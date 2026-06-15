@@ -39,6 +39,7 @@ func runHome(e Env) int {
 		fmt.Fprintln(os.Stderr, "xmux: warning — inside a mux; attach is refused here. Detach first (prefix d), or bind `xmux popup`.")
 	}
 	for {
+		fmt.Fprintln(os.Stderr, "xmux: scanning sessions… (probing local + ssh hosts)")
 		res, err := ui.RunSwitcher(e.deepScan(), e.ops(), e.controlHook())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "xmux:", err)
@@ -71,6 +72,7 @@ func runHome(e Env) int {
 // Same-server pick teleports (switch-client); cross-server detaches to the home
 // loop. Exits after one action so the popup closes back onto the pane.
 func runPopup(e Env) int {
+	fmt.Fprintln(os.Stderr, "xmux: scanning sessions… (probing local + ssh hosts)")
 	res, err := ui.RunSwitcher(e.deepScan(), e.ops(), e.controlHook())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "xmux:", err)

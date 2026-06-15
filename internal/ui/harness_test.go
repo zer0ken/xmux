@@ -147,6 +147,11 @@ func (h *harness) treeFgOf(text string) tcell.Color {
 	return tcell.ColorDefault
 }
 
+func dialogVisible(h *harness) bool {
+	name, _ := h.s.previewPages.GetFrontPage()
+	return name == "dialog"
+}
+
 func curRef(h *harness) interface{} {
 	n := h.s.tree.GetCurrentNode()
 	if n == nil {

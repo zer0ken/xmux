@@ -83,11 +83,13 @@ type switcher struct {
 	app     *tview.Application
 	flex    *tview.Flex
 	middle  *tview.Flex
-	header  *tview.TextView
-	tree    *tview.TreeView
-	preview *tview.TextView
-	input   *tview.InputField
-	footer  *tview.TextView
+	header       *tview.TextView
+	tree         *tview.TreeView
+	previewPages *tview.Pages    // content page + an overlay dialog page
+	preview      *tview.TextView // the content (cached/live render)
+	dialog       *tview.TextView // a small box floated over the content
+	input        *tview.InputField
+	footer       *tview.TextView
 
 	ops    SwitcherOps
 	groups []Group
@@ -136,6 +138,16 @@ func newSwitcher(scan Scan, ops SwitcherOps) *switcher {
 	s.preview.SetDynamicColors(true).SetWrap(false) // captured ANSI is translated to tview tags
 	s.preview.SetBorder(true).SetTitle(" Preview ")
 
+	// dialog floats over the content (its own bordered box); a non-resizing page
+	// so it draws only its rect and the content shows around it.
+	s.dialog = tview.NewTextView()
+	s.dialog.SetTextAlign(tview.AlignCenter).SetDynamicColors(false)
+	s.dialog.SetBorder(true)
+
+	s.previewPages = tview.NewPages()
+	s.previewPages.AddPage("content", s.preview, true, true)
+	s.previewPages.AddPage("dialog", s.dialog, false, false)
+
 	s.input = tview.NewInputField()
 	s.input.SetDoneFunc(s.onInputDone)
 
@@ -144,7 +156,7 @@ func newSwitcher(scan Scan, ops SwitcherOps) *switcher {
 
 	s.middle = tview.NewFlex().SetDirection(tview.FlexColumn)
 	s.middle.AddItem(s.tree, treeWidth, 0, true)
-	s.middle.AddItem(s.preview, 0, 1, false)
+	s.middle.AddItem(s.previewPages, 0, 1, false)
 
 	s.flex = tview.NewFlex().SetDirection(tview.FlexRow)
 	s.flex.AddItem(s.header, 2, 0, false)
@@ -342,16 +354,20 @@ func (s *switcher) onFocusChanged(node *tview.TreeNode) {
 	}
 	if tgt.Target == "" {
 		s.preview.SetTitle(" Preview ")
+		s.hideDialog()
 		s.preview.SetTextAlign(tview.AlignLeft).SetText("")
 		return
 	}
 	s.preview.SetTitle(previewTitle(tgt))
-	if _, seen := s.previewCache[previewKey(tgt)]; seen {
-		// revisit: a reconnecting dialog, same centred style as loading.
-		s.showCentered("⟳ reconnecting…")
+	if cached, seen := s.previewCache[previewKey(tgt)]; seen {
+		// revisit: keep the cached render visible and float a reconnecting dialog
+		// over it; the poll below refreshes and dismisses the dialog.
+		s.preview.SetTextAlign(tview.AlignLeft).SetText(cached)
+		s.showDialog("⟳ reconnecting…")
 	} else {
 		// first visit: a loading dialog until the first capture lands.
-		s.showCentered("⟳ loading preview…")
+		s.preview.SetTextAlign(tview.AlignLeft).SetText("")
+		s.showDialog("⟳ loading preview…")
 	}
 	select {
 	case s.pollKick <- struct{}{}:
@@ -363,23 +379,21 @@ func previewKey(t previewTarget) string { return t.Source + "\x00" + t.Target }
 
 func previewTitle(t previewTarget) string { return fmt.Sprintf(" Preview · %s ", t.Target) }
 
-// showCentered draws a small dialog-like box, centred in the preview pane.
-func (s *switcher) showCentered(msg string) {
-	_, _, _, h := s.preview.GetInnerRect()
-	s.preview.SetTextAlign(tview.AlignCenter).SetText(centeredBox(msg, h))
+// showDialog floats a small bordered box, centred over the preview content (the
+// content underneath stays visible around it).
+func (s *switcher) showDialog(msg string) {
+	s.dialog.SetText(msg)
+	w := uniseg.StringWidth(msg) + 4 // text + a space each side + borders
+	h := 3
+	px, py, pw, ph := s.preview.GetInnerRect()
+	if pw < w || ph < h {
+		px, py, pw, ph = 0, 0, w, h // pre-draw fallback
+	}
+	s.dialog.SetRect(px+(pw-w)/2, py+(ph-h)/2, w, h)
+	s.previewPages.ShowPage("dialog")
 }
 
-func centeredBox(msg string, height int) string {
-	inner := " " + msg + " "
-	bar := strings.Repeat("─", uniseg.StringWidth(inner))
-	lines := []string{"╭" + bar + "╮", "│" + inner + "│", "╰" + bar + "╯"}
-	var b strings.Builder
-	for i := 0; i < (height-len(lines))/2; i++ {
-		b.WriteByte('\n')
-	}
-	b.WriteString(strings.Join(lines, "\n"))
-	return b.String()
-}
+func (s *switcher) hideDialog() { s.previewPages.HidePage("dialog") }
 
 // targetFor maps the focused node to the capture-pane target whose active pane
 // is what attaching here would land on: a host previews its most-recent
@@ -430,7 +444,7 @@ func (s *switcher) pollOnce() {
 	tgt := s.previewTgt
 	s.previewMu.Unlock()
 	if tgt.Target == "" {
-		s.app.QueueUpdateDraw(func() { s.preview.SetTextAlign(tview.AlignLeft).SetText("") })
+		s.app.QueueUpdateDraw(func() { s.hideDialog(); s.preview.SetTextAlign(tview.AlignLeft).SetText("") })
 		return
 	}
 	text, err := s.ops.Capture(tgt.Source, tgt.Target)
@@ -440,7 +454,7 @@ func (s *switcher) pollOnce() {
 		s.previewMu.Unlock()
 		if err != nil {
 			if cur == tgt {
-				s.showCentered("preview unavailable")
+				s.showDialog("preview unavailable") // keep cached content visible under it
 			}
 			return
 		}
@@ -451,7 +465,7 @@ func (s *switcher) pollOnce() {
 		rendered := ansiToTview(strings.TrimRight(text, "\n"))
 		s.previewCache[previewKey(tgt)] = rendered
 		if cur == tgt {
-			s.preview.SetTitle(previewTitle(tgt)) // fresh render landed — clears the dialog
+			s.hideDialog() // fresh render landed — dismiss the dialog
 			s.preview.SetTextAlign(tview.AlignLeft).SetText(rendered)
 		}
 	})

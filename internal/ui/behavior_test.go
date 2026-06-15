@@ -232,29 +232,26 @@ func TestCreateOnUnreachableHostRefused(t *testing.T) {
 
 func TestPreviewShowsLoadingUntilFetched(t *testing.T) {
 	h := newHarness(t, switcherSample(), noopOps())
-	// inference is preselected with a real target, but the poller is not running
-	// in the harness, so the preview should show the loading indicator.
-	if !strings.Contains(h.s.preview.GetText(true), "loading") {
-		t.Errorf("preview should indicate loading on a fresh target, got %q", h.s.preview.GetText(true))
+	// inference is preselected (first visit) ⇒ a loading dialog floats over it.
+	if !dialogVisible(h) || !strings.Contains(h.s.dialog.GetText(true), "loading") {
+		t.Errorf("first visit should float a loading dialog, visible=%v text=%q", dialogVisible(h), h.s.dialog.GetText(true))
 	}
-	// moving to a new node re-arms the loading indicator for the new target.
-	h.key(tcell.KeyDown) // → window 1: train
-	if !strings.Contains(h.s.preview.GetText(true), "loading") {
-		t.Errorf("moving to a new node should show loading, got %q", h.s.preview.GetText(true))
+	h.key(tcell.KeyDown) // → window 1: train (also a first visit)
+	if !dialogVisible(h) || !strings.Contains(h.s.dialog.GetText(true), "loading") {
+		t.Errorf("moving to a new node should show the loading dialog")
 	}
 }
 
 func TestPreviewReconnectingOnRevisit(t *testing.T) {
 	h := newHarness(t, switcherSample(), noopOps())
-	h.s.previewCache["jupiter00\x00inference"] = "CACHED" // mark inference as already seen
-	h.key(tcell.KeyDown)                                  // away (window 1: train)
-	h.key(tcell.KeyUp)                                    // back to inference (revisit)
-	got := h.s.preview.GetText(true)
-	if !strings.Contains(got, "reconnecting") {
-		t.Errorf("a revisit should show the reconnecting dialog, got %q", got)
+	h.s.previewCache["jupiter00\x00inference"] = "CACHED-CONTENT" // mark inference seen
+	h.key(tcell.KeyDown)                                          // away (window 1: train)
+	h.key(tcell.KeyUp)                                            // back to inference (revisit)
+	if !strings.Contains(h.s.preview.GetText(true), "CACHED-CONTENT") {
+		t.Errorf("revisit must keep the cached content visible UNDER the dialog, got %q", h.s.preview.GetText(true))
 	}
-	if strings.Contains(got, "loading") {
-		t.Errorf("a revisit must not show the first-visit loading text, got %q", got)
+	if !dialogVisible(h) || !strings.Contains(h.s.dialog.GetText(true), "reconnecting") {
+		t.Errorf("revisit should float a reconnecting dialog, visible=%v text=%q", dialogVisible(h), h.s.dialog.GetText(true))
 	}
 }
 
@@ -262,8 +259,11 @@ func TestPreviewBlankOnHostWithoutSession(t *testing.T) {
 	h := newHarness(t, switcherSample(), noopOps())
 	h.key(tcell.KeyDown) // inference → window 1: train
 	h.key(tcell.KeyDown) // → db-2 (unreachable host, no session ⇒ no preview target)
-	if strings.Contains(h.s.preview.GetText(true), "loading") {
-		t.Errorf("a host with no session has no preview target and must not show loading, got %q", h.s.preview.GetText(true))
+	if dialogVisible(h) {
+		t.Errorf("a host with no session has no preview target and must not float a dialog")
+	}
+	if strings.TrimSpace(h.s.preview.GetText(true)) != "" {
+		t.Errorf("a host with no session should clear the preview, got %q", h.s.preview.GetText(true))
 	}
 }
 
