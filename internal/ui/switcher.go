@@ -247,7 +247,7 @@ func (s *switcher) rebuildTree() {
 
 	for _, g := range groups {
 		unreachable := g.Err != nil
-		host := tview.NewTreeNode(s.hostLabel(g)).
+		host := tview.NewTreeNode(padLabel(s.hostLabel(g))).
 			SetReference(swHostRef{Source: g.Source, Unreachable: unreachable}).
 			SetColor(colorHost).
 			SetSelectedTextStyle(reverseStyle).
@@ -257,7 +257,7 @@ func (s *switcher) rebuildTree() {
 		}
 		if !unreachable {
 			for _, sess := range g.Sessions {
-				sessNode := tview.NewTreeNode(s.sessionLabel(sess)).
+				sessNode := tview.NewTreeNode(padLabel(s.sessionLabel(sess))).
 					SetReference(swSessionRef{S: sess}).
 					SetColor(colorSession).
 					SetSelectedTextStyle(reverseStyle).
@@ -267,13 +267,13 @@ func (s *switcher) rebuildTree() {
 					current = sessNode
 				}
 				for _, w := range s.panes[sess.Address()] {
-					winNode := tview.NewTreeNode(windowLabel(w)).
+					winNode := tview.NewTreeNode(padLabel(windowLabel(w))).
 						SetReference(swWindowRef{S: sess, Window: w.Index}).
 						SetColor(colorWindow).
 						SetSelectedTextStyle(reverseStyle).
 						SetSelectable(true)
 					for _, p := range w.Panes {
-						winNode.AddChild(tview.NewTreeNode(paneLabel(p)).SetColor(colorPane).SetSelectable(false))
+						winNode.AddChild(tview.NewTreeNode(padLabel(paneLabel(p))).SetColor(colorPane).SetSelectable(false))
 					}
 					sessNode.AddChild(winNode)
 				}
@@ -302,6 +302,10 @@ func (s *switcher) setTreeTitle() {
 	}
 	s.tree.SetTitle(" Hosts · Sessions · Windows · Panes ")
 }
+
+// padLabel adds a space each side so the reverse-video selection has breathing
+// room around the text (the spaces are invisible when the row isn't selected).
+func padLabel(s string) string { return " " + s + " " }
 
 func (s *switcher) hostLabel(g Group) string {
 	if g.Err != nil {
