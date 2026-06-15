@@ -345,12 +345,12 @@ func (s *switcher) onFocusChanged(node *tview.TreeNode) {
 		s.preview.SetTextAlign(tview.AlignLeft).SetText("")
 		return
 	}
-	s.preview.SetTitle(fmt.Sprintf(" Preview · %s ", tgt.Target))
-	if cached, ok := s.previewCache[previewKey(tgt)]; ok {
-		// revisit: show the last render instantly; the poll below refreshes it.
-		s.preview.SetTextAlign(tview.AlignLeft).SetText(cached)
+	s.preview.SetTitle(previewTitle(tgt))
+	if _, seen := s.previewCache[previewKey(tgt)]; seen {
+		// revisit: a reconnecting dialog, same centred style as loading.
+		s.showCentered("⟳ reconnecting…")
 	} else {
-		// first visit: a centred loading dialog until the first capture lands.
+		// first visit: a loading dialog until the first capture lands.
 		s.showCentered("⟳ loading preview…")
 	}
 	select {
@@ -360,6 +360,8 @@ func (s *switcher) onFocusChanged(node *tview.TreeNode) {
 }
 
 func previewKey(t previewTarget) string { return t.Source + "\x00" + t.Target }
+
+func previewTitle(t previewTarget) string { return fmt.Sprintf(" Preview · %s ", t.Target) }
 
 // showCentered draws a small dialog-like box, centred in the preview pane.
 func (s *switcher) showCentered(msg string) {
@@ -449,6 +451,7 @@ func (s *switcher) pollOnce() {
 		rendered := ansiToTview(strings.TrimRight(text, "\n"))
 		s.previewCache[previewKey(tgt)] = rendered
 		if cur == tgt {
+			s.preview.SetTitle(previewTitle(tgt)) // fresh render landed — clears the dialog
 			s.preview.SetTextAlign(tview.AlignLeft).SetText(rendered)
 		}
 	})

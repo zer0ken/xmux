@@ -244,18 +244,17 @@ func TestPreviewShowsLoadingUntilFetched(t *testing.T) {
 	}
 }
 
-func TestPreviewShowsCachedRenderOnRevisit(t *testing.T) {
+func TestPreviewReconnectingOnRevisit(t *testing.T) {
 	h := newHarness(t, switcherSample(), noopOps())
-	// pretend a poll already rendered inference's preview.
-	h.s.previewCache["jupiter00\x00inference"] = "CACHED-RENDER"
-	h.key(tcell.KeyDown) // inference → window 1: train (different target)
-	h.key(tcell.KeyUp)   // back to the inference session
+	h.s.previewCache["jupiter00\x00inference"] = "CACHED" // mark inference as already seen
+	h.key(tcell.KeyDown)                                  // away (window 1: train)
+	h.key(tcell.KeyUp)                                    // back to inference (revisit)
 	got := h.s.preview.GetText(true)
-	if !strings.Contains(got, "CACHED-RENDER") {
-		t.Errorf("revisiting a cached target should show the cached render instantly, got %q", got)
+	if !strings.Contains(got, "reconnecting") {
+		t.Errorf("a revisit should show the reconnecting dialog, got %q", got)
 	}
 	if strings.Contains(got, "loading") {
-		t.Errorf("a revisit with a cache must not show the loading dialog, got %q", got)
+		t.Errorf("a revisit must not show the first-visit loading text, got %q", got)
 	}
 }
 
