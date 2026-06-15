@@ -413,6 +413,28 @@ func (s *switcher) currentSession() *session.Session {
 	return nil
 }
 
+func (s *switcher) currentHostUnreachable() bool {
+	node := s.tree.GetCurrentNode()
+	if node == nil {
+		return false
+	}
+	if ref, ok := node.GetReference().(swHostRef); ok {
+		return ref.Unreachable
+	}
+	return false
+}
+
+func (s *switcher) findSessionNode(address string) *tview.TreeNode {
+	for _, host := range s.tree.GetRoot().GetChildren() {
+		for _, leaf := range host.GetChildren() {
+			if ref, ok := leaf.GetReference().(swSessionRef); ok && ref.S.Address() == address {
+				return leaf
+			}
+		}
+	}
+	return nil
+}
+
 func (s *switcher) currentSource() string {
 	node := s.tree.GetCurrentNode()
 	if node == nil {
@@ -437,6 +459,11 @@ func (s *switcher) openInput(mode int) {
 		s.input.SetLabel(" filter: ").SetText(s.filter)
 	case inputNew:
 		if s.currentSource() == "" {
+			return
+		}
+		if s.currentHostUnreachable() {
+			s.flash = "host unreachable — cannot create here"
+			s.updateFooter()
 			return
 		}
 		s.input.SetLabel(" new session name (empty = auto): ").SetText("")
@@ -490,8 +517,13 @@ func (s *switcher) doCreate(name string) {
 		s.flash = "create failed: " + err.Error()
 		return
 	}
+	delete(s.detailByAddr, created.Address()) // an address may be reused after a kill
 	s.groups = AddSession(s.groups, created)
 	s.rebuildTree()
+	if node := s.findSessionNode(created.Address()); node != nil {
+		s.tree.SetCurrentNode(node)
+		s.onFocusChanged(node)
+	}
 }
 
 func (s *switcher) doRename(newName string) {
@@ -499,10 +531,19 @@ func (s *switcher) doRename(newName string) {
 	if sess == nil || newName == "" || newName == sess.Name {
 		return
 	}
+	if strings.HasPrefix(newName, "-") {
+		// A leading-dash name is silently no-op'd by the mux (getopt eats it),
+		// which would diverge the model from reality — refuse it up front.
+		s.flash = "rename: name cannot start with '-'"
+		s.updateFooter()
+		return
+	}
 	if err := s.ops.Rename(*sess, newName); err != nil {
 		s.flash = "rename failed: " + err.Error()
 		return
 	}
+	delete(s.detailByAddr, sess.Address())
+	delete(s.detailByAddr, sess.Source+"/"+newName)
 	s.groups = RenameSession(s.groups, sess.Address(), newName)
 	s.rebuildTree()
 }
@@ -525,6 +566,7 @@ func (s *switcher) resolveKill(ev *tcell.EventKey) {
 		if err := s.ops.Kill(*sess); err != nil {
 			s.flash = "kill failed: " + err.Error()
 		} else {
+			delete(s.detailByAddr, sess.Address()) // don't serve a dead session's cached detail
 			s.groups = RemoveSession(s.groups, sess.Address())
 			s.detailAddr = ""
 			s.rebuildTree()

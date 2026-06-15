@@ -19,6 +19,7 @@ type Runner interface {
 // connection failure surfaces as a plain error (never benign).
 type ExitErr struct {
 	Stderr string
+	Code   int // process exit code; 126/127/255 are never a healthy-but-empty mux
 	Err    error
 }
 
@@ -42,7 +43,7 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte,
 	if err != nil {
 		var xe *exec.ExitError
 		if errors.As(err, &xe) {
-			return out, &ExitErr{Stderr: string(xe.Stderr), Err: err}
+			return out, &ExitErr{Stderr: string(xe.Stderr), Code: xe.ExitCode(), Err: err}
 		}
 		return out, err
 	}

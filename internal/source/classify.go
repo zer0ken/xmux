@@ -16,9 +16,17 @@ func isNoSessions(err error) bool {
 	if !errors.As(err, &ee) {
 		return false
 	}
-	s := strings.ToLower(ee.Stderr)
-	for _, marker := range []string{"no server running", "no sessions"} {
-		if strings.Contains(s, marker) {
+	// command-not-found (127), not-executable (126), and ssh failure (255) are
+	// never a healthy-but-empty mux — a broken host must not be hidden as empty.
+	switch ee.Code {
+	case 126, 127, 255:
+		return false
+	}
+	// Match the marker as a line PREFIX, not anywhere — so a login banner or MOTD
+	// line like "you have no sessions pending" cannot masquerade as the idle mux.
+	for _, line := range strings.Split(strings.ToLower(ee.Stderr), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "no server running") || strings.HasPrefix(line, "no sessions") {
 			return true
 		}
 	}

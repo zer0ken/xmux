@@ -159,14 +159,26 @@ func TestListSessionsUnreachableIsError(t *testing.T) {
 }
 
 func TestIsNoSessions(t *testing.T) {
-	if !isNoSessions(&ExitErr{Stderr: "no server running"}) {
-		t.Error("'no server running' is benign")
+	if !isNoSessions(&ExitErr{Code: 1, Stderr: "no server running on /tmp/tmux-1000/default"}) {
+		t.Error("a line beginning 'no server running' is benign")
 	}
-	if !isNoSessions(&ExitErr{Stderr: "error: no sessions"}) {
+	if !isNoSessions(&ExitErr{Code: 1, Stderr: "no sessions"}) {
 		t.Error("'no sessions' is benign")
 	}
-	if isNoSessions(&ExitErr{Stderr: "permission denied"}) {
+	if isNoSessions(&ExitErr{Code: 1, Stderr: "permission denied"}) {
 		t.Error("'permission denied' is NOT benign")
+	}
+	// A banner/MOTD line merely CONTAINING the phrase must not misclassify a real failure.
+	if isNoSessions(&ExitErr{Code: 1, Stderr: "Last login...\nYou have no sessions pending.\n"}) {
+		t.Error("a banner line that only contains 'no sessions' mid-line is NOT benign")
+	}
+	// command-not-found / ssh failure are never a healthy-but-empty mux, even if
+	// some forwarded banner happens to contain the marker.
+	if isNoSessions(&ExitErr{Code: 127, Stderr: "tmux: command not found\nno sessions\n"}) {
+		t.Error("exit 127 (missing binary) is NEVER benign")
+	}
+	if isNoSessions(&ExitErr{Code: 255, Stderr: "ssh: connect failed\n"}) {
+		t.Error("exit 255 (ssh failure) is NEVER benign")
 	}
 	if isNoSessions(errors.New("exec: \"tmux\": executable file not found")) {
 		t.Error("a non-ExitErr (missing binary / connect failure) is NOT benign")
