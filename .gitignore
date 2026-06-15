@@ -1,0 +1,8 @@
+# build outputs
+/xmux
+/xmux.exe
+*.exe
+/dist/
+
+# scratch
+/tmp/
