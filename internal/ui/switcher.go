@@ -202,6 +202,7 @@ func (s *switcher) rebuildTree() {
 		host := tview.NewTreeNode(s.hostLabel(g)).
 			SetReference(swHostRef{Source: g.Source, Unreachable: unreachable}).
 			SetColor(tcell.ColorYellow).
+			SetSelectedTextStyle(reverseStyle).
 			SetSelectable(true)
 		expanded := s.isExpanded(g.Source)
 		host.SetExpanded(expanded)
@@ -212,6 +213,7 @@ func (s *switcher) rebuildTree() {
 			for _, sess := range g.Sessions {
 				leaf := tview.NewTreeNode(s.sessionLabel(sess)).
 					SetReference(swSessionRef{S: sess}).
+					SetSelectedTextStyle(reverseStyle).
 					SetSelectable(true)
 				host.AddChild(leaf)
 				if firstNode == nil {
@@ -645,6 +647,11 @@ func screenToString(sim tcell.SimulationScreen) string {
 	}
 	return b.String()
 }
+
+// reverseStyle is the selection highlight: a true reverse-video attribute, which
+// the terminal renders by swapping its own fg/bg — visible on any theme, unlike
+// swapping ColorDefault with ColorDefault (which is a no-op).
+var reverseStyle = tcell.StyleDefault.Reverse(true)
 
 func applyTheme() {
 	tview.Styles.PrimitiveBackgroundColor = tcell.ColorDefault
