@@ -22,13 +22,16 @@ const (
 // ColorDefault with ColorDefault is a no-op).
 var reverseStyle = tcell.StyleDefault.Reverse(true)
 
-// Per-level node colours, so the four tree levels read apart at a glance. Panes
-// are dimmed grey since they are context only (not selectable).
+// Per-level node colours, so the four tree levels read apart at a glance. These
+// are the first-16 ANSI colours, which tcell always emits as palette codes (even
+// in truecolor mode), so they follow the terminal's own theme. Achromatic slots
+// (black/white/silver/grey) are avoided — they blend into the background on some
+// themes.
 var (
 	colorHost    = tcell.ColorYellow
 	colorSession = tcell.ColorGreen
 	colorWindow  = tcell.ColorFuchsia
-	colorPane    = tcell.ColorSilver
+	colorPane    = tcell.ColorAqua
 )
 
 // Node references. Hosts, sessions, and windows are selectable; panes are shown
