@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	treeWidth       = 46
+	treeWidth       = 48 // includes the border + the 1-cell inner padding each side
 	previewInterval = time.Second // live preview poll cadence
 )
 
@@ -27,8 +27,8 @@ var reverseStyle = tcell.StyleDefault.Reverse(true)
 var (
 	colorHost    = tcell.ColorYellow
 	colorSession = tcell.ColorGreen
-	colorWindow  = tcell.ColorAqua
-	colorPane    = tcell.ColorGray
+	colorWindow  = tcell.ColorFuchsia
+	colorPane    = tcell.ColorSilver
 )
 
 // Node references. Hosts, sessions, and windows are selectable; panes are shown
@@ -131,6 +131,7 @@ func newSwitcher(scan Scan, ops SwitcherOps) *switcher {
 	s.tree.SetGraphics(false)
 	s.tree.SetTopLevel(1)
 	s.tree.SetBorder(true).SetTitle(" Hosts · Sessions · Windows · Panes ")
+	s.tree.SetBorderPadding(0, 0, 1, 1) // 1-cell gap inside the left/right border
 	s.tree.SetChangedFunc(s.onFocusChanged)
 	s.tree.SetInputCapture(s.onTreeKey)
 
