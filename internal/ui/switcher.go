@@ -329,14 +329,21 @@ func (s *switcher) onFocusChanged(node *tview.TreeNode) {
 	}
 	if tgt.Target == "" {
 		s.preview.SetTitle(" Preview ")
+		s.preview.SetText("")
 	} else {
+		// Show the loading cue immediately on a target CHANGE (not on the periodic
+		// same-target refresh, which the changed-guard above filters out) so a slow
+		// remote capture doesn't leave the previous pane's content sitting there.
 		s.preview.SetTitle(fmt.Sprintf(" Preview · %s ", tgt.Target))
+		s.preview.SetText(previewLoading)
 	}
 	select {
 	case s.pollKick <- struct{}{}:
 	default:
 	}
 }
+
+const previewLoading = "\n  ⟳  loading preview…"
 
 // targetFor maps the focused node to the capture-pane target whose active pane
 // is what attaching here would land on: a host previews its most-recent

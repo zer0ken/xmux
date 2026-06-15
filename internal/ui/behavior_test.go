@@ -230,6 +230,29 @@ func TestCreateOnUnreachableHostRefused(t *testing.T) {
 	}
 }
 
+func TestPreviewShowsLoadingUntilFetched(t *testing.T) {
+	h := newHarness(t, switcherSample(), noopOps())
+	// inference is preselected with a real target, but the poller is not running
+	// in the harness, so the preview should show the loading indicator.
+	if !strings.Contains(h.s.preview.GetText(true), "loading") {
+		t.Errorf("preview should indicate loading on a fresh target, got %q", h.s.preview.GetText(true))
+	}
+	// moving to a new node re-arms the loading indicator for the new target.
+	h.key(tcell.KeyDown) // → window 1: train
+	if !strings.Contains(h.s.preview.GetText(true), "loading") {
+		t.Errorf("moving to a new node should show loading, got %q", h.s.preview.GetText(true))
+	}
+}
+
+func TestPreviewBlankOnHostWithoutSession(t *testing.T) {
+	h := newHarness(t, switcherSample(), noopOps())
+	h.key(tcell.KeyDown) // inference → window 1: train
+	h.key(tcell.KeyDown) // → db-2 (unreachable host, no session ⇒ no preview target)
+	if strings.Contains(h.s.preview.GetText(true), "loading") {
+		t.Errorf("a host with no session has no preview target and must not show loading, got %q", h.s.preview.GetText(true))
+	}
+}
+
 func TestQuitLeavesNoChoice(t *testing.T) {
 	h := newHarness(t, switcherSample(), noopOps())
 	h.rune('q')
