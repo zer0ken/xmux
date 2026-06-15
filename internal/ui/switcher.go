@@ -100,9 +100,10 @@ type switcher struct {
 	flash        string
 	nameColWidth int
 
-	previewMu  sync.Mutex
-	previewTgt previewTarget
-	pollKick   chan struct{}
+	previewMu    sync.Mutex
+	previewTgt   previewTarget
+	previewCache map[string]string // last rendered preview per target (shown instantly on revisit)
+	pollKick     chan struct{}
 }
 
 func newSwitcher(scan Scan, ops SwitcherOps) *switcher {
@@ -112,8 +113,9 @@ func newSwitcher(scan Scan, ops SwitcherOps) *switcher {
 		ops:      ops,
 		groups:   scan.Groups,
 		panes:    scan.Panes,
-		result:   Result{Window: -1},
-		pollKick: make(chan struct{}, 1),
+		result:       Result{Window: -1},
+		previewCache: map[string]string{},
+		pollKick:     make(chan struct{}, 1),
 	}
 	if s.panes == nil {
 		s.panes = map[string][]session.WindowPanes{}
@@ -340,13 +342,16 @@ func (s *switcher) onFocusChanged(node *tview.TreeNode) {
 	}
 	if tgt.Target == "" {
 		s.preview.SetTitle(" Preview ")
-		s.preview.SetText("")
+		s.preview.SetTextAlign(tview.AlignLeft).SetText("")
+		return
+	}
+	s.preview.SetTitle(fmt.Sprintf(" Preview · %s ", tgt.Target))
+	if cached, ok := s.previewCache[previewKey(tgt)]; ok {
+		// revisit: show the last render instantly; the poll below refreshes it.
+		s.preview.SetTextAlign(tview.AlignLeft).SetText(cached)
 	} else {
-		// Show the loading cue immediately on a target CHANGE (not on the periodic
-		// same-target refresh, which the changed-guard above filters out) so a slow
-		// remote capture doesn't leave the previous pane's content sitting there.
-		s.preview.SetTitle(fmt.Sprintf(" Preview · %s ", tgt.Target))
-		s.preview.SetText(previewLoading)
+		// first visit: a centred loading dialog until the first capture lands.
+		s.showCentered("⟳ loading preview…")
 	}
 	select {
 	case s.pollKick <- struct{}{}:
@@ -354,7 +359,25 @@ func (s *switcher) onFocusChanged(node *tview.TreeNode) {
 	}
 }
 
-const previewLoading = "\n  ⟳  loading preview…"
+func previewKey(t previewTarget) string { return t.Source + "\x00" + t.Target }
+
+// showCentered draws a small dialog-like box, centred in the preview pane.
+func (s *switcher) showCentered(msg string) {
+	_, _, _, h := s.preview.GetInnerRect()
+	s.preview.SetTextAlign(tview.AlignCenter).SetText(centeredBox(msg, h))
+}
+
+func centeredBox(msg string, height int) string {
+	inner := " " + msg + " "
+	bar := strings.Repeat("─", uniseg.StringWidth(inner))
+	lines := []string{"╭" + bar + "╮", "│" + inner + "│", "╰" + bar + "╯"}
+	var b strings.Builder
+	for i := 0; i < (height-len(lines))/2; i++ {
+		b.WriteByte('\n')
+	}
+	b.WriteString(strings.Join(lines, "\n"))
+	return b.String()
+}
 
 // targetFor maps the focused node to the capture-pane target whose active pane
 // is what attaching here would land on: a host previews its most-recent
@@ -405,7 +428,7 @@ func (s *switcher) pollOnce() {
 	tgt := s.previewTgt
 	s.previewMu.Unlock()
 	if tgt.Target == "" {
-		s.app.QueueUpdateDraw(func() { s.preview.SetText("") })
+		s.app.QueueUpdateDraw(func() { s.preview.SetTextAlign(tview.AlignLeft).SetText("") })
 		return
 	}
 	text, err := s.ops.Capture(tgt.Source, tgt.Target)
@@ -413,16 +436,21 @@ func (s *switcher) pollOnce() {
 		s.previewMu.Lock()
 		cur := s.previewTgt
 		s.previewMu.Unlock()
-		if cur != tgt {
-			return // cursor moved while fetching — drop this stale frame
-		}
 		if err != nil {
-			s.preview.SetText("(preview unavailable)")
+			if cur == tgt {
+				s.showCentered("preview unavailable")
+			}
 			return
 		}
 		// Translate the pane's ANSI colour escapes into tview markup so the
-		// preview reproduces the pane's colours.
-		s.preview.SetText(tview.TranslateANSI(strings.TrimRight(text, "\n")))
+		// preview reproduces the pane's colours (and underline/bold), re-stating
+		// the full style per change so attributes never bleed. Cache it so a
+		// revisit shows it instantly.
+		rendered := ansiToTview(strings.TrimRight(text, "\n"))
+		s.previewCache[previewKey(tgt)] = rendered
+		if cur == tgt {
+			s.preview.SetTextAlign(tview.AlignLeft).SetText(rendered)
+		}
 	})
 }
 
@@ -440,13 +468,23 @@ func (s *switcher) onTreeKey(ev *tcell.EventKey) *tcell.EventKey {
 	case tcell.KeyEnter:
 		s.onEnter()
 		return nil
-	case tcell.KeyUp, tcell.KeyDown, tcell.KeyPgUp, tcell.KeyPgDn:
-		return ev // navigation (tview skips non-selectable pane rows)
+	case tcell.KeyUp:
+		s.moveSelection(-1) // owns navigation so it wraps and skips panes deterministically
+		return nil
+	case tcell.KeyDown:
+		s.moveSelection(1)
+		return nil
+	case tcell.KeyPgUp:
+		s.moveSelection(-10)
+		return nil
+	case tcell.KeyPgDn:
+		s.moveSelection(10)
+		return nil
 	case tcell.KeyHome:
-		s.setCurrent(s.edgeNode(true))
+		s.moveTo(0)
 		return nil
 	case tcell.KeyEnd:
-		s.setCurrent(s.edgeNode(false))
+		s.moveTo(-1)
 		return nil
 	}
 	switch ev.Rune() {
@@ -545,21 +583,51 @@ func (s *switcher) setCurrent(node *tview.TreeNode) {
 	s.onFocusChanged(node)
 }
 
-// edgeNode returns the first (or last) selectable node in display order. A
-// selectable node is one with a reference (panes have none).
-func (s *switcher) edgeNode(first bool) *tview.TreeNode {
-	var found *tview.TreeNode
+// selectableNodes returns every selectable node (one with a reference; panes
+// have none) in top-to-bottom display order.
+func (s *switcher) selectableNodes() []*tview.TreeNode {
+	var out []*tview.TreeNode
 	var walk func(n *tview.TreeNode)
 	walk = func(n *tview.TreeNode) {
 		for _, c := range n.GetChildren() {
-			if c.GetReference() != nil && (found == nil || !first) {
-				found = c
+			if c.GetReference() != nil {
+				out = append(out, c)
 			}
 			walk(c)
 		}
 	}
 	walk(s.tree.GetRoot())
-	return found
+	return out
+}
+
+// moveSelection moves the cursor by delta with wrap-around (bottom→top, top→bottom).
+func (s *switcher) moveSelection(delta int) {
+	nodes := s.selectableNodes()
+	if len(nodes) == 0 {
+		return
+	}
+	cur := s.tree.GetCurrentNode()
+	idx := 0
+	for i, n := range nodes {
+		if n == cur {
+			idx = i
+			break
+		}
+	}
+	idx = ((idx+delta)%len(nodes) + len(nodes)) % len(nodes)
+	s.setCurrent(nodes[idx])
+}
+
+// moveTo jumps to the idx-th selectable node (-1 = last).
+func (s *switcher) moveTo(idx int) {
+	nodes := s.selectableNodes()
+	if len(nodes) == 0 {
+		return
+	}
+	if idx < 0 || idx >= len(nodes) {
+		idx = len(nodes) - 1
+	}
+	s.setCurrent(nodes[idx])
 }
 
 func (s *switcher) findSessionNode(address string) *tview.TreeNode {

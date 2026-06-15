@@ -244,6 +244,21 @@ func TestPreviewShowsLoadingUntilFetched(t *testing.T) {
 	}
 }
 
+func TestPreviewShowsCachedRenderOnRevisit(t *testing.T) {
+	h := newHarness(t, switcherSample(), noopOps())
+	// pretend a poll already rendered inference's preview.
+	h.s.previewCache["jupiter00\x00inference"] = "CACHED-RENDER"
+	h.key(tcell.KeyDown) // inference → window 1: train (different target)
+	h.key(tcell.KeyUp)   // back to the inference session
+	got := h.s.preview.GetText(true)
+	if !strings.Contains(got, "CACHED-RENDER") {
+		t.Errorf("revisiting a cached target should show the cached render instantly, got %q", got)
+	}
+	if strings.Contains(got, "loading") {
+		t.Errorf("a revisit with a cache must not show the loading dialog, got %q", got)
+	}
+}
+
 func TestPreviewBlankOnHostWithoutSession(t *testing.T) {
 	h := newHarness(t, switcherSample(), noopOps())
 	h.key(tcell.KeyDown) // inference → window 1: train
@@ -274,6 +289,22 @@ func TestLevelsHaveDistinctColors(t *testing.T) {
 	}
 	if host == sess || host == win || sess == win {
 		t.Errorf("the four levels must be visually distinct")
+	}
+}
+
+func TestNavigationWrapsAround(t *testing.T) {
+	h := newHarness(t, switcherSample(), noopOps())
+	h.key(tcell.KeyEnd) // last node = db-2 (unreachable host)
+	if ref, ok := curRef(h).(swHostRef); !ok || ref.Source != "db-2" {
+		t.Fatalf("End should reach db-2, got %+v", curRef(h))
+	}
+	h.key(tcell.KeyDown) // wrap bottom → top
+	if ref, ok := curRef(h).(swHostRef); !ok || ref.Source != "local" {
+		t.Fatalf("Down at the bottom should wrap to the first node (local), got %+v", curRef(h))
+	}
+	h.key(tcell.KeyUp) // wrap top → bottom
+	if ref, ok := curRef(h).(swHostRef); !ok || ref.Source != "db-2" {
+		t.Fatalf("Up at the top should wrap to the last node (db-2), got %+v", curRef(h))
 	}
 }
 
