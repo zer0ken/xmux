@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 	"github.com/zer0ken/xmux/internal/session"
 )
 
@@ -304,6 +305,24 @@ func TestNavigationWrapsAround(t *testing.T) {
 	h.key(tcell.KeyUp) // wrap top → bottom
 	if ref, ok := curRef(h).(swHostRef); !ok || ref.Source != "db-2" {
 		t.Fatalf("Up at the top should wrap to the last node (db-2), got %+v", curRef(h))
+	}
+}
+
+func TestDoubleClickAttachesCurrentNode(t *testing.T) {
+	h := newHarness(t, switcherSample(), noopOps())
+	// inference is preselected; a double-click inside the tree attaches it.
+	ev := tcell.NewEventMouse(5, 4, tcell.Button1, tcell.ModNone)
+	h.s.onMouse(ev, tview.MouseLeftDoubleClick)
+	if h.s.result.Chosen == nil || h.s.result.Chosen.Name != "inference" {
+		t.Fatalf("double-click should attach the current node, got %+v", h.s.result.Chosen)
+	}
+}
+
+func TestSingleClickDoesNotAttach(t *testing.T) {
+	h := newHarness(t, switcherSample(), noopOps())
+	ev := tcell.NewEventMouse(5, 4, tcell.Button1, tcell.ModNone)
+	if _, _ = h.s.onMouse(ev, tview.MouseLeftClick); h.s.result.Chosen != nil {
+		t.Fatalf("a single click must not attach, got %+v", h.s.result.Chosen)
 	}
 }
 

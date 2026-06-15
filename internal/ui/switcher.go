@@ -170,6 +170,8 @@ func newSwitcher(scan Scan, ops SwitcherOps) *switcher {
 
 	s.rebuildTree()
 	s.app.SetRoot(s.flex, true)
+	s.app.EnableMouse(true)
+	s.app.SetMouseCapture(s.onMouse)
 	s.app.SetFocus(s.tree)
 	s.updateFooter()
 	return s
@@ -527,6 +529,20 @@ func (s *switcher) onTreeKey(ev *tcell.EventKey) *tcell.EventKey {
 		s.doRefresh()
 	}
 	return nil
+}
+
+// onMouse adds double-click-to-attach over tview's built-in single-click (which
+// moves the cursor, so the preview follows) and scroll-wheel handling. A single
+// click only selects; attach needs a double-click so a stray click can't jump.
+func (s *switcher) onMouse(event *tcell.EventMouse, action tview.MouseAction) (*tcell.EventMouse, tview.MouseAction) {
+	if action == tview.MouseLeftDoubleClick && event != nil {
+		x, y := event.Position()
+		if s.app.GetFocus() == s.tree && s.pendingKill == nil && s.tree.InRect(x, y) {
+			s.onEnter() // the preceding click already moved the cursor to this node
+			return nil, action
+		}
+	}
+	return event, action
 }
 
 func (s *switcher) onEnter() {
