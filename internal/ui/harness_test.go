@@ -120,6 +120,33 @@ func (h *harness) treeRowReversed(y int) bool {
 	return false
 }
 
+// treeFgOf returns the foreground colour of the first cell of text in the tree.
+func (h *harness) treeFgOf(text string) tcell.Color {
+	cells, w, ht := h.screen.GetContents()
+	runes := []rune(text)
+	limit := treeWidth
+	if limit > w {
+		limit = w
+	}
+	for y := 0; y < ht; y++ {
+		for x := 0; x+len(runes) <= limit; x++ {
+			match := true
+			for i, r := range runes {
+				rs := cells[y*w+x+i].Runes
+				if len(rs) == 0 || rs[0] != r {
+					match = false
+					break
+				}
+			}
+			if match {
+				fg, _, _ := cells[y*w+x].Style.Decompose()
+				return fg
+			}
+		}
+	}
+	return tcell.ColorDefault
+}
+
 func curRef(h *harness) interface{} {
 	n := h.s.tree.GetCurrentNode()
 	if n == nil {

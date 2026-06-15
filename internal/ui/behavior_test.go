@@ -253,6 +253,30 @@ func TestPreviewBlankOnHostWithoutSession(t *testing.T) {
 	}
 }
 
+func TestLevelsHaveDistinctColors(t *testing.T) {
+	h := newHarness(t, switcherSample(), noopOps())
+	// inference is the selected (reverse-video) node, so check non-selected rows.
+	host := h.treeFgOf("local")
+	sess := h.treeFgOf("editor")
+	win := h.treeFgOf("window 1: shell")
+	pane := h.treeFgOf("pane 1  bash")
+	if host != colorHost {
+		t.Errorf("host colour = %v, want %v", host, colorHost)
+	}
+	if sess != colorSession {
+		t.Errorf("session colour = %v, want %v", sess, colorSession)
+	}
+	if win != colorWindow {
+		t.Errorf("window colour = %v, want %v", win, colorWindow)
+	}
+	if pane != colorPane {
+		t.Errorf("pane colour = %v, want %v", pane, colorPane)
+	}
+	if host == sess || host == win || sess == win {
+		t.Errorf("the four levels must be visually distinct")
+	}
+}
+
 func TestQuitLeavesNoChoice(t *testing.T) {
 	h := newHarness(t, switcherSample(), noopOps())
 	h.rune('q')

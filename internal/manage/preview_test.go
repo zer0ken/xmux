@@ -31,7 +31,7 @@ func TestCapture(t *testing.T) {
 	if got != "$ npm run dev\nReady\n" {
 		t.Errorf("Capture text = %q", got)
 	}
-	if !reflect.DeepEqual(r.args, []string{"capture-pane", "-p", "-t", "editor:1.0"}) {
+	if !reflect.DeepEqual(r.args, []string{"capture-pane", "-p", "-e", "-t", "editor:1.0"}) {
 		t.Errorf("Capture argv = %v", r.args)
 	}
 }

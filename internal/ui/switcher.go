@@ -22,6 +22,15 @@ const (
 // ColorDefault with ColorDefault is a no-op).
 var reverseStyle = tcell.StyleDefault.Reverse(true)
 
+// Per-level node colours, so the four tree levels read apart at a glance. Panes
+// are dimmed grey since they are context only (not selectable).
+var (
+	colorHost    = tcell.ColorYellow
+	colorSession = tcell.ColorGreen
+	colorWindow  = tcell.ColorAqua
+	colorPane    = tcell.ColorGray
+)
+
 // Node references. Hosts, sessions, and windows are selectable; panes are shown
 // for context but never selectable, so the cursor skips them.
 type swHostRef struct {
@@ -122,7 +131,7 @@ func newSwitcher(scan Scan, ops SwitcherOps) *switcher {
 	s.tree.SetInputCapture(s.onTreeKey)
 
 	s.preview = tview.NewTextView()
-	s.preview.SetDynamicColors(false).SetWrap(false) // arbitrary pane content, shown verbatim
+	s.preview.SetDynamicColors(true).SetWrap(false) // captured ANSI is translated to tview tags
 	s.preview.SetBorder(true).SetTitle(" Preview ")
 
 	s.input = tview.NewInputField()
@@ -222,7 +231,7 @@ func (s *switcher) rebuildTree() {
 		unreachable := g.Err != nil
 		host := tview.NewTreeNode(s.hostLabel(g)).
 			SetReference(swHostRef{Source: g.Source, Unreachable: unreachable}).
-			SetColor(tcell.ColorYellow).
+			SetColor(colorHost).
 			SetSelectedTextStyle(reverseStyle).
 			SetSelectable(true)
 		if firstNode == nil {
@@ -232,6 +241,7 @@ func (s *switcher) rebuildTree() {
 			for _, sess := range g.Sessions {
 				sessNode := tview.NewTreeNode(s.sessionLabel(sess)).
 					SetReference(swSessionRef{S: sess}).
+					SetColor(colorSession).
 					SetSelectedTextStyle(reverseStyle).
 					SetSelectable(true)
 				if sess.LastAttached > bestRecency {
@@ -241,10 +251,11 @@ func (s *switcher) rebuildTree() {
 				for _, w := range s.panes[sess.Address()] {
 					winNode := tview.NewTreeNode(windowLabel(w)).
 						SetReference(swWindowRef{S: sess, Window: w.Index}).
+						SetColor(colorWindow).
 						SetSelectedTextStyle(reverseStyle).
 						SetSelectable(true)
 					for _, p := range w.Panes {
-						winNode.AddChild(tview.NewTreeNode(paneLabel(p)).SetSelectable(false))
+						winNode.AddChild(tview.NewTreeNode(paneLabel(p)).SetColor(colorPane).SetSelectable(false))
 					}
 					sessNode.AddChild(winNode)
 				}
@@ -409,7 +420,9 @@ func (s *switcher) pollOnce() {
 			s.preview.SetText("(preview unavailable)")
 			return
 		}
-		s.preview.SetText(strings.TrimRight(text, "\n"))
+		// Translate the pane's ANSI colour escapes into tview markup so the
+		// preview reproduces the pane's colours.
+		s.preview.SetText(tview.TranslateANSI(strings.TrimRight(text, "\n")))
 	})
 }
 

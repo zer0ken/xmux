@@ -19,7 +19,8 @@ func TestPaneTarget(t *testing.T) {
 
 func TestCapturePane(t *testing.T) {
 	got := CapturePane("psmux", "editor:1.0")
-	want := []string{"psmux", "capture-pane", "-p", "-t", "editor:1.0"}
+	// -e includes the pane's ANSI colour escapes so the preview can reproduce them.
+	want := []string{"psmux", "capture-pane", "-p", "-e", "-t", "editor:1.0"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("CapturePane = %v, want %v", got, want)
 	}

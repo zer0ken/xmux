@@ -65,9 +65,10 @@ func PaneTarget(session string, window, pane int) string {
 }
 
 // CapturePane prints the visible content of the target pane (a pane, or the
-// active pane of a window/session target) to stdout — the preview source.
+// active pane of a window/session target) to stdout — the preview source. -e
+// includes the pane's ANSI colour escapes so the preview reproduces its colours.
 func CapturePane(bin, target string) []string {
-	return []string{bin, "capture-pane", "-p", "-t", target}
+	return []string{bin, "capture-pane", "-p", "-e", "-t", target}
 }
 
 // SelectWindow makes the target window active in its session.
