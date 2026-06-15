@@ -14,21 +14,23 @@ import (
 // The switcher is driven without app.Run(): primitives are built by
 // newSwitcher, keys are dispatched through the exact tview path the run loop
 // uses, and the flex is drawn to a tcell SimulationScreen after every key (the
-// per-key redraw settles TreeView's internal node cache, matching live).
+// per-key redraw settles TreeView's node cache, matching live). The live
+// preview poller is NOT started here (it belongs to RunSwitcher), so preview
+// CONTENT is verified live; the harness verifies the preview TARGET selection.
 
 type harness struct {
 	s      *switcher
 	screen tcell.SimulationScreen
 }
 
-func newHarness(t *testing.T, groups []Group, ops SwitcherOps) *harness {
+func newHarness(t *testing.T, scan Scan, ops SwitcherOps) *harness {
 	t.Helper()
 	screen := tcell.NewSimulationScreen("UTF-8")
 	if err := screen.Init(); err != nil {
 		t.Fatalf("screen init: %v", err)
 	}
-	screen.SetSize(90, 24)
-	s := newSwitcher(groups, ops)
+	screen.SetSize(100, 30)
+	s := newSwitcher(scan, ops)
 	s.app.SetScreen(screen)
 	h := &harness{s: s, screen: screen}
 	h.draw()
@@ -77,55 +79,96 @@ func (h *harness) text() string {
 	return b.String()
 }
 
+// treeRowOf returns the first screen row where text appears within the tree pane.
+func (h *harness) treeRowOf(text string) int {
+	cells, w, ht := h.screen.GetContents()
+	runes := []rune(text)
+	limit := treeWidth
+	if limit > w {
+		limit = w
+	}
+	for y := 0; y < ht; y++ {
+		for x := 0; x+len(runes) <= limit; x++ {
+			match := true
+			for i, r := range runes {
+				rs := cells[y*w+x+i].Runes
+				if len(rs) == 0 || rs[0] != r {
+					match = false
+					break
+				}
+			}
+			if match {
+				return y
+			}
+		}
+	}
+	return -1
+}
+
+func (h *harness) treeRowReversed(y int) bool {
+	cells, w, _ := h.screen.GetContents()
+	limit := treeWidth
+	if limit > w {
+		limit = w
+	}
+	for x := 0; x < limit; x++ {
+		_, _, attr := cells[y*w+x].Style.Decompose()
+		if attr&tcell.AttrReverse != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func curRef(h *harness) interface{} {
+	n := h.s.tree.GetCurrentNode()
+	if n == nil {
+		return nil
+	}
+	return n.GetReference()
+}
+
 func noopOps() SwitcherOps {
 	return SwitcherOps{
 		Panes:   func(session.Session) ([]session.WindowPanes, error) { return nil, nil },
-		Refresh: func() ([]Group, error) { return nil, nil },
-		New:     func(string, string) (session.Session, error) { return session.Session{}, nil },
+		Capture: func(string, string) (string, error) { return "", nil },
+		Refresh: func() (Scan, error) { return Scan{}, nil },
+		New:     func(src, name string) (session.Session, error) { return session.Session{Source: src, Name: name, Windows: 1}, nil },
 		Kill:    func(session.Session) error { return nil },
 		Rename:  func(session.Session, string) error { return nil },
 	}
 }
 
-func switcherSample() []Group {
-	return []Group{
-		{Source: "local", Sessions: []session.Session{
-			{Source: "local", Name: "editor", Windows: 3, Attached: true, LastAttached: 200},
-			{Source: "local", Name: "build", Windows: 1, LastAttached: 100},
-		}},
-		{Source: "jupiter00", Sessions: []session.Session{
-			{Source: "jupiter00", Name: "inference", Windows: 3, LastAttached: 300},
-		}},
-		{Source: "db-2", Err: errUnreachable},
-	}
-}
-
-// errUnreachable is a stand-in for a scan error.
 var errUnreachable = &scanErr{"connection timed out"}
 
 type scanErr struct{ s string }
 
 func (e *scanErr) Error() string { return e.s }
 
-func TestRendersHostsAndSessions(t *testing.T) {
-	h := newHarness(t, switcherSample(), noopOps())
-	out := h.text()
-	for _, want := range []string{"local", "editor", "build", "jupiter00", "inference", "db-2", "unreachable"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("rendered tree missing %q\n---\n%s", want, out)
-		}
+// switcherSample is a fully-populated Scan: local (editor, build) + jupiter00
+// (inference) with windows/panes, and an unreachable db-2.
+func switcherSample() Scan {
+	groups := []Group{
+		{Source: "local", Sessions: []session.Session{
+			{Source: "local", Name: "editor", Windows: 2, Attached: true, LastAttached: 200},
+			{Source: "local", Name: "build", Windows: 1, LastAttached: 100},
+		}},
+		{Source: "jupiter00", Sessions: []session.Session{
+			{Source: "jupiter00", Name: "inference", Windows: 1, LastAttached: 300},
+		}},
+		{Source: "db-2", Err: errUnreachable},
 	}
-}
-
-func TestPreselectsGloballyMostRecentSession(t *testing.T) {
-	h := newHarness(t, switcherSample(), noopOps())
-	// jupiter00/inference has the highest LastAttached (300) ⇒ it is the current node.
-	cur := h.s.tree.GetCurrentNode()
-	if cur == nil {
-		t.Fatal("no current node")
+	panes := map[string][]session.WindowPanes{
+		"local/editor": {
+			{Index: 1, Name: "shell", Active: true, Panes: []session.Pane{{Index: 1, Active: true, Command: "bash"}}},
+			{Index: 2, Name: "logs", Panes: []session.Pane{{Index: 1, Command: "tail"}}},
+		},
+		"local/build": {
+			{Index: 1, Name: "make", Active: true, Panes: []session.Pane{{Index: 1, Active: true, Command: "make"}}},
+		},
+		"jupiter00/inference": {
+			{Index: 1, Name: "train", Active: true, Panes: []session.Pane{{Index: 1, Active: true, Command: "python"}}},
+		},
 	}
-	ref, ok := cur.GetReference().(swSessionRef)
-	if !ok || ref.S.Name != "inference" {
-		t.Fatalf("preselected node = %+v, want session inference", cur.GetReference())
-	}
+	return Scan{Groups: groups, Panes: panes}
 }

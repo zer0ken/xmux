@@ -35,10 +35,14 @@ Or:
 
 ### In the tree
 
+The left pane is one tree over every environment — Host → Session → Window →
+Pane — with the live preview of the focused node's pane on the right.
+
 | Key | Action |
 |---|---|
-| `↑` / `↓` | move (the detail pane follows the cursor) |
-| `Enter` | switch to a session · expand/collapse a host |
+| `↑` / `↓` | move (panes are shown but skipped; the preview follows) |
+| `Home` / `End` | jump to the first / last node |
+| `Enter` | attach — on a host: its most-recent session; on a session: that session; on a window: that window |
 | `n` | new session on the focused host |
 | `R` | rename the focused session |
 | `x` | kill the focused session (inline `y`/`n` confirm) |
@@ -46,10 +50,12 @@ Or:
 | `r` | re-scan every host |
 | `q` / `Esc` | quit |
 
-The left pane is the merged tree of all hosts; the right pane shows the focused
-session's windows and panes. A host that cannot be reached shows
-`⚠ unreachable`; a reachable host with no sessions is still a valid create
-target.
+The right pane is a **live preview**: it polls and shows the screen of the pane
+that attaching here would land on — a host previews its most-recent session's
+active window, a session its active window, a window its active pane. A host
+that cannot be reached shows `⚠ unreachable`; a reachable host with no sessions
+is still a valid create target. Panes are shown for context but are not
+selectable.
 
 ## Keybind
 

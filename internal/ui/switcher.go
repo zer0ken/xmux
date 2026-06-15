@@ -3,6 +3,8 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -10,43 +12,57 @@ import (
 	"github.com/zer0ken/xmux/internal/session"
 )
 
-const treeWidth = 42
+const (
+	treeWidth       = 46
+	previewInterval = time.Second // live preview poll cadence
+)
 
-// node references stored on tree nodes.
+// reverseStyle is the selection highlight: a true reverse-video attribute the
+// terminal renders by swapping its own fg/bg — visible on any theme (swapping
+// ColorDefault with ColorDefault is a no-op).
+var reverseStyle = tcell.StyleDefault.Reverse(true)
+
+// Node references. Hosts, sessions, and windows are selectable; panes are shown
+// for context but never selectable, so the cursor skips them.
 type swHostRef struct {
 	Source      string
 	Unreachable bool
 }
+type swSessionRef struct{ S session.Session }
+type swWindowRef struct {
+	S      session.Session
+	Window int
+}
 
-type swSessionRef struct {
-	S session.Session
+// Scan is a fully-populated snapshot of the reachable environment: the host /
+// session groups plus every session's windows-and-panes, keyed by address.
+type Scan struct {
+	Groups []Group
+	Panes  map[string][]session.WindowPanes
 }
 
 // SwitcherOps are the side-effecting actions the switcher delegates to the host
-// program. New/Kill/Rename act on the live mux; Panes fetches a session's
-// windows-and-panes for the detail view; Refresh re-scans every source.
+// program.
 type SwitcherOps struct {
 	New     func(sourceAlias, name string) (session.Session, error)
 	Kill    func(s session.Session) error
 	Rename  func(s session.Session, newName string) error
 	Panes   func(s session.Session) ([]session.WindowPanes, error)
-	Refresh func() ([]Group, error)
+	Capture func(sourceAlias, target string) (string, error)
+	Refresh func() (Scan, error)
 }
 
-// Result is the outcome of one switcher run.
+// Result is the outcome of one switcher run. Window >= 0 means attach with that
+// window selected; -1 means the session's current window.
 type Result struct {
-	Chosen *session.Session // nil ⇒ the user quit
+	Chosen *session.Session
+	Window int
 }
 
 // Control is the seam an external driver (the control channel) attaches through.
-// It receives the application, its root, and a function that renders the live
-// screen to text; it returns a stop func run at teardown.
 type Control func(app *tview.Application, root tview.Primitive, render func() string) (stop func())
 
-type detailEntry struct {
-	wins []session.WindowPanes
-	err  error
-}
+type previewTarget struct{ Source, Target string }
 
 const (
 	inputFilter = iota
@@ -55,37 +71,43 @@ const (
 )
 
 type switcher struct {
-	app    *tview.Application
-	flex   *tview.Flex
-	middle *tview.Flex
-	header *tview.TextView
-	tree   *tview.TreeView
-	detail *tview.TextView
-	input  *tview.InputField
-	footer *tview.TextView
+	app     *tview.Application
+	flex    *tview.Flex
+	middle  *tview.Flex
+	header  *tview.TextView
+	tree    *tview.TreeView
+	preview *tview.TextView
+	input   *tview.InputField
+	footer  *tview.TextView
 
 	ops    SwitcherOps
 	groups []Group
+	panes  map[string][]session.WindowPanes
 
-	filter        string
-	expanded      map[string]bool // host source → expanded (absent ⇒ true)
-	inputMode     int
-	pendingKill   *session.Session
-	chosen        *session.Session
-	flash         string
-	nameColWidth  int
-	detailByAddr  map[string]detailEntry
-	detailAddr    string
+	filter       string
+	inputMode    int
+	pendingKill  *session.Session
+	result       Result
+	flash        string
+	nameColWidth int
+
+	previewMu  sync.Mutex
+	previewTgt previewTarget
+	pollKick   chan struct{}
 }
 
-func newSwitcher(groups []Group, ops SwitcherOps) *switcher {
+func newSwitcher(scan Scan, ops SwitcherOps) *switcher {
 	applyTheme()
 	s := &switcher{
-		app:          tview.NewApplication(),
-		ops:          ops,
-		groups:       groups,
-		expanded:     map[string]bool{},
-		detailByAddr: map[string]detailEntry{},
+		app:      tview.NewApplication(),
+		ops:      ops,
+		groups:   scan.Groups,
+		panes:    scan.Panes,
+		result:   Result{Window: -1},
+		pollKick: make(chan struct{}, 1),
+	}
+	if s.panes == nil {
+		s.panes = map[string][]session.WindowPanes{}
 	}
 
 	s.header = tview.NewTextView()
@@ -95,13 +117,13 @@ func newSwitcher(groups []Group, ops SwitcherOps) *switcher {
 	s.tree = tview.NewTreeView()
 	s.tree.SetGraphics(false)
 	s.tree.SetTopLevel(1)
-	s.tree.SetBorder(true).SetTitle(" Sessions ")
+	s.tree.SetBorder(true).SetTitle(" Hosts · Sessions · Windows · Panes ")
 	s.tree.SetChangedFunc(s.onFocusChanged)
 	s.tree.SetInputCapture(s.onTreeKey)
 
-	s.detail = tview.NewTextView()
-	s.detail.SetDynamicColors(true).SetWrap(false)
-	s.detail.SetBorder(true)
+	s.preview = tview.NewTextView()
+	s.preview.SetDynamicColors(false).SetWrap(false) // arbitrary pane content, shown verbatim
+	s.preview.SetBorder(true).SetTitle(" Preview ")
 
 	s.input = tview.NewInputField()
 	s.input.SetDoneFunc(s.onInputDone)
@@ -111,12 +133,12 @@ func newSwitcher(groups []Group, ops SwitcherOps) *switcher {
 
 	s.middle = tview.NewFlex().SetDirection(tview.FlexColumn)
 	s.middle.AddItem(s.tree, treeWidth, 0, true)
-	s.middle.AddItem(s.detail, 0, 1, false)
+	s.middle.AddItem(s.preview, 0, 1, false)
 
 	s.flex = tview.NewFlex().SetDirection(tview.FlexRow)
 	s.flex.AddItem(s.header, 2, 0, false)
 	s.flex.AddItem(s.middle, 0, 1, true)
-	s.flex.AddItem(s.input, 0, 0, false) // hidden until a prompt opens
+	s.flex.AddItem(s.input, 0, 0, false)
 	s.flex.AddItem(s.footer, 1, 0, false)
 
 	s.rebuildTree()
@@ -126,17 +148,22 @@ func newSwitcher(groups []Group, ops SwitcherOps) *switcher {
 	return s
 }
 
-// RunSwitcher runs one interactive switcher session and returns the chosen
-// session (or nil if the user quit). Controls are attached before the run loop.
-func RunSwitcher(groups []Group, ops SwitcherOps, controls ...Control) (Result, error) {
-	s := newSwitcher(groups, ops)
+// RunSwitcher runs one interactive switcher session, polling the live preview
+// for as long as it is open.
+func RunSwitcher(scan Scan, ops SwitcherOps, controls ...Control) (Result, error) {
+	s := newSwitcher(scan, ops)
+
+	stop := make(chan struct{})
+	go s.runPoller(stop)
+	defer close(stop)
+
 	var stops []func()
 	for _, c := range controls {
 		if c == nil {
 			continue
 		}
-		if stop := c(s.app, s.flex, s.renderText); stop != nil {
-			stops = append(stops, stop)
+		if st := c(s.app, s.flex, s.renderText); st != nil {
+			stops = append(stops, st)
 		}
 	}
 	defer func() {
@@ -144,29 +171,22 @@ func RunSwitcher(groups []Group, ops SwitcherOps, controls ...Control) (Result, 
 			st()
 		}
 	}()
+
 	if err := s.app.Run(); err != nil {
 		return Result{}, err
 	}
-	return Result{Chosen: s.chosen}, nil
+	return s.result, nil
 }
 
-func (s *switcher) isExpanded(source string) bool {
-	if v, ok := s.expanded[source]; ok {
-		return v
-	}
-	return true // hosts auto-expand so every environment is visible
-}
+// --- tree -------------------------------------------------------------------
 
-// visibleGroups applies the active filter. When the filter matches nothing, it
-// falls back to source-only nodes so every host stays selectable as a create
-// target (the XM-01 fix — a non-matching filter must not be a dead end).
 func (s *switcher) visibleGroups() []Group {
 	if s.filter == "" {
 		return s.groups
 	}
 	filtered := FilterGroups(s.groups, s.filter)
 	if len(filtered) == 0 {
-		return sourcesOnly(s.groups)
+		return sourcesOnly(s.groups) // XM-01: a non-matching filter must not be a dead end
 	}
 	return filtered
 }
@@ -184,7 +204,7 @@ func (s *switcher) rebuildTree() {
 
 	s.nameColWidth = 0
 	for _, g := range groups {
-		if g.Err != nil || !s.isExpanded(g.Source) {
+		if g.Err != nil {
 			continue
 		}
 		for _, sess := range g.Sessions {
@@ -197,6 +217,7 @@ func (s *switcher) rebuildTree() {
 	root := tview.NewTreeNode("").SetSelectable(false)
 	var current, firstNode *tview.TreeNode
 	var bestRecency int64 = -1
+
 	for _, g := range groups {
 		unreachable := g.Err != nil
 		host := tview.NewTreeNode(s.hostLabel(g)).
@@ -204,25 +225,30 @@ func (s *switcher) rebuildTree() {
 			SetColor(tcell.ColorYellow).
 			SetSelectedTextStyle(reverseStyle).
 			SetSelectable(true)
-		expanded := s.isExpanded(g.Source)
-		host.SetExpanded(expanded)
 		if firstNode == nil {
 			firstNode = host
 		}
 		if !unreachable {
 			for _, sess := range g.Sessions {
-				leaf := tview.NewTreeNode(s.sessionLabel(sess)).
+				sessNode := tview.NewTreeNode(s.sessionLabel(sess)).
 					SetReference(swSessionRef{S: sess}).
 					SetSelectedTextStyle(reverseStyle).
 					SetSelectable(true)
-				host.AddChild(leaf)
-				if firstNode == nil {
-					firstNode = leaf
-				}
-				if expanded && sess.LastAttached > bestRecency {
+				if sess.LastAttached > bestRecency {
 					bestRecency = sess.LastAttached
-					current = leaf
+					current = sessNode
 				}
+				for _, w := range s.panes[sess.Address()] {
+					winNode := tview.NewTreeNode(windowLabel(w)).
+						SetReference(swWindowRef{S: sess, Window: w.Index}).
+						SetSelectedTextStyle(reverseStyle).
+						SetSelectable(true)
+					for _, p := range w.Panes {
+						winNode.AddChild(tview.NewTreeNode(paneLabel(p)).SetSelectable(false))
+					}
+					sessNode.AddChild(winNode)
+				}
+				host.AddChild(sessNode)
 			}
 		}
 		root.AddChild(host)
@@ -241,20 +267,18 @@ func (s *switcher) rebuildTree() {
 
 func (s *switcher) setTreeTitle() {
 	if s.filter != "" {
-		s.tree.SetTitle(fmt.Sprintf(" Sessions (filter: %s) ", s.filter))
+		// keep it short — the full label + filter overflows the pane width.
+		s.tree.SetTitle(fmt.Sprintf(" filter: %s ", s.filter))
 		return
 	}
-	s.tree.SetTitle(" Sessions ")
+	s.tree.SetTitle(" Hosts · Sessions · Windows · Panes ")
 }
 
 func (s *switcher) hostLabel(g Group) string {
 	if g.Err != nil {
 		return g.Source + "  ⚠ unreachable"
 	}
-	if s.isExpanded(g.Source) {
-		return "▾ " + g.Source
-	}
-	return "▸ " + g.Source
+	return g.Source
 }
 
 func plural(n int) string {
@@ -276,65 +300,113 @@ func (s *switcher) sessionLabel(sess session.Session) string {
 	return sess.Name + strings.Repeat(" ", pad) + "   " + plural(sess.Windows) + star
 }
 
-// --- detail pane (cursor-following, cached per address) ---------------------
+func windowLabel(w session.WindowPanes) string {
+	s := fmt.Sprintf("window %d: %s", w.Index, w.Name)
+	if w.Active {
+		s += "  (active)"
+	}
+	return s
+}
+
+func paneLabel(p session.Pane) string {
+	s := fmt.Sprintf("pane %d  %s", p.Index, p.Command)
+	if p.Active {
+		s += "  (active)"
+	}
+	return s
+}
+
+// --- live preview (follows the cursor) --------------------------------------
 
 func (s *switcher) onFocusChanged(node *tview.TreeNode) {
+	tgt := s.targetFor(node)
+	s.previewMu.Lock()
+	changed := tgt != s.previewTgt
+	s.previewTgt = tgt
+	s.previewMu.Unlock()
+	if !changed {
+		return
+	}
+	if tgt.Target == "" {
+		s.preview.SetTitle(" Preview ")
+	} else {
+		s.preview.SetTitle(fmt.Sprintf(" Preview · %s ", tgt.Target))
+	}
+	select {
+	case s.pollKick <- struct{}{}:
+	default:
+	}
+}
+
+// targetFor maps the focused node to the capture-pane target whose active pane
+// is what attaching here would land on: a host previews its most-recent
+// session's active window; a session its active window; a window its active pane.
+func (s *switcher) targetFor(node *tview.TreeNode) previewTarget {
 	if node == nil {
-		s.clearDetail()
-		return
+		return previewTarget{}
 	}
-	sref, ok := node.GetReference().(swSessionRef)
-	if !ok {
-		s.clearDetail()
-		return
-	}
-	addr := sref.S.Address()
-	if addr == s.detailAddr {
-		return // same row — no refetch, no repaint
-	}
-	s.detailAddr = addr
-	s.detail.SetTitle(fmt.Sprintf(" %s · Windows/Panes ", addr))
-	entry, ok := s.detailByAddr[addr]
-	if !ok {
-		wins, err := s.ops.Panes(sref.S)
-		entry = detailEntry{wins: wins, err: err}
-		s.detailByAddr[addr] = entry // cache success AND error so revisiting never re-blocks
-	}
-	s.detail.SetText(renderDetail(entry))
-}
-
-func (s *switcher) clearDetail() {
-	s.detailAddr = ""
-	s.detail.SetTitle("")
-	s.detail.SetText("")
-}
-
-func renderDetail(e detailEntry) string {
-	if e.err != nil {
-		return "error: " + e.err.Error()
-	}
-	if len(e.wins) == 0 {
-		return "(no windows)"
-	}
-	var b strings.Builder
-	for _, w := range e.wins {
-		active := ""
-		if w.Active {
-			active = "  (active)"
+	switch ref := node.GetReference().(type) {
+	case swHostRef:
+		if sess, ok := s.firstSessionOf(ref.Source); ok {
+			return previewTarget{Source: sess.Source, Target: sess.Name}
 		}
-		fmt.Fprintf(&b, "%d: %s%s\n", w.Index, w.Name, active)
-		for _, p := range w.Panes {
-			pa := ""
-			if p.Active {
-				pa = "  (active)"
-			}
-			fmt.Fprintf(&b, "   pane %d  %s%s\n", p.Index, p.Command, pa)
+	case swSessionRef:
+		return previewTarget{Source: ref.S.Source, Target: ref.S.Name}
+	case swWindowRef:
+		return previewTarget{Source: ref.S.Source, Target: fmt.Sprintf("%s:%d", ref.S.Name, ref.Window)}
+	}
+	return previewTarget{}
+}
+
+func (s *switcher) firstSessionOf(source string) (session.Session, bool) {
+	for _, g := range s.groups {
+		if g.Source == source && len(g.Sessions) > 0 {
+			return g.Sessions[0], true // recency-sorted ⇒ what `attach` (no -t) picks
 		}
 	}
-	return b.String()
+	return session.Session{}, false
 }
 
-// --- key handling (scoped to the tree) --------------------------------------
+func (s *switcher) runPoller(stop <-chan struct{}) {
+	ticker := time.NewTicker(previewInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			s.pollOnce()
+		case <-s.pollKick:
+			s.pollOnce()
+		}
+	}
+}
+
+func (s *switcher) pollOnce() {
+	s.previewMu.Lock()
+	tgt := s.previewTgt
+	s.previewMu.Unlock()
+	if tgt.Target == "" {
+		s.app.QueueUpdateDraw(func() { s.preview.SetText("") })
+		return
+	}
+	text, err := s.ops.Capture(tgt.Source, tgt.Target)
+	s.app.QueueUpdateDraw(func() {
+		s.previewMu.Lock()
+		cur := s.previewTgt
+		s.previewMu.Unlock()
+		if cur != tgt {
+			return // cursor moved while fetching — drop this stale frame
+		}
+		if err != nil {
+			s.preview.SetText("(preview unavailable)")
+			return
+		}
+		s.preview.SetText(strings.TrimRight(text, "\n"))
+	})
+}
+
+// --- keys -------------------------------------------------------------------
 
 func (s *switcher) onTreeKey(ev *tcell.EventKey) *tcell.EventKey {
 	if s.pendingKill != nil {
@@ -348,8 +420,14 @@ func (s *switcher) onTreeKey(ev *tcell.EventKey) *tcell.EventKey {
 	case tcell.KeyEnter:
 		s.onEnter()
 		return nil
-	case tcell.KeyUp, tcell.KeyDown, tcell.KeyHome, tcell.KeyEnd, tcell.KeyPgUp, tcell.KeyPgDn:
-		return ev // navigation: let the TreeView move
+	case tcell.KeyUp, tcell.KeyDown, tcell.KeyPgUp, tcell.KeyPgDn:
+		return ev // navigation (tview skips non-selectable pane rows)
+	case tcell.KeyHome:
+		s.setCurrent(s.edgeNode(true))
+		return nil
+	case tcell.KeyEnd:
+		s.setCurrent(s.edgeNode(false))
+		return nil
 	}
 	switch ev.Rune() {
 	case 'q':
@@ -365,7 +443,7 @@ func (s *switcher) onTreeKey(ev *tcell.EventKey) *tcell.EventKey {
 	case 'r':
 		s.doRefresh()
 	}
-	return nil // nav-mode: a stray key is consumed, never typed
+	return nil
 }
 
 func (s *switcher) onEnter() {
@@ -378,61 +456,36 @@ func (s *switcher) onEnter() {
 		if ref.Unreachable {
 			return
 		}
-		s.toggleExpand(ref.Source)
-	case swSessionRef:
-		chosen := ref.S
-		s.chosen = &chosen
-		s.app.Stop()
-	}
-}
-
-func (s *switcher) toggleExpand(source string) {
-	s.expanded[source] = !s.isExpanded(source)
-	s.rebuildTree()
-	if node := s.findHostNode(source); node != nil {
-		s.tree.SetCurrentNode(node)
-	}
-}
-
-func (s *switcher) findHostNode(source string) *tview.TreeNode {
-	for _, child := range s.tree.GetRoot().GetChildren() {
-		if ref, ok := child.GetReference().(swHostRef); ok && ref.Source == source {
-			return child
+		if sess, ok := s.firstSessionOf(ref.Source); ok {
+			s.choose(sess, -1) // attach with no session specified ⇒ the host's recent session
 		}
+	case swSessionRef:
+		s.choose(ref.S, -1)
+	case swWindowRef:
+		s.choose(ref.S, ref.Window)
 	}
-	return nil
 }
 
+func (s *switcher) choose(sess session.Session, window int) {
+	chosen := sess
+	s.result = Result{Chosen: &chosen, Window: window}
+	s.app.Stop()
+}
+
+// currentSession resolves the session a session/window node belongs to (nil on a
+// host node).
 func (s *switcher) currentSession() *session.Session {
 	node := s.tree.GetCurrentNode()
 	if node == nil {
 		return nil
 	}
-	if ref, ok := node.GetReference().(swSessionRef); ok {
+	switch ref := node.GetReference().(type) {
+	case swSessionRef:
 		sess := ref.S
 		return &sess
-	}
-	return nil
-}
-
-func (s *switcher) currentHostUnreachable() bool {
-	node := s.tree.GetCurrentNode()
-	if node == nil {
-		return false
-	}
-	if ref, ok := node.GetReference().(swHostRef); ok {
-		return ref.Unreachable
-	}
-	return false
-}
-
-func (s *switcher) findSessionNode(address string) *tview.TreeNode {
-	for _, host := range s.tree.GetRoot().GetChildren() {
-		for _, leaf := range host.GetChildren() {
-			if ref, ok := leaf.GetReference().(swSessionRef); ok && ref.S.Address() == address {
-				return leaf
-			}
-		}
+	case swWindowRef:
+		sess := ref.S
+		return &sess
 	}
 	return nil
 }
@@ -447,8 +500,57 @@ func (s *switcher) currentSource() string {
 		return ref.Source
 	case swSessionRef:
 		return ref.S.Source
+	case swWindowRef:
+		return ref.S.Source
 	}
 	return ""
+}
+
+func (s *switcher) currentHostUnreachable() bool {
+	node := s.tree.GetCurrentNode()
+	if node == nil {
+		return false
+	}
+	if ref, ok := node.GetReference().(swHostRef); ok {
+		return ref.Unreachable
+	}
+	return false
+}
+
+func (s *switcher) setCurrent(node *tview.TreeNode) {
+	if node == nil {
+		return
+	}
+	s.tree.SetCurrentNode(node)
+	s.onFocusChanged(node)
+}
+
+// edgeNode returns the first (or last) selectable node in display order. A
+// selectable node is one with a reference (panes have none).
+func (s *switcher) edgeNode(first bool) *tview.TreeNode {
+	var found *tview.TreeNode
+	var walk func(n *tview.TreeNode)
+	walk = func(n *tview.TreeNode) {
+		for _, c := range n.GetChildren() {
+			if c.GetReference() != nil && (found == nil || !first) {
+				found = c
+			}
+			walk(c)
+		}
+	}
+	walk(s.tree.GetRoot())
+	return found
+}
+
+func (s *switcher) findSessionNode(address string) *tview.TreeNode {
+	for _, host := range s.tree.GetRoot().GetChildren() {
+		for _, sess := range host.GetChildren() {
+			if ref, ok := sess.GetReference().(swSessionRef); ok && ref.S.Address() == address {
+				return sess
+			}
+		}
+	}
+	return nil
 }
 
 // --- input row (filter / new / rename) --------------------------------------
@@ -488,23 +590,21 @@ func (s *switcher) closeInput() {
 }
 
 func (s *switcher) onInputDone(key tcell.Key) {
-	// tview fires DoneFunc for Enter/Esc/Tab/Backtab alike; every non-Enter key
-	// must close the row or focus is stranded inside it.
 	if key != tcell.KeyEnter {
-		s.closeInput()
+		s.closeInput() // every non-Enter key closes the row or focus is stranded
 		return
 	}
-	val := s.input.GetText()
+	val := strings.TrimSpace(s.input.GetText())
 	switch s.inputMode {
 	case inputFilter:
-		s.filter = strings.TrimSpace(val)
+		s.filter = val
 		s.closeInput()
 		s.rebuildTree()
 	case inputNew:
-		s.doCreate(strings.TrimSpace(val))
+		s.doCreate(val)
 		s.closeInput()
 	case inputRename:
-		s.doRename(strings.TrimSpace(val))
+		s.doRename(val)
 		s.closeInput()
 	}
 }
@@ -519,7 +619,9 @@ func (s *switcher) doCreate(name string) {
 		s.flash = "create failed: " + err.Error()
 		return
 	}
-	delete(s.detailByAddr, created.Address()) // an address may be reused after a kill
+	if wins, perr := s.ops.Panes(created); perr == nil {
+		s.panes[created.Address()] = wins
+	}
 	s.groups = AddSession(s.groups, created)
 	s.rebuildTree()
 	if node := s.findSessionNode(created.Address()); node != nil {
@@ -534,8 +636,7 @@ func (s *switcher) doRename(newName string) {
 		return
 	}
 	if strings.HasPrefix(newName, "-") {
-		// A leading-dash name is silently no-op'd by the mux (getopt eats it),
-		// which would diverge the model from reality — refuse it up front.
+		// the mux silently no-ops a '-'-leading name (getopt eats it) — refuse it
 		s.flash = "rename: name cannot start with '-'"
 		s.updateFooter()
 		return
@@ -544,8 +645,10 @@ func (s *switcher) doRename(newName string) {
 		s.flash = "rename failed: " + err.Error()
 		return
 	}
-	delete(s.detailByAddr, sess.Address())
-	delete(s.detailByAddr, sess.Source+"/"+newName)
+	if wins, ok := s.panes[sess.Address()]; ok {
+		delete(s.panes, sess.Address())
+		s.panes[sess.Source+"/"+newName] = wins
+	}
 	s.groups = RenameSession(s.groups, sess.Address(), newName)
 	s.rebuildTree()
 }
@@ -568,52 +671,50 @@ func (s *switcher) resolveKill(ev *tcell.EventKey) {
 		if err := s.ops.Kill(*sess); err != nil {
 			s.flash = "kill failed: " + err.Error()
 		} else {
-			delete(s.detailByAddr, sess.Address()) // don't serve a dead session's cached detail
+			delete(s.panes, sess.Address())
 			s.groups = RemoveSession(s.groups, sess.Address())
-			s.detailAddr = ""
 			s.rebuildTree()
 		}
 	}
 	s.updateFooter()
 }
 
-// --- refresh ----------------------------------------------------------------
+// --- refresh / quit / footer ------------------------------------------------
 
 func (s *switcher) doRefresh() {
-	groups, err := s.ops.Refresh()
+	scan, err := s.ops.Refresh()
 	if err != nil {
 		s.flash = "refresh failed: " + err.Error()
 		return
 	}
-	s.groups = groups
-	s.detailByAddr = map[string]detailEntry{}
-	s.detailAddr = ""
+	s.groups = scan.Groups
+	s.panes = scan.Panes
+	if s.panes == nil {
+		s.panes = map[string][]session.WindowPanes{}
+	}
 	s.rebuildTree()
 }
 
-// --- footer / quit ----------------------------------------------------------
-
 func (s *switcher) quit() {
-	s.chosen = nil
+	s.result = Result{Window: -1}
 	s.app.Stop()
 }
 
 func (s *switcher) updateFooter() {
-	if s.pendingKill != nil {
+	switch {
+	case s.pendingKill != nil:
 		s.footer.SetText(fmt.Sprintf(" kill %s? [y]es / [n]o", s.pendingKill.Address()))
-		return
-	}
-	if s.flash != "" {
+	case s.flash != "":
 		s.footer.SetText(" " + s.flash)
-		return
+	default:
+		s.footer.SetText(" enter attach · n new · R rename · x kill · / filter · r refresh · q quit")
 	}
-	s.footer.SetText(" enter switch · n new · R rename · x kill · / filter · r refresh · q quit")
 }
 
 // renderText draws the live layout to an off-screen simulation screen and
-// flattens it to text — the payload the control channel's `dump` returns.
+// flattens it — the payload the control channel's `dump` returns.
 func (s *switcher) renderText() string {
-	w, h := 90, 24
+	w, h := 100, 30
 	if _, _, rw, rh := s.flex.GetRect(); rw > 0 && rh > 0 {
 		w, h = rw, rh
 	}
@@ -647,11 +748,6 @@ func screenToString(sim tcell.SimulationScreen) string {
 	}
 	return b.String()
 }
-
-// reverseStyle is the selection highlight: a true reverse-video attribute, which
-// the terminal renders by swapping its own fg/bg — visible on any theme, unlike
-// swapping ColorDefault with ColorDefault (which is a no-op).
-var reverseStyle = tcell.StyleDefault.Reverse(true)
 
 func applyTheme() {
 	tview.Styles.PrimitiveBackgroundColor = tcell.ColorDefault

@@ -7,6 +7,7 @@ import (
 	"github.com/rivo/tview"
 	"github.com/zer0ken/xmux/internal/attach"
 	"github.com/zer0ken/xmux/internal/control"
+	"github.com/zer0ken/xmux/internal/manage"
 	"github.com/zer0ken/xmux/internal/session"
 	"github.com/zer0ken/xmux/internal/ui"
 )
@@ -38,7 +39,7 @@ func runHome(e Env) int {
 		fmt.Fprintln(os.Stderr, "xmux: warning — inside a mux; attach is refused here. Detach first (prefix d), or bind `xmux popup`.")
 	}
 	for {
-		res, err := ui.RunSwitcher(e.scan(), e.ops(), e.controlHook())
+		res, err := ui.RunSwitcher(e.deepScan(), e.ops(), e.controlHook())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "xmux:", err)
 			return 1
@@ -56,6 +57,10 @@ func runHome(e Env) int {
 			fmt.Fprintln(os.Stderr, "xmux:", err)
 			continue
 		}
+		if res.Window >= 0 {
+			// land on the chosen window (best-effort; an attach still proceeds)
+			_ = manage.SelectWindow(e.ctx, src, s.Name, res.Window)
+		}
 		if err := attach.RunAttach(attach.OSExecer{}, src.AttachCommand(s.Name)); err != nil {
 			fmt.Fprintln(os.Stderr, "xmux: attach failed:", err)
 		}
@@ -66,7 +71,7 @@ func runHome(e Env) int {
 // Same-server pick teleports (switch-client); cross-server detaches to the home
 // loop. Exits after one action so the popup closes back onto the pane.
 func runPopup(e Env) int {
-	res, err := ui.RunSwitcher(e.scan(), e.ops(), e.controlHook())
+	res, err := ui.RunSwitcher(e.deepScan(), e.ops(), e.controlHook())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "xmux:", err)
 		return 1
@@ -74,7 +79,14 @@ func runPopup(e Env) int {
 	if res.Chosen == nil {
 		return 0
 	}
-	plan := attach.PlanSwitch(session.LocalSource, e.localBin, *res.Chosen)
+	s := *res.Chosen
+	plan := attach.PlanSwitch(session.LocalSource, e.localBin, s)
+	if res.Window >= 0 && plan.Teleport {
+		// same-server teleport: pre-select the window so switch-client lands on it
+		if src, ok := e.byAlias[s.Source]; ok {
+			_ = manage.SelectWindow(e.ctx, src, s.Name, res.Window)
+		}
+	}
 	if err := attach.RunAttach(attach.OSExecer{}, plan.Argv); err != nil {
 		fmt.Fprintln(os.Stderr, "xmux:", err)
 		return 1

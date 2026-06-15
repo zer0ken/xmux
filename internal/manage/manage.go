@@ -35,11 +35,36 @@ func Rename(ctx context.Context, s source.Source, oldName, newName string) error
 	return err
 }
 
-// Panes returns the source session's windows-with-panes (for the detail view).
+// Panes returns the source session's windows-with-panes (for the tree's lazy
+// child loading and active-pane resolution).
 func Panes(ctx context.Context, s source.Source, name string) ([]session.WindowPanes, error) {
 	out, err := s.Run(ctx, mux.ListPanes(s.Binary, name))
 	if err != nil {
 		return nil, err
 	}
 	return mux.ParsePanes(string(out)), nil
+}
+
+// Capture returns the visible content of a target pane (a "session",
+// "session:window", or "session:window.pane" target) — the live preview source.
+func Capture(ctx context.Context, s source.Source, target string) (string, error) {
+	out, err := s.Run(ctx, mux.CapturePane(s.Binary, target))
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+// SelectWindow makes a window active in its session (used before attach so the
+// client lands on the chosen window).
+func SelectWindow(ctx context.Context, s source.Source, sess string, window int) error {
+	_, err := s.Run(ctx, mux.SelectWindow(s.Binary, mux.WindowTarget(sess, window)))
+	return err
+}
+
+// SelectPane makes a pane active in its window (used before attach so the client
+// lands on the chosen pane).
+func SelectPane(ctx context.Context, s source.Source, sess string, window, pane int) error {
+	_, err := s.Run(ctx, mux.SelectPane(s.Binary, mux.PaneTarget(sess, window, pane)))
+	return err
 }

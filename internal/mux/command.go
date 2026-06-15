@@ -4,6 +4,8 @@
 // functions over the raw command output.
 package mux
 
+import "strconv"
+
 // SessionFormat is the list-sessions -F template. The free-form session name is
 // LAST so a tab inside a name cannot shift the fixed numeric columns.
 const SessionFormat = "#{session_windows}\t#{session_attached}\t#{session_last_attached}\t#{session_name}"
@@ -50,6 +52,32 @@ func NewSession(bin, name string) []string {
 		argv = append(argv, "-s", name)
 	}
 	return argv
+}
+
+// WindowTarget builds a "session:window" target.
+func WindowTarget(session string, window int) string {
+	return session + ":" + strconv.Itoa(window)
+}
+
+// PaneTarget builds a "session:window.pane" target.
+func PaneTarget(session string, window, pane int) string {
+	return session + ":" + strconv.Itoa(window) + "." + strconv.Itoa(pane)
+}
+
+// CapturePane prints the visible content of the target pane (a pane, or the
+// active pane of a window/session target) to stdout — the preview source.
+func CapturePane(bin, target string) []string {
+	return []string{bin, "capture-pane", "-p", "-t", target}
+}
+
+// SelectWindow makes the target window active in its session.
+func SelectWindow(bin, target string) []string {
+	return []string{bin, "select-window", "-t", target}
+}
+
+// SelectPane makes the target pane active in its window.
+func SelectPane(bin, target string) []string {
+	return []string{bin, "select-pane", "-t", target}
 }
 
 // KillSession kills session name.

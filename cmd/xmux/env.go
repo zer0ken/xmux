@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/zer0ken/xmux/internal/config"
@@ -70,10 +71,45 @@ func buildEnv(ctx context.Context) (Env, error) {
 	}, cfgErr
 }
 
-// scan probes every source and returns the merged, recency-sorted tree.
+// scan probes every source and returns the merged, recency-sorted host/session
+// groups (used by `ls`, which needs no window/pane detail).
 func (e Env) scan() []ui.Group {
 	results := discovery.ScanAll(e.ctx, e.srcs, scanTimeout, scanConcurrency)
 	return toGroups(results)
+}
+
+// deepScan is the interactive snapshot: the groups plus every reachable session's
+// windows-and-panes, fetched concurrently (the always-expanded tree shows them
+// all, so they are loaded up front rather than on expand).
+func (e Env) deepScan() ui.Scan {
+	groups := e.scan()
+	panes := map[string][]session.WindowPanes{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, scanConcurrency)
+	for _, g := range groups {
+		if g.Err != nil {
+			continue
+		}
+		src := e.byAlias[g.Source]
+		for _, sess := range g.Sessions {
+			wg.Add(1)
+			go func(src source.Source, sess session.Session) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				ctx, cancel := context.WithTimeout(e.ctx, detailTimeout)
+				defer cancel()
+				if w, err := manage.Panes(ctx, src, sess.Name); err == nil {
+					mu.Lock()
+					panes[sess.Address()] = w
+					mu.Unlock()
+				}
+			}(src, sess)
+		}
+	}
+	wg.Wait()
+	return ui.Scan{Groups: groups, Panes: panes}
 }
 
 // toGroups converts scan results to display groups, sorting sessions by recency.
@@ -131,8 +167,17 @@ func (e Env) ops() ui.SwitcherOps {
 			defer cancel()
 			return manage.Panes(ctx, e.byAlias[s.Source], s.Name)
 		},
-		Refresh: func() ([]ui.Group, error) {
-			return e.scan(), nil
+		Capture: func(alias, target string) (string, error) {
+			src, ok := e.byAlias[alias]
+			if !ok {
+				return "", fmt.Errorf("unknown source %q", alias)
+			}
+			ctx, cancel := context.WithTimeout(e.ctx, detailTimeout)
+			defer cancel()
+			return manage.Capture(ctx, src, target)
+		},
+		Refresh: func() (ui.Scan, error) {
+			return e.deepScan(), nil
 		},
 	}
 }
