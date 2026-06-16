@@ -72,7 +72,7 @@ the next unchecked module.
 
 - [x] 0. Scaffold: Cargo (lib+bin), `.gitignore` `/target/`, Go → `legacy-go/`, build+test green
 - [x] 1. session — types + parse_target (3 tests) ✅
-- [ ] 2. mux — argv builders + parsers
+- [x] 2. mux — argv builders + parsers (26 tests) ✅
 - [ ] 3. config — TOML + ssh-config discovery
 - [ ] 4. source — local/ssh boundary, quoting, runner, classify
 - [ ] 5. discovery — tokio bounded concurrent scan

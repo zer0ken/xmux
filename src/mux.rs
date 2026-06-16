@@ -1,0 +1,553 @@
+//! Builds the argv for mux (tmux/psmux) subcommands and parses their
+//! tab-delimited output. Builders are pure: they assemble `Vec<String>` argv with
+//! no shell involved (`argv[0]` is the mux binary name). Parsers are pure
+//! functions over the raw command output.
+
+use crate::session::{Pane, Session, WindowPanes};
+
+/// The `list-sessions -F` template. The free-form session name is LAST so a tab
+/// inside a name cannot shift the fixed numeric columns.
+pub const SESSION_FORMAT: &str =
+    "#{session_windows}\t#{session_attached}\t#{session_last_attached}\t#{session_name}";
+
+/// The `list-panes -F` template. The free-form window name is LAST so a tab
+/// inside it cannot shift the fixed columns; `pane_current_command` sits in a
+/// fixed slot because a process name has no tabs.
+pub const PANE_FORMAT: &str =
+    "#{window_index}\t#{window_active}\t#{pane_index}\t#{pane_active}\t#{pane_current_command}\t#{window_name}";
+
+fn argv(parts: &[&str]) -> Vec<String> {
+    parts.iter().map(|s| s.to_string()).collect()
+}
+
+/// Lists all sessions on the server in [`SESSION_FORMAT`].
+pub fn list_sessions(bin: &str) -> Vec<String> {
+    argv(&[bin, "list-sessions", "-F", SESSION_FORMAT])
+}
+
+/// Lists every pane across ALL windows of session `name`. The `-s` flag widens
+/// scope to the whole session (never `-a`, which leaks across servers).
+pub fn list_panes(bin: &str, name: &str) -> Vec<String> {
+    argv(&[bin, "list-panes", "-s", "-t", name, "-F", PANE_FORMAT])
+}
+
+/// Attaches the current client to session `name`.
+pub fn attach(bin: &str, name: &str) -> Vec<String> {
+    argv(&[bin, "attach", "-t", name])
+}
+
+/// Switches the current client to session `name`.
+pub fn switch_client(bin: &str, name: &str) -> Vec<String> {
+    argv(&[bin, "switch-client", "-t", name])
+}
+
+/// Detaches the current client. `-E` is deliberately omitted because psmux
+/// treats it as a no-op, so the design must not depend on it.
+pub fn detach_client(bin: &str) -> Vec<String> {
+    argv(&[bin, "detach-client"])
+}
+
+/// Creates-or-attaches a DETACHED session and prints its assigned name. `-A`
+/// makes it idempotent, `-d` keeps it detached, and `-P -F` prints the assigned
+/// name even when the mux auto-names (e.g. `"0"`). A non-empty name is requested
+/// with `-s`; an empty name lets the mux auto-name.
+pub fn new_session(bin: &str, name: &str) -> Vec<String> {
+    let mut v = argv(&[
+        bin,
+        "new-session",
+        "-A",
+        "-d",
+        "-P",
+        "-F",
+        "#{session_name}",
+    ]);
+    if !name.is_empty() {
+        v.push("-s".to_string());
+        v.push(name.to_string());
+    }
+    v
+}
+
+/// Builds a `"session:window"` target.
+pub fn window_target(session: &str, window: i64) -> String {
+    format!("{session}:{window}")
+}
+
+/// Builds a `"session:window.pane"` target.
+pub fn pane_target(session: &str, window: i64, pane: i64) -> String {
+    format!("{session}:{window}.{pane}")
+}
+
+/// Prints the visible content of the target pane (a pane, or the active pane of
+/// a window/session target) to stdout — the preview source. `-e` includes the
+/// pane's ANSI colour escapes so the preview reproduces its colours.
+pub fn capture_pane(bin: &str, target: &str) -> Vec<String> {
+    argv(&[bin, "capture-pane", "-p", "-e", "-t", target])
+}
+
+/// Makes the target window active in its session.
+pub fn select_window(bin: &str, target: &str) -> Vec<String> {
+    argv(&[bin, "select-window", "-t", target])
+}
+
+/// Makes the target pane active in its window.
+pub fn select_pane(bin: &str, target: &str) -> Vec<String> {
+    argv(&[bin, "select-pane", "-t", target])
+}
+
+/// Kills session `name`.
+pub fn kill_session(bin: &str, name: &str) -> Vec<String> {
+    argv(&[bin, "kill-session", "-t", name])
+}
+
+/// Renames session `old_name` to `new_name`.
+pub fn rename_session(bin: &str, old_name: &str, new_name: &str) -> Vec<String> {
+    argv(&[bin, "rename-session", "-t", old_name, new_name])
+}
+
+/// Splits raw mux output into non-blank lines, tolerating both `\r\n` and `\n`.
+fn split_lines(out: &str) -> Vec<&str> {
+    out.split('\n')
+        .map(|ln| ln.strip_suffix('\r').unwrap_or(ln))
+        .filter(|ln| !ln.is_empty())
+        .collect()
+}
+
+/// Parses `list-sessions` output ([`SESSION_FORMAT`]) into sessions tagged with
+/// `source`. Malformed lines (short, non-numeric numeric columns, or empty name)
+/// are skipped so banners and garbage cannot poison the list. The name is
+/// rejoined from `fields[3..]` so a tab inside a name survives. Order is
+/// preserved.
+pub fn parse_sessions(source: &str, out: &str) -> Vec<Session> {
+    let mut sessions = Vec::new();
+    for ln in split_lines(out) {
+        let fields: Vec<&str> = ln.split('\t').collect();
+        if fields.len() < 4 {
+            continue;
+        }
+        let Ok(windows) = fields[0].parse::<i64>() else {
+            continue;
+        };
+        let Ok(attached_n) = fields[1].parse::<i64>() else {
+            continue;
+        };
+        let last_attached = if fields[2].is_empty() {
+            0
+        } else {
+            match fields[2].parse::<i64>() {
+                Ok(n) => n,
+                Err(_) => continue,
+            }
+        };
+        let name = fields[3..].join("\t");
+        if name.is_empty() {
+            continue;
+        }
+        sessions.push(Session {
+            source: source.to_string(),
+            name,
+            windows,
+            attached: attached_n > 0,
+            last_attached,
+        });
+    }
+    sessions
+}
+
+/// Parses `list-panes` output ([`PANE_FORMAT`]) into windows-and-panes, grouping
+/// panes by `window_index` in first-seen order. Each window takes its index,
+/// name, and active flag from the first row seen for that window; the window name
+/// is rejoined from `fields[5..]` so a tab inside it survives. Malformed lines
+/// (short or non-numeric `window_index`) are skipped.
+pub fn parse_panes(out: &str) -> Vec<WindowPanes> {
+    let mut windows: Vec<WindowPanes> = Vec::new();
+    let mut pos: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+    for ln in split_lines(out) {
+        let fields: Vec<&str> = ln.split('\t').collect();
+        if fields.len() < 6 {
+            continue;
+        }
+        let Ok(win_idx) = fields[0].parse::<i64>() else {
+            continue;
+        };
+        let Ok(win_active) = fields[1].parse::<i64>() else {
+            continue;
+        };
+        let Ok(pane_idx) = fields[2].parse::<i64>() else {
+            continue;
+        };
+        let Ok(pane_active) = fields[3].parse::<i64>() else {
+            continue;
+        };
+        let command = fields[4].to_string();
+        let win_name = fields[5..].join("\t");
+
+        let pane = Pane {
+            index: pane_idx,
+            active: pane_active > 0,
+            command,
+        };
+        if let Some(&i) = pos.get(&win_idx) {
+            windows[i].panes.push(pane);
+            continue;
+        }
+        pos.insert(win_idx, windows.len());
+        windows.push(WindowPanes {
+            index: win_idx,
+            name: win_name,
+            active: win_active > 0,
+            panes: vec![pane],
+        });
+    }
+    windows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn session_format_template() {
+        assert_eq!(
+            SESSION_FORMAT,
+            "#{session_windows}\t#{session_attached}\t#{session_last_attached}\t#{session_name}"
+        );
+    }
+
+    #[test]
+    fn pane_format_template() {
+        assert_eq!(
+            PANE_FORMAT,
+            "#{window_index}\t#{window_active}\t#{pane_index}\t#{pane_active}\t#{pane_current_command}\t#{window_name}"
+        );
+    }
+
+    #[test]
+    fn list_sessions_argv() {
+        assert_eq!(
+            list_sessions("tmux"),
+            sv(&["tmux", "list-sessions", "-F", SESSION_FORMAT])
+        );
+    }
+
+    #[test]
+    fn list_panes_argv() {
+        assert_eq!(
+            list_panes("psmux", "work"),
+            sv(&["psmux", "list-panes", "-s", "-t", "work", "-F", PANE_FORMAT])
+        );
+    }
+
+    #[test]
+    fn attach_argv() {
+        assert_eq!(
+            attach("tmux", "main"),
+            sv(&["tmux", "attach", "-t", "main"])
+        );
+    }
+
+    #[test]
+    fn switch_client_argv() {
+        assert_eq!(
+            switch_client("tmux", "main"),
+            sv(&["tmux", "switch-client", "-t", "main"])
+        );
+    }
+
+    #[test]
+    fn detach_client_argv() {
+        assert_eq!(detach_client("tmux"), sv(&["tmux", "detach-client"]));
+    }
+
+    #[test]
+    fn new_session_named_argv() {
+        assert_eq!(
+            new_session("tmux", "dev"),
+            sv(&[
+                "tmux",
+                "new-session",
+                "-A",
+                "-d",
+                "-P",
+                "-F",
+                "#{session_name}",
+                "-s",
+                "dev"
+            ])
+        );
+    }
+
+    #[test]
+    fn new_session_auto_argv() {
+        assert_eq!(
+            new_session("tmux", ""),
+            sv(&[
+                "tmux",
+                "new-session",
+                "-A",
+                "-d",
+                "-P",
+                "-F",
+                "#{session_name}"
+            ])
+        );
+    }
+
+    #[test]
+    fn kill_session_argv() {
+        assert_eq!(
+            kill_session("tmux", "old"),
+            sv(&["tmux", "kill-session", "-t", "old"])
+        );
+    }
+
+    #[test]
+    fn rename_session_argv() {
+        assert_eq!(
+            rename_session("tmux", "old", "new"),
+            sv(&["tmux", "rename-session", "-t", "old", "new"])
+        );
+    }
+
+    #[test]
+    fn target_builders() {
+        assert_eq!(window_target("editor", 2), "editor:2");
+        assert_eq!(pane_target("editor", 2, 1), "editor:2.1");
+    }
+
+    #[test]
+    fn capture_pane_argv() {
+        assert_eq!(
+            capture_pane("psmux", "editor:1.0"),
+            sv(&["psmux", "capture-pane", "-p", "-e", "-t", "editor:1.0"])
+        );
+    }
+
+    #[test]
+    fn select_window_pane_argv() {
+        assert_eq!(
+            select_window("tmux", "if:3"),
+            sv(&["tmux", "select-window", "-t", "if:3"])
+        );
+        assert_eq!(
+            select_pane("tmux", "if:3.2"),
+            sv(&["tmux", "select-pane", "-t", "if:3.2"])
+        );
+    }
+
+    #[test]
+    fn parse_sessions_basic() {
+        let out = "3\t1\t1700000000\tmain\n2\t0\t1699999999\tother\n";
+        let got = parse_sessions("local", out);
+        assert_eq!(
+            got,
+            vec![
+                Session {
+                    source: "local".into(),
+                    name: "main".into(),
+                    windows: 3,
+                    attached: true,
+                    last_attached: 1700000000
+                },
+                Session {
+                    source: "local".into(),
+                    name: "other".into(),
+                    windows: 2,
+                    attached: false,
+                    last_attached: 1699999999
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_sessions_crlf() {
+        let out = "1\t1\t100\ta\r\n1\t0\t200\tb\r\n";
+        let got = parse_sessions("local", out);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].name, "a");
+        assert_eq!(got[1].name, "b");
+    }
+
+    #[test]
+    fn parse_sessions_name_with_tab_and_slash() {
+        let out = "4\t1\t1700000000\tproj/a\tb\n";
+        let got = parse_sessions("ssh-host", out);
+        assert_eq!(
+            got,
+            vec![Session {
+                source: "ssh-host".into(),
+                name: "proj/a\tb".into(),
+                windows: 4,
+                attached: true,
+                last_attached: 1700000000
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_sessions_empty_last_attached() {
+        let out = "1\t0\t\tlegacy\n";
+        let got = parse_sessions("local", out);
+        assert_eq!(
+            got,
+            vec![Session {
+                source: "local".into(),
+                name: "legacy".into(),
+                windows: 1,
+                attached: false,
+                last_attached: 0
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_sessions_skips_garbage() {
+        let out = concat!(
+            "some random banner text\n",
+            "\n",
+            "x\t1\t100\tbadwin\n",
+            "1\tnope\t100\tbadattach\n",
+            "1\t1\tabc\tbadtime\n",
+            "1\t1\t100\t\n",
+            "2\t1\t300\tgood\n",
+        );
+        let got = parse_sessions("local", out);
+        assert_eq!(
+            got,
+            vec![Session {
+                source: "local".into(),
+                name: "good".into(),
+                windows: 2,
+                attached: true,
+                last_attached: 300
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_sessions_empty_output() {
+        assert!(parse_sessions("local", "").is_empty());
+    }
+
+    #[test]
+    fn parse_sessions_order_preserved() {
+        let out = "1\t0\t1\tz\n1\t0\t2\ta\n1\t0\t3\tm\n";
+        let got = parse_sessions("local", out);
+        let names: Vec<&str> = got.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["z", "a", "m"]);
+    }
+
+    #[test]
+    fn parse_panes_basic() {
+        let out = concat!(
+            "0\t1\t0\t1\tbash\teditor\n",
+            "0\t1\t1\t0\tvim\teditor\n",
+            "1\t0\t0\t1\tssh\tserver\n",
+        );
+        let got = parse_panes(out);
+        assert_eq!(
+            got,
+            vec![
+                WindowPanes {
+                    index: 0,
+                    name: "editor".into(),
+                    active: true,
+                    panes: vec![
+                        Pane {
+                            index: 0,
+                            active: true,
+                            command: "bash".into()
+                        },
+                        Pane {
+                            index: 1,
+                            active: false,
+                            command: "vim".into()
+                        },
+                    ]
+                },
+                WindowPanes {
+                    index: 1,
+                    name: "server".into(),
+                    active: false,
+                    panes: vec![Pane {
+                        index: 0,
+                        active: true,
+                        command: "ssh".into()
+                    }]
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_panes_window_name_with_spaces_and_tab() {
+        let out = "2\t1\t0\t1\tzsh\tmy window\tname\n";
+        let got = parse_panes(out);
+        assert_eq!(
+            got,
+            vec![WindowPanes {
+                index: 2,
+                name: "my window\tname".into(),
+                active: true,
+                panes: vec![Pane {
+                    index: 0,
+                    active: true,
+                    command: "zsh".into()
+                }]
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_panes_grouping_order_preserved() {
+        let out = concat!(
+            "5\t1\t0\t1\ta\tfive\n",
+            "2\t0\t0\t1\tb\ttwo\n",
+            "5\t1\t1\t0\tc\tfive\n",
+            "2\t0\t1\t0\td\ttwo\n",
+        );
+        let got = parse_panes(out);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].index, 5);
+        assert_eq!(got[1].index, 2);
+        assert_eq!(got[0].panes.len(), 2);
+        assert_eq!(got[1].panes.len(), 2);
+        assert_eq!(got[0].panes[0].command, "a");
+        assert_eq!(got[0].panes[1].command, "c");
+    }
+
+    #[test]
+    fn parse_panes_skips_short_lines() {
+        let out = concat!(
+            "short line\n",
+            "0\t1\t0\n",
+            "\n",
+            "x\t1\t0\t1\tbash\twin\n",
+            "0\t1\t0\t1\tbash\twin\n",
+        );
+        let got = parse_panes(out);
+        assert_eq!(
+            got,
+            vec![WindowPanes {
+                index: 0,
+                name: "win".into(),
+                active: true,
+                panes: vec![Pane {
+                    index: 0,
+                    active: true,
+                    command: "bash".into()
+                }]
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_panes_empty_output() {
+        assert!(parse_panes("").is_empty());
+    }
+}
