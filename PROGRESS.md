@@ -79,7 +79,7 @@ the next unchecked module.
 - [x] 6. manage — lifecycle ops (11 tests) ✅
 - [x] 7. attach — handover + switch plan (8 tests, incl. live Windows OsExecer) ✅
 - [x] 8. ui::tree — pure model (19 tests) ✅
-- [ ] 9. ui::ansi — ANSI → ratatui Text
+- [x] 9. ui::ansi — ANSI → ratatui Text (9 tests) ✅
 - [ ] 10. control — socket protocol + client (interprocess)
 - [ ] 11. ui::switcher — ratatui TUI (the big one)
 - [ ] 12. env — runtime wiring

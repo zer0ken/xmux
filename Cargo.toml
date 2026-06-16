@@ -23,6 +23,7 @@ strip = true
 [dependencies]
 anyhow = "1.0.102"
 async-trait = "0.1.89"
+ratatui = "0.30.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_ignored = "0.1.14"
 thiserror = "2.0.18"

@@ -3,6 +3,7 @@
 //! (`switcher`). The model layer is side-effect-free; the rendering is layered
 //! on top separately.
 
+pub mod ansi;
 pub mod tree;
 
 pub use tree::{
