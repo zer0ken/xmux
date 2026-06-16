@@ -9,13 +9,15 @@ from the mux servers each time. The servers are the source of truth.
 
 ## Install
 
-From source:
+xmux is written in Rust. From source:
 
-    go build -o xmux ./cmd/xmux
+    cargo build --release        # binary at target/release/xmux
 
-Or:
+Or install into `~/.cargo/bin`:
 
-    go install github.com/zer0ken/xmux/cmd/xmux@latest
+    cargo install --path .
+
+(The previous Go implementation is preserved under `legacy-go/` for reference.)
 
 ## Requirements
 
@@ -48,7 +50,10 @@ Pane — with the live preview of the focused node's pane on the right.
 | `x` | kill the focused session (inline `y`/`n` confirm) |
 | `/` | fuzzy filter `<source>/<name>` |
 | `r` | re-scan every host |
+| `?` | toggle the keybinding help overlay |
 | `q` / `Esc` | quit |
+
+The mouse works too: click selects, double-click attaches, the wheel scrolls.
 
 The right pane is a **live preview**: it polls and shows the screen of the pane
 that attaching here would land on — a host previews its most-recent session's

@@ -115,9 +115,41 @@ Not live-verified (thin wrappers, unit-tested): attach/popup terminal handover
 - Runtime: tokio **current-thread** (low startup/memory); discovery scan is bounded-concurrent
   (8 at once) with per-source 6s timeout (a dropped future cancels the ssh child, kill_on_drop);
   deep-scan fetches panes concurrently; preview captures are spawned (non-blocking input).
-- [ ] 14. Optimize pass — startup/memory measurements; async scan tuning
-- [ ] 15. UX pass — help overlay, keybindings, visual hierarchy
-- [ ] 16. Final verification + README update; write `C:\Projects\tmp\rust-rewrite\DONE`
+- [x] 14. Optimize pass — measured (970 KB, ~9.8 ms startup); tokio current-thread;
+  bounded-concurrent async scans w/ per-source timeout + kill_on_drop; non-blocking
+  preview captures; size release profile. ✅
+- [x] 15. UX pass — `?` help overlay (modal cheatsheet), footer hint, mouse
+  (click/double-click/wheel), per-level colours, reverse-video selection. ✅
+- [x] 16. Final verification (fmt --check clean, clippy -D warnings clean, 146 tests,
+  release build, live re-verify) + README updated to Rust; DONE written. ✅
+
+---
+
+## DONE — final summary (2026-06-16)
+
+The Go→Rust port of xmux is **complete, green, and verified live**.
+
+- **Every Go module ported** (session, mux, config, source, discovery, manage,
+  attach, control, ui/tree, ui/ansi, ui/switcher, env, cmd) with its behavioral
+  contract preserved as Rust tests. **146 tests pass**; `cargo fmt --check` and
+  `cargo clippy --all-targets -- -D warnings` are clean.
+- **Stack:** ratatui 0.30 + crossterm 0.29 (TUI), tokio current-thread (async),
+  clap (CLI), serde+toml (config), interprocess (cross-platform control socket).
+- **TUI reimplemented in ratatui's immediate-mode idiom** (no TreeView/focus
+  system): a flattened row model + `Switcher` state machine + a render pass that
+  serves both the live `CrosstermBackend` and the headless `TestBackend` (the
+  control `dump`). The full Go behavior suite is ported and runs headlessly.
+- **Verified live** against real psmux + ssh tmux: scan/ls/doctor, four-level
+  tree render, live preview capture, navigation, loading/reconnecting dialogs,
+  filter, live create, live kill, and the control channel — driven over the
+  socket inside a psmux PTY.
+- **Optimized:** 970 KB binary, ~9.8 ms warm startup, concurrent bounded scans.
+- **UX improvement:** a `?` help overlay (the Go version had none).
+- The Go sources are preserved under `legacy-go/` (still build clean).
+
+Not live-verified (thin, unit-tested wrappers): the terminal handover of
+attach/popup (`run_attach` + `plan_switch`) and rename; the OS-level
+`display-popup` overlay is a human terminal check.
 
 ---
 
