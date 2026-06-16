@@ -1,0 +1,385 @@
+//! Loads xmux's optional TOML configuration and merges it with ssh-config
+//! discovery to produce the set of hosts and mux binaries to use.
+
+use std::path::Path;
+
+use serde::Deserialize;
+
+/// The on-disk `config.toml` structure. All fields are optional.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Config {
+    #[serde(default)]
+    pub local: LocalConfig,
+    #[serde(default)]
+    pub hosts: Vec<HostConfig>,
+    #[serde(default)]
+    pub exclude: Vec<String>,
+}
+
+/// Configures the mux used on the local machine.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct LocalConfig {
+    #[serde(default)]
+    pub mux: String,
+}
+
+/// Overrides the mux for a discovered ssh alias, or adds a host that ssh-config
+/// discovery did not surface.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct HostConfig {
+    #[serde(default)]
+    pub ssh: String,
+    #[serde(default)]
+    pub mux: String,
+}
+
+/// A resolved remote host: its ssh alias and the mux binary to run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostSpec {
+    pub alias: String,
+    pub bin: String,
+}
+
+/// Reads `config.toml` from `path`. A missing file yields a zero [`Config`] and
+/// no error; a parse error is returned to the caller (treated as fatal).
+pub fn load(path: &Path) -> anyhow::Result<Config> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
+        Err(e) => return Err(e.into()),
+    };
+    Ok(toml::from_str(&content)?)
+}
+
+/// Behaves like [`load`] but also returns human-readable warnings for any keys
+/// present in the file that did not decode into [`Config`] (typos, removed or
+/// unsupported options). A missing file yields no warnings and no error.
+pub fn load_verbose(path: &Path) -> anyhow::Result<(Config, Vec<String>)> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((Config::default(), Vec::new()))
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let mut warnings = Vec::new();
+    let de = toml::de::Deserializer::parse(&content)?;
+    let cfg: Config = serde_ignored::deserialize(de, |path| {
+        warnings.push(format!("unknown key {:?}", path.to_string()));
+    })?;
+    Ok((cfg, warnings))
+}
+
+impl Config {
+    /// Returns the mux binary to run on the local machine for the given `os`. An
+    /// empty or `"auto"` setting picks psmux on Windows and tmux elsewhere; any
+    /// other value is returned verbatim.
+    pub fn local_bin(&self, os: &str) -> String {
+        if self.local.mux.is_empty() || self.local.mux == "auto" {
+            if os == "windows" {
+                return "psmux".to_string();
+            }
+            return "tmux".to_string();
+        }
+        self.local.mux.clone()
+    }
+
+    /// Merges ssh-config discovery with the config file. Discovered aliases come
+    /// first in their original order (each deduped and skipping any in
+    /// `exclude`), with the mux taken from a matching `hosts` override or
+    /// defaulting to `"tmux"`. Config-only hosts (`hosts` entries whose ssh alias
+    /// was not discovered) are appended afterwards. Config augments discovery; it
+    /// never replaces it.
+    pub fn host_specs(&self, ssh_aliases: &[String]) -> Vec<HostSpec> {
+        use std::collections::HashSet;
+
+        let excluded: HashSet<&str> = self.exclude.iter().map(String::as_str).collect();
+
+        let mut override_mux: std::collections::HashMap<&str, &str> =
+            std::collections::HashMap::new();
+        for h in &self.hosts {
+            if !h.ssh.is_empty() {
+                override_mux.insert(&h.ssh, &h.mux);
+            }
+        }
+
+        let mut specs = Vec::new();
+        let mut seen: HashSet<&str> = HashSet::new();
+
+        for alias in ssh_aliases {
+            if excluded.contains(alias.as_str()) || seen.contains(alias.as_str()) {
+                continue;
+            }
+            let mut bin = "tmux";
+            if let Some(&m) = override_mux.get(alias.as_str()) {
+                if !m.is_empty() {
+                    bin = m;
+                }
+            }
+            specs.push(HostSpec {
+                alias: alias.clone(),
+                bin: bin.to_string(),
+            });
+            seen.insert(alias.as_str());
+        }
+
+        for h in &self.hosts {
+            if h.ssh.is_empty()
+                || excluded.contains(h.ssh.as_str())
+                || seen.contains(h.ssh.as_str())
+            {
+                continue;
+            }
+            let bin = if h.mux.is_empty() { "tmux" } else { &h.mux };
+            specs.push(HostSpec {
+                alias: h.ssh.clone(),
+                bin: bin.to_string(),
+            });
+            seen.insert(h.ssh.as_str());
+        }
+
+        specs
+    }
+}
+
+/// Parses an OpenSSH client config at `path` and returns the concrete host
+/// aliases declared by `Host` lines, in first-seen order and deduplicated. Glob
+/// patterns (containing `*` or `?`) and negations (starting with `!`) are
+/// skipped, as are comments, blank lines, and non-`Host` directives. `Include`
+/// and `Match` directives are not expanded. A missing file yields an empty list.
+pub fn ssh_host_aliases(path: &Path) -> Vec<String> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut aliases = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut fields = line.split_whitespace();
+        let Some(directive) = fields.next() else {
+            continue;
+        };
+        if !directive.eq_ignore_ascii_case("Host") {
+            continue;
+        }
+        for pattern in fields {
+            if pattern.starts_with('!') || pattern.contains('*') || pattern.contains('?') {
+                continue;
+            }
+            if seen.contains(pattern) {
+                continue;
+            }
+            aliases.push(pattern.to_string());
+            seen.insert(pattern.to_string());
+        }
+    }
+    aliases
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_temp(content: &str, name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("xmux-cfg-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Unique per-name file so parallel tests do not collide.
+        let path = dir.join(name);
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        path
+    }
+
+    #[test]
+    fn load_missing_file() {
+        let missing = std::env::temp_dir().join("xmux-does-not-exist-xyz.toml");
+        let cfg = load(&missing).unwrap();
+        assert!(cfg.hosts.is_empty());
+        assert!(cfg.exclude.is_empty());
+        assert_eq!(cfg.local.mux, "");
+    }
+
+    #[test]
+    fn load_round_trip() {
+        let path = write_temp(
+            r#"
+exclude = ["foo", "bar"]
+
+[local]
+mux = "tmux"
+
+[[hosts]]
+ssh = "prod"
+mux = "psmux"
+
+[[hosts]]
+ssh = "stage"
+"#,
+            "round-trip.toml",
+        );
+        let cfg = load(&path).unwrap();
+        assert_eq!(cfg.local.mux, "tmux");
+        assert_eq!(cfg.hosts.len(), 2);
+        assert_eq!(cfg.hosts[0].ssh, "prod");
+        assert_eq!(cfg.hosts[0].mux, "psmux");
+        assert_eq!(cfg.hosts[1].ssh, "stage");
+        assert_eq!(cfg.hosts[1].mux, "");
+        assert_eq!(cfg.exclude, vec!["foo", "bar"]);
+    }
+
+    #[test]
+    fn load_malformed() {
+        let path = write_temp("this is = = not valid toml [[[", "malformed.toml");
+        assert!(load(&path).is_err());
+    }
+
+    #[test]
+    fn load_verbose_missing_file() {
+        let missing = std::env::temp_dir().join("xmux-nope-xyz.toml");
+        let (cfg, warnings) = load_verbose(&missing).unwrap();
+        assert!(warnings.is_empty());
+        assert_eq!(cfg.local.mux, "");
+    }
+
+    #[test]
+    fn load_verbose_unknown_key() {
+        let path = write_temp(
+            r#"
+[local]
+mux = "tmux"
+bogus = "nope"
+"#,
+            "unknown-key.toml",
+        );
+        let (cfg, warnings) = load_verbose(&path).unwrap();
+        assert_eq!(cfg.local.mux, "tmux");
+        assert_eq!(warnings.len(), 1, "warnings = {warnings:?}");
+        assert_eq!(warnings[0], r#"unknown key "local.bogus""#);
+    }
+
+    #[test]
+    fn host_specs_merge() {
+        let cfg = Config {
+            hosts: vec![
+                HostConfig {
+                    ssh: "prod".into(),
+                    mux: "psmux".into(),
+                },
+                HostConfig {
+                    ssh: "extra".into(),
+                    mux: "zellij".into(),
+                },
+                HostConfig {
+                    ssh: "noMuxOnly".into(),
+                    mux: "".into(),
+                },
+                HostConfig {
+                    ssh: "".into(),
+                    mux: "ignored".into(),
+                },
+            ],
+            exclude: vec!["banned".into()],
+            ..Default::default()
+        };
+        let ssh_aliases: Vec<String> = ["prod", "banned", "stage", "prod"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let got = cfg.host_specs(&ssh_aliases);
+        let want = vec![
+            HostSpec {
+                alias: "prod".into(),
+                bin: "psmux".into(),
+            },
+            HostSpec {
+                alias: "stage".into(),
+                bin: "tmux".into(),
+            },
+            HostSpec {
+                alias: "extra".into(),
+                bin: "zellij".into(),
+            },
+            HostSpec {
+                alias: "noMuxOnly".into(),
+                bin: "tmux".into(),
+            },
+        ];
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn host_specs_excludes_config_only() {
+        let cfg = Config {
+            hosts: vec![HostConfig {
+                ssh: "secret".into(),
+                mux: "psmux".into(),
+            }],
+            exclude: vec!["secret".into()],
+            ..Default::default()
+        };
+        assert!(cfg.host_specs(&[]).is_empty());
+    }
+
+    #[test]
+    fn local_bin_cases() {
+        let cases: &[(&str, &str, &str)] = &[
+            ("", "windows", "psmux"),
+            ("", "linux", "tmux"),
+            ("auto", "windows", "psmux"),
+            ("auto", "linux", "tmux"),
+            ("zellij", "windows", "zellij"),
+            ("zellij", "linux", "zellij"),
+        ];
+        for &(mux, os, want) in cases {
+            let c = Config {
+                local: LocalConfig { mux: mux.into() },
+                ..Default::default()
+            };
+            assert_eq!(c.local_bin(os), want, "mux={mux:?} os={os:?}");
+        }
+    }
+
+    #[test]
+    fn ssh_host_aliases_missing_file() {
+        let missing = std::env::temp_dir().join("xmux-no-such-ssh-config");
+        assert!(ssh_host_aliases(&missing).is_empty());
+    }
+
+    #[test]
+    fn ssh_host_aliases_parsing() {
+        let path = write_temp(
+            r#"
+# a comment line
+Host alpha beta gamma
+    HostName 10.0.0.1
+    User me
+
+Host *
+    ForwardAgent yes
+
+Host prod-*
+    User deploy
+
+Host !skipme realhost
+    Port 2222
+
+  Host indented
+    HostName 10.0.0.2
+
+Host alpha
+    Port 2200
+"#,
+            "ssh-config",
+        );
+        let got = ssh_host_aliases(&path);
+        assert_eq!(got, vec!["alpha", "beta", "gamma", "realhost", "indented"]);
+    }
+}

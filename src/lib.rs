@@ -7,5 +7,6 @@
 //! discovery, lifecycle management, terminal handover, the control channel, and
 //! the TUI. The binary crate (`main.rs`) wires them behind a CLI.
 
+pub mod config;
 pub mod mux;
 pub mod session;

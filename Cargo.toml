@@ -19,3 +19,10 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[dependencies]
+anyhow = "1.0.102"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_ignored = "0.1.14"
+thiserror = "2.0.18"
+toml = "1.1.2"
