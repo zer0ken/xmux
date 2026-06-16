@@ -3,6 +3,7 @@
 /xmux.exe
 *.exe
 /dist/
+/target/
 
 # scratch
 /tmp/
