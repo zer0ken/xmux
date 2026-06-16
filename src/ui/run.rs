@@ -67,10 +67,10 @@ pub fn dump_switcher(switcher: &mut Switcher, width: u16, height: u16) -> String
 }
 
 fn spawn_capture(switcher: &Switcher, ops: &Arc<dyn Ops>, cmd_tx: &mpsc::Sender<Cmd>) {
-    let tgt = switcher.preview_target();
-    if tgt.target.is_empty() {
+    if !switcher.preview_capturable() {
         return;
     }
+    let tgt = switcher.preview_target();
     let ops = ops.clone();
     let tx = cmd_tx.clone();
     tokio::spawn(async move {

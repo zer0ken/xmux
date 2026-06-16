@@ -27,6 +27,11 @@ const COLOR_SESSION: Color = Color::Green;
 const COLOR_WINDOW: Color = Color::Magenta;
 const COLOR_PANE: Color = Color::Cyan;
 
+/// Shown in the preview pane when the focused target's active pane is itself
+/// running xmux. Capturing it would draw the switcher inside its own preview (an
+/// infinite overlay); the note stands in for that suppressed capture.
+const PREVIEW_SELF_NOTE: &str = "  This pane is running xmux.\n\n  Preview hidden here so the switcher is not\n  drawn inside its own preview.";
+
 /// A fully-populated snapshot of the reachable environment.
 #[derive(Clone, Default)]
 pub struct Scan {
@@ -127,6 +132,10 @@ pub struct Switcher {
     /// Set when the preview target changes — the run loop's poller reads + clears
     /// it to refresh immediately rather than waiting for the next tick.
     poll_kick: bool,
+    /// True when the focused target's active pane is itself running xmux, so a
+    /// capture would mirror this UI recursively. Set in `on_focus_changed`; gates
+    /// the capture ([`Switcher::preview_capturable`]) and swaps in a note.
+    preview_self: bool,
 
     list_state: ListState,
     tree_inner: Rect,
@@ -154,6 +163,7 @@ impl Switcher {
             preview_title: " Preview ".into(),
             dialog: None,
             poll_kick: false,
+            preview_self: false,
             list_state: ListState::default(),
             tree_inner: Rect::default(),
             show_help: false,
@@ -179,6 +189,13 @@ impl Switcher {
     /// Takes the pending poll-kick flag (true once after the target changed).
     pub fn take_poll_kick(&mut self) -> bool {
         std::mem::take(&mut self.poll_kick)
+    }
+
+    /// Whether the current preview target should be captured. False when there is
+    /// no target, or its active pane is running xmux (a self-overlay whose capture
+    /// would mirror this UI recursively).
+    pub fn preview_capturable(&self) -> bool {
+        !self.preview_target.target.is_empty() && !self.preview_self
     }
 
     // --- tree model ---------------------------------------------------------
@@ -398,6 +415,37 @@ impl Switcher {
         }
     }
 
+    /// The current command of the active pane the focused target would capture,
+    /// from the already-fetched pane map. The active pane of a session target is
+    /// the active pane of its active window; of a window target, the active pane
+    /// of that window. `None` when the panes are not known.
+    fn focused_pane_command(&self, reference: &RowRef) -> Option<&str> {
+        let (address, window) = match reference {
+            RowRef::Session(s) => (s.address(), None),
+            RowRef::Window { sess, window } => (sess.address(), Some(*window)),
+            RowRef::Host { source, .. } => (self.first_session_of(source)?.address(), None),
+            RowRef::Pane => return None,
+        };
+        let windows = self.panes.get(&address)?;
+        let win = match window {
+            Some(idx) => windows.iter().find(|w| w.index == idx)?,
+            None => windows.iter().find(|w| w.active).or_else(|| windows.first())?,
+        };
+        let pane = win
+            .panes
+            .iter()
+            .find(|p| p.active)
+            .or_else(|| win.panes.first())?;
+        Some(&pane.command)
+    }
+
+    /// Whether the focused target's active pane is running xmux itself.
+    fn focused_runs_xmux(&self) -> bool {
+        self.current_ref()
+            .and_then(|r| self.focused_pane_command(r))
+            .is_some_and(command_is_xmux)
+    }
+
     fn on_focus_changed(&mut self) {
         let tgt = match self.current_ref() {
             Some(r) => self.target_for(r),
@@ -411,9 +459,19 @@ impl Switcher {
             self.preview_title = " Preview ".into();
             self.dialog = None;
             self.preview_text.clear();
+            self.preview_self = false;
             return;
         }
         self.preview_title = format!(" Preview · {} ", tgt.target);
+        // A pane already running xmux would capture this very switcher — show a
+        // note instead of recursing, and skip the capture (preview_capturable).
+        if self.focused_runs_xmux() {
+            self.preview_self = true;
+            self.dialog = None;
+            self.preview_text = PREVIEW_SELF_NOTE.to_string();
+            return;
+        }
+        self.preview_self = false;
         let key = preview_key(&tgt);
         if let Some(cached) = self.preview_cache.get(&key) {
             // revisit: keep the cached render visible and float a reconnecting
@@ -902,6 +960,13 @@ fn pad_label(s: &str) -> String {
 
 fn preview_key(t: &PreviewTarget) -> String {
     format!("{}\u{0}{}", t.source, t.target)
+}
+
+/// Whether `pane_current_command` names the xmux binary — so capturing that pane
+/// would mirror this UI. Matches the bare name and the Windows `.exe`.
+fn command_is_xmux(command: &str) -> bool {
+    let c = command.trim().to_ascii_lowercase();
+    c == "xmux" || c == "xmux.exe"
 }
 
 fn centered_rect(w: u16, h: u16, area: Rect) -> Rect {
@@ -1490,5 +1555,62 @@ mod tests {
             "a key should dismiss help"
         );
         assert!(h.sw.result().chosen.is_none());
+    }
+
+    #[tokio::test]
+    async fn preview_suppressed_when_focused_pane_runs_xmux() {
+        // A pane already running xmux would, if captured, draw this very switcher
+        // inside its own preview — an infinite overlay. Focusing it must skip the
+        // capture and show a note instead.
+        let groups = vec![Group {
+            source: "local".into(),
+            err: None,
+            sessions: vec![sess("local", "selfsess", 1, true, 500)],
+        }];
+        let mut panes = HashMap::new();
+        panes.insert(
+            "local/selfsess".to_string(),
+            vec![win(0, "xmux", true, vec![pane(0, true, "xmux")])],
+        );
+        let h = Harness::new(Scan { groups, panes });
+        // selfsess is the only session ⇒ preselected and previewed.
+        assert!(
+            !h.sw.preview_capturable(),
+            "a pane running xmux must not be captured (would mirror the UI)"
+        );
+        assert!(
+            h.text().contains("Preview hidden"),
+            "the preview must show a note, not the recursive overlay:\n{}",
+            h.text()
+        );
+        assert!(
+            h.sw.dialog.is_none(),
+            "a suppressed preview floats no loading/reconnecting dialog"
+        );
+    }
+
+    #[tokio::test]
+    async fn preview_captures_when_focused_pane_is_not_xmux() {
+        // A normal pane (a shell/editor) is the "original screen" the user wants
+        // to peek — it must still be captured and shown.
+        let groups = vec![Group {
+            source: "local".into(),
+            err: None,
+            sessions: vec![sess("local", "work", 1, true, 500)],
+        }];
+        let mut panes = HashMap::new();
+        panes.insert(
+            "local/work".to_string(),
+            vec![win(0, "shell", true, vec![pane(0, true, "vim")])],
+        );
+        let h = Harness::new(Scan { groups, panes });
+        assert!(
+            h.sw.preview_capturable(),
+            "a normal pane must be captured so the original screen is shown"
+        );
+        assert!(
+            !h.text().contains("Preview hidden"),
+            "a normal pane must not be treated as a self-overlay"
+        );
     }
 }
