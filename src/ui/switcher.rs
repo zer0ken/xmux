@@ -131,6 +131,7 @@ pub struct Switcher {
     list_state: ListState,
     tree_inner: Rect,
 
+    show_help: bool,
     result: SwitchResult,
     exit: bool,
 }
@@ -155,6 +156,7 @@ impl Switcher {
             poll_kick: false,
             list_state: ListState::default(),
             tree_inner: Rect::default(),
+            show_help: false,
             result: SwitchResult::default(),
             exit: false,
         };
@@ -452,6 +454,11 @@ impl Switcher {
             self.handle_input_key(ev, ops).await;
             return;
         }
+        if self.show_help {
+            // The help overlay is modal: any key dismisses it.
+            self.show_help = false;
+            return;
+        }
         if self.pending_kill.is_some() {
             self.resolve_kill(ev, ops).await;
             return;
@@ -472,6 +479,7 @@ impl Switcher {
                 'R' => self.open_input(InputMode::Rename),
                 'x' => self.arm_kill(),
                 'r' => self.do_refresh(ops).await,
+                '?' => self.show_help = true,
                 _ => {}
             },
             _ => {}
@@ -744,6 +752,9 @@ impl Switcher {
             self.render_input(frame, v[2]);
         }
         self.render_footer(frame, v[3]);
+        if self.show_help {
+            self.render_help(frame, area);
+        }
     }
 
     fn render_header(&self, frame: &mut Frame, area: Rect) {
@@ -820,9 +831,43 @@ impl Switcher {
         } else if !self.flash.is_empty() {
             format!(" {}", self.flash)
         } else {
-            " enter attach · n new · R rename · x kill · / filter · r refresh · q quit".to_string()
+            " enter attach · n new · R rename · x kill · / filter · r refresh · ? help · q quit"
+                .to_string()
         };
         frame.render_widget(Paragraph::new(text), area);
+    }
+
+    fn render_help(&self, frame: &mut Frame, area: Rect) {
+        const LINES: &[&str] = &[
+            "↑ / ↓        move (panes are skipped)",
+            "PgUp / PgDn  jump by 10",
+            "Home / End   first / last node",
+            "Enter        attach (host → recent · session · window)",
+            "n            new session on the focused host",
+            "R            rename the focused session",
+            "x            kill the focused session (y / n confirm)",
+            "/            fuzzy filter <source>/<name>",
+            "r            re-scan every host",
+            "?            toggle this help",
+            "q / Esc      quit",
+            "",
+            "mouse: click selects · double-click attaches · wheel scrolls",
+        ];
+        let inner_w = LINES.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
+        let w = (inner_w + 4).min(area.width); // text + a space each side + borders
+        let h = (LINES.len() as u16 + 2).min(area.height);
+        let rect = centered_rect(w, h, area);
+        let text = Text::from(
+            LINES
+                .iter()
+                .map(|l| Line::from(format!(" {l}")))
+                .collect::<Vec<_>>(),
+        );
+        frame.render_widget(Clear, rect);
+        frame.render_widget(
+            Paragraph::new(text).block(Block::bordered().title(" keys ")),
+            rect,
+        );
     }
 }
 
@@ -1425,5 +1470,25 @@ mod tests {
         let mut h = Harness::new(sample());
         h.ch('q').await;
         assert!(h.sw.result().chosen.is_none(), "quit must leave no choice");
+    }
+
+    #[tokio::test]
+    async fn help_overlay_toggles() {
+        let mut h = Harness::new(sample());
+        assert!(!h.text().contains("keys"), "help hidden initially");
+        h.ch('?').await;
+        let out = h.text();
+        assert!(
+            out.contains("keys"),
+            "? should show the help overlay:\n{out}"
+        );
+        assert!(out.contains("fuzzy filter"), "help should list keybindings");
+        // Any key dismisses the modal without acting on the tree.
+        h.key(KeyCode::Down).await;
+        assert!(
+            !h.text().contains("fuzzy filter"),
+            "a key should dismiss help"
+        );
+        assert!(h.sw.result().chosen.is_none());
     }
 }
