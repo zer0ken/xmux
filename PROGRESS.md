@@ -77,7 +77,7 @@ the next unchecked module.
 - [x] 4. source — local/ssh boundary, quoting, runner, classify (14 tests) ✅
 - [x] 5. discovery — tokio bounded concurrent scan (6 tests) ✅
 - [x] 6. manage — lifecycle ops (11 tests) ✅
-- [ ] 7. attach — handover + switch plan
+- [x] 7. attach — handover + switch plan (8 tests, incl. live Windows OsExecer) ✅
 - [ ] 8. ui::tree — pure model
 - [ ] 9. ui::ansi — ANSI → ratatui Text
 - [ ] 10. control — socket protocol + client (interprocess)
