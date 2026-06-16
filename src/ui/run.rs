@@ -4,22 +4,28 @@
 //! is backend-generic so it is driveable headlessly; [`run_switcher`] adds the
 //! real-terminal setup/teardown and the crossterm event reader.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
+use interprocess::local_socket::tokio::{Listener, Stream};
+use interprocess::local_socket::traits::tokio::Listener as _;
+use interprocess::local_socket::ListenerOptions;
 use ratatui::backend::{Backend, CrosstermBackend, TestBackend};
 use ratatui::crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyEvent, KeyEventKind,
-    MouseButton, MouseEvent, MouseEventKind,
+    DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::Terminal;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 
+use crate::control;
 use crate::ui::switcher::{Ops, PreviewTarget, Scan, SwitchResult, Switcher};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -181,13 +187,93 @@ impl Drop for TerminalGuard {
     }
 }
 
+/// A running control server: the accept-loop task plus the socket path to clean
+/// up on shutdown.
+pub struct ControlHandle {
+    task: tokio::task::JoinHandle<()>,
+    path: PathBuf,
+}
+
+impl ControlHandle {
+    fn shutdown(self) {
+        self.task.abort();
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Binds the per-pid control socket at `path` and serves it, forwarding injected
+/// keys/text into `cmd_tx` and answering `ping`/`dump`. A bind failure returns
+/// `None` (the UI runs without a control channel rather than failing).
+pub fn serve_control(path: PathBuf, cmd_tx: mpsc::Sender<Cmd>) -> Option<ControlHandle> {
+    let _ = std::fs::remove_file(&path); // remove a stale socket so the bind succeeds
+    let name = control::endpoint_name(&path).ok()?;
+    let listener = ListenerOptions::new().name(name).create_tokio().ok()?;
+    // On Windows the endpoint is a named pipe (no filesystem presence); drop a
+    // marker file so `discover` can still find this instance by pid. On unix the
+    // bind already created the socket file at `path`.
+    #[cfg(windows)]
+    let _ = std::fs::write(&path, b"");
+    let task = tokio::spawn(accept_loop(listener, cmd_tx));
+    Some(ControlHandle { task, path })
+}
+
+async fn accept_loop(listener: Listener, cmd_tx: mpsc::Sender<Cmd>) {
+    while let Ok(conn) = listener.accept().await {
+        tokio::spawn(handle_conn(conn, cmd_tx.clone()));
+    }
+}
+
+async fn handle_conn(conn: Stream, cmd_tx: mpsc::Sender<Cmd>) {
+    let mut buf = BufReader::new(conn);
+    loop {
+        let mut line = String::new();
+        match buf.read_line(&mut line).await {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+        let payload = dispatch(&line, &cmd_tx).await;
+        if control::write_frame(&mut buf, &payload).await.is_err() {
+            return;
+        }
+    }
+}
+
+async fn dispatch(line: &str, cmd_tx: &mpsc::Sender<Cmd>) -> String {
+    let req = control::parse_request(line);
+    match req.verb.as_str() {
+        "ping" => "pong".into(),
+        "dump" => {
+            let (tx, rx) = oneshot::channel();
+            if cmd_tx.send(Cmd::Dump(tx)).await.is_err() {
+                return String::new();
+            }
+            rx.await.unwrap_or_default()
+        }
+        "key" => match control::parse_key(&req.arg) {
+            Some(ev) => {
+                let _ = cmd_tx.send(Cmd::Key(ev)).await;
+                "ok".into()
+            }
+            None => "err: unknown key".into(),
+        },
+        "text" => {
+            for c in req.arg.chars() {
+                let ev = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+                let _ = cmd_tx.send(Cmd::Key(ev)).await;
+            }
+            "ok".into()
+        }
+        _ => "err: unknown command".into(),
+    }
+}
+
 /// Runs one interactive switcher session on the real terminal, polling the live
-/// preview for as long as it is open. `make_control` optionally wires the control
-/// channel against the command sender (returning a teardown closure).
+/// preview for as long as it is open. When `control` is `Some(path)`, a control
+/// socket is served at that path for the session's lifetime.
 pub async fn run_switcher(
     scan: Scan,
     ops: Arc<dyn Ops>,
-    make_control: impl FnOnce(mpsc::Sender<Cmd>) -> Box<dyn FnOnce() + Send>,
+    control: Option<PathBuf>,
 ) -> anyhow::Result<SwitchResult> {
     let mut switcher = Switcher::new(scan);
     let (cmd_tx, cmd_rx) = mpsc::channel::<Cmd>(256);
@@ -197,19 +283,16 @@ pub async fn run_switcher(
     terminal.clear()?;
 
     let events = tokio::spawn(read_events(cmd_tx.clone()));
-    let teardown_control = make_control(cmd_tx.clone());
+    let control_handle = control.and_then(|p| serve_control(p, cmd_tx.clone()));
 
     let result = event_loop(&mut terminal, &mut switcher, ops, cmd_tx.clone(), cmd_rx).await;
 
     events.abort();
-    teardown_control();
+    if let Some(h) = control_handle {
+        h.shutdown();
+    }
     result?;
     Ok(switcher.result())
-}
-
-/// A `make_control` that wires nothing — for callers without a control channel.
-pub fn no_control(_tx: mpsc::Sender<Cmd>) -> Box<dyn FnOnce() + Send> {
-    Box::new(|| {})
 }
 
 #[cfg(test)]
@@ -317,5 +400,47 @@ mod tests {
         let out = dump_switcher(&mut sw, 100, 30);
         assert!(out.contains("editor"));
         assert!(out.contains("Hosts · Sessions · Windows · Panes"));
+    }
+
+    #[tokio::test]
+    async fn control_end_to_end() {
+        let dir = std::env::temp_dir().join(format!("xmux-ctl-e2e-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let sock = control::socket_path(&dir, std::process::id());
+
+        let (tx, rx) = mpsc::channel::<Cmd>(64);
+        let handle = serve_control(sock.clone(), tx.clone()).expect("bind control socket");
+
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut sw = Switcher::new(sample());
+        let ops: Arc<dyn Ops> = Arc::new(NoopOps);
+        let tx2 = tx.clone();
+        let loop_task = tokio::spawn(async move {
+            event_loop(&mut term, &mut sw, ops, tx2, rx).await.unwrap();
+            sw.result()
+        });
+
+        let mut client = control::Client::dial(&sock).await.unwrap();
+        assert_eq!(client.do_cmd("ping").await.unwrap(), "pong");
+        let dump = client.do_cmd("dump").await.unwrap();
+        assert!(
+            dump.contains("editor"),
+            "dump should render the tree:\n{dump}"
+        );
+        assert_eq!(
+            client.do_cmd("key fnord").await.unwrap(),
+            "err: unknown key"
+        );
+        assert_eq!(
+            client.do_cmd("bogus").await.unwrap(),
+            "err: unknown command"
+        );
+        // Quit so the loop exits.
+        assert_eq!(client.do_cmd("key q").await.unwrap(), "ok");
+
+        let result = loop_task.await.unwrap();
+        assert!(result.chosen.is_none(), "quit must leave no choice");
+        handle.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -2,16 +2,18 @@
 //! that sees and moves between every reachable tmux/psmux session — local and over
 //! ssh — regardless of OS or mux kind.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 
 use xmux::attach::{self, OsExecer};
+use xmux::control;
 use xmux::env::{self, ls_lines, Env};
 use xmux::manage;
 use xmux::session;
 use xmux::source::Source;
-use xmux::ui::run::{no_control, run_switcher};
+use xmux::ui::run::run_switcher;
 
 #[derive(Parser)]
 #[command(
@@ -38,6 +40,18 @@ enum Command {
     },
     /// Diagnose configuration and source reachability.
     Doctor,
+    /// Drive a running switcher over its control socket.
+    Ctl {
+        /// Target the instance with this pid.
+        #[arg(long)]
+        pid: Option<u32>,
+        /// Target this socket path.
+        #[arg(long)]
+        sock: Option<PathBuf>,
+        /// The command to send (e.g. `dump`, `key down`); empty reads from stdin.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Print version.
     Version,
 }
@@ -71,6 +85,11 @@ async fn run() -> i32 {
             let (env, cfg_err) = env::build_env();
             run_doctor(&env, cfg_err).await
         }
+        Some(Command::Ctl { pid, sock, args }) => {
+            // ctl only needs the xmux dir (independent of config validity).
+            let (env, _cfg_err) = env::build_env();
+            run_ctl(&env, pid, sock, args).await
+        }
         Some(Command::Version) => {
             println!("xmux {}", env!("CARGO_PKG_VERSION"));
             0
@@ -102,7 +121,7 @@ async fn run_home(env: Arc<Env>) -> i32 {
     loop {
         eprintln!("xmux: scanning sessions… (probing local + ssh hosts)");
         let scan = env.deep_scan().await;
-        let result = match run_switcher(scan, ops.clone(), no_control).await {
+        let result = match run_switcher(scan, ops.clone(), control_path(&env)).await {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("xmux: {e}");
@@ -136,7 +155,7 @@ async fn run_home(env: Arc<Env>) -> i32 {
 async fn run_popup(env: Arc<Env>) -> i32 {
     eprintln!("xmux: scanning sessions… (probing local + ssh hosts)");
     let scan = env.deep_scan().await;
-    let result = match run_switcher(scan, env.ops(), no_control).await {
+    let result = match run_switcher(scan, env.ops(), control_path(&env)).await {
         Ok(r) => r,
         Err(e) => {
             eprintln!("xmux: {e}");
@@ -235,6 +254,83 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
         }
     }
     0
+}
+
+/// The control socket path to serve for this session, unless `XMUX_CONTROL=0`
+/// disables it. A failure to create the dir or open the socket never breaks the
+/// UI (the switcher just runs without a control channel).
+fn control_path(env: &Env) -> Option<PathBuf> {
+    if std::env::var("XMUX_CONTROL").as_deref() == Ok("0") {
+        return None;
+    }
+    let _ = std::fs::create_dir_all(&env.xmux_dir);
+    Some(control::socket_path(&env.xmux_dir, std::process::id()))
+}
+
+/// Drives a running switcher over its control socket. With command args it sends
+/// one command; with none it streams commands from stdin. The target is the
+/// explicit `--sock`, else `--pid`'s socket, else the newest socket.
+async fn run_ctl(env: &Env, pid: Option<u32>, sock: Option<PathBuf>, args: Vec<String>) -> i32 {
+    let path = match resolve_ctl_socket(&env.xmux_dir, pid, sock) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("xmux ctl: {e}");
+            return 1;
+        }
+    };
+    let mut client = match control::Client::dial(&path).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("xmux ctl: {e}");
+            return 1;
+        }
+    };
+    if !args.is_empty() {
+        return ctl_one(&mut client, &args.join(" ")).await;
+    }
+    use std::io::BufRead;
+    let stdin = std::io::stdin();
+    let lines: Vec<String> = stdin.lock().lines().map_while(Result::ok).collect();
+    for line in lines {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let rc = ctl_one(&mut client, line).await;
+        if rc != 0 {
+            return rc;
+        }
+    }
+    0
+}
+
+fn resolve_ctl_socket(
+    xmux_dir: &std::path::Path,
+    pid: Option<u32>,
+    sock: Option<PathBuf>,
+) -> anyhow::Result<PathBuf> {
+    match (sock, pid) {
+        (Some(s), _) => Ok(s),
+        (None, Some(p)) => Ok(control::socket_path(xmux_dir, p)),
+        (None, None) => Ok(control::discover(xmux_dir)?),
+    }
+}
+
+async fn ctl_one(client: &mut control::Client, line: &str) -> i32 {
+    match client.do_cmd(line).await {
+        Ok(resp) => {
+            if resp.ends_with('\n') {
+                print!("{resp}");
+            } else {
+                println!("{resp}");
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("xmux ctl: {e}");
+            1
+        }
+    }
 }
 
 async fn probe(s: &Source) -> Result<usize, String> {

@@ -3,14 +3,24 @@
 //! dumping the rendered screen over a local socket.
 //!
 //! This module holds the wire protocol (length-framed messages, request parsing,
-//! key parsing) and socket discovery. Keys parse to crossterm [`KeyEvent`]s so
-//! the switcher handles injected and real keys through one path. The socket
-//! `Server`/`Client` are wired alongside the switcher's event loop.
+//! key parsing), socket discovery, and the `xmux ctl` [`Client`]. Keys parse to
+//! crossterm [`KeyEvent`]s so the switcher handles injected and real keys through
+//! one path. The socket server (accept loop + dispatch) lives in `ui::run`, where
+//! it forwards into the event loop's command channel.
 
-use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
+use interprocess::local_socket::tokio::Stream;
+use interprocess::local_socket::traits::tokio::Stream as _;
+use interprocess::local_socket::Name;
+#[cfg(unix)]
+use interprocess::local_socket::{GenericFilePath, ToFsName};
+#[cfg(windows)]
+use interprocess::local_socket::{GenericNamespaced, ToNsName};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use tokio::io::{
+    AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
+};
 
 /// Bounds a single length-framed payload, guarding against a corrupt or hostile
 /// length header.
@@ -96,16 +106,18 @@ pub fn parse_request(line: &str) -> Request {
 
 /// Writes `payload` as a length-framed message: a decimal byte count, a newline,
 /// then the raw payload bytes.
-pub fn write_frame<W: Write>(w: &mut W, payload: &str) -> std::io::Result<()> {
-    writeln!(w, "{}", payload.len())?;
-    w.write_all(payload.as_bytes())
+pub async fn write_frame<W: AsyncWrite + Unpin>(w: &mut W, payload: &str) -> std::io::Result<()> {
+    w.write_all(format!("{}\n", payload.len()).as_bytes())
+        .await?;
+    w.write_all(payload.as_bytes()).await?;
+    w.flush().await
 }
 
 /// Reads a length-framed message written by [`write_frame`]. The length header
 /// must not exceed [`MAX_FRAME`].
-pub fn read_frame<R: BufRead>(r: &mut R) -> std::io::Result<String> {
+pub async fn read_frame<R: AsyncBufRead + Unpin>(r: &mut R) -> std::io::Result<String> {
     let mut line = String::new();
-    r.read_line(&mut line)?;
+    r.read_line(&mut line).await?;
     let n: i64 = line
         .trim_end_matches(['\r', '\n'])
         .parse()
@@ -114,12 +126,60 @@ pub fn read_frame<R: BufRead>(r: &mut R) -> std::io::Result<String> {
         return Err(frame_err(format!("frame length {n} out of range")));
     }
     let mut buf = vec![0u8; n as usize];
-    std::io::Read::read_exact(r, &mut buf)?;
+    r.read_exact(&mut buf).await?;
     String::from_utf8(buf).map_err(|e| frame_err(e.to_string()))
 }
 
 fn frame_err(msg: String) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, format!("control: {msg}"))
+}
+
+/// Builds the interprocess endpoint name for a `ctl-<pid>.sock` path. On unix the
+/// path IS the AF_UNIX socket (and the discovery marker); on Windows, where local
+/// sockets are named pipes, the endpoint is the namespaced name `xmux-ctl-<pid>`
+/// derived from the pid, and the `.sock` file is a separate filesystem marker the
+/// [`discover`] glob finds.
+pub fn endpoint_name(path: &Path) -> std::io::Result<Name<'static>> {
+    #[cfg(unix)]
+    {
+        path.to_owned()
+            .into_os_string()
+            .to_fs_name::<GenericFilePath>()
+    }
+    #[cfg(windows)]
+    {
+        let pid = pid_from_sock(path).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "control: socket name is not ctl-<pid>.sock",
+            )
+        })?;
+        format!("xmux-ctl-{pid}").to_ns_name::<GenericNamespaced>()
+    }
+}
+
+/// A minimal control-channel client for the `xmux ctl` command.
+pub struct Client {
+    stream: BufReader<Stream>,
+}
+
+impl Client {
+    /// Connects to a control socket.
+    pub async fn dial(path: &Path) -> std::io::Result<Client> {
+        let stream = Stream::connect(endpoint_name(path)?).await?;
+        Ok(Client {
+            stream: BufReader::new(stream),
+        })
+    }
+
+    /// Sends one request line and returns the framed response payload.
+    pub async fn do_cmd(&mut self, line: &str) -> std::io::Result<String> {
+        self.stream
+            .write_all(format!("{line}\n").as_bytes())
+            .await?;
+        self.stream.flush().await?;
+        read_frame(&mut self.stream).await
+    }
 }
 
 /// Returns the control socket path for a given pid in `dir`.
@@ -168,6 +228,7 @@ pub fn discover(dir: &Path) -> std::io::Result<PathBuf> {
 mod tests {
     use super::*;
     use std::io::Cursor;
+    use tokio::io::BufReader as TokioBufReader;
 
     #[test]
     fn parse_key_named() {
@@ -229,8 +290,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn frame_round_trip() {
+    #[tokio::test]
+    async fn frame_round_trip() {
         for payload in [
             "pong",
             "",
@@ -238,17 +299,17 @@ mod tests {
             "line one\nline two\nline three",
         ] {
             let mut buf = Vec::new();
-            write_frame(&mut buf, payload).unwrap();
-            let mut r = Cursor::new(buf);
-            let got = read_frame(&mut r).unwrap();
+            write_frame(&mut buf, payload).await.unwrap();
+            let mut r = TokioBufReader::new(Cursor::new(buf));
+            let got = read_frame(&mut r).await.unwrap();
             assert_eq!(got, payload);
         }
     }
 
-    #[test]
-    fn read_frame_oversized() {
-        let mut r = Cursor::new(b"99999999\nx".to_vec());
-        assert!(read_frame(&mut r).is_err());
+    #[tokio::test]
+    async fn read_frame_oversized() {
+        let mut r = TokioBufReader::new(Cursor::new(b"99999999\nx".to_vec()));
+        assert!(read_frame(&mut r).await.is_err());
     }
 
     #[test]
