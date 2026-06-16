@@ -1,0 +1,326 @@
+//! A programmatic control channel that drives the running switcher headlessly. It
+//! backs xmux's own tests and the `xmux ctl` command, injecting keystrokes and
+//! dumping the rendered screen over a local socket.
+//!
+//! This module holds the wire protocol (length-framed messages, request parsing,
+//! key parsing) and socket discovery. Keys parse to crossterm [`KeyEvent`]s so
+//! the switcher handles injected and real keys through one path. The socket
+//! `Server`/`Client` are wired alongside the switcher's event loop.
+
+use std::io::{BufRead, Write};
+use std::path::{Path, PathBuf};
+
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+/// Bounds a single length-framed payload, guarding against a corrupt or hostile
+/// length header.
+pub const MAX_FRAME: usize = 1 << 24;
+
+/// Maps a key name to a crossterm event. Named keys and `ctrl+<letter>` are
+/// matched case-insensitively; a single char is taken verbatim (case preserved,
+/// so `"R"` differs from `"r"`). Returns `None` for anything unrecognized.
+pub fn parse_key(name: &str) -> Option<KeyEvent> {
+    // A single char is preserved exactly as given, including case — checked
+    // before lowercasing so "R" and "r" stay distinct.
+    let mut chars = name.chars();
+    if let (Some(c), None) = (chars.next(), chars.next()) {
+        return Some(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+
+    let lc = name.to_lowercase();
+
+    if lc == "space" {
+        return Some(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    }
+
+    let named = match lc.as_str() {
+        "up" => Some(KeyCode::Up),
+        "down" => Some(KeyCode::Down),
+        "left" => Some(KeyCode::Left),
+        "right" => Some(KeyCode::Right),
+        "enter" => Some(KeyCode::Enter),
+        "esc" | "escape" => Some(KeyCode::Esc),
+        "tab" => Some(KeyCode::Tab),
+        "backtab" => Some(KeyCode::BackTab),
+        "home" => Some(KeyCode::Home),
+        "end" => Some(KeyCode::End),
+        "pgup" => Some(KeyCode::PageUp),
+        "pgdn" => Some(KeyCode::PageDown),
+        "backspace" => Some(KeyCode::Backspace),
+        "delete" => Some(KeyCode::Delete),
+        "insert" => Some(KeyCode::Insert),
+        _ => None,
+    };
+    if let Some(code) = named {
+        return Some(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    // ctrl+<letter> or ctrl-<letter>, letter a-z (case-insensitive).
+    if let Some(rest) = lc
+        .strip_prefix("ctrl+")
+        .or_else(|| lc.strip_prefix("ctrl-"))
+    {
+        let mut rc = rest.chars();
+        if let (Some(c), None) = (rc.next(), rc.next()) {
+            if c.is_ascii_lowercase() {
+                return Some(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+            }
+        }
+    }
+
+    None
+}
+
+/// A parsed request line: a lowercased verb and the verbatim remainder.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Request {
+    pub verb: String,
+    pub arg: String,
+}
+
+/// Splits a request line on its first space. The verb is lowercased; the arg is
+/// the remainder verbatim. A trailing CR/LF is trimmed from the line first.
+pub fn parse_request(line: &str) -> Request {
+    let line = line.trim_end_matches(['\r', '\n']);
+    match line.find(' ') {
+        Some(i) => Request {
+            verb: line[..i].to_lowercase(),
+            arg: line[i + 1..].to_string(),
+        },
+        None => Request {
+            verb: line.to_lowercase(),
+            arg: String::new(),
+        },
+    }
+}
+
+/// Writes `payload` as a length-framed message: a decimal byte count, a newline,
+/// then the raw payload bytes.
+pub fn write_frame<W: Write>(w: &mut W, payload: &str) -> std::io::Result<()> {
+    writeln!(w, "{}", payload.len())?;
+    w.write_all(payload.as_bytes())
+}
+
+/// Reads a length-framed message written by [`write_frame`]. The length header
+/// must not exceed [`MAX_FRAME`].
+pub fn read_frame<R: BufRead>(r: &mut R) -> std::io::Result<String> {
+    let mut line = String::new();
+    r.read_line(&mut line)?;
+    let n: i64 = line
+        .trim_end_matches(['\r', '\n'])
+        .parse()
+        .map_err(|_| frame_err(format!("bad frame length {line:?}")))?;
+    if n < 0 || n as usize > MAX_FRAME {
+        return Err(frame_err(format!("frame length {n} out of range")));
+    }
+    let mut buf = vec![0u8; n as usize];
+    std::io::Read::read_exact(r, &mut buf)?;
+    String::from_utf8(buf).map_err(|e| frame_err(e.to_string()))
+}
+
+fn frame_err(msg: String) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, format!("control: {msg}"))
+}
+
+/// Returns the control socket path for a given pid in `dir`.
+pub fn socket_path(dir: &Path, pid: u32) -> PathBuf {
+    dir.join(format!("ctl-{pid}.sock"))
+}
+
+/// Extracts the pid embedded in a `ctl-<pid>.sock` filename, or `None`.
+fn pid_from_sock(path: &Path) -> Option<u32> {
+    let name = path.file_name()?.to_str()?;
+    name.strip_prefix("ctl-")?
+        .strip_suffix(".sock")?
+        .parse()
+        .ok()
+}
+
+/// Returns the path of the most-recently-modified `ctl-*.sock` in `dir`. Ties on
+/// modification time are broken by the higher pid. Errors if none exist.
+pub fn discover(dir: &Path) -> std::io::Result<PathBuf> {
+    let mut cands: Vec<(PathBuf, std::time::SystemTime, u32)> = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let Some(pid) = pid_from_sock(&path) else {
+            continue;
+        };
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        cands.push((path, modified, pid));
+    }
+    if cands.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("control: no ctl-*.sock found in {}", dir.display()),
+        ));
+    }
+    cands.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)));
+    Ok(cands[0].0.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn parse_key_named() {
+        let cases: &[(&str, KeyCode)] = &[
+            ("up", KeyCode::Up),
+            ("DOWN", KeyCode::Down),
+            ("left", KeyCode::Left),
+            ("Right", KeyCode::Right),
+            ("enter", KeyCode::Enter),
+            ("esc", KeyCode::Esc),
+            ("escape", KeyCode::Esc),
+            ("tab", KeyCode::Tab),
+            ("backtab", KeyCode::BackTab),
+            ("home", KeyCode::Home),
+            ("end", KeyCode::End),
+            ("pgup", KeyCode::PageUp),
+            ("pgdn", KeyCode::PageDown),
+            ("backspace", KeyCode::Backspace),
+            ("delete", KeyCode::Delete),
+            ("insert", KeyCode::Insert),
+        ];
+        for &(name, want) in cases {
+            let ev = parse_key(name).unwrap_or_else(|| panic!("parse_key({name:?}) = None"));
+            assert_eq!(ev.code, want, "parse_key({name:?})");
+        }
+    }
+
+    #[test]
+    fn parse_key_space() {
+        let ev = parse_key("space").unwrap();
+        assert_eq!(ev.code, KeyCode::Char(' '));
+    }
+
+    #[test]
+    fn parse_key_ctrl() {
+        for name in ["ctrl+c", "ctrl-c", "CTRL+C", "Ctrl-C"] {
+            let ev = parse_key(name).unwrap_or_else(|| panic!("parse_key({name:?}) = None"));
+            assert_eq!(ev.code, KeyCode::Char('c'), "{name:?}");
+            assert!(ev.modifiers.contains(KeyModifiers::CONTROL), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn parse_key_single_rune_case_preserved() {
+        let upper = parse_key("R").unwrap();
+        assert_eq!(upper.code, KeyCode::Char('R'));
+        let lower = parse_key("r").unwrap();
+        assert_eq!(lower.code, KeyCode::Char('r'));
+        assert_ne!(upper.code, lower.code);
+    }
+
+    #[test]
+    fn parse_key_unknown() {
+        for name in ["nope", "ctrl+", "ctrl+1", "", "fnord"] {
+            assert!(
+                parse_key(name).is_none(),
+                "parse_key({name:?}) should be None"
+            );
+        }
+    }
+
+    #[test]
+    fn frame_round_trip() {
+        for payload in [
+            "pong",
+            "",
+            "a single line",
+            "line one\nline two\nline three",
+        ] {
+            let mut buf = Vec::new();
+            write_frame(&mut buf, payload).unwrap();
+            let mut r = Cursor::new(buf);
+            let got = read_frame(&mut r).unwrap();
+            assert_eq!(got, payload);
+        }
+    }
+
+    #[test]
+    fn read_frame_oversized() {
+        let mut r = Cursor::new(b"99999999\nx".to_vec());
+        assert!(read_frame(&mut r).is_err());
+    }
+
+    #[test]
+    fn parse_request_cases() {
+        let cases: &[(&str, &str, &str)] = &[
+            ("ping", "ping", ""),
+            ("PING\r\n", "ping", ""),
+            ("key down", "key", "down"),
+            ("text hello world", "text", "hello world"),
+            ("text  leading", "text", " leading"),
+            ("", "", ""),
+        ];
+        for &(line, want_verb, want_arg) in cases {
+            let got = parse_request(line);
+            assert_eq!(got.verb, want_verb, "verb for {line:?}");
+            assert_eq!(got.arg, want_arg, "arg for {line:?}");
+        }
+    }
+
+    #[test]
+    fn socket_path_format() {
+        assert_eq!(
+            socket_path(Path::new("/some/dir"), 1234),
+            Path::new("/some/dir").join("ctl-1234.sock")
+        );
+    }
+
+    #[test]
+    fn discover_newest_then_higher_pid() {
+        let dir = std::env::temp_dir().join(format!("xmux-ctl-discover-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        assert!(discover(&dir).is_err(), "empty dir must error");
+
+        let older = socket_path(&dir, 100);
+        let newer = socket_path(&dir, 200);
+        std::fs::write(&older, b"").unwrap();
+        std::fs::write(&newer, b"").unwrap();
+        // Make `older` distinctly older.
+        let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        filetime_set(&older, hour_ago);
+
+        assert_eq!(discover(&dir).unwrap(), newer);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn discover_tie_break_higher_pid() {
+        let dir = std::env::temp_dir().join(format!("xmux-ctl-tie-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = socket_path(&dir, 100);
+        let b = socket_path(&dir, 200);
+        std::fs::write(&a, b"").unwrap();
+        std::fs::write(&b, b"").unwrap();
+        // Same mtime for both: tie-break must pick the higher pid.
+        let ts = std::time::SystemTime::now();
+        filetime_set(&a, ts);
+        filetime_set(&b, ts);
+
+        assert_eq!(discover(&dir).unwrap(), b);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Sets a file's mtime via the filesystem so Discover's ordering is testable
+    /// without depending on write order resolution.
+    fn filetime_set(path: &Path, when: std::time::SystemTime) {
+        let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        f.set_modified(when).unwrap();
+    }
+}

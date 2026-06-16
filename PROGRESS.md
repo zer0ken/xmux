@@ -80,7 +80,7 @@ the next unchecked module.
 - [x] 7. attach — handover + switch plan (8 tests, incl. live Windows OsExecer) ✅
 - [x] 8. ui::tree — pure model (19 tests) ✅
 - [x] 9. ui::ansi — ANSI → ratatui Text (9 tests) ✅
-- [ ] 10. control — socket protocol + client (interprocess)
+- [~] 10. control — protocol ported (parse_key→crossterm, parse_request, frames, socket_path/discover; 11 tests) ✅; Server/Client socket wiring deferred to switcher integration
 - [ ] 11. ui::switcher — ratatui TUI (the big one)
 - [ ] 12. env — runtime wiring
 - [ ] 13. main — clap CLI + home/popup/ls/attach/doctor/ctl

@@ -9,6 +9,7 @@
 
 pub mod attach;
 pub mod config;
+pub mod control;
 pub mod discovery;
 pub mod manage;
 pub mod mux;
