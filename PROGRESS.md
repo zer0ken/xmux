@@ -75,7 +75,7 @@ the next unchecked module.
 - [x] 2. mux — argv builders + parsers (26 tests) ✅
 - [x] 3. config — TOML + ssh-config discovery (10 tests) ✅
 - [x] 4. source — local/ssh boundary, quoting, runner, classify (14 tests) ✅
-- [ ] 5. discovery — tokio bounded concurrent scan
+- [x] 5. discovery — tokio bounded concurrent scan (6 tests) ✅
 - [ ] 6. manage — lifecycle ops
 - [ ] 7. attach — handover + switch plan
 - [ ] 8. ui::tree — pure model
