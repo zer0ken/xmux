@@ -81,7 +81,7 @@ the next unchecked module.
 - [x] 8. ui::tree — pure model (19 tests) ✅
 - [x] 9. ui::ansi — ANSI → ratatui Text (9 tests) ✅
 - [~] 10. control — protocol ported (parse_key→crossterm, parse_request, frames, socket_path/discover; 11 tests) ✅; Server/Client socket wiring deferred to switcher integration
-- [ ] 11. ui::switcher — ratatui TUI (the big one)
+- [~] 11. ui::switcher — state machine + render + key/mouse handling done; full Go behavior suite ported headlessly via TestBackend (21 tests) ✅. Remaining: async run loop (EventStream + poller) + control Server, in 11b.
 - [ ] 12. env — runtime wiring
 - [ ] 13. main — clap CLI + home/popup/ls/attach/doctor/ctl
 - [ ] 14. Optimize pass — startup/memory measurements; async scan tuning

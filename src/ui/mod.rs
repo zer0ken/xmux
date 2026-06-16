@@ -4,6 +4,7 @@
 //! on top separately.
 
 pub mod ansi;
+pub mod switcher;
 pub mod tree;
 
 pub use tree::{
