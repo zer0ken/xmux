@@ -84,7 +84,9 @@ the next unchecked module.
 - [~] 11. ui::switcher — state machine + render + key/mouse handling done; full Go behavior suite ported headlessly via TestBackend (21 tests) ✅. Remaining: control Server, in 11b-control.
 - [x] 11b. ui::run — async event loop (tokio select! over a unified Cmd channel + 1s poll), backend-generic `event_loop` (3 headless tests: key-attach, dump, flatten), real-terminal `run_switcher` (raw mode + alt screen + mouse, RAII restore guard, crossterm EventStream reader, non-blocking preview captures), `dump_switcher` (TestBackend flatten). ✅
 - [x] 12. env — runtime wiring (build_env, scan/deep_scan, EnvOps over manage, ls_lines; 5 tests) ✅
-- [ ] 13. main — clap CLI + home/popup/ls/attach/doctor/ctl
+- [~] 13. main — clap CLI: home/popup/ls/attach/doctor/version done; VERIFIED LIVE
+  (`doctor` finds local psmux + reaches jupiter00/jupiter06 tmux over ssh; `ls` lists
+  local + remote sessions). `ctl` subcommand deferred to the control-Server step.
 - [ ] 14. Optimize pass — startup/memory measurements; async scan tuning
 - [ ] 15. UX pass — help overlay, keybindings, visual hierarchy
 - [ ] 16. Final verification + README update; write `C:\Projects\tmp\rust-rewrite\DONE`
