@@ -630,6 +630,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn event_loop_cancel_leaves_no_choice() {
+        // UC-3 / FR-B5: surveying the list and cancelling (q) leaves no chosen
+        // session — the current session is untouched.
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut sw = Switcher::new(sample());
+        let (tx, rx) = mpsc::channel(16);
+        tx.send(Cmd::Key(KeyEvent::new(
+            KeyCode::Char('q'),
+            KeyModifiers::NONE,
+        )))
+        .await
+        .unwrap();
+        event_loop(&mut term, &mut sw, Arc::new(NoopOps), tx.clone(), rx)
+            .await
+            .unwrap();
+        assert!(
+            sw.result().chosen.is_none(),
+            "cancel must leave no chosen session"
+        );
+    }
+
+    #[tokio::test]
+    async fn event_loop_filter_then_enter_attaches_visible() {
+        // UC-4 / FR-B6, end-to-end through the live event loop: filter to one of
+        // several sessions, Enter applies the filter, Enter attaches the VISIBLE
+        // (filtered) session — never the attached/most-recent filtered-out one.
+        let scan = Scan {
+            groups: vec![Group {
+                source: "local".into(),
+                err: None,
+                sessions: vec![
+                    Session {
+                        source: "local".into(),
+                        name: "editor".into(),
+                        windows: 1,
+                        attached: true,
+                        last_attached: 999, // most-recent + attached
+                    },
+                    Session {
+                        source: "local".into(),
+                        name: "build".into(),
+                        windows: 1,
+                        attached: false,
+                        last_attached: 10,
+                    },
+                ],
+            }],
+            panes: Default::default(),
+        };
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut sw = Switcher::new(scan);
+        let (tx, rx) = mpsc::channel(32);
+        for k in ['/', 'b', 'u', 'i', 'l', 'd'] {
+            tx.send(Cmd::Key(KeyEvent::new(
+                KeyCode::Char(k),
+                KeyModifiers::NONE,
+            )))
+            .await
+            .unwrap();
+        }
+        tx.send(Cmd::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)))
+            .await
+            .unwrap(); // apply filter
+        tx.send(Cmd::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)))
+            .await
+            .unwrap(); // attach the filtered session
+        event_loop(&mut term, &mut sw, Arc::new(NoopOps), tx.clone(), rx)
+            .await
+            .unwrap();
+        assert_eq!(
+            sw.result().chosen.as_ref().map(|s| s.name.as_str()),
+            Some("build"),
+            "filter+Enter through the loop must attach the visible (filtered) session"
+        );
+    }
+
+    #[tokio::test]
     async fn event_loop_dump_renders_screen() {
         let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
         let mut sw = Switcher::new(sample());

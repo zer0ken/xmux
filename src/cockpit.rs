@@ -647,6 +647,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn loop_switches_local_remote_both_directions() {
+        use std::sync::Mutex;
+        // UC-11: the cockpit re-attaches whatever the next queued switch names —
+        // local OR remote — in any order, with no picker between. The picker is
+        // only reached when no switch is queued (here: to quit at the end).
+        struct SeqAttacher {
+            log: Mutex<Vec<String>>,
+            pending: Pending,
+            queue: Mutex<Vec<Option<Target>>>,
+        }
+        #[async_trait::async_trait]
+        impl Attacher for SeqAttacher {
+            async fn attach(&self, t: &Target) {
+                self.log.lock().unwrap().push(t.session.address());
+                let next = self.queue.lock().unwrap().remove(0);
+                *self.pending.lock().unwrap() = next.map(|target| PendingSwitch {
+                    target,
+                    at: Instant::now(),
+                });
+            }
+        }
+        struct QuitPicker;
+        #[async_trait::async_trait]
+        impl Picker for QuitPicker {
+            async fn pick(&self) -> Option<Target> {
+                None
+            }
+        }
+        let pending: Pending = std::sync::Arc::new(Mutex::new(None));
+        let attacher = SeqAttacher {
+            log: Mutex::new(Vec::new()),
+            pending: pending.clone(),
+            queue: Mutex::new(vec![
+                Some(target("jupiter06", "api")), // local  -> remote
+                Some(target("local", "db")),      // remote -> local
+                Some(target("jupiter00", "web")), // local  -> remote
+                None,                             // no switch -> picker -> quit
+            ]),
+        };
+        let rc = cockpit_loop(
+            &attacher,
+            &QuitPicker,
+            pending.clone(),
+            Some(target("local", "work")),
+        )
+        .await;
+        assert_eq!(rc, 0);
+        assert_eq!(
+            *attacher.log.lock().unwrap(),
+            vec!["local/work", "jupiter06/api", "local/db", "jupiter00/web"],
+            "the cockpit must re-attach in both directions (local<->remote), no picker between"
+        );
+    }
+
+    #[tokio::test]
     async fn loop_discards_stale_pending() {
         use std::sync::Mutex;
         // During the first attach a STALE switch is queued; the loop must discard
