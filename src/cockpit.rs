@@ -3,6 +3,9 @@
 //! can ask it to re-attach a session on another server — the cross-host switch.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
 
 use crate::control;
 use crate::session::{self, Session};
@@ -92,6 +95,50 @@ pub fn decide_popup_action(
     }
 }
 
+/// Hands the terminal to the attach for a target and returns when the child exits.
+#[async_trait]
+pub trait Attacher: Send + Sync {
+    async fn attach(&self, target: &Target);
+}
+
+/// Runs the full-screen picker; returns the chosen target, or `None` to quit.
+#[async_trait]
+pub trait Picker: Send + Sync {
+    async fn pick(&self) -> Option<Target>;
+}
+
+/// A recorded cross-server switch, shared between the accept task and the loop.
+pub type Pending = Arc<Mutex<Option<Target>>>;
+
+/// The cockpit supervisor loop. Attaches the current target; when the child
+/// exits, a recorded switch re-attaches with no picker (the seamless cross-host
+/// switch), otherwise the picker chooses the next target (or quits).
+pub async fn cockpit_loop(
+    attacher: &dyn Attacher,
+    picker: &dyn Picker,
+    pending: Pending,
+    initial: Option<Target>,
+) -> i32 {
+    let mut target = match initial {
+        Some(t) => t,
+        None => match picker.pick().await {
+            Some(t) => t,
+            None => return 0,
+        },
+    };
+    loop {
+        attacher.attach(&target).await;
+        let next = pending.lock().unwrap().take();
+        target = match next {
+            Some(t) => t,
+            None => match picker.pick().await {
+                Some(t) => t,
+                None => return 0,
+            },
+        };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,5 +220,94 @@ mod tests {
             decide_popup_action(&remote, LOCAL_SOURCE, false),
             PopupAction::NoCockpit
         );
+    }
+
+    fn target(source: &str, name: &str) -> Target {
+        Target {
+            session: Session {
+                source: source.into(),
+                name: name.into(),
+                ..Default::default()
+            },
+            window: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn loop_reattaches_on_pending_then_picks_on_bare_exit() {
+        use std::sync::Mutex;
+
+        // Attacher logs each target and injects a pending switch "during" each attach.
+        struct ScriptAttacher {
+            log: Mutex<Vec<String>>,
+            pending: Pending,
+            inject: Mutex<Vec<Option<Target>>>,
+        }
+        #[async_trait::async_trait]
+        impl Attacher for ScriptAttacher {
+            async fn attach(&self, t: &Target) {
+                self.log.lock().unwrap().push(t.session.address());
+                let inj = self.inject.lock().unwrap().remove(0);
+                *self.pending.lock().unwrap() = inj;
+            }
+        }
+        struct QuitPicker;
+        #[async_trait::async_trait]
+        impl Picker for QuitPicker {
+            async fn pick(&self) -> Option<Target> {
+                None
+            }
+        }
+
+        let pending: Pending = std::sync::Arc::new(Mutex::new(None));
+        let attacher = ScriptAttacher {
+            log: Mutex::new(Vec::new()),
+            pending: pending.clone(),
+            inject: Mutex::new(vec![Some(target("jupiter06", "api")), None]),
+        };
+        let rc = cockpit_loop(
+            &attacher,
+            &QuitPicker,
+            pending.clone(),
+            Some(target("local", "work")),
+        )
+        .await;
+        assert_eq!(rc, 0);
+        assert_eq!(
+            *attacher.log.lock().unwrap(),
+            vec!["local/work", "jupiter06/api"]
+        );
+    }
+
+    #[tokio::test]
+    async fn loop_runs_picker_first_when_no_initial_target() {
+        use std::sync::Mutex;
+        struct RecordAttacher {
+            log: Mutex<Vec<String>>,
+            pending: Pending,
+        }
+        #[async_trait::async_trait]
+        impl Attacher for RecordAttacher {
+            async fn attach(&self, t: &Target) {
+                self.log.lock().unwrap().push(t.session.address());
+                *self.pending.lock().unwrap() = None;
+            }
+        }
+        struct ScriptPicker(Mutex<Vec<Option<Target>>>);
+        #[async_trait::async_trait]
+        impl Picker for ScriptPicker {
+            async fn pick(&self) -> Option<Target> {
+                self.0.lock().unwrap().remove(0)
+            }
+        }
+        let pending: Pending = std::sync::Arc::new(Mutex::new(None));
+        let attacher = RecordAttacher {
+            log: Mutex::new(Vec::new()),
+            pending: pending.clone(),
+        };
+        let picker = ScriptPicker(Mutex::new(vec![Some(target("local", "work")), None]));
+        let rc = cockpit_loop(&attacher, &picker, pending.clone(), None).await;
+        assert_eq!(rc, 0);
+        assert_eq!(*attacher.log.lock().unwrap(), vec!["local/work"]);
     }
 }
