@@ -66,6 +66,32 @@ pub fn dispatch_cockpit(
     }
 }
 
+/// What the popup does with a pick.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PopupAction {
+    /// Same-server pick: `switch-client` in place (instant).
+    SwitchClient,
+    /// Cross-server pick with a cockpit pointer present: signal it to re-attach.
+    SignalCockpit,
+    /// Cross-server pick with no cockpit pointer: cannot cross hosts from here.
+    NoCockpit,
+}
+
+/// Decides the popup action from the pick and whether a cockpit pointer exists.
+pub fn decide_popup_action(
+    chosen: &Session,
+    local_source: &str,
+    cockpit_available: bool,
+) -> PopupAction {
+    if chosen.source == local_source {
+        PopupAction::SwitchClient
+    } else if cockpit_available {
+        PopupAction::SignalCockpit
+    } else {
+        PopupAction::NoCockpit
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,5 +141,37 @@ mod tests {
 
         // Unknown verb.
         assert_eq!(dispatch_cockpit("bogus", known).0, "err: unknown command");
+    }
+
+    #[test]
+    fn popup_decision_table() {
+        use crate::session::{Session, LOCAL_SOURCE};
+        let local = Session {
+            source: LOCAL_SOURCE.into(),
+            name: "w".into(),
+            ..Default::default()
+        };
+        let remote = Session {
+            source: "jupiter06".into(),
+            name: "api".into(),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            decide_popup_action(&local, LOCAL_SOURCE, false),
+            PopupAction::SwitchClient
+        );
+        assert_eq!(
+            decide_popup_action(&local, LOCAL_SOURCE, true),
+            PopupAction::SwitchClient
+        );
+        assert_eq!(
+            decide_popup_action(&remote, LOCAL_SOURCE, true),
+            PopupAction::SignalCockpit
+        );
+        assert_eq!(
+            decide_popup_action(&remote, LOCAL_SOURCE, false),
+            PopupAction::NoCockpit
+        );
     }
 }
