@@ -6,9 +6,17 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use interprocess::local_socket::tokio::{Listener, Stream};
+use interprocess::local_socket::traits::tokio::Listener as _;
+use interprocess::local_socket::ListenerOptions;
+use tokio::io::{AsyncBufReadExt, BufReader};
 
+use crate::attach;
 use crate::control;
+use crate::env::Env;
+use crate::manage;
 use crate::session::{self, Session};
+use crate::ui::run::run_switcher;
 
 /// A target the cockpit attaches: a session and an optional window to land on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,6 +145,160 @@ pub async fn cockpit_loop(
             },
         };
     }
+}
+
+/// Tests whether a source alias is known to this cockpit (so `switch` to an
+/// unknown source is rejected).
+type KnownSource = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
+/// Serves the cockpit control socket: each `switch` stores the target into
+/// `pending` for the loop to consume after the current child exits.
+async fn cockpit_accept(listener: Listener, pending: Pending, known: KnownSource) {
+    while let Ok(conn) = listener.accept().await {
+        let pending = pending.clone();
+        let known = known.clone();
+        tokio::spawn(handle_cockpit_conn(conn, pending, known));
+    }
+}
+
+async fn handle_cockpit_conn(conn: Stream, pending: Pending, known: KnownSource) {
+    let mut buf = BufReader::new(conn);
+    loop {
+        let mut line = String::new();
+        match buf.read_line(&mut line).await {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+        let known_fn = |s: &str| (known)(s);
+        let (reply, target) = dispatch_cockpit(&line, &known_fn);
+        if let Some(t) = target {
+            *pending.lock().unwrap() = Some(t);
+        }
+        if control::write_frame(&mut buf, &reply).await.is_err() {
+            return;
+        }
+    }
+}
+
+/// A running cockpit socket: the accept task plus paths to clean up on drop.
+struct CockpitHandle {
+    task: tokio::task::JoinHandle<()>,
+    sock: PathBuf,
+    xmux_dir: PathBuf,
+}
+impl Drop for CockpitHandle {
+    fn drop(&mut self) {
+        self.task.abort();
+        let _ = std::fs::remove_file(&self.sock);
+        remove_cockpit_pointer(&self.xmux_dir);
+    }
+}
+
+/// Binds the cockpit socket, writes the pointer, and serves it. A bind failure
+/// returns `None` (the cockpit still runs; cross-host-from-popup is unavailable).
+fn serve_cockpit(env: &Arc<Env>, sock: PathBuf, pending: Pending) -> Option<CockpitHandle> {
+    let _ = std::fs::remove_file(&sock);
+    let name = control::endpoint_name(&sock).ok()?;
+    let listener = ListenerOptions::new().name(name).create_tokio().ok()?;
+    #[cfg(windows)]
+    let _ = std::fs::write(&sock, b"");
+    let _ = write_cockpit_pointer(&env.xmux_dir, &sock);
+    let known_keys: std::collections::HashSet<String> = env.by_alias.keys().cloned().collect();
+    let known: KnownSource = Arc::new(move |s: &str| known_keys.contains(s));
+    let task = tokio::spawn(cockpit_accept(listener, pending, known));
+    Some(CockpitHandle {
+        task,
+        sock,
+        xmux_dir: env.xmux_dir.clone(),
+    })
+}
+
+/// The real terminal-handover attach (async, so the cockpit serves its socket
+/// concurrently with the child's run).
+struct RealAttacher {
+    env: Arc<Env>,
+}
+#[async_trait]
+impl Attacher for RealAttacher {
+    async fn attach(&self, target: &Target) {
+        let Some(src) = self.env.by_alias.get(&target.session.source).cloned() else {
+            eprintln!("xmux: unknown source {:?}", target.session.source);
+            return;
+        };
+        if let Err(e) = attach::nest_guard(attach::in_mux()) {
+            eprintln!("xmux: {e}");
+            return;
+        }
+        // Local pre-selects the window with an instant local command; a remote
+        // folds the selection into the single ssh attach connection.
+        if !src.remote {
+            if let Some(w) = target.window {
+                let _ = manage::select_window(&src, &target.session.name, w).await;
+            }
+        }
+        let argv = src.attach_command(&target.session.name, target.window);
+        if let Err(e) = tokio::process::Command::new(&argv[0])
+            .args(&argv[1..])
+            .status()
+            .await
+        {
+            eprintln!("xmux: attach failed: {e}");
+        }
+    }
+}
+
+/// The real picker: runs the full-screen switcher and maps its result to a target.
+struct RealPicker {
+    ops: Arc<dyn crate::ui::switcher::Ops>,
+    control: Option<PathBuf>,
+}
+#[async_trait]
+impl Picker for RealPicker {
+    async fn pick(&self) -> Option<Target> {
+        let result = match run_switcher(self.ops.clone(), self.control.clone()).await {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("xmux: {e}");
+                return None;
+            }
+        };
+        let chosen = result.chosen?;
+        Some(Target {
+            session: chosen,
+            window: (result.window >= 0).then_some(result.window),
+        })
+    }
+}
+
+/// The `xmux` (no subcommand) entry: the persistent cockpit. Owns the terminal,
+/// runs one mux-client child at a time, and serves a control socket so the in-mux
+/// popup can signal a cross-host switch that re-attaches with no picker between.
+pub async fn run_cockpit(env: Arc<Env>) -> i32 {
+    if attach::in_mux() {
+        eprintln!(
+            "xmux: warning — inside a mux; attaching is refused here. Run xmux as your terminal entry."
+        );
+    }
+    let _ = std::fs::create_dir_all(&env.xmux_dir);
+    let pending: Pending = Arc::new(Mutex::new(None));
+    let sock = control::cockpit_socket_path(&env.xmux_dir, std::process::id());
+    let _handle = serve_cockpit(&env, sock, pending.clone());
+
+    let attacher = RealAttacher { env: env.clone() };
+    let picker = RealPicker {
+        ops: env.ops(),
+        control: pick_control_path(&env),
+    };
+    cockpit_loop(&attacher, &picker, pending, None).await
+}
+
+/// The picker's control socket path (`ctl-<pid>.sock`), unless `XMUX_CONTROL=0`.
+fn pick_control_path(env: &Env) -> Option<PathBuf> {
+    if std::env::var("XMUX_CONTROL").as_deref() == Ok("0") {
+        return None;
+    }
+    let _ = std::fs::create_dir_all(&env.xmux_dir);
+    Some(control::socket_path(&env.xmux_dir, std::process::id()))
 }
 
 #[cfg(test)]
@@ -309,5 +471,32 @@ mod tests {
         let rc = cockpit_loop(&attacher, &picker, pending.clone(), None).await;
         assert_eq!(rc, 0);
         assert_eq!(*attacher.log.lock().unwrap(), vec!["local/work"]);
+    }
+
+    #[tokio::test]
+    async fn cockpit_socket_switch_sets_pending() {
+        let dir = std::env::temp_dir().join(format!("xmux-cockpit-sock-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let sock = crate::control::cockpit_socket_path(&dir, std::process::id());
+        let _ = std::fs::remove_file(&sock);
+
+        let name = crate::control::endpoint_name(&sock).unwrap();
+        let listener = ListenerOptions::new().name(name).create_tokio().unwrap();
+        #[cfg(windows)]
+        let _ = std::fs::write(&sock, b"");
+
+        let pending: Pending = Arc::new(Mutex::new(None));
+        let known: KnownSource = Arc::new(|s: &str| s == "jupiter06");
+        let task = tokio::spawn(cockpit_accept(listener, pending.clone(), known));
+
+        let mut client = crate::control::Client::dial(&sock).await.unwrap();
+        assert_eq!(client.do_cmd("ping").await.unwrap(), "pong");
+        assert_eq!(client.do_cmd("switch jupiter06/api").await.unwrap(), "ok");
+
+        let got = pending.lock().unwrap().clone().expect("switch sets pending");
+        assert_eq!(got.session.address(), "jupiter06/api");
+
+        task.abort();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

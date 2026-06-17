@@ -148,13 +148,15 @@ pub fn endpoint_name(path: &Path) -> std::io::Result<Name<'static>> {
     }
     #[cfg(windows)]
     {
-        let pid = pid_from_sock(path).ok_or_else(|| {
+        // Local sockets are named pipes on Windows; derive the namespaced name
+        // from the file stem so both `ctl-<pid>` and `cockpit-<pid>` map cleanly.
+        let stem = path.file_stem().and_then(|s| s.to_str()).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
-                "control: socket name is not ctl-<pid>.sock",
+                "control: socket path has no usable file stem",
             )
         })?;
-        format!("xmux-ctl-{pid}").to_ns_name::<GenericNamespaced>()
+        format!("xmux-{stem}").to_ns_name::<GenericNamespaced>()
     }
 }
 
@@ -197,6 +199,12 @@ impl Client {
 /// Returns the control socket path for a given pid in `dir`.
 pub fn socket_path(dir: &Path, pid: u32) -> PathBuf {
     dir.join(format!("ctl-{pid}.sock"))
+}
+
+/// Returns the cockpit control socket path for a given pid in `dir`. Distinct
+/// from [`socket_path`] (the switcher's `ctl-*` socket) so the two coexist.
+pub fn cockpit_socket_path(dir: &Path, pid: u32) -> PathBuf {
+    dir.join(format!("cockpit-{pid}.sock"))
 }
 
 /// Extracts the pid embedded in a `ctl-<pid>.sock` filename, or `None`.
@@ -347,6 +355,14 @@ mod tests {
             socket_path(Path::new("/some/dir"), 1234),
             Path::new("/some/dir").join("ctl-1234.sock")
         );
+    }
+
+    #[test]
+    fn endpoint_name_accepts_cockpit_socket() {
+        // A cockpit-<pid>.sock must build a valid endpoint (no panic / error) on
+        // every platform, just like ctl-<pid>.sock.
+        let p = Path::new("/some/dir/cockpit-1234.sock");
+        assert!(endpoint_name(p).is_ok());
     }
 
     #[test]
