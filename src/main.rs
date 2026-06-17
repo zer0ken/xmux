@@ -144,10 +144,12 @@ async fn run_popup(env: Arc<Env>) -> i32 {
         }
         cockpit::PopupAction::SignalCockpit => {
             // Cross-server: switch-client cannot cross mux servers. Signal the
-            // cockpit to re-attach the target, then detach this client — the
-            // cockpit regains the terminal and attaches with no picker between.
+            // cockpit to re-attach the target (landing on the picked window), then
+            // detach this client — the cockpit regains the terminal and attaches
+            // with no picker between.
             let sock = cockpit_sock.expect("SignalCockpit implies a pointer");
-            match cockpit::signal_cockpit_switch(&sock, &chosen.address()).await {
+            let window = (result.window >= 0).then_some(result.window);
+            match cockpit::signal_cockpit_switch(&sock, &chosen.address(), window).await {
                 Ok(true) => {
                     let argv = mux::detach_client(&env.local_bin);
                     if let Err(e) = attach::run_attach(&OsExecer, &argv) {
@@ -161,6 +163,9 @@ async fn run_popup(env: Arc<Env>) -> i32 {
                     1
                 }
                 Err(_) => {
+                    // The pointer named a dead cockpit (e.g. hard-killed): clear it
+                    // so the next popup takes the honest no-cockpit path at once.
+                    cockpit::remove_cockpit_pointer(&env.xmux_dir);
                     eprintln!(
                         "xmux: cross-host switch needs the xmux cockpit; start your terminal with `xmux`"
                     );

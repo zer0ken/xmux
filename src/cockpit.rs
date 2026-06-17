@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use interprocess::local_socket::tokio::{Listener, Stream};
@@ -52,6 +53,28 @@ pub fn remove_cockpit_pointer(xmux_dir: &Path) {
     let _ = std::fs::remove_file(cockpit_pointer_path(xmux_dir));
 }
 
+/// Removes the pointer only if it still names `sock`, so a sibling cockpit's
+/// pointer is not orphaned when this one exits.
+pub fn remove_cockpit_pointer_if_ours(xmux_dir: &Path, sock: &Path) {
+    if read_cockpit_pointer(xmux_dir).as_deref() == Some(sock) {
+        remove_cockpit_pointer(xmux_dir);
+    }
+}
+
+/// Appends a line to `~/.xmux/cockpit.log`. The cockpit cannot render UI between
+/// attaches (the picker owns the screen next), so attach/bind failures are
+/// recorded here to survive the picker's screen clears.
+fn log_cockpit(xmux_dir: &Path, msg: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(xmux_dir.join("cockpit.log"))
+    {
+        let _ = writeln!(f, "{msg}");
+    }
+}
+
 /// Handles one cockpit control request line. Returns the reply payload and, for a
 /// valid `switch <source>/<name>` naming a known source, the target the loop
 /// should attach next.
@@ -62,18 +85,32 @@ pub fn dispatch_cockpit(
     let req = control::parse_request(line);
     match req.verb.as_str() {
         "ping" => ("pong".to_string(), None),
-        "switch" => match session::parse_target(req.arg.trim()) {
-            Ok(s) if known_source(&s.source) => (
-                "ok".to_string(),
-                Some(Target {
-                    session: s,
-                    window: None,
-                }),
-            ),
-            Ok(s) => (format!("err: unknown source {:?}", s.source), None),
-            Err(e) => (format!("err: {e}"), None),
-        },
+        "switch" => {
+            let (window, addr) = parse_switch_arg(&req.arg);
+            match session::parse_target(addr.trim()) {
+                Ok(s) if known_source(&s.source) => {
+                    ("ok".to_string(), Some(Target { session: s, window }))
+                }
+                Ok(s) => (format!("err: unknown source {:?}", s.source), None),
+                Err(e) => (format!("err: {e}"), None),
+            }
+        }
         _ => ("err: unknown command".to_string(), None),
+    }
+}
+
+/// Parses a `switch` argument. The popup sends `<window> <addr>`, where `<window>`
+/// is a window index or `-` for none; a bare `<addr>` (no leading window token) is
+/// also accepted so the address — which may contain spaces — is taken verbatim
+/// whenever the first token is not a window spec.
+fn parse_switch_arg(arg: &str) -> (Option<i64>, &str) {
+    match arg.split_once(' ') {
+        Some(("-", rest)) => (None, rest),
+        Some((head, rest)) => match head.parse::<i64>() {
+            Ok(n) => (Some(n), rest),
+            Err(_) => (None, arg),
+        },
+        None => (None, arg),
     }
 }
 
@@ -115,12 +152,37 @@ pub trait Picker: Send + Sync {
     async fn pick(&self) -> Option<Target>;
 }
 
+/// A switch is honored only if the loop reaches it within this window of being
+/// queued. Bounds a leak: if a popup queues a switch but its detach never lands,
+/// a much-later unrelated child exit must not trigger a stale teleport. The
+/// normal popup→ok→detach→child-exit path completes in well under a second.
+const SWITCH_FRESH_WINDOW: Duration = Duration::from_secs(15);
+
+/// A recorded cross-server switch and the instant it was queued.
+#[derive(Debug, Clone)]
+pub struct PendingSwitch {
+    pub target: Target,
+    pub at: Instant,
+}
+
 /// A recorded cross-server switch, shared between the accept task and the loop.
-pub type Pending = Arc<Mutex<Option<Target>>>;
+pub type Pending = Arc<Mutex<Option<PendingSwitch>>>;
+
+/// Whether a switch queued at `at` is still fresh as of `now`.
+fn switch_is_fresh(at: Instant, now: Instant, window: Duration) -> bool {
+    now.saturating_duration_since(at) < window
+}
+
+/// Drains the pending cell, returning the target only if the queued switch is
+/// still fresh; a stale switch is consumed (cleared) but not acted on.
+fn take_fresh_switch(pending: &Pending) -> Option<Target> {
+    let p = pending.lock().unwrap().take()?;
+    switch_is_fresh(p.at, Instant::now(), SWITCH_FRESH_WINDOW).then_some(p.target)
+}
 
 /// The cockpit supervisor loop. Attaches the current target; when the child
-/// exits, a recorded switch re-attaches with no picker (the seamless cross-host
-/// switch), otherwise the picker chooses the next target (or quits).
+/// exits, a fresh recorded switch re-attaches with no picker (the seamless
+/// cross-host switch), otherwise the picker chooses the next target (or quits).
 pub async fn cockpit_loop(
     attacher: &dyn Attacher,
     picker: &dyn Picker,
@@ -136,8 +198,7 @@ pub async fn cockpit_loop(
     };
     loop {
         attacher.attach(&target).await;
-        let next = pending.lock().unwrap().take();
-        target = match next {
+        target = match take_fresh_switch(&pending) {
             Some(t) => t,
             None => match picker.pick().await {
                 Some(t) => t,
@@ -147,11 +208,17 @@ pub async fn cockpit_loop(
     }
 }
 
-/// Tells the cockpit at `sock` to switch to `addr`. Returns `Ok(true)` when the
-/// cockpit acks `ok`, `Ok(false)` on any other reply, `Err` if no cockpit answers.
-pub async fn signal_cockpit_switch(sock: &Path, addr: &str) -> anyhow::Result<bool> {
+/// Tells the cockpit at `sock` to switch to `addr`, landing on `window` when set.
+/// Returns `Ok(true)` when the cockpit acks `ok`, `Ok(false)` on any other reply,
+/// `Err` if no cockpit answers. The wire form is `switch <window|-> <addr>`.
+pub async fn signal_cockpit_switch(
+    sock: &Path,
+    addr: &str,
+    window: Option<i64>,
+) -> anyhow::Result<bool> {
+    let w = window.map_or_else(|| "-".to_string(), |n| n.to_string());
     let mut client = control::Client::dial(sock).await?;
-    let reply = client.do_cmd(&format!("switch {addr}")).await?;
+    let reply = client.do_cmd(&format!("switch {w} {addr}")).await?;
     Ok(reply.trim() == "ok")
 }
 
@@ -180,7 +247,10 @@ async fn handle_cockpit_conn(conn: Stream, pending: Pending, known: KnownSource)
         let known_fn = |s: &str| (known)(s);
         let (reply, target) = dispatch_cockpit(&line, &known_fn);
         if let Some(t) = target {
-            *pending.lock().unwrap() = Some(t);
+            *pending.lock().unwrap() = Some(PendingSwitch {
+                target: t,
+                at: Instant::now(),
+            });
         }
         if control::write_frame(&mut buf, &reply).await.is_err() {
             return;
@@ -198,7 +268,7 @@ impl Drop for CockpitHandle {
     fn drop(&mut self) {
         self.task.abort();
         let _ = std::fs::remove_file(&self.sock);
-        remove_cockpit_pointer(&self.xmux_dir);
+        remove_cockpit_pointer_if_ours(&self.xmux_dir, &self.sock);
     }
 }
 
@@ -206,8 +276,20 @@ impl Drop for CockpitHandle {
 /// returns `None` (the cockpit still runs; cross-host-from-popup is unavailable).
 fn serve_cockpit(env: &Arc<Env>, sock: PathBuf, pending: Pending) -> Option<CockpitHandle> {
     let _ = std::fs::remove_file(&sock);
-    let name = control::endpoint_name(&sock).ok()?;
-    let listener = ListenerOptions::new().name(name).create_tokio().ok()?;
+    let name = match control::endpoint_name(&sock) {
+        Ok(n) => n,
+        Err(e) => {
+            log_cockpit(&env.xmux_dir, &format!("cockpit socket name error: {e}"));
+            return None;
+        }
+    };
+    let listener = match ListenerOptions::new().name(name).create_tokio() {
+        Ok(l) => l,
+        Err(e) => {
+            log_cockpit(&env.xmux_dir, &format!("cockpit socket bind failed: {e}"));
+            return None;
+        }
+    };
     #[cfg(windows)]
     let _ = std::fs::write(&sock, b"");
     let _ = write_cockpit_pointer(&env.xmux_dir, &sock);
@@ -229,12 +311,17 @@ struct RealAttacher {
 #[async_trait]
 impl Attacher for RealAttacher {
     async fn attach(&self, target: &Target) {
+        let dir = &self.env.xmux_dir;
+        let addr = target.session.address();
         let Some(src) = self.env.by_alias.get(&target.session.source).cloned() else {
-            eprintln!("xmux: unknown source {:?}", target.session.source);
+            let m = format!("attach {addr} failed: unknown source");
+            eprintln!("xmux: {m}");
+            log_cockpit(dir, &m);
             return;
         };
         if let Err(e) = attach::nest_guard(attach::in_mux()) {
             eprintln!("xmux: {e}");
+            log_cockpit(dir, &format!("attach {addr} refused: {e}"));
             return;
         }
         // Local pre-selects the window with an instant local command; a remote
@@ -245,12 +332,24 @@ impl Attacher for RealAttacher {
             }
         }
         let argv = src.attach_command(&target.session.name, target.window);
-        if let Err(e) = tokio::process::Command::new(&argv[0])
+        // A non-zero exit (e.g. ssh 255 for an unreachable remote) is a failed
+        // switch, not silence — record it so it is not lost behind the picker.
+        match tokio::process::Command::new(&argv[0])
             .args(&argv[1..])
             .status()
             .await
         {
-            eprintln!("xmux: attach failed: {e}");
+            Ok(st) if st.success() => {}
+            Ok(st) => {
+                let m = format!("attach {addr} failed: child exited {st}");
+                eprintln!("xmux: {m}");
+                log_cockpit(dir, &m);
+            }
+            Err(e) => {
+                let m = format!("attach {addr} failed: {e}");
+                eprintln!("xmux: {m}");
+                log_cockpit(dir, &m);
+            }
         }
     }
 }
@@ -282,15 +381,25 @@ impl Picker for RealPicker {
 /// runs one mux-client child at a time, and serves a control socket so the in-mux
 /// popup can signal a cross-host switch that re-attaches with no picker between.
 pub async fn run_cockpit(env: Arc<Env>) -> i32 {
-    if attach::in_mux() {
-        eprintln!(
-            "xmux: warning — inside a mux; attaching is refused here. Run xmux as your terminal entry."
-        );
+    // The cockpit owns the terminal and attaches mux clients as children; nested
+    // inside a mux every attach is refused, leaving only a doomed picker loop. So
+    // running it inside a mux is refused outright, not warned.
+    if let Err(e) = attach::nest_guard(attach::in_mux()) {
+        eprintln!("xmux: {e}");
+        eprintln!("xmux: the cockpit must be your terminal entry, not run inside a mux.");
+        return 2;
     }
     let _ = std::fs::create_dir_all(&env.xmux_dir);
     let pending: Pending = Arc::new(Mutex::new(None));
     let sock = control::cockpit_socket_path(&env.xmux_dir, std::process::id());
-    let _handle = serve_cockpit(&env, sock, pending.clone());
+    let handle = serve_cockpit(&env, sock, pending.clone());
+    if handle.is_none() {
+        log_cockpit(
+            &env.xmux_dir,
+            "cockpit control socket unavailable; cross-host popup switching disabled",
+        );
+    }
+    let _handle = handle;
 
     let attacher = RealAttacher { env: env.clone() };
     let picker = RealPicker {
@@ -313,6 +422,7 @@ fn pick_control_path(env: &Env) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::time::{Duration, Instant};
 
     fn tmp(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("xmux-cockpit-{tag}-{}", std::process::id()));
@@ -364,6 +474,52 @@ mod tests {
 
         // Unknown verb.
         assert_eq!(dispatch_cockpit("bogus", known).0, "err: unknown command");
+    }
+
+    #[test]
+    fn dispatch_switch_carries_window() {
+        let known = |s: &str| s == "jupiter06";
+        let known: &dyn Fn(&str) -> bool = &known;
+
+        // Window-first wire form: "<window> <addr>".
+        let (reply, target) = dispatch_cockpit("switch 3 jupiter06/api", known);
+        assert_eq!(reply, "ok");
+        let t = target.unwrap();
+        assert_eq!(t.session.address(), "jupiter06/api");
+        assert_eq!(t.window, Some(3));
+
+        // Explicit no-window sentinel.
+        let (_, target) = dispatch_cockpit("switch - jupiter06/api", known);
+        assert_eq!(target.unwrap().window, None);
+
+        // Bare address (no leading window token) still works, window None.
+        let (_, target) = dispatch_cockpit("switch jupiter06/api", known);
+        assert_eq!(target.unwrap().window, None);
+    }
+
+    #[test]
+    fn switch_freshness_window() {
+        let at = Instant::now();
+        let w = Duration::from_secs(15);
+        assert!(switch_is_fresh(at, at + Duration::from_secs(5), w));
+        assert!(!switch_is_fresh(at, at + Duration::from_secs(20), w));
+        // A `now` earlier than `at` saturates to zero elapsed → still fresh.
+        assert!(switch_is_fresh(at, at, w));
+    }
+
+    #[test]
+    fn pointer_removed_only_if_ours() {
+        let dir = tmp("ptr-ours");
+        let ours = dir.join("cockpit-111.sock");
+        let theirs = dir.join("cockpit-222.sock");
+        write_cockpit_pointer(&dir, &ours).unwrap();
+        // A different cockpit's exit must not clear our pointer.
+        remove_cockpit_pointer_if_ours(&dir, &theirs);
+        assert_eq!(read_cockpit_pointer(&dir), Some(ours.clone()));
+        // Our own exit clears it.
+        remove_cockpit_pointer_if_ours(&dir, &ours);
+        assert!(read_cockpit_pointer(&dir).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -424,7 +580,10 @@ mod tests {
             async fn attach(&self, t: &Target) {
                 self.log.lock().unwrap().push(t.session.address());
                 let inj = self.inject.lock().unwrap().remove(0);
-                *self.pending.lock().unwrap() = inj;
+                *self.pending.lock().unwrap() = inj.map(|target| PendingSwitch {
+                    target,
+                    at: Instant::now(),
+                });
             }
         }
         struct QuitPicker;
@@ -488,6 +647,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn loop_discards_stale_pending() {
+        use std::sync::Mutex;
+        // During the first attach a STALE switch is queued; the loop must discard
+        // it (not re-attach) and fall to the picker, which quits.
+        struct StaleAttacher {
+            log: Mutex<Vec<String>>,
+            pending: Pending,
+            armed: Mutex<bool>,
+        }
+        #[async_trait::async_trait]
+        impl Attacher for StaleAttacher {
+            async fn attach(&self, t: &Target) {
+                self.log.lock().unwrap().push(t.session.address());
+                let mut armed = self.armed.lock().unwrap();
+                if !*armed {
+                    *armed = true;
+                    if let Some(old) = Instant::now().checked_sub(Duration::from_secs(3600)) {
+                        *self.pending.lock().unwrap() = Some(PendingSwitch {
+                            target: target("jupiter06", "api"),
+                            at: old,
+                        });
+                    }
+                }
+            }
+        }
+        struct QuitPicker;
+        #[async_trait::async_trait]
+        impl Picker for QuitPicker {
+            async fn pick(&self) -> Option<Target> {
+                None
+            }
+        }
+        let pending: Pending = std::sync::Arc::new(Mutex::new(None));
+        let attacher = StaleAttacher {
+            log: Mutex::new(Vec::new()),
+            pending: pending.clone(),
+            armed: Mutex::new(false),
+        };
+        let rc = cockpit_loop(
+            &attacher,
+            &QuitPicker,
+            pending.clone(),
+            Some(target("local", "work")),
+        )
+        .await;
+        assert_eq!(rc, 0);
+        // The stale switch was discarded: only the initial attach ran.
+        assert_eq!(*attacher.log.lock().unwrap(), vec!["local/work"]);
+    }
+
+    #[tokio::test]
     async fn cockpit_socket_switch_sets_pending() {
         let dir = std::env::temp_dir().join(format!("xmux-cockpit-sock-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
@@ -512,7 +722,7 @@ mod tests {
             .unwrap()
             .clone()
             .expect("switch sets pending");
-        assert_eq!(got.session.address(), "jupiter06/api");
+        assert_eq!(got.target.session.address(), "jupiter06/api");
 
         task.abort();
         let _ = std::fs::remove_dir_all(&dir);
@@ -533,14 +743,23 @@ mod tests {
         let known: KnownSource = Arc::new(|s: &str| s == "jupiter06");
         let task = tokio::spawn(cockpit_accept(listener, pending.clone(), known));
 
-        let ok = signal_cockpit_switch(&sock, "jupiter06/api").await.unwrap();
+        let ok = signal_cockpit_switch(&sock, "jupiter06/api", None)
+            .await
+            .unwrap();
         assert!(ok, "a known target acks ok");
         assert_eq!(
-            pending.lock().unwrap().clone().unwrap().session.address(),
+            pending
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap()
+                .target
+                .session
+                .address(),
             "jupiter06/api"
         );
 
-        let rejected = signal_cockpit_switch(&sock, "nope/x").await.unwrap();
+        let rejected = signal_cockpit_switch(&sock, "nope/x", None).await.unwrap();
         assert!(!rejected, "an unknown source is not ok");
 
         task.abort();
