@@ -88,22 +88,31 @@ re-attaching with no intermediate UI.
   pointer file `~/.xmux/cockpit` containing the live socket path. The cockpit
   removes both on exit.
 - A new dispatch (distinct from the switcher's key/dump dispatch) handling:
-  - `switch <source>/<name>` → parse + validate the source is known → store the
-    pending target → reply `ok`; an unknown/invalid target replies `err: …`.
+  - `switch <window|-> <source>/<name>` → parse the leading window token (a window
+    index, or `-` for none), validate the source is known → store the pending
+    target (with window) → reply `ok`; an unknown/invalid target replies `err: …`.
+    A bare `switch <source>/<name>` (no leading window token) is also accepted, so
+    the address — which may contain spaces — is taken verbatim when the first
+    token is not a window spec.
   - `ping` → `pong` (liveness, used by the popup to confirm a live cockpit).
-- The pending target is shared with the loop via an `Arc<Mutex<Option<Session>>>`
-  the accept task writes and the loop drains after each child exit. The popup
-  receives `ok` before it detaches, so the target is always stored before the
-  child can exit (no race).
+- The pending target is shared with the loop via an `Arc<Mutex<Option<PendingSwitch>>>`
+  (target + the `Instant` it was queued) the accept task writes and the loop
+  drains after each child exit. The popup receives `ok` before it detaches, so the
+  target is stored before the child can exit. A queued switch older than a 15s
+  freshness window is discarded on drain, so an abandoned/failed switch cannot
+  trigger a stale cross-host teleport on a much-later unrelated child exit.
 
 ### `run_popup` (reworked cross-server branch)
 
 - Same-server pick (`chosen.source` is the local source): `switch-client`
   (with `select-window` pre-select) — unchanged, instant.
 - Cross-server pick: resolve the cockpit via the `~/.xmux/cockpit` pointer; if a
-  live cockpit answers, send `switch <addr>`; on `ok`, `detach-client`. If no
-  live cockpit, print a clear message (cross-host switch needs the xmux cockpit;
-  start the terminal with `xmux`) and exit non-zero — never a silent loss.
+  live cockpit answers, send `switch <window|-> <addr>` (carrying the picked
+  window); on `ok`, `detach-client`. If no live cockpit (no pointer, or the dial
+  fails on a stale pointer), print a clear message (cross-host switch needs the
+  xmux cockpit; start the terminal with `xmux`) and exit non-zero — never a silent
+  loss. A failed dial also removes the stale pointer so the next popup takes the
+  honest no-cockpit path at once.
 
 ### Cockpit discovery (new, small, in `control.rs` or a `cockpit` module)
 
@@ -126,7 +135,7 @@ re-attaching with no intermediate UI.
 [cockpit] attach local/work ─ child owns terminal ─────────────────┐
    user triggers popup (display-popup -E "xmux popup")              │
 [popup] picks remote jupiter06/api                                  │
-[popup] read ~/.xmux/cockpit → dial socket → "switch jupiter06/api" │
+[popup] read ~/.xmux/cockpit → dial socket → "switch - jupiter06/api" │
 [cockpit socket] store pending=jupiter06/api → reply "ok" ──────────┤
 [popup] detach-client ──────────────────────────────────────────── child exits
 [cockpit] child.wait() returns → take pending → attach jupiter06/api
@@ -135,14 +144,37 @@ re-attaching with no intermediate UI.
 
 ## Error handling and degradation
 
+- Running the cockpit inside a mux is refused (exit 2 with guidance): nested,
+  every attach is nest-guard-refused, so the only alternative — warn-and-continue —
+  is a doomed picker-flap loop. The cockpit must be the terminal's entry point.
 - No cockpit socket / dead socket on a cross-server popup pick → explicit message,
-  non-zero exit. Predictable, never a silent discard.
-- Unknown source in `switch <addr>` → `err`, popup surfaces it, no detach.
-- Cockpit socket bind failure → the cockpit still runs (cross-server-from-popup
-  is unavailable, but native detach→picker still works); logged once.
-- A recorded pending target that is never consumed (popup's detach failed) is the
-  user's intended target anyway; it is consumed on the next child exit. The
-  cockpit clears pending whenever it falls through to the picker.
+  non-zero exit, and the stale pointer is removed. Predictable, never a silent
+  discard.
+- Unknown source in `switch … <addr>` → `err`, popup surfaces it, no detach.
+- The cockpit cannot render UI between attaches (the picker owns the screen next),
+  so attach failures and the socket-bind failure are recorded in
+  `~/.xmux/cockpit.log` to survive the picker's screen clears. A non-zero exit of
+  the attach child (e.g. ssh 255 for an unreachable remote) is treated as a failed
+  switch and logged — not silently swallowed — and the cockpit falls back to the
+  picker so the user can re-pick.
+- A queued switch is bounded by a 15s freshness window: an abandoned switch
+  (popup killed / detach failed) cannot teleport the user on a much-later child
+  exit. The cockpit clears pending whenever it falls through to the picker.
+- The cockpit pointer is removed on exit only if it still names this cockpit, so a
+  sibling cockpit's pointer is not orphaned.
+
+### Accepted limitations (single-cockpit-per-machine model)
+
+- The pointer is a single well-known file: with two cockpits on one machine, a
+  popup signals whichever cockpit wrote the pointer last (possible misroute). The
+  model assumes one cockpit owns the machine's switching; per-terminal addressing
+  is out of scope (the popup's environment does not propagate through
+  `display-popup`).
+- `ok` means "queued," not "committed": if the cockpit is killed in the sub-second
+  window between `ok` and the child exit, the switch is dropped — but the cockpit
+  owning the terminal is gone anyway, so there is nothing to switch.
+- Concurrent/rapid switches are last-write-wins; the freshness window plus a single
+  drain per child exit keep this bounded to the user's most recent pick.
 
 ## Testing strategy
 
