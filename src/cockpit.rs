@@ -147,6 +147,14 @@ pub async fn cockpit_loop(
     }
 }
 
+/// Tells the cockpit at `sock` to switch to `addr`. Returns `Ok(true)` when the
+/// cockpit acks `ok`, `Ok(false)` on any other reply, `Err` if no cockpit answers.
+pub async fn signal_cockpit_switch(sock: &Path, addr: &str) -> anyhow::Result<bool> {
+    let mut client = control::Client::dial(sock).await?;
+    let reply = client.do_cmd(&format!("switch {addr}")).await?;
+    Ok(reply.trim() == "ok")
+}
+
 /// Tests whether a source alias is known to this cockpit (so `switch` to an
 /// unknown source is rejected).
 type KnownSource = Arc<dyn Fn(&str) -> bool + Send + Sync>;
@@ -495,6 +503,35 @@ mod tests {
 
         let got = pending.lock().unwrap().clone().expect("switch sets pending");
         assert_eq!(got.session.address(), "jupiter06/api");
+
+        task.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn signal_cockpit_switch_acks_and_sets_pending() {
+        let dir = std::env::temp_dir().join(format!("xmux-cockpit-signal-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let sock = crate::control::cockpit_socket_path(&dir, std::process::id().wrapping_add(11));
+        let _ = std::fs::remove_file(&sock);
+        let name = crate::control::endpoint_name(&sock).unwrap();
+        let listener = ListenerOptions::new().name(name).create_tokio().unwrap();
+        #[cfg(windows)]
+        let _ = std::fs::write(&sock, b"");
+
+        let pending: Pending = Arc::new(Mutex::new(None));
+        let known: KnownSource = Arc::new(|s: &str| s == "jupiter06");
+        let task = tokio::spawn(cockpit_accept(listener, pending.clone(), known));
+
+        let ok = signal_cockpit_switch(&sock, "jupiter06/api").await.unwrap();
+        assert!(ok, "a known target acks ok");
+        assert_eq!(
+            pending.lock().unwrap().clone().unwrap().session.address(),
+            "jupiter06/api"
+        );
+
+        let rejected = signal_cockpit_switch(&sock, "nope/x").await.unwrap();
+        assert!(!rejected, "an unknown source is not ok");
 
         task.abort();
         let _ = std::fs::remove_dir_all(&dir);

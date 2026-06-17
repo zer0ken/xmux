@@ -8,10 +8,12 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 
 use xmux::attach::{self, OsExecer};
+use xmux::cockpit;
 use xmux::control;
 use xmux::env::{self, ls_lines, Env};
 use xmux::jump;
 use xmux::manage;
+use xmux::mux;
 use xmux::session;
 use xmux::source::Source;
 use xmux::ui::run::run_switcher;
@@ -187,25 +189,55 @@ async fn run_popup(env: Arc<Env>) -> i32 {
     let Some(chosen) = result.chosen else {
         return 0;
     };
-    let plan = attach::plan_switch(session::LOCAL_SOURCE, &env.local_bin, &chosen);
-    if plan.teleport {
-        if result.window >= 0 {
-            // Same-server teleport: pre-select the window so switch-client lands on it.
-            if let Some(src) = env.by_alias.get(&chosen.source) {
-                let _ = manage::select_window(src, &chosen.name, result.window).await;
+    let cockpit_sock = cockpit::read_cockpit_pointer(&env.xmux_dir);
+    match cockpit::decide_popup_action(&chosen, session::LOCAL_SOURCE, cockpit_sock.is_some()) {
+        cockpit::PopupAction::SwitchClient => {
+            // Same-server: switch-client repaints the existing client in place.
+            if result.window >= 0 {
+                if let Some(src) = env.by_alias.get(&chosen.source) {
+                    let _ = manage::select_window(src, &chosen.name, result.window).await;
+                }
+            }
+            let argv = mux::switch_client(&env.local_bin, &chosen.name);
+            if let Err(e) = attach::run_attach(&OsExecer, &argv) {
+                eprintln!("xmux: {e}");
+                return 1;
+            }
+            0
+        }
+        cockpit::PopupAction::SignalCockpit => {
+            // Cross-server: switch-client cannot cross mux servers. Signal the
+            // cockpit to re-attach the target, then detach this client — the
+            // cockpit regains the terminal and attaches with no picker between.
+            let sock = cockpit_sock.expect("SignalCockpit implies a pointer");
+            match cockpit::signal_cockpit_switch(&sock, &chosen.address()).await {
+                Ok(true) => {
+                    let argv = mux::detach_client(&env.local_bin);
+                    if let Err(e) = attach::run_attach(&OsExecer, &argv) {
+                        eprintln!("xmux: {e}");
+                        return 1;
+                    }
+                    0
+                }
+                Ok(false) => {
+                    eprintln!("xmux: cockpit rejected the switch");
+                    1
+                }
+                Err(_) => {
+                    eprintln!(
+                        "xmux: cross-host switch needs the xmux cockpit; start your terminal with `xmux`"
+                    );
+                    1
+                }
             }
         }
-    } else {
-        // Cross-server: switch-client cannot cross mux servers. Hand the pick to
-        // the home loop (which regains control once this detach returns) so it
-        // attaches the target directly — a single action, not detach-then-re-pick.
-        let _ = jump::write_pending(&env.xmux_dir, &chosen);
+        cockpit::PopupAction::NoCockpit => {
+            eprintln!(
+                "xmux: cross-host switch needs the xmux cockpit; start your terminal with `xmux`"
+            );
+            1
+        }
     }
-    if let Err(e) = attach::run_attach(&OsExecer, &plan.argv) {
-        eprintln!("xmux: {e}");
-        return 1;
-    }
-    0
 }
 
 /// Prints every reachable session as one `<source>/<name>` line; dead sources go
