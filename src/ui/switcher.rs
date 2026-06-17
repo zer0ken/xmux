@@ -2081,6 +2081,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn filter_then_enter_picks_visible_not_attached_recent() {
+        // Mirrors the live local case: an attached, most-recent session ("live")
+        // plus a throwaway ("xmux-probeL"). Filtering to the throwaway and pressing
+        // Enter — with the cursor auto-selected after the filter (no Home) and a
+        // streamed rescan landing between the filter and the attach — must choose
+        // the throwaway, never the attached/most-recent filtered-out session.
+        let mut h = Harness::from_sources(&["local"]);
+        let stream = || {
+            vec![
+                sess("local", "live", 2, true, 999), // attached, most recent
+                sess("local", "xmux-probeL", 1, false, 50),
+            ]
+        };
+        h.sw.apply_source_result("local".into(), stream(), None);
+        h.ch('/').await;
+        h.sw.set_input_text("probeL");
+        h.key(KeyCode::Enter).await; // apply filter → only xmux-probeL visible
+                                     // A streamed rescan arrives between the filter and the attach (the race the
+                                     // live run hit).
+        h.sw.apply_source_result("local".into(), stream(), None);
+        h.draw();
+        h.key(KeyCode::Enter).await; // attach the selected
+        assert_eq!(
+            h.sw.result().chosen.as_ref().map(|s| s.name.as_str()),
+            Some("xmux-probeL"),
+            "filter+Enter must attach the visible (filtered) session, not the attached most-recent one"
+        );
+    }
+
+    #[tokio::test]
+    async fn filter_then_enter_picks_visible_with_panes_streaming() {
+        // Same as above, but the filtered session's panes stream in between the
+        // filter and the attach (rebuilds the rows with window/pane children under
+        // the auto-selected session) — the attach must still land on it.
+        let mut h = Harness::from_sources(&["local"]);
+        h.sw.apply_source_result(
+            "local".into(),
+            vec![
+                sess("local", "live", 2, true, 999),
+                sess("local", "xmux-probeL", 1, false, 50),
+            ],
+            None,
+        );
+        h.ch('/').await;
+        h.sw.set_input_text("probeL");
+        h.key(KeyCode::Enter).await; // apply filter
+        h.sw.apply_panes(
+            "local/xmux-probeL".into(),
+            vec![win(0, "pwsh", true, vec![pane(0, true, "pwsh")])],
+        );
+        h.draw();
+        h.key(KeyCode::Enter).await;
+        assert_eq!(
+            h.sw.result().chosen.as_ref().map(|s| s.name.as_str()),
+            Some("xmux-probeL"),
+            "panes streaming between filter and attach must not divert the pick"
+        );
+    }
+
+    #[tokio::test]
     async fn host_enter_under_filter_picks_visible_session() {
         let mut h = Harness::from_sources(&["alpha"]);
         h.sw.apply_source_result(
