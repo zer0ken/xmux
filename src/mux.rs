@@ -73,11 +73,6 @@ pub fn window_target(session: &str, window: i64) -> String {
     format!("{session}:{window}")
 }
 
-/// Builds a `"session:window.pane"` target.
-pub fn pane_target(session: &str, window: i64, pane: i64) -> String {
-    format!("{session}:{window}.{pane}")
-}
-
 /// Prints the visible content of the target pane (a pane, or the active pane of
 /// a window/session target) to stdout — the preview source. `-e` includes the
 /// pane's ANSI colour escapes so the preview reproduces its colours.
@@ -88,11 +83,6 @@ pub fn capture_pane(bin: &str, target: &str) -> Vec<String> {
 /// Makes the target window active in its session.
 pub fn select_window(bin: &str, target: &str) -> Vec<String> {
     argv(&[bin, "select-window", "-t", target])
-}
-
-/// Makes the target pane active in its window.
-pub fn select_pane(bin: &str, target: &str) -> Vec<String> {
-    argv(&[bin, "select-pane", "-t", target])
 }
 
 /// Kills session `name`.
@@ -316,7 +306,6 @@ mod tests {
     #[test]
     fn target_builders() {
         assert_eq!(window_target("editor", 2), "editor:2");
-        assert_eq!(pane_target("editor", 2, 1), "editor:2.1");
     }
 
     #[test]
@@ -328,14 +317,10 @@ mod tests {
     }
 
     #[test]
-    fn select_window_pane_argv() {
+    fn select_window_argv() {
         assert_eq!(
             select_window("tmux", "if:3"),
             sv(&["tmux", "select-window", "-t", "if:3"])
-        );
-        assert_eq!(
-            select_pane("tmux", "if:3.2"),
-            sv(&["tmux", "select-pane", "-t", "if:3.2"])
         );
     }
 

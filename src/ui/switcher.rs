@@ -78,6 +78,72 @@ impl Default for SwitchResult {
     }
 }
 
+/// A slow (network) action a keypress queues. The key-handling path only records
+/// it; the event loop runs it off-loop via [`run_op`] and applies the
+/// [`OpResult`], so an ssh round-trip never freezes the UI. Tests pump it inline.
+#[derive(Debug, Clone)]
+pub enum PendingOp {
+    Create { source: String, name: String },
+    Rename { sess: Session, new_name: String },
+    Kill { sess: Session },
+}
+
+/// The outcome of a [`PendingOp`], applied back into the switcher state by
+/// [`Switcher::apply_op_result`].
+#[derive(Debug, Clone)]
+pub enum OpResult {
+    Created {
+        session: Session,
+        panes: Vec<WindowPanes>,
+    },
+    Renamed {
+        source: String,
+        old_name: String,
+        new_name: String,
+    },
+    Killed {
+        address: String,
+    },
+    Failed {
+        message: String,
+    },
+}
+
+/// Runs a queued [`PendingOp`] against the live mux and returns its [`OpResult`].
+/// Pure over `ops` (no switcher state), so it runs in a detached task off the
+/// event loop.
+pub async fn run_op(op: &PendingOp, ops: &dyn Ops) -> OpResult {
+    match op {
+        PendingOp::Create { source, name } => match ops.new_session(source, name).await {
+            Ok(session) => {
+                let panes = ops.panes(&session).await.unwrap_or_default();
+                OpResult::Created { session, panes }
+            }
+            Err(e) => OpResult::Failed {
+                message: format!("create failed: {e}"),
+            },
+        },
+        PendingOp::Rename { sess, new_name } => match ops.rename(sess, new_name).await {
+            Ok(()) => OpResult::Renamed {
+                source: sess.source.clone(),
+                old_name: sess.name.clone(),
+                new_name: new_name.clone(),
+            },
+            Err(e) => OpResult::Failed {
+                message: format!("rename failed: {e}"),
+            },
+        },
+        PendingOp::Kill { sess } => match ops.kill(sess).await {
+            Ok(()) => OpResult::Killed {
+                address: sess.address(),
+            },
+            Err(e) => OpResult::Failed {
+                message: format!("kill failed: {e}"),
+            },
+        },
+    }
+}
+
 /// What a tree row references. Hosts, sessions, and windows are selectable; panes
 /// and loading placeholders are shown for context but never selectable, so the
 /// cursor skips them.
@@ -126,6 +192,11 @@ struct Input {
     mode: InputMode,
     label: String,
     buffer: String,
+    /// The create source / rename target captured when the input opened, so the
+    /// action lands on the node the user was on — not wherever streaming results
+    /// moved the cursor by the time they pressed Enter.
+    source: Option<String>,
+    sess: Option<Session>,
 }
 
 /// The switcher state machine.
@@ -172,6 +243,9 @@ pub struct Switcher {
     show_help: bool,
     result: SwitchResult,
     exit: bool,
+    /// A slow (network) action queued by the last keypress for the event loop to
+    /// run off-loop. `None` unless a create/rename/kill is pending dispatch.
+    pending_op: Option<PendingOp>,
 }
 
 impl Switcher {
@@ -202,6 +276,7 @@ impl Switcher {
             show_help: false,
             result: SwitchResult::default(),
             exit: false,
+            pending_op: None,
         }
     }
 
@@ -485,8 +560,10 @@ impl Switcher {
     // --- preview ------------------------------------------------------------
 
     fn first_session_of(&self, source: &str) -> Option<Session> {
-        self.groups
-            .iter()
+        // Visible (filtered) groups, so a host's Enter/preview picks a session the
+        // user can actually see — never a filtered-out one.
+        self.visible_groups()
+            .into_iter()
             .find(|g| g.source == source && !g.sessions.is_empty())
             .map(|g| g.sessions[0].clone())
     }
@@ -536,6 +613,25 @@ impl Switcher {
         Some(&pane.command)
     }
 
+    /// Re-evaluates self-capture for the already-focused target once pane data
+    /// has streamed in. A target focused before its panes were known starts
+    /// capturable; this flips it to suppressed if the active pane turns out to be
+    /// running xmux, and back to capturable if not.
+    fn refresh_preview_self(&mut self) {
+        if self.preview_target.target.is_empty() {
+            return;
+        }
+        let is_self = self.focused_runs_xmux();
+        if is_self && !self.preview_self {
+            self.preview_self = true;
+            self.dialog = None;
+            self.preview_text = PREVIEW_SELF_NOTE.to_string();
+        } else if !is_self && self.preview_self {
+            self.preview_self = false;
+            self.poll_kick = true; // capture now that it is safe
+        }
+    }
+
     /// Whether the focused target's active pane is running xmux itself.
     fn focused_runs_xmux(&self) -> bool {
         self.current_ref()
@@ -549,6 +645,10 @@ impl Switcher {
             None => PreviewTarget::default(),
         };
         if tgt == self.preview_target {
+            // The cursor did not move, but streamed pane data may have arrived
+            // since this target was first focused — re-check self-capture so a
+            // pane that turns out to run xmux is suppressed (and vice versa).
+            self.refresh_preview_self();
             return;
         }
         self.preview_target = tgt.clone();
@@ -586,6 +686,11 @@ impl Switcher {
     /// Applies a freshly captured preview for `target` (called by the poller). If
     /// the cursor is still on `target`, dismisses the dialog and shows it.
     pub fn apply_capture(&mut self, target: &PreviewTarget, text: Option<String>) {
+        // A capture that was in flight before self-capture suppression engaged
+        // must not overwrite the self note for the now-current target.
+        if self.preview_self && *target == self.preview_target {
+            return;
+        }
         match text {
             Some(text) => {
                 self.preview_cache.insert(preview_key(target), text.clone());
@@ -604,9 +709,9 @@ impl Switcher {
 
     // --- key handling -------------------------------------------------------
 
-    pub async fn handle_key(&mut self, ev: KeyEvent, ops: &dyn Ops) {
+    pub fn handle_key(&mut self, ev: KeyEvent) {
         if self.input.is_some() {
-            self.handle_input_key(ev, ops).await;
+            self.handle_input_key(ev);
             return;
         }
         if self.show_help {
@@ -615,7 +720,7 @@ impl Switcher {
             return;
         }
         if self.pending_kill.is_some() {
-            self.resolve_kill(ev, ops).await;
+            self.resolve_kill(ev);
             return;
         }
         match ev.code {
@@ -689,12 +794,14 @@ impl Switcher {
                     mode,
                     label: " filter: ".into(),
                     buffer: self.filter.clone(),
+                    source: None,
+                    sess: None,
                 });
             }
             InputMode::New => {
-                if self.current_source().is_none() {
+                let Some(source) = self.current_source() else {
                     return;
-                }
+                };
                 if self.current_host_unreachable() {
                     self.flash = "host unreachable — cannot create here".into();
                     return;
@@ -703,6 +810,8 @@ impl Switcher {
                     mode,
                     label: " new session name (empty = auto): ".into(),
                     buffer: String::new(),
+                    source: Some(source),
+                    sess: None,
                 });
             }
             InputMode::Rename => {
@@ -712,7 +821,9 @@ impl Switcher {
                 self.input = Some(Input {
                     mode,
                     label: " rename to: ".into(),
-                    buffer: sess.name,
+                    buffer: sess.name.clone(),
+                    source: None,
+                    sess: Some(sess),
                 });
             }
         }
@@ -722,12 +833,17 @@ impl Switcher {
         self.input = None;
     }
 
-    async fn handle_input_key(&mut self, ev: KeyEvent, ops: &dyn Ops) {
+    fn handle_input_key(&mut self, ev: KeyEvent) {
         match ev.code {
             KeyCode::Enter => {
-                let (mode, val) = {
+                let (mode, val, source, sess) = {
                     let input = self.input.as_ref().expect("input active");
-                    (input.mode, input.buffer.trim().to_string())
+                    (
+                        input.mode,
+                        input.buffer.trim().to_string(),
+                        input.source.clone(),
+                        input.sess.clone(),
+                    )
                 };
                 match mode {
                     InputMode::Filter => {
@@ -736,11 +852,11 @@ impl Switcher {
                         self.rebuild();
                     }
                     InputMode::New => {
-                        self.do_create(&val, ops).await;
+                        self.queue_create(source, &val);
                         self.close_input();
                     }
                     InputMode::Rename => {
-                        self.do_rename(&val, ops).await;
+                        self.queue_rename(sess, &val);
                         self.close_input();
                     }
                 }
@@ -767,32 +883,23 @@ impl Switcher {
         }
     }
 
-    async fn do_create(&mut self, name: &str, ops: &dyn Ops) {
-        let Some(src) = self.current_source() else {
+    /// Queues a create for the event loop. The network call is NOT made here, so
+    /// the key-handling path never blocks on an ssh round-trip; [`run_op`]
+    /// performs it off-loop and [`Switcher::apply_op_result`] folds the result in.
+    fn queue_create(&mut self, source: Option<String>, name: &str) {
+        let Some(source) = source else {
             return;
         };
-        let created = match ops.new_session(&src, name).await {
-            Ok(s) => s,
-            Err(e) => {
-                self.flash = format!("create failed: {e}");
-                return;
-            }
-        };
-        if let Ok(wins) = ops.panes(&created).await {
-            self.panes.insert(created.address(), wins);
-        }
-        let addr = created.address();
-        self.panes_loaded.insert(addr.clone());
-        self.groups = tree::add_session(&self.groups, created);
-        self.rebuild();
-        if let Some(i) = self.row_of_session(&addr) {
-            self.user_moved = true;
-            self.set_selected(i);
-        }
+        self.pending_op = Some(PendingOp::Create {
+            source,
+            name: name.to_string(),
+        });
     }
 
-    async fn do_rename(&mut self, new_name: &str, ops: &dyn Ops) {
-        let Some(sess) = self.current_session() else {
+    /// Queues a rename for the event loop after the synchronous validation that
+    /// needs no network. See [`Switcher::queue_create`] for why the op is deferred.
+    fn queue_rename(&mut self, sess: Option<Session>, new_name: &str) {
+        let Some(sess) = sess else {
             return;
         };
         if new_name.is_empty() || new_name == sess.name {
@@ -803,19 +910,60 @@ impl Switcher {
             self.flash = "rename: name cannot start with '-'".into();
             return;
         }
-        if let Err(e) = ops.rename(&sess, new_name).await {
-            self.flash = format!("rename failed: {e}");
-            return;
+        self.pending_op = Some(PendingOp::Rename {
+            sess,
+            new_name: new_name.to_string(),
+        });
+    }
+
+    /// Applies a completed [`PendingOp`] to the in-memory tree. Runs on the event
+    /// loop once [`run_op`] returns, so the state mutation that used to follow the
+    /// inline network call now follows the off-loop one.
+    pub fn apply_op_result(&mut self, result: OpResult) {
+        match result {
+            OpResult::Created { session, panes } => {
+                let addr = session.address();
+                self.panes.insert(addr.clone(), panes);
+                self.panes_loaded.insert(addr.clone());
+                self.groups = tree::add_session(&self.groups, session);
+                self.rebuild();
+                if let Some(i) = self.row_of_session(&addr) {
+                    self.user_moved = true;
+                    self.set_selected(i);
+                }
+            }
+            OpResult::Renamed {
+                source,
+                old_name,
+                new_name,
+            } => {
+                let old_addr = format!("{source}/{old_name}");
+                let new_addr = format!("{source}/{new_name}");
+                if let Some(wins) = self.panes.remove(&old_addr) {
+                    self.panes.insert(new_addr.clone(), wins);
+                }
+                if self.panes_loaded.remove(&old_addr) {
+                    self.panes_loaded.insert(new_addr);
+                }
+                self.groups = tree::rename_session(&self.groups, &old_addr, &new_name);
+                self.rebuild();
+            }
+            OpResult::Killed { address } => {
+                self.panes.remove(&address);
+                self.panes_loaded.remove(&address);
+                self.groups = tree::remove_session(&self.groups, &address);
+                self.rebuild();
+            }
+            OpResult::Failed { message } => {
+                self.flash = message;
+            }
         }
-        let new_addr = format!("{}/{}", sess.source, new_name);
-        if let Some(wins) = self.panes.remove(&sess.address()) {
-            self.panes.insert(new_addr.clone(), wins);
-        }
-        if self.panes_loaded.remove(&sess.address()) {
-            self.panes_loaded.insert(new_addr);
-        }
-        self.groups = tree::rename_session(&self.groups, &sess.address(), new_name);
-        self.rebuild();
+    }
+
+    /// Takes the action queued by the last keypress, if any, for the event loop to
+    /// run off-loop. Consumes it so it dispatches once.
+    pub fn take_pending_op(&mut self) -> Option<PendingOp> {
+        self.pending_op.take()
     }
 
     fn row_of_session(&self, address: &str) -> Option<usize> {
@@ -832,18 +980,10 @@ impl Switcher {
         }
     }
 
-    async fn resolve_kill(&mut self, ev: KeyEvent, ops: &dyn Ops) {
-        let sess = self.pending_kill.take();
-        if let Some(sess) = sess {
+    fn resolve_kill(&mut self, ev: KeyEvent) {
+        if let Some(sess) = self.pending_kill.take() {
             if matches!(ev.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
-                if let Err(e) = ops.kill(&sess).await {
-                    self.flash = format!("kill failed: {e}");
-                } else {
-                    self.panes.remove(&sess.address());
-                    self.panes_loaded.remove(&sess.address());
-                    self.groups = tree::remove_session(&self.groups, &sess.address());
-                    self.rebuild();
-                }
+                self.pending_op = Some(PendingOp::Kill { sess });
             }
         }
     }
@@ -1299,9 +1439,13 @@ mod tests {
         }
 
         async fn key(&mut self, code: KeyCode) {
-            self.sw
-                .handle_key(KeyEvent::new(code, KeyModifiers::NONE), &self.ops)
-                .await;
+            self.sw.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+            // Pump any queued slow op inline so tests observe its effect, exactly
+            // as the real event loop does (only off-loop there).
+            if let Some(op) = self.sw.take_pending_op() {
+                let r = run_op(&op, &self.ops).await;
+                self.sw.apply_op_result(r);
+            }
             self.draw();
         }
 
@@ -1618,6 +1762,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn streamed_xmux_pane_suppresses_self_preview() {
+        let mut h = Harness::from_sources(&["local"]);
+        h.sw.apply_source_result(
+            "local".into(),
+            vec![sess("local", "editor", 1, false, 100)],
+            None,
+        );
+        // Before panes are known the focused session is capturable.
+        assert!(h.sw.preview_capturable(), "capturable before panes known");
+        // Panes stream in and the focused session's active pane is running xmux.
+        h.sw.apply_panes(
+            "local/editor".into(),
+            vec![win(1, "main", true, vec![pane(1, true, "xmux")])],
+        );
+        assert!(
+            !h.sw.preview_capturable(),
+            "self-capture must be suppressed once streamed panes reveal xmux"
+        );
+    }
+
+    #[tokio::test]
     async fn streaming_auto_advances_to_recent_when_untouched() {
         // While the user has not moved the cursor, each result advances the
         // preselect toward the globally most-recent session.
@@ -1830,6 +1995,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn slow_op_is_deferred_off_the_key_path() {
+        // The key-handling path must NOT perform the network create (which would
+        // freeze the UI on a slow remote); it only queues the op for the loop.
+        let mut h = Harness::new(sample());
+        h.ch('n').await; // open New on jupiter00
+        h.sw.set_input_text("scratch");
+        h.sw
+            .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)); // raw: not pumped
+        assert!(
+            h.ops.created.lock().unwrap().is_empty(),
+            "create must be deferred off the key path, not run inline"
+        );
+        let op = h.sw.take_pending_op().expect("a create was queued for the loop");
+        let r = run_op(&op, &h.ops).await;
+        assert_eq!(
+            h.ops.created.lock().unwrap().len(),
+            1,
+            "the op runs only when the loop pumps it"
+        );
+        h.sw.apply_op_result(r);
+        assert!(
+            h.sw.row_of_session("jupiter00/scratch").is_some(),
+            "applying the result folds the new session into the tree"
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_targets_node_captured_at_open_not_enter() {
+        // Open rename on alpha/a-sess, then let a more-recent session stream in on
+        // another host (which, with an untouched cursor, moves the preselect). The
+        // rename must still target the session captured when the input opened.
+        let mut h = Harness::from_sources(&["alpha", "beta"]);
+        h.sw.apply_source_result(
+            "alpha".into(),
+            vec![sess("alpha", "a-sess", 1, false, 100)],
+            None,
+        );
+        h.ch('R').await; // capture alpha/a-sess
+        h.sw.apply_source_result(
+            "beta".into(),
+            vec![sess("beta", "b-sess", 1, false, 999)],
+            None,
+        );
+        h.sw.set_input_text("renamed");
+        h.key(KeyCode::Enter).await;
+        let renamed = h.ops.renamed.lock().unwrap();
+        assert_eq!(
+            *renamed,
+            vec!["alpha/a-sess->renamed".to_string()],
+            "rename must target the captured node, not where streaming moved the cursor"
+        );
+    }
+
+    #[tokio::test]
     async fn rename_rejects_leading_dash() {
         let mut h = Harness::new(sample());
         h.ch('R').await;
@@ -1838,6 +2057,29 @@ mod tests {
         assert!(
             h.ops.renamed.lock().unwrap().is_empty(),
             "leading-dash rename must be refused"
+        );
+    }
+
+    #[tokio::test]
+    async fn host_enter_under_filter_picks_visible_session() {
+        let mut h = Harness::from_sources(&["alpha"]);
+        h.sw.apply_source_result(
+            "alpha".into(),
+            vec![
+                sess("alpha", "keep-me", 1, false, 50),
+                sess("alpha", "other", 1, false, 999), // more recent but filtered out
+            ],
+            None,
+        );
+        h.ch('/').await;
+        h.sw.set_input_text("keep");
+        h.key(KeyCode::Enter).await; // apply filter → only keep-me visible
+        h.key(KeyCode::Home).await; // host row (alpha)
+        h.key(KeyCode::Enter).await; // choose first VISIBLE session
+        assert_eq!(
+            h.sw.result().chosen.as_ref().map(|s| s.name.as_str()),
+            Some("keep-me"),
+            "host Enter under a filter must pick a visible session, not a filtered-out recent one"
         );
     }
 

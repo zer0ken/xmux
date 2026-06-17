@@ -172,13 +172,25 @@ impl Client {
         })
     }
 
-    /// Sends one request line and returns the framed response payload.
+    /// Sends one request line and returns the framed response payload. The read is
+    /// bounded so `xmux ctl` cannot hang forever on a switcher that never replies.
     pub async fn do_cmd(&mut self, line: &str) -> std::io::Result<String> {
         self.stream
             .write_all(format!("{line}\n").as_bytes())
             .await?;
         self.stream.flush().await?;
-        read_frame(&mut self.stream).await
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            read_frame(&mut self.stream),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "control: response timed out",
+            )),
+        }
     }
 }
 

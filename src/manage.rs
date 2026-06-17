@@ -53,17 +53,6 @@ pub async fn select_window(s: &Source, sess: &str, window: i64) -> Result<(), Ru
     Ok(())
 }
 
-/// Makes a pane active in its window (used before attach so the client lands on
-/// the chosen pane).
-pub async fn select_pane(s: &Source, sess: &str, window: i64, pane: i64) -> Result<(), RunError> {
-    s.run(&mux::select_pane(
-        &s.binary,
-        &mux::pane_target(sess, window, pane),
-    ))
-    .await?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,6 +104,7 @@ mod tests {
             remote: false,
             control_path: String::new(),
             os: "linux".into(),
+            socket: None,
             runner: Some(r),
         }
     }
@@ -220,12 +210,4 @@ mod tests {
         assert_eq!(fr.args(), vec!["select-window", "-t", "editor:3"]);
     }
 
-    #[tokio::test]
-    async fn select_pane_targets() {
-        let fr = RecordingRunner::new("", false);
-        select_pane(&local_source(fr.clone()), "editor", 3, 2)
-            .await
-            .unwrap();
-        assert_eq!(fr.args(), vec!["select-pane", "-t", "editor:3.2"]);
-    }
 }

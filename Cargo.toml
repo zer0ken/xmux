@@ -17,7 +17,9 @@ path = "src/lib.rs"
 opt-level = "z"
 lto = true
 codegen-units = 1
-panic = "abort"
+# Unwind (the default), NOT abort: the TUI relies on RAII Drop (TerminalGuard,
+# ControlHandle) running during a panic to restore the terminal and remove the
+# control socket. `panic = "abort"` would skip those and leave a wrecked terminal.
 strip = true
 
 [dependencies]

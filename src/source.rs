@@ -70,13 +70,16 @@ impl Runner for ExecRunner {
 }
 
 fn is_mux_var(key: &str) -> bool {
-    key.starts_with("TMUX") || key.starts_with("PSMUX")
+    // Exactly tmux's session markers and any psmux var; NOT a blanket `TMUX`
+    // prefix, which would also drop unrelated vars like `TMUX_TMPDIR` (selects
+    // the socket dir) or `TMUXP_*` (the separate tmuxp tool).
+    matches!(key, "TMUX" | "TMUX_PANE") || key.starts_with("PSMUX")
 }
 
-/// Returns env entries (`K=V`) with every `TMUX*`/`PSMUX*` variable removed.
+/// Returns env entries (`K=V`) with every mux session variable removed.
 pub fn mux_clean_env(env: &[String]) -> Vec<String> {
     env.iter()
-        .filter(|e| !(e.starts_with("TMUX") || e.starts_with("PSMUX")))
+        .filter(|e| !is_mux_var(e.split('=').next().unwrap_or(e)))
         .cloned()
         .collect()
 }
@@ -93,6 +96,10 @@ pub struct Source {
     pub control_path: String,
     /// platform of the machine running xmux (gates ControlMaster).
     pub os: String,
+    /// The local mux server socket to target (`-S`), parsed from `$TMUX` when
+    /// xmux itself runs inside a mux (the popup). `None` ⇒ the default socket.
+    /// Only meaningful for the local source.
+    pub socket: Option<String>,
     /// injectable; `None` ⇒ the real exec runner.
     pub runner: Option<Arc<dyn Runner>>,
 }
@@ -129,7 +136,16 @@ impl Source {
     /// name and args to run: local runs the mux directly; remote wraps it in ssh.
     pub fn exec_argv(&self, tty: bool, mux_argv: &[String]) -> (String, Vec<String>) {
         if !self.remote {
-            return (mux_argv[0].clone(), mux_argv[1..].to_vec());
+            let mut args: Vec<String> = Vec::new();
+            if let Some(sock) = self.socket.as_deref().filter(|s| !s.is_empty()) {
+                // Target the exact mux server the user is on (e.g. `tmux -L work`),
+                // not just the default socket — so listing/select agree with the
+                // teleport's switch-client (which inherits the same `$TMUX`).
+                args.push("-S".into());
+                args.push(sock.to_string());
+            }
+            args.extend_from_slice(&mux_argv[1..]);
+            return (mux_argv[0].clone(), args);
         }
         let mut args = self.ssh_args(tty);
         args.push(remote_command(mux_argv));
@@ -138,10 +154,35 @@ impl Source {
 
     /// The argv that hands the terminal over to attach this source's named
     /// session (over `ssh -t` for a remote).
-    pub fn attach_command(&self, name: &str) -> Vec<String> {
-        let (n, a) = self.exec_argv(true, &mux::attach(&self.binary, name));
-        let mut v = vec![n];
-        v.extend(a);
+    ///
+    /// `window` is the window index to land on. For a LOCAL source the caller
+    /// pre-selects it with a separate, instant local command, so it is ignored
+    /// here. For a REMOTE source the selection is folded into the SAME `ssh -t`
+    /// connection (`select-window ; exec attach`) so there is no second
+    /// connection that could hang on a stalled remote or be silently skipped by
+    /// interactive auth, and the chosen window is preserved.
+    pub fn attach_command(&self, name: &str, window: Option<i64>) -> Vec<String> {
+        if !self.remote {
+            let (n, a) = self.exec_argv(true, &mux::attach(&self.binary, name));
+            let mut v = vec![n];
+            v.extend(a);
+            return v;
+        }
+        let remote_cmd = match window {
+            Some(w) => format!(
+                "{} ; exec {}",
+                remote_command(&mux::select_window(
+                    &self.binary,
+                    &mux::window_target(name, w),
+                )),
+                remote_command(&mux::attach(&self.binary, name)),
+            ),
+            None => remote_command(&mux::attach(&self.binary, name)),
+        };
+        let mut args = self.ssh_args(true);
+        args.push(remote_cmd);
+        let mut v = vec!["ssh".to_string()];
+        v.extend(args);
         v
     }
 
@@ -224,19 +265,34 @@ fn is_shell_safe(s: &str) -> bool {
 
 /// Joins a mux argv into a single shell command line, quoting each element, for
 /// execution by the remote shell ssh hands it to.
+///
+/// Assumes the remote login shell is POSIX (`sh`/`bash`/`zsh`), which is the
+/// supported remote target: a remote source runs `tmux`, and tmux remotes are
+/// POSIX. [`quote`]'s single-quote escaping is correct and injection-safe there.
+/// A Windows remote whose ssh default shell is `cmd.exe` is NOT a supported
+/// remote (the local side may be Windows/psmux, but remotes are POSIX); cmd.exe
+/// does not treat single quotes as quoting, so addressing it correctly would need
+/// an explicit per-host shell — a separate feature, intentionally not assumed here.
 pub fn remote_command(argv: &[String]) -> String {
     argv.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")
 }
 
 /// Assembles the source list for a config: local first, then each ssh host
 /// (ssh-config aliases merged with config overrides) in order.
-pub fn build(cfg: &Config, ssh_aliases: &[String], os: &str, xmux_dir: &Path) -> Vec<Source> {
+pub fn build(
+    cfg: &Config,
+    ssh_aliases: &[String],
+    os: &str,
+    xmux_dir: &Path,
+    local_socket: Option<String>,
+) -> Vec<Source> {
     let mut srcs = vec![Source {
         alias: session::LOCAL_SOURCE.to_string(),
         binary: cfg.local_bin(os),
         remote: false,
         control_path: String::new(),
         os: os.to_string(),
+        socket: local_socket,
         runner: None,
     }];
     for spec in cfg.host_specs(ssh_aliases) {
@@ -250,6 +306,7 @@ pub fn build(cfg: &Config, ssh_aliases: &[String], os: &str, xmux_dir: &Path) ->
             remote: true,
             control_path,
             os: os.to_string(),
+            socket: None,
             runner: None,
         });
     }
@@ -296,6 +353,7 @@ mod tests {
             remote,
             control_path: control_path.into(),
             os: os.into(),
+            socket: None,
             runner: None,
         }
     }
@@ -369,6 +427,24 @@ mod tests {
     }
 
     #[test]
+    fn exec_argv_local_with_socket_injects_dash_s() {
+        // A local source on a non-default socket targets it explicitly via -S so
+        // listing/select hit the same server the user's client (switch-client) is on.
+        let mut s = src("local", "tmux", false, "linux", "");
+        s.socket = Some("/tmp/tmux-1000/work".into());
+        let argv: Vec<String> = ["tmux", "list-sessions", "-F", "x"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let (name, args) = s.exec_argv(false, &argv);
+        assert_eq!(name, "tmux");
+        assert_eq!(
+            args,
+            vec!["-S", "/tmp/tmux-1000/work", "list-sessions", "-F", "x"]
+        );
+    }
+
+    #[test]
     fn exec_argv_remote() {
         let s = src("prod", "tmux", true, "linux", "");
         let argv: Vec<String> = ["tmux", "kill-session", "-t", "x"]
@@ -381,17 +457,42 @@ mod tests {
     }
 
     #[test]
-    fn attach_command_local_and_remote() {
+    fn attach_command_local_ignores_window() {
+        // Local pre-selects the window with a separate (instant) local command;
+        // attach_command itself just attaches, with or without a window.
         let loc = src("local", "psmux", false, "", "");
         assert_eq!(
-            loc.attach_command("dev"),
+            loc.attach_command("dev", None),
             vec!["psmux", "attach", "-t", "dev"]
         );
+        assert_eq!(
+            loc.attach_command("dev", Some(3)),
+            vec!["psmux", "attach", "-t", "dev"]
+        );
+    }
+
+    #[test]
+    fn attach_command_remote_without_window() {
         let rem = src("prod", "tmux", true, "linux", "");
-        let got = rem.attach_command("api");
+        let got = rem.attach_command("api", None);
         assert_eq!(got[0], "ssh");
-        assert_eq!(got.last().unwrap(), "tmux attach -t api");
         assert!(got.iter().any(|s| s == "-t"), "{got:?}");
+        assert_eq!(got.last().unwrap(), "tmux attach -t api");
+    }
+
+    #[test]
+    fn attach_command_remote_folds_window_into_one_connection() {
+        // The window pre-selection and the attach run over a SINGLE `ssh -t`, so
+        // there is no second connection to hang on a stalled remote or to lose the
+        // selection to interactive auth.
+        let rem = src("prod", "tmux", true, "linux", "");
+        let got = rem.attach_command("api", Some(2));
+        assert_eq!(got[0], "ssh");
+        assert!(got.iter().any(|s| s == "-t"), "{got:?}");
+        assert_eq!(
+            got.last().unwrap(),
+            "tmux select-window -t 'api:2' ; exec tmux attach -t api"
+        );
     }
 
     #[tokio::test]
@@ -462,6 +563,30 @@ mod tests {
     }
 
     #[test]
+    fn is_mux_var_is_precise() {
+        // Strips exactly tmux's session markers and psmux vars.
+        assert!(is_mux_var("TMUX"));
+        assert!(is_mux_var("TMUX_PANE"));
+        assert!(is_mux_var("PSMUX_SESSION"));
+        // Keeps unrelated vars that merely share the TMUX prefix.
+        assert!(!is_mux_var("TMUXP_LAYOUT")); // tmuxp, a different tool
+        assert!(!is_mux_var("TMUX_TMPDIR")); // selects the socket dir — must survive
+        assert!(!is_mux_var("PATH"));
+    }
+
+    #[test]
+    fn mux_clean_env_keeps_lookalike_vars() {
+        let input: Vec<String> = ["TMUX=/x,1,0", "TMUXP_LAYOUT=tiled", "TMUX_TMPDIR=/tmp/t"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let out = mux_clean_env(&input);
+        assert!(!out.iter().any(|e| e.starts_with("TMUX=")), "{out:?}");
+        assert!(out.iter().any(|e| e == "TMUXP_LAYOUT=tiled"), "{out:?}");
+        assert!(out.iter().any(|e| e == "TMUX_TMPDIR=/tmp/t"), "{out:?}");
+    }
+
+    #[test]
     fn mux_clean_env_strips_mux_vars() {
         let input: Vec<String> = [
             "PATH=/bin",
@@ -488,7 +613,7 @@ mod tests {
     fn build_puts_local_first() {
         let cfg = Config::default();
         let aliases: Vec<String> = ["prod", "db"].iter().map(|s| s.to_string()).collect();
-        let srcs = build(&cfg, &aliases, "linux", Path::new("/home/u/.xmux"));
+        let srcs = build(&cfg, &aliases, "linux", Path::new("/home/u/.xmux"), None);
         assert_eq!(srcs.len(), 3);
         assert_eq!(srcs[0].alias, "local");
         assert!(!srcs[0].remote);

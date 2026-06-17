@@ -51,6 +51,15 @@ fn current_os() -> &'static str {
     std::env::consts::OS
 }
 
+/// The local mux server socket parsed from `$TMUX` (`<socket>,<pid>,<session>`),
+/// so a popup launched inside a non-default mux (e.g. `tmux -L work`) targets
+/// that server rather than the default socket. `None` when not inside a mux (the
+/// home loop) — then the default socket is used.
+fn local_socket(tmux: Option<&str>) -> Option<String> {
+    let path = tmux?.split(',').next()?;
+    (!path.is_empty()).then(|| path.to_string())
+}
+
 /// Loads config and assembles the sources. The returned error is the config-parse
 /// error (non-`None` for a malformed config); the [`Env`] is still usable with
 /// defaults so `doctor` can report the problem instead of dying on it.
@@ -62,7 +71,8 @@ pub fn build_env() -> (Env, Option<anyhow::Error>) {
     let os = current_os();
     let aliases = config::ssh_host_aliases(&ssh_config_path());
     let xmux_dir = xmux_dir_path();
-    let srcs = source::build(&cfg, &aliases, os, &xmux_dir);
+    let local_socket = local_socket(std::env::var("TMUX").ok().as_deref());
+    let srcs = source::build(&cfg, &aliases, os, &xmux_dir, local_socket);
     let by_alias = srcs.iter().map(|s| (s.alias.clone(), s.clone())).collect();
     let local_bin = cfg.local_bin(os);
     (
@@ -239,6 +249,7 @@ mod tests {
             remote,
             control_path: String::new(),
             os: "linux".into(),
+            socket: None,
             runner: Some(runner(line)),
         }
     }
@@ -309,6 +320,20 @@ mod tests {
         );
         assert_eq!(unreachable, vec!["prod\t(unreachable: connection refused)"]);
         assert!(!all_unreachable);
+    }
+
+    #[test]
+    fn local_socket_parses_tmux() {
+        assert_eq!(
+            local_socket(Some("/tmp/tmux-1000/default,1234,0")),
+            Some("/tmp/tmux-1000/default".to_string())
+        );
+        assert_eq!(
+            local_socket(Some("/private/tmp/work,99,2")),
+            Some("/private/tmp/work".to_string())
+        );
+        assert_eq!(local_socket(None), None);
+        assert_eq!(local_socket(Some("")), None);
     }
 
     #[test]

@@ -10,6 +10,7 @@ use clap::{Parser, Subcommand};
 use xmux::attach::{self, OsExecer};
 use xmux::control;
 use xmux::env::{self, ls_lines, Env};
+use xmux::jump;
 use xmux::manage;
 use xmux::session;
 use xmux::source::Source;
@@ -119,6 +120,22 @@ async fn run_home(env: Arc<Env>) -> i32 {
     }
     let ops = env.ops();
     loop {
+        // A cross-server pick handed off by the in-mux popup (which cannot
+        // switch-client across servers): attach it directly instead of
+        // re-rendering, so the popup pick is a single action.
+        if let Some(target) = jump::take_pending(&env.xmux_dir) {
+            if let Some(src) = env.by_alias.get(&target.source).cloned() {
+                if attach::nest_guard(attach::in_mux()).is_ok() {
+                    if let Err(e) =
+                        attach::run_attach(&OsExecer, &src.attach_command(&target.name, None))
+                    {
+                        eprintln!("xmux: attach failed: {e}");
+                    }
+                    continue;
+                }
+            }
+            // Unknown source or nested — fall through to the switcher.
+        }
         // The switcher paints host skeletons immediately and streams each source's
         // sessions and panes in independently — nothing blocks the first frame.
         let result = match run_switcher(ops.clone(), control_path(&env)).await {
@@ -139,11 +156,16 @@ async fn run_home(env: Arc<Env>) -> i32 {
             eprintln!("xmux: {e}");
             continue;
         }
-        if result.window >= 0 {
-            // Land on the chosen window (best-effort; an attach still proceeds).
-            let _ = manage::select_window(&src, &chosen.name, result.window).await;
+        let window = (result.window >= 0).then_some(result.window);
+        // Local pre-selects the window with an instant local command; a remote
+        // folds the selection into the single attach connection (see
+        // Source::attach_command) so there is no separate call to hang on.
+        if !src.remote {
+            if let Some(w) = window {
+                let _ = manage::select_window(&src, &chosen.name, w).await;
+            }
         }
-        if let Err(e) = attach::run_attach(&OsExecer, &src.attach_command(&chosen.name)) {
+        if let Err(e) = attach::run_attach(&OsExecer, &src.attach_command(&chosen.name, window)) {
             eprintln!("xmux: attach failed: {e}");
         }
     }
@@ -166,11 +188,18 @@ async fn run_popup(env: Arc<Env>) -> i32 {
         return 0;
     };
     let plan = attach::plan_switch(session::LOCAL_SOURCE, &env.local_bin, &chosen);
-    if result.window >= 0 && plan.teleport {
-        // Same-server teleport: pre-select the window so switch-client lands on it.
-        if let Some(src) = env.by_alias.get(&chosen.source) {
-            let _ = manage::select_window(src, &chosen.name, result.window).await;
+    if plan.teleport {
+        if result.window >= 0 {
+            // Same-server teleport: pre-select the window so switch-client lands on it.
+            if let Some(src) = env.by_alias.get(&chosen.source) {
+                let _ = manage::select_window(src, &chosen.name, result.window).await;
+            }
         }
+    } else {
+        // Cross-server: switch-client cannot cross mux servers. Hand the pick to
+        // the home loop (which regains control once this detach returns) so it
+        // attaches the target directly — a single action, not detach-then-re-pick.
+        let _ = jump::write_pending(&env.xmux_dir, &chosen);
     }
     if let Err(e) = attach::run_attach(&OsExecer, &plan.argv) {
         eprintln!("xmux: {e}");
@@ -217,7 +246,7 @@ async fn run_direct_attach(env: &Env, addr: &str) -> i32 {
         eprintln!("xmux: {e}");
         return 1;
     }
-    if let Err(e) = attach::run_attach(&OsExecer, &src.attach_command(&target.name)) {
+    if let Err(e) = attach::run_attach(&OsExecer, &src.attach_command(&target.name, None)) {
         eprintln!("xmux: attach failed: {e}");
         return 1;
     }
@@ -288,10 +317,14 @@ async fn run_ctl(env: &Env, pid: Option<u32>, sock: Option<PathBuf>, args: Vec<S
     if !args.is_empty() {
         return ctl_one(&mut client, &args.join(" ")).await;
     }
+    // Dispatch each line as it arrives rather than buffering until EOF, so a
+    // piped/interactive stream of commands is processed incrementally.
     use std::io::BufRead;
     let stdin = std::io::stdin();
-    let lines: Vec<String> = stdin.lock().lines().map_while(Result::ok).collect();
-    for line in lines {
+    for line in stdin.lock().lines() {
+        let Ok(line) = line else {
+            break;
+        };
         let line = line.trim();
         if line.is_empty() {
             continue;

@@ -27,7 +27,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::control;
 use crate::session::{Session, WindowPanes};
-use crate::ui::switcher::{Ops, PreviewTarget, SwitchResult, Switcher};
+use crate::ui::switcher::{run_op, Ops, OpResult, PreviewTarget, SwitchResult, Switcher};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
@@ -52,6 +52,8 @@ pub enum Cmd {
     },
     /// A control-channel `dump` request: reply with the rendered screen.
     Dump(oneshot::Sender<String>),
+    /// A slow (create/rename/kill) op finished off-loop; fold its result in.
+    OpDone(OpResult),
 }
 
 /// Renders the switcher to an off-screen buffer and flattens it — the payload the
@@ -194,7 +196,19 @@ where
             maybe = cmd_rx.recv() => {
                 let Some(cmd) = maybe else { break };
                 match cmd {
-                    Cmd::Key(k) => switcher.handle_key(k, ops.as_ref()).await,
+                    Cmd::Key(k) => {
+                        switcher.handle_key(k);
+                        // A create/rename/kill runs OFF the loop so a slow ssh
+                        // round-trip never freezes rendering, streaming, or ctl.
+                        if let Some(op) = switcher.take_pending_op() {
+                            let ops = ops.clone();
+                            let tx = cmd_tx.clone();
+                            tokio::spawn(async move {
+                                let result = run_op(&op, ops.as_ref()).await;
+                                let _ = tx.send(Cmd::OpDone(result)).await;
+                            });
+                        }
+                    }
                     Cmd::Mouse(m) => handle_mouse(switcher, m, &mut last_click),
                     Cmd::Preview(tgt, text) => switcher.apply_capture(&tgt, text),
                     Cmd::SourceResult { source, sessions, err } => {
@@ -207,9 +221,14 @@ where
                     }
                     Cmd::Panes { address, panes } => switcher.apply_panes(address, panes),
                     Cmd::Dump(reply) => {
-                        let size = terminal.size()?;
+                        // A transient size-query failure must not kill the switcher;
+                        // fall back to a sane default so the dump still renders.
+                        let size = terminal
+                            .size()
+                            .unwrap_or(ratatui::layout::Size { width: 80, height: 24 });
                         let _ = reply.send(dump_switcher(switcher, size.width, size.height));
                     }
+                    Cmd::OpDone(result) => switcher.apply_op_result(result),
                 }
             }
             _ = poll.tick() => {
@@ -263,8 +282,8 @@ pub struct ControlHandle {
     path: PathBuf,
 }
 
-impl ControlHandle {
-    fn shutdown(self) {
+impl Drop for ControlHandle {
+    fn drop(&mut self) {
         self.task.abort();
         let _ = std::fs::remove_file(&self.path);
     }
@@ -355,9 +374,7 @@ pub async fn run_switcher(ops: Arc<dyn Ops>, control: Option<PathBuf>) -> anyhow
     let result = event_loop(&mut terminal, &mut switcher, ops, cmd_tx.clone(), cmd_rx).await;
 
     events.abort();
-    if let Some(h) = control_handle {
-        h.shutdown();
-    }
+    drop(control_handle); // abort the accept loop and remove the socket
     result?;
     Ok(switcher.result())
 }
@@ -638,6 +655,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn control_handle_drop_removes_socket() {
+        let dir = std::env::temp_dir().join(format!("xmux-ctl-drop-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        // A distinct pid so the Windows pipe endpoint (xmux-ctl-<pid>) does not
+        // collide with the concurrently-running control_end_to_end test.
+        let sock = control::socket_path(&dir, std::process::id().wrapping_add(7));
+        let (tx, _rx) = mpsc::channel::<Cmd>(8);
+        let handle = serve_control(sock.clone(), tx).expect("bind control socket");
+        assert!(sock.exists(), "socket/marker present while serving");
+        drop(handle);
+        assert!(!sock.exists(), "socket/marker removed when the handle drops");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn control_end_to_end() {
         let dir = std::env::temp_dir().join(format!("xmux-ctl-e2e-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
@@ -675,7 +707,7 @@ mod tests {
 
         let result = loop_task.await.unwrap();
         assert!(result.chosen.is_none(), "quit must leave no choice");
-        handle.shutdown();
+        drop(handle);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

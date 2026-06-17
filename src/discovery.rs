@@ -109,6 +109,7 @@ mod tests {
             remote: false,
             control_path: String::new(),
             os: "linux".into(),
+            socket: None,
             runner: Some(r),
         }
     }

@@ -98,13 +98,26 @@ impl Config {
         let mut override_mux: std::collections::HashMap<&str, &str> =
             std::collections::HashMap::new();
         for h in &self.hosts {
-            if !h.ssh.is_empty() {
-                override_mux.insert(&h.ssh, &h.mux);
+            if h.ssh.is_empty() {
+                continue;
+            }
+            // First entry wins; a later duplicate with an empty mux must never
+            // clobber an explicit one already recorded for the same alias.
+            let replace = match override_mux.get(h.ssh.as_str()) {
+                None => true,
+                Some(existing) => existing.is_empty() && !h.mux.is_empty(),
+            };
+            if replace {
+                override_mux.insert(h.ssh.as_str(), h.mux.as_str());
             }
         }
 
         let mut specs = Vec::new();
         let mut seen: HashSet<&str> = HashSet::new();
+        // "local" is reserved for the local mux source; pre-seeding it makes both
+        // the discovered-alias and config-host loops skip any host named "local"
+        // so a remote can never shadow the local source.
+        seen.insert(crate::session::LOCAL_SOURCE);
 
         for alias in ssh_aliases {
             if excluded.contains(alias.as_str()) || seen.contains(alias.as_str()) {
@@ -313,6 +326,48 @@ bogus = "nope"
             },
         ];
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn host_specs_duplicate_empty_mux_does_not_clobber() {
+        // A later [[hosts]] for the same ssh with an empty mux must not erase the
+        // explicit mux recorded earlier.
+        let cfg = Config {
+            hosts: vec![
+                HostConfig {
+                    ssh: "prod".into(),
+                    mux: "psmux".into(),
+                },
+                HostConfig {
+                    ssh: "prod".into(),
+                    mux: String::new(),
+                },
+            ],
+            ..Default::default()
+        };
+        let got = cfg.host_specs(&["prod".to_string()]);
+        let prod = got.iter().find(|s| s.alias == "prod").expect("prod present");
+        assert_eq!(prod.bin, "psmux", "explicit mux must survive a later empty dup");
+    }
+
+    #[test]
+    fn host_specs_excludes_reserved_local_alias() {
+        // "local" is reserved for the local mux source; an ssh alias or a config
+        // host named "local" must never shadow it.
+        let cfg = Config {
+            hosts: vec![HostConfig {
+                ssh: "local".into(),
+                mux: "psmux".into(),
+            }],
+            ..Default::default()
+        };
+        let ssh_aliases: Vec<String> = ["local", "prod"].iter().map(|s| s.to_string()).collect();
+        let got = cfg.host_specs(&ssh_aliases);
+        assert!(
+            !got.iter().any(|s| s.alias == "local"),
+            "reserved 'local' alias must be excluded: {got:?}"
+        );
+        assert!(got.iter().any(|s| s.alias == "prod"));
     }
 
     #[test]
