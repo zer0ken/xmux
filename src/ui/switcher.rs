@@ -747,13 +747,29 @@ impl Switcher {
 
     // --- refresh ------------------------------------------------------------
 
+    /// Replaces the tree's data with a fuller scan (the background deep scan
+    /// after a fast local-only first paint, or a manual re-scan) and rebuilds
+    /// the rows, keeping the cursor on the focused node if it survives.
+    pub fn apply_scan(&mut self, scan: Scan) {
+        let focus = self.current_ref().cloned();
+        self.groups = scan.groups;
+        self.panes = scan.panes;
+        self.rebuild();
+        if let Some(i) = focus.and_then(|f| self.row_matching(&f)) {
+            self.set_selected(i);
+        }
+    }
+
+    /// The row index targeting the same node as `focus`, if it survives a
+    /// rebuild — so a re-scan keeps the cursor in place rather than snapping to
+    /// the recency preselect.
+    fn row_matching(&self, focus: &RowRef) -> Option<usize> {
+        self.rows.iter().position(|r| same_node(&r.reference, focus))
+    }
+
     async fn do_refresh(&mut self, ops: &dyn Ops) {
         match ops.refresh().await {
-            Ok(scan) => {
-                self.groups = scan.groups;
-                self.panes = scan.panes;
-                self.rebuild();
-            }
+            Ok(scan) => self.apply_scan(scan),
             Err(e) => self.flash = format!("refresh failed: {e}"),
         }
     }
@@ -960,6 +976,20 @@ fn pad_label(s: &str) -> String {
 
 fn preview_key(t: &PreviewTarget) -> String {
     format!("{}\u{0}{}", t.source, t.target)
+}
+
+/// Whether two row references target the same selectable node (host by source,
+/// session/window by address), used to keep the cursor across a re-scan.
+fn same_node(a: &RowRef, b: &RowRef) -> bool {
+    match (a, b) {
+        (RowRef::Host { source: x, .. }, RowRef::Host { source: y, .. }) => x == y,
+        (RowRef::Session(x), RowRef::Session(y)) => x.address() == y.address(),
+        (
+            RowRef::Window { sess: x, window: wx },
+            RowRef::Window { sess: y, window: wy },
+        ) => x.address() == y.address() && wx == wy,
+        _ => false,
+    }
 }
 
 /// Whether `pane_current_command` names the xmux binary — so capturing that pane
@@ -1256,6 +1286,63 @@ mod tests {
             h.key(KeyCode::Down).await;
         }
         assert!(saw_window, "navigation should reach window nodes");
+    }
+
+    #[tokio::test]
+    async fn apply_scan_merges_fuller_scan() {
+        // First paint is local-only (no remote host, no window/pane detail).
+        let local_only = Scan {
+            groups: vec![Group {
+                source: "local".into(),
+                err: None,
+                sessions: vec![
+                    sess("local", "editor", 2, true, 200),
+                    sess("local", "build", 1, false, 100),
+                ],
+            }],
+            panes: HashMap::new(),
+        };
+        let mut h = Harness::new(local_only);
+        let out = h.text();
+        assert!(out.contains("editor"), "local session on first paint:\n{out}");
+        assert!(
+            !out.contains("jupiter00"),
+            "remote host must be absent before the deep scan:\n{out}"
+        );
+        assert!(
+            !out.contains("window 1"),
+            "pane detail must be absent before the deep scan:\n{out}"
+        );
+
+        // The background deep scan lands: remote host + pane detail stream in.
+        h.sw.apply_scan(sample());
+        h.draw();
+        let out = h.text();
+        assert!(
+            out.contains("jupiter00"),
+            "remote host must stream in after the deep scan:\n{out}"
+        );
+        assert!(
+            out.contains("window 1: shell"),
+            "pane detail must stream in after the deep scan:\n{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_scan_preserves_cursor() {
+        let mut h = Harness::new(sample());
+        h.key(KeyCode::Home).await; // local host
+        h.key(KeyCode::Down).await; // editor
+        assert_eq!(cur_session_name(&h).as_deref(), Some("editor"));
+        // A fuller scan arrives; the cursor stays on the same session rather
+        // than snapping back to the recency preselect (inference).
+        h.sw.apply_scan(sample());
+        h.draw();
+        assert_eq!(
+            cur_session_name(&h).as_deref(),
+            Some("editor"),
+            "apply_scan must keep the focused session if it survives"
+        );
     }
 
     #[tokio::test]

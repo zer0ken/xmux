@@ -37,6 +37,9 @@ pub enum Cmd {
     Mouse(MouseEvent),
     /// A freshly captured preview (target, text) — `None` ⇒ capture failed.
     Preview(PreviewTarget, Option<String>),
+    /// A fuller scan to merge into the live tree (the background deep scan that
+    /// follows the fast local-only first paint).
+    Scan(Scan),
     /// A control-channel `dump` request: reply with the rendered screen.
     Dump(oneshot::Sender<String>),
 }
@@ -120,6 +123,19 @@ where
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut last_click: Option<(Instant, u16, u16)> = None;
 
+    // The switcher started from a fast local-only scan. Run the full deep scan
+    // (every host + pane detail) in the background and merge it in via a
+    // `Cmd::Scan`, so remote hosts stream in without blocking the first paint.
+    {
+        let ops = ops.clone();
+        let tx = cmd_tx.clone();
+        tokio::spawn(async move {
+            if let Ok(scan) = ops.refresh().await {
+                let _ = tx.send(Cmd::Scan(scan)).await;
+            }
+        });
+    }
+
     loop {
         terminal.draw(|f| switcher.render(f))?;
         if switcher.should_exit() {
@@ -137,6 +153,7 @@ where
                     Cmd::Key(k) => switcher.handle_key(k, ops.as_ref()).await,
                     Cmd::Mouse(m) => handle_mouse(switcher, m, &mut last_click),
                     Cmd::Preview(tgt, text) => switcher.apply_capture(&tgt, text),
+                    Cmd::Scan(scan) => switcher.apply_scan(scan),
                     Cmd::Dump(reply) => {
                         let size = terminal.size()?;
                         let _ = reply.send(dump_switcher(switcher, size.width, size.height));
@@ -328,7 +345,9 @@ mod tests {
             Ok(String::new())
         }
         async fn refresh(&self) -> anyhow::Result<Scan> {
-            Ok(Scan::default())
+            // The background deep scan kicked off by the event loop refreshes
+            // with the same environment, not an empty one.
+            Ok(sample())
         }
     }
 
@@ -347,6 +366,126 @@ mod tests {
             }],
             panes: Default::default(),
         }
+    }
+
+    /// A scan with a remote host — the fuller picture a background deep scan
+    /// streams in on top of the local-only first paint.
+    fn deep_sample() -> Scan {
+        Scan {
+            groups: vec![
+                Group {
+                    source: "local".into(),
+                    err: None,
+                    sessions: vec![Session {
+                        source: "local".into(),
+                        name: "editor".into(),
+                        windows: 1,
+                        attached: false,
+                        last_attached: 100,
+                    }],
+                },
+                Group {
+                    source: "remote".into(),
+                    err: None,
+                    sessions: vec![Session {
+                        source: "remote".into(),
+                        name: "api".into(),
+                        windows: 1,
+                        attached: false,
+                        last_attached: 50,
+                    }],
+                },
+            ],
+            panes: Default::default(),
+        }
+    }
+
+    /// Ops whose `refresh` returns a canned deeper scan, mimicking the real
+    /// deep scan that the event loop kicks off in the background on start.
+    struct DeepScanOps(Scan);
+
+    #[async_trait::async_trait]
+    impl Ops for DeepScanOps {
+        async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session> {
+            Ok(Session {
+                source: source.into(),
+                name: name.into(),
+                windows: 1,
+                ..Default::default()
+            })
+        }
+        async fn kill(&self, _s: &Session) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn rename(&self, _s: &Session, _n: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn panes(&self, _s: &Session) -> anyhow::Result<Vec<crate::session::WindowPanes>> {
+            Ok(Vec::new())
+        }
+        async fn capture(&self, _source: &str, _target: &str) -> anyhow::Result<String> {
+            Ok(String::new())
+        }
+        async fn refresh(&self) -> anyhow::Result<Scan> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn event_loop_applies_scan_cmd() {
+        // A `Cmd::Scan` flowing through the loop replaces the rendered tree.
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut sw = Switcher::new(sample()); // local-only first paint
+        let (tx, rx) = mpsc::channel(16);
+        tx.send(Cmd::Scan(deep_sample())).await.unwrap();
+        let (reply_tx, reply_rx) = oneshot::channel();
+        tx.send(Cmd::Dump(reply_tx)).await.unwrap();
+        tx.send(Cmd::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)))
+            .await
+            .unwrap();
+        event_loop(&mut term, &mut sw, Arc::new(NoopOps), tx.clone(), rx)
+            .await
+            .unwrap();
+        let dump = reply_rx.await.unwrap();
+        assert!(
+            dump.contains("remote") && dump.contains("api"),
+            "a Cmd::Scan must update the rendered tree:\n{dump}"
+        );
+    }
+
+    #[tokio::test]
+    async fn event_loop_kicks_background_deep_scan() {
+        // On start the loop runs the full deep scan in the background and merges
+        // it in, so the remote host appears without a key/poll nudging it.
+        let (tx, rx) = mpsc::channel::<Cmd>(64);
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut sw = Switcher::new(sample()); // local-only first paint
+        let ops: Arc<dyn Ops> = Arc::new(DeepScanOps(deep_sample()));
+        let tx2 = tx.clone();
+        let loop_task = tokio::spawn(async move {
+            event_loop(&mut term, &mut sw, ops, tx2, rx).await.unwrap();
+        });
+
+        let mut appeared = false;
+        for _ in 0..100 {
+            let (rtx, rrx) = oneshot::channel();
+            if tx.send(Cmd::Dump(rtx)).await.is_err() {
+                break;
+            }
+            if rrx.await.unwrap_or_default().contains("remote") {
+                appeared = true;
+                break;
+            }
+        }
+        assert!(
+            appeared,
+            "the background deep scan should stream the remote host into the tree"
+        );
+
+        tx.send(Cmd::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)))
+            .await
+            .unwrap();
+        loop_task.await.unwrap();
     }
 
     #[tokio::test]

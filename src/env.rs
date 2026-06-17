@@ -101,6 +101,19 @@ impl Env {
         to_groups(results)
     }
 
+    /// A fast first-paint snapshot: the local source only — `list-sessions`, no
+    /// window/pane detail — so the switcher renders in tens of ms instead of
+    /// blocking on every ssh host. The full [`deep_scan`] runs afterward in the
+    /// background and replaces it.
+    pub async fn local_scan(&self) -> Scan {
+        let local: Vec<Source> = self.srcs.iter().filter(|s| !s.remote).cloned().collect();
+        let results = discovery::scan_all(&local, SCAN_TIMEOUT, SCAN_CONCURRENCY).await;
+        Scan {
+            groups: to_groups(results),
+            panes: HashMap::new(),
+        }
+    }
+
     /// The interactive snapshot: the groups plus every reachable session's
     /// windows-and-panes, fetched concurrently up front.
     pub async fn deep_scan(&self) -> Scan {
@@ -240,6 +253,57 @@ impl Ops for EnvOps {
 mod tests {
     use super::*;
     use crate::session::Session;
+    use crate::source::{RunError, Runner};
+
+    /// Returns canned list-sessions output, ignoring the command.
+    struct StaticRunner(Vec<u8>);
+
+    #[async_trait::async_trait]
+    impl Runner for StaticRunner {
+        async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn runner(line: &str) -> std::sync::Arc<dyn Runner> {
+        std::sync::Arc::new(StaticRunner(line.as_bytes().to_vec()))
+    }
+
+    fn test_source(alias: &str, remote: bool, line: &str) -> Source {
+        Source {
+            alias: alias.into(),
+            binary: "tmux".into(),
+            remote,
+            control_path: String::new(),
+            os: "linux".into(),
+            runner: Some(runner(line)),
+        }
+    }
+
+    #[tokio::test]
+    async fn local_scan_skips_remotes_and_panes() {
+        // The fast first-paint scan: the local source only, sessions but no
+        // window/pane detail, and never the (slow, ssh) remotes.
+        let env = Env {
+            cfg: Config::default(),
+            cfg_warnings: Vec::new(),
+            srcs: vec![
+                test_source("local", false, "2\t1\t100\teditor\n"),
+                test_source("prod", true, "1\t0\t0\tapi\n"),
+            ],
+            by_alias: HashMap::new(),
+            local_bin: "tmux".into(),
+            xmux_dir: PathBuf::from("."),
+        };
+        let scan = env.local_scan().await;
+        assert_eq!(scan.groups.len(), 1, "local_scan must skip remote sources");
+        assert_eq!(scan.groups[0].source, "local");
+        assert_eq!(scan.groups[0].sessions[0].name, "editor");
+        assert!(
+            scan.panes.is_empty(),
+            "local_scan must not fetch any window/pane detail"
+        );
+    }
 
     fn group(source: &str, err: Option<&str>, sessions: Vec<Session>) -> Group {
         Group {
