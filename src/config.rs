@@ -346,8 +346,14 @@ bogus = "nope"
             ..Default::default()
         };
         let got = cfg.host_specs(&["prod".to_string()]);
-        let prod = got.iter().find(|s| s.alias == "prod").expect("prod present");
-        assert_eq!(prod.bin, "psmux", "explicit mux must survive a later empty dup");
+        let prod = got
+            .iter()
+            .find(|s| s.alias == "prod")
+            .expect("prod present");
+        assert_eq!(
+            prod.bin, "psmux",
+            "explicit mux must survive a later empty dup"
+        );
     }
 
     #[test]

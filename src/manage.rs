@@ -209,5 +209,4 @@ mod tests {
             .unwrap();
         assert_eq!(fr.args(), vec!["select-window", "-t", "editor:3"]);
     }
-
 }

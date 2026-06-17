@@ -27,7 +27,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::control;
 use crate::session::{Session, WindowPanes};
-use crate::ui::switcher::{run_op, Ops, OpResult, PreviewTarget, SwitchResult, Switcher};
+use crate::ui::switcher::{run_op, OpResult, Ops, PreviewTarget, SwitchResult, Switcher};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
@@ -107,12 +107,13 @@ fn spawn_probes(ops: &Arc<dyn Ops>, cmd_tx: &mpsc::Sender<Cmd>) {
                 Ok(s) => (s, None),
                 Err(e) => (Vec::new(), Some(e.to_string())),
             };
-            let _ = tx.send(Cmd::SourceResult {
-                source,
-                sessions,
-                err,
-            })
-            .await;
+            let _ = tx
+                .send(Cmd::SourceResult {
+                    source,
+                    sessions,
+                    err,
+                })
+                .await;
         });
     }
 }
@@ -125,11 +126,12 @@ fn spawn_panes(ops: &Arc<dyn Ops>, cmd_tx: &mpsc::Sender<Cmd>, sessions: Vec<Ses
         let tx = cmd_tx.clone();
         tokio::spawn(async move {
             let panes = ops.panes(&sess).await.unwrap_or_default();
-            let _ = tx.send(Cmd::Panes {
-                address: sess.address(),
-                panes,
-            })
-            .await;
+            let _ = tx
+                .send(Cmd::Panes {
+                    address: sess.address(),
+                    panes,
+                })
+                .await;
         });
     }
 }
@@ -358,7 +360,10 @@ async fn dispatch(line: &str, cmd_tx: &mpsc::Sender<Cmd>) -> String {
 /// Runs one interactive switcher session on the real terminal, polling the live
 /// preview for as long as it is open. When `control` is `Some(path)`, a control
 /// socket is served at that path for the session's lifetime.
-pub async fn run_switcher(ops: Arc<dyn Ops>, control: Option<PathBuf>) -> anyhow::Result<SwitchResult> {
+pub async fn run_switcher(
+    ops: Arc<dyn Ops>,
+    control: Option<PathBuf>,
+) -> anyhow::Result<SwitchResult> {
     // Seed host skeletons from the resolved source list — no probing — so the
     // first frame paints immediately; the event loop streams the rest in.
     let mut switcher = Switcher::from_sources(ops.sources());
@@ -545,9 +550,12 @@ mod tests {
         .unwrap();
         let (reply_tx, reply_rx) = oneshot::channel();
         tx.send(Cmd::Dump(reply_tx)).await.unwrap();
-        tx.send(Cmd::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)))
-            .await
-            .unwrap();
+        tx.send(Cmd::Key(KeyEvent::new(
+            KeyCode::Char('q'),
+            KeyModifiers::NONE,
+        )))
+        .await
+        .unwrap();
         event_loop(&mut term, &mut sw, Arc::new(NoopOps), tx.clone(), rx)
             .await
             .unwrap();
@@ -595,9 +603,12 @@ mod tests {
             "each reachable session's panes must stream in on start"
         );
 
-        tx.send(Cmd::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)))
-            .await
-            .unwrap();
+        tx.send(Cmd::Key(KeyEvent::new(
+            KeyCode::Char('q'),
+            KeyModifiers::NONE,
+        )))
+        .await
+        .unwrap();
         loop_task.await.unwrap();
     }
 
@@ -665,7 +676,10 @@ mod tests {
         let handle = serve_control(sock.clone(), tx).expect("bind control socket");
         assert!(sock.exists(), "socket/marker present while serving");
         drop(handle);
-        assert!(!sock.exists(), "socket/marker removed when the handle drops");
+        assert!(
+            !sock.exists(),
+            "socket/marker removed when the handle drops"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

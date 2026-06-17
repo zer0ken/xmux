@@ -323,12 +323,18 @@ mod tests {
     #[test]
     fn pointer_round_trip_and_absent() {
         let dir = tmp("ptr");
-        assert!(read_cockpit_pointer(&dir).is_none(), "absent pointer is None");
+        assert!(
+            read_cockpit_pointer(&dir).is_none(),
+            "absent pointer is None"
+        );
         let sock = dir.join("cockpit-123.sock");
         write_cockpit_pointer(&dir, &sock).unwrap();
         assert_eq!(read_cockpit_pointer(&dir), Some(sock));
         remove_cockpit_pointer(&dir);
-        assert!(read_cockpit_pointer(&dir).is_none(), "removed pointer is None");
+        assert!(
+            read_cockpit_pointer(&dir).is_none(),
+            "removed pointer is None"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -501,7 +507,11 @@ mod tests {
         assert_eq!(client.do_cmd("ping").await.unwrap(), "pong");
         assert_eq!(client.do_cmd("switch jupiter06/api").await.unwrap(), "ok");
 
-        let got = pending.lock().unwrap().clone().expect("switch sets pending");
+        let got = pending
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("switch sets pending");
         assert_eq!(got.session.address(), "jupiter06/api");
 
         task.abort();

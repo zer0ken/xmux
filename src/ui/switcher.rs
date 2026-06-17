@@ -149,9 +149,15 @@ pub async fn run_op(op: &PendingOp, ops: &dyn Ops) -> OpResult {
 /// cursor skips them.
 #[derive(Clone)]
 enum RowRef {
-    Host { source: String, unreachable: bool },
+    Host {
+        source: String,
+        unreachable: bool,
+    },
     Session(Session),
-    Window { sess: Session, window: i64 },
+    Window {
+        sess: Session,
+        window: i64,
+    },
     Pane,
     /// A "panes loading…" placeholder under a session whose detail is in flight.
     Loading,
@@ -603,7 +609,10 @@ impl Switcher {
         let windows = self.panes.get(&address)?;
         let win = match window {
             Some(idx) => windows.iter().find(|w| w.index == idx)?,
-            None => windows.iter().find(|w| w.active).or_else(|| windows.first())?,
+            None => windows
+                .iter()
+                .find(|w| w.active)
+                .or_else(|| windows.first())?,
         };
         let pane = win
             .panes
@@ -1061,7 +1070,9 @@ impl Switcher {
     /// rebuild — so a re-scan keeps the cursor in place rather than snapping to
     /// the recency preselect.
     fn row_matching(&self, focus: &RowRef) -> Option<usize> {
-        self.rows.iter().position(|r| same_node(&r.reference, focus))
+        self.rows
+            .iter()
+            .position(|r| same_node(&r.reference, focus))
     }
 
     // --- mouse --------------------------------------------------------------
@@ -1290,8 +1301,14 @@ fn same_node(a: &RowRef, b: &RowRef) -> bool {
         (RowRef::Host { source: x, .. }, RowRef::Host { source: y, .. }) => x == y,
         (RowRef::Session(x), RowRef::Session(y)) => x.address() == y.address(),
         (
-            RowRef::Window { sess: x, window: wx },
-            RowRef::Window { sess: y, window: wy },
+            RowRef::Window {
+                sess: x,
+                window: wx,
+            },
+            RowRef::Window {
+                sess: y,
+                window: wy,
+            },
         ) => x.address() == y.address() && wx == wy,
         _ => false,
     }
@@ -1691,7 +1708,10 @@ mod tests {
         );
         h.draw();
         let out = h.tree_text();
-        assert!(out.contains("editor"), "session appears after result:\n{out}");
+        assert!(
+            out.contains("editor"),
+            "session appears after result:\n{out}"
+        );
         assert!(
             !out.contains("scanning"),
             "scanning hint clears once the only host resolves:\n{out}"
@@ -1718,14 +1738,13 @@ mod tests {
     #[tokio::test]
     async fn apply_source_result_unreachable_shows_reason() {
         let mut h = Harness::from_sources(&["prod"]);
-        h.sw.apply_source_result(
-            "prod".into(),
-            vec![],
-            Some("connection refused".into()),
-        );
+        h.sw.apply_source_result("prod".into(), vec![], Some("connection refused".into()));
         h.draw();
         let out = h.text();
-        assert!(out.contains("unreachable"), "shows unreachable state:\n{out}");
+        assert!(
+            out.contains("unreachable"),
+            "shows unreachable state:\n{out}"
+        );
         assert!(
             out.contains("connection refused"),
             "shows the failure reason:\n{out}"
@@ -2001,13 +2020,14 @@ mod tests {
         let mut h = Harness::new(sample());
         h.ch('n').await; // open New on jupiter00
         h.sw.set_input_text("scratch");
-        h.sw
-            .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)); // raw: not pumped
+        h.sw.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)); // raw: not pumped
         assert!(
             h.ops.created.lock().unwrap().is_empty(),
             "create must be deferred off the key path, not run inline"
         );
-        let op = h.sw.take_pending_op().expect("a create was queued for the loop");
+        let op =
+            h.sw.take_pending_op()
+                .expect("a create was queued for the loop");
         let r = run_op(&op, &h.ops).await;
         assert_eq!(
             h.ops.created.lock().unwrap().len(),
