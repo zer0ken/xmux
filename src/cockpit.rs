@@ -4,7 +4,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::session::Session;
+use crate::control;
+use crate::session::{self, Session};
 
 /// A target the cockpit attaches: a session and an optional window to land on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +41,31 @@ pub fn remove_cockpit_pointer(xmux_dir: &Path) {
     let _ = std::fs::remove_file(cockpit_pointer_path(xmux_dir));
 }
 
+/// Handles one cockpit control request line. Returns the reply payload and, for a
+/// valid `switch <source>/<name>` naming a known source, the target the loop
+/// should attach next.
+pub fn dispatch_cockpit(
+    line: &str,
+    known_source: &dyn Fn(&str) -> bool,
+) -> (String, Option<Target>) {
+    let req = control::parse_request(line);
+    match req.verb.as_str() {
+        "ping" => ("pong".to_string(), None),
+        "switch" => match session::parse_target(req.arg.trim()) {
+            Ok(s) if known_source(&s.source) => (
+                "ok".to_string(),
+                Some(Target {
+                    session: s,
+                    window: None,
+                }),
+            ),
+            Ok(s) => (format!("err: unknown source {:?}", s.source), None),
+            Err(e) => (format!("err: {e}"), None),
+        },
+        _ => ("err: unknown command".to_string(), None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -61,5 +87,33 @@ mod tests {
         remove_cockpit_pointer(&dir);
         assert!(read_cockpit_pointer(&dir).is_none(), "removed pointer is None");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dispatch_switch_ping_and_errors() {
+        let known = |s: &str| matches!(s, "local" | "jupiter06");
+        let known: &dyn Fn(&str) -> bool = &known;
+
+        assert_eq!(dispatch_cockpit("ping", known).0, "pong");
+
+        let (reply, target) = dispatch_cockpit("switch jupiter06/api", known);
+        assert_eq!(reply, "ok");
+        let t = target.expect("a valid switch yields a target");
+        assert_eq!(t.session.source, "jupiter06");
+        assert_eq!(t.session.name, "api");
+        assert_eq!(t.window, None);
+
+        // Unknown source → err, no target.
+        let (reply, target) = dispatch_cockpit("switch nope/x", known);
+        assert!(reply.starts_with("err:"), "{reply}");
+        assert!(target.is_none());
+
+        // Malformed address → err, no target.
+        let (reply, target) = dispatch_cockpit("switch noslash", known);
+        assert!(reply.starts_with("err:"), "{reply}");
+        assert!(target.is_none());
+
+        // Unknown verb.
+        assert_eq!(dispatch_cockpit("bogus", known).0, "err: unknown command");
     }
 }
