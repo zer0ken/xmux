@@ -1,7 +1,8 @@
 //! The resolved runtime: the source list and the lookups the commands share,
 //! built once per process from config + ssh-config. Owns the scan (concurrent
-//! reachability probe), the deep scan (scan + concurrent window/pane fetch), and
-//! the switcher's side-effecting [`Ops`] over the live mux.
+//! reachability probe, used by `ls`) and the switcher's side-effecting [`Ops`]
+//! over the live mux — including the per-source/per-session probes the event
+//! loop streams in.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -13,7 +14,7 @@ use crate::discovery;
 use crate::manage;
 use crate::session::{Session, WindowPanes};
 use crate::source::{self, Source};
-use crate::ui::switcher::{Ops, Scan};
+use crate::ui::switcher::Ops;
 use crate::ui::tree::{self, Group};
 
 const SCAN_CONCURRENCY: usize = 8;
@@ -101,64 +102,14 @@ impl Env {
         to_groups(results)
     }
 
-    /// A fast first-paint snapshot: the local source only — `list-sessions`, no
-    /// window/pane detail — so the switcher renders in tens of ms instead of
-    /// blocking on every ssh host. The full [`deep_scan`] runs afterward in the
-    /// background and replaces it.
-    pub async fn local_scan(&self) -> Scan {
-        let local: Vec<Source> = self.srcs.iter().filter(|s| !s.remote).cloned().collect();
-        let results = discovery::scan_all(&local, SCAN_TIMEOUT, SCAN_CONCURRENCY).await;
-        Scan {
-            groups: to_groups(results),
-            panes: HashMap::new(),
-        }
-    }
-
-    /// The interactive snapshot: the groups plus every reachable session's
-    /// windows-and-panes, fetched concurrently up front.
-    pub async fn deep_scan(&self) -> Scan {
-        let groups = self.scan().await;
-
-        // Collect (source, session-name, address) for every reachable session.
-        let mut targets: Vec<(Source, String, String)> = Vec::new();
-        for g in &groups {
-            if g.err.is_some() {
-                continue;
-            }
-            if let Some(src) = self.by_alias.get(&g.source) {
-                for sess in &g.sessions {
-                    targets.push((src.clone(), sess.name.clone(), sess.address()));
-                }
-            }
-        }
-
-        let sem = Arc::new(tokio::sync::Semaphore::new(SCAN_CONCURRENCY));
-        let mut set: tokio::task::JoinSet<Option<(String, Vec<WindowPanes>)>> =
-            tokio::task::JoinSet::new();
-        for (src, name, address) in targets {
-            let sem = sem.clone();
-            set.spawn(async move {
-                let _permit = sem.acquire().await.ok()?;
-                match tokio::time::timeout(DETAIL_TIMEOUT, manage::panes(&src, &name)).await {
-                    Ok(Ok(wins)) => Some((address, wins)),
-                    _ => None,
-                }
-            });
-        }
-
-        let mut panes = HashMap::new();
-        while let Some(joined) = set.join_next().await {
-            if let Ok(Some((address, wins))) = joined {
-                panes.insert(address, wins);
-            }
-        }
-
-        Scan { groups, panes }
-    }
-
-    /// Builds the switcher's side-effecting actions over the live mux.
+    /// Builds the switcher's side-effecting actions over the live mux. A shared
+    /// semaphore bounds the concurrent probes (`list-sessions`/`list-panes`) the
+    /// event loop streams through these ops.
     pub fn ops(self: &Arc<Self>) -> Arc<dyn Ops> {
-        Arc::new(EnvOps(self.clone()))
+        Arc::new(EnvOps {
+            env: self.clone(),
+            sem: Arc::new(tokio::sync::Semaphore::new(SCAN_CONCURRENCY)),
+        })
     }
 }
 
@@ -189,11 +140,15 @@ pub fn ls_lines(groups: &[Group]) -> (Vec<String>, Vec<String>, bool) {
 }
 
 /// The live [`Ops`] implementation over a [`Env`].
-struct EnvOps(Arc<Env>);
+struct EnvOps {
+    env: Arc<Env>,
+    /// Bounds the in-flight probes so a fan-out of ssh connects stays capped.
+    sem: Arc<tokio::sync::Semaphore>,
+}
 
 impl EnvOps {
     fn source(&self, alias: &str) -> anyhow::Result<Source> {
-        self.0
+        self.env
             .by_alias
             .get(alias)
             .cloned()
@@ -202,20 +157,31 @@ impl EnvOps {
 }
 
 async fn with_timeout<T>(
+    timeout: Duration,
     fut: impl std::future::Future<Output = Result<T, source::RunError>>,
 ) -> anyhow::Result<T> {
-    match tokio::time::timeout(DETAIL_TIMEOUT, fut).await {
+    match tokio::time::timeout(timeout, fut).await {
         Ok(Ok(v)) => Ok(v),
         Ok(Err(e)) => Err(e.into()),
-        Err(_) => Err(anyhow::anyhow!("timed out")),
+        Err(_) => Err(anyhow::anyhow!("timed out after {}s", timeout.as_secs())),
     }
 }
 
 #[async_trait::async_trait]
 impl Ops for EnvOps {
+    fn sources(&self) -> Vec<String> {
+        self.env.srcs.iter().map(|s| s.alias.clone()).collect()
+    }
+
+    async fn list_sessions(&self, source: &str) -> anyhow::Result<Vec<Session>> {
+        let src = self.source(source)?;
+        let _permit = self.sem.acquire().await?;
+        with_timeout(SCAN_TIMEOUT, src.list_sessions()).await
+    }
+
     async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session> {
         let src = self.source(source)?;
-        let assigned = with_timeout(manage::create(&src, name)).await?;
+        let assigned = with_timeout(DETAIL_TIMEOUT, manage::create(&src, name)).await?;
         Ok(Session {
             source: source.to_string(),
             name: assigned,
@@ -226,26 +192,23 @@ impl Ops for EnvOps {
 
     async fn kill(&self, s: &Session) -> anyhow::Result<()> {
         let src = self.source(&s.source)?;
-        with_timeout(manage::kill(&src, &s.name)).await
+        with_timeout(DETAIL_TIMEOUT, manage::kill(&src, &s.name)).await
     }
 
     async fn rename(&self, s: &Session, new_name: &str) -> anyhow::Result<()> {
         let src = self.source(&s.source)?;
-        with_timeout(manage::rename(&src, &s.name, new_name)).await
+        with_timeout(DETAIL_TIMEOUT, manage::rename(&src, &s.name, new_name)).await
     }
 
     async fn panes(&self, s: &Session) -> anyhow::Result<Vec<WindowPanes>> {
         let src = self.source(&s.source)?;
-        with_timeout(manage::panes(&src, &s.name)).await
+        let _permit = self.sem.acquire().await?;
+        with_timeout(DETAIL_TIMEOUT, manage::panes(&src, &s.name)).await
     }
 
     async fn capture(&self, source: &str, target: &str) -> anyhow::Result<String> {
         let src = self.source(source)?;
-        with_timeout(manage::capture(&src, target)).await
-    }
-
-    async fn refresh(&self) -> anyhow::Result<Scan> {
-        Ok(self.0.deep_scan().await)
+        with_timeout(DETAIL_TIMEOUT, manage::capture(&src, target)).await
     }
 }
 
@@ -281,28 +244,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_scan_skips_remotes_and_panes() {
-        // The fast first-paint scan: the local source only, sessions but no
-        // window/pane detail, and never the (slow, ssh) remotes.
-        let env = Env {
+    async fn list_sessions_probes_one_source() {
+        // EnvOps::list_sessions probes a single source by alias, returning its
+        // sessions (the per-host streaming probe the event loop fans out).
+        let env = Arc::new(Env {
             cfg: Config::default(),
             cfg_warnings: Vec::new(),
-            srcs: vec![
+            srcs: vec![test_source("local", false, "2\t1\t100\teditor\n")],
+            by_alias: [(
+                "local".to_string(),
                 test_source("local", false, "2\t1\t100\teditor\n"),
-                test_source("prod", true, "1\t0\t0\tapi\n"),
-            ],
-            by_alias: HashMap::new(),
+            )]
+            .into_iter()
+            .collect(),
             local_bin: "tmux".into(),
             xmux_dir: PathBuf::from("."),
-        };
-        let scan = env.local_scan().await;
-        assert_eq!(scan.groups.len(), 1, "local_scan must skip remote sources");
-        assert_eq!(scan.groups[0].source, "local");
-        assert_eq!(scan.groups[0].sessions[0].name, "editor");
-        assert!(
-            scan.panes.is_empty(),
-            "local_scan must not fetch any window/pane detail"
-        );
+        });
+        let ops = env.ops();
+        assert_eq!(ops.sources(), vec!["local".to_string()]);
+        let sessions = ops.list_sessions("local").await.unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].name, "editor");
+        assert_eq!(sessions[0].source, "local");
     }
 
     fn group(source: &str, err: Option<&str>, sessions: Vec<Session>) -> Group {

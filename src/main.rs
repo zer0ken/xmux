@@ -119,10 +119,9 @@ async fn run_home(env: Arc<Env>) -> i32 {
     }
     let ops = env.ops();
     loop {
-        // Paint from a fast local-only scan; the switcher's loop runs the full
-        // deep scan (remote hosts + pane detail) in the background and merges it.
-        let scan = env.local_scan().await;
-        let result = match run_switcher(scan, ops.clone(), control_path(&env)).await {
+        // The switcher paints host skeletons immediately and streams each source's
+        // sessions and panes in independently — nothing blocks the first frame.
+        let result = match run_switcher(ops.clone(), control_path(&env)).await {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("xmux: {e}");
@@ -154,10 +153,9 @@ async fn run_home(env: Arc<Env>) -> i32 {
 /// pick teleports (switch-client); cross-server detaches to the home loop. Exits
 /// after one action so the popup closes back onto the pane.
 async fn run_popup(env: Arc<Env>) -> i32 {
-    // Paint from a fast local-only scan; the switcher's loop runs the full deep
-    // scan (remote hosts + pane detail) in the background and merges it.
-    let scan = env.local_scan().await;
-    let result = match run_switcher(scan, env.ops(), control_path(&env)).await {
+    // The switcher paints host skeletons immediately and streams each source's
+    // sessions and panes in independently — nothing blocks the first frame.
+    let result = match run_switcher(env.ops(), control_path(&env)).await {
         Ok(r) => r,
         Err(e) => {
             eprintln!("xmux: {e}");

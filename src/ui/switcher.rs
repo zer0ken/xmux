@@ -5,7 +5,7 @@
 //! that draws to either the live terminal or a headless `TestBackend` (the
 //! control channel's `dump`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
@@ -26,6 +26,9 @@ const COLOR_HOST: Color = Color::Yellow;
 const COLOR_SESSION: Color = Color::Green;
 const COLOR_WINDOW: Color = Color::Magenta;
 const COLOR_PANE: Color = Color::Cyan;
+/// Transient per-element state hints (scanning…, loading…, (empty), unreachable)
+/// render dim so pending state reads apart from settled content.
+const COLOR_HINT: Color = Color::DarkGray;
 
 /// Shown in the preview pane when the focused target's active pane is itself
 /// running xmux. Capturing it would draw the switcher inside its own preview (an
@@ -39,15 +42,23 @@ pub struct Scan {
     pub panes: HashMap<String, Vec<WindowPanes>>,
 }
 
-/// The side-effecting actions the switcher delegates to the host program.
+/// The side-effecting actions the switcher delegates to the host program. The
+/// event loop also drives the streaming probes through it: [`Ops::sources`] seeds
+/// the host skeletons, then [`Ops::list_sessions`] (one per source) and
+/// [`Ops::panes`] (one per session) feed the tree incrementally.
 #[async_trait::async_trait]
 pub trait Ops: Send + Sync {
+    /// The resolved source aliases in display order — synchronous, no probing —
+    /// so the UI can paint host skeletons before any probe runs.
+    fn sources(&self) -> Vec<String>;
+    /// Probes one source's sessions. `Ok` (possibly empty) ⇒ reachable; `Err` ⇒
+    /// unreachable (the message is shown as the host's failure reason).
+    async fn list_sessions(&self, source: &str) -> anyhow::Result<Vec<Session>>;
     async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session>;
     async fn kill(&self, s: &Session) -> anyhow::Result<()>;
     async fn rename(&self, s: &Session, new_name: &str) -> anyhow::Result<()>;
     async fn panes(&self, s: &Session) -> anyhow::Result<Vec<WindowPanes>>;
     async fn capture(&self, source: &str, target: &str) -> anyhow::Result<String>;
-    async fn refresh(&self) -> anyhow::Result<Scan>;
 }
 
 /// The outcome of one switcher run. `window >= 0` means attach with that window
@@ -68,17 +79,24 @@ impl Default for SwitchResult {
 }
 
 /// What a tree row references. Hosts, sessions, and windows are selectable; panes
-/// are shown for context but never selectable, so the cursor skips them.
+/// and loading placeholders are shown for context but never selectable, so the
+/// cursor skips them.
 #[derive(Clone)]
 enum RowRef {
     Host { source: String, unreachable: bool },
     Session(Session),
     Window { sess: Session, window: i64 },
     Pane,
+    /// A "panes loading…" placeholder under a session whose detail is in flight.
+    Loading,
 }
 
 struct Row {
     label: String,
+    /// A trailing dim annotation (scanning…, (empty), ⚠ unreachable: …) — kept
+    /// apart from `label` so the name stays in its level colour and the state
+    /// reads dim.
+    hint: Option<String>,
     indent: usize,
     color: Color,
     reference: RowRef,
@@ -86,7 +104,7 @@ struct Row {
 
 impl Row {
     fn selectable(&self) -> bool {
-        !matches!(self.reference, RowRef::Pane)
+        !matches!(self.reference, RowRef::Pane | RowRef::Loading)
     }
 }
 
@@ -114,6 +132,17 @@ struct Input {
 pub struct Switcher {
     groups: Vec<Group>,
     panes: HashMap<String, Vec<WindowPanes>>,
+    /// Sources whose `list-sessions` has not yet returned (host shows scanning…).
+    scanning: HashSet<String>,
+    /// Session addresses whose `list-panes` has resolved (success or failure) —
+    /// until then the session shows a loading… placeholder.
+    panes_loaded: HashSet<String>,
+    /// Set once the user explicitly moves the cursor; while false, streaming
+    /// results advance the preselect toward the most-recent session.
+    user_moved: bool,
+    /// Signals the event loop to (re)kick the streaming probes — set on the
+    /// initial seed and on an `r` re-scan; the loop reads + clears it.
+    rescan_kick: bool,
 
     rows: Vec<Row>,
     selected: usize,
@@ -146,10 +175,14 @@ pub struct Switcher {
 }
 
 impl Switcher {
-    pub fn new(scan: Scan) -> Self {
-        let mut s = Switcher {
-            groups: scan.groups,
-            panes: scan.panes,
+    fn blank() -> Self {
+        Switcher {
+            groups: Vec::new(),
+            panes: HashMap::new(),
+            scanning: HashSet::new(),
+            panes_loaded: HashSet::new(),
+            user_moved: false,
+            rescan_kick: false,
             rows: Vec::new(),
             selected: 0,
             name_col_width: 0,
@@ -169,7 +202,40 @@ impl Switcher {
             show_help: false,
             result: SwitchResult::default(),
             exit: false,
-        };
+        }
+    }
+
+    /// Builds from a complete snapshot: every host is resolved (reachable or
+    /// unreachable per its `err`) and every session's panes are considered known.
+    pub fn new(scan: Scan) -> Self {
+        let mut s = Switcher::blank();
+        s.groups = scan.groups;
+        s.panes = scan.panes;
+        s.panes_loaded = s
+            .groups
+            .iter()
+            .flat_map(|g| g.sessions.iter().map(|sess| sess.address()))
+            .collect();
+        s.rebuild();
+        s
+    }
+
+    /// Seeds the switcher from the resolved source list alone — no probing — so
+    /// the first frame paints host-skeleton rows, each in a scanning state, in
+    /// tens of milliseconds. Streamed [`apply_source_result`]/[`apply_panes`]
+    /// calls fill the tree in afterward.
+    pub fn from_sources(aliases: Vec<String>) -> Self {
+        let mut s = Switcher::blank();
+        s.scanning = aliases.iter().cloned().collect();
+        s.groups = aliases
+            .into_iter()
+            .map(|source| Group {
+                source,
+                err: None,
+                sessions: Vec::new(),
+            })
+            .collect();
+        s.rescan_kick = true; // the event loop kicks the probes on the first frame
         s.rebuild();
         s
     }
@@ -189,6 +255,12 @@ impl Switcher {
     /// Takes the pending poll-kick flag (true once after the target changed).
     pub fn take_poll_kick(&mut self) -> bool {
         std::mem::take(&mut self.poll_kick)
+    }
+
+    /// Takes the pending rescan-kick flag (true once after seeding or an `r`
+    /// re-scan) — the event loop spawns the streaming probes when it is set.
+    pub fn take_rescan_kick(&mut self) -> bool {
+        std::mem::take(&mut self.rescan_kick)
     }
 
     /// Whether the current preview target should be captured. False when there is
@@ -238,9 +310,11 @@ impl Switcher {
         let mut best_recency = i64::MIN;
 
         for g in &groups {
+            let scanning = self.scanning.contains(&g.source);
             let unreachable = g.err.is_some();
             rows.push(Row {
-                label: self.host_label(g),
+                label: g.source.clone(),
+                hint: self.host_hint(g, scanning),
                 indent: 0,
                 color: COLOR_HOST,
                 reference: RowRef::Host {
@@ -248,7 +322,7 @@ impl Switcher {
                     unreachable,
                 },
             });
-            if unreachable {
+            if scanning || unreachable {
                 continue;
             }
             for sess in &g.sessions {
@@ -258,30 +332,45 @@ impl Switcher {
                 }
                 rows.push(Row {
                     label: self.session_label(sess),
+                    hint: None,
                     indent: 2,
                     color: COLOR_SESSION,
                     reference: RowRef::Session(sess.clone()),
                 });
-                if let Some(windows) = self.panes.get(&sess.address()) {
-                    for w in windows {
-                        rows.push(Row {
-                            label: window_label(w),
-                            indent: 4,
-                            color: COLOR_WINDOW,
-                            reference: RowRef::Window {
-                                sess: sess.clone(),
-                                window: w.index,
-                            },
-                        });
-                        for p in &w.panes {
+                if self.panes_loaded.contains(&sess.address()) {
+                    if let Some(windows) = self.panes.get(&sess.address()) {
+                        for w in windows {
                             rows.push(Row {
-                                label: pane_label(p),
-                                indent: 6,
-                                color: COLOR_PANE,
-                                reference: RowRef::Pane,
+                                label: window_label(w),
+                                hint: None,
+                                indent: 4,
+                                color: COLOR_WINDOW,
+                                reference: RowRef::Window {
+                                    sess: sess.clone(),
+                                    window: w.index,
+                                },
                             });
+                            for p in &w.panes {
+                                rows.push(Row {
+                                    label: pane_label(p),
+                                    hint: None,
+                                    indent: 6,
+                                    color: COLOR_PANE,
+                                    reference: RowRef::Pane,
+                                });
+                            }
                         }
                     }
+                } else {
+                    // Panes still in flight for this session — a dim placeholder
+                    // stands where its windows will appear.
+                    rows.push(Row {
+                        label: "loading…".into(),
+                        hint: None,
+                        indent: 4,
+                        color: COLOR_HINT,
+                        reference: RowRef::Loading,
+                    });
                 }
             }
         }
@@ -293,11 +382,17 @@ impl Switcher {
         self.set_selected(target);
     }
 
-    fn host_label(&self, g: &Group) -> String {
-        if g.err.is_some() {
-            format!("{}  ⚠ unreachable", g.source)
+    /// The dim trailing annotation for a host row: its scan state when it has no
+    /// sessions to show — scanning…, ⚠ unreachable: <reason>, or (empty).
+    fn host_hint(&self, g: &Group, scanning: bool) -> Option<String> {
+        if scanning {
+            Some("scanning…".into())
+        } else if let Some(err) = &g.err {
+            Some(format!("⚠ unreachable: {err}"))
+        } else if g.sessions.is_empty() {
+            Some("(empty)".into())
         } else {
-            g.source.clone()
+            None
         }
     }
 
@@ -341,6 +436,7 @@ impl Switcher {
         if sel.is_empty() {
             return;
         }
+        self.user_moved = true;
         let cur = sel.iter().position(|&i| i == self.selected).unwrap_or(0) as isize;
         let n = sel.len() as isize;
         let next = ((cur + delta) % n + n) % n;
@@ -352,6 +448,7 @@ impl Switcher {
         if sel.is_empty() {
             return;
         }
+        self.user_moved = true;
         let idx = if pos < 0 || pos as usize >= sel.len() {
             sel.len() - 1
         } else {
@@ -369,7 +466,7 @@ impl Switcher {
             RowRef::Host { source, .. } => Some(source.clone()),
             RowRef::Session(s) => Some(s.source.clone()),
             RowRef::Window { sess, .. } => Some(sess.source.clone()),
-            RowRef::Pane => None,
+            RowRef::Pane | RowRef::Loading => None,
         }
     }
 
@@ -411,7 +508,7 @@ impl Switcher {
                 source: sess.source.clone(),
                 target: format!("{}:{}", sess.name, window),
             },
-            RowRef::Pane => PreviewTarget::default(),
+            RowRef::Pane | RowRef::Loading => PreviewTarget::default(),
         }
     }
 
@@ -424,7 +521,7 @@ impl Switcher {
             RowRef::Session(s) => (s.address(), None),
             RowRef::Window { sess, window } => (sess.address(), Some(*window)),
             RowRef::Host { source, .. } => (self.first_session_of(source)?.address(), None),
-            RowRef::Pane => return None,
+            RowRef::Pane | RowRef::Loading => return None,
         };
         let windows = self.panes.get(&address)?;
         let win = match window {
@@ -536,7 +633,7 @@ impl Switcher {
                 'n' => self.open_input(InputMode::New),
                 'R' => self.open_input(InputMode::Rename),
                 'x' => self.arm_kill(),
-                'r' => self.do_refresh(ops).await,
+                'r' => self.request_rescan(),
                 '?' => self.show_help = true,
                 _ => {}
             },
@@ -562,7 +659,7 @@ impl Switcher {
             }
             RowRef::Session(s) => self.choose(s, -1),
             RowRef::Window { sess, window } => self.choose(sess, window),
-            RowRef::Pane => {}
+            RowRef::Pane | RowRef::Loading => {}
         }
     }
 
@@ -685,9 +782,11 @@ impl Switcher {
             self.panes.insert(created.address(), wins);
         }
         let addr = created.address();
+        self.panes_loaded.insert(addr.clone());
         self.groups = tree::add_session(&self.groups, created);
         self.rebuild();
         if let Some(i) = self.row_of_session(&addr) {
+            self.user_moved = true;
             self.set_selected(i);
         }
     }
@@ -708,9 +807,12 @@ impl Switcher {
             self.flash = format!("rename failed: {e}");
             return;
         }
+        let new_addr = format!("{}/{}", sess.source, new_name);
         if let Some(wins) = self.panes.remove(&sess.address()) {
-            self.panes
-                .insert(format!("{}/{}", sess.source, new_name), wins);
+            self.panes.insert(new_addr.clone(), wins);
+        }
+        if self.panes_loaded.remove(&sess.address()) {
+            self.panes_loaded.insert(new_addr);
         }
         self.groups = tree::rename_session(&self.groups, &sess.address(), new_name);
         self.rebuild();
@@ -738,6 +840,7 @@ impl Switcher {
                     self.flash = format!("kill failed: {e}");
                 } else {
                     self.panes.remove(&sess.address());
+                    self.panes_loaded.remove(&sess.address());
                     self.groups = tree::remove_session(&self.groups, &sess.address());
                     self.rebuild();
                 }
@@ -747,16 +850,70 @@ impl Switcher {
 
     // --- refresh ------------------------------------------------------------
 
-    /// Replaces the tree's data with a fuller scan (the background deep scan
-    /// after a fast local-only first paint, or a manual re-scan) and rebuilds
-    /// the rows, keeping the cursor on the focused node if it survives.
-    pub fn apply_scan(&mut self, scan: Scan) {
+    /// Resets every host to its scanning skeleton and signals the event loop to
+    /// re-kick the streaming probes (the `r` re-scan) — sessions and panes stream
+    /// back in exactly as on first launch. Keeps the cursor on the focused host
+    /// if the user had moved it there.
+    pub fn request_rescan(&mut self) {
         let focus = self.current_ref().cloned();
-        self.groups = scan.groups;
-        self.panes = scan.panes;
+        self.scanning = self.groups.iter().map(|g| g.source.clone()).collect();
+        for g in self.groups.iter_mut() {
+            g.err = None;
+            g.sessions.clear();
+        }
+        self.panes.clear();
+        self.panes_loaded.clear();
+        self.rescan_kick = true;
         self.rebuild();
-        if let Some(i) = focus.and_then(|f| self.row_matching(&f)) {
-            self.set_selected(i);
+        self.restore_focus(focus);
+    }
+
+    /// Streams in one source's `list-sessions` outcome: clears its scanning
+    /// state and replaces that host's sessions (reachable) or records its failure
+    /// (unreachable). The host authoritatively owns its session list.
+    pub fn apply_source_result(
+        &mut self,
+        source: String,
+        mut sessions: Vec<Session>,
+        err: Option<String>,
+    ) {
+        let focus = self.current_ref().cloned();
+        self.scanning.remove(&source);
+        tree::sort_by_recency(&mut sessions);
+        if let Some(g) = self.groups.iter_mut().find(|g| g.source == source) {
+            g.err = err;
+            g.sessions = sessions;
+        } else {
+            self.groups.push(Group {
+                source,
+                err,
+                sessions,
+            });
+        }
+        self.rebuild();
+        self.restore_focus(focus);
+    }
+
+    /// Streams in one session's `list-panes` outcome, clearing its loading
+    /// placeholder. An empty `panes` (a failed/timed-out fetch) still resolves the
+    /// session — it shows no children rather than spinning forever.
+    pub fn apply_panes(&mut self, address: String, panes: Vec<WindowPanes>) {
+        let focus = self.current_ref().cloned();
+        self.panes_loaded.insert(address.clone());
+        self.panes.insert(address, panes);
+        self.rebuild();
+        self.restore_focus(focus);
+    }
+
+    /// After a streamed update rebuilds the rows: if the user has driven the
+    /// cursor, keep it on the focused node when it survives; otherwise let the
+    /// rebuild's recency preselect stand, so an untouched cursor follows the
+    /// most-recent session as hosts stream in.
+    fn restore_focus(&mut self, focus: Option<RowRef>) {
+        if self.user_moved {
+            if let Some(i) = focus.and_then(|f| self.row_matching(&f)) {
+                self.set_selected(i);
+            }
         }
     }
 
@@ -765,13 +922,6 @@ impl Switcher {
     /// the recency preselect.
     fn row_matching(&self, focus: &RowRef) -> Option<usize> {
         self.rows.iter().position(|r| same_node(&r.reference, focus))
-    }
-
-    async fn do_refresh(&mut self, ops: &dyn Ops) {
-        match ops.refresh().await {
-            Ok(scan) => self.apply_scan(scan),
-            Err(e) => self.flash = format!("refresh failed: {e}"),
-        }
     }
 
     // --- mouse --------------------------------------------------------------
@@ -788,6 +938,7 @@ impl Switcher {
         let offset = self.list_state.offset();
         let idx = offset + (row.saturating_sub(self.tree_inner.y)) as usize;
         if self.rows.get(idx).is_some_and(Row::selectable) {
+            self.user_moved = true;
             self.set_selected(idx);
         }
     }
@@ -856,15 +1007,23 @@ impl Switcher {
             .enumerate()
             .map(|(i, row)| {
                 let indent = " ".repeat(row.indent);
+                let selected = i == self.selected;
                 let mut style = Style::default().fg(row.color);
-                if i == self.selected {
+                if selected {
                     style = style.add_modifier(Modifier::REVERSED);
                 }
-                let line = Line::from(vec![
+                let mut spans = vec![
                     Span::raw(indent),
                     Span::styled(pad_label(&row.label), style),
-                ]);
-                ListItem::new(line)
+                ];
+                if let Some(hint) = &row.hint {
+                    let mut hint_style = Style::default().fg(COLOR_HINT);
+                    if selected {
+                        hint_style = hint_style.add_modifier(Modifier::REVERSED);
+                    }
+                    spans.push(Span::styled(format!("{hint} "), hint_style));
+                }
+                ListItem::new(Line::from(spans))
             })
             .collect();
 
@@ -904,6 +1063,12 @@ impl Switcher {
             format!(" kill {}? [y]es / [n]o", sess.address())
         } else if !self.flash.is_empty() {
             format!(" {}", self.flash)
+        } else if !self.scanning.is_empty() {
+            // A subtle global indicator while host probes are in flight; clears
+            // (falls through to the help line) once every host has settled.
+            let total = self.groups.len();
+            let done = total.saturating_sub(self.scanning.len());
+            format!(" ⟳ scanning hosts {done}/{total}… · q quit · ? help")
         } else {
             " enter attach · n new · R rename · x kill · / filter · r refresh · ? help · q quit"
                 .to_string()
@@ -1032,6 +1197,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Ops for RecordOps {
+        fn sources(&self) -> Vec<String> {
+            Vec::new()
+        }
+        async fn list_sessions(&self, _source: &str) -> anyhow::Result<Vec<Session>> {
+            Ok(Vec::new())
+        }
         async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session> {
             self.created
                 .lock()
@@ -1061,9 +1232,6 @@ mod tests {
         async fn capture(&self, _source: &str, _target: &str) -> anyhow::Result<String> {
             Ok(String::new())
         }
-        async fn refresh(&self) -> anyhow::Result<Scan> {
-            Ok(Scan::default())
-        }
     }
 
     // --- headless harness ---------------------------------------------------
@@ -1085,6 +1253,44 @@ mod tests {
             };
             h.draw();
             h
+        }
+
+        fn from_sources(aliases: &[&str]) -> Self {
+            let backend = TestBackend::new(100, 30);
+            let term = Terminal::new(backend).unwrap();
+            let aliases = aliases.iter().map(|s| s.to_string()).collect();
+            let mut h = Harness {
+                sw: Switcher::from_sources(aliases),
+                term,
+                ops: RecordOps::default(),
+            };
+            h.draw();
+            h
+        }
+
+        fn footer_text(&self) -> String {
+            let buf = self.buf();
+            let y = buf.area.height - 1;
+            let mut line = String::new();
+            for x in 0..buf.area.width {
+                line.push_str(buf[(x, y)].symbol());
+            }
+            line.trim_end().to_string()
+        }
+
+        /// Only the tree pane (first `TREE_WIDTH` columns) — so a hint assertion
+        /// is not satisfied by the preview pane's own loading/reconnecting dialog.
+        fn tree_text(&self) -> String {
+            let buf = self.buf();
+            let limit = TREE_WIDTH.min(buf.area.width);
+            let mut out = String::new();
+            for y in 0..buf.area.height {
+                for x in 0..limit {
+                    out.push_str(buf[(x, y)].symbol());
+                }
+                out.push('\n');
+            }
+            out
         }
 
         fn draw(&mut self) {
@@ -1289,59 +1495,205 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_scan_merges_fuller_scan() {
-        // First paint is local-only (no remote host, no window/pane detail).
-        let local_only = Scan {
-            groups: vec![Group {
-                source: "local".into(),
-                err: None,
-                sessions: vec![
-                    sess("local", "editor", 2, true, 200),
-                    sess("local", "build", 1, false, 100),
-                ],
-            }],
-            panes: HashMap::new(),
-        };
-        let mut h = Harness::new(local_only);
-        let out = h.text();
-        assert!(out.contains("editor"), "local session on first paint:\n{out}");
+    async fn rescan_resets_to_scanning_skeleton() {
+        // `r` resets every host to its scanning state and signals the loop to
+        // re-kick the probes — the tree returns to skeletons until results land.
+        let mut h = Harness::new(sample());
+        assert!(h.text().contains("inference"), "sessions before rescan");
+        h.ch('r').await;
         assert!(
-            !out.contains("jupiter00"),
-            "remote host must be absent before the deep scan:\n{out}"
+            h.sw.take_rescan_kick(),
+            "rescan must signal the loop to re-probe"
+        );
+        let tree = h.tree_text();
+        assert!(
+            tree.contains("scanning"),
+            "hosts return to scanning after rescan:\n{tree}"
         );
         assert!(
-            !out.contains("window 1"),
-            "pane detail must be absent before the deep scan:\n{out}"
+            !tree.contains("inference"),
+            "stale sessions clear until the re-probe lands:\n{tree}"
         );
+    }
 
-        // The background deep scan lands: remote host + pane detail stream in.
-        h.sw.apply_scan(sample());
-        h.draw();
+    // --- streaming model (render-first, per-element) ------------------------
+
+    #[tokio::test]
+    async fn from_sources_renders_scanning_skeletons() {
+        // The first frame: one host-skeleton row per source, each in a scanning
+        // state, before ANY probe result lands. Structure first, data later.
+        let h = Harness::from_sources(&["local", "jupiter00"]);
         let out = h.text();
+        assert!(out.contains("local"), "host skeleton present:\n{out}");
+        assert!(out.contains("jupiter00"), "host skeleton present:\n{out}");
         assert!(
-            out.contains("jupiter00"),
-            "remote host must stream in after the deep scan:\n{out}"
+            out.contains("scanning"),
+            "each host shows a scanning hint:\n{out}"
         );
         assert!(
-            out.contains("window 1: shell"),
-            "pane detail must stream in after the deep scan:\n{out}"
+            !out.contains("window"),
+            "no pane detail before any probe:\n{out}"
         );
     }
 
     #[tokio::test]
-    async fn apply_scan_preserves_cursor() {
-        let mut h = Harness::new(sample());
-        h.key(KeyCode::Home).await; // local host
-        h.key(KeyCode::Down).await; // editor
+    async fn apply_source_result_turns_scanning_into_sessions() {
+        let mut h = Harness::from_sources(&["local"]);
+        assert!(h.text().contains("scanning"), "scanning before the result");
+        h.sw.apply_source_result(
+            "local".into(),
+            vec![sess("local", "editor", 2, false, 100)],
+            None,
+        );
+        h.draw();
+        let out = h.tree_text();
+        assert!(out.contains("editor"), "session appears after result:\n{out}");
+        assert!(
+            !out.contains("scanning"),
+            "scanning hint clears once the only host resolves:\n{out}"
+        );
+        assert!(
+            out.contains("loading"),
+            "the session shows a loading hint until its panes arrive:\n{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_source_result_empty_shows_empty_hint() {
+        let mut h = Harness::from_sources(&["local"]);
+        h.sw.apply_source_result("local".into(), vec![], None);
+        h.draw();
+        let out = h.text();
+        assert!(
+            out.contains("empty"),
+            "a reachable host with no sessions reads (empty):\n{out}"
+        );
+        assert!(!out.contains("scanning"), "no longer scanning:\n{out}");
+    }
+
+    #[tokio::test]
+    async fn apply_source_result_unreachable_shows_reason() {
+        let mut h = Harness::from_sources(&["prod"]);
+        h.sw.apply_source_result(
+            "prod".into(),
+            vec![],
+            Some("connection refused".into()),
+        );
+        h.draw();
+        let out = h.text();
+        assert!(out.contains("unreachable"), "shows unreachable state:\n{out}");
+        assert!(
+            out.contains("connection refused"),
+            "shows the failure reason:\n{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_panes_attaches_and_clears_loading() {
+        let mut h = Harness::from_sources(&["local"]);
+        h.sw.apply_source_result(
+            "local".into(),
+            vec![sess("local", "editor", 1, false, 100)],
+            None,
+        );
+        h.draw();
+        assert!(
+            h.tree_text().contains("loading"),
+            "panes loading before they land"
+        );
+        h.sw.apply_panes(
+            "local/editor".into(),
+            vec![win(1, "shell", true, vec![pane(1, true, "bash")])],
+        );
+        h.draw();
+        let out = h.tree_text();
+        assert!(
+            out.contains("window 1: shell"),
+            "panes attach under the session:\n{out}"
+        );
+        assert!(
+            !out.contains("loading"),
+            "the loading hint clears once panes arrive:\n{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn streaming_auto_advances_to_recent_when_untouched() {
+        // While the user has not moved the cursor, each result advances the
+        // preselect toward the globally most-recent session.
+        let mut h = Harness::from_sources(&["local", "jupiter00"]);
+        h.sw.apply_source_result(
+            "local".into(),
+            vec![sess("local", "editor", 1, false, 100)],
+            None,
+        );
+        h.draw();
         assert_eq!(cur_session_name(&h).as_deref(), Some("editor"));
-        // A fuller scan arrives; the cursor stays on the same session rather
-        // than snapping back to the recency preselect (inference).
-        h.sw.apply_scan(sample());
+        h.sw.apply_source_result(
+            "jupiter00".into(),
+            vec![sess("jupiter00", "infer", 1, false, 300)],
+            None,
+        );
         h.draw();
         assert_eq!(
             cur_session_name(&h).as_deref(),
-            Some("editor"),
-            "apply_scan must keep the focused session if it survives"
+            Some("infer"),
+            "an untouched cursor follows the most-recent session as it streams in"
+        );
+    }
+
+    #[tokio::test]
+    async fn streaming_preserves_cursor_once_user_moves() {
+        let mut h = Harness::from_sources(&["local", "jupiter00"]);
+        h.sw.apply_source_result(
+            "local".into(),
+            vec![
+                sess("local", "editor", 1, false, 100),
+                sess("local", "build", 1, false, 50),
+            ],
+            None,
+        );
+        h.draw();
+        // editor preselected (most recent local); move down to build.
+        h.key(KeyCode::Down).await;
+        assert_eq!(cur_session_name(&h).as_deref(), Some("build"));
+        // A more-recent remote session streams in; the cursor must NOT jump.
+        h.sw.apply_source_result(
+            "jupiter00".into(),
+            vec![sess("jupiter00", "infer", 1, false, 300)],
+            None,
+        );
+        h.draw();
+        assert_eq!(
+            cur_session_name(&h).as_deref(),
+            Some("build"),
+            "once the user has moved, streaming updates keep the cursor put"
+        );
+    }
+
+    #[tokio::test]
+    async fn footer_shows_scanning_progress_then_clears() {
+        let mut h = Harness::from_sources(&["local", "jupiter00"]);
+        let footer = h.footer_text();
+        assert!(
+            footer.contains("scanning"),
+            "footer shows a global scanning indicator:\n{footer:?}"
+        );
+        assert!(
+            footer.contains("/2"),
+            "footer shows the host progress fraction:\n{footer:?}"
+        );
+        h.sw.apply_source_result("local".into(), vec![], None);
+        h.sw.apply_source_result("jupiter00".into(), vec![], None);
+        h.draw();
+        let footer = h.footer_text();
+        assert!(
+            !footer.contains("scanning"),
+            "the scanning indicator clears once all hosts settle:\n{footer:?}"
+        );
+        assert!(
+            footer.contains("attach"),
+            "the footer returns to the help line:\n{footer:?}"
         );
     }
 

@@ -26,7 +26,8 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::control;
-use crate::ui::switcher::{Ops, PreviewTarget, Scan, SwitchResult, Switcher};
+use crate::session::{Session, WindowPanes};
+use crate::ui::switcher::{Ops, PreviewTarget, SwitchResult, Switcher};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
@@ -37,9 +38,18 @@ pub enum Cmd {
     Mouse(MouseEvent),
     /// A freshly captured preview (target, text) — `None` ⇒ capture failed.
     Preview(PreviewTarget, Option<String>),
-    /// A fuller scan to merge into the live tree (the background deep scan that
-    /// follows the fast local-only first paint).
-    Scan(Scan),
+    /// One source's `list-sessions` outcome, streamed in as it returns. `err` set
+    /// ⇒ the host was unreachable.
+    SourceResult {
+        source: String,
+        sessions: Vec<Session>,
+        err: Option<String>,
+    },
+    /// One session's `list-panes` outcome, streamed in independently of the rest.
+    Panes {
+        address: String,
+        panes: Vec<WindowPanes>,
+    },
     /// A control-channel `dump` request: reply with the rendered screen.
     Dump(oneshot::Sender<String>),
 }
@@ -80,6 +90,46 @@ fn spawn_capture(switcher: &Switcher, ops: &Arc<dyn Ops>, cmd_tx: &mpsc::Sender<
         let text = ops.capture(&tgt.source, &tgt.target).await.ok();
         let _ = tx.send(Cmd::Preview(tgt, text)).await;
     });
+}
+
+/// Spawns one detached `list-sessions` probe per source; each streams its outcome
+/// back as a [`Cmd::SourceResult`] the moment it returns, so a fast host never
+/// waits on a slow one. The first `terminal.draw` runs before these are polled, so
+/// the skeleton paints instantly.
+fn spawn_probes(ops: &Arc<dyn Ops>, cmd_tx: &mpsc::Sender<Cmd>) {
+    for source in ops.sources() {
+        let ops = ops.clone();
+        let tx = cmd_tx.clone();
+        tokio::spawn(async move {
+            let (sessions, err) = match ops.list_sessions(&source).await {
+                Ok(s) => (s, None),
+                Err(e) => (Vec::new(), Some(e.to_string())),
+            };
+            let _ = tx.send(Cmd::SourceResult {
+                source,
+                sessions,
+                err,
+            })
+            .await;
+        });
+    }
+}
+
+/// Spawns one detached `list-panes` probe per session of a freshly reachable
+/// host; each streams its windows/panes back as a [`Cmd::Panes`] independently.
+fn spawn_panes(ops: &Arc<dyn Ops>, cmd_tx: &mpsc::Sender<Cmd>, sessions: Vec<Session>) {
+    for sess in sessions {
+        let ops = ops.clone();
+        let tx = cmd_tx.clone();
+        tokio::spawn(async move {
+            let panes = ops.panes(&sess).await.unwrap_or_default();
+            let _ = tx.send(Cmd::Panes {
+                address: sess.address(),
+                panes,
+            })
+            .await;
+        });
+    }
 }
 
 fn handle_mouse(
@@ -123,20 +173,10 @@ where
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut last_click: Option<(Instant, u16, u16)> = None;
 
-    // The switcher started from a fast local-only scan. Run the full deep scan
-    // (every host + pane detail) in the background and merge it in via a
-    // `Cmd::Scan`, so remote hosts stream in without blocking the first paint.
-    {
-        let ops = ops.clone();
-        let tx = cmd_tx.clone();
-        tokio::spawn(async move {
-            if let Ok(scan) = ops.refresh().await {
-                let _ = tx.send(Cmd::Scan(scan)).await;
-            }
-        });
-    }
-
     loop {
+        // The very first draw paints the host skeletons before any probe is
+        // polled (the runtime is current-thread; spawned probes run at the await
+        // below), so the first frame is instant.
         terminal.draw(|f| switcher.render(f))?;
         if switcher.should_exit() {
             break;
@@ -144,6 +184,10 @@ where
         // A target change (initial build or cursor move) kicks an immediate fetch.
         if switcher.take_poll_kick() {
             spawn_capture(switcher, &ops, &cmd_tx);
+        }
+        // The seed (and each `r` re-scan) kicks one streaming probe per source.
+        if switcher.take_rescan_kick() {
+            spawn_probes(&ops, &cmd_tx);
         }
 
         tokio::select! {
@@ -153,7 +197,15 @@ where
                     Cmd::Key(k) => switcher.handle_key(k, ops.as_ref()).await,
                     Cmd::Mouse(m) => handle_mouse(switcher, m, &mut last_click),
                     Cmd::Preview(tgt, text) => switcher.apply_capture(&tgt, text),
-                    Cmd::Scan(scan) => switcher.apply_scan(scan),
+                    Cmd::SourceResult { source, sessions, err } => {
+                        let reachable = err.is_none();
+                        switcher.apply_source_result(source, sessions.clone(), err);
+                        // A reachable host's sessions each get their panes fetched.
+                        if reachable {
+                            spawn_panes(&ops, &cmd_tx, sessions);
+                        }
+                    }
+                    Cmd::Panes { address, panes } => switcher.apply_panes(address, panes),
                     Cmd::Dump(reply) => {
                         let size = terminal.size()?;
                         let _ = reply.send(dump_switcher(switcher, size.width, size.height));
@@ -287,12 +339,10 @@ async fn dispatch(line: &str, cmd_tx: &mpsc::Sender<Cmd>) -> String {
 /// Runs one interactive switcher session on the real terminal, polling the live
 /// preview for as long as it is open. When `control` is `Some(path)`, a control
 /// socket is served at that path for the session's lifetime.
-pub async fn run_switcher(
-    scan: Scan,
-    ops: Arc<dyn Ops>,
-    control: Option<PathBuf>,
-) -> anyhow::Result<SwitchResult> {
-    let mut switcher = Switcher::new(scan);
+pub async fn run_switcher(ops: Arc<dyn Ops>, control: Option<PathBuf>) -> anyhow::Result<SwitchResult> {
+    // Seed host skeletons from the resolved source list — no probing — so the
+    // first frame paints immediately; the event loop streams the rest in.
+    let mut switcher = Switcher::from_sources(ops.sources());
     let (cmd_tx, cmd_rx) = mpsc::channel::<Cmd>(256);
 
     let _guard = TerminalGuard::enter()?;
@@ -315,15 +365,24 @@ pub async fn run_switcher(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::Session;
+    use crate::session::{Pane, Session, WindowPanes};
     use crate::ui::switcher::Scan;
     use crate::ui::tree::Group;
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    use std::collections::HashMap;
 
     struct NoopOps;
 
     #[async_trait::async_trait]
     impl Ops for NoopOps {
+        fn sources(&self) -> Vec<String> {
+            // No sources ⇒ the loop kicks no probes, leaving a switcher built from
+            // a complete snapshot untouched (these tests don't exercise streaming).
+            Vec::new()
+        }
+        async fn list_sessions(&self, _source: &str) -> anyhow::Result<Vec<Session>> {
+            Ok(Vec::new())
+        }
         async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session> {
             Ok(Session {
                 source: source.into(),
@@ -338,16 +397,11 @@ mod tests {
         async fn rename(&self, _s: &Session, _n: &str) -> anyhow::Result<()> {
             Ok(())
         }
-        async fn panes(&self, _s: &Session) -> anyhow::Result<Vec<crate::session::WindowPanes>> {
+        async fn panes(&self, _s: &Session) -> anyhow::Result<Vec<WindowPanes>> {
             Ok(Vec::new())
         }
         async fn capture(&self, _source: &str, _target: &str) -> anyhow::Result<String> {
             Ok(String::new())
-        }
-        async fn refresh(&self) -> anyhow::Result<Scan> {
-            // The background deep scan kicked off by the event loop refreshes
-            // with the same environment, not an empty one.
-            Ok(sample())
         }
     }
 
@@ -368,44 +422,68 @@ mod tests {
         }
     }
 
-    /// A scan with a remote host — the fuller picture a background deep scan
-    /// streams in on top of the local-only first paint.
-    fn deep_sample() -> Scan {
-        Scan {
-            groups: vec![
-                Group {
+    /// Ops that stream canned per-source sessions and per-session panes, mimicking
+    /// the real probe fan-out the event loop kicks on start.
+    struct StreamOps {
+        sources: Vec<String>,
+        sessions: HashMap<String, Vec<Session>>,
+        panes: HashMap<String, Vec<WindowPanes>>,
+    }
+
+    impl StreamOps {
+        /// A local host plus a remote host, the remote session carrying pane detail.
+        fn local_and_remote() -> Self {
+            let mut sessions = HashMap::new();
+            sessions.insert(
+                "local".to_string(),
+                vec![Session {
                     source: "local".into(),
-                    err: None,
-                    sessions: vec![Session {
-                        source: "local".into(),
-                        name: "editor".into(),
-                        windows: 1,
-                        attached: false,
-                        last_attached: 100,
-                    }],
-                },
-                Group {
+                    name: "editor".into(),
+                    windows: 1,
+                    attached: false,
+                    last_attached: 100,
+                }],
+            );
+            sessions.insert(
+                "remote".to_string(),
+                vec![Session {
                     source: "remote".into(),
-                    err: None,
-                    sessions: vec![Session {
-                        source: "remote".into(),
-                        name: "api".into(),
-                        windows: 1,
-                        attached: false,
-                        last_attached: 50,
+                    name: "api".into(),
+                    windows: 1,
+                    attached: false,
+                    last_attached: 50,
+                }],
+            );
+            let mut panes = HashMap::new();
+            panes.insert(
+                "remote/api".to_string(),
+                vec![WindowPanes {
+                    index: 1,
+                    name: "serve".into(),
+                    active: true,
+                    panes: vec![Pane {
+                        index: 1,
+                        active: true,
+                        command: "node".into(),
                     }],
-                },
-            ],
-            panes: Default::default(),
+                }],
+            );
+            StreamOps {
+                sources: vec!["local".into(), "remote".into()],
+                sessions,
+                panes,
+            }
         }
     }
 
-    /// Ops whose `refresh` returns a canned deeper scan, mimicking the real
-    /// deep scan that the event loop kicks off in the background on start.
-    struct DeepScanOps(Scan);
-
     #[async_trait::async_trait]
-    impl Ops for DeepScanOps {
+    impl Ops for StreamOps {
+        fn sources(&self) -> Vec<String> {
+            self.sources.clone()
+        }
+        async fn list_sessions(&self, source: &str) -> anyhow::Result<Vec<Session>> {
+            Ok(self.sessions.get(source).cloned().unwrap_or_default())
+        }
         async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session> {
             Ok(Session {
                 source: source.into(),
@@ -420,24 +498,34 @@ mod tests {
         async fn rename(&self, _s: &Session, _n: &str) -> anyhow::Result<()> {
             Ok(())
         }
-        async fn panes(&self, _s: &Session) -> anyhow::Result<Vec<crate::session::WindowPanes>> {
-            Ok(Vec::new())
+        async fn panes(&self, s: &Session) -> anyhow::Result<Vec<WindowPanes>> {
+            Ok(self.panes.get(&s.address()).cloned().unwrap_or_default())
         }
         async fn capture(&self, _source: &str, _target: &str) -> anyhow::Result<String> {
             Ok(String::new())
         }
-        async fn refresh(&self) -> anyhow::Result<Scan> {
-            Ok(self.0.clone())
-        }
     }
 
     #[tokio::test]
-    async fn event_loop_applies_scan_cmd() {
-        // A `Cmd::Scan` flowing through the loop replaces the rendered tree.
+    async fn event_loop_streams_source_result() {
+        // A `Cmd::SourceResult` flowing through the loop turns a scanning host
+        // into its sessions.
         let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        let mut sw = Switcher::new(sample()); // local-only first paint
+        let mut sw = Switcher::from_sources(vec!["local".into()]);
         let (tx, rx) = mpsc::channel(16);
-        tx.send(Cmd::Scan(deep_sample())).await.unwrap();
+        tx.send(Cmd::SourceResult {
+            source: "local".into(),
+            sessions: vec![Session {
+                source: "local".into(),
+                name: "editor".into(),
+                windows: 1,
+                attached: false,
+                last_attached: 100,
+            }],
+            err: None,
+        })
+        .await
+        .unwrap();
         let (reply_tx, reply_rx) = oneshot::channel();
         tx.send(Cmd::Dump(reply_tx)).await.unwrap();
         tx.send(Cmd::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)))
@@ -448,38 +536,46 @@ mod tests {
             .unwrap();
         let dump = reply_rx.await.unwrap();
         assert!(
-            dump.contains("remote") && dump.contains("api"),
-            "a Cmd::Scan must update the rendered tree:\n{dump}"
+            dump.contains("editor"),
+            "a SourceResult must stream the session into the tree:\n{dump}"
         );
     }
 
     #[tokio::test]
-    async fn event_loop_kicks_background_deep_scan() {
-        // On start the loop runs the full deep scan in the background and merges
-        // it in, so the remote host appears without a key/poll nudging it.
+    async fn event_loop_kicks_probes_on_start() {
+        // On start the loop kicks one `list-sessions` probe per source; a reachable
+        // host's sessions then get their panes fetched — all streaming in without a
+        // key/poll nudge, starting from a bare host skeleton.
         let (tx, rx) = mpsc::channel::<Cmd>(64);
         let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        let mut sw = Switcher::new(sample()); // local-only first paint
-        let ops: Arc<dyn Ops> = Arc::new(DeepScanOps(deep_sample()));
+        let mut sw = Switcher::from_sources(vec!["local".into(), "remote".into()]);
+        let ops: Arc<dyn Ops> = Arc::new(StreamOps::local_and_remote());
         let tx2 = tx.clone();
         let loop_task = tokio::spawn(async move {
             event_loop(&mut term, &mut sw, ops, tx2, rx).await.unwrap();
         });
 
-        let mut appeared = false;
-        for _ in 0..100 {
+        let mut got_remote = false;
+        let mut got_panes = false;
+        for _ in 0..200 {
             let (rtx, rrx) = oneshot::channel();
             if tx.send(Cmd::Dump(rtx)).await.is_err() {
                 break;
             }
-            if rrx.await.unwrap_or_default().contains("remote") {
-                appeared = true;
+            let dump = rrx.await.unwrap_or_default();
+            got_remote |= dump.contains("api");
+            got_panes |= dump.contains("window 1: serve");
+            if got_remote && got_panes {
                 break;
             }
         }
         assert!(
-            appeared,
-            "the background deep scan should stream the remote host into the tree"
+            got_remote,
+            "the remote host's sessions must stream in on start"
+        );
+        assert!(
+            got_panes,
+            "each reachable session's panes must stream in on start"
         );
 
         tx.send(Cmd::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)))
