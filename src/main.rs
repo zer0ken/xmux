@@ -11,7 +11,6 @@ use xmux::attach::{self, OsExecer};
 use xmux::cockpit;
 use xmux::control;
 use xmux::env::{self, ls_lines, Env};
-use xmux::jump;
 use xmux::manage;
 use xmux::mux;
 use xmux::session;
@@ -68,7 +67,7 @@ async fn run() -> i32 {
     let cli = Cli::parse();
     match cli.command {
         None => match interactive_env() {
-            Ok(env) => run_home(Arc::new(env)).await,
+            Ok(env) => cockpit::run_cockpit(Arc::new(env)).await,
             Err(code) => code,
         },
         Some(Command::Popup) => match interactive_env() {
@@ -109,68 +108,6 @@ fn interactive_env() -> Result<Env, i32> {
         return Err(1);
     }
     Ok(env)
-}
-
-/// The full-screen switcher. Pick a session → attach; on detach, control returns
-/// here, the tree is re-scanned and re-rendered (detach-to-home). Loops until the
-/// user quits.
-async fn run_home(env: Arc<Env>) -> i32 {
-    if attach::in_mux() {
-        eprintln!(
-            "xmux: warning — inside a mux; attach is refused here. Detach first (prefix d), or bind `xmux popup`."
-        );
-    }
-    let ops = env.ops();
-    loop {
-        // A cross-server pick handed off by the in-mux popup (which cannot
-        // switch-client across servers): attach it directly instead of
-        // re-rendering, so the popup pick is a single action.
-        if let Some(target) = jump::take_pending(&env.xmux_dir) {
-            if let Some(src) = env.by_alias.get(&target.source).cloned() {
-                if attach::nest_guard(attach::in_mux()).is_ok() {
-                    if let Err(e) =
-                        attach::run_attach(&OsExecer, &src.attach_command(&target.name, None))
-                    {
-                        eprintln!("xmux: attach failed: {e}");
-                    }
-                    continue;
-                }
-            }
-            // Unknown source or nested — fall through to the switcher.
-        }
-        // The switcher paints host skeletons immediately and streams each source's
-        // sessions and panes in independently — nothing blocks the first frame.
-        let result = match run_switcher(ops.clone(), control_path(&env)).await {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("xmux: {e}");
-                return 1;
-            }
-        };
-        let Some(chosen) = result.chosen else {
-            return 0;
-        };
-        let Some(src) = env.by_alias.get(&chosen.source).cloned() else {
-            eprintln!("xmux: unknown source {:?}", chosen.source);
-            continue;
-        };
-        if let Err(e) = attach::nest_guard(attach::in_mux()) {
-            eprintln!("xmux: {e}");
-            continue;
-        }
-        let window = (result.window >= 0).then_some(result.window);
-        // Local pre-selects the window with an instant local command; a remote
-        // folds the selection into the single attach connection (see
-        // Source::attach_command) so there is no separate call to hang on.
-        if !src.remote {
-            if let Some(w) = window {
-                let _ = manage::select_window(&src, &chosen.name, w).await;
-            }
-        }
-        if let Err(e) = attach::run_attach(&OsExecer, &src.attach_command(&chosen.name, window)) {
-            eprintln!("xmux: attach failed: {e}");
-        }
-    }
 }
 
 /// The in-mux switcher (bound via `display-popup -E "xmux popup"`). Same-server

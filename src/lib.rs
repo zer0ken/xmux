@@ -13,7 +13,6 @@ pub mod config;
 pub mod control;
 pub mod discovery;
 pub mod env;
-pub mod jump;
 pub mod manage;
 pub mod mux;
 pub mod session;

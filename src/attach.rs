@@ -4,9 +4,6 @@
 
 use anyhow::{anyhow, Result};
 
-use crate::mux;
-use crate::session::Session;
-
 /// Reports whether the process is running inside a mux, by checking `$TMUX`
 /// (psmux also sets `TMUX` for tmux-compat, so this one check covers both).
 pub fn in_mux() -> bool {
@@ -63,32 +60,6 @@ pub fn run_attach(e: &dyn Execer, argv: &[String]) -> Result<()> {
         return Err(anyhow!("attach: empty argv"));
     }
     e.exec(argv)
-}
-
-/// The resolved in-mux switch action.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SwitchPlan {
-    /// `true` ⇒ same-server instant switch; `false` ⇒ cross-server detach-to-home.
-    pub teleport: bool,
-    /// The mux argv to run.
-    pub argv: Vec<String>,
-}
-
-/// Resolves same-server teleport vs cross-server detach. A mux's switch-client
-/// cannot cross servers, so cross-source means detach back to the home loop
-/// (which re-renders and the user re-picks).
-pub fn plan_switch(from_source: &str, from_bin: &str, target: &Session) -> SwitchPlan {
-    if target.source == from_source {
-        SwitchPlan {
-            teleport: true,
-            argv: mux::switch_client(from_bin, &target.name),
-        }
-    } else {
-        SwitchPlan {
-            teleport: false,
-            argv: mux::detach_client(from_bin),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -157,30 +128,6 @@ mod tests {
         };
         assert!(run_attach(&f, &[]).is_err());
         assert!(f.got.borrow().is_none(), "execer must not be called");
-    }
-
-    #[test]
-    fn plan_switch_teleport() {
-        let target = Session {
-            source: "local".into(),
-            name: "dev".into(),
-            ..Default::default()
-        };
-        let got = plan_switch("local", "tmux", &target);
-        assert!(got.teleport);
-        assert_eq!(got.argv, mux::switch_client("tmux", "dev"));
-    }
-
-    #[test]
-    fn plan_switch_cross_server() {
-        let target = Session {
-            source: "remote".into(),
-            name: "dev".into(),
-            ..Default::default()
-        };
-        let got = plan_switch("local", "tmux", &target);
-        assert!(!got.teleport);
-        assert_eq!(got.argv, mux::detach_client("tmux"));
     }
 
     #[cfg(windows)]
