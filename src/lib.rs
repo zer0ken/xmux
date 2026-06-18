@@ -8,6 +8,7 @@
 //! the TUI. The binary crate (`main.rs`) wires them behind a CLI.
 
 pub mod attach;
+pub mod proxy;
 pub mod cockpit;
 pub mod config;
 pub mod control;
