@@ -16,6 +16,7 @@ use crate::attach;
 use crate::control;
 use crate::env::Env;
 use crate::manage;
+use crate::proxy;
 use crate::session::{self, Session};
 use crate::ui::run::run_switcher;
 
@@ -150,6 +151,16 @@ pub trait Attacher: Send + Sync {
 #[async_trait]
 pub trait Picker: Send + Sync {
     async fn pick(&self) -> Option<Target>;
+}
+
+/// Maps a picker/overlay `SwitchResult` to a `Target`, or `None` when nothing was
+/// chosen. The window is carried only when the result names a real one (`>= 0`).
+fn switch_result_to_target(result: crate::ui::switcher::SwitchResult) -> Option<Target> {
+    let chosen = result.chosen?;
+    Some(Target {
+        session: chosen,
+        window: (result.window >= 0).then_some(result.window),
+    })
 }
 
 /// A switch is honored only if the loop reaches it within this window of being
@@ -303,10 +314,16 @@ fn serve_cockpit(env: &Arc<Env>, sock: PathBuf, pending: Pending) -> Option<Cock
     })
 }
 
-/// The real terminal-handover attach (async, so the cockpit serves its socket
-/// concurrently with the child's run).
+/// The real terminal-handover attach. It runs the attach child under the PTY
+/// proxy so the in-pane prefix hotkey can open the picker overlay without a
+/// detach. A pick (same- or cross-server) is recorded into `pending`; the
+/// cockpit loop drains it and re-attaches, so both kinds of pick flow through
+/// the one re-attach path. The proxy is async, so the cockpit serves its socket
+/// concurrently with the child's run.
 struct RealAttacher {
     env: Arc<Env>,
+    ops: Arc<dyn crate::ui::switcher::Ops>,
+    pending: Pending,
 }
 #[async_trait]
 impl Attacher for RealAttacher {
@@ -332,19 +349,27 @@ impl Attacher for RealAttacher {
             }
         }
         let argv = src.attach_command(&target.session.name, target.window);
-        // A non-zero exit (e.g. ssh 255 for an unreachable remote) is a failed
-        // switch, not silence — record it so it is not lost behind the picker.
-        match tokio::process::Command::new(&argv[0])
-            .args(&argv[1..])
-            .status()
-            .await
-        {
-            Ok(st) if st.success() => {}
-            Ok(st) => {
-                let m = format!("attach {addr} failed: child exited {st}");
-                eprintln!("xmux: {m}");
-                log_cockpit(dir, &m);
+        let cfg = proxy::run::ProxyConfig {
+            prefix: proxy::run::prefix_from_env(),
+            action_key: b's',
+        };
+        match proxy::run::proxy_attach(&argv, self.ops.clone(), cfg).await {
+            // The overlay yielded a pick: record it (fresh) for the loop to
+            // re-attach, mirroring the socket popup path. Same- and cross-server
+            // picks both flow through this one re-attach path.
+            Ok(Some(result)) => {
+                if let Some(t) = switch_result_to_target(result) {
+                    *self.pending.lock().unwrap() = Some(PendingSwitch {
+                        target: t,
+                        at: Instant::now(),
+                    });
+                }
             }
+            // The child exited on its own: behave as the old bare-exit path —
+            // return and let the loop re-pick. (The proxy does not surface the
+            // child's exit status, so a non-zero remote exit, e.g. ssh 255, is no
+            // longer logged here; see the Task 7 report.)
+            Ok(None) => {}
             Err(e) => {
                 let m = format!("attach {addr} failed: {e}");
                 eprintln!("xmux: {m}");
@@ -369,11 +394,7 @@ impl Picker for RealPicker {
                 return None;
             }
         };
-        let chosen = result.chosen?;
-        Some(Target {
-            session: chosen,
-            window: (result.window >= 0).then_some(result.window),
-        })
+        switch_result_to_target(result)
     }
 }
 
@@ -401,7 +422,11 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     }
     let _handle = handle;
 
-    let attacher = RealAttacher { env: env.clone() };
+    let attacher = RealAttacher {
+        env: env.clone(),
+        ops: env.ops(),
+        pending: pending.clone(),
+    };
     let picker = RealPicker {
         ops: env.ops(),
         control: pick_control_path(&env),
@@ -495,6 +520,44 @@ mod tests {
         // Bare address (no leading window token) still works, window None.
         let (_, target) = dispatch_cockpit("switch jupiter06/api", known);
         assert_eq!(target.unwrap().window, None);
+    }
+
+    #[test]
+    fn switch_result_maps_to_target() {
+        use crate::session::Session;
+        use crate::ui::switcher::SwitchResult;
+
+        // No choice → no target (the picker/overlay was cancelled).
+        assert!(switch_result_to_target(SwitchResult {
+            chosen: None,
+            window: 3,
+        })
+        .is_none());
+
+        // A real window (>= 0) is carried.
+        let t = switch_result_to_target(SwitchResult {
+            chosen: Some(Session {
+                source: "jupiter06".into(),
+                name: "api".into(),
+                ..Default::default()
+            }),
+            window: 2,
+        })
+        .expect("a chosen session yields a target");
+        assert_eq!(t.session.address(), "jupiter06/api");
+        assert_eq!(t.window, Some(2));
+
+        // A sentinel window (< 0) means "no specific window".
+        let t = switch_result_to_target(SwitchResult {
+            chosen: Some(Session {
+                source: "local".into(),
+                name: "work".into(),
+                ..Default::default()
+            }),
+            window: -1,
+        })
+        .expect("a chosen session yields a target");
+        assert_eq!(t.window, None);
     }
 
     #[test]
