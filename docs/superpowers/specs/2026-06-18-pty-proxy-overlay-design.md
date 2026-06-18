@@ -14,11 +14,12 @@ in `tmp/pty-brainstorm/02-repo-pain-points.md` and are summarized under
 
 ## Status
 
-**Strategy and PTY plumbing: proven (spike GREEN).** **Implementation: gated** on
-two further spikes (S-local, S-input below) plus the design fixes in this doc.
-The first design draft was revised after an adversarial review found the overlay
-mechanism contradicted the picker it reused; that review's findings are resolved
-here (`tmp/pty-brainstorm/04-adversarial-doc-review.md`).
+**Strategy and PTY plumbing: proven (spike GREEN). Local mux attach over the PTY
+slave: proven (spike S-local).** **Implementation: gated** on the remaining
+live-terminal checks (host raw input + visual handover, below) plus the design
+fixes in this doc. The first design draft was revised after an adversarial review
+found the overlay mechanism contradicted the picker it reused; that review's
+findings are resolved here (`tmp/pty-brainstorm/04-adversarial-doc-review.md`).
 
 ## Why the cockpit must own the byte stream
 
@@ -84,20 +85,26 @@ Three findings are baked into the design:
 3. **The overlay must not toggle the alternate screen.** See
    [Overlay composition](#overlay-composition).
 
-**Still unproven (two gating spikes required before implementation):**
+**Proven by spike S-local:** a `psmux -L … attach` spawned on a portable-pty
+slave emits the tmux **client attach handshake** (`?1049h` + mouse / bracketed-
+paste mode sets) — i.e. it passes the controlling-tty / isatty checks and attaches
+— once the nesting-guard env is cleared on the child. With `PSMUX_SESSION` left
+set the same attach prints "sessions should be nested with care" and never
+handshakes; cleared, it handshakes. **Design note:** the cockpit must clear
+`PSMUX_SESSION`/`TMUX`/`TMUX_PANE` on the attach child (it runs un-nested anyway,
+so this is defensive hygiene). The full marker round-trip + visual fidelity is the
+visual gate below.
 
-- **S-local — local mux attach over the portable-pty slave.** The spike used
-  `cmd.exe`; the load-bearing case is `psmux/tmux -S <sock> attach` on the slave,
-  which is pickier about its controlling tty. This is the most-used path (the
-  cockpit's own local session) and is historically hard to verify headless
-  (`xmux-cockpit-local-attach-headless-untestable`). Spike it before building.
-- **S-input — host raw input on Windows.** The spike proved PTY *child* I/O, not
-  reading the *host* console as a forwardable raw byte stream with prefix
-  detection (win32-input-mode / raw console read). Spike the host-input read +
-  the minimal byte→key decode for the picker (below) before building.
+**Remaining live-terminal gates (not cleanly headless — validated during TDD on a
+real terminal):**
 
-The visual screen-handover (does the live pane look right after the overlay
-closes) needs a real terminal / human eye and stays a gated manual check.
+- **Host raw input on Windows (S-input).** The existing switcher already reads
+  host input via crossterm on this box, so reading works; the open part is reading
+  it as a *forwardable raw byte stream* (vs crossterm's decoded events) with prefix
+  detection. There is no interactive input source headless, so this is validated
+  live during TDD.
+- **Visual screen-handover** — does the live pane look right after an overlay
+  close (the vt100 repaint + private-mode re-emit fidelity, C3). Needs a human eye.
 
 ## Architecture
 
@@ -343,8 +350,9 @@ delta — measure it as part of the work, not a surprise.
 
 ## Testing strategy
 
-- **Gating spikes:** S-local (psmux/tmux attach over the slave) and S-input (host
-  raw read + picker byte→key decode) must run GREEN before implementation.
+- **Gating spikes:** S-local (psmux attach over the slave) is **GREEN** (client
+  handshake over the slave). S-input (host raw read + picker byte→key decode) and
+  the visual handover are live-terminal gates validated during TDD, not headless.
 - **Unit tests:** the byte-level input state machine (paste/UTF-8/escape/DSR
   framing, prefix double-tap, prefix-timeout) and the vt100 restore (alt-screen
   reconstruct, cursor + one wide-char/CJK assertion).
@@ -395,5 +403,5 @@ under ~1s. Specced later.
 - Resize: **always forward** (master + parser + picker injection).
 - I/O: dedicated threads + atomic `Mode` + per-attach generation token + a single
   `Drop` restore owner under `panic=unwind`.
-- Gating spikes: **S-local** (mux attach over the slave), **S-input** (host raw
-  read + picker decode) before implementation.
+- Gating spikes: **S-local GREEN** (mux attach over the slave proven); **S-input**
+  (host raw read + picker decode) + visual handover are live-terminal gates in TDD.
