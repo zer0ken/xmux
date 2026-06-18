@@ -31,7 +31,7 @@ impl InputMachine {
 
     fn track_paste(&mut self, byte: u8) {
         self.paste_scan.push(byte);
-        if self.paste_scan.len() > PASTE_START.len() {
+        if self.paste_scan.len() > PASTE_START.len().max(PASTE_END.len()) {
             self.paste_scan.remove(0);
         }
         if !self.in_paste && self.paste_scan.ends_with(PASTE_START) {
