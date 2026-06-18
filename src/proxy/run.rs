@@ -87,6 +87,16 @@ pub fn prefix_from_env() -> u8 {
     parse_prefix(std::env::var("XMUX_PREFIX").ok().as_deref())
 }
 
+/// Write one chunk to stdout, acquiring and releasing the process-global stdout
+/// lock within this call. Holding a `StdoutLock` across the pump's blocking read
+/// (or while the picker overlay draws from another task) deadlocks the picker;
+/// scoping the lock to the write is the contract that prevents C1.
+fn pump_write(out: &std::io::Stdout, chunk: &[u8]) {
+    let mut lock = out.lock();
+    let _ = lock.write_all(chunk);
+    let _ = lock.flush();
+}
+
 /// The proxy's internal mode. The picker overlay is a self-contained inner loop
 /// (gated by `overlay_active`, not a mode), so there is no separate Picker state.
 #[derive(PartialEq, Clone, Copy)]
@@ -169,8 +179,6 @@ pub async fn proxy_attach(
     // Stdout handle for the pump to write into (overlay-gated).
     let stdout = std::io::stdout();
     std::thread::spawn(move || {
-        // Keep a local lock handle so drops don't release stdout between writes.
-        let mut out = stdout.lock();
         let mut buf = [0u8; 4096];
         loop {
             match reader.read(&mut buf) {
@@ -180,9 +188,14 @@ pub async fn proxy_attach(
                     // Tee to main thread for grid (non-blocking; unbounded so never drops).
                     let _ = pump_tx.send(chunk.clone());
                     // Write to real stdout only when the overlay is not active.
+                    // Acquire the process-global stdout lock PER WRITE so it is
+                    // never held across the blocking ConPTY read (which never
+                    // EOFs after child exit) and never held while the overlay is
+                    // up. The picker draws to `std::io::stdout()` from a different
+                    // (tokio) task; holding a long-lived `StdoutLock` here would
+                    // block that draw forever and deadlock the first `Ctrl-g s`.
                     if !pump_overlay.load(Ordering::Acquire) {
-                        let _ = out.write_all(&chunk);
-                        let _ = out.flush();
+                        pump_write(&stdout, &chunk);
                     }
                 }
                 Err(_) => break,
@@ -234,7 +247,11 @@ pub async fn proxy_attach(
     let mut event_stream = EventStream::new();
 
     loop {
-        // Check if the child has exited (non-blocking).
+        // Check if the child has exited (non-blocking). NOTE (I2): child exit is
+        // NOT observed while the overlay is open — the inner overlay loop does not
+        // poll try_wait. It is detected here on the next outer iteration once the
+        // overlay closes (the overlay is a short-lived modal), so the delay is
+        // bounded by how long the picker stays up.
         if let Ok(Some(_status)) = child.try_wait() {
             mode = Mode::Quitting;
         }
@@ -490,6 +507,75 @@ mod tests {
         assert_eq!(parse_prefix(Some("C-Space")), 0x00);
         assert_eq!(parse_prefix(None), 0x07);
         assert_eq!(parse_prefix(Some("garbage")), 0x07);
+    }
+
+    // -- C1 regression: the pump must not hold the stdout lock -------------
+    //
+    // Before the fix the pump bound a long-lived `StdoutLock`, so the picker's
+    // draw (a `std::io::stdout()` write/lock from another thread) blocked
+    // forever and the first `Ctrl-g s` hung the process. This proves the FIXED
+    // per-write pattern (`pump_write`) does NOT block a concurrent stdout lock
+    // from another thread.
+    //
+    // It can NEVER hang the suite: the writer self-terminates after N iterations,
+    // the prober signals over a channel, the main thread waits with a 2s
+    // recv_timeout, and a watchdog flips an AtomicBool that stops the writer
+    // regardless — so every spawned thread returns and the test always finishes.
+    #[test]
+    fn pump_write_does_not_hold_stdout_lock_across_threads() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::mpsc::{self, RecvTimeoutError};
+
+        let stop = Arc::new(AtomicBool::new(false));
+
+        // Writer thread: emulate the pump's per-write step. Writes EMPTY bytes
+        // (no test-output pollution) through the fixed acquire-write-release
+        // helper, then exits after a bounded iteration count or when stopped.
+        let writer_stop = stop.clone();
+        let writer = std::thread::spawn(move || {
+            let out = std::io::stdout();
+            for _ in 0..50 {
+                if writer_stop.load(Ordering::Acquire) {
+                    break;
+                }
+                pump_write(&out, b"");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+
+        // Prober thread: a held pump lock (the C1 bug) would block this lock
+        // acquisition forever; with the fix it returns promptly and signals.
+        let (probe_tx, probe_rx) = mpsc::channel::<()>();
+        let prober = std::thread::spawn(move || {
+            let out = std::io::stdout();
+            {
+                let mut lock = out.lock();
+                let _ = lock.write_all(b"");
+            }
+            let _ = probe_tx.send(());
+        });
+
+        // Watchdog: guarantees the writer stops even if anything stalls, so no
+        // thread can outlive the test.
+        let watchdog_stop = stop.clone();
+        let watchdog = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(2));
+            watchdog_stop.store(true, Ordering::Release);
+        });
+
+        let probed = probe_rx.recv_timeout(Duration::from_secs(2));
+
+        // Ensure everything winds down regardless of outcome.
+        stop.store(true, Ordering::Release);
+        let _ = writer.join();
+        let _ = prober.join();
+        let _ = watchdog.join();
+
+        assert!(
+            matches!(probed, Ok(())),
+            "concurrent stdout lock timed out — the pump is holding the lock (C1 regression); err={:?}",
+            probed.err().unwrap_or(RecvTimeoutError::Disconnected)
+        );
     }
 
     // Smoke test: requires a console; run on demand with
