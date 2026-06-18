@@ -36,6 +36,8 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 pub enum Cmd {
     Key(KeyEvent),
     Mouse(MouseEvent),
+    /// Host terminal resized (cols, rows) — re-layout the picker.
+    Resize(u16, u16),
     /// A freshly captured preview (target, text) — `None` ⇒ capture failed.
     Preview(PreviewTarget, Option<String>),
     /// One source's `list-sessions` outcome, streamed in as it returns. `err` set
@@ -212,6 +214,9 @@ where
                         }
                     }
                     Cmd::Mouse(m) => handle_mouse(switcher, m, &mut last_click),
+                    Cmd::Resize(cols, rows) => {
+                        let _ = terminal.resize(ratatui::layout::Rect::new(0, 0, cols, rows));
+                    }
                     Cmd::Preview(tgt, text) => switcher.apply_capture(&tgt, text),
                     Cmd::SourceResult { source, sessions, err } => {
                         let reachable = err.is_none();
@@ -381,6 +386,22 @@ pub async fn run_switcher(
     events.abort();
     drop(control_handle); // abort the accept loop and remove the socket
     result?;
+    Ok(switcher.result())
+}
+
+/// Like `run_switcher` but the CALLER owns the terminal (raw mode, screen
+/// buffer) and the input source. Used by the PTY proxy overlay: no
+/// `TerminalGuard` (no alt-screen toggle) and no `read_events` (the proxy feeds
+/// `Cmd::Key`/`Cmd::Resize` over `cmd_tx`).
+pub async fn run_picker_fed(
+    ops: Arc<dyn Ops>,
+    cmd_tx: mpsc::Sender<Cmd>,
+    cmd_rx: mpsc::Receiver<Cmd>,
+    term: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+) -> anyhow::Result<SwitchResult> {
+    let mut switcher = Switcher::from_sources(ops.sources());
+    term.clear()?;
+    event_loop(term, &mut switcher, ops, cmd_tx, cmd_rx).await?;
     Ok(switcher.result())
 }
 
@@ -732,6 +753,21 @@ mod tests {
             dump.contains("xmux"),
             "dump should render the header:\n{dump}"
         );
+    }
+
+    #[tokio::test]
+    async fn resize_cmd_is_handled_then_quit() {
+        let ops: Arc<dyn Ops> = Arc::new(NoopOps);
+        let (tx, rx) = mpsc::channel::<Cmd>(16);
+        let mut switcher = Switcher::from_sources(ops.sources());
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        // a resize then a quit key
+        tx.send(Cmd::Resize(100, 40)).await.unwrap();
+        tx.send(Cmd::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)))
+            .await
+            .unwrap();
+        let r = event_loop(&mut term, &mut switcher, ops, tx.clone(), rx).await;
+        assert!(r.is_ok(), "Cmd::Resize must be handled without error");
     }
 
     #[tokio::test]
