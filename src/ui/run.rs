@@ -389,19 +389,21 @@ pub async fn run_switcher(
     Ok(switcher.result())
 }
 
-/// Like `run_switcher` but the CALLER owns the terminal (raw mode, screen
-/// buffer) and the input source. Used by the PTY proxy overlay: no
-/// `TerminalGuard` (no alt-screen toggle) and no `read_events` (the proxy feeds
-/// `Cmd::Key`/`Cmd::Resize` over `cmd_tx`).
+/// Like `run_switcher` but the CALLER owns input + screen policy. Used by the
+/// PTY proxy overlay: it constructs its OWN `CrosstermBackend` terminal on the
+/// current screen (no `TerminalGuard`, no alt-screen toggle — the proxy owns
+/// that), and spawns NO `read_events` (the proxy is the single input reader and
+/// feeds `Cmd::Key`/`Cmd::Resize` over `cmd_tx`). Owning the terminal means this
+/// can be `tokio::spawn`ed while the proxy keeps reading stdin.
 pub async fn run_picker_fed(
     ops: Arc<dyn Ops>,
     cmd_tx: mpsc::Sender<Cmd>,
     cmd_rx: mpsc::Receiver<Cmd>,
-    term: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
 ) -> anyhow::Result<SwitchResult> {
     let mut switcher = Switcher::from_sources(ops.sources());
+    let mut term = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
     term.clear()?;
-    event_loop(term, &mut switcher, ops, cmd_tx, cmd_rx).await?;
+    event_loop(&mut term, &mut switcher, ops, cmd_tx, cmd_rx).await?;
     Ok(switcher.result())
 }
 

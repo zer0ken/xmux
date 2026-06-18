@@ -15,16 +15,39 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, EventStream};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use futures::StreamExt;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use ratatui::crossterm;
 use tokio::sync::mpsc;
 
 use crate::proxy::{
+    decode::KeyDecoder,
     input::{InAction, InputMachine},
     screen::Grid,
 };
+use crate::ui::run::{run_picker_fed, Cmd};
 use crate::ui::switcher::{Ops, SwitchResult};
+
+/// RAII guard: enables raw mode on construction and restores it on drop, so the
+/// host terminal is left cooked on normal return AND on a panic (release builds
+/// unwind). The proxy needs raw mode for the WHOLE session — byte-faithful
+/// forwarding can't tolerate the line discipline cooking input — not just while
+/// the overlay is up.
+struct RawGuard;
+
+impl RawGuard {
+    fn enter() -> anyhow::Result<Self> {
+        enable_raw_mode()?;
+        Ok(RawGuard)
+    }
+}
+
+impl Drop for RawGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+    }
+}
 
 /// Proxy configuration: the C0 prefix byte and the action byte that, when
 /// typed after the prefix, opens the session picker.
@@ -64,14 +87,12 @@ pub fn prefix_from_env() -> u8 {
     parse_prefix(std::env::var("XMUX_PREFIX").ok().as_deref())
 }
 
-/// The proxy's internal mode.
+/// The proxy's internal mode. The picker overlay is a self-contained inner loop
+/// (gated by `overlay_active`, not a mode), so there is no separate Picker state.
 #[derive(PartialEq, Clone, Copy)]
-#[allow(dead_code)] // Picker used by Task-6 overlay path (not yet wired)
 enum Mode {
     /// Forwarding host input to the child and streaming child output to stdout.
     Forwarding,
-    /// The picker overlay owns the terminal; the output pump is suppressed via overlay_active.
-    Picker,
     /// Teardown in progress.
     Quitting,
 }
@@ -83,15 +104,21 @@ enum Mode {
 /// - Pumps child output to stdout (suppressed while `overlay_active`) and tees
 ///   every byte into a `Grid` for repaint on overlay close.
 /// - Forwards host stdin bytes through `InputMachine`; on `InAction::OpenPicker`
-///   the Task-6 picker overlay will be driven (stub for now).
-/// - On child exit, returns `None`. On picker pick/cancel, returns
-///   `Some(result)`.
+///   it suspends forwarding, draws the picker overlay (feeding it the proxy's own
+///   decoded stdin so there is never a second stdin reader), and on close repaints
+///   the live pane via `Grid::restore_bytes()`.
+/// - On child exit, returns `None`. On a picker pick (cross- or same-server),
+///   returns `Some(result)`; on a picker cancel, resumes forwarding.
 pub async fn proxy_attach(
     argv: &[String],
     ops: Arc<dyn Ops>,
     cfg: ProxyConfig,
 ) -> anyhow::Result<Option<SwitchResult>> {
     anyhow::ensure!(!argv.is_empty(), "proxy_attach: argv must not be empty");
+
+    // Raw mode for the whole session (RAII-restored on return or panic). Enabled
+    // before any I/O so host keystrokes reach us byte-faithfully.
+    let _raw = RawGuard::enter()?;
 
     // ------------------------------------------------------------------
     // 1. Open a PTY pair and spawn the child on the slave.
@@ -172,12 +199,10 @@ pub async fn proxy_attach(
     //    (b) Crossterm terminal resize events
     //    (c) Raw stdin bytes forwarded through InputMachine
     //
-    // NOTE (S-input live-terminal gate): the proxy runs a raw stdin thread
-    // (below) for byte-faithful forwarding AND a crossterm EventStream for
-    // resize events. On Windows these two can compete for console input.
-    // The correct single-reader design (one reader yielding both raw bytes
-    // and resize via raw console input) is deferred to Task 6. Do NOT
-    // rearchitect the input model here.
+    // The proxy's raw stdin thread is the SINGLE reader of host stdin. The
+    // EventStream is used only for Resize (not key bytes). When the overlay
+    // opens, the same `stdin_rx` is decoded and fed into the picker — the proxy
+    // never spawns a second stdin reader, which would race this thread.
     // ------------------------------------------------------------------
     let mut grid = Grid::new(size.1, size.0);
     let mut machine = InputMachine::new(
@@ -186,7 +211,7 @@ pub async fn proxy_attach(
         Duration::from_millis(400),
     );
     let mut mode = Mode::Forwarding;
-    let pick_result: Option<SwitchResult> = None;
+    let mut pick_result: Option<SwitchResult> = None;
 
     let (stdin_tx, mut stdin_rx) = mpsc::channel::<Vec<u8>>(256);
     std::thread::spawn(move || {
@@ -228,31 +253,21 @@ pub async fn proxy_attach(
                 if mode == Mode::Forwarding {
                     let now = Instant::now();
                     let mut to_forward: Vec<u8> = Vec::new();
+                    let mut open_picker = false;
                     for byte in bytes {
                         let actions = machine.feed(byte, now);
                         for action in actions {
                             match action {
                                 InAction::Forward(b) => to_forward.extend_from_slice(&b),
                                 InAction::OpenPicker => {
-                                    // Flush pending bytes first.
+                                    // Flush pending bytes first; the prefix+action
+                                    // bytes themselves are NOT forwarded to the child.
                                     if !to_forward.is_empty() {
                                         let _ = pty_writer.write_all(&to_forward);
                                         let _ = pty_writer.flush();
                                         to_forward.clear();
                                     }
-                                    // TODO(Task 6): drive the picker overlay here.
-                                    // Steps:
-                                    //   overlay_active.store(true, Ordering::Release);
-                                    //   mode = Mode::Picker;
-                                    //   run the picker fed by KeyDecoder over a Cmd channel;
-                                    //   let restore = grid.restore_bytes();
-                                    //   stdout.lock().write_all(&restore)?;
-                                    //   overlay_active.store(false, Ordering::Release);
-                                    //   mode = Mode::Forwarding; (or Quitting on pick)
-                                    //
-                                    // For now: swallow the hotkey, stay in Forwarding.
-                                    // The prefix+action bytes are NOT forwarded to the child.
-                                    let _ = &ops; // suppress unused-variable lint until Task 6
+                                    open_picker = true;
                                 }
                             }
                         }
@@ -272,6 +287,81 @@ pub async fn proxy_attach(
                     if !flush_bytes.is_empty() {
                         let _ = pty_writer.write_all(&flush_bytes);
                         let _ = pty_writer.flush();
+                    }
+
+                    // The hotkey fired: run the picker overlay. The proxy stays
+                    // the single stdin reader — it decodes its own `stdin_rx` and
+                    // FEEDS the picker over a Cmd channel; no second reader.
+                    if open_picker {
+                        overlay_active.store(true, Ordering::Release);
+
+                        let (pcmd_tx, pcmd_rx) = mpsc::channel::<Cmd>(256);
+                        let picker = tokio::spawn(run_picker_fed(
+                            ops.clone(),
+                            pcmd_tx.clone(),
+                            pcmd_rx,
+                        ));
+                        tokio::pin!(picker);
+
+                        let mut decoder = KeyDecoder::new();
+                        // Inner loop: keep the proxy as the SOLE reader of stdin,
+                        // routing decoded keys + resize into the picker, feeding
+                        // the grid, until the picker task completes.
+                        let picker_out = loop {
+                            tokio::select! {
+                                // Picker finished — take its result.
+                                joined = &mut picker => {
+                                    break joined;
+                                }
+                                // Keep the grid current under the overlay so the
+                                // restore repaint reflects the child's live screen.
+                                Some(chunk) = pump_rx.recv() => {
+                                    grid.feed(&chunk);
+                                }
+                                // The proxy's own stdin → decode → feed the picker.
+                                Some(raw) = stdin_rx.recv() => {
+                                    for key in decoder.feed(&raw) {
+                                        if pcmd_tx.send(Cmd::Key(key)).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                // Resize: re-size the child PTY + grid AND tell the
+                                // picker so its layout tracks the live terminal.
+                                Some(Ok(event)) = event_stream.next() => {
+                                    if let Event::Resize(cols, rows) = event {
+                                        grid.resize(rows, cols);
+                                        let _ = pair.master.resize(PtySize {
+                                            rows,
+                                            cols,
+                                            pixel_width: 0,
+                                            pixel_height: 0,
+                                        });
+                                        let _ = pcmd_tx.send(Cmd::Resize(cols, rows)).await;
+                                    }
+                                }
+                            }
+                        };
+
+                        // Overlay closed: repaint the live pane from the grid, then
+                        // re-enable the output pump's stdout writes.
+                        let restore = grid.restore_bytes();
+                        let mut out = std::io::stdout().lock();
+                        let _ = out.write_all(&restore);
+                        let _ = out.flush();
+                        drop(out);
+                        overlay_active.store(false, Ordering::Release);
+
+                        // A pick (cross- or same-server) ends the proxy so the
+                        // cockpit acts on the switch. A cancel, a picker error, or a
+                        // join failure all leave `mode` at Forwarding so the live
+                        // session resumes rather than being torn down.
+                        if let Ok(Ok(result)) = picker_out {
+                            if result.chosen.is_some() {
+                                pick_result = Some(result);
+                                mode = Mode::Quitting;
+                            }
+                        }
                     }
                 }
             }
@@ -410,5 +500,133 @@ mod tests {
         // mirrors tmp/pty-spike: spawn cmd.exe on a slave, write a command,
         // read the marker back. Asserts bytes round-trip through the proxy PTY.
         assert!(super::smoke_roundtrip());
+    }
+
+    // -- decode → picker wiring -------------------------------------------
+    //
+    // The full overlay (raw-mode stdin thread + live console) is a manual gate.
+    // What IS headless-testable is the exact decode→feed path the overlay uses:
+    // raw host bytes → `KeyDecoder` → `Cmd::Key` → the switcher's selection. This
+    // proves a stream of host keystrokes (filter then Enter) drives the picker to
+    // the intended `SwitchResult` deterministically.
+
+    use crate::session::Session;
+    use crate::ui::run::event_loop;
+    use crate::ui::switcher::{Scan, Switcher};
+    use crate::ui::tree::Group;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    struct NoopOps;
+
+    #[async_trait::async_trait]
+    impl Ops for NoopOps {
+        fn sources(&self) -> Vec<String> {
+            // No sources ⇒ the loop kicks no probes, leaving a `Switcher::new`
+            // snapshot untouched (this test doesn't exercise streaming).
+            Vec::new()
+        }
+        async fn list_sessions(&self, _source: &str) -> anyhow::Result<Vec<Session>> {
+            Ok(Vec::new())
+        }
+        async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session> {
+            Ok(Session {
+                source: source.into(),
+                name: name.into(),
+                windows: 1,
+                ..Default::default()
+            })
+        }
+        async fn kill(&self, _s: &Session) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn rename(&self, _s: &Session, _n: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn panes(&self, _s: &Session) -> anyhow::Result<Vec<crate::session::WindowPanes>> {
+            Ok(Vec::new())
+        }
+        async fn capture(&self, _source: &str, _target: &str) -> anyhow::Result<String> {
+            Ok(String::new())
+        }
+    }
+
+    /// Two local sessions: `editor` (attached, most-recent) and `build`.
+    fn sample_scan() -> Scan {
+        Scan {
+            groups: vec![Group {
+                source: "local".into(),
+                err: None,
+                sessions: vec![
+                    Session {
+                        source: "local".into(),
+                        name: "editor".into(),
+                        windows: 1,
+                        attached: true,
+                        last_attached: 999,
+                    },
+                    Session {
+                        source: "local".into(),
+                        name: "build".into(),
+                        windows: 1,
+                        attached: false,
+                        last_attached: 10,
+                    },
+                ],
+            }],
+            panes: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn decoded_filter_then_enter_picks_visible_session() {
+        // Host types `/build` then Enter (apply filter) then Enter (attach). The
+        // SAME bytes the overlay would receive — decoded by `KeyDecoder` and sent
+        // as `Cmd::Key` — must drive the picker to the visible (filtered) session,
+        // not the attached/most-recent one that got filtered out.
+        let raw = b"/build\r\r";
+        let mut decoder = KeyDecoder::new();
+        let keys = decoder.feed(raw);
+
+        let (tx, rx) = mpsc::channel::<Cmd>(32);
+        for k in keys {
+            tx.send(Cmd::Key(k)).await.unwrap();
+        }
+
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut sw = Switcher::new(sample_scan());
+        event_loop(&mut term, &mut sw, Arc::new(NoopOps), tx.clone(), rx)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            sw.result().chosen.as_ref().map(|s| s.name.as_str()),
+            Some("build"),
+            "decoded filter+Enter must pick the visible (filtered) session"
+        );
+    }
+
+    #[tokio::test]
+    async fn decoded_esc_cancels_with_no_choice() {
+        // A bare ESC byte from the host decodes to Esc, which cancels the picker —
+        // leaving no chosen session so the proxy resumes forwarding untouched.
+        let mut decoder = KeyDecoder::new();
+        let keys = decoder.feed(b"\x1b");
+
+        let (tx, rx) = mpsc::channel::<Cmd>(8);
+        for k in keys {
+            tx.send(Cmd::Key(k)).await.unwrap();
+        }
+
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut sw = Switcher::new(sample_scan());
+        event_loop(&mut term, &mut sw, Arc::new(NoopOps), tx.clone(), rx)
+            .await
+            .unwrap();
+
+        assert!(
+            sw.result().chosen.is_none(),
+            "a decoded Esc must cancel the picker with no chosen session"
+        );
     }
 }
