@@ -2,6 +2,7 @@
 //! keys the switcher uses. A lone ESC that is not followed by `[<final>` is Esc.
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+#[derive(Default)]
 pub struct KeyDecoder {
     buf: Vec<u8>,
 }
@@ -17,24 +18,39 @@ impl KeyDecoder {
             let b = self.buf[i];
             match b {
                 0x1b => {
-                    // CSI arrow: ESC [ A/B/C/D
-                    if i + 2 < self.buf.len() && self.buf[i + 1] == b'[' {
-                        let code = match self.buf[i + 2] {
-                            b'A' => Some(KeyCode::Up),
-                            b'B' => Some(KeyCode::Down),
-                            b'C' => Some(KeyCode::Right),
-                            b'D' => Some(KeyCode::Left),
-                            _ => None,
-                        };
-                        if let Some(c) = code {
-                            out.push(KeyEvent::new(c, KeyModifiers::NONE));
-                            i += 3;
-                            continue;
+                    // Need at least ESC + `[` to start a CSI.
+                    if i + 1 < self.buf.len() && self.buf[i + 1] == b'[' {
+                        // Scan for the CSI final byte (0x40..=0x7e) after the params/intermediates.
+                        let seq_start = i + 2; // first byte after ESC [
+                        let mut j = seq_start;
+                        while j < self.buf.len() && !(0x40..=0x7eu8).contains(&self.buf[j]) {
+                            j += 1;
                         }
-                    }
-                    // ESC `[` with no final byte yet — wait for more data.
-                    if i + 1 < self.buf.len() && self.buf[i + 1] == b'[' && i + 2 >= self.buf.len() {
-                        break; // keep the tail buffered
+                        if j >= self.buf.len() {
+                            // No final byte yet — keep the whole tail buffered.
+                            break;
+                        }
+                        // j now points at the final byte.
+                        let final_byte = self.buf[j];
+                        let csi_len = j + 1 - i; // total bytes: ESC [ params... final
+                        // Bare arrows have no params/intermediates (seq_start == j).
+                        if j == seq_start {
+                            let code = match final_byte {
+                                b'A' => Some(KeyCode::Up),
+                                b'B' => Some(KeyCode::Down),
+                                b'C' => Some(KeyCode::Right),
+                                b'D' => Some(KeyCode::Left),
+                                _ => None,
+                            };
+                            if let Some(c) = code {
+                                out.push(KeyEvent::new(c, KeyModifiers::NONE));
+                                i += csi_len;
+                                continue;
+                            }
+                        }
+                        // Any other complete CSI — consume silently (no Esc spurion).
+                        i += csi_len;
+                        continue;
                     }
                     // Lone ESC (no following byte) or ESC followed by non-`[`: emit Esc.
                     out.push(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -68,7 +84,7 @@ fn utf8_len(lead: u8) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    use ratatui::crossterm::event::KeyCode;
 
     fn codes(bytes: &[u8]) -> Vec<KeyCode> {
         KeyDecoder::new().feed(bytes).into_iter().map(|k| k.code).collect()
@@ -104,5 +120,14 @@ mod tests {
     fn lone_esc_then_char_is_esc_and_char() {
         // a bare ESC not starting a CSI is Esc; the next byte is its own key
         assert_eq!(codes(b"\x1bx"), vec![KeyCode::Esc, KeyCode::Char('x')]);
+    }
+
+    #[test]
+    fn unrecognized_csi_consumed_silently() {
+        // Delete (ESC[3~), PgDn (ESC[6~), and Home (ESC[H) must produce no events —
+        // never a spurious Esc that would cancel the picker.
+        assert_eq!(codes(b"\x1b[3~"), Vec::<KeyCode>::new(), "Delete should be silent");
+        assert_eq!(codes(b"\x1b[6~"), Vec::<KeyCode>::new(), "PgDn should be silent");
+        assert_eq!(codes(b"\x1b[H"),  Vec::<KeyCode>::new(), "Home (ESC[H) should be silent");
     }
 }
