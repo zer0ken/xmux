@@ -1,3 +1,37 @@
+# Cockpit global overlay hotkey
+
+Under the cockpit (entered via `xmux`), a built-in prefix hotkey opens the
+cross-environment picker as a fast LOCAL overlay over your current pane — from
+ANY session, local or remote, with nothing installed on the remote host.
+
+**Default binding:** `Ctrl-g` then `s` (mnemonic: switch).
+
+    Ctrl-g s    open the cross-environment picker overlay
+    Ctrl-g g    send one literal Ctrl-g byte through to the inner application
+
+Press the prefix twice (`Ctrl-g Ctrl-g`) to send one literal prefix byte through
+to the inner application. A lone prefix not followed by a recognised action key
+is also forwarded after a brief timeout, so a reflexive `Ctrl-g` still reaches
+readline/emacs.
+
+**Change the prefix:** set `XMUX_PREFIX` to a `C-<x>` spec before launching:
+
+    XMUX_PREFIX=C-Space xmux
+
+Accepted specs: `C-g`, `C-Space`, `C-b`, and any `C-<printable>`.
+
+## What the cockpit overlay does
+
+- **Peek and cancel** — `Esc` closes the overlay; you are back in your pane,
+  untouched.
+- **Same-server teleport** — pick a local session: xmux switches the client
+  in-place (`switch-client`), no detach.
+- **Cross-host re-attach** — pick a remote session: xmux tears down the current
+  attach and opens a new one to the remote host, all within the same terminal
+  window — no manual detach and no `xmux` command needed on the remote.
+
+---
+
 # In-mux popup switcher
 
 xmux is the cockpit: you enter every environment through the xmux tree, and an

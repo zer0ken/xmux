@@ -110,7 +110,7 @@ Not live-verified (thin wrappers, unit-tested): attach/popup terminal handover
 (`display-popup -E`) is a human/terminal check.
 
 ## OPTIMIZATION MEASUREMENTS
-- Release binary: **970 KB** (profile: opt-level="z", LTO, 1 codegen-unit, panic=abort, strip).
+- Release binary: **970 KB** (profile: opt-level="z", LTO, 1 codegen-unit, panic=unwind, strip).
 - Startup (`xmux version`, warm): **~9.8 ms**.
 - Runtime: tokio **current-thread** (low startup/memory); discovery scan is bounded-concurrent
   (8 at once) with per-source 6s timeout (a dropped future cancels the ssh child, kill_on_drop);
@@ -164,7 +164,7 @@ attach/popup (`run_attach` + `plan_switch`) and rename; the OS-level
 - **Runtime:** lean toward `tokio` current-thread flavor for low startup/memory; the
   discovery scan, preview poller, and control server are all I/O-bound so single-thread
   concurrency suffices. (Confirm when wiring the switcher.)
-- **Release profile:** `opt-level="z"`, LTO, 1 codegen unit, panic=abort, strip — size+startup.
+- **Release profile:** `opt-level="z"`, LTO, 1 codegen unit, panic=unwind, strip — size+startup. Unwind (not abort) is required so RAII `Drop` handlers (TerminalGuard, the proxy's RawGuard, ControlHandle) run during a panic and restore the terminal and remove the control socket.
 - **Cargo.lock committed** (xmux is a binary).
 - **Control socket on Windows:** Go used AF_UNIX (Go supports it on Win). Rust std lacks
   Windows AF_UNIX (unstable); use `interprocess` local sockets, or `uds_windows`. Decide at module 10.
