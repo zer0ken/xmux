@@ -1,34 +1,30 @@
 //! PTY proxy loop: own a ConPTY, spawn the attach child on its slave (with the
-//! mux-nesting env cleared), pump child output (tee → Grid, generation-gated
+//! mux-nesting env cleared), pump child output (tee → Grid, overlay-gated
 //! stdout write), forward host input through the InputMachine, handle terminal
 //! resize, and tear down without blocking.
 //!
-//! Generation tokens: each time the picker overlay takes over stdout, the
-//! generation counter is bumped. The output pump captures the generation at
-//! thread-spawn time and only writes to stdout when the live counter still
-//! matches — so overlay writes never interleave with proxy output.
+//! Overlay suppression: `overlay_active` is an `AtomicBool` shared with the
+//! output pump. The pump writes to stdout only when `!overlay_active`. Task 6
+//! sets it `true` before drawing the picker and `false` after restoring the
+//! child's screen. A stale pump from a PRIOR cross-server attach is a separate
+//! concern handled when the cockpit re-attaches (Task 7), not here.
 
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, EventStream};
 use futures::StreamExt;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
-use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm;
-use ratatui::Terminal;
 use tokio::sync::mpsc;
 
 use crate::proxy::{
     input::{InAction, InputMachine},
     screen::Grid,
 };
-use crate::ui::{
-    run::{run_picker_fed, Cmd},
-    switcher::{Ops, SwitchResult},
-};
+use crate::ui::switcher::{Ops, SwitchResult};
 
 /// Proxy configuration: the C0 prefix byte and the action byte that, when
 /// typed after the prefix, opens the session picker.
@@ -74,7 +70,7 @@ pub fn prefix_from_env() -> u8 {
 enum Mode {
     /// Forwarding host input to the child and streaming child output to stdout.
     Forwarding,
-    /// The picker overlay owns the terminal; the output pump is generation-gated.
+    /// The picker overlay owns the terminal; the output pump is suppressed via overlay_active.
     Picker,
     /// Teardown in progress.
     Quitting,
@@ -84,10 +80,10 @@ enum Mode {
 ///
 /// - Owns the PTY master; spawns `argv[0]` on the slave with mux nesting-guard
 ///   env vars removed.
-/// - Pumps child output to stdout (generation-gated while the picker overlay is
-///   active) and tees every byte into a `Grid` for repaint on overlay close.
+/// - Pumps child output to stdout (suppressed while `overlay_active`) and tees
+///   every byte into a `Grid` for repaint on overlay close.
 /// - Forwards host stdin bytes through `InputMachine`; on `InAction::OpenPicker`
-///   opens the picker overlay (Task 6 TODO hook).
+///   the Task-6 picker overlay will be driven (stub for now).
 /// - On child exit, returns `None`. On picker pick/cancel, returns
 ///   `Some(result)`.
 pub async fn proxy_attach(
@@ -130,34 +126,34 @@ pub async fn proxy_attach(
     let mut reader = pair.master.try_clone_reader()?;
     let mut pty_writer = pair.master.take_writer()?;
 
-    // generation counter: bump when the picker overlay takes over stdout;
-    // the pump only writes when its captured generation still matches.
-    let generation: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
-    let pump_gen = generation.clone();
+    // overlay_active: when true the pump does not write to stdout (the picker
+    // overlay owns the terminal). Task 6 sets true before drawing, false after
+    // restoring via grid.restore_bytes().
+    let overlay_active: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let pump_overlay = overlay_active.clone();
 
-    // Grid lives on the main thread (single-writer); pump sends raw chunks via a
-    // channel so the main thread can feed them in.
-    let (pump_tx, mut pump_rx) = mpsc::channel::<Vec<u8>>(256);
-    // A second copy of pump_tx is kept for the grid so the channel stays open.
+    // Grid lives on the main thread (single-writer); pump sends raw chunks via
+    // an unbounded channel so chunks are never dropped (Grid is the source of
+    // truth for the restore repaint — dropping corrupts it).
+    let (pump_tx, mut pump_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    // A second copy of pump_tx is kept so the channel stays open.
     let pump_tx2 = pump_tx.clone();
 
-    // Stdout handle for the pump to write into (generation-gated).
+    // Stdout handle for the pump to write into (overlay-gated).
     let stdout = std::io::stdout();
     std::thread::spawn(move || {
         // Keep a local lock handle so drops don't release stdout between writes.
         let mut out = stdout.lock();
         let mut buf = [0u8; 4096];
-        let my_gen = pump_gen.load(Ordering::Acquire);
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
                     let chunk = buf[..n].to_vec();
-                    // Tee to main thread for grid (best-effort; never block the pump).
-                    let _ = pump_tx.try_send(chunk.clone());
-                    // Write to real stdout only when in forwarding mode (generation
-                    // matches the value at thread-spawn time).
-                    if pump_gen.load(Ordering::Acquire) == my_gen {
+                    // Tee to main thread for grid (non-blocking; unbounded so never drops).
+                    let _ = pump_tx.send(chunk.clone());
+                    // Write to real stdout only when the overlay is not active.
+                    if !pump_overlay.load(Ordering::Acquire) {
                         let _ = out.write_all(&chunk);
                         let _ = out.flush();
                     }
@@ -175,6 +171,13 @@ pub async fn proxy_attach(
     //    (a) Grid chunks arriving from the pump
     //    (b) Crossterm terminal resize events
     //    (c) Raw stdin bytes forwarded through InputMachine
+    //
+    // NOTE (S-input live-terminal gate): the proxy runs a raw stdin thread
+    // (below) for byte-faithful forwarding AND a crossterm EventStream for
+    // resize events. On Windows these two can compete for console input.
+    // The correct single-reader design (one reader yielding both raw bytes
+    // and resize via raw console input) is deferred to Task 6. Do NOT
+    // rearchitect the input model here.
     // ------------------------------------------------------------------
     let mut grid = Grid::new(size.1, size.0);
     let mut machine = InputMachine::new(
@@ -183,13 +186,8 @@ pub async fn proxy_attach(
         Duration::from_millis(400),
     );
     let mut mode = Mode::Forwarding;
-    let mut pick_result: Option<SwitchResult> = None;
+    let pick_result: Option<SwitchResult> = None;
 
-    // Crossterm event stream for resize / raw key events.
-    // We read stdin bytes directly for forwarding (crossterm input is
-    // insufficient for proxying because it decodes and loses raw bytes).
-    // However, we need crossterm for Resize events; raw bytes come from a
-    // background stdin-reader thread that sends them over a channel.
     let (stdin_tx, mut stdin_rx) = mpsc::channel::<Vec<u8>>(256);
     std::thread::spawn(move || {
         use std::io::Read as _;
@@ -242,31 +240,19 @@ pub async fn proxy_attach(
                                         let _ = pty_writer.flush();
                                         to_forward.clear();
                                     }
-                                    // --- TODO (Task 6): open the picker overlay ---
-                                    // Generation bump suppresses the output pump's
-                                    // stdout writes while the overlay owns the terminal.
-                                    // Restore with grid.restore_bytes() on close.
-
-                                    // Bump generation so the pump stops writing.
-                                    let new_gen = generation.fetch_add(1, Ordering::AcqRel) + 1;
-
-                                    // Run the picker overlay using the pre-built
-                                    // run_picker_fed path (caller owns the terminal).
-                                    let result = run_overlay(ops.clone(), new_gen, &generation, &mut grid).await;
-
-                                    mode = Mode::Forwarding;
-                                    match result {
-                                        OverlayOutcome::Picked(r) => {
-                                            pick_result = Some(r);
-                                            mode = Mode::Quitting;
-                                        }
-                                        OverlayOutcome::Cancelled => {
-                                            // Restore child's screen from the grid.
-                                            let restore = grid.restore_bytes();
-                                            let _ = std::io::stdout().lock().write_all(&restore);
-                                            let _ = std::io::stdout().lock().flush();
-                                        }
-                                    }
+                                    // TODO(Task 6): drive the picker overlay here.
+                                    // Steps:
+                                    //   overlay_active.store(true, Ordering::Release);
+                                    //   mode = Mode::Picker;
+                                    //   run the picker fed by KeyDecoder over a Cmd channel;
+                                    //   let restore = grid.restore_bytes();
+                                    //   stdout.lock().write_all(&restore)?;
+                                    //   overlay_active.store(false, Ordering::Release);
+                                    //   mode = Mode::Forwarding; (or Quitting on pick)
+                                    //
+                                    // For now: swallow the hotkey, stay in Forwarding.
+                                    // The prefix+action bytes are NOT forwarded to the child.
+                                    let _ = &ops; // suppress unused-variable lint until Task 6
                                 }
                             }
                         }
@@ -322,65 +308,6 @@ pub async fn proxy_attach(
     let _keep_master = pair.master;
 
     Ok(pick_result)
-}
-
-// ---------------------------------------------------------------------------
-// Overlay driver — invoked from the input loop when InAction::OpenPicker fires.
-// ---------------------------------------------------------------------------
-
-enum OverlayOutcome {
-    Picked(SwitchResult),
-    Cancelled,
-}
-
-async fn run_overlay(
-    ops: Arc<dyn Ops>,
-    _new_gen: u64,
-    _generation: &Arc<AtomicU64>,
-    _grid: &mut Grid,
-) -> OverlayOutcome {
-    // Build a crossterm terminal that draws to the real stdout (the caller has
-    // already suppressed the pump's stdout writes via the generation bump).
-    let stdout = std::io::stdout();
-    let backend = CrosstermBackend::new(stdout);
-    let mut term = match Terminal::new(backend) {
-        Ok(t) => t,
-        Err(_) => return OverlayOutcome::Cancelled,
-    };
-
-    // Synthesise a channel pair; run_picker_fed reads from cmd_rx.
-    let (cmd_tx, cmd_rx) = mpsc::channel::<Cmd>(128);
-
-    // Read crossterm events and feed them as Cmd::Key / Cmd::Resize so the
-    // picker's event loop can drive without its own read_events task (which
-    // would conflict with the proxy's own event stream).
-    let feeder_tx = cmd_tx.clone();
-    let feeder = tokio::spawn(async move {
-        let mut stream = EventStream::new();
-        while let Some(Ok(ev)) = stream.next().await {
-            let cmd = match ev {
-                Event::Key(k)
-                    if k.kind
-                        == crossterm::event::KeyEventKind::Press =>
-                {
-                    Cmd::Key(k)
-                }
-                Event::Resize(cols, rows) => Cmd::Resize(cols, rows),
-                _ => continue,
-            };
-            if feeder_tx.send(cmd).await.is_err() {
-                break;
-            }
-        }
-    });
-
-    let result = run_picker_fed(ops, cmd_tx, cmd_rx, &mut term).await;
-    feeder.abort();
-
-    match result {
-        Ok(r) if r.chosen.is_some() => OverlayOutcome::Picked(r),
-        _ => OverlayOutcome::Cancelled,
-    }
 }
 
 // ---------------------------------------------------------------------------
