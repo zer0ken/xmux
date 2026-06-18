@@ -36,3 +36,4 @@ serde_ignored = "0.1.14"
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["rt", "rt-multi-thread", "macros", "process", "time", "io-util", "net", "sync", "fs"] }
 toml = "1.1.2"
+vt100 = "0.16"
