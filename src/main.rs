@@ -58,6 +58,12 @@ enum Command {
     Version,
 }
 
+// A single-threaded runtime is deliberate: every blocking I/O the proxy needs is
+// already off-loaded to dedicated OS threads (the PTY output pump, the stdin
+// reader, and the PTY control thread that owns the writer + master), so the async
+// loop itself never blocks and a multi-thread runtime would only add scheduler
+// overhead and `Send` bounds for no gain. The fix for a blocked write is to move
+// the blocking off the loop (as those threads do), not to add runtime threads.
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     std::process::exit(run().await);

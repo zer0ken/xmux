@@ -119,7 +119,11 @@ impl Source {
         a.push("-o".into());
         a.push(format!("ConnectTimeout={CONNECT_TIMEOUT}"));
         if self.os != "windows" && !self.control_path.is_empty() {
-            // Windows OpenSSH lacks ControlMaster; only multiplex elsewhere.
+            // Windows OpenSSH lacks ControlMaster, so remote probes can't reuse one
+            // ssh connection there; only multiplex elsewhere. On Windows the
+            // cockpit's scan cache (stale-while-revalidate) softens the cost by
+            // showing last-known sessions at once instead of blocking on a fresh
+            // handshake every picker open.
             a.push("-o".into());
             a.push("ControlMaster=auto".into());
             a.push("-o".into());

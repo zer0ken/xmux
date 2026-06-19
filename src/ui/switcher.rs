@@ -52,6 +52,11 @@ pub struct Scan {
 /// event loop also drives the streaming probes through it: [`Ops::sources`] seeds
 /// the host skeletons, then [`Ops::list_sessions`] (one per source) and
 /// [`Ops::panes`] (one per session) feed the tree incrementally.
+///
+/// This is deliberately one trait, not split into read/mutate halves: the
+/// `Switcher` is its sole consumer and uses every method, so an ISP split would
+/// add test boilerplate without decoupling any independent caller. Split it only
+/// when a second consumer needs just one half.
 #[async_trait::async_trait]
 pub trait Ops: Send + Sync {
     /// The resolved source aliases in display order — synchronous, no probing —
