@@ -454,6 +454,72 @@ impl HostClient {
     }
 }
 
+/// Owns one [`HostClient`] per host alias, spawning each lazily on first use and
+/// reaping it on `%exit`/EOF. The bound is the host count: at most one control
+/// child per host. Every client emits onto the one shared `events` sink the
+/// cockpit's loop drains.
+pub struct HostManager {
+    clients: HashMap<String, HostClient>,
+    events: tokio::sync::mpsc::UnboundedSender<HostEvent>,
+}
+
+impl HostManager {
+    pub fn new(events: tokio::sync::mpsc::UnboundedSender<HostEvent>) -> Self {
+        Self {
+            clients: HashMap::new(),
+            events,
+        }
+    }
+
+    /// Ensures `host`'s client is connected, spawning it lazily from `src`. A
+    /// no-op (`Ok(false)`) if already connected; otherwise spawns, inserts, and
+    /// returns `Ok(true)`. `HostClient::spawn` queues the connect sequence
+    /// (resize → pause-after → list-sessions) itself.
+    pub fn ensure(
+        &mut self,
+        host: &str,
+        src: &crate::source::Source,
+        cols: u16,
+        rows: u16,
+    ) -> anyhow::Result<bool> {
+        if self.clients.contains_key(host) {
+            return Ok(false);
+        }
+        let client = HostClient::spawn(host, &src.control_argv(), cols, rows, self.events.clone())?;
+        self.clients.insert(host.to_string(), client);
+        Ok(true)
+    }
+
+    pub fn get(&self, host: &str) -> Option<&HostClient> {
+        self.clients.get(host)
+    }
+
+    pub fn get_mut(&mut self, host: &str) -> Option<&mut HostClient> {
+        self.clients.get_mut(host)
+    }
+
+    /// `%exit`/EOF: drop the client (bounded teardown join). The cockpit keeps the
+    /// last-known tree in its switcher state, so the inventory is not re-fetched here.
+    pub fn reap(&mut self, host: &str) {
+        if let Some(c) = self.clients.remove(host) {
+            c.teardown();
+        }
+    }
+
+    pub fn resize_all(&mut self, cols: u16, rows: u16) {
+        for c in self.clients.values_mut() {
+            c.resize(cols, rows);
+        }
+    }
+
+    /// Drains and tears down every client (bounded join per client).
+    pub fn teardown_all(self) {
+        for (_, c) in self.clients {
+            c.teardown();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -612,5 +678,51 @@ mod tests {
         let client = HostClient::spawn("local", &argv, 80, 24, tx).expect("spawn");
         // echo exits immediately, closing pipes → teardown's joins return promptly.
         client.teardown();
+    }
+
+    impl HostManager {
+        /// Inserts a real no-op control child keyed by `host`, proving the map
+        /// insert without a live `-CC` server. `cmd.exe /c rem` spawns and exits
+        /// immediately, so its stdout EOFs at once and `teardown`'s joins return.
+        fn insert_fake(&mut self, host: &str) {
+            let argv: Vec<String> = ["cmd.exe", "/c", "rem"].iter().map(|s| s.to_string()).collect();
+            let client = HostClient::spawn(host, &argv, 80, 24, self.events.clone()).expect("spawn");
+            self.clients.insert(host.to_string(), client);
+        }
+    }
+
+    /// A constructible LOCAL `Source` whose `control_argv()` is valid (`cmd.exe`).
+    /// `ensure` on an already-present host returns `Ok(false)` without spawning,
+    /// so this argv is never actually executed in `manager_ensure_is_idempotent`.
+    fn fake_source(host: &str) -> crate::source::Source {
+        crate::source::Source {
+            alias: host.into(),
+            binary: "cmd.exe".into(),
+            remote: false,
+            control_path: String::new(),
+            os: "windows".into(),
+            socket: None,
+            runner: None,
+        }
+    }
+
+    #[test]
+    fn manager_ensure_is_idempotent() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
+        let mut mgr = HostManager::new(tx);
+        mgr.insert_fake("jupiter06");
+        assert!(mgr.get("jupiter06").is_some());
+        // ensure on an already-connected host returns Ok(false) (no fresh connect).
+        let src = fake_source("jupiter06");
+        assert!(!mgr.ensure("jupiter06", &src, 80, 24).unwrap());
+    }
+
+    #[test]
+    fn manager_reap_drops_client() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
+        let mut mgr = HostManager::new(tx);
+        mgr.insert_fake("jupiter06");
+        mgr.reap("jupiter06");
+        assert!(mgr.get("jupiter06").is_none(), "reaped client is dropped");
     }
 }
