@@ -353,13 +353,13 @@ impl portable_pty::Child for DummyChild {
 /// Constructs an `Attachment` backed by a `DummyChild` and a no-op control
 /// channel. Used by Task 5's headless registry tests.
 #[cfg(test)]
-pub fn fake_attachment(id: u64) -> Attachment {
+pub fn fake_attachment(id: u64, last_used: Instant) -> Attachment {
     let (control_tx, _control_rx) = std::sync::mpsc::channel::<PtyCmd>();
     Attachment {
         grid: Arc::new(Mutex::new(Grid::new(24, 80))),
         control_tx,
         size: (80, 24),
-        last_used: Instant::now(),
+        last_used,
         child: Box::new(DummyChild),
         id,
     }
