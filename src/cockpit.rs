@@ -74,6 +74,24 @@ fn connect_all_sources(mgr: &mut HostManager, env: &Env, cols: u16, rows: u16) {
     }
 }
 
+/// Requests `list-panes` for each of a host's sessions whose panes have not been
+/// requested yet, so every session's window/pane subtree loads instead of sitting
+/// on the "loading…" placeholder. The control client never volunteers pane data —
+/// it must be asked, once per session (`requested` dedupes repeat Inventory
+/// events). The resolved reply emits an Inventory event that paints the subtree.
+fn request_session_panes(
+    client: &crate::host::HostClient,
+    sessions: &[crate::session::Session],
+    requested: &mut std::collections::HashSet<String>,
+) {
+    for s in sessions {
+        let addr = s.address();
+        if requested.insert(addr.clone()) {
+            client.list_panes(&s.name, addr);
+        }
+    }
+}
+
 /// Handles a host's control client dying. If the host never reached a connected
 /// state, marks it unreachable in the switcher so it renders "⚠ unreachable"
 /// instead of spinning on "scanning…" forever; a host that had connected keeps
@@ -195,6 +213,9 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     // dies before it ever connected is marked unreachable instead of spinning on
     // "scanning…" forever.
     let mut connected: HashSet<String> = HashSet::new();
+    // Session addresses whose list-panes has been requested, so a session's
+    // subtree is asked for exactly once (repeat Inventory events don't re-issue).
+    let mut panes_requested: HashSet<String> = HashSet::new();
     connect_all_sources(&mut mgr, &env, cols, body_rows);
 
     loop {
@@ -251,13 +272,18 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 match ev {
                     HostEvent::Connected { host } | HostEvent::Inventory { host } => {
                         connected.insert(host.clone());
-                        // Rebuild this host's tree from its live inventory.
+                        // Rebuild this host's tree from its live inventory, then ask
+                        // for each session's panes (once) so its subtree loads.
                         if let Some(client) = mgr.get(&host) {
-                            let inv = client.inventory.lock().unwrap();
-                            switcher.apply_source_result(host.clone(), inv.sessions.clone(), None);
-                            for (addr, windows) in inv.panes.iter() {
-                                switcher.apply_panes(addr.clone(), windows.clone());
-                            }
+                            let sessions = {
+                                let inv = client.inventory.lock().unwrap();
+                                switcher.apply_source_result(host.clone(), inv.sessions.clone(), None);
+                                for (addr, windows) in inv.panes.iter() {
+                                    switcher.apply_panes(addr.clone(), windows.clone());
+                                }
+                                inv.sessions.clone()
+                            };
+                            request_session_panes(client, &sessions, &mut panes_requested);
                         }
                     }
                     HostEvent::Output { .. } => { /* redraw on the next loop top */ }

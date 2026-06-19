@@ -464,6 +464,18 @@ impl HostClient {
         });
     }
 
+    /// Requests every pane across all windows of `session`, correlating the reply
+    /// to `address` (the switcher's `source/name` session key) so the reader fills
+    /// that session's window/pane subtree. Without this a session's children stay
+    /// on the "loading…" placeholder forever — the control client never volunteers
+    /// pane data, it must be asked.
+    pub fn list_panes(&self, session: &str, address: String) {
+        let _ = self.cmd_tx.send(HostCmd::Query {
+            line: format!("list-panes -s -t {session} -F '{}'\n", crate::mux::PANE_FORMAT),
+            reply: PendingReply::ListPanes { address },
+        });
+    }
+
     /// Switch this client to `session` (writer also probes the active pane).
     pub fn switch_client(&self, session: impl Into<String>) {
         let _ = self
@@ -808,6 +820,57 @@ mod tests {
             .unwrap()
             .iter()
             .any(|r| matches!(r, PendingReply::ActivePane { .. })));
+    }
+
+    #[test]
+    fn reader_resolves_list_panes_block_into_inventory() {
+        // A session's window/pane subtree must arrive via an explicit list-panes
+        // query (correlated to the session's `source/name` address); otherwise the
+        // session stays on "loading…" forever.
+        let state = test_state(80, 24);
+        let in_flight: InFlight = Default::default();
+        in_flight
+            .lock()
+            .unwrap()
+            .push_back(PendingReply::ListPanes { address: "jupiter00/if".into() });
+        let mut events = Vec::new();
+        // PANE_FORMAT: window_index, window_active, pane_index, pane_active,
+        // pane_current_command, window_name.
+        let lines = vec![
+            "%begin 1 5 0".to_string(),
+            "0\t1\t0\t1\tbash\tmain".to_string(),
+            "%end 1 5 0".to_string(),
+        ]
+        .into_iter();
+        run_reader("jupiter00", lines, &state, &in_flight, |e| events.push(e));
+        let inv = state.inventory.lock().unwrap();
+        let panes = inv
+            .panes
+            .get("jupiter00/if")
+            .expect("panes recorded under the session address");
+        assert_eq!(panes.len(), 1, "one window parsed");
+        assert!(events.iter().any(|e| matches!(e, HostEvent::Inventory { .. })));
+    }
+
+    #[test]
+    fn writer_query_list_panes_correlates() {
+        let (tx, rx) = std::sync::mpsc::channel::<HostCmd>();
+        let in_flight: InFlight = Default::default();
+        tx.send(HostCmd::Query {
+            line: format!("list-panes -s -t if -F '{}'\n", crate::mux::PANE_FORMAT),
+            reply: PendingReply::ListPanes { address: "jupiter00/if".into() },
+        })
+        .unwrap();
+        tx.send(HostCmd::Shutdown).unwrap();
+        drop(tx);
+        let mut out: Vec<u8> = Vec::new();
+        run_writer(rx, &mut out, &in_flight);
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("list-panes -s -t if -F"), "writes the list-panes command: {s}");
+        assert!(
+            matches!(in_flight.lock().unwrap().front(), Some(PendingReply::ListPanes { address }) if address == "jupiter00/if"),
+            "pushes the ListPanes correlator keyed by the session address"
+        );
     }
 
     #[test]
