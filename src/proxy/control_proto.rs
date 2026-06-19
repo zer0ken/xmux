@@ -20,37 +20,50 @@ pub enum Line<'a> {
     Body(&'a str),
 }
 
-/// Placeholder for Task 3, which replaces this with the full notification enum.
-/// `classify` returns `Notification(Notif::Raw(line))` for any `%…` line that
-/// is not one of the recognised frame/output verbs.
+/// A parsed tmux control-mode notification (any `%`-prefixed line that is not a
+/// recognised `%begin`/`%end`/`%error`/`%output`/`%extended-output` frame).
+/// Unknown or malformed notifications are represented as `Other`.
 #[derive(Debug, PartialEq)]
 pub enum Notif<'a> {
-    Raw(&'a str),
+    SessionChanged { id: &'a str, name: &'a str },
+    SessionsChanged,
+    WindowAdd { window: &'a str },
+    WindowClose { window: &'a str },
+    WindowRenamed { window: &'a str, name: &'a str },
+    WindowPaneChanged { window: &'a str, pane: &'a str },
+    SessionWindowChanged { session: &'a str, window: &'a str },
+    LayoutChange { window: &'a str },
+    Pause { pane: &'a str },
+    Continue { pane: &'a str },
+    Exit { reason: Option<&'a str> },
+    ClientDetached,
+    Other,
 }
 
 /// Classifies one control-mode stdout line (trailing `\n` already stripped).
 ///
 /// Frame format: `%<verb> <unix-time> <num> <flags>` — `<num>` (the 3rd
 /// whitespace field) is the correlator; `<flags>` is ignored per `[research §2]`.
-/// A `%`-prefixed line whose verb is not recognised is `Notification(Notif::Raw)`.
-/// A line not starting with `%` is `Body`.
+/// A `%`-prefixed line whose verb is not a recognised frame/output verb is
+/// classified as `Notification(parse_notif(line))`. A line not starting with
+/// `%` is `Body`.
 pub fn classify(line: &str) -> Line<'_> {
     if let Some(rest) = line.strip_prefix("%begin ") {
         return match frame_num_after(rest) {
             Some(num) => Line::Begin { num },
-            None => Line::Notification(Notif::Raw(line)),
+            None => Line::Notification(Notif::Other),
         };
     }
     if let Some(rest) = line.strip_prefix("%end ") {
         return match frame_num_after(rest) {
             Some(num) => Line::End { num },
-            None => Line::Notification(Notif::Raw(line)),
+            None => Line::Notification(Notif::Other),
         };
     }
     if let Some(rest) = line.strip_prefix("%error ") {
         return match frame_num_after(rest) {
             Some(num) => Line::Error { num },
-            None => Line::Notification(Notif::Raw(line)),
+            None => Line::Notification(Notif::Other),
         };
     }
     if let Some(rest) = line.strip_prefix("%output ") {
@@ -66,7 +79,7 @@ pub fn classify(line: &str) -> Line<'_> {
         }
     }
     if line.starts_with('%') {
-        return Line::Notification(Notif::Raw(line));
+        return Line::Notification(parse_notif(line));
     }
     Line::Body(line)
 }
@@ -75,6 +88,43 @@ pub fn classify(line: &str) -> Line<'_> {
 /// `<num>` is the second whitespace field; `<flags>` is ignored.
 fn frame_num_after(rest: &str) -> Option<u64> {
     rest.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// Parses a `%`-prefixed notification line into a `Notif` variant.
+/// Unknown or malformed notifications return `Notif::Other`.
+pub fn parse_notif(line: &str) -> Notif<'_> {
+    let mut it = line.splitn(4, ' ');
+    let verb = it.next().unwrap_or("");
+    match verb {
+        "%session-changed" => match (it.next(), it.next()) {
+            (Some(id), Some(name)) => Notif::SessionChanged { id, name },
+            _ => Notif::Other,
+        },
+        "%sessions-changed" => Notif::SessionsChanged,
+        "%window-add" => it.next().map_or(Notif::Other, |w| Notif::WindowAdd { window: w }),
+        "%window-close" => it.next().map_or(Notif::Other, |w| Notif::WindowClose { window: w }),
+        "%window-renamed" => match (it.next(), it.next()) {
+            (Some(w), Some(name)) => Notif::WindowRenamed { window: w, name },
+            _ => Notif::Other,
+        },
+        "%window-pane-changed" => match (it.next(), it.next()) {
+            (Some(w), Some(p)) => Notif::WindowPaneChanged { window: w, pane: p },
+            _ => Notif::Other,
+        },
+        "%session-window-changed" => match (it.next(), it.next()) {
+            (Some(s), Some(w)) => Notif::SessionWindowChanged { session: s, window: w },
+            _ => Notif::Other,
+        },
+        "%layout-change" => it.next().map_or(Notif::Other, |w| Notif::LayoutChange { window: w }),
+        "%pause" => it.next().map_or(Notif::Other, |p| Notif::Pause { pane: p }),
+        "%continue" => it.next().map_or(Notif::Other, |p| Notif::Continue { pane: p }),
+        "%client-detached" => Notif::ClientDetached,
+        "%exit" => {
+            let reason = line.strip_prefix("%exit").map(str::trim).filter(|s| !s.is_empty());
+            Notif::Exit { reason }
+        }
+        _ => Notif::Other,
+    }
 }
 
 #[inline]
@@ -185,5 +235,31 @@ mod tests {
         assert_eq!(strip_extended_prefix(b"512 : \\033[2J"), b"\\033[2J");
         assert_eq!(strip_extended_prefix(b"7 future stuff : payload"), b"payload");
         assert_eq!(strip_extended_prefix(b"no colon here"), b"no colon here");
+    }
+
+    #[test]
+    fn parse_notif_full_table() {
+        assert!(matches!(parse_notif("%session-changed $1 work"),
+            Notif::SessionChanged { id: "$1", name: "work" }));
+        assert!(matches!(parse_notif("%sessions-changed"), Notif::SessionsChanged));
+        assert!(matches!(parse_notif("%window-add @4"), Notif::WindowAdd { window: "@4" }));
+        assert!(matches!(parse_notif("%window-close @4"), Notif::WindowClose { window: "@4" }));
+        assert!(matches!(parse_notif("%window-renamed @4 logs"),
+            Notif::WindowRenamed { window: "@4", name: "logs" }));
+        assert!(matches!(parse_notif("%window-pane-changed @4 %9"),
+            Notif::WindowPaneChanged { window: "@4", pane: "%9" }));
+        assert!(matches!(parse_notif("%session-window-changed $1 @4"),
+            Notif::SessionWindowChanged { session: "$1", window: "@4" }));
+        assert!(matches!(parse_notif("%pause %9"), Notif::Pause { pane: "%9" }));
+        assert!(matches!(parse_notif("%continue %9"), Notif::Continue { pane: "%9" }));
+        assert!(matches!(parse_notif("%client-detached client0"), Notif::ClientDetached));
+        assert!(matches!(parse_notif("%unlinked-window-add @9"), Notif::Other));
+    }
+
+    #[test]
+    fn parse_notif_exit_reason_optional() {
+        assert!(matches!(parse_notif("%exit"), Notif::Exit { reason: None }));
+        assert!(matches!(parse_notif("%exit too far behind"),
+            Notif::Exit { reason: Some("too far behind") }));
     }
 }
