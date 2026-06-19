@@ -116,7 +116,9 @@ fn interactive_env() -> Result<Env, i32> {
 async fn run_popup(env: Arc<Env>) -> i32 {
     // The switcher paints host skeletons immediately and streams each source's
     // sessions and panes in independently — nothing blocks the first frame.
-    let result = match run_switcher(env.ops(), control_path(&env)).await {
+    // The popup is a one-shot process — no persistent cockpit to cache across, so
+    // it seeds fresh each time.
+    let result = match run_switcher(env.ops(), control_path(&env), None).await {
         Ok(r) => r,
         Err(e) => {
             eprintln!("xmux: {e}");

@@ -26,7 +26,7 @@ use crate::proxy::{
     input::{InAction, InputMachine},
     screen::Grid,
 };
-use crate::ui::run::{run_picker_fed, Cmd};
+use crate::ui::run::{run_picker_fed, Cmd, ScanCache};
 use crate::ui::switcher::{Ops, SwitchResult};
 
 /// RAII guard: enables raw mode on construction and restores it on drop, so the
@@ -183,6 +183,7 @@ pub async fn proxy_attach(
     argv: &[String],
     ops: Arc<dyn Ops>,
     cfg: ProxyConfig,
+    cache: Option<ScanCache>,
 ) -> anyhow::Result<Option<SwitchResult>> {
     anyhow::ensure!(!argv.is_empty(), "proxy_attach: argv must not be empty");
 
@@ -387,6 +388,7 @@ pub async fn proxy_attach(
                             ops.clone(),
                             pcmd_tx.clone(),
                             pcmd_rx,
+                            cache.clone(),
                         ));
                         tokio::pin!(picker);
 

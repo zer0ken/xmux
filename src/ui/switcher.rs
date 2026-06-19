@@ -5,7 +5,7 @@
 //! that draws to either the live terminal or a headless `TestBackend` (the
 //! control channel's `dump`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
@@ -20,6 +20,12 @@ use crate::ui::tree::{self, Group};
 
 /// Tree pane width: border + 1-cell inner padding each side + content.
 pub const TREE_WIDTH: u16 = 48;
+
+/// Cap on the live-preview cache. It is kept across rescans for
+/// stale-while-revalidate, so it is bounded (LRU by most-recent capture) rather
+/// than grown for the cockpit's whole lifetime. Previews are small (one pane's
+/// visible text), so this holds a generous working set at trivial cost.
+const PREVIEW_CACHE_CAP: usize = 64;
 
 // Per-level node colours, so the four tree levels read apart at a glance.
 const COLOR_HOST: Color = Color::Yellow;
@@ -232,6 +238,9 @@ pub struct Switcher {
 
     preview_target: PreviewTarget,
     preview_cache: HashMap<String, String>,
+    /// Capture-recency order of `preview_cache` keys (front = oldest) so the cache
+    /// can evict its least-recently-captured entry once it reaches the cap.
+    preview_cache_order: VecDeque<String>,
     preview_text: String,
     preview_title: String,
     dialog: Option<String>,
@@ -272,6 +281,7 @@ impl Switcher {
             flash: String::new(),
             preview_target: PreviewTarget::default(),
             preview_cache: HashMap::new(),
+            preview_cache_order: VecDeque::new(),
             preview_text: String::new(),
             preview_title: " Preview ".into(),
             dialog: None,
@@ -319,6 +329,57 @@ impl Switcher {
         s.rescan_kick = true; // the event loop kicks the probes on the first frame
         s.rebuild();
         s
+    }
+
+    /// Seeds from a cached scan (the cockpit's last-known snapshot) so reopening
+    /// the picker shows the last-known sessions AT ONCE instead of a blank wait —
+    /// stale-while-revalidate. A source with cached sessions renders them
+    /// immediately (NOT marked scanning); a source with no cached sessions shows
+    /// the scanning skeleton. Either way `rescan_kick` is set so the event loop
+    /// re-probes every source in the background and fresh results replace the
+    /// cached ones.
+    pub fn from_cached_scan(aliases: Vec<String>, cache: Scan) -> Self {
+        let mut s = Switcher::blank();
+        let mut cached: HashMap<String, Group> = cache
+            .groups
+            .into_iter()
+            .map(|g| (g.source.clone(), g))
+            .collect();
+        s.groups = aliases
+            .into_iter()
+            .map(|source| match cached.remove(&source) {
+                // Last-known sessions for this host → show them now, not scanning.
+                Some(g) if !g.sessions.is_empty() => g,
+                // No cached sessions (never seen, was empty, or was unreachable) →
+                // a scanning skeleton that the background re-probe fills in.
+                _ => {
+                    s.scanning.insert(source.clone());
+                    Group {
+                        source,
+                        err: None,
+                        sessions: Vec::new(),
+                    }
+                }
+            })
+            .collect();
+        s.panes = cache.panes;
+        // Cached panes are considered loaded so their windows show at once; a
+        // session with no cached panes shows a loading… placeholder until its
+        // re-probe lands.
+        s.panes_loaded = s.panes.keys().cloned().collect();
+        s.rescan_kick = true;
+        s.rebuild();
+        s
+    }
+
+    /// A snapshot of the current resolved state (sessions + panes) for the cockpit
+    /// to cache and seed the next picker open from. Hosts still scanning contribute
+    /// their empty group, so the next seed re-probes them.
+    pub fn snapshot(&self) -> Scan {
+        Scan {
+            groups: self.groups.clone(),
+            panes: self.panes.clone(),
+        }
     }
 
     pub fn result(&self) -> SwitchResult {
@@ -702,7 +763,7 @@ impl Switcher {
         }
         match text {
             Some(text) => {
-                self.preview_cache.insert(preview_key(target), text.clone());
+                self.cache_preview(preview_key(target), text.clone());
                 if *target == self.preview_target {
                     self.dialog = None;
                     self.preview_text = text;
@@ -714,6 +775,27 @@ impl Switcher {
                 }
             }
         }
+    }
+
+    /// Inserts (or refreshes) a preview into the bounded cache, evicting the
+    /// least-recently-captured entry once it exceeds [`PREVIEW_CACHE_CAP`].
+    fn cache_preview(&mut self, key: String, text: String) {
+        self.preview_cache_order.retain(|k| k != &key);
+        self.preview_cache_order.push_back(key.clone());
+        self.preview_cache.insert(key, text);
+        while self.preview_cache.len() > PREVIEW_CACHE_CAP {
+            match self.preview_cache_order.pop_front() {
+                Some(old) => {
+                    self.preview_cache.remove(&old);
+                }
+                None => break,
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn preview_cache_len(&self) -> usize {
+        self.preview_cache.len()
     }
 
     // --- key handling -------------------------------------------------------
@@ -1449,6 +1531,19 @@ mod tests {
             h
         }
 
+        fn from_cached(aliases: &[&str], cache: Scan) -> Self {
+            let backend = TestBackend::new(100, 30);
+            let term = Terminal::new(backend).unwrap();
+            let aliases = aliases.iter().map(|s| s.to_string()).collect();
+            let mut h = Harness {
+                sw: Switcher::from_cached_scan(aliases, cache),
+                term,
+                ops: RecordOps::default(),
+            };
+            h.draw();
+            h
+        }
+
         fn footer_text(&self) -> String {
             let buf = self.buf();
             let y = buf.area.height - 1;
@@ -1718,6 +1813,72 @@ mod tests {
         assert!(
             !out.contains("window"),
             "no pane detail before any probe:\n{out}"
+        );
+    }
+
+    // --- cockpit scan cache (stale-while-revalidate) ------------------------
+
+    #[tokio::test]
+    async fn snapshot_carries_sessions_and_panes() {
+        // The cockpit snapshots the picker's resolved state to seed the next open.
+        // A snapshot of a fully-built switcher must carry its sessions and panes.
+        let h = Harness::new(sample());
+        let snap = h.sw.snapshot();
+        assert!(
+            snap.groups
+                .iter()
+                .any(|g| g.sessions.iter().any(|s| s.name == "inference")),
+            "snapshot carries the sessions"
+        );
+        assert!(!snap.panes.is_empty(), "snapshot carries the pane detail");
+    }
+
+    #[tokio::test]
+    async fn preview_cache_is_bounded() {
+        // The preview cache is kept across rescans (stale-while-revalidate), so it
+        // must be bounded or it grows for the cockpit's whole life. Inserting far
+        // more than the cap must evict, never grow without limit.
+        let mut sw = Switcher::new(sample());
+        for i in 0..(PREVIEW_CACHE_CAP + 25) {
+            let tgt = PreviewTarget {
+                source: "local".into(),
+                target: format!("s{i}"),
+            };
+            sw.apply_capture(&tgt, Some(format!("text{i}")));
+        }
+        assert!(
+            sw.preview_cache_len() <= PREVIEW_CACHE_CAP,
+            "preview cache must stay bounded (len {})",
+            sw.preview_cache_len()
+        );
+    }
+
+    #[tokio::test]
+    async fn from_cached_scan_shows_last_known_and_revalidates() {
+        // A cached host shows its last-known sessions IMMEDIATELY (no scanning
+        // skeleton) so reopening the picker is not a blank wait; an uncached host
+        // still shows a scanning skeleton. Both are re-probed in the background.
+        let cache = Scan {
+            groups: vec![Group {
+                source: "local".into(),
+                err: None,
+                sessions: vec![sess("local", "editor", 1, false, 100)],
+            }],
+            panes: Default::default(),
+        };
+        let mut h = Harness::from_cached(&["local", "remote"], cache);
+        assert!(
+            h.sw.take_rescan_kick(),
+            "a cached seed must still revalidate in the background"
+        );
+        let tree = h.tree_text();
+        assert!(
+            tree.contains("editor"),
+            "the cached host's last-known session shows at once:\n{tree}"
+        );
+        assert!(
+            tree.contains("scanning"),
+            "the uncached host shows a scanning skeleton:\n{tree}"
         );
     }
 

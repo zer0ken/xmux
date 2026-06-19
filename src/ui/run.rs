@@ -5,7 +5,7 @@
 //! real-terminal setup/teardown and the crossterm event reader.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
@@ -27,10 +27,69 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::control;
 use crate::session::{Session, WindowPanes};
-use crate::ui::switcher::{run_op, OpResult, Ops, PreviewTarget, SwitchResult, Switcher};
+use crate::ui::switcher::{run_op, OpResult, Ops, PreviewTarget, Scan, SwitchResult, Switcher};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
+/// The cockpit's last-known scan, shared so the next picker open seeds from it
+/// (stale-while-revalidate). `None` until a picker first resolves something.
+pub type ScanCache = Arc<Mutex<Option<Scan>>>;
+
+/// Builds the initial switcher for a picker open: seeded from the cache when one
+/// is present (last-known sessions shown at once), else a bare scanning skeleton.
+fn seed_switcher(ops: &Arc<dyn Ops>, cache: &Option<ScanCache>) -> Switcher {
+    // A poisoned lock recovers its inner value rather than crashing the cockpit.
+    let seed = cache
+        .as_ref()
+        .and_then(|c| c.lock().unwrap_or_else(|e| e.into_inner()).clone());
+    match seed {
+        Some(scan) => Switcher::from_cached_scan(ops.sources(), scan),
+        None => Switcher::from_sources(ops.sources()),
+    }
+}
+
+/// Merges a fresh picker snapshot into the previous cache. A host whose reprobe
+/// came back unreachable-and-empty keeps its last-known sessions (and their
+/// cached panes), so one transient timeout never erases the cache the feature
+/// exists to provide; every other host takes the fresh result.
+fn merge_scan(prev: Option<Scan>, fresh: Scan) -> Scan {
+    let Some(prev) = prev else { return fresh };
+    let prev_panes = prev.panes;
+    let mut prev_groups: std::collections::HashMap<_, _> =
+        prev.groups.into_iter().map(|g| (g.source.clone(), g)).collect();
+    let mut panes = fresh.panes;
+    let groups = fresh
+        .groups
+        .into_iter()
+        .map(|g| {
+            if g.err.is_some() && g.sessions.is_empty() {
+                if let Some(p) = prev_groups.remove(&g.source) {
+                    if !p.sessions.is_empty() {
+                        for s in &p.sessions {
+                            let addr = s.address();
+                            if let Some(win) = prev_panes.get(&addr) {
+                                panes.entry(addr).or_insert_with(|| win.clone());
+                            }
+                        }
+                        return p;
+                    }
+                }
+            }
+            g
+        })
+        .collect();
+    Scan { groups, panes }
+}
+
+/// Stores the switcher's resolved state into the cache (if any) for the next open,
+/// merged so a transient unreachable reprobe never wipes last-known sessions.
+fn store_snapshot(switcher: &Switcher, cache: &Option<ScanCache>) {
+    if let Some(c) = cache {
+        let mut guard = c.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = Some(merge_scan(guard.take(), switcher.snapshot()));
+    }
+}
 
 /// A unit of work the event loop processes, from any source.
 pub enum Cmd {
@@ -83,9 +142,12 @@ pub fn dump_switcher(switcher: &mut Switcher, width: u16, height: u16) -> String
     out
 }
 
-fn spawn_capture(switcher: &Switcher, ops: &Arc<dyn Ops>, cmd_tx: &mpsc::Sender<Cmd>) {
+/// Spawns a detached capture of the current preview target, returning whether one
+/// was actually started (false when the target is not capturable). The caller uses
+/// the return to track a single in-flight capture.
+fn spawn_capture(switcher: &Switcher, ops: &Arc<dyn Ops>, cmd_tx: &mpsc::Sender<Cmd>) -> bool {
     if !switcher.preview_capturable() {
-        return;
+        return false;
     }
     let tgt = switcher.preview_target();
     let ops = ops.clone();
@@ -94,6 +156,7 @@ fn spawn_capture(switcher: &Switcher, ops: &Arc<dyn Ops>, cmd_tx: &mpsc::Sender<
         let text = ops.capture(&tgt.source, &tgt.target).await.ok();
         let _ = tx.send(Cmd::Preview(tgt, text)).await;
     });
+    true
 }
 
 /// Spawns one detached `list-sessions` probe per source; each streams its outcome
@@ -178,6 +241,10 @@ where
     let mut poll = tokio::time::interval(POLL_INTERVAL);
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut last_click: Option<(Instant, u16, u16)> = None;
+    // Single in-flight capture: a burst of cursor moves must not spawn a storm of
+    // soon-stale ssh captures. While one is running, the poll-kick is held (not
+    // consumed) and coalesces into one re-capture when the result lands.
+    let mut capture_inflight = false;
 
     loop {
         // The very first draw paints the host skeletons before any probe is
@@ -188,8 +255,10 @@ where
             break;
         }
         // A target change (initial build or cursor move) kicks an immediate fetch.
-        if switcher.take_poll_kick() {
-            spawn_capture(switcher, &ops, &cmd_tx);
+        // While a capture is in flight the kick is intentionally NOT consumed, so a
+        // burst of moves coalesces into one re-capture once the current one lands.
+        if !capture_inflight && switcher.take_poll_kick() {
+            capture_inflight = spawn_capture(switcher, &ops, &cmd_tx);
         }
         // The seed (and each `r` re-scan) kicks one streaming probe per source.
         if switcher.take_rescan_kick() {
@@ -217,7 +286,10 @@ where
                     Cmd::Resize(cols, rows) => {
                         let _ = terminal.resize(ratatui::layout::Rect::new(0, 0, cols, rows));
                     }
-                    Cmd::Preview(tgt, text) => switcher.apply_capture(&tgt, text),
+                    Cmd::Preview(tgt, text) => {
+                        capture_inflight = false; // this capture finished; allow the next
+                        switcher.apply_capture(&tgt, text);
+                    }
                     Cmd::SourceResult { source, sessions, err } => {
                         let reachable = err.is_none();
                         switcher.apply_source_result(source, sessions.clone(), err);
@@ -239,7 +311,9 @@ where
                 }
             }
             _ = poll.tick() => {
-                spawn_capture(switcher, &ops, &cmd_tx);
+                if !capture_inflight {
+                    capture_inflight = spawn_capture(switcher, &ops, &cmd_tx);
+                }
             }
         }
     }
@@ -368,10 +442,12 @@ async fn dispatch(line: &str, cmd_tx: &mpsc::Sender<Cmd>) -> String {
 pub async fn run_switcher(
     ops: Arc<dyn Ops>,
     control: Option<PathBuf>,
+    cache: Option<ScanCache>,
 ) -> anyhow::Result<SwitchResult> {
-    // Seed host skeletons from the resolved source list — no probing — so the
-    // first frame paints immediately; the event loop streams the rest in.
-    let mut switcher = Switcher::from_sources(ops.sources());
+    // Seed from the cockpit's last-known scan when present (last-known sessions at
+    // once, then revalidate); otherwise bare skeletons. Either way the event loop
+    // streams fresh results in.
+    let mut switcher = seed_switcher(&ops, &cache);
     let (cmd_tx, cmd_rx) = mpsc::channel::<Cmd>(256);
 
     let _guard = TerminalGuard::enter()?;
@@ -386,6 +462,7 @@ pub async fn run_switcher(
     events.abort();
     drop(control_handle); // abort the accept loop and remove the socket
     result?;
+    store_snapshot(&switcher, &cache); // warm the cache for the next open
     Ok(switcher.result())
 }
 
@@ -399,11 +476,13 @@ pub async fn run_picker_fed(
     ops: Arc<dyn Ops>,
     cmd_tx: mpsc::Sender<Cmd>,
     cmd_rx: mpsc::Receiver<Cmd>,
+    cache: Option<ScanCache>,
 ) -> anyhow::Result<SwitchResult> {
-    let mut switcher = Switcher::from_sources(ops.sources());
+    let mut switcher = seed_switcher(&ops, &cache);
     let mut term = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
     term.clear()?;
     event_loop(&mut term, &mut switcher, ops, cmd_tx, cmd_rx).await?;
+    store_snapshot(&switcher, &cache); // warm the cache for the next open
     Ok(switcher.result())
 }
 
@@ -415,6 +494,271 @@ mod tests {
     use crate::ui::tree::Group;
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     use std::collections::HashMap;
+
+    // -- Task 2: cockpit scan cache (stale-while-revalidate) -------------
+    //
+    // The cockpit keeps a last-known scan so reopening the picker shows sessions
+    // at once instead of a blank wait. A picker stores its resolved state on close;
+    // the next open seeds from it. This proves the store→seed round-trip surfaces
+    // the cached sessions (the background re-probe then refreshes them).
+    #[tokio::test]
+    async fn scan_cache_round_trips_through_seed() {
+        let ops: Arc<dyn Ops> = Arc::new(StreamOps::local_and_remote()); // sources: local, remote
+
+        let cache: ScanCache = Arc::new(std::sync::Mutex::new(None));
+        // A first picker resolved one local session; snapshot it into the cache.
+        let resolved = Switcher::new(Scan {
+            groups: vec![Group {
+                source: "local".into(),
+                err: None,
+                sessions: vec![Session {
+                    source: "local".into(),
+                    name: "editor".into(),
+                    windows: 1,
+                    attached: false,
+                    last_attached: 100,
+                }],
+            }],
+            panes: Default::default(),
+        });
+        store_snapshot(&resolved, &Some(cache.clone()));
+
+        // The next open seeds from the cache: the last-known session is present
+        // immediately, before any probe runs.
+        let seeded = seed_switcher(&ops, &Some(cache.clone()));
+        let snap = seeded.snapshot();
+        assert!(
+            snap.groups
+                .iter()
+                .any(|g| g.sessions.iter().any(|s| s.name == "editor")),
+            "the seeded picker shows the cached session at once"
+        );
+
+        // With no cache, the seed is the bare scanning skeleton (no sessions).
+        let none: Option<ScanCache> = None;
+        let bare = seed_switcher(&ops, &none);
+        assert!(
+            bare.snapshot()
+                .groups
+                .iter()
+                .all(|g| g.sessions.is_empty()),
+            "with no cache the seed is a bare skeleton"
+        );
+    }
+
+    #[test]
+    fn scan_cache_survives_a_transient_unreachable() {
+        // The cache exists to soften flaky remotes, so one timed-out reprobe must
+        // NOT erase a host's last-known sessions. Merging a fresh snapshot whose
+        // host came back err+empty keeps the previous sessions (and their panes).
+        let prev = Scan {
+            groups: vec![Group {
+                source: "remote".into(),
+                err: None,
+                sessions: vec![Session {
+                    source: "remote".into(),
+                    name: "api".into(),
+                    windows: 1,
+                    attached: false,
+                    last_attached: 50,
+                }],
+            }],
+            panes: {
+                let mut m = HashMap::new();
+                m.insert(
+                    "remote/api".to_string(),
+                    vec![WindowPanes {
+                        index: 1,
+                        name: "serve".into(),
+                        active: true,
+                        panes: vec![Pane {
+                            index: 1,
+                            active: true,
+                            command: "node".into(),
+                        }],
+                    }],
+                );
+                m
+            },
+        };
+        // A transient failure: the reprobe returned an error with no sessions.
+        let fresh = Scan {
+            groups: vec![Group {
+                source: "remote".into(),
+                err: Some("timed out after 6s".into()),
+                sessions: Vec::new(),
+            }],
+            panes: HashMap::new(),
+        };
+        let merged = merge_scan(Some(prev), fresh);
+        assert!(
+            merged
+                .groups
+                .iter()
+                .any(|g| g.sessions.iter().any(|s| s.name == "api")),
+            "a transient unreachable reprobe must not wipe last-known sessions"
+        );
+        assert!(
+            merged.panes.contains_key("remote/api"),
+            "the kept sessions keep their cached panes too"
+        );
+    }
+
+    #[test]
+    fn merge_scan_takes_fresh_when_reprobe_succeeds() {
+        // A successful reprobe (reachable, with sessions) replaces the cache — the
+        // merge only protects against the err+empty wipe.
+        let prev = Scan {
+            groups: vec![Group {
+                source: "remote".into(),
+                err: None,
+                sessions: vec![Session {
+                    source: "remote".into(),
+                    name: "old".into(),
+                    windows: 1,
+                    attached: false,
+                    last_attached: 1,
+                }],
+            }],
+            panes: HashMap::new(),
+        };
+        let fresh = Scan {
+            groups: vec![Group {
+                source: "remote".into(),
+                err: None,
+                sessions: vec![Session {
+                    source: "remote".into(),
+                    name: "new".into(),
+                    windows: 1,
+                    attached: false,
+                    last_attached: 9,
+                }],
+            }],
+            panes: HashMap::new(),
+        };
+        let merged = merge_scan(Some(prev), fresh);
+        let names: Vec<&str> = merged.groups[0]
+            .sessions
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["new"], "a fresh result replaces the cache");
+    }
+
+    // -- B2: capture is single-in-flight ---------------------------------
+    //
+    // Rapid cursor movement (holding ↑/↓) must NOT spawn a new preview capture
+    // while one is already in flight; otherwise a burst of moves queues a storm of
+    // soon-stale ssh captures. This gates a capture so it never completes, then
+    // moves the cursor and asserts no SECOND capture starts.
+    #[tokio::test]
+    async fn capture_is_single_in_flight() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::sync::Semaphore;
+
+        struct GatedOps {
+            started: mpsc::UnboundedSender<()>,
+            gate: Arc<Semaphore>,
+            count: Arc<AtomicUsize>,
+        }
+        #[async_trait::async_trait]
+        impl Ops for GatedOps {
+            fn sources(&self) -> Vec<String> {
+                Vec::new() // drive a prebuilt Switcher; kick no probes
+            }
+            async fn list_sessions(&self, _: &str) -> anyhow::Result<Vec<Session>> {
+                Ok(Vec::new())
+            }
+            async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session> {
+                Ok(Session {
+                    source: source.into(),
+                    name: name.into(),
+                    windows: 1,
+                    ..Default::default()
+                })
+            }
+            async fn kill(&self, _: &Session) -> anyhow::Result<()> {
+                Ok(())
+            }
+            async fn rename(&self, _: &Session, _: &str) -> anyhow::Result<()> {
+                Ok(())
+            }
+            async fn panes(&self, _: &Session) -> anyhow::Result<Vec<WindowPanes>> {
+                Ok(Vec::new())
+            }
+            async fn capture(&self, _: &str, _: &str) -> anyhow::Result<String> {
+                self.count.fetch_add(1, Ordering::SeqCst);
+                let _ = self.started.send(());
+                let _ = self.gate.acquire().await; // park: never released in this test
+                Ok(String::new())
+            }
+        }
+
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let count = Arc::new(AtomicUsize::new(0));
+        let ops: Arc<dyn Ops> = Arc::new(GatedOps {
+            started: started_tx,
+            gate: Arc::new(Semaphore::new(0)),
+            count: count.clone(),
+        });
+
+        // Two sessions so a Down keypress moves the cursor (a fresh poll-kick).
+        let scan = Scan {
+            groups: vec![Group {
+                source: "local".into(),
+                err: None,
+                sessions: vec![
+                    Session {
+                        source: "local".into(),
+                        name: "editor".into(),
+                        windows: 1,
+                        attached: false,
+                        last_attached: 100,
+                    },
+                    Session {
+                        source: "local".into(),
+                        name: "build".into(),
+                        windows: 1,
+                        attached: false,
+                        last_attached: 50,
+                    },
+                ],
+            }],
+            panes: Default::default(),
+        };
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut sw = Switcher::new(scan);
+        let (tx, rx) = mpsc::channel::<Cmd>(32);
+        let tx2 = tx.clone();
+        let loop_task = tokio::spawn(async move {
+            event_loop(&mut term, &mut sw, ops, tx2, rx).await.unwrap();
+        });
+
+        // The first capture starts and parks (gate has no permits).
+        started_rx.recv().await.expect("initial capture must start");
+
+        // Move the cursor while that capture is still in flight.
+        tx.send(Cmd::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)))
+            .await
+            .unwrap();
+
+        // No SECOND capture may start: the in-flight one must debounce it.
+        let second = tokio::time::timeout(Duration::from_millis(150), started_rx.recv()).await;
+        assert!(
+            second.is_err(),
+            "a cursor move while a capture is in flight must not start a second capture \
+             (captures so far: {})",
+            count.load(Ordering::SeqCst)
+        );
+
+        tx.send(Cmd::Key(KeyEvent::new(
+            KeyCode::Char('q'),
+            KeyModifiers::NONE,
+        )))
+        .await
+        .unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), loop_task).await;
+    }
 
     struct NoopOps;
 

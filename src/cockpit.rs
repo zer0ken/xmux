@@ -18,7 +18,7 @@ use crate::env::Env;
 use crate::manage;
 use crate::proxy;
 use crate::session::{self, Session};
-use crate::ui::run::run_switcher;
+use crate::ui::run::{run_switcher, ScanCache};
 
 /// A target the cockpit attaches: a session and an optional window to land on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -324,6 +324,7 @@ struct RealAttacher {
     env: Arc<Env>,
     ops: Arc<dyn crate::ui::switcher::Ops>,
     pending: Pending,
+    cache: ScanCache,
 }
 #[async_trait]
 impl Attacher for RealAttacher {
@@ -353,7 +354,8 @@ impl Attacher for RealAttacher {
             prefix: proxy::run::prefix_from_env(),
             action_key: b's',
         };
-        match proxy::run::proxy_attach(&argv, self.ops.clone(), cfg).await {
+        match proxy::run::proxy_attach(&argv, self.ops.clone(), cfg, Some(self.cache.clone())).await
+        {
             // The overlay yielded a pick: record it (fresh) for the loop to
             // re-attach, mirroring the socket popup path. Same- and cross-server
             // picks both flow through this one re-attach path.
@@ -383,11 +385,15 @@ impl Attacher for RealAttacher {
 struct RealPicker {
     ops: Arc<dyn crate::ui::switcher::Ops>,
     control: Option<PathBuf>,
+    cache: ScanCache,
 }
 #[async_trait]
 impl Picker for RealPicker {
     async fn pick(&self) -> Option<Target> {
-        let result = match run_switcher(self.ops.clone(), self.control.clone()).await {
+        let result =
+            match run_switcher(self.ops.clone(), self.control.clone(), Some(self.cache.clone()))
+                .await
+            {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("xmux: {e}");
@@ -422,14 +428,21 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     }
     let _handle = handle;
 
+    // One last-known scan shared by every picker open this cockpit serves (the
+    // full-screen picker between attaches AND the in-attach overlay), so reopening
+    // shows last-known sessions at once and revalidates in the background.
+    let scan_cache: ScanCache = Arc::new(Mutex::new(None));
+
     let attacher = RealAttacher {
         env: env.clone(),
         ops: env.ops(),
         pending: pending.clone(),
+        cache: scan_cache.clone(),
     };
     let picker = RealPicker {
         ops: env.ops(),
         control: pick_control_path(&env),
+        cache: scan_cache.clone(),
     };
     cockpit_loop(&attacher, &picker, pending, None).await
 }
