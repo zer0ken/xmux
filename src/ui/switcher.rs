@@ -248,6 +248,10 @@ pub struct Switcher {
     show_help: bool,
     result: SwitchResult,
     exit: bool,
+    /// Set when the user pressed Esc at the top level (consumed by `take_esc`).
+    /// In the cockpit, Esc returns to the previous foreground rather than quitting,
+    /// so it is kept distinct from `exit` (which `q` sets to quit the app).
+    esc_requested: bool,
     /// A slow (network) action queued by the last keypress for the event loop to
     /// run off-loop. `None` unless a create/rename/kill is pending dispatch.
     pending_op: Option<PendingOp>,
@@ -285,6 +289,7 @@ impl Switcher {
             show_help: false,
             result: SwitchResult::default(),
             exit: false,
+            esc_requested: false,
             pending_op: None,
             dwell_start: None,
             dwell_addr: None,
@@ -384,6 +389,21 @@ impl Switcher {
 
     pub fn should_exit(&self) -> bool {
         self.exit
+    }
+
+    /// Takes the pending Esc request (true once after the user pressed Esc at the
+    /// top level). The cockpit consumes this to return to the previous foreground;
+    /// the standalone picker treats it as a cancel.
+    pub fn take_esc(&mut self) -> bool {
+        std::mem::take(&mut self.esc_requested)
+    }
+
+    /// Clears the chosen result + exit/esc flags after the cockpit has acted on an
+    /// Enter choice, so the same choice is not re-applied on the next loop turn.
+    pub fn clear_result(&mut self) {
+        self.result = SwitchResult::default();
+        self.exit = false;
+        self.esc_requested = false;
     }
 
     pub fn terminal_view_target(&self) -> TerminalViewTarget {
@@ -728,6 +748,12 @@ impl Switcher {
         }
     }
 
+    /// Whether a dwell is in flight on the current attachable row. This stays true
+    /// AFTER the 500ms window elapses — it does not flip false on its own at 500ms.
+    /// It clears only when `take_dwell_attach` consumes the completed dwell (or
+    /// `note_attached`/a cursor move re-arms it). The event loop uses it to pick the
+    /// 33ms animation tick; it must call `take_dwell_attach` each iteration so the
+    /// tick reverts to the idle rate once the attach is taken.
     pub fn dwell_pending(&self) -> bool {
         self.dwell_start.is_some()
     }
@@ -783,7 +809,7 @@ impl Switcher {
             return;
         }
         match ev.code {
-            KeyCode::Esc => self.quit(),
+            KeyCode::Esc => self.esc_requested = true,
             KeyCode::Enter => self.on_enter(),
             KeyCode::Up => self.move_selection(-1),
             KeyCode::Down => self.move_selection(1),
@@ -2538,5 +2564,27 @@ mod tests {
             !h.sw.dwell_pending(),
             "a self-mirror session must not start a dwell/attach"
         );
+    }
+
+    // --- Esc/q split (cockpit return-vs-quit) -------------------------------
+    //
+    // In the cockpit, Esc returns to the previous foreground while q quits the
+    // app. The switcher keeps the two distinct: Esc sets `esc_requested` (consumed
+    // by `take_esc`) and never sets `exit`; q sets `exit` and never `esc_requested`.
+
+    #[tokio::test]
+    async fn esc_requests_return_not_quit() {
+        let mut h = Harness::new(sample());
+        h.key(KeyCode::Esc).await;
+        assert!(h.sw.take_esc(), "Esc requests an overlay return");
+        assert!(!h.sw.should_exit(), "Esc must not quit the app");
+    }
+
+    #[tokio::test]
+    async fn q_quits_the_app() {
+        let mut h = Harness::new(sample());
+        h.ch('q').await;
+        assert!(h.sw.should_exit(), "q quits");
+        assert!(!h.sw.take_esc(), "q is not an esc-return");
     }
 }

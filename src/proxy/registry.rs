@@ -37,6 +37,19 @@ impl AttachRegistry {
         self.map.contains_key(addr)
     }
 
+    /// The number of currently-kept attachments (for the status bar).
+    pub fn kept(&self) -> usize {
+        self.map.len()
+    }
+
+    /// Push the Passthrough status-bar bytes into `addr`'s attachment so its owner
+    /// pump can re-emit them after a full-screen clear.
+    pub fn set_status_bar(&self, addr: &str, bytes: Vec<u8>) {
+        if let Some(att) = self.map.get(addr) {
+            att.set_status_bar(bytes);
+        }
+    }
+
     pub fn get(&self, addr: &str) -> Option<&Attachment> {
         self.map.get(addr)
     }

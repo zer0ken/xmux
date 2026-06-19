@@ -145,7 +145,7 @@ pub fn dump_switcher(switcher: &mut Switcher, width: u16, height: u16) -> String
 /// back as a [`Cmd::SourceResult`] the moment it returns, so a fast host never
 /// waits on a slow one. The first `terminal.draw` runs before these are polled, so
 /// the skeleton paints instantly.
-fn spawn_probes(ops: &Arc<dyn Ops>, cmd_tx: &mpsc::Sender<Cmd>) {
+pub(crate) fn spawn_probes(ops: &Arc<dyn Ops>, cmd_tx: &mpsc::Sender<Cmd>) {
     for source in ops.sources() {
         let ops = ops.clone();
         let tx = cmd_tx.clone();
@@ -167,7 +167,7 @@ fn spawn_probes(ops: &Arc<dyn Ops>, cmd_tx: &mpsc::Sender<Cmd>) {
 
 /// Spawns one detached `list-panes` probe per session of a freshly reachable
 /// host; each streams its windows/panes back as a [`Cmd::Panes`] independently.
-fn spawn_panes(ops: &Arc<dyn Ops>, cmd_tx: &mpsc::Sender<Cmd>, sessions: Vec<Session>) {
+pub(crate) fn spawn_panes(ops: &Arc<dyn Ops>, cmd_tx: &mpsc::Sender<Cmd>, sessions: Vec<Session>) {
     for sess in sessions {
         let ops = ops.clone();
         let tx = cmd_tx.clone();
@@ -248,6 +248,13 @@ where
                 match cmd {
                     Cmd::Key(k) => {
                         switcher.handle_key(k);
+                        // The standalone picker (and the proxy overlay) treat Esc as
+                        // a cancel: no chosen session, exit the loop. The cockpit
+                        // drives the switcher directly and consumes `take_esc` itself
+                        // to return to its previous foreground instead of exiting.
+                        if switcher.take_esc() {
+                            break;
+                        }
                         // A create/rename/kill runs OFF the loop so a slow ssh
                         // round-trip never freezes rendering, streaming, or ctl.
                         if let Some(op) = switcher.take_pending_op() {

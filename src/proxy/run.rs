@@ -34,10 +34,10 @@ use crate::ui::switcher::{Ops, SwitchResult};
 /// unwind). The proxy needs raw mode for the WHOLE session — byte-faithful
 /// forwarding can't tolerate the line discipline cooking input — not just while
 /// the overlay is up.
-struct RawGuard;
+pub struct RawGuard;
 
 impl RawGuard {
-    fn enter() -> anyhow::Result<Self> {
+    pub fn enter() -> anyhow::Result<Self> {
         enable_raw_mode()?;
         Ok(RawGuard)
     }
@@ -91,6 +91,52 @@ fn pump_write(out: &std::io::Stdout, chunk: &[u8]) {
     let mut lock = out.lock();
     let _ = lock.write_all(chunk);
     let _ = lock.flush();
+}
+
+/// Detects an erase-display sequence `ESC [ <digits>? J` in `chunk`, carrying any
+/// trailing unfinished CSI in `tail` so a sequence split across read chunks is
+/// still caught. The owner pump re-emits the status bar whenever this returns
+/// true (a child sized cols×(rows-1) only reaches the status row via a full
+/// clear). The tail is bounded so a stream of bare ESCs cannot grow it.
+fn scan_clear(tail: &mut Vec<u8>, chunk: &[u8]) -> bool {
+    let mut buf = std::mem::take(tail);
+    buf.extend_from_slice(chunk);
+    let mut found = false;
+    let mut i = 0;
+    let mut keep_from = buf.len();
+    while i < buf.len() {
+        if buf[i] != 0x1b {
+            i += 1;
+            continue;
+        }
+        if i + 1 >= buf.len() {
+            keep_from = i; // lone trailing ESC: could begin a CSI next chunk
+            break;
+        }
+        if buf[i + 1] != b'[' {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 2;
+        while j < buf.len() && buf[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j >= buf.len() {
+            keep_from = i; // unfinished params: resume from this ESC next chunk
+            break;
+        }
+        if buf[j] == b'J' {
+            found = true;
+        }
+        i = j + 1;
+    }
+    let mut rest = buf.split_off(keep_from);
+    if rest.len() > 16 {
+        let n = rest.len() - 16;
+        rest.drain(0..n);
+    }
+    *tail = rest;
+    found
 }
 
 /// A command for the dedicated PTY control thread: bytes to write to the child,
@@ -203,6 +249,9 @@ pub struct Attachment {
     pub control_tx: std::sync::mpsc::Sender<PtyCmd>,
     pub size: (u16, u16),
     pub last_used: Instant,
+    /// The Passthrough status-bar bytes the owner pump re-emits after a child
+    /// full-screen clear (empty until the cockpit sets it on Passthrough entry).
+    pub status_bar: Arc<Mutex<Vec<u8>>>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     id: u64,
 }
@@ -210,6 +259,12 @@ pub struct Attachment {
 impl Attachment {
     pub fn id(&self) -> u64 {
         self.id
+    }
+    /// Set the status-bar bytes the owner pump re-emits after a clear sequence.
+    pub fn set_status_bar(&self, bytes: Vec<u8>) {
+        if let Ok(mut g) = self.status_bar.lock() {
+            *g = bytes;
+        }
     }
     /// Queue input bytes to the child (FIFO, off the loop).
     pub fn input(&self, bytes: Vec<u8>) {
@@ -278,8 +333,12 @@ pub fn spawn_attachment(
 
     let grid = Arc::new(Mutex::new(Grid::new(rows, cols)));
     let pump_grid = grid.clone();
+    let status_bar = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let pump_status = status_bar.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
+        // Rolling tail so a clear sequence split across reads is still caught.
+        let mut clear_tail: Vec<u8> = Vec::new();
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
@@ -290,6 +349,16 @@ pub fn spawn_attachment(
                     }
                     if live.is_owner(id) {
                         pump_write(&stdout, chunk);
+                        // The child is sized cols×(rows-1); only a full-screen
+                        // clear reaches the status row, so re-emit the bar after
+                        // one. The bar wraps itself in cursor save/restore, so the
+                        // re-emit is transparent to the child.
+                        if scan_clear(&mut clear_tail, chunk) {
+                            let sb = pump_status.lock().map(|g| g.clone()).unwrap_or_default();
+                            if !sb.is_empty() {
+                                pump_write(&stdout, &sb);
+                            }
+                        }
                     }
                 }
                 Err(_) => break,
@@ -303,6 +372,7 @@ pub fn spawn_attachment(
         control_tx,
         size: (cols, rows),
         last_used: Instant::now(),
+        status_bar,
         child,
         id,
     })
@@ -360,6 +430,7 @@ pub fn fake_attachment(id: u64, last_used: Instant) -> Attachment {
         control_tx,
         size: (80, 24),
         last_used,
+        status_bar: Arc::new(Mutex::new(Vec::new())),
         child: Box::new(DummyChild),
         id,
     }
@@ -774,6 +845,26 @@ pub fn smoke_roundtrip() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scan_clear_detects_ed_in_one_and_across_chunks() {
+        // Whole sequence in one chunk.
+        let mut tail = Vec::new();
+        assert!(scan_clear(&mut tail, b"text\x1b[2Jmore"));
+
+        // Split across two chunks: `ESC [ 2` then `J`.
+        let mut tail = Vec::new();
+        assert!(!scan_clear(&mut tail, b"abc\x1b[2"), "params unfinished: not yet");
+        assert!(scan_clear(&mut tail, b"J xyz"), "completes on the next chunk");
+
+        // `ESC [ J` (no param) is also an erase-display.
+        let mut tail = Vec::new();
+        assert!(scan_clear(&mut tail, b"\x1b[J"));
+
+        // A non-ED CSI (colour) must NOT trigger a repaint.
+        let mut tail = Vec::new();
+        assert!(!scan_clear(&mut tail, b"\x1b[31m colored \x1b[0m"));
+    }
 
     #[test]
     fn parse_prefix_recognises_specs_and_defaults() {

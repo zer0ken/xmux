@@ -1,368 +1,359 @@
-//! The cockpit: a persistent supervisor that owns the terminal, runs one
-//! mux-client child at a time, and serves a control socket so in-attach overlay
-//! picks can signal a cross-host switch that re-attaches with no picker between.
+//! The cockpit: a persistent supervisor that owns the terminal for the whole
+//! session. It keeps a bounded set of live attachments (each a mux-client child
+//! on its own ConPTY), runs ONE event loop that interleaves stdin, the picker
+//! control socket, terminal resize, dwell-driven attaches, and EOF reaps, and
+//! transitions between Passthrough (a foreground attachment owns raw stdout) and
+//! Overlay (ratatui draws the switcher). Switching between hosts is instant: the
+//! target is already (or quickly) attached and kept warm, so a switch is a state
+//! transition, not a fresh attach.
 
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
-
-use async_trait::async_trait;
-use interprocess::local_socket::tokio::{Listener, Stream};
-use interprocess::local_socket::traits::tokio::Listener as _;
-use interprocess::local_socket::ListenerOptions;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::attach;
-use crate::control;
 use crate::env::Env;
-use crate::manage;
-use crate::proxy;
-use crate::session::{self, Session};
-use crate::ui::run::{run_switcher, ScanCache};
-
-/// A target the cockpit attaches: a session and an optional window to land on.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Target {
-    pub session: Session,
-    pub window: Option<i64>,
-}
-
-/// Appends a line to `~/.xmux/cockpit.log`. The cockpit cannot render UI between
-/// attaches (the picker owns the screen next), so attach/bind failures are
-/// recorded here to survive the picker's screen clears.
-fn log_cockpit(xmux_dir: &Path, msg: &str) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(xmux_dir.join("cockpit.log"))
-    {
-        let _ = writeln!(f, "{msg}");
-    }
-}
-
-/// Handles one cockpit control request line. Returns the reply payload and, for a
-/// valid `switch <source>/<name>` naming a known source, the target the loop
-/// should attach next.
-pub fn dispatch_cockpit(
-    line: &str,
-    known_source: &dyn Fn(&str) -> bool,
-) -> (String, Option<Target>) {
-    let req = control::parse_request(line);
-    match req.verb.as_str() {
-        "ping" => ("pong".to_string(), None),
-        "switch" => {
-            let (window, addr) = parse_switch_arg(&req.arg);
-            match session::parse_target(addr.trim()) {
-                Ok(s) if known_source(&s.source) => {
-                    ("ok".to_string(), Some(Target { session: s, window }))
-                }
-                Ok(s) => (format!("err: unknown source {:?}", s.source), None),
-                Err(e) => (format!("err: {e}"), None),
-            }
-        }
-        _ => ("err: unknown command".to_string(), None),
-    }
-}
-
-/// Parses a `switch` argument. The popup sends `<window> <addr>`, where `<window>`
-/// is a window index or `-` for none; a bare `<addr>` (no leading window token) is
-/// also accepted so the address — which may contain spaces — is taken verbatim
-/// whenever the first token is not a window spec.
-fn parse_switch_arg(arg: &str) -> (Option<i64>, &str) {
-    match arg.split_once(' ') {
-        Some(("-", rest)) => (None, rest),
-        Some((head, rest)) => match head.parse::<i64>() {
-            Ok(n) => (Some(n), rest),
-            Err(_) => (None, arg),
-        },
-        None => (None, arg),
-    }
-}
-
-/// Hands the terminal to the attach for a target and returns when the child exits.
-#[async_trait]
-pub trait Attacher: Send + Sync {
-    async fn attach(&self, target: &Target);
-}
-
-/// Runs the full-screen picker; returns the chosen target, or `None` to quit.
-#[async_trait]
-pub trait Picker: Send + Sync {
-    async fn pick(&self) -> Option<Target>;
-}
-
-/// Maps a picker/overlay `SwitchResult` to a `Target`, or `None` when nothing was
-/// chosen. The window is carried only when the result names a real one (`>= 0`).
-fn switch_result_to_target(result: crate::ui::switcher::SwitchResult) -> Option<Target> {
-    let chosen = result.chosen?;
-    Some(Target {
-        session: chosen,
-        window: (result.window >= 0).then_some(result.window),
-    })
-}
-
-/// A switch is honored only if the loop reaches it within this window of being
-/// queued. Bounds a leak: if a popup queues a switch but its detach never lands,
-/// a much-later unrelated child exit must not trigger a stale teleport. The
-/// normal popup→ok→detach→child-exit path completes in well under a second.
-const SWITCH_FRESH_WINDOW: Duration = Duration::from_secs(15);
-
-/// A recorded cross-server switch and the instant it was queued.
-#[derive(Debug, Clone)]
-pub struct PendingSwitch {
-    pub target: Target,
-    pub at: Instant,
-}
-
-/// A recorded cross-server switch, shared between the accept task and the loop.
-pub type Pending = Arc<Mutex<Option<PendingSwitch>>>;
-
-/// Whether a switch queued at `at` is still fresh as of `now`.
-fn switch_is_fresh(at: Instant, now: Instant, window: Duration) -> bool {
-    now.saturating_duration_since(at) < window
-}
-
-/// Drains the pending cell, returning the target only if the queued switch is
-/// still fresh; a stale switch is consumed (cleared) but not acted on.
-fn take_fresh_switch(pending: &Pending) -> Option<Target> {
-    let p = pending.lock().unwrap().take()?;
-    switch_is_fresh(p.at, Instant::now(), SWITCH_FRESH_WINDOW).then_some(p.target)
-}
-
-/// The cockpit supervisor loop. Attaches the current target; when the child
-/// exits, a fresh recorded switch re-attaches with no picker (the seamless
-/// cross-host switch), otherwise the picker chooses the next target (or quits).
-pub async fn cockpit_loop(
-    attacher: &dyn Attacher,
-    picker: &dyn Picker,
-    pending: Pending,
-    initial: Option<Target>,
-) -> i32 {
-    let mut target = match initial {
-        Some(t) => t,
-        None => match picker.pick().await {
-            Some(t) => t,
-            None => return 0,
-        },
-    };
-    loop {
-        attacher.attach(&target).await;
-        target = match take_fresh_switch(&pending) {
-            Some(t) => t,
-            None => match picker.pick().await {
-                Some(t) => t,
-                None => return 0,
-            },
-        };
-    }
-}
-
-/// Tests whether a source alias is known to this cockpit (so `switch` to an
-/// unknown source is rejected).
-type KnownSource = Arc<dyn Fn(&str) -> bool + Send + Sync>;
-
-/// Serves the cockpit control socket: each `switch` stores the target into
-/// `pending` for the loop to consume after the current child exits.
-async fn cockpit_accept(listener: Listener, pending: Pending, known: KnownSource) {
-    while let Ok(conn) = listener.accept().await {
-        let pending = pending.clone();
-        let known = known.clone();
-        tokio::spawn(handle_cockpit_conn(conn, pending, known));
-    }
-}
-
-async fn handle_cockpit_conn(conn: Stream, pending: Pending, known: KnownSource) {
-    let mut buf = BufReader::new(conn);
-    loop {
-        let mut line = String::new();
-        match buf.read_line(&mut line).await {
-            Ok(0) | Err(_) => return,
-            Ok(_) => {}
-        }
-        let known_fn = |s: &str| (known)(s);
-        let (reply, target) = dispatch_cockpit(&line, &known_fn);
-        if let Some(t) = target {
-            *pending.lock().unwrap() = Some(PendingSwitch {
-                target: t,
-                at: Instant::now(),
-            });
-        }
-        if control::write_frame(&mut buf, &reply).await.is_err() {
-            return;
-        }
-    }
-}
-
-/// A running cockpit socket: the accept task plus the socket path to clean up on drop.
-struct CockpitHandle {
-    task: tokio::task::JoinHandle<()>,
-    sock: PathBuf,
-}
-impl Drop for CockpitHandle {
-    fn drop(&mut self) {
-        self.task.abort();
-        let _ = std::fs::remove_file(&self.sock);
-    }
-}
-
-/// Binds the cockpit socket and serves it. A bind failure returns `None` (the
-/// cockpit still runs; control-socket switching is unavailable).
-fn serve_cockpit(env: &Arc<Env>, sock: PathBuf, pending: Pending) -> Option<CockpitHandle> {
-    let _ = std::fs::remove_file(&sock);
-    let name = match control::endpoint_name(&sock) {
-        Ok(n) => n,
-        Err(e) => {
-            log_cockpit(&env.xmux_dir, &format!("cockpit socket name error: {e}"));
-            return None;
-        }
-    };
-    let listener = match ListenerOptions::new().name(name).create_tokio() {
-        Ok(l) => l,
-        Err(e) => {
-            log_cockpit(&env.xmux_dir, &format!("cockpit socket bind failed: {e}"));
-            return None;
-        }
-    };
-    #[cfg(windows)]
-    let _ = std::fs::write(&sock, b"");
-    let known_keys: std::collections::HashSet<String> = env.by_alias.keys().cloned().collect();
-    let known: KnownSource = Arc::new(move |s: &str| known_keys.contains(s));
-    let task = tokio::spawn(cockpit_accept(listener, pending, known));
-    Some(CockpitHandle { task, sock })
-}
-
-/// The real terminal-handover attach. It runs the attach child under the PTY
-/// proxy so the in-pane prefix hotkey can open the picker overlay without a
-/// detach. A pick (same- or cross-server) is recorded into `pending`; the
-/// cockpit loop drains it and re-attaches, so both kinds of pick flow through
-/// the one re-attach path. The proxy is async, so the cockpit serves its socket
-/// concurrently with the child's run.
-struct RealAttacher {
-    env: Arc<Env>,
-    ops: Arc<dyn crate::ui::switcher::Ops>,
-    pending: Pending,
-    cache: ScanCache,
-}
-#[async_trait]
-impl Attacher for RealAttacher {
-    async fn attach(&self, target: &Target) {
-        let dir = &self.env.xmux_dir;
-        let addr = target.session.address();
-        let Some(src) = self.env.by_alias.get(&target.session.source).cloned() else {
-            let m = format!("attach {addr} failed: unknown source");
-            eprintln!("xmux: {m}");
-            log_cockpit(dir, &m);
-            return;
-        };
-        if let Err(e) = attach::nest_guard(attach::in_mux()) {
-            eprintln!("xmux: {e}");
-            log_cockpit(dir, &format!("attach {addr} refused: {e}"));
-            return;
-        }
-        // Local pre-selects the window with an instant local command; a remote
-        // folds the selection into the single ssh attach connection.
-        if !src.remote {
-            if let Some(w) = target.window {
-                let _ = manage::select_window(&src, &target.session.name, w).await;
-            }
-        }
-        let argv = src.attach_command(&target.session.name, target.window);
-        let cfg = proxy::run::ProxyConfig {
-            prefix: proxy::run::parse_prefix(Some(&self.env.ui_prefix)),
-            action_key: b's',
-        };
-        match proxy::run::proxy_attach(&argv, self.ops.clone(), cfg, Some(self.cache.clone())).await
-        {
-            // The overlay yielded a pick: record it (fresh) for the loop to
-            // re-attach, mirroring the socket popup path. Same- and cross-server
-            // picks both flow through this one re-attach path.
-            Ok(Some(result)) => {
-                if let Some(t) = switch_result_to_target(result) {
-                    *self.pending.lock().unwrap() = Some(PendingSwitch {
-                        target: t,
-                        at: Instant::now(),
-                    });
-                }
-            }
-            // The child exited on its own: behave as the old bare-exit path —
-            // return and let the loop re-pick. (The proxy does not surface the
-            // child's exit status, so a non-zero remote exit, e.g. ssh 255, is no
-            // longer logged here; see the Task 7 report.)
-            Ok(None) => {}
-            Err(e) => {
-                let m = format!("attach {addr} failed: {e}");
-                eprintln!("xmux: {m}");
-                log_cockpit(dir, &m);
-            }
-        }
-    }
-}
-
-/// The real picker: runs the full-screen switcher and maps its result to a target.
-struct RealPicker {
-    ops: Arc<dyn crate::ui::switcher::Ops>,
-    control: Option<PathBuf>,
-    cache: ScanCache,
-}
-#[async_trait]
-impl Picker for RealPicker {
-    async fn pick(&self) -> Option<Target> {
-        let result =
-            match run_switcher(self.ops.clone(), self.control.clone(), Some(self.cache.clone()))
-                .await
-            {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("xmux: {e}");
-                return None;
-            }
-        };
-        switch_result_to_target(result)
-    }
-}
+use crate::session;
 
 /// The `xmux` (no subcommand) entry: the persistent cockpit. Owns the terminal,
-/// runs one mux-client child at a time, and serves a control socket so the in-mux
-/// popup can signal a cross-host switch that re-attaches with no picker between.
+/// keeps a bounded set of live attachments, and lets the in-session overlay
+/// switch between them with no re-attach. It serves a picker control socket so a
+/// headless driver can inject keys/text and dump the switcher screen.
 pub async fn run_cockpit(env: Arc<Env>) -> i32 {
+    use crate::proxy::app::{App, AppState};
+    use crate::proxy::input::{InAction, InputMachine};
+    use crate::proxy::registry::AttachRegistry;
+    use crate::proxy::run::{parse_prefix, LiveOwner, RawGuard};
+    use crate::ui::switcher::Switcher;
+    use std::io::Read;
+    use std::time::Duration;
+
     // The cockpit owns the terminal and attaches mux clients as children; nested
-    // inside a mux every attach is refused, leaving only a doomed picker loop. So
-    // running it inside a mux is refused outright, not warned.
+    // inside a mux every attach is refused, leaving only a doomed loop. So running
+    // it inside a mux is refused outright, not warned.
     if let Err(e) = attach::nest_guard(attach::in_mux()) {
         eprintln!("xmux: {e}");
         eprintln!("xmux: the cockpit must be your terminal entry, not run inside a mux.");
         return 2;
     }
     let _ = std::fs::create_dir_all(&env.xmux_dir);
-    let pending: Pending = Arc::new(Mutex::new(None));
-    let sock = control::cockpit_socket_path(&env.xmux_dir, std::process::id());
-    let handle = serve_cockpit(&env, sock, pending.clone());
-    if handle.is_none() {
-        log_cockpit(
-            &env.xmux_dir,
-            "cockpit control socket unavailable; cross-host popup switching disabled",
-        );
+
+    // Raw mode for the whole session (RAII-restored on return/panic).
+    let _raw = match RawGuard::enter() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("xmux: {e}");
+            return 1;
+        }
+    };
+
+    let size = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
+    let (cols, body_rows) = (size.0, size.1.saturating_sub(1)); // status bar = last row
+
+    let live = LiveOwner::new();
+    let (eof_tx, mut eof_rx) = tokio::sync::mpsc::unbounded_channel::<u64>();
+    let mut registry = AttachRegistry::new(env.cfg.keep_cap(), live.clone(), eof_tx);
+    let mut app = App::new(live.clone());
+
+    // The switcher, seeded from the source skeletons; probes stream sessions in.
+    let ops = env.ops();
+    let mut switcher = Switcher::from_sources(ops.sources());
+
+    // Single stdin reader thread (the proxy pattern): raw host bytes → channel.
+    let (stdin_tx, mut stdin_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
+    std::thread::spawn(move || {
+        let stdin = std::io::stdin();
+        let mut stdin = stdin.lock();
+        let mut buf = [0u8; 256];
+        loop {
+            match stdin.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if stdin_tx.blocking_send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    let mut machine = InputMachine::new(
+        parse_prefix(Some(&env.ui_prefix)),
+        b's',
+        b'q',
+        Duration::from_millis(400),
+    );
+
+    // ratatui terminal over the real stdout (Overlay draws; Passthrough is raw).
+    let mut term =
+        match ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(std::io::stdout())) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("xmux: {e}");
+                return 1;
+            }
+        };
+
+    // The picker control + probe channel: serves headless key/text/dump and
+    // carries the streaming probe results back into the switcher.
+    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<crate::ui::run::Cmd>(256);
+    let control = pick_control_path(&env);
+    let _control_handle = control.and_then(|p| crate::ui::run::serve_control(p, cmd_tx.clone()));
+    crate::ui::run::spawn_probes(&ops, &cmd_tx); // kick the streaming probes
+
+    let mut event_stream = ratatui::crossterm::event::EventStream::new();
+    use futures::StreamExt;
+
+    loop {
+        // Draw: in Overlay, ratatui paints the sidebar + terminal view (the cursor
+        // session's grid). In Passthrough the foreground pump writes raw — nothing
+        // to draw here, the terminal is the child's.
+        if app.is_overlay() {
+            let tv_addr = {
+                let t = switcher.terminal_view_target();
+                (!t.target.is_empty()).then(|| format!("{}/{}", t.source, t.target))
+            };
+            // Borrow the cursor session's grid (clone the Arc, lock briefly).
+            let grid_arc = tv_addr
+                .as_deref()
+                .and_then(|a| registry.get(a))
+                .map(|att| att.grid.clone());
+            let _ = match &grid_arc {
+                Some(g) => {
+                    let guard = g.lock().ok();
+                    term.draw(|f| switcher.render(f, guard.as_deref()))
+                }
+                None => term.draw(|f| switcher.render(f, None)),
+            };
+        }
+
+        // Dwell-completed attach (Overlay only): attach + keep, mark live. Polled
+        // every iteration so `dwell_pending` clears once the attach is taken and
+        // the tick reverts from the 33ms animation rate back to the idle rate.
+        if app.is_overlay() {
+            if let Some(tgt) = switcher.take_dwell_attach(std::time::Instant::now()) {
+                let addr = format!("{}/{}", tgt.source, tgt.target);
+                attach_into_registry(&env, &mut registry, &addr, cols, body_rows, &app);
+            }
+        }
+
+        let tick = if app.is_overlay() && switcher.dwell_pending() {
+            Duration::from_millis(33)
+        } else {
+            Duration::from_millis(250)
+        };
+
+        tokio::select! {
+            biased;
+            Some(id) = eof_rx.recv() => {
+                // A session exited: reap it; if it was the foreground, fall to
+                // Overlay (clear + redraw on the next loop top overdraws any stray
+                // chunk a demoted pump leaked during the gate handoff).
+                let was_fg = matches!(&app.state, AppState::Passthrough { fg_id, .. } if *fg_id == id);
+                registry.reap(id);
+                if was_fg {
+                    app.enter_overlay();
+                    let _ = term.clear();
+                }
+            }
+            Some(bytes) = stdin_rx.recv() => {
+                if app.is_overlay() {
+                    // Drive the switcher: decode bytes → KeyEvents.
+                    let mut decoder = crate::proxy::decode::KeyDecoder::new();
+                    for key in decoder.feed(&bytes) {
+                        switcher.handle_key(key);
+                    }
+                    handle_switcher_outcome(
+                        &env, &mut registry, &mut switcher, &mut app, &mut term, cols, body_rows,
+                    );
+                    if switcher.should_exit() && switcher.result().chosen.is_none() {
+                        break; // q quit the app
+                    }
+                } else {
+                    // Passthrough: the InputMachine intercepts only the prefix.
+                    let now = std::time::Instant::now();
+                    let mut to_fg: Vec<u8> = Vec::new();
+                    let mut open = false;
+                    let mut quit = false;
+                    for b in bytes {
+                        for action in machine.feed(b, now) {
+                            match action {
+                                InAction::Forward(f) => to_fg.extend_from_slice(&f),
+                                InAction::OpenOverlay => open = true,
+                                InAction::Quit => quit = true,
+                            }
+                        }
+                    }
+                    if let AppState::Passthrough { fg, .. } = &app.state {
+                        if !to_fg.is_empty() {
+                            if let Some(att) = registry.get(fg) {
+                                att.input(to_fg);
+                            }
+                        }
+                    }
+                    if quit {
+                        break;
+                    }
+                    if open {
+                        // ONLY enter Overlay from Passthrough (never re-enter while
+                        // already Overlay). Clear + the next loop-top redraw overdraw
+                        // any stray chunk the demoted foreground pump may have leaked.
+                        app.enter_overlay();
+                        let _ = term.clear();
+                    }
+                }
+            }
+            Some(cmd) = cmd_rx.recv() => {
+                use crate::ui::run::Cmd;
+                match cmd {
+                    Cmd::Key(k) => {
+                        switcher.handle_key(k);
+                        if app.is_overlay() {
+                            handle_switcher_outcome(
+                                &env, &mut registry, &mut switcher, &mut app, &mut term, cols,
+                                body_rows,
+                            );
+                            if switcher.should_exit() && switcher.result().chosen.is_none() {
+                                break;
+                            }
+                        }
+                    }
+                    Cmd::SourceResult { source, sessions, err } => {
+                        let reachable = err.is_none();
+                        switcher.apply_source_result(source, sessions.clone(), err);
+                        if reachable {
+                            crate::ui::run::spawn_panes(&ops, &cmd_tx, sessions);
+                        }
+                    }
+                    Cmd::Panes { address, panes } => switcher.apply_panes(address, panes),
+                    Cmd::Dump(reply) => {
+                        let sz = term
+                            .size()
+                            .unwrap_or(ratatui::layout::Size { width: 80, height: 24 });
+                        let _ = reply.send(crate::ui::run::dump_switcher(
+                            &mut switcher,
+                            sz.width,
+                            sz.height,
+                        ));
+                    }
+                    Cmd::OpDone(result) => switcher.apply_op_result(result),
+                    Cmd::Mouse(_) | Cmd::Resize(_, _) => {}
+                }
+            }
+            Some(Ok(ev)) = event_stream.next() => {
+                if let ratatui::crossterm::event::Event::Resize(c, r) = ev {
+                    let body = r.saturating_sub(1);
+                    registry.resize_all(c, body);
+                    let _ = term.resize(ratatui::layout::Rect::new(0, 0, c, r));
+                }
+            }
+            _ = tokio::time::sleep(tick) => { /* wake to repaint dwell progress */ }
+        }
     }
-    let _handle = handle;
 
-    // One last-known scan shared by every picker open this cockpit serves (the
-    // full-screen picker between attaches AND the in-attach overlay), so reopening
-    // shows last-known sessions at once and revalidates in the background.
-    let scan_cache: ScanCache = Arc::new(Mutex::new(None));
+    registry.teardown_all();
+    0
+}
 
-    let attacher = RealAttacher {
-        env: env.clone(),
-        ops: env.ops(),
-        pending: pending.clone(),
-        cache: scan_cache.clone(),
-    };
-    let picker = RealPicker {
-        ops: env.ops(),
-        control: pick_control_path(&env),
-        cache: scan_cache.clone(),
-    };
-    cockpit_loop(&attacher, &picker, pending, None).await
+/// Resolves an `addr` to its attach argv and ensures it is in the registry,
+/// protecting the foreground + the target itself from eviction. Returns the
+/// attachment's id, or `None` when the source is unknown, the address is
+/// malformed, or xmux is (now) inside a mux.
+fn attach_into_registry(
+    env: &Arc<Env>,
+    registry: &mut crate::proxy::registry::AttachRegistry,
+    addr: &str,
+    cols: u16,
+    rows: u16,
+    app: &crate::proxy::app::App,
+) -> Option<u64> {
+    let sess = session::parse_target(addr).ok()?;
+    let src = env.by_alias.get(&sess.source)?.clone();
+    if attach::nest_guard(attach::in_mux()).is_err() {
+        return None;
+    }
+    let argv = src.attach_command(&sess.name, None);
+    let mut protect: Vec<&str> = vec![addr];
+    if let crate::proxy::app::AppState::Passthrough { fg, .. } = &app.state {
+        protect.push(fg.as_str());
+    }
+    registry.ensure(addr, &argv, cols, rows, &protect).ok()
+}
+
+/// After the switcher processed a key in Overlay: Enter → attach + promote to
+/// Passthrough; Esc → return to the previous foreground (when one exists). Quit
+/// (`q`) is detected by the caller via `should_exit` + no chosen session.
+fn handle_switcher_outcome(
+    env: &Arc<Env>,
+    registry: &mut crate::proxy::registry::AttachRegistry,
+    switcher: &mut crate::ui::switcher::Switcher,
+    app: &mut crate::proxy::app::App,
+    term: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    cols: u16,
+    rows: u16,
+) {
+    // Enter chose a session: attach immediately + promote to foreground.
+    let result = switcher.result();
+    if let Some(chosen) = result.chosen {
+        let addr = chosen.address();
+        if let Some(id) = attach_into_registry(env, registry, &addr, cols, rows, app) {
+            switcher.note_attached(&addr);
+            enter_passthrough(env, registry, app, &addr, id, cols, rows);
+        }
+        switcher.clear_result();
+        let _ = term; // the terminal is ratatui's; Passthrough writes raw next
+        return;
+    }
+    // Esc: return to the previous foreground if there is one (otherwise stay in
+    // Overlay — the initial Overlay has no foreground to return to). The kept
+    // attachment's CURRENT id is read from the registry (the remembered id can be
+    // stale if it was evicted/reaped and re-attached while in Overlay).
+    if switcher.take_esc() {
+        if let Some((addr, _stale_id)) = app.esc_target() {
+            let id = registry
+                .id_of(&addr)
+                .or_else(|| attach_into_registry(env, registry, &addr, cols, rows, app));
+            if let Some(id) = id {
+                enter_passthrough(env, registry, app, &addr, id, cols, rows);
+            }
+        }
+    }
+}
+
+/// Builds the foreground restore + status bar for `addr`/`id`, pushes the status
+/// bytes into the attachment (so its owner pump re-emits them after a child
+/// full-screen clear), then transitions the app to Passthrough.
+fn enter_passthrough(
+    env: &Arc<Env>,
+    registry: &mut crate::proxy::registry::AttachRegistry,
+    app: &mut crate::proxy::app::App,
+    addr: &str,
+    id: u64,
+    cols: u16,
+    rows: u16,
+) {
+    let restore = registry
+        .get(addr)
+        .and_then(|att| att.grid.lock().ok().map(|g| g.restore_bytes()))
+        .unwrap_or_default();
+    let status = status_bar_bytes(addr, registry.kept(), env.cfg.keep_cap(), cols, rows);
+    registry.set_status_bar(addr, status.clone());
+    app.enter_passthrough(addr.to_string(), id, &restore, &status);
+}
+
+/// The Passthrough status bar bytes: `host/session · kept N/cap`, painted on the
+/// last physical row, wrapped in cursor save/restore. Info only — no shortcuts.
+fn status_bar_bytes(addr: &str, kept: usize, cap: usize, cols: u16, rows: u16) -> Vec<u8> {
+    let text = format!("{addr} · kept {kept}/{cap}");
+    let clipped: String = text.chars().take(cols as usize).collect();
+    let mut out = Vec::new();
+    out.extend_from_slice(b"\x1b7"); // save cursor
+    out.extend_from_slice(format!("\x1b[{};1H", rows + 1).as_bytes()); // last physical row
+    out.extend_from_slice(b"\x1b[7m"); // reverse video
+    out.extend_from_slice(b"\x1b[K"); // clear line
+    out.extend_from_slice(clipped.as_bytes());
+    out.extend_from_slice(b"\x1b[0m");
+    out.extend_from_slice(b"\x1b8"); // restore cursor
+    out
 }
 
 /// The picker's control socket path (`ctl-<pid>.sock`), unless `XMUX_CONTROL=0`.
@@ -371,338 +362,68 @@ fn pick_control_path(env: &Env) -> Option<PathBuf> {
         return None;
     }
     let _ = std::fs::create_dir_all(&env.xmux_dir);
-    Some(control::socket_path(&env.xmux_dir, std::process::id()))
+    Some(crate::control::socket_path(&env.xmux_dir, std::process::id()))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::time::{Duration, Instant};
-
-    #[test]
-    fn dispatch_switch_ping_and_errors() {
-        let known = |s: &str| matches!(s, "local" | "jupiter06");
-        let known: &dyn Fn(&str) -> bool = &known;
-
-        assert_eq!(dispatch_cockpit("ping", known).0, "pong");
-
-        let (reply, target) = dispatch_cockpit("switch jupiter06/api", known);
-        assert_eq!(reply, "ok");
-        let t = target.expect("a valid switch yields a target");
-        assert_eq!(t.session.source, "jupiter06");
-        assert_eq!(t.session.name, "api");
-        assert_eq!(t.window, None);
-
-        // Unknown source → err, no target.
-        let (reply, target) = dispatch_cockpit("switch nope/x", known);
-        assert!(reply.starts_with("err:"), "{reply}");
-        assert!(target.is_none());
-
-        // Malformed address → err, no target.
-        let (reply, target) = dispatch_cockpit("switch noslash", known);
-        assert!(reply.starts_with("err:"), "{reply}");
-        assert!(target.is_none());
-
-        // Unknown verb.
-        assert_eq!(dispatch_cockpit("bogus", known).0, "err: unknown command");
-    }
-
-    #[test]
-    fn dispatch_switch_carries_window() {
-        let known = |s: &str| s == "jupiter06";
-        let known: &dyn Fn(&str) -> bool = &known;
-
-        // Window-first wire form: "<window> <addr>".
-        let (reply, target) = dispatch_cockpit("switch 3 jupiter06/api", known);
-        assert_eq!(reply, "ok");
-        let t = target.unwrap();
-        assert_eq!(t.session.address(), "jupiter06/api");
-        assert_eq!(t.window, Some(3));
-
-        // Explicit no-window sentinel.
-        let (_, target) = dispatch_cockpit("switch - jupiter06/api", known);
-        assert_eq!(target.unwrap().window, None);
-
-        // Bare address (no leading window token) still works, window None.
-        let (_, target) = dispatch_cockpit("switch jupiter06/api", known);
-        assert_eq!(target.unwrap().window, None);
-    }
-
-    #[test]
-    fn switch_result_maps_to_target() {
+    #[tokio::test]
+    async fn enter_promotes_cursor_to_passthrough_foreground() {
+        use crate::proxy::app::{App, AppState};
+        use crate::proxy::run::LiveOwner;
         use crate::session::Session;
-        use crate::ui::switcher::SwitchResult;
+        use crate::ui::switcher::{Scan, Switcher};
+        use crate::ui::tree::Group;
 
-        // No choice → no target (the picker/overlay was cancelled).
-        assert!(switch_result_to_target(SwitchResult {
-            chosen: None,
-            window: 3,
-        })
-        .is_none());
-
-        // A real window (>= 0) is carried.
-        let t = switch_result_to_target(SwitchResult {
-            chosen: Some(Session {
+        let live = LiveOwner::new();
+        let mut app = App::new(live.clone());
+        let scan = Scan {
+            groups: vec![Group {
                 source: "jupiter06".into(),
-                name: "api".into(),
-                ..Default::default()
-            }),
-            window: 2,
-        })
-        .expect("a chosen session yields a target");
-        assert_eq!(t.session.address(), "jupiter06/api");
-        assert_eq!(t.window, Some(2));
-
-        // A sentinel window (< 0) means "no specific window".
-        let t = switch_result_to_target(SwitchResult {
-            chosen: Some(Session {
-                source: "local".into(),
-                name: "work".into(),
-                ..Default::default()
-            }),
-            window: -1,
-        })
-        .expect("a chosen session yields a target");
-        assert_eq!(t.window, None);
-    }
-
-    #[test]
-    fn switch_freshness_window() {
-        let at = Instant::now();
-        let w = Duration::from_secs(15);
-        assert!(switch_is_fresh(at, at + Duration::from_secs(5), w));
-        assert!(!switch_is_fresh(at, at + Duration::from_secs(20), w));
-        // A `now` earlier than `at` saturates to zero elapsed → still fresh.
-        assert!(switch_is_fresh(at, at, w));
-    }
-
-    fn target(source: &str, name: &str) -> Target {
-        Target {
-            session: Session {
-                source: source.into(),
-                name: name.into(),
-                ..Default::default()
-            },
-            window: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn loop_reattaches_on_pending_then_picks_on_bare_exit() {
-        use std::sync::Mutex;
-
-        // Attacher logs each target and injects a pending switch "during" each attach.
-        struct ScriptAttacher {
-            log: Mutex<Vec<String>>,
-            pending: Pending,
-            inject: Mutex<Vec<Option<Target>>>,
-        }
-        #[async_trait::async_trait]
-        impl Attacher for ScriptAttacher {
-            async fn attach(&self, t: &Target) {
-                self.log.lock().unwrap().push(t.session.address());
-                let inj = self.inject.lock().unwrap().remove(0);
-                *self.pending.lock().unwrap() = inj.map(|target| PendingSwitch {
-                    target,
-                    at: Instant::now(),
-                });
-            }
-        }
-        struct QuitPicker;
-        #[async_trait::async_trait]
-        impl Picker for QuitPicker {
-            async fn pick(&self) -> Option<Target> {
-                None
-            }
-        }
-
-        let pending: Pending = std::sync::Arc::new(Mutex::new(None));
-        let attacher = ScriptAttacher {
-            log: Mutex::new(Vec::new()),
-            pending: pending.clone(),
-            inject: Mutex::new(vec![Some(target("jupiter06", "api")), None]),
+                err: None,
+                sessions: vec![Session {
+                    source: "jupiter06".into(),
+                    name: "api".into(),
+                    windows: 1,
+                    attached: false,
+                    last_attached: 100,
+                }],
+            }],
+            panes: Default::default(),
         };
-        let rc = cockpit_loop(
-            &attacher,
-            &QuitPicker,
-            pending.clone(),
-            Some(target("local", "work")),
-        )
-        .await;
-        assert_eq!(rc, 0);
+        let mut sw = Switcher::new(scan);
+        // Cursor preselected on jupiter06/api; Enter chooses it.
+        sw.handle_key(ratatui::crossterm::event::KeyEvent::new(
+            ratatui::crossterm::event::KeyCode::Enter,
+            ratatui::crossterm::event::KeyModifiers::NONE,
+        ));
+        let chosen = sw.result().chosen.expect("Enter chooses the cursor session");
+        let addr = chosen.address();
+        assert_eq!(addr, "jupiter06/api");
+        // The cockpit would attach (fake id 9) and promote to foreground.
+        app.enter_passthrough(addr.clone(), 9, b"", b"");
         assert_eq!(
-            *attacher.log.lock().unwrap(),
-            vec!["local/work", "jupiter06/api"]
+            app.state,
+            AppState::Passthrough {
+                fg: "jupiter06/api".into(),
+                fg_id: 9
+            }
         );
+        assert!(live.is_owner(9), "the foreground attachment owns stdout");
     }
 
     #[tokio::test]
-    async fn loop_runs_picker_first_when_no_initial_target() {
-        use std::sync::Mutex;
-        struct RecordAttacher {
-            log: Mutex<Vec<String>>,
-            pending: Pending,
-        }
-        #[async_trait::async_trait]
-        impl Attacher for RecordAttacher {
-            async fn attach(&self, t: &Target) {
-                self.log.lock().unwrap().push(t.session.address());
-                *self.pending.lock().unwrap() = None;
-            }
-        }
-        struct ScriptPicker(Mutex<Vec<Option<Target>>>);
-        #[async_trait::async_trait]
-        impl Picker for ScriptPicker {
-            async fn pick(&self) -> Option<Target> {
-                self.0.lock().unwrap().remove(0)
-            }
-        }
-        let pending: Pending = std::sync::Arc::new(Mutex::new(None));
-        let attacher = RecordAttacher {
-            log: Mutex::new(Vec::new()),
-            pending: pending.clone(),
-        };
-        let picker = ScriptPicker(Mutex::new(vec![Some(target("local", "work")), None]));
-        let rc = cockpit_loop(&attacher, &picker, pending.clone(), None).await;
-        assert_eq!(rc, 0);
-        assert_eq!(*attacher.log.lock().unwrap(), vec!["local/work"]);
+    async fn esc_returns_to_previous_foreground_no_switch() {
+        use crate::proxy::app::App;
+        use crate::proxy::run::LiveOwner;
+        let live = LiveOwner::new();
+        let mut app = App::new(live.clone());
+        app.enter_passthrough("local/work".into(), 1, b"", b"");
+        app.enter_overlay();
+        // Esc target is the remembered previous foreground.
+        let (addr, id) = app.esc_target().expect("esc returns to previous fg");
+        assert_eq!(addr, "local/work");
+        app.enter_passthrough(addr, id, b"", b"");
+        assert!(live.is_owner(1));
     }
-
-    #[tokio::test]
-    async fn loop_switches_local_remote_both_directions() {
-        use std::sync::Mutex;
-        // UC-11: the cockpit re-attaches whatever the next queued switch names —
-        // local OR remote — in any order, with no picker between. The picker is
-        // only reached when no switch is queued (here: to quit at the end).
-        struct SeqAttacher {
-            log: Mutex<Vec<String>>,
-            pending: Pending,
-            queue: Mutex<Vec<Option<Target>>>,
-        }
-        #[async_trait::async_trait]
-        impl Attacher for SeqAttacher {
-            async fn attach(&self, t: &Target) {
-                self.log.lock().unwrap().push(t.session.address());
-                let next = self.queue.lock().unwrap().remove(0);
-                *self.pending.lock().unwrap() = next.map(|target| PendingSwitch {
-                    target,
-                    at: Instant::now(),
-                });
-            }
-        }
-        struct QuitPicker;
-        #[async_trait::async_trait]
-        impl Picker for QuitPicker {
-            async fn pick(&self) -> Option<Target> {
-                None
-            }
-        }
-        let pending: Pending = std::sync::Arc::new(Mutex::new(None));
-        let attacher = SeqAttacher {
-            log: Mutex::new(Vec::new()),
-            pending: pending.clone(),
-            queue: Mutex::new(vec![
-                Some(target("jupiter06", "api")), // local  -> remote
-                Some(target("local", "db")),      // remote -> local
-                Some(target("jupiter00", "web")), // local  -> remote
-                None,                             // no switch -> picker -> quit
-            ]),
-        };
-        let rc = cockpit_loop(
-            &attacher,
-            &QuitPicker,
-            pending.clone(),
-            Some(target("local", "work")),
-        )
-        .await;
-        assert_eq!(rc, 0);
-        assert_eq!(
-            *attacher.log.lock().unwrap(),
-            vec!["local/work", "jupiter06/api", "local/db", "jupiter00/web"],
-            "the cockpit must re-attach in both directions (local<->remote), no picker between"
-        );
-    }
-
-    #[tokio::test]
-    async fn loop_discards_stale_pending() {
-        use std::sync::Mutex;
-        // During the first attach a STALE switch is queued; the loop must discard
-        // it (not re-attach) and fall to the picker, which quits.
-        struct StaleAttacher {
-            log: Mutex<Vec<String>>,
-            pending: Pending,
-            armed: Mutex<bool>,
-        }
-        #[async_trait::async_trait]
-        impl Attacher for StaleAttacher {
-            async fn attach(&self, t: &Target) {
-                self.log.lock().unwrap().push(t.session.address());
-                let mut armed = self.armed.lock().unwrap();
-                if !*armed {
-                    *armed = true;
-                    if let Some(old) = Instant::now().checked_sub(Duration::from_secs(3600)) {
-                        *self.pending.lock().unwrap() = Some(PendingSwitch {
-                            target: target("jupiter06", "api"),
-                            at: old,
-                        });
-                    }
-                }
-            }
-        }
-        struct QuitPicker;
-        #[async_trait::async_trait]
-        impl Picker for QuitPicker {
-            async fn pick(&self) -> Option<Target> {
-                None
-            }
-        }
-        let pending: Pending = std::sync::Arc::new(Mutex::new(None));
-        let attacher = StaleAttacher {
-            log: Mutex::new(Vec::new()),
-            pending: pending.clone(),
-            armed: Mutex::new(false),
-        };
-        let rc = cockpit_loop(
-            &attacher,
-            &QuitPicker,
-            pending.clone(),
-            Some(target("local", "work")),
-        )
-        .await;
-        assert_eq!(rc, 0);
-        // The stale switch was discarded: only the initial attach ran.
-        assert_eq!(*attacher.log.lock().unwrap(), vec!["local/work"]);
-    }
-
-    #[tokio::test]
-    async fn cockpit_socket_switch_sets_pending() {
-        let dir = std::env::temp_dir().join(format!("xmux-cockpit-sock-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let sock = crate::control::cockpit_socket_path(&dir, std::process::id());
-        let _ = std::fs::remove_file(&sock);
-
-        let name = crate::control::endpoint_name(&sock).unwrap();
-        let listener = ListenerOptions::new().name(name).create_tokio().unwrap();
-        #[cfg(windows)]
-        let _ = std::fs::write(&sock, b"");
-
-        let pending: Pending = Arc::new(Mutex::new(None));
-        let known: KnownSource = Arc::new(|s: &str| s == "jupiter06");
-        let task = tokio::spawn(cockpit_accept(listener, pending.clone(), known));
-
-        let mut client = crate::control::Client::dial(&sock).await.unwrap();
-        assert_eq!(client.do_cmd("ping").await.unwrap(), "pong");
-        assert_eq!(client.do_cmd("switch jupiter06/api").await.unwrap(), "ok");
-
-        let got = pending
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("switch sets pending");
-        assert_eq!(got.target.session.address(), "jupiter06/api");
-
-        task.abort();
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
 }
