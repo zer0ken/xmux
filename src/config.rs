@@ -25,32 +25,23 @@ pub struct LocalConfig {
     pub mux: String,
 }
 
-/// The optional `[ui]` table: xmux's own prefix and the kept-attachment cap.
+/// The optional `[ui]` table: xmux's own prefix.
 #[derive(Debug, Clone, Deserialize)]
 pub struct UiConfig {
     /// xmux's prefix spec (e.g. `C-g`, `C-Space`), config-only like tmux's
     /// `set -g prefix`. Parsed by `proxy::run::parse_prefix`.
     #[serde(default = "default_prefix")]
     pub prefix: String,
-    /// How many live Attachments to keep. Clamped to a minimum of 2 via
-    /// [`Config::keep_cap`] (must hold foreground + cursor).
-    #[serde(default = "default_keep_cap")]
-    pub keep_cap: usize,
 }
 
 fn default_prefix() -> String {
     "C-g".to_string()
 }
 
-fn default_keep_cap() -> usize {
-    6
-}
-
 impl Default for UiConfig {
     fn default() -> Self {
         UiConfig {
             prefix: default_prefix(),
-            keep_cap: default_keep_cap(),
         }
     }
 }
@@ -119,11 +110,6 @@ impl Config {
     /// xmux's configured prefix spec.
     pub fn ui_prefix(&self) -> &str {
         &self.ui.prefix
-    }
-
-    /// The kept-attachment cap, clamped to a minimum of 2.
-    pub fn keep_cap(&self) -> usize {
-        self.ui.keep_cap.max(2)
     }
 
     /// Merges ssh-config discovery with the config file. Discovered aliases come
@@ -452,38 +438,21 @@ bogus = "nope"
 
     #[test]
     fn ui_table_defaults_and_overrides() {
-        // Missing [ui] → defaults: prefix "C-g", keep_cap 6.
+        // Missing [ui] → default prefix "C-g".
         let missing = std::env::temp_dir().join("xmux-ui-absent-xyz.toml");
         let cfg = load(&missing).unwrap();
         assert_eq!(cfg.ui_prefix(), "C-g");
-        assert_eq!(cfg.keep_cap(), 6);
 
-        // Explicit [ui] overrides both.
+        // Explicit [ui] overrides prefix.
         let path = write_temp(
             r#"
 [ui]
 prefix = "C-Space"
-keep_cap = 10
 "#,
             "ui-override.toml",
         );
         let cfg = load(&path).unwrap();
         assert_eq!(cfg.ui_prefix(), "C-Space");
-        assert_eq!(cfg.keep_cap(), 10);
-    }
-
-    #[test]
-    fn ui_keep_cap_clamped_to_min_two() {
-        // keep_cap must hold foreground + cursor, so values below 2 clamp up to 2.
-        let path = write_temp(
-            r#"
-[ui]
-keep_cap = 1
-"#,
-            "ui-clamp.toml",
-        );
-        let cfg = load(&path).unwrap();
-        assert_eq!(cfg.keep_cap(), 2, "keep_cap below 2 must clamp to 2");
     }
 
     #[test]
@@ -492,14 +461,30 @@ keep_cap = 1
         let path = write_temp(
             r#"
 [ui]
-keep_cap = 6
+prefix = "C-g"
 bogus = "nope"
 "#,
             "ui-unknown.toml",
         );
         let (cfg, warnings) = load_verbose(&path).unwrap();
-        assert_eq!(cfg.keep_cap(), 6);
+        assert_eq!(cfg.ui_prefix(), "C-g");
         assert_eq!(warnings, vec![r#"unknown key "ui.bogus""#.to_string()]);
+    }
+
+    #[test]
+    fn ui_table_keeps_prefix_drops_keep_cap() {
+        // keep_cap is no longer a known field; writing it in TOML produces an
+        // unknown-key warning while prefix still loads correctly.
+        let path = write_temp(
+            "[ui]\nprefix = \"C-Space\"\nkeep_cap = 10\n",
+            "ui-no-keepcap.toml",
+        );
+        let (cfg, warnings) = load_verbose(&path).unwrap();
+        assert_eq!(cfg.ui_prefix(), "C-Space");
+        assert!(
+            warnings.iter().any(|w| w.contains("ui.keep_cap")),
+            "keep_cap is now an unknown key: {warnings:?}"
+        );
     }
 
     #[test]
