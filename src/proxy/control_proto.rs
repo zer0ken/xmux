@@ -156,6 +156,38 @@ pub fn decode_output_into(out: &mut Vec<u8>, data: &[u8]) {
     }
 }
 
+use std::fmt::Write as _;
+
+/// One batched `send-keys -H` line forwarding `bytes` to `pane` (`[research §5]`).
+/// `-H` is the faithful raw-byte path in 3.3 (no `-K`); each byte is one hex arg.
+pub fn send_keys_line(pane: &str, bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return String::new();
+    }
+    let mut s = format!("send-keys -t {pane} -H");
+    for b in bytes {
+        let _ = write!(s, " {b:02x}");
+    }
+    s.push('\n');
+    s
+}
+
+/// `refresh-client -C WxH` — the `x`-form is correct for 3.3.x (`[research §7]`).
+pub fn refresh_size_line(cols: u16, rows: u16) -> String {
+    format!("refresh-client -C {cols}x{rows}\n")
+}
+
+/// Enables flow control so a firehose pane cannot make the client buffer
+/// unbounded or be killed "too far behind" (`[research §8]`).
+pub fn pause_after_line(secs: u32) -> String {
+    format!("refresh-client -f pause-after={secs}\n")
+}
+
+/// Resumes a paused pane after the renderer caught up (`[research §8]`).
+pub fn continue_pane_line(pane: &str) -> String {
+    format!("refresh-client -A {pane}:continue\n")
+}
+
 /// For `%extended-output`, returns the data part after the single `:` separator
 /// (`[research §3, §8]`); the bytes up to and including the first `:` are the age
 /// and future-args field, ignored. No `:` ⇒ the input is returned unchanged.
@@ -261,5 +293,21 @@ mod tests {
         assert!(matches!(parse_notif("%exit"), Notif::Exit { reason: None }));
         assert!(matches!(parse_notif("%exit too far behind"),
             Notif::Exit { reason: Some("too far behind") }));
+    }
+
+    #[test]
+    fn send_keys_batches_bytes_as_hex() {
+        // Ctrl-C then "ab": one line, hex per byte.
+        assert_eq!(send_keys_line("%0", &[0x03, b'a', b'b']), "send-keys -t %0 -H 03 61 62\n");
+        // Up-arrow CSI ESC [ A → 1b 5b 41.
+        assert_eq!(send_keys_line("%2", b"\x1b[A"), "send-keys -t %2 -H 1b 5b 41\n");
+        assert_eq!(send_keys_line("%0", b""), "", "empty burst yields no command");
+    }
+
+    #[test]
+    fn size_and_flow_control_lines() {
+        assert_eq!(refresh_size_line(80, 24), "refresh-client -C 80x24\n");  // x-form, NOT comma
+        assert_eq!(pause_after_line(2), "refresh-client -f pause-after=2\n");
+        assert_eq!(continue_pane_line("%5"), "refresh-client -A %5:continue\n");
     }
 }
