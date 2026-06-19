@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 #[derive(Debug, PartialEq)]
 pub enum InAction {
     Forward(Vec<u8>),
-    OpenOverlay,
+    /// The prefix + action key: toggle focus between the tree and the terminal
+    /// pane (both panes stay on screen; only the active side changes).
+    ToggleFocus,
     Quit,
 }
 
@@ -68,7 +70,7 @@ impl InputMachine {
                 }
                 self.state = State::Idle;
                 if byte == self.action_key {
-                    vec![InAction::OpenOverlay]
+                    vec![InAction::ToggleFocus]
                 } else if byte == self.quit_key {
                     vec![InAction::Quit]
                 } else if byte == self.prefix {
@@ -105,12 +107,12 @@ mod tests {
     }
 
     #[test]
-    fn prefix_then_s_opens_overlay() {
+    fn prefix_then_action_key_toggles_focus() {
         let mut im = m();
         let t = Instant::now();
         assert!(im.feed(0x07, t).is_empty(), "prefix is swallowed while arming");
         let out = im.feed(b's', t);
-        assert!(matches!(out.as_slice(), [InAction::OpenOverlay]));
+        assert!(matches!(out.as_slice(), [InAction::ToggleFocus]));
     }
 
     #[test]
@@ -137,7 +139,7 @@ mod tests {
         assert!(im.feed(0x07, t).is_empty());
         let out = im.feed(b'x', t);
         assert!(fwd(&out).is_empty(), "incomplete sequence forwards nothing");
-        assert!(!out.iter().any(|a| matches!(a, InAction::OpenOverlay)));
+        assert!(!out.iter().any(|a| matches!(a, InAction::ToggleFocus)));
     }
 
     #[test]
@@ -152,7 +154,7 @@ mod tests {
         assert!(im.feed(0x07, t).is_empty());
         let out = im.feed(b's', stale);
         assert_eq!(fwd(&out), vec![b's']);
-        assert!(!out.iter().any(|a| matches!(a, InAction::OpenOverlay)));
+        assert!(!out.iter().any(|a| matches!(a, InAction::ToggleFocus)));
     }
 
     #[test]
@@ -164,10 +166,10 @@ mod tests {
         // a 0x07 inside the paste must be forwarded, never open the overlay
         let out = im.feed(0x07, t);
         assert_eq!(fwd(&out), vec![0x07]);
-        assert!(!out.iter().any(|a| matches!(a, InAction::OpenOverlay)));
+        assert!(!out.iter().any(|a| matches!(a, InAction::ToggleFocus)));
         // leave paste: ESC [ 2 0 1 ~ — afterwards the prefix arms again
         for b in b"\x1b[201~" { let _ = im.feed(*b, t); }
         assert!(im.feed(0x07, t).is_empty());
-        assert!(matches!(im.feed(b's', t).as_slice(), [InAction::OpenOverlay]));
+        assert!(matches!(im.feed(b's', t).as_slice(), [InAction::ToggleFocus]));
     }
 }

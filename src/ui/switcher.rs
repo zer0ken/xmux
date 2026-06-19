@@ -11,7 +11,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragraph};
+use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
 use crate::session::{Pane, Session, WindowPanes};
@@ -212,7 +212,6 @@ pub struct Switcher {
     flash: String,
 
     terminal_view_target: TerminalViewTarget,
-    terminal_view_title: String,
 
     list_state: ListState,
     tree_inner: Rect,
@@ -245,7 +244,6 @@ impl Switcher {
             pending_kill: None,
             flash: String::new(),
             terminal_view_target: TerminalViewTarget::default(),
-            terminal_view_title: " Terminal ".into(),
             list_state: ListState::default(),
             tree_inner: Rect::default(),
             show_help: false,
@@ -552,16 +550,10 @@ impl Switcher {
     }
 
     fn on_focus_changed(&mut self) {
-        let tgt = match self.current_ref() {
+        self.terminal_view_target = match self.current_ref() {
             Some(r) => self.target_for(r),
             None => TerminalViewTarget::default(),
         };
-        self.terminal_view_target = tgt.clone();
-        if tgt.target.is_empty() {
-            self.terminal_view_title = " Terminal ".into();
-            return;
-        }
-        self.terminal_view_title = format!(" {} ", tgt.target);
     }
 
     /// The session/window the cursor is currently on, used by the cockpit to
@@ -952,45 +944,56 @@ impl Switcher {
 
     // --- render -------------------------------------------------------------
 
-    pub fn render(&mut self, frame: &mut Frame, grid: Option<&crate::proxy::screen::Grid>) {
+    pub fn render(
+        &mut self,
+        frame: &mut Frame,
+        grid: Option<&crate::proxy::screen::Grid>,
+        terminal_focused: bool,
+    ) {
         let area = frame.area();
         let input_h = if self.input.is_some() { 1 } else { 0 };
         let v = Layout::vertical([
-            Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(input_h),
             Constraint::Length(1),
         ])
         .split(area);
-        self.render_header(frame, v[0]);
-        let mid =
-            Layout::horizontal([Constraint::Length(TREE_WIDTH), Constraint::Min(0)]).split(v[1]);
+        let mid = Layout::horizontal([
+            Constraint::Length(TREE_WIDTH),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(v[0]);
         self.render_tree(frame, mid[0]);
-        self.render_terminal_view(frame, mid[1], grid);
+        self.render_divider(frame, mid[1], terminal_focused);
+        self.render_terminal_view(frame, mid[2], grid);
         if input_h == 1 {
-            self.render_input(frame, v[2]);
+            self.render_input(frame, v[1]);
         }
-        self.render_footer(frame, v[3]);
+        self.render_footer(frame, v[2]);
         if self.show_help {
             self.render_help(frame, area);
         }
     }
 
-    fn render_header(&self, frame: &mut Frame, area: Rect) {
-        let text = Text::from(Line::from(Span::raw("xmux: cross-host MUX manager").bold()));
-        frame.render_widget(Paragraph::new(text), area);
+    /// The single vertical rule between the tree (left) and terminal (right). Its
+    /// color marks the focused side — green when the terminal pane has focus, dim
+    /// otherwise — so the active side reads at a glance (tmux pane-border
+    /// convention). Replaces the per-pane box borders.
+    fn render_divider(&self, frame: &mut Frame, area: Rect, terminal_focused: bool) {
+        let color = if terminal_focused { Color::Green } else { COLOR_HINT };
+        let bars = Text::from(
+            (0..area.height)
+                .map(|_| Line::from(Span::styled("│", Style::default().fg(color))))
+                .collect::<Vec<_>>(),
+        );
+        frame.render_widget(Paragraph::new(bars), area);
     }
 
     fn render_tree(&mut self, frame: &mut Frame, area: Rect) {
-        let title = if self.filter.is_empty() {
-            " Hosts · Sessions · Windows · Panes ".to_string()
-        } else {
-            format!(" filter: {} ", self.filter)
-        };
-        let block = Block::bordered()
-            .title(title)
-            .padding(Padding::horizontal(1));
-        self.tree_inner = block.inner(area);
+        // No border box: the tree fills its column outright and a single rule
+        // (render_divider) separates it from the terminal view.
+        self.tree_inner = area;
 
         const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
         let spinner_glyph = SPINNER[self.spinner_frame % SPINNER.len()];
@@ -1001,6 +1004,14 @@ impl Switcher {
             .enumerate()
             .map(|(i, row)| {
                 let indent = " ".repeat(row.indent);
+                // The pane-loading placeholder is an animated progress spinner,
+                // not the word "loading".
+                if matches!(row.reference, RowRef::Loading) {
+                    return ListItem::new(Line::from(vec![
+                        Span::raw(indent),
+                        Span::styled(spinner_glyph.to_string(), Style::default().fg(COLOR_HINT)),
+                    ]));
+                }
                 let selected = i == self.selected;
                 let mut style = Style::default().fg(row.color);
                 if selected {
@@ -1026,21 +1037,20 @@ impl Switcher {
             })
             .collect();
 
-        let list = List::new(items).block(block);
+        let list = List::new(items);
         frame.render_stateful_widget(list, area, &mut self.list_state);
     }
 
     fn render_terminal_view(&self, frame: &mut Frame, area: Rect, grid: Option<&crate::proxy::screen::Grid>) {
-        let block = Block::bordered().title(self.terminal_view_title.clone());
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+        // No border box: the live grid fills the area; render_divider draws the
+        // separating rule.
         match grid {
             Some(g) => {
                 let buf = frame.buffer_mut();
-                g.render_into(buf, inner);
+                g.render_into(buf, area);
             }
             None => {
-                frame.render_widget(Paragraph::new("  (attaching…)").dim(), inner);
+                frame.render_widget(Paragraph::new("  (attaching…)").dim(), area);
             }
         }
     }
@@ -1069,13 +1079,23 @@ impl Switcher {
                 ],
                 area.width,
             )
+        } else if !self.filter.is_empty() {
+            // The active filter has no border title to live in any more, so it
+            // shows in the footer (with how to clear it).
+            fit(
+                &[
+                    format!(" filter: {} · / edit · Esc clear · ? help · q quit", self.filter),
+                    format!(" filter: {}", self.filter),
+                ],
+                area.width,
+            )
         } else {
             fit(
                 &[
-                    " ↑/↓ · j/k move (select = attach) · / filter · R rename · x kill · r refresh · ? help · C-g s fullscreen · q quit".to_string(),
-                    " ↑/↓ · j/k move (select = attach) · / filter · R rename · x kill · ? help · C-g s fullscreen · q quit".to_string(),
-                    " j/k move (select = attach) · / filter · ? help · C-g s fullscreen · q quit".to_string(),
-                    " ? help · C-g s fullscreen · q quit".to_string(),
+                    " ↑/↓ · j/k move (select = attach) · / filter · R rename · x kill · r refresh · ? help · C-g Tab focus · q quit".to_string(),
+                    " ↑/↓ · j/k move (select = attach) · / filter · R rename · x kill · ? help · C-g Tab focus · q quit".to_string(),
+                    " j/k move (select = attach) · / filter · ? help · C-g Tab focus · q quit".to_string(),
+                    " ? help · C-g Tab focus · q quit".to_string(),
                     " ? help · q quit".to_string(),
                 ],
                 area.width,
@@ -1097,8 +1117,8 @@ impl Switcher {
             "r            re-scan every host",
             "?            toggle this help",
             "q            quit",
-            "C-g s        fullscreen",
-            "C-g q        quit from passthrough",
+            "C-g Tab      focus tree ⇄ terminal",
+            "C-g q        quit",
             "",
             "mouse: click selects · wheel scrolls",
         ];
@@ -1308,7 +1328,7 @@ mod tests {
 
         fn draw(&mut self) {
             let sw = &mut self.sw;
-            self.term.draw(|f| sw.render(f, None)).unwrap();
+            self.term.draw(|f| sw.render(f, None, false)).unwrap();
         }
 
         async fn key(&mut self, code: KeyCode) {
@@ -1573,8 +1593,8 @@ mod tests {
             "scanning hint clears once the only host resolves:\n{out}"
         );
         assert!(
-            out.contains("loading"),
-            "the session shows a loading hint until its panes arrive:\n{out}"
+            out.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)),
+            "the session shows a progress spinner until its panes arrive:\n{out}"
         );
     }
 
@@ -1617,8 +1637,8 @@ mod tests {
         );
         h.draw();
         assert!(
-            h.tree_text().contains("loading"),
-            "panes loading before they land"
+            h.tree_text().chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)),
+            "a progress spinner stands in before panes land"
         );
         h.sw.apply_panes(
             "local/editor".into(),
@@ -1631,8 +1651,8 @@ mod tests {
             "panes attach under the session:\n{out}"
         );
         assert!(
-            !out.contains("loading"),
-            "the loading hint clears once panes arrive:\n{out}"
+            !out.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)),
+            "the progress spinner clears once panes arrive:\n{out}"
         );
     }
 
@@ -1720,7 +1740,7 @@ mod tests {
     async fn footer_fits_narrow_width() {
         let mut sw = Switcher::new(sample());
         let mut term = Terminal::new(TestBackend::new(30, 30)).unwrap();
-        term.draw(|f| sw.render(f, None)).unwrap();
+        term.draw(|f| sw.render(f, None, false)).unwrap();
         let buf = term.backend().buffer();
         let y = buf.area.height - 1;
         let mut footer = String::new();
@@ -2042,7 +2062,7 @@ mod tests {
         g.feed(b"LIVE-GRID-CONTENT");
         // Render with the live grid supplied.
         let sw = &mut h.sw;
-        h.term.draw(|f| sw.render(f, Some(&g))).unwrap();
+        h.term.draw(|f| sw.render(f, Some(&g), false)).unwrap();
         let out = buffer_text(h.term.backend().buffer());
         assert!(
             out.contains("LIVE-GRID-CONTENT"),
@@ -2119,8 +2139,8 @@ mod tests {
         let mut h = Harness::new(sample());
         let footer = h.footer_text();
         assert!(!footer.to_lowercase().contains("enter attach"), "Enter is a no-op now:\n{footer}");
-        assert!(footer.contains("C-g s") || footer.contains("fullscreen"),
-            "footer mentions fullscreen toggle:\n{footer}");
+        assert!(footer.contains("C-g Tab") || footer.contains("focus"),
+            "footer mentions the focus toggle:\n{footer}");
         h.ch('?').await;
         let help = h.text();
         assert!(help.contains("select = attach") || help.contains("move (select = attach)"),
@@ -2130,10 +2150,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn title_is_one_line() {
-        let h = Harness::new(sample());
-        let out = h.text();
-        assert!(out.contains("xmux: cross-host MUX manager"),
-            "one-line title:\n{out}");
+    async fn divider_color_marks_the_focused_side() {
+        // The single rule between tree and terminal is green when the terminal
+        // pane has focus, dim otherwise — the only focus indicator (tmux-style).
+        let backend = TestBackend::new(100, 30);
+        let mut term = Terminal::new(backend).unwrap();
+        let mut sw = Switcher::new(sample());
+        let div_x = TREE_WIDTH;
+        let divider_is_green = |buf: &Buffer| {
+            (0..buf.area.height)
+                .any(|y| buf[(div_x, y)].symbol() == "│" && buf[(div_x, y)].fg == Color::Green)
+        };
+
+        term.draw(|f| sw.render(f, None, true)).unwrap();
+        assert!(divider_is_green(term.backend().buffer()), "terminal-focused divider is green");
+
+        term.draw(|f| sw.render(f, None, false)).unwrap();
+        assert!(!divider_is_green(term.backend().buffer()), "tree-focused divider is not green");
     }
 }

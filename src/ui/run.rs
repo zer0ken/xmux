@@ -59,7 +59,7 @@ pub fn dump_overlay(
         Ok(t) => t,
         Err(_) => return String::new(),
     };
-    if term.draw(|f| switcher.render(f, grid)).is_err() {
+    if term.draw(|f| switcher.render(f, grid, false)).is_err() {
         return String::new();
     }
     flatten_buffer(term.backend().buffer())
@@ -235,7 +235,9 @@ mod tests {
         let mut sw = Switcher::new(sample());
         let out = dump_switcher(&mut sw, 100, 30);
         assert!(out.contains("editor"));
-        assert!(out.contains("Hosts · Sessions · Windows · Panes"));
+        // The dump renders the full overlay (tree + footer); the footer's nav hint
+        // is always present (the chrome titles were removed).
+        assert!(out.contains("quit"), "footer hint present:\n{out}");
     }
 
     #[tokio::test]

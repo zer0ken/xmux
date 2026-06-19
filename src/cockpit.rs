@@ -180,9 +180,10 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         }
     });
 
+    // Prefix + Tab toggles focus (tree ⇄ terminal); prefix + q quits.
     let mut machine = InputMachine::new(
         parse_prefix(Some(&env.ui_prefix)),
-        b's',
+        b'\t',
         b'q',
         Duration::from_millis(400),
     );
@@ -219,37 +220,21 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     connect_all_sources(&mut mgr, &env, cols, body_rows);
 
     loop {
-        // Draw every frame: in Overlay paint the switcher (tree + the cursor
-        // session's grid); in Passthrough draw that grid fullscreen + status bar.
+        // Always draw the split: the tree (left) and the cursor session's live
+        // grid (right), with the divider colored to mark the focused side. The
+        // app state selects focus + key routing, not what is drawn.
         let tgt = switcher.terminal_view_target();
         let grid_arc = (!tgt.target.is_empty())
             .then(|| mgr.get(&tgt.source).map(|c| c.grid.clone()))
             .flatten();
-        if app.is_overlay() {
-            let _ = match &grid_arc {
-                Some(g) => {
-                    let guard = g.lock().ok();
-                    term.draw(|f| switcher.render(f, guard.as_deref()))
-                }
-                None => term.draw(|f| switcher.render(f, None)),
-            };
-        } else {
-            let _ = term.draw(|f| {
-                let area = f.area();
-                let body = ratatui::layout::Rect::new(
-                    area.x,
-                    area.y,
-                    area.width,
-                    area.height.saturating_sub(1),
-                );
-                if let Some(g) = &grid_arc {
-                    if let Ok(guard) = g.lock() {
-                        guard.render_into(f.buffer_mut(), body);
-                    }
-                }
-                draw_status_bar(f, &mgr, &tgt);
-            });
-        }
+        let terminal_focused = !app.is_overlay();
+        let _ = match &grid_arc {
+            Some(g) => {
+                let guard = g.lock().ok();
+                term.draw(|f| switcher.render(f, guard.as_deref(), terminal_focused))
+            }
+            None => term.draw(|f| switcher.render(f, None, terminal_focused)),
+        };
 
         // The renderer has now caught up, so it is safe to resume any panes the
         // server paused for flow control. Snapshot + clear the set under a brief
@@ -302,56 +287,51 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 }
             }
             Some(bytes) = stdin_rx.recv() => {
+                // The InputMachine intercepts the prefix in BOTH focus states so
+                // `C-g Tab` can toggle focus either way; all other bytes route by
+                // the focused side.
+                let now = std::time::Instant::now();
+                let mut fwd: Vec<u8> = Vec::new();
+                let mut toggle = false;
+                let mut quit = false;
+                for b in bytes {
+                    for action in machine.feed(b, now) {
+                        match action {
+                            InAction::Forward(f) => fwd.extend_from_slice(&f),
+                            InAction::ToggleFocus => toggle = true,
+                            InAction::Quit => quit = true,
+                        }
+                    }
+                }
                 if app.is_overlay() {
-                    let mut decoder = KeyDecoder::new();
-                    for key in decoder.feed(&bytes) {
-                        switcher.handle_key(key);
-                    }
-                    dispatch_pending_op(&mut switcher, &ops, &op_tx);
-                    ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows);
-                    if let Some(tgt) = switcher.current_attach_target() {
-                        select_attach(&mut mgr, &env, &tgt, cols, body_rows);
-                    }
-                    if switcher.wants_quit() {
-                        break;
-                    }
-                } else {
-                    // Passthrough: the InputMachine intercepts only the prefix; all
-                    // other bytes forward to the selected session's active pane.
-                    let now = std::time::Instant::now();
-                    let mut to_fg: Vec<u8> = Vec::new();
-                    let mut open = false;
-                    let mut quit = false;
-                    for b in bytes {
-                        for action in machine.feed(b, now) {
-                            match action {
-                                InAction::Forward(f) => to_fg.extend_from_slice(&f),
-                                InAction::OpenOverlay => open = true,
-                                InAction::Quit => quit = true,
-                            }
+                    // Tree focus: forwarded bytes are tree navigation/commands.
+                    if !fwd.is_empty() {
+                        let mut decoder = KeyDecoder::new();
+                        for key in decoder.feed(&fwd) {
+                            switcher.handle_key(key);
+                        }
+                        dispatch_pending_op(&mut switcher, &ops, &op_tx);
+                        ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows);
+                        if let Some(tgt) = switcher.current_attach_target() {
+                            select_attach(&mut mgr, &env, &tgt, cols, body_rows);
                         }
                     }
-                    if !to_fg.is_empty() {
-                        let tv = switcher.terminal_view_target();
-                        if let Some(client) = mgr.get(&tv.source) {
-                            let pane = client
-                                .inventory
-                                .lock()
-                                .unwrap()
-                                .active_pane
-                                .clone();
-                            if let Some(pane) = pane {
-                                client.send_keys(pane, to_fg);
-                            }
+                } else if !fwd.is_empty() {
+                    // Terminal focus: forwarded bytes go to the session's pane.
+                    let tv = switcher.terminal_view_target();
+                    if let Some(client) = mgr.get(&tv.source) {
+                        let pane = client.inventory.lock().unwrap().active_pane.clone();
+                        if let Some(pane) = pane {
+                            client.send_keys(pane, fwd);
                         }
                     }
-                    if quit {
-                        break;
-                    }
-                    if open {
-                        app.toggle();
-                        let _ = term.clear();
-                    }
+                }
+                if toggle {
+                    app.toggle();
+                    let _ = term.clear();
+                }
+                if quit || switcher.wants_quit() {
+                    break;
                 }
             }
             Some(cmd) = cmd_rx.recv() => {
@@ -475,32 +455,6 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
 fn spinner_key(tgt: &TerminalViewTarget) -> String {
     let name = tgt.target.split(':').next().unwrap_or(&tgt.target);
     format!("{}/{}", tgt.source, name)
-}
-
-/// Draws the Passthrough status bar on the last physical row: `host/session` plus
-/// the active window/pane, in reverse video. Info only — no shortcuts.
-fn draw_status_bar(
-    f: &mut ratatui::Frame,
-    mgr: &HostManager,
-    tgt: &TerminalViewTarget,
-) {
-    use ratatui::style::{Modifier, Style};
-    use ratatui::widgets::Paragraph;
-
-    let area = f.area();
-    if area.height == 0 {
-        return;
-    }
-    let row = ratatui::layout::Rect::new(area.x, area.y + area.height - 1, area.width, 1);
-    let active = mgr
-        .get(&tgt.source)
-        .and_then(|c| c.inventory.lock().unwrap().active_pane.clone());
-    let text = match active {
-        Some(pane) => format!(" {}/{}  ·  pane {pane} ", tgt.source, tgt.target),
-        None => format!(" {}/{} ", tgt.source, tgt.target),
-    };
-    let bar = Paragraph::new(text).style(Style::default().add_modifier(Modifier::REVERSED));
-    f.render_widget(bar, row);
 }
 
 /// After a key was handled in Overlay: take any queued create/rename/kill and run

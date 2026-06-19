@@ -1,11 +1,14 @@
-//! The cockpit's two-state machine. ratatui owns stdout in both states, so the
-//! state only chooses what is drawn: Overlay paints the switcher (tree + live
-//! terminal view); Passthrough draws the selected session's grid fullscreen plus
-//! a one-line status bar. The prefix `s` toggles between them.
+//! The cockpit's focus state. Both states draw the SAME split (tree on the left,
+//! the cursor session's live grid on the right); the state only chooses the
+//! focused side and where keys go. `Overlay` focuses the tree (keys navigate);
+//! `Passthrough` focuses the terminal (keys forward to the session's pane). The
+//! divider rule is colored to mark the focused side. `prefix Tab` toggles.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppState {
+    /// Tree focused — keys navigate the host/session tree.
     Overlay,
+    /// Terminal focused — keys forward to the selected session's active pane.
     Passthrough,
 }
 
@@ -25,7 +28,7 @@ impl App {
         matches!(self.state, AppState::Overlay)
     }
 
-    /// Overlay ⇄ Passthrough (the prefix `s` toggle).
+    /// Tree ⇄ terminal focus (the `prefix Tab` toggle).
     pub fn toggle(&mut self) {
         self.state = match self.state {
             AppState::Overlay => AppState::Passthrough,
