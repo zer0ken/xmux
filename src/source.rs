@@ -206,7 +206,13 @@ impl Source {
             v.push("attach".into());
             return v;
         }
-        let mut args = self.ssh_args(false);
+        // Force a remote pty (`-tt`): `tmux -CC attach` does a `tcgetattr` on its
+        // stdin and exits immediately when stdin is not a tty, so a pipe-only ssh
+        // (no `-t`) dies before emitting any control-mode output. xmux drives ssh's
+        // stdin/stdout as pipes, so a plain `-t` would not allocate a pty either —
+        // `-tt` forces one. BatchMode/ConnectTimeout still come from ssh_args(false).
+        let mut args = vec!["-tt".to_string()];
+        args.extend(self.ssh_args(false));
         args.push(remote_command(&[
             self.binary.clone(),
             "-CC".into(),
@@ -654,17 +660,19 @@ mod tests {
     }
 
     #[test]
-    fn control_argv_remote_no_tty() {
+    fn control_argv_remote_forces_pty() {
         let rem = src("prod", "tmux", true, "linux", "");
         let got = rem.control_argv();
         assert_eq!(got[0], "ssh");
+        // `tmux -CC attach` does a tcgetattr and exits without a tty, and xmux
+        // drives ssh over pipes, so the control connection forces a remote pty.
         assert!(
-            !got.iter().any(|s| s == "-t"),
-            "control mode is pipes, never ssh -t: {got:?}"
+            got.iter().any(|s| s == "-tt"),
+            "control-mode ssh forces a pty with -tt: {got:?}"
         );
         assert!(
             got.iter().any(|s: &String| s.contains("BatchMode=yes")),
-            "{got:?}"
+            "the control connection must never hang on a prompt: {got:?}"
         );
         assert_eq!(got.last().unwrap(), "tmux -CC attach");
     }
