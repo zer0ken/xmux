@@ -3,6 +3,80 @@
 //! batched-hex builder, and the `refresh-client -C WxH` formatter. No I/O — every
 //! wire detail is unit-testable headlessly against tmux 3.3.x.
 
+/// A single stdout line from tmux control mode, classified by shape.
+///
+/// `Body` is any non-`%`-prefixed line that appears inside a `%begin…%end` block.
+/// The caller's IDLE/IN\_BLOCK state machine decides whether to treat an
+/// unrecognised `%`-line as a `Notification` or a block body; `classify` only
+/// determines the line shape.
+#[derive(Debug, PartialEq)]
+pub enum Line<'a> {
+    Begin { num: u64 },
+    End { num: u64 },
+    Error { num: u64 },
+    Output { pane: &'a str, data: &'a str },
+    ExtendedOutput { pane: &'a str, rest: &'a str },
+    Notification(Notif<'a>),
+    Body(&'a str),
+}
+
+/// Placeholder for Task 3, which replaces this with the full notification enum.
+/// `classify` returns `Notification(Notif::Raw(line))` for any `%…` line that
+/// is not one of the recognised frame/output verbs.
+#[derive(Debug, PartialEq)]
+pub enum Notif<'a> {
+    Raw(&'a str),
+}
+
+/// Classifies one control-mode stdout line (trailing `\n` already stripped).
+///
+/// Frame format: `%<verb> <unix-time> <num> <flags>` — `<num>` (the 3rd
+/// whitespace field) is the correlator; `<flags>` is ignored per `[research §2]`.
+/// A `%`-prefixed line whose verb is not recognised is `Notification(Notif::Raw)`.
+/// A line not starting with `%` is `Body`.
+pub fn classify(line: &str) -> Line<'_> {
+    if let Some(rest) = line.strip_prefix("%begin ") {
+        return match frame_num_after(rest) {
+            Some(num) => Line::Begin { num },
+            None => Line::Notification(Notif::Raw(line)),
+        };
+    }
+    if let Some(rest) = line.strip_prefix("%end ") {
+        return match frame_num_after(rest) {
+            Some(num) => Line::End { num },
+            None => Line::Notification(Notif::Raw(line)),
+        };
+    }
+    if let Some(rest) = line.strip_prefix("%error ") {
+        return match frame_num_after(rest) {
+            Some(num) => Line::Error { num },
+            None => Line::Notification(Notif::Raw(line)),
+        };
+    }
+    if let Some(rest) = line.strip_prefix("%output ") {
+        // "%output %<pane> <data>" — pane up to first space, data is the remainder.
+        if let Some((pane, data)) = rest.split_once(' ') {
+            return Line::Output { pane, data };
+        }
+    }
+    if let Some(rest) = line.strip_prefix("%extended-output ") {
+        // "%extended-output %<pane> <rest>" — pane up to first space.
+        if let Some((pane, rest)) = rest.split_once(' ') {
+            return Line::ExtendedOutput { pane, rest };
+        }
+    }
+    if line.starts_with('%') {
+        return Line::Notification(Notif::Raw(line));
+    }
+    Line::Body(line)
+}
+
+/// `rest` is the line with `%<verb> ` stripped: `"<unix-time> <num> <flags>"`.
+/// `<num>` is the second whitespace field; `<flags>` is ignored.
+fn frame_num_after(rest: &str) -> Option<u64> {
+    rest.split_whitespace().nth(1)?.parse().ok()
+}
+
 #[inline]
 fn is_octal_digit(b: u8) -> bool {
     (b'0'..=b'7').contains(&b)
@@ -49,6 +123,31 @@ pub fn strip_extended_prefix(data: &[u8]) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classify_frames_and_output() {
+        assert!(matches!(classify("%begin 1363006971 2 1"), Line::Begin { num: 2 }));
+        assert!(matches!(classify("%end 1363006971 2 1"), Line::End { num: 2 }));
+        assert!(matches!(classify("%error 1363006971 5 0"), Line::Error { num: 5 }));
+        match classify("%output %0 hi\\012") {
+            Line::Output { pane, data } => { assert_eq!(pane, "%0"); assert_eq!(data, "hi\\012"); }
+            _ => panic!("expected Output"),
+        }
+        match classify("%extended-output %3 512 : \\033[2J") {
+            Line::ExtendedOutput { pane, rest } => { assert_eq!(pane, "%3"); assert_eq!(rest, "512 : \\033[2J"); }
+            _ => panic!("expected ExtendedOutput"),
+        }
+        assert!(matches!(classify("0: ksh* (1 panes)"), Line::Body("0: ksh* (1 panes)")));
+    }
+
+    #[test]
+    fn classify_begin_num_is_the_correlator() {
+        // %begin <time> <num> <flags> — num is field 2, flags (field 3) ignored.
+        assert!(matches!(classify("%begin 999 17 0"), Line::Begin { num: 17 }));
+        // A malformed begin (non-numeric num) classifies as an Other notification,
+        // never panics.
+        assert!(matches!(classify("%begin x y z"), Line::Notification(_)));
+    }
 
     #[test]
     fn decode_handles_octal_and_literals() {
