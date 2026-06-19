@@ -52,7 +52,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     use crate::proxy::decode::KeyDecoder;
     use crate::proxy::input::{InAction, InputMachine};
     use crate::proxy::term::{parse_prefix, TermGuard};
-    use crate::ui::run::{dump_switcher, serve_control, AppStateKind, Cmd};
+    use crate::ui::run::{dump_overlay, serve_control, AppStateKind, Cmd};
     use crate::ui::switcher::Switcher;
     use std::collections::HashSet;
     use std::io::Read;
@@ -139,9 +139,6 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     // channel (replacing the removed Cmd::OpDone arm).
     let (op_tx, mut op_rx) = tokio::sync::mpsc::unbounded_channel();
 
-    let mut event_stream = ratatui::crossterm::event::EventStream::new();
-    use futures::StreamExt;
-
     // Lazily connect the preselected host + switch to the preselected session.
     if let Some(tgt) = switcher.current_attach_target() {
         select_attach(&mut mgr, &env, &tgt, cols, body_rows);
@@ -178,6 +175,19 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 }
                 draw_status_bar(f, &mgr, &tgt);
             });
+        }
+
+        // The renderer has now caught up, so it is safe to resume any panes the
+        // server paused for flow control. Snapshot + clear the set under a brief
+        // lock, then resume each outside the lock (never across an `.await`).
+        if let Some(client) = mgr.get(&tgt.source) {
+            let paused: Vec<String> = {
+                let mut inv = client.inventory.lock().unwrap();
+                inv.paused_panes.drain().collect()
+            };
+            for pane in &paused {
+                client.resume_pane(pane);
+            }
         }
 
         let tick = Duration::from_millis(250);
@@ -275,10 +285,24 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         }
                     }
                     Cmd::Dump(reply) => {
+                        // Render the SAME Overlay content the main draw produces —
+                        // the switcher plus the cursor host's live grid — so a
+                        // headless `dump` reflects the live screen.
                         let sz = term
                             .size()
                             .unwrap_or(ratatui::layout::Size { width: 80, height: 24 });
-                        let _ = reply.send(dump_switcher(&mut switcher, sz.width, sz.height));
+                        let tgt = switcher.terminal_view_target();
+                        let grid_arc = (!tgt.target.is_empty())
+                            .then(|| mgr.get(&tgt.source).map(|c| c.grid.clone()))
+                            .flatten();
+                        let dump = match &grid_arc {
+                            Some(g) => {
+                                let guard = g.lock().ok();
+                                dump_overlay(&mut switcher, guard.as_deref(), sz.width, sz.height)
+                            }
+                            None => dump_overlay(&mut switcher, None, sz.width, sz.height),
+                        };
+                        let _ = reply.send(dump);
                     }
                     Cmd::SetState(kind) => {
                         app.state = match kind {
@@ -320,16 +344,21 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             Some(result) = op_rx.recv() => {
                 switcher.apply_op_result(result);
             }
-            Some(Ok(ev)) = event_stream.next() => {
-                if let ratatui::crossterm::event::Event::Resize(c, r) = ev {
-                    let body = r.saturating_sub(1);
-                    cols = c;
-                    body_rows = body;
-                    mgr.resize_all(c, body);
-                    let _ = term.resize(ratatui::layout::Rect::new(0, 0, c, r));
-                }
-            }
             _ = tokio::time::sleep(tick) => {
+                // The dedicated stdin thread is the sole fd-0 reader; resize is
+                // detected here by polling the console size (an ioctl/Win32
+                // console-info call, NOT a stdin read — no fd contention). On a
+                // change push the new size to the hosts and let ratatui pick it up
+                // on the next draw.
+                if let Ok((c, r)) = ratatui::crossterm::terminal::size() {
+                    if (c, r) != (cols, body_rows + 1) {
+                        let body = r.saturating_sub(1);
+                        cols = c;
+                        body_rows = body;
+                        mgr.resize_all(c, body);
+                        let _ = term.autoresize();
+                    }
+                }
                 // Animation tick: advance the braille spinner and rebuild the
                 // spinner set from the hosts still connecting (the cursor's target).
                 switcher.tick_spinner();
@@ -341,7 +370,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         None => true,
                     };
                     if connecting {
-                        sp.insert(format!("{}/{}", tv.source, tv.target));
+                        sp.insert(spinner_key(&tv));
                     }
                 }
                 switcher.set_spinner(sp);
@@ -351,6 +380,16 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
 
     mgr.teardown_all();
     0
+}
+
+/// The spinner key for a terminal-view target, matching `Session::address()`
+/// (`source/name`). A Window-row target carries `name:window`, so its session
+/// part is everything before the first `:`; a session-row target has no `:` and
+/// is the name verbatim. Without this the spinner key would never match the
+/// switcher's session addresses and the spinner would never show.
+fn spinner_key(tgt: &TerminalViewTarget) -> String {
+    let name = tgt.target.split(':').next().unwrap_or(&tgt.target);
+    format!("{}/{}", tgt.source, name)
 }
 
 /// Draws the Passthrough status bar on the last physical row: `host/session` plus
@@ -458,6 +497,24 @@ mod tests {
             "select on a connected host queues a switch-client"
         );
         mgr.teardown_all();
+    }
+
+    #[test]
+    fn spinner_key_is_the_session_address_for_a_window_target() {
+        // A Window-row target carries `name:window`; its spinner key must be the
+        // session address `source/name` (matching `Session::address()`), not
+        // `source/name:window`, else the spinner never matches and never shows.
+        let win_tgt = TerminalViewTarget {
+            source: "jupiter06".into(),
+            target: "api:2".into(),
+        };
+        assert_eq!(spinner_key(&win_tgt), "jupiter06/api");
+        // A session-row target has no `:window` suffix — the name passes through.
+        let sess_tgt = TerminalViewTarget {
+            source: "jupiter06".into(),
+            target: "api".into(),
+        };
+        assert_eq!(spinner_key(&sess_tgt), "jupiter06/api");
     }
 
     #[test]

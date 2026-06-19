@@ -40,16 +40,33 @@ pub enum Cmd {
 /// Renders the switcher to an off-screen buffer and flattens it — the payload the
 /// control channel's `dump` returns.
 pub fn dump_switcher(switcher: &mut Switcher, width: u16, height: u16) -> String {
+    dump_overlay(switcher, None, width, height)
+}
+
+/// Renders the Overlay view — the switcher with the cursor host's live `grid` (if
+/// any) in the terminal-view pane — to an off-screen `TestBackend` and flattens
+/// it. So a headless `dump` reflects the same screen the main draw produces,
+/// including the live terminal Grid. Runs without a real terminal.
+pub fn dump_overlay(
+    switcher: &mut Switcher,
+    grid: Option<&crate::proxy::screen::Grid>,
+    width: u16,
+    height: u16,
+) -> String {
     let w = width.max(1);
     let h = height.max(1);
     let mut term = match Terminal::new(TestBackend::new(w, h)) {
         Ok(t) => t,
         Err(_) => return String::new(),
     };
-    if term.draw(|f| switcher.render(f, None)).is_err() {
+    if term.draw(|f| switcher.render(f, grid)).is_err() {
         return String::new();
     }
-    let buf = term.backend().buffer();
+    flatten_buffer(term.backend().buffer())
+}
+
+/// Flattens a rendered buffer to text (one trimmed line per row).
+fn flatten_buffer(buf: &ratatui::buffer::Buffer) -> String {
     let mut out = String::new();
     for y in 0..buf.area.height {
         let mut line = String::new();
@@ -219,6 +236,18 @@ mod tests {
         let out = dump_switcher(&mut sw, 100, 30);
         assert!(out.contains("editor"));
         assert!(out.contains("Hosts · Sessions · Windows · Panes"));
+    }
+
+    #[tokio::test]
+    async fn dump_overlay_renders_the_live_grid() {
+        // A dump with a live grid must include both the tree AND the grid content
+        // (the terminal-view pane), so a headless `dump` reflects the live screen.
+        let mut sw = Switcher::new(sample());
+        let mut grid = crate::proxy::screen::Grid::new(30, 100);
+        grid.feed(b"LIVEGRID");
+        let out = dump_overlay(&mut sw, Some(&grid), 100, 30);
+        assert!(out.contains("editor"), "tree still rendered:\n{out}");
+        assert!(out.contains("LIVEGRID"), "live grid content rendered:\n{out}");
     }
 
     #[tokio::test]
