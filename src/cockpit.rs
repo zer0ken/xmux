@@ -52,7 +52,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     use crate::proxy::decode::KeyDecoder;
     use crate::proxy::input::{InAction, InputMachine};
     use crate::proxy::term::{parse_prefix, TermGuard};
-    use crate::ui::run::{dump_switcher, serve_control, Cmd};
+    use crate::ui::run::{dump_switcher, serve_control, AppStateKind, Cmd};
     use crate::ui::switcher::Switcher;
     use std::collections::HashSet;
     use std::io::Read;
@@ -279,6 +279,41 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             .size()
                             .unwrap_or(ratatui::layout::Size { width: 80, height: 24 });
                         let _ = reply.send(dump_switcher(&mut switcher, sz.width, sz.height));
+                    }
+                    Cmd::SetState(kind) => {
+                        app.state = match kind {
+                            AppStateKind::Overlay => crate::proxy::app::AppState::Overlay,
+                            AppStateKind::Passthrough => crate::proxy::app::AppState::Passthrough,
+                        };
+                    }
+                    Cmd::Keys(bytes) => {
+                        // Run the bytes through the same Passthrough forwarding path
+                        // as stdin bytes in Passthrough state: feed through the input
+                        // machine so the prefix is intercepted, then send any Forward
+                        // output to the active pane.
+                        let now = std::time::Instant::now();
+                        let mut to_fg: Vec<u8> = Vec::new();
+                        for b in bytes {
+                            for action in machine.feed(b, now) {
+                                if let InAction::Forward(f) = action {
+                                    to_fg.extend_from_slice(&f);
+                                }
+                            }
+                        }
+                        if !to_fg.is_empty() {
+                            let tv = switcher.terminal_view_target();
+                            if let Some(client) = mgr.get(&tv.source) {
+                                let pane = client
+                                    .inventory
+                                    .lock()
+                                    .unwrap()
+                                    .active_pane
+                                    .clone();
+                                if let Some(pane) = pane {
+                                    client.send_keys(pane, to_fg);
+                                }
+                            }
+                        }
                     }
                 }
             }

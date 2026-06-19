@@ -18,11 +18,23 @@ use tokio::sync::{mpsc, oneshot};
 use crate::control;
 use crate::ui::switcher::Switcher;
 
+/// The cockpit's state kind, as seen from the control channel. Mirrors
+/// [`crate::proxy::app::AppState`] but lives here so `Cmd` stays in this crate
+/// without pulling in the full proxy tree.
+pub enum AppStateKind {
+    Overlay,
+    Passthrough,
+}
+
 /// A unit of work the cockpit loop processes, from the control socket.
 pub enum Cmd {
     Key(KeyEvent),
     /// A control-channel `dump` request: reply with the rendered screen.
     Dump(oneshot::Sender<String>),
+    /// Set the cockpit's overlay/passthrough state.
+    SetState(AppStateKind),
+    /// Forward raw bytes through the Passthrough input path to the active pane.
+    Keys(Vec<u8>),
 }
 
 /// Renders the switcher to an off-screen buffer and flattens it — the payload the
@@ -101,6 +113,21 @@ async fn handle_conn(conn: Stream, cmd_tx: mpsc::Sender<Cmd>) {
     }
 }
 
+/// Parses a hex string (e.g. `"1b5b41"`) into bytes. Returns `Err` with an
+/// `"err: ..."` message on odd length or non-hex characters.
+fn parse_hex(s: &str) -> Result<Vec<u8>, String> {
+    if !s.len().is_multiple_of(2) {
+        return Err("err: odd-length hex string".into());
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&s[i..i + 2], 16)
+                .map_err(|_| format!("err: invalid hex '{}'", &s[i..i + 2]))
+        })
+        .collect()
+}
+
 async fn dispatch(line: &str, cmd_tx: &mpsc::Sender<Cmd>) -> String {
     let req = control::parse_request(line);
     match req.verb.as_str() {
@@ -126,6 +153,21 @@ async fn dispatch(line: &str, cmd_tx: &mpsc::Sender<Cmd>) -> String {
             }
             "ok".into()
         }
+        "passthrough" => {
+            let _ = cmd_tx.send(Cmd::SetState(AppStateKind::Passthrough)).await;
+            "ok".into()
+        }
+        "overlay" => {
+            let _ = cmd_tx.send(Cmd::SetState(AppStateKind::Overlay)).await;
+            "ok".into()
+        }
+        "keys" => match parse_hex(req.arg.trim()) {
+            Ok(bytes) => {
+                let _ = cmd_tx.send(Cmd::Keys(bytes)).await;
+                "ok".into()
+            }
+            Err(e) => e,
+        },
         _ => "err: unknown command".into(),
     }
 }
@@ -221,6 +263,7 @@ mod tests {
                     Cmd::Dump(reply) => {
                         let _ = reply.send(dump_switcher(&mut sw, 100, 30));
                     }
+                    Cmd::SetState(_) | Cmd::Keys(_) => {}
                 }
             }
             sw.wants_quit()
@@ -248,5 +291,35 @@ mod tests {
         assert!(quit, "q must set wants_quit");
         drop(handle);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn dispatch_state_and_keys_verbs() {
+        let (tx, mut rx) = mpsc::channel::<Cmd>(8);
+        assert_eq!(dispatch("passthrough", &tx).await, "ok");
+        assert!(matches!(
+            rx.recv().await,
+            Some(Cmd::SetState(AppStateKind::Passthrough))
+        ));
+        assert_eq!(dispatch("overlay", &tx).await, "ok");
+        assert!(matches!(
+            rx.recv().await,
+            Some(Cmd::SetState(AppStateKind::Overlay))
+        ));
+        assert_eq!(dispatch("keys 1b5b41", &tx).await, "ok"); // ESC [ A
+        assert!(matches!(rx.recv().await, Some(Cmd::Keys(b)) if b == vec![0x1b, 0x5b, 0x41]));
+    }
+
+    #[tokio::test]
+    async fn dispatch_keys_rejects_invalid_hex() {
+        let (tx, mut rx) = mpsc::channel::<Cmd>(8);
+        // Odd-length hex is rejected; no Cmd is sent.
+        let r = dispatch("keys abc", &tx).await;
+        assert!(r.starts_with("err:"), "expected err, got: {r}");
+        // Non-hex characters are rejected.
+        let r = dispatch("keys zz", &tx).await;
+        assert!(r.starts_with("err:"), "expected err, got: {r}");
+        // Channel must be empty (no Cmd was sent for either bad input).
+        assert!(rx.try_recv().is_err(), "no Cmd should be sent on parse error");
     }
 }
