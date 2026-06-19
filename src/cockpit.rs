@@ -61,6 +61,38 @@ fn ensure_current_host(
     }
 }
 
+/// Connects EVERY source's control client at startup so each one's
+/// `list-sessions` streams its host's tree in without waiting for a cursor move.
+/// A control-mode client is the only source of a host's session list, so without
+/// this every host sits on "scanning…" until the user happens to focus it. The
+/// bound is the host count (one connection per host); each connect runs its
+/// handshake on its own reader/writer threads, so this returns at once and the
+/// trees fill in asynchronously as each host responds.
+fn connect_all_sources(mgr: &mut HostManager, env: &Env, cols: u16, rows: u16) {
+    for src in &env.srcs {
+        let _ = mgr.ensure(&src.alias, src, cols, rows);
+    }
+}
+
+/// Handles a host's control client dying. If the host never reached a connected
+/// state, marks it unreachable in the switcher so it renders "⚠ unreachable"
+/// instead of spinning on "scanning…" forever; a host that had connected keeps
+/// its last-known tree (the reap leaves the switcher state intact). Returns
+/// `true` when it marked the host unreachable.
+fn note_host_exited(
+    switcher: &mut crate::ui::switcher::Switcher,
+    connected: &std::collections::HashSet<String>,
+    host: &str,
+    reason: Option<String>,
+) -> bool {
+    if connected.contains(host) {
+        return false;
+    }
+    let msg = reason.unwrap_or_else(|| "connection closed".into());
+    switcher.apply_source_result(host.to_string(), Vec::new(), Some(msg));
+    true
+}
+
 /// The `xmux` (no subcommand) entry: the persistent cockpit. Owns the terminal,
 /// keeps a lazily-spawned control client per host, and lets the in-session overlay
 /// switch between them with no re-attach. It serves a picker control socket so a
@@ -157,10 +189,13 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     // channel (replacing the removed Cmd::OpDone arm).
     let (op_tx, mut op_rx) = tokio::sync::mpsc::unbounded_channel();
 
-    // Lazily connect the preselected host + switch to the preselected session.
-    if let Some(tgt) = switcher.current_attach_target() {
-        select_attach(&mut mgr, &env, &tgt, cols, body_rows);
-    }
+    // Connect EVERY source up front so each control client's list-sessions
+    // streams its host's tree in without waiting for a cursor move. `connected`
+    // tracks the hosts that have reached a connected state, so a connection that
+    // dies before it ever connected is marked unreachable instead of spinning on
+    // "scanning…" forever.
+    let mut connected: HashSet<String> = HashSet::new();
+    connect_all_sources(&mut mgr, &env, cols, body_rows);
 
     loop {
         // Draw every frame: in Overlay paint the switcher (tree + the cursor
@@ -215,6 +250,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             Some(ev) = host_rx.recv() => {
                 match ev {
                     HostEvent::Connected { host } | HostEvent::Inventory { host } => {
+                        connected.insert(host.clone());
                         // Rebuild this host's tree from its live inventory.
                         if let Some(client) = mgr.get(&host) {
                             let inv = client.inventory.lock().unwrap();
@@ -231,7 +267,10 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         // connecting set from scratch.
                         switcher.set_spinner(HashSet::new());
                     }
-                    HostEvent::Exited { host, .. } => {
+                    HostEvent::Exited { host, reason } => {
+                        // A client that dies before it ever connected is marked
+                        // unreachable so its host stops spinning on "scanning…".
+                        note_host_exited(&mut switcher, &connected, &host, reason);
                         mgr.reap(&host);
                     }
                 }
@@ -488,13 +527,19 @@ mod tests {
     }
 
     fn fake_env_with_source(alias: &str) -> Env {
-        let src = fake_source(alias);
-        let by_alias: HashMap<String, Source> =
-            [(alias.to_string(), src.clone())].into_iter().collect();
+        fake_env_with_sources(&[alias])
+    }
+
+    fn fake_env_with_sources(aliases: &[&str]) -> Env {
+        let srcs: Vec<Source> = aliases.iter().map(|a| fake_source(a)).collect();
+        let by_alias: HashMap<String, Source> = srcs
+            .iter()
+            .map(|s| (s.alias.clone(), s.clone()))
+            .collect();
         Env {
             cfg: Config::default(),
             cfg_warnings: Vec::new(),
-            srcs: vec![src],
+            srcs,
             by_alias,
             local_bin: "cmd.exe".into(),
             ui_prefix: "C-g".into(),
@@ -517,6 +562,55 @@ mod tests {
             "select on a connected host queues a switch-client"
         );
         mgr.teardown_all();
+    }
+
+    #[tokio::test]
+    async fn connect_all_sources_connects_every_host() {
+        // Startup must connect EVERY source so each host's list-sessions streams
+        // its tree in without a cursor move — the fix for hosts stuck on
+        // "scanning…" until the user happened to focus them.
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
+        let mut mgr = HostManager::new(tx);
+        let env = fake_env_with_sources(&["jupiter06", "jupiter00", "local"]);
+        connect_all_sources(&mut mgr, &env, 80, 24);
+        assert!(mgr.get("jupiter06").is_some(), "jupiter06 connected at startup");
+        assert!(mgr.get("jupiter00").is_some(), "jupiter00 connected at startup");
+        assert!(mgr.get("local").is_some(), "local connected at startup");
+        mgr.teardown_all();
+    }
+
+    #[tokio::test]
+    async fn host_exited_before_connect_marks_unreachable() {
+        use crate::ui::run::dump_overlay;
+        use crate::ui::switcher::Switcher;
+        use std::collections::HashSet;
+        // A control client that dies before it ever connected must flip its host
+        // from "scanning…" to "⚠ unreachable" so it does not spin forever.
+        let mut switcher = Switcher::from_sources(vec!["jupiter00".into()]);
+        let connected: HashSet<String> = HashSet::new();
+        assert!(
+            note_host_exited(&mut switcher, &connected, "jupiter00", Some("no route to host".into())),
+            "a never-connected host is marked unreachable on exit"
+        );
+        let out = dump_overlay(&mut switcher, None, 80, 24);
+        assert!(out.contains("unreachable"), "host reads unreachable:\n{out}");
+        assert!(out.contains("no route to host"), "shows the exit reason:\n{out}");
+        assert!(!out.contains("scanning"), "no longer scanning:\n{out}");
+    }
+
+    #[tokio::test]
+    async fn host_exited_after_connect_keeps_tree() {
+        use crate::ui::switcher::Switcher;
+        use std::collections::HashSet;
+        // A host that had connected keeps its last-known tree on a later exit —
+        // it is NOT reset to unreachable.
+        let mut switcher = Switcher::from_sources(vec!["jupiter06".into()]);
+        let mut connected: HashSet<String> = HashSet::new();
+        connected.insert("jupiter06".into());
+        assert!(
+            !note_host_exited(&mut switcher, &connected, "jupiter06", None),
+            "an already-connected host is not marked unreachable on exit"
+        );
     }
 
     #[test]
