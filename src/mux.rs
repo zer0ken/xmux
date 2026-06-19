@@ -36,17 +36,6 @@ pub fn attach(bin: &str, name: &str) -> Vec<String> {
     argv(&[bin, "attach", "-t", name])
 }
 
-/// Switches the current client to session `name`.
-pub fn switch_client(bin: &str, name: &str) -> Vec<String> {
-    argv(&[bin, "switch-client", "-t", name])
-}
-
-/// Detaches the current client. `-E` is deliberately omitted because psmux
-/// treats it as a no-op, so the design must not depend on it.
-pub fn detach_client(bin: &str) -> Vec<String> {
-    argv(&[bin, "detach-client"])
-}
-
 /// Creates-or-attaches a DETACHED session and prints its assigned name. `-A`
 /// makes it idempotent, `-d` keeps it detached, and `-P -F` prints the assigned
 /// name even when the mux auto-names (e.g. `"0"`). A non-empty name is requested
@@ -231,19 +220,6 @@ mod tests {
             attach("tmux", "main"),
             sv(&["tmux", "attach", "-t", "main"])
         );
-    }
-
-    #[test]
-    fn switch_client_argv() {
-        assert_eq!(
-            switch_client("tmux", "main"),
-            sv(&["tmux", "switch-client", "-t", "main"])
-        );
-    }
-
-    #[test]
-    fn detach_client_argv() {
-        assert_eq!(detach_client("tmux"), sv(&["tmux", "detach-client"]));
     }
 
     #[test]

@@ -1,8 +1,8 @@
 //! The async event loop that runs the switcher: a tokio `select!` over a unified
 //! command channel (real terminal key/mouse events, control-channel injections,
-//! and preview results) and a 1s preview-poll interval. The core [`event_loop`]
-//! is backend-generic so it is driveable headlessly from both the cockpit and
-//! tests.
+//! and streamed probe results) and a 1s idle-poll / animation tick. The core
+//! [`event_loop`] is backend-generic so it is driveable headlessly from both
+//! the cockpit and tests.
 
 use std::path::PathBuf;
 use std::sync::Arc;

@@ -39,7 +39,7 @@ pub trait Runner: Send + Sync {
 }
 
 /// The real runner: spawns the command via tokio, stripping mux env so a local
-/// command run from inside a mux (e.g. the popup) is not refused as nesting.
+/// command run from inside a mux is not refused as nesting.
 pub struct ExecRunner;
 
 #[async_trait]
@@ -97,8 +97,8 @@ pub struct Source {
     /// platform of the machine running xmux (gates ControlMaster).
     pub os: String,
     /// The local mux server socket to target (`-S`), parsed from `$TMUX` when
-    /// xmux itself runs inside a mux (the popup). `None` ⇒ the default socket.
-    /// Only meaningful for the local source.
+    /// xmux runs inside a mux (e.g. `tmux -L work`). `None` ⇒ the default
+    /// socket. Only meaningful for the local source.
     pub socket: Option<String>,
     /// injectable; `None` ⇒ the real exec runner.
     pub runner: Option<Arc<dyn Runner>>,

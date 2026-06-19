@@ -1,9 +1,7 @@
-//! The session switcher UI: the pure tree model (`tree`), the pane ANSI →
-//! styled-text translation (`ansi`), and the interactive ratatui application
-//! (`switcher`). The model layer is side-effect-free; the rendering is layered
-//! on top separately.
+//! The session switcher UI: the pure tree model (`tree`) and the interactive
+//! ratatui application (`switcher`). The model layer is side-effect-free; the
+//! rendering is layered on top separately.
 
-pub mod ansi;
 pub mod run;
 pub mod switcher;
 pub mod tree;

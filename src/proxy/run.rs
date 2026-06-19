@@ -144,12 +144,12 @@ trait PtySink {
 /// async runtime — so neither can stall the event loop. Input bytes are written in
 /// arrival order: one ordered channel, one reader.
 ///
-/// On channel close it returns; in `proxy_attach` the sink owns the master, so
-/// returning drops it here. Closing the ConPTY can block on Windows older than
-/// 24H2 (`ClosePseudoConsole` waits for clients to disconnect) — but only this
-/// control thread can stall on that, never the async runtime or `proxy_attach`'s
-/// return. In the common teardown path the output pump is still draining the read
-/// pipe, which lets the close complete.
+/// On channel close it returns; the caller (`spawn_attachment`) keeps the sink,
+/// which owns the master, so returning drops it here. Closing the ConPTY can
+/// block on Windows older than 24H2 (`ClosePseudoConsole` waits for clients to
+/// disconnect) — but only this control thread can stall on that, never the async
+/// runtime or the caller's return. In the common teardown path the output pump
+/// is still draining the read pipe, which lets the close complete.
 fn pty_control_loop(rx: std::sync::mpsc::Receiver<PtyCmd>, mut sink: impl PtySink) {
     while let Ok(cmd) = rx.recv() {
         match cmd {

@@ -796,8 +796,18 @@ impl Switcher {
                     self.choose(sess, -1);
                 }
             }
-            RowRef::Session(s) => self.choose(s, -1),
-            RowRef::Window { sess, window } => self.choose(sess, window),
+            RowRef::Session(s) => {
+                if self.terminal_view_self_flag {
+                    return; // active pane runs xmux: self-mirror guard, no attach
+                }
+                self.choose(s, -1);
+            }
+            RowRef::Window { sess, window } => {
+                if self.terminal_view_self_flag {
+                    return; // active pane runs xmux: self-mirror guard, no attach
+                }
+                self.choose(sess, window);
+            }
             RowRef::Pane | RowRef::Loading => {}
         }
     }
@@ -1291,7 +1301,10 @@ impl Switcher {
             "/            fuzzy filter <source>/<name>",
             "r            re-scan every host",
             "?            toggle this help",
-            "q / Esc      quit",
+            "Esc          return to previous foreground",
+            "q            quit",
+            "C-g s        open this overlay",
+            "C-g q        quit from passthrough",
             "",
             "mouse: click selects · double-click attaches · wheel scrolls",
         ];
@@ -2453,6 +2466,34 @@ mod tests {
         assert!(
             !h.sw.dwell_pending(),
             "a self-mirror session must not start a dwell/attach"
+        );
+    }
+
+    #[tokio::test]
+    async fn enter_on_self_mirror_does_not_choose() {
+        // A session whose active pane runs xmux must not be live-attached via
+        // Enter (infinite self-mirror). Enter on such a row must be a NO-OP:
+        // no chosen session, state unchanged.
+        let groups = vec![Group {
+            source: "local".into(),
+            err: None,
+            sessions: vec![sess("local", "selfsess", 1, true, 500)],
+        }];
+        let mut panes = HashMap::new();
+        panes.insert(
+            "local/selfsess".to_string(),
+            vec![win(0, "xmux", true, vec![pane(0, true, "xmux")])],
+        );
+        let mut h = Harness::new(Scan { groups, panes });
+        assert!(h.sw.terminal_view_self(), "fixture focuses the xmux session");
+        h.key(KeyCode::Enter).await;
+        assert!(
+            h.sw.result().chosen.is_none(),
+            "Enter on a self-mirror session must not choose/attach"
+        );
+        assert!(
+            !h.sw.should_exit(),
+            "Enter on a self-mirror session must not exit the switcher"
         );
     }
 

@@ -53,9 +53,9 @@ fn current_os() -> &'static str {
 }
 
 /// The local mux server socket parsed from `$TMUX` (`<socket>,<pid>,<session>`),
-/// so a popup launched inside a non-default mux (e.g. `tmux -L work`) targets
-/// that server rather than the default socket. `None` when not inside a mux (the
-/// home loop) — then the default socket is used.
+/// so xmux running inside a non-default mux (e.g. `tmux -L work`) targets that
+/// server rather than the default socket. `None` when not inside a mux — then
+/// the default socket is used.
 fn local_socket(tmux: Option<&str>) -> Option<String> {
     let path = tmux?.split(',').next()?;
     (!path.is_empty()).then(|| path.to_string())

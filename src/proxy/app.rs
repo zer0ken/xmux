@@ -51,9 +51,9 @@ impl App {
     /// After `live.set_overlay()` returns, a foreground pump that already passed
     /// its `is_owner(id)` check but has not yet executed its `pump_write` call
     /// can still land one chunk on real stdout. This is an accepted one-frame
-    /// flicker. The consuming loop (Task 12) MUST call `term.clear()` followed
-    /// by a full ratatui redraw immediately after `enter_overlay` returns, which
-    /// overdrawing any such stray chunk.
+    /// flicker. The consuming loop MUST call `term.clear()` followed by a full
+    /// ratatui redraw immediately after `enter_overlay` returns, which overdraws
+    /// any such stray chunk.
     pub fn enter_overlay(&mut self) {
         if let AppState::Passthrough { fg, fg_id } = &self.state {
             self.prev_fg = Some((fg.clone(), *fg_id));
@@ -65,7 +65,7 @@ impl App {
     /// Overlay → Passthrough{fg}: while pumps are still gated off stdout, paint
     /// the foreground restore + status bar under ONE per-write lock; then set the
     /// state and re-enable the foreground pump (it resumes raw writes). This
-    /// mirrors the reviewed overlay-close restore in `proxy_attach`.
+    /// mirrors the cockpit overlay-close restore.
     pub fn enter_passthrough(&mut self, fg: String, fg_id: u64, restore: &[u8], status_bar: &[u8]) {
         // Pumps are gated off here (we are still Overlay/owner=sentinel), so this
         // single lock cannot race a pump write.

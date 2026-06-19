@@ -201,12 +201,6 @@ pub fn socket_path(dir: &Path, pid: u32) -> PathBuf {
     dir.join(format!("ctl-{pid}.sock"))
 }
 
-/// Returns the cockpit control socket path for a given pid in `dir`. Distinct
-/// from [`socket_path`] (the switcher's `ctl-*` socket) so the two coexist.
-pub fn cockpit_socket_path(dir: &Path, pid: u32) -> PathBuf {
-    dir.join(format!("cockpit-{pid}.sock"))
-}
-
 /// Extracts the pid embedded in a `ctl-<pid>.sock` filename, or `None`.
 fn pid_from_sock(path: &Path) -> Option<u32> {
     let name = path.file_name()?.to_str()?;
