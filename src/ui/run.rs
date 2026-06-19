@@ -1,25 +1,20 @@
 //! The async event loop that runs the switcher: a tokio `select!` over a unified
 //! command channel (real terminal key/mouse events, control-channel injections,
 //! and preview results) and a 1s preview-poll interval. The core [`event_loop`]
-//! is backend-generic so it is driveable headlessly; [`run_switcher`] adds the
-//! real-terminal setup/teardown and the crossterm event reader.
+//! is backend-generic so it is driveable headlessly from both the cockpit and
+//! tests.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use futures::StreamExt;
 use interprocess::local_socket::tokio::{Listener, Stream};
 use interprocess::local_socket::traits::tokio::Listener as _;
 use interprocess::local_socket::ListenerOptions;
-use ratatui::backend::{Backend, CrosstermBackend, TestBackend};
+use ratatui::backend::{Backend, TestBackend};
 use ratatui::crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
+    KeyCode, KeyEvent,
     KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-};
-use ratatui::crossterm::execute;
-use ratatui::crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::Terminal;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -27,70 +22,11 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::control;
 use crate::session::{Session, WindowPanes};
-use crate::ui::switcher::{run_op, OpResult, Ops, Scan, SwitchResult, Switcher};
+use crate::ui::switcher::{run_op, OpResult, Ops, Switcher};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const ANIM_INTERVAL: Duration = Duration::from_millis(33);
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
-
-/// The cockpit's last-known scan, shared so the next picker open seeds from it
-/// (stale-while-revalidate). `None` until a picker first resolves something.
-pub type ScanCache = Arc<Mutex<Option<Scan>>>;
-
-/// Builds the initial switcher for a picker open: seeded from the cache when one
-/// is present (last-known sessions shown at once), else a bare scanning skeleton.
-fn seed_switcher(ops: &Arc<dyn Ops>, cache: &Option<ScanCache>) -> Switcher {
-    // A poisoned lock recovers its inner value rather than crashing the cockpit.
-    let seed = cache
-        .as_ref()
-        .and_then(|c| c.lock().unwrap_or_else(|e| e.into_inner()).clone());
-    match seed {
-        Some(scan) => Switcher::from_cached_scan(ops.sources(), scan),
-        None => Switcher::from_sources(ops.sources()),
-    }
-}
-
-/// Merges a fresh picker snapshot into the previous cache. A host whose reprobe
-/// came back unreachable-and-empty keeps its last-known sessions (and their
-/// cached panes), so one transient timeout never erases the cache the feature
-/// exists to provide; every other host takes the fresh result.
-fn merge_scan(prev: Option<Scan>, fresh: Scan) -> Scan {
-    let Some(prev) = prev else { return fresh };
-    let prev_panes = prev.panes;
-    let mut prev_groups: std::collections::HashMap<_, _> =
-        prev.groups.into_iter().map(|g| (g.source.clone(), g)).collect();
-    let mut panes = fresh.panes;
-    let groups = fresh
-        .groups
-        .into_iter()
-        .map(|g| {
-            if g.err.is_some() && g.sessions.is_empty() {
-                if let Some(p) = prev_groups.remove(&g.source) {
-                    if !p.sessions.is_empty() {
-                        for s in &p.sessions {
-                            let addr = s.address();
-                            if let Some(win) = prev_panes.get(&addr) {
-                                panes.entry(addr).or_insert_with(|| win.clone());
-                            }
-                        }
-                        return p;
-                    }
-                }
-            }
-            g
-        })
-        .collect();
-    Scan { groups, panes }
-}
-
-/// Stores the switcher's resolved state into the cache (if any) for the next open,
-/// merged so a transient unreachable reprobe never wipes last-known sessions.
-fn store_snapshot(switcher: &Switcher, cache: &Option<ScanCache>) {
-    if let Some(c) = cache {
-        let mut guard = c.lock().unwrap_or_else(|e| e.into_inner());
-        *guard = Some(merge_scan(guard.take(), switcher.snapshot()));
-    }
-}
 
 /// A unit of work the event loop processes, from any source.
 pub enum Cmd {
@@ -296,42 +232,6 @@ where
     Ok(())
 }
 
-/// Reads crossterm events and forwards key presses and mouse events into the
-/// command channel until the channel closes or the stream ends.
-async fn read_events(cmd_tx: mpsc::Sender<Cmd>) {
-    let mut stream = EventStream::new();
-    while let Some(Ok(event)) = stream.next().await {
-        let cmd = match event {
-            // Windows reports Press and Release; only act on Press.
-            Event::Key(k) if k.kind == KeyEventKind::Press => Cmd::Key(k),
-            Event::Mouse(m) => Cmd::Mouse(m),
-            _ => continue,
-        };
-        if cmd_tx.send(cmd).await.is_err() {
-            return;
-        }
-    }
-}
-
-/// A RAII guard that restores the terminal on drop (so a panic mid-loop does not
-/// leave the terminal in raw mode / the alternate screen).
-struct TerminalGuard;
-
-impl TerminalGuard {
-    fn enter() -> anyhow::Result<Self> {
-        enable_raw_mode()?;
-        execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
-        Ok(TerminalGuard)
-    }
-}
-
-impl Drop for TerminalGuard {
-    fn drop(&mut self) {
-        let _ = execute!(std::io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
-        let _ = disable_raw_mode();
-    }
-}
-
 /// A running control server: the accept-loop task plus the socket path to clean
 /// up on shutdown.
 pub struct ControlHandle {
@@ -412,56 +312,6 @@ async fn dispatch(line: &str, cmd_tx: &mpsc::Sender<Cmd>) -> String {
     }
 }
 
-/// Runs one interactive switcher session on the real terminal, polling the live
-/// preview for as long as it is open. When `control` is `Some(path)`, a control
-/// socket is served at that path for the session's lifetime.
-pub async fn run_switcher(
-    ops: Arc<dyn Ops>,
-    control: Option<PathBuf>,
-    cache: Option<ScanCache>,
-) -> anyhow::Result<SwitchResult> {
-    // Seed from the cockpit's last-known scan when present (last-known sessions at
-    // once, then revalidate); otherwise bare skeletons. Either way the event loop
-    // streams fresh results in.
-    let mut switcher = seed_switcher(&ops, &cache);
-    let (cmd_tx, cmd_rx) = mpsc::channel::<Cmd>(256);
-
-    let _guard = TerminalGuard::enter()?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
-    terminal.clear()?;
-
-    let events = tokio::spawn(read_events(cmd_tx.clone()));
-    let control_handle = control.and_then(|p| serve_control(p, cmd_tx.clone()));
-
-    let result = event_loop(&mut terminal, &mut switcher, ops, cmd_tx.clone(), cmd_rx).await;
-
-    events.abort();
-    drop(control_handle); // abort the accept loop and remove the socket
-    result?;
-    store_snapshot(&switcher, &cache); // warm the cache for the next open
-    Ok(switcher.result())
-}
-
-/// Like `run_switcher` but the CALLER owns input + screen policy. Used by the
-/// PTY proxy overlay: it constructs its OWN `CrosstermBackend` terminal on the
-/// current screen (no `TerminalGuard`, no alt-screen toggle — the proxy owns
-/// that), and spawns NO `read_events` (the proxy is the single input reader and
-/// feeds `Cmd::Key`/`Cmd::Resize` over `cmd_tx`). Owning the terminal means this
-/// can be `tokio::spawn`ed while the proxy keeps reading stdin.
-pub async fn run_picker_fed(
-    ops: Arc<dyn Ops>,
-    cmd_tx: mpsc::Sender<Cmd>,
-    cmd_rx: mpsc::Receiver<Cmd>,
-    cache: Option<ScanCache>,
-) -> anyhow::Result<SwitchResult> {
-    let mut switcher = seed_switcher(&ops, &cache);
-    let mut term = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
-    term.clear()?;
-    event_loop(&mut term, &mut switcher, ops, cmd_tx, cmd_rx).await?;
-    store_snapshot(&switcher, &cache); // warm the cache for the next open
-    Ok(switcher.result())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,156 +320,6 @@ mod tests {
     use crate::ui::tree::Group;
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     use std::collections::HashMap;
-
-    // -- Task 2: cockpit scan cache (stale-while-revalidate) -------------
-    //
-    // The cockpit keeps a last-known scan so reopening the picker shows sessions
-    // at once instead of a blank wait. A picker stores its resolved state on close;
-    // the next open seeds from it. This proves the store→seed round-trip surfaces
-    // the cached sessions (the background re-probe then refreshes them).
-    #[tokio::test]
-    async fn scan_cache_round_trips_through_seed() {
-        let ops: Arc<dyn Ops> = Arc::new(StreamOps::local_and_remote()); // sources: local, remote
-
-        let cache: ScanCache = Arc::new(std::sync::Mutex::new(None));
-        // A first picker resolved one local session; snapshot it into the cache.
-        let resolved = Switcher::new(Scan {
-            groups: vec![Group {
-                source: "local".into(),
-                err: None,
-                sessions: vec![Session {
-                    source: "local".into(),
-                    name: "editor".into(),
-                    windows: 1,
-                    attached: false,
-                    last_attached: 100,
-                }],
-            }],
-            panes: Default::default(),
-        });
-        store_snapshot(&resolved, &Some(cache.clone()));
-
-        // The next open seeds from the cache: the last-known session is present
-        // immediately, before any probe runs.
-        let seeded = seed_switcher(&ops, &Some(cache.clone()));
-        let snap = seeded.snapshot();
-        assert!(
-            snap.groups
-                .iter()
-                .any(|g| g.sessions.iter().any(|s| s.name == "editor")),
-            "the seeded picker shows the cached session at once"
-        );
-
-        // With no cache, the seed is the bare scanning skeleton (no sessions).
-        let none: Option<ScanCache> = None;
-        let bare = seed_switcher(&ops, &none);
-        assert!(
-            bare.snapshot()
-                .groups
-                .iter()
-                .all(|g| g.sessions.is_empty()),
-            "with no cache the seed is a bare skeleton"
-        );
-    }
-
-    #[test]
-    fn scan_cache_survives_a_transient_unreachable() {
-        // The cache exists to soften flaky remotes, so one timed-out reprobe must
-        // NOT erase a host's last-known sessions. Merging a fresh snapshot whose
-        // host came back err+empty keeps the previous sessions (and their panes).
-        let prev = Scan {
-            groups: vec![Group {
-                source: "remote".into(),
-                err: None,
-                sessions: vec![Session {
-                    source: "remote".into(),
-                    name: "api".into(),
-                    windows: 1,
-                    attached: false,
-                    last_attached: 50,
-                }],
-            }],
-            panes: {
-                let mut m = HashMap::new();
-                m.insert(
-                    "remote/api".to_string(),
-                    vec![WindowPanes {
-                        index: 1,
-                        name: "serve".into(),
-                        active: true,
-                        panes: vec![Pane {
-                            index: 1,
-                            active: true,
-                            command: "node".into(),
-                        }],
-                    }],
-                );
-                m
-            },
-        };
-        // A transient failure: the reprobe returned an error with no sessions.
-        let fresh = Scan {
-            groups: vec![Group {
-                source: "remote".into(),
-                err: Some("timed out after 6s".into()),
-                sessions: Vec::new(),
-            }],
-            panes: HashMap::new(),
-        };
-        let merged = merge_scan(Some(prev), fresh);
-        assert!(
-            merged
-                .groups
-                .iter()
-                .any(|g| g.sessions.iter().any(|s| s.name == "api")),
-            "a transient unreachable reprobe must not wipe last-known sessions"
-        );
-        assert!(
-            merged.panes.contains_key("remote/api"),
-            "the kept sessions keep their cached panes too"
-        );
-    }
-
-    #[test]
-    fn merge_scan_takes_fresh_when_reprobe_succeeds() {
-        // A successful reprobe (reachable, with sessions) replaces the cache — the
-        // merge only protects against the err+empty wipe.
-        let prev = Scan {
-            groups: vec![Group {
-                source: "remote".into(),
-                err: None,
-                sessions: vec![Session {
-                    source: "remote".into(),
-                    name: "old".into(),
-                    windows: 1,
-                    attached: false,
-                    last_attached: 1,
-                }],
-            }],
-            panes: HashMap::new(),
-        };
-        let fresh = Scan {
-            groups: vec![Group {
-                source: "remote".into(),
-                err: None,
-                sessions: vec![Session {
-                    source: "remote".into(),
-                    name: "new".into(),
-                    windows: 1,
-                    attached: false,
-                    last_attached: 9,
-                }],
-            }],
-            panes: HashMap::new(),
-        };
-        let merged = merge_scan(Some(prev), fresh);
-        let names: Vec<&str> = merged.groups[0]
-            .sessions
-            .iter()
-            .map(|s| s.name.as_str())
-            .collect();
-        assert_eq!(names, vec!["new"], "a fresh result replaces the cache");
-    }
 
     struct NoopOps;
 

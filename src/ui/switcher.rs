@@ -332,57 +332,6 @@ impl Switcher {
         s
     }
 
-    /// Seeds from a cached scan (the cockpit's last-known snapshot) so reopening
-    /// the picker shows the last-known sessions AT ONCE instead of a blank wait —
-    /// stale-while-revalidate. A source with cached sessions renders them
-    /// immediately (NOT marked scanning); a source with no cached sessions shows
-    /// the scanning skeleton. Either way `rescan_kick` is set so the event loop
-    /// re-probes every source in the background and fresh results replace the
-    /// cached ones.
-    pub fn from_cached_scan(aliases: Vec<String>, cache: Scan) -> Self {
-        let mut s = Switcher::blank();
-        let mut cached: HashMap<String, Group> = cache
-            .groups
-            .into_iter()
-            .map(|g| (g.source.clone(), g))
-            .collect();
-        s.groups = aliases
-            .into_iter()
-            .map(|source| match cached.remove(&source) {
-                // Last-known sessions for this host → show them now, not scanning.
-                Some(g) if !g.sessions.is_empty() => g,
-                // No cached sessions (never seen, was empty, or was unreachable) →
-                // a scanning skeleton that the background re-probe fills in.
-                _ => {
-                    s.scanning.insert(source.clone());
-                    Group {
-                        source,
-                        err: None,
-                        sessions: Vec::new(),
-                    }
-                }
-            })
-            .collect();
-        s.panes = cache.panes;
-        // Cached panes are considered loaded so their windows show at once; a
-        // session with no cached panes shows a loading… placeholder until its
-        // re-probe lands.
-        s.panes_loaded = s.panes.keys().cloned().collect();
-        s.rescan_kick = true;
-        s.rebuild();
-        s
-    }
-
-    /// A snapshot of the current resolved state (sessions + panes) for the cockpit
-    /// to cache and seed the next picker open from. Hosts still scanning contribute
-    /// their empty group, so the next seed re-probes them.
-    pub fn snapshot(&self) -> Scan {
-        Scan {
-            groups: self.groups.clone(),
-            panes: self.panes.clone(),
-        }
-    }
-
     pub fn result(&self) -> SwitchResult {
         self.result.clone()
     }
@@ -1532,19 +1481,6 @@ mod tests {
             h
         }
 
-        fn from_cached(aliases: &[&str], cache: Scan) -> Self {
-            let backend = TestBackend::new(100, 30);
-            let term = Terminal::new(backend).unwrap();
-            let aliases = aliases.iter().map(|s| s.to_string()).collect();
-            let mut h = Harness {
-                sw: Switcher::from_cached_scan(aliases, cache),
-                term,
-                ops: RecordOps::default(),
-            };
-            h.draw();
-            h
-        }
-
         fn footer_text(&self) -> String {
             let buf = self.buf();
             let y = buf.area.height - 1;
@@ -1814,52 +1750,6 @@ mod tests {
         assert!(
             !out.contains("window"),
             "no pane detail before any probe:\n{out}"
-        );
-    }
-
-    // --- cockpit scan cache (stale-while-revalidate) ------------------------
-
-    #[tokio::test]
-    async fn snapshot_carries_sessions_and_panes() {
-        // The cockpit snapshots the picker's resolved state to seed the next open.
-        // A snapshot of a fully-built switcher must carry its sessions and panes.
-        let h = Harness::new(sample());
-        let snap = h.sw.snapshot();
-        assert!(
-            snap.groups
-                .iter()
-                .any(|g| g.sessions.iter().any(|s| s.name == "inference")),
-            "snapshot carries the sessions"
-        );
-        assert!(!snap.panes.is_empty(), "snapshot carries the pane detail");
-    }
-
-    #[tokio::test]
-    async fn from_cached_scan_shows_last_known_and_revalidates() {
-        // A cached host shows its last-known sessions IMMEDIATELY (no scanning
-        // skeleton) so reopening the picker is not a blank wait; an uncached host
-        // still shows a scanning skeleton. Both are re-probed in the background.
-        let cache = Scan {
-            groups: vec![Group {
-                source: "local".into(),
-                err: None,
-                sessions: vec![sess("local", "editor", 1, false, 100)],
-            }],
-            panes: Default::default(),
-        };
-        let mut h = Harness::from_cached(&["local", "remote"], cache);
-        assert!(
-            h.sw.take_rescan_kick(),
-            "a cached seed must still revalidate in the background"
-        );
-        let tree = h.tree_text();
-        assert!(
-            tree.contains("editor"),
-            "the cached host's last-known session shows at once:\n{tree}"
-        );
-        assert!(
-            tree.contains("scanning"),
-            "the uncached host shows a scanning skeleton:\n{tree}"
         );
     }
 
