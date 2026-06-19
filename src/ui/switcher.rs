@@ -403,23 +403,25 @@ impl Switcher {
     // --- tree model ---------------------------------------------------------
 
     fn visible_groups(&self) -> Vec<Group> {
-        if self.filter.is_empty() {
-            return self.groups.clone();
-        }
-        let filtered = tree::filter_groups(&self.groups, &self.filter);
-        if filtered.is_empty() {
-            // XM-01: a non-matching filter must not be a dead end.
-            return self
-                .groups
-                .iter()
-                .map(|g| Group {
-                    source: g.source.clone(),
-                    err: g.err.clone(),
-                    sessions: Vec::new(),
-                })
-                .collect();
-        }
-        filtered
+        let groups = if self.filter.is_empty() {
+            self.groups.clone()
+        } else {
+            let filtered = tree::filter_groups(&self.groups, &self.filter);
+            if filtered.is_empty() {
+                // XM-01: a non-matching filter must not be a dead end.
+                self.groups
+                    .iter()
+                    .map(|g| Group {
+                        source: g.source.clone(),
+                        err: g.err.clone(),
+                        sessions: Vec::new(),
+                    })
+                    .collect()
+            } else {
+                filtered
+            }
+        };
+        tree::order_groups(&groups)
     }
 
     fn rebuild(&mut self) {

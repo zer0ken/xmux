@@ -138,6 +138,30 @@ pub fn remove_session(groups: &[Group], address: &str) -> Vec<Group> {
     out
 }
 
+/// Orders host groups for display: the local source(s) pinned first (original
+/// relative order), then remote groups by their most-recent session's
+/// `last_attached` descending (a group with no sessions sorts last; ties by
+/// source name ascending). Inputs are not mutated.
+pub fn order_groups(groups: &[Group]) -> Vec<Group> {
+    use crate::session::LOCAL_SOURCE;
+    let mut local: Vec<Group> = Vec::new();
+    let mut remote: Vec<Group> = Vec::new();
+    for g in groups {
+        if g.source == LOCAL_SOURCE {
+            local.push(g.clone());
+        } else {
+            remote.push(g.clone());
+        }
+    }
+    remote.sort_by(|a, b| {
+        let am = a.sessions.iter().map(|s| s.last_attached).max();
+        let bm = b.sessions.iter().map(|s| s.last_attached).max();
+        // Some(max) before None; higher max first; ties by source name asc.
+        bm.cmp(&am).then_with(|| a.source.cmp(&b.source))
+    });
+    local.into_iter().chain(remote).collect()
+}
+
 /// Returns groups with the session at `address` renamed to `new_name` and its
 /// group re-sorted by recency. It is a no-op if no session matches. Inputs are
 /// not mutated.
@@ -445,5 +469,44 @@ mod tests {
         }];
         let _ = rename_session(&groups, "local/web", "renamed");
         assert_eq!(groups[0].sessions[0].name, "web");
+    }
+
+    #[test]
+    fn order_groups_pins_local_then_remote_by_recency() {
+        let groups = vec![
+            Group {
+                source: "jupiter00".into(),
+                err: None,
+                sessions: vec![sess("jupiter00", "a", 100)],
+            },
+            Group {
+                source: "local".into(),
+                err: None,
+                sessions: vec![sess("local", "w", 50)],
+            },
+            Group {
+                source: "jupiter06".into(),
+                err: None,
+                sessions: vec![sess("jupiter06", "b", 300)],
+            },
+            Group {
+                source: "deadhost".into(),
+                err: Some("refused".into()),
+                sessions: vec![],
+            },
+        ];
+        let out = order_groups(&groups);
+        let order: Vec<&str> = out.iter().map(|g| g.source.as_str()).collect();
+        // local first; then remotes by max last_attached desc (jupiter06=300,
+        // jupiter00=100); the empty/unreachable deadhost (no sessions) sorts last.
+        assert_eq!(order, vec!["local", "jupiter06", "jupiter00", "deadhost"]);
+    }
+
+    #[test]
+    fn order_groups_does_not_mutate_input() {
+        let groups = sample_groups();
+        let first = groups[0].source.clone();
+        let _ = order_groups(&groups);
+        assert_eq!(groups[0].source, first);
     }
 }
