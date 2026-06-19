@@ -1219,10 +1219,23 @@ impl Switcher {
             // (falls through to the help line) once every host has settled.
             let total = self.groups.len();
             let done = total.saturating_sub(self.scanning.len());
-            format!(" ⟳ scanning hosts {done}/{total}… · q quit · ? help")
+            fit(
+                &[
+                    format!(" ⟳ scanning hosts {done}/{total}… · q quit · ? help"),
+                    format!(" ⟳ scanning {done}/{total}…"),
+                ],
+                area.width,
+            )
         } else {
-            " enter attach · n new · R rename · x kill · / filter · r refresh · ? help · q quit"
-                .to_string()
+            fit(
+                &[
+                    " enter attach · n new · R rename · x kill · / filter · r refresh · ? help · q quit".to_string(),
+                    " enter attach · n new · R rename · x kill · / filter · ? help · q quit".to_string(),
+                    " enter attach · / filter · ? help · q quit".to_string(),
+                    " ? help · q quit".to_string(),
+                ],
+                area.width,
+            )
         };
         frame.render_widget(Paragraph::new(text), area);
     }
@@ -1267,6 +1280,17 @@ fn plural(n: i64) -> String {
     } else {
         format!("{n} windows")
     }
+}
+
+/// Picks the first (longest) candidate whose width fits `width`, falling back
+/// to the last (shortest) when even that does not fit.
+fn fit(candidates: &[String], width: u16) -> String {
+    let w = width as usize;
+    candidates
+        .iter()
+        .find(|c| c.chars().count() <= w)
+        .cloned()
+        .unwrap_or_else(|| candidates.last().cloned().unwrap_or_default())
 }
 
 fn window_label(w: &WindowPanes) -> String {
@@ -1878,6 +1902,28 @@ mod tests {
         assert!(
             footer.contains("attach"),
             "the footer returns to the help line:\n{footer:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn footer_fits_narrow_width() {
+        let mut sw = Switcher::new(sample());
+        let mut term = Terminal::new(TestBackend::new(30, 30)).unwrap();
+        term.draw(|f| sw.render(f)).unwrap();
+        let buf = term.backend().buffer();
+        let y = buf.area.height - 1;
+        let mut footer = String::new();
+        for x in 0..buf.area.width {
+            footer.push_str(buf[(x, y)].symbol());
+        }
+        let footer = footer.trim_end().to_string();
+        assert!(
+            footer.chars().count() <= 30,
+            "footer fits a 30-column terminal:\n{footer:?}"
+        );
+        assert!(
+            footer.contains("? help") && footer.contains("q quit"),
+            "footer still offers help and quit hints:\n{footer:?}"
         );
     }
 
