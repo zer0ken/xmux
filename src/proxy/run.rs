@@ -954,9 +954,6 @@ mod tests {
         async fn panes(&self, _s: &Session) -> anyhow::Result<Vec<crate::session::WindowPanes>> {
             Ok(Vec::new())
         }
-        async fn capture(&self, _source: &str, _target: &str) -> anyhow::Result<String> {
-            Ok(String::new())
-        }
     }
 
     /// Two local sessions: `editor` (attached, most-recent) and `build`.

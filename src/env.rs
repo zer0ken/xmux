@@ -219,13 +219,6 @@ impl Ops for EnvOps {
         with_timeout(DETAIL_TIMEOUT, manage::panes(&src, &s.name)).await
     }
 
-    async fn capture(&self, source: &str, target: &str) -> anyhow::Result<String> {
-        let src = self.source(source)?;
-        // Share the probe semaphore so a flood of previews never spawns unbounded
-        // concurrent ssh captures (capped like list_sessions/panes).
-        let _permit = self.sem.acquire().await?;
-        with_timeout(DETAIL_TIMEOUT, manage::capture(&src, target)).await
-    }
 }
 
 #[cfg(test)]
@@ -290,58 +283,6 @@ mod tests {
             ui_prefix: "C-g".into(),
             xmux_dir: PathBuf::from("."),
         })
-    }
-
-    // -- B2: capture must share the probe semaphore ----------------------
-    //
-    // `list_sessions`/`panes` acquire a permit so the concurrent ssh fan-out is
-    // capped; `capture` (the preview) previously bypassed it, so a flood of
-    // previews (holding ↑/↓) could spawn unbounded concurrent ssh captures. With
-    // a 1-permit semaphore a capture and a list-sessions must NOT overlap.
-    #[tokio::test]
-    async fn capture_shares_the_probe_semaphore() {
-        use std::sync::atomic::{AtomicI32, Ordering};
-
-        struct CountingRunner {
-            active: AtomicI32,
-            max: AtomicI32,
-        }
-        #[async_trait::async_trait]
-        impl Runner for CountingRunner {
-            async fn run(&self, _n: &str, _a: &[String]) -> Result<Vec<u8>, RunError> {
-                let n = self.active.fetch_add(1, Ordering::SeqCst) + 1;
-                self.max.fetch_max(n, Ordering::SeqCst);
-                tokio::time::sleep(Duration::from_millis(20)).await;
-                self.active.fetch_sub(1, Ordering::SeqCst);
-                Ok(b"1\t0\t0\ts\n".to_vec())
-            }
-        }
-
-        let runner = std::sync::Arc::new(CountingRunner {
-            active: AtomicI32::new(0),
-            max: AtomicI32::new(0),
-        });
-        let env = env_of(source_with("local", runner.clone()));
-        let ops = Arc::new(EnvOps {
-            env,
-            sem: Arc::new(tokio::sync::Semaphore::new(1)),
-        });
-
-        let o1 = ops.clone();
-        let o2 = ops.clone();
-        let a = tokio::spawn(async move {
-            let _ = o1.capture("local", "editor:1.0").await;
-        });
-        let b = tokio::spawn(async move {
-            let _ = o2.list_sessions("local").await;
-        });
-        let _ = tokio::join!(a, b);
-
-        assert!(
-            runner.max.load(Ordering::SeqCst) <= 1,
-            "capture must share the probe semaphore (peak concurrency {})",
-            runner.max.load(Ordering::SeqCst)
-        );
     }
 
     #[tokio::test]

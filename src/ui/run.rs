@@ -27,7 +27,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::control;
 use crate::session::{Session, WindowPanes};
-use crate::ui::switcher::{run_op, OpResult, Ops, PreviewTarget, Scan, SwitchResult, Switcher};
+use crate::ui::switcher::{run_op, OpResult, Ops, Scan, SwitchResult, Switcher};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
@@ -97,8 +97,6 @@ pub enum Cmd {
     Mouse(MouseEvent),
     /// Host terminal resized (cols, rows) — re-layout the picker.
     Resize(u16, u16),
-    /// A freshly captured preview (target, text) — `None` ⇒ capture failed.
-    Preview(PreviewTarget, Option<String>),
     /// One source's `list-sessions` outcome, streamed in as it returns. `err` set
     /// ⇒ the host was unreachable.
     SourceResult {
@@ -126,7 +124,7 @@ pub fn dump_switcher(switcher: &mut Switcher, width: u16, height: u16) -> String
         Ok(t) => t,
         Err(_) => return String::new(),
     };
-    if term.draw(|f| switcher.render(f)).is_err() {
+    if term.draw(|f| switcher.render(f, None)).is_err() {
         return String::new();
     }
     let buf = term.backend().buffer();
@@ -140,23 +138,6 @@ pub fn dump_switcher(switcher: &mut Switcher, width: u16, height: u16) -> String
         out.push('\n');
     }
     out
-}
-
-/// Spawns a detached capture of the current preview target, returning whether one
-/// was actually started (false when the target is not capturable). The caller uses
-/// the return to track a single in-flight capture.
-fn spawn_capture(switcher: &Switcher, ops: &Arc<dyn Ops>, cmd_tx: &mpsc::Sender<Cmd>) -> bool {
-    if !switcher.preview_capturable() {
-        return false;
-    }
-    let tgt = switcher.preview_target();
-    let ops = ops.clone();
-    let tx = cmd_tx.clone();
-    tokio::spawn(async move {
-        let text = ops.capture(&tgt.source, &tgt.target).await.ok();
-        let _ = tx.send(Cmd::Preview(tgt, text)).await;
-    });
-    true
 }
 
 /// Spawns one detached `list-sessions` probe per source; each streams its outcome
@@ -226,8 +207,8 @@ fn handle_mouse(
     }
 }
 
-/// The backend-generic core loop. Draws after every change, polls the preview on
-/// an interval and on cursor change, and exits when the switcher signals it.
+/// The backend-generic core loop. Draws after every change and exits when the
+/// switcher signals it.
 pub async fn event_loop<B: Backend>(
     terminal: &mut Terminal<B>,
     switcher: &mut Switcher,
@@ -241,24 +222,14 @@ where
     let mut poll = tokio::time::interval(POLL_INTERVAL);
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut last_click: Option<(Instant, u16, u16)> = None;
-    // Single in-flight capture: a burst of cursor moves must not spawn a storm of
-    // soon-stale ssh captures. While one is running, the poll-kick is held (not
-    // consumed) and coalesces into one re-capture when the result lands.
-    let mut capture_inflight = false;
 
     loop {
         // The very first draw paints the host skeletons before any probe is
         // polled (the runtime is current-thread; spawned probes run at the await
         // below), so the first frame is instant.
-        terminal.draw(|f| switcher.render(f))?;
+        terminal.draw(|f| switcher.render(f, None))?;
         if switcher.should_exit() {
             break;
-        }
-        // A target change (initial build or cursor move) kicks an immediate fetch.
-        // While a capture is in flight the kick is intentionally NOT consumed, so a
-        // burst of moves coalesces into one re-capture once the current one lands.
-        if !capture_inflight && switcher.take_poll_kick() {
-            capture_inflight = spawn_capture(switcher, &ops, &cmd_tx);
         }
         // The seed (and each `r` re-scan) kicks one streaming probe per source.
         if switcher.take_rescan_kick() {
@@ -286,10 +257,6 @@ where
                     Cmd::Resize(cols, rows) => {
                         let _ = terminal.resize(ratatui::layout::Rect::new(0, 0, cols, rows));
                     }
-                    Cmd::Preview(tgt, text) => {
-                        capture_inflight = false; // this capture finished; allow the next
-                        switcher.apply_capture(&tgt, text);
-                    }
                     Cmd::SourceResult { source, sessions, err } => {
                         let reachable = err.is_none();
                         switcher.apply_source_result(source, sessions.clone(), err);
@@ -310,11 +277,7 @@ where
                     Cmd::OpDone(result) => switcher.apply_op_result(result),
                 }
             }
-            _ = poll.tick() => {
-                if !capture_inflight {
-                    capture_inflight = spawn_capture(switcher, &ops, &cmd_tx);
-                }
-            }
+            _ = poll.tick() => {}
         }
     }
     Ok(())
@@ -645,121 +608,6 @@ mod tests {
         assert_eq!(names, vec!["new"], "a fresh result replaces the cache");
     }
 
-    // -- B2: capture is single-in-flight ---------------------------------
-    //
-    // Rapid cursor movement (holding ↑/↓) must NOT spawn a new preview capture
-    // while one is already in flight; otherwise a burst of moves queues a storm of
-    // soon-stale ssh captures. This gates a capture so it never completes, then
-    // moves the cursor and asserts no SECOND capture starts.
-    #[tokio::test]
-    async fn capture_is_single_in_flight() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use tokio::sync::Semaphore;
-
-        struct GatedOps {
-            started: mpsc::UnboundedSender<()>,
-            gate: Arc<Semaphore>,
-            count: Arc<AtomicUsize>,
-        }
-        #[async_trait::async_trait]
-        impl Ops for GatedOps {
-            fn sources(&self) -> Vec<String> {
-                Vec::new() // drive a prebuilt Switcher; kick no probes
-            }
-            async fn list_sessions(&self, _: &str) -> anyhow::Result<Vec<Session>> {
-                Ok(Vec::new())
-            }
-            async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session> {
-                Ok(Session {
-                    source: source.into(),
-                    name: name.into(),
-                    windows: 1,
-                    ..Default::default()
-                })
-            }
-            async fn kill(&self, _: &Session) -> anyhow::Result<()> {
-                Ok(())
-            }
-            async fn rename(&self, _: &Session, _: &str) -> anyhow::Result<()> {
-                Ok(())
-            }
-            async fn panes(&self, _: &Session) -> anyhow::Result<Vec<WindowPanes>> {
-                Ok(Vec::new())
-            }
-            async fn capture(&self, _: &str, _: &str) -> anyhow::Result<String> {
-                self.count.fetch_add(1, Ordering::SeqCst);
-                let _ = self.started.send(());
-                let _ = self.gate.acquire().await; // park: never released in this test
-                Ok(String::new())
-            }
-        }
-
-        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
-        let count = Arc::new(AtomicUsize::new(0));
-        let ops: Arc<dyn Ops> = Arc::new(GatedOps {
-            started: started_tx,
-            gate: Arc::new(Semaphore::new(0)),
-            count: count.clone(),
-        });
-
-        // Two sessions so a Down keypress moves the cursor (a fresh poll-kick).
-        let scan = Scan {
-            groups: vec![Group {
-                source: "local".into(),
-                err: None,
-                sessions: vec![
-                    Session {
-                        source: "local".into(),
-                        name: "editor".into(),
-                        windows: 1,
-                        attached: false,
-                        last_attached: 100,
-                    },
-                    Session {
-                        source: "local".into(),
-                        name: "build".into(),
-                        windows: 1,
-                        attached: false,
-                        last_attached: 50,
-                    },
-                ],
-            }],
-            panes: Default::default(),
-        };
-        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        let mut sw = Switcher::new(scan);
-        let (tx, rx) = mpsc::channel::<Cmd>(32);
-        let tx2 = tx.clone();
-        let loop_task = tokio::spawn(async move {
-            event_loop(&mut term, &mut sw, ops, tx2, rx).await.unwrap();
-        });
-
-        // The first capture starts and parks (gate has no permits).
-        started_rx.recv().await.expect("initial capture must start");
-
-        // Move the cursor while that capture is still in flight.
-        tx.send(Cmd::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)))
-            .await
-            .unwrap();
-
-        // No SECOND capture may start: the in-flight one must debounce it.
-        let second = tokio::time::timeout(Duration::from_millis(150), started_rx.recv()).await;
-        assert!(
-            second.is_err(),
-            "a cursor move while a capture is in flight must not start a second capture \
-             (captures so far: {})",
-            count.load(Ordering::SeqCst)
-        );
-
-        tx.send(Cmd::Key(KeyEvent::new(
-            KeyCode::Char('q'),
-            KeyModifiers::NONE,
-        )))
-        .await
-        .unwrap();
-        let _ = tokio::time::timeout(Duration::from_secs(2), loop_task).await;
-    }
-
     struct NoopOps;
 
     #[async_trait::async_trait]
@@ -788,9 +636,6 @@ mod tests {
         }
         async fn panes(&self, _s: &Session) -> anyhow::Result<Vec<WindowPanes>> {
             Ok(Vec::new())
-        }
-        async fn capture(&self, _source: &str, _target: &str) -> anyhow::Result<String> {
-            Ok(String::new())
         }
     }
 
@@ -889,9 +734,6 @@ mod tests {
         }
         async fn panes(&self, s: &Session) -> anyhow::Result<Vec<WindowPanes>> {
             Ok(self.panes.get(&s.address()).cloned().unwrap_or_default())
-        }
-        async fn capture(&self, _source: &str, _target: &str) -> anyhow::Result<String> {
-            Ok(String::new())
         }
     }
 

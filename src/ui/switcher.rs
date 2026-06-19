@@ -5,7 +5,7 @@
 //! that draws to either the live terminal or a headless `TestBackend` (the
 //! control channel's `dump`).
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
@@ -15,17 +15,10 @@ use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragra
 use ratatui::Frame;
 
 use crate::session::{Pane, Session, WindowPanes};
-use crate::ui::ansi::ansi_to_text;
 use crate::ui::tree::{self, Group};
 
 /// Tree pane width: border + 1-cell inner padding each side + content.
 pub const TREE_WIDTH: u16 = 48;
-
-/// Cap on the live-preview cache. It is kept across rescans for
-/// stale-while-revalidate, so it is bounded (LRU by most-recent capture) rather
-/// than grown for the cockpit's whole lifetime. Previews are small (one pane's
-/// visible text), so this holds a generous working set at trivial cost.
-const PREVIEW_CACHE_CAP: usize = 64;
 
 // Per-level node colours, so the four tree levels read apart at a glance.
 const COLOR_HOST: Color = Color::Yellow;
@@ -36,10 +29,10 @@ const COLOR_PANE: Color = Color::Cyan;
 /// render dim so pending state reads apart from settled content.
 const COLOR_HINT: Color = Color::DarkGray;
 
-/// Shown in the preview pane when the focused target's active pane is itself
-/// running xmux. Capturing it would draw the switcher inside its own preview (an
-/// infinite overlay); the note stands in for that suppressed capture.
-const PREVIEW_SELF_NOTE: &str = "  This pane is running xmux.\n\n  Preview hidden here so the switcher is not\n  drawn inside its own preview.";
+/// Shown in the terminal view when the focused target's active pane is itself
+/// running xmux. Attaching it would draw the switcher inside its own terminal
+/// view (an infinite overlay); the note stands in for that suppressed view.
+const TERMINAL_VIEW_SELF_NOTE: &str = "  This pane is running xmux.\n\n  Live view hidden here so xmux is not\n  attached inside its own terminal view.";
 
 /// A fully-populated snapshot of the reachable environment.
 #[derive(Clone, Default)]
@@ -69,7 +62,6 @@ pub trait Ops: Send + Sync {
     async fn kill(&self, s: &Session) -> anyhow::Result<()>;
     async fn rename(&self, s: &Session, new_name: &str) -> anyhow::Result<()>;
     async fn panes(&self, s: &Session) -> anyhow::Result<Vec<WindowPanes>>;
-    async fn capture(&self, source: &str, target: &str) -> anyhow::Result<String>;
 }
 
 /// The outcome of one switcher run. `window >= 0` means attach with that window
@@ -191,11 +183,11 @@ impl Row {
     }
 }
 
-/// The preview target whose active pane attaching here would land on.
+/// The terminal-view target whose active pane attaching here would land on.
 #[derive(Clone, Default, PartialEq, Eq)]
-pub struct PreviewTarget {
+pub struct TerminalViewTarget {
     pub source: String,
-    pub target: String, // empty ⇒ no preview
+    pub target: String, // empty ⇒ no terminal view
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -241,21 +233,11 @@ pub struct Switcher {
     pending_kill: Option<Session>,
     flash: String,
 
-    preview_target: PreviewTarget,
-    preview_cache: HashMap<String, String>,
-    /// Capture-recency order of `preview_cache` keys (front = oldest) so the cache
-    /// can evict its least-recently-captured entry once it reaches the cap.
-    preview_cache_order: VecDeque<String>,
-    preview_text: String,
-    preview_title: String,
-    dialog: Option<String>,
-    /// Set when the preview target changes — the run loop's poller reads + clears
-    /// it to refresh immediately rather than waiting for the next tick.
-    poll_kick: bool,
+    terminal_view_target: TerminalViewTarget,
+    terminal_view_title: String,
     /// True when the focused target's active pane is itself running xmux, so a
-    /// capture would mirror this UI recursively. Set in `on_focus_changed`; gates
-    /// the capture ([`Switcher::preview_capturable`]) and swaps in a note.
-    preview_self: bool,
+    /// live attach would mirror this UI recursively. Set in `on_focus_changed`.
+    terminal_view_self_flag: bool,
 
     list_state: ListState,
     tree_inner: Rect,
@@ -284,14 +266,9 @@ impl Switcher {
             input: None,
             pending_kill: None,
             flash: String::new(),
-            preview_target: PreviewTarget::default(),
-            preview_cache: HashMap::new(),
-            preview_cache_order: VecDeque::new(),
-            preview_text: String::new(),
-            preview_title: " Preview ".into(),
-            dialog: None,
-            poll_kick: false,
-            preview_self: false,
+            terminal_view_target: TerminalViewTarget::default(),
+            terminal_view_title: " Terminal ".into(),
+            terminal_view_self_flag: false,
             list_state: ListState::default(),
             tree_inner: Rect::default(),
             show_help: false,
@@ -395,26 +372,18 @@ impl Switcher {
         self.exit
     }
 
-    pub fn preview_target(&self) -> PreviewTarget {
-        self.preview_target.clone()
+    pub fn terminal_view_target(&self) -> TerminalViewTarget {
+        self.terminal_view_target.clone()
     }
 
-    /// Takes the pending poll-kick flag (true once after the target changed).
-    pub fn take_poll_kick(&mut self) -> bool {
-        std::mem::take(&mut self.poll_kick)
+    pub fn terminal_view_self(&self) -> bool {
+        self.terminal_view_self_flag
     }
 
     /// Takes the pending rescan-kick flag (true once after seeding or an `r`
     /// re-scan) — the event loop spawns the streaming probes when it is set.
     pub fn take_rescan_kick(&mut self) -> bool {
         std::mem::take(&mut self.rescan_kick)
-    }
-
-    /// Whether the current preview target should be captured. False when there is
-    /// no target, or its active pane is running xmux (a self-overlay whose capture
-    /// would mirror this UI recursively).
-    pub fn preview_capturable(&self) -> bool {
-        !self.preview_target.target.is_empty() && !self.preview_self
     }
 
     // --- tree model ---------------------------------------------------------
@@ -640,24 +609,24 @@ impl Switcher {
             .map(|g| g.sessions[0].clone())
     }
 
-    fn target_for(&self, reference: &RowRef) -> PreviewTarget {
+    fn target_for(&self, reference: &RowRef) -> TerminalViewTarget {
         match reference {
             RowRef::Host { source, .. } => match self.first_session_of(source) {
-                Some(sess) => PreviewTarget {
+                Some(sess) => TerminalViewTarget {
                     source: sess.source,
                     target: sess.name,
                 },
-                None => PreviewTarget::default(),
+                None => TerminalViewTarget::default(),
             },
-            RowRef::Session(s) => PreviewTarget {
+            RowRef::Session(s) => TerminalViewTarget {
                 source: s.source.clone(),
                 target: s.name.clone(),
             },
-            RowRef::Window { sess, window } => PreviewTarget {
+            RowRef::Window { sess, window } => TerminalViewTarget {
                 source: sess.source.clone(),
                 target: format!("{}:{}", sess.name, window),
             },
-            RowRef::Pane | RowRef::Loading => PreviewTarget::default(),
+            RowRef::Pane | RowRef::Loading => TerminalViewTarget::default(),
         }
     }
 
@@ -688,25 +657,6 @@ impl Switcher {
         Some(&pane.command)
     }
 
-    /// Re-evaluates self-capture for the already-focused target once pane data
-    /// has streamed in. A target focused before its panes were known starts
-    /// capturable; this flips it to suppressed if the active pane turns out to be
-    /// running xmux, and back to capturable if not.
-    fn refresh_preview_self(&mut self) {
-        if self.preview_target.target.is_empty() {
-            return;
-        }
-        let is_self = self.focused_runs_xmux();
-        if is_self && !self.preview_self {
-            self.preview_self = true;
-            self.dialog = None;
-            self.preview_text = PREVIEW_SELF_NOTE.to_string();
-        } else if !is_self && self.preview_self {
-            self.preview_self = false;
-            self.poll_kick = true; // capture now that it is safe
-        }
-    }
-
     /// Whether the focused target's active pane is running xmux itself.
     fn focused_runs_xmux(&self) -> bool {
         self.current_ref()
@@ -717,90 +667,16 @@ impl Switcher {
     fn on_focus_changed(&mut self) {
         let tgt = match self.current_ref() {
             Some(r) => self.target_for(r),
-            None => PreviewTarget::default(),
+            None => TerminalViewTarget::default(),
         };
-        if tgt == self.preview_target {
-            // The cursor did not move, but streamed pane data may have arrived
-            // since this target was first focused — re-check self-capture so a
-            // pane that turns out to run xmux is suppressed (and vice versa).
-            self.refresh_preview_self();
-            return;
-        }
-        self.preview_target = tgt.clone();
+        self.terminal_view_target = tgt.clone();
         if tgt.target.is_empty() {
-            self.preview_title = " Preview ".into();
-            self.dialog = None;
-            self.preview_text.clear();
-            self.preview_self = false;
+            self.terminal_view_title = " Terminal ".into();
+            self.terminal_view_self_flag = false;
             return;
         }
-        self.preview_title = format!(" Preview · {} ", tgt.target);
-        // A pane already running xmux would capture this very switcher — show a
-        // note instead of recursing, and skip the capture (preview_capturable).
-        if self.focused_runs_xmux() {
-            self.preview_self = true;
-            self.dialog = None;
-            self.preview_text = PREVIEW_SELF_NOTE.to_string();
-            return;
-        }
-        self.preview_self = false;
-        let key = preview_key(&tgt);
-        if let Some(cached) = self.preview_cache.get(&key) {
-            // revisit: keep the cached render visible and float a reconnecting
-            // dialog over it; the poller refreshes and dismisses the dialog.
-            self.preview_text = cached.clone();
-            self.dialog = Some("⟳ reconnecting…".into());
-        } else {
-            // first visit: a loading dialog until the first capture lands.
-            self.preview_text.clear();
-            self.dialog = Some("⟳ loading preview…".into());
-        }
-        self.poll_kick = true;
-    }
-
-    /// Applies a freshly captured preview for `target` (called by the poller). If
-    /// the cursor is still on `target`, dismisses the dialog and shows it.
-    pub fn apply_capture(&mut self, target: &PreviewTarget, text: Option<String>) {
-        // A capture that was in flight before self-capture suppression engaged
-        // must not overwrite the self note for the now-current target.
-        if self.preview_self && *target == self.preview_target {
-            return;
-        }
-        match text {
-            Some(text) => {
-                self.cache_preview(preview_key(target), text.clone());
-                if *target == self.preview_target {
-                    self.dialog = None;
-                    self.preview_text = text;
-                }
-            }
-            None => {
-                if *target == self.preview_target {
-                    self.dialog = Some("preview unavailable".into());
-                }
-            }
-        }
-    }
-
-    /// Inserts (or refreshes) a preview into the bounded cache, evicting the
-    /// least-recently-captured entry once it exceeds [`PREVIEW_CACHE_CAP`].
-    fn cache_preview(&mut self, key: String, text: String) {
-        self.preview_cache_order.retain(|k| k != &key);
-        self.preview_cache_order.push_back(key.clone());
-        self.preview_cache.insert(key, text);
-        while self.preview_cache.len() > PREVIEW_CACHE_CAP {
-            match self.preview_cache_order.pop_front() {
-                Some(old) => {
-                    self.preview_cache.remove(&old);
-                }
-                None => break,
-            }
-        }
-    }
-
-    #[cfg(test)]
-    fn preview_cache_len(&self) -> usize {
-        self.preview_cache.len()
+        self.terminal_view_title = format!(" {} ", tgt.target);
+        self.terminal_view_self_flag = self.focused_runs_xmux();
     }
 
     // --- key handling -------------------------------------------------------
@@ -1196,7 +1072,7 @@ impl Switcher {
 
     // --- render -------------------------------------------------------------
 
-    pub fn render(&mut self, frame: &mut Frame) {
+    pub fn render(&mut self, frame: &mut Frame, grid: Option<&crate::proxy::screen::Grid>) {
         let area = frame.area();
         let input_h = if self.input.is_some() { 1 } else { 0 };
         let v = Layout::vertical([
@@ -1210,7 +1086,7 @@ impl Switcher {
         let mid =
             Layout::horizontal([Constraint::Length(TREE_WIDTH), Constraint::Min(0)]).split(v[1]);
         self.render_tree(frame, mid[0]);
-        self.render_preview(frame, mid[1]);
+        self.render_terminal_view(frame, mid[1], grid);
         if input_h == 1 {
             self.render_input(frame, v[2]);
         }
@@ -1269,23 +1145,22 @@ impl Switcher {
         frame.render_stateful_widget(list, area, &mut self.list_state);
     }
 
-    fn render_preview(&self, frame: &mut Frame, area: Rect) {
-        let block = Block::bordered().title(self.preview_title.clone());
+    fn render_terminal_view(&self, frame: &mut Frame, area: Rect, grid: Option<&crate::proxy::screen::Grid>) {
+        let block = Block::bordered().title(self.terminal_view_title.clone());
         let inner = block.inner(area);
         frame.render_widget(block, area);
-        frame.render_widget(Paragraph::new(ansi_to_text(&self.preview_text)), inner);
-
-        if let Some(msg) = &self.dialog {
-            let w = (msg.chars().count() as u16) + 4;
-            let h = 3;
-            let rect = centered_rect(w, h, inner);
-            frame.render_widget(Clear, rect);
-            frame.render_widget(
-                Paragraph::new(msg.clone())
-                    .centered()
-                    .block(Block::bordered()),
-                rect,
-            );
+        if self.terminal_view_self_flag {
+            frame.render_widget(Paragraph::new(TERMINAL_VIEW_SELF_NOTE), inner);
+            return;
+        }
+        match grid {
+            Some(g) => {
+                let buf = frame.buffer_mut();
+                g.render_into(buf, inner);
+            }
+            None => {
+                frame.render_widget(Paragraph::new("  (attaching…)").dim(), inner);
+            }
         }
     }
 
@@ -1401,10 +1276,6 @@ fn pad_label(s: &str) -> String {
     format!(" {s} ")
 }
 
-fn preview_key(t: &PreviewTarget) -> String {
-    format!("{}\u{0}{}", t.source, t.target)
-}
-
 /// Whether two row references target the same selectable node (host by source,
 /// session/window by address), used to keep the cursor across a re-scan.
 fn same_node(a: &RowRef, b: &RowRef) -> bool {
@@ -1497,9 +1368,6 @@ mod tests {
         async fn panes(&self, _s: &Session) -> anyhow::Result<Vec<WindowPanes>> {
             Ok(Vec::new())
         }
-        async fn capture(&self, _source: &str, _target: &str) -> anyhow::Result<String> {
-            Ok(String::new())
-        }
     }
 
     // --- headless harness ---------------------------------------------------
@@ -1576,7 +1444,7 @@ mod tests {
 
         fn draw(&mut self) {
             let sw = &mut self.sw;
-            self.term.draw(|f| sw.render(f)).unwrap();
+            self.term.draw(|f| sw.render(f, None)).unwrap();
         }
 
         async fn key(&mut self, code: KeyCode) {
@@ -1839,26 +1707,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preview_cache_is_bounded() {
-        // The preview cache is kept across rescans (stale-while-revalidate), so it
-        // must be bounded or it grows for the cockpit's whole life. Inserting far
-        // more than the cap must evict, never grow without limit.
-        let mut sw = Switcher::new(sample());
-        for i in 0..(PREVIEW_CACHE_CAP + 25) {
-            let tgt = PreviewTarget {
-                source: "local".into(),
-                target: format!("s{i}"),
-            };
-            sw.apply_capture(&tgt, Some(format!("text{i}")));
-        }
-        assert!(
-            sw.preview_cache_len() <= PREVIEW_CACHE_CAP,
-            "preview cache must stay bounded (len {})",
-            sw.preview_cache_len()
-        );
-    }
-
-    #[tokio::test]
     async fn from_cached_scan_shows_last_known_and_revalidates() {
         // A cached host shows its last-known sessions IMMEDIATELY (no scanning
         // skeleton) so reopening the picker is not a blank wait; an uncached host
@@ -1978,16 +1826,19 @@ mod tests {
             vec![sess("local", "editor", 1, false, 100)],
             None,
         );
-        // Before panes are known the focused session is capturable.
-        assert!(h.sw.preview_capturable(), "capturable before panes known");
+        // Before panes are known the self-flag is not set.
+        assert!(
+            !h.sw.terminal_view_self(),
+            "self-flag not set before panes are known"
+        );
         // Panes stream in and the focused session's active pane is running xmux.
         h.sw.apply_panes(
             "local/editor".into(),
             vec![win(1, "main", true, vec![pane(1, true, "xmux")])],
         );
         assert!(
-            !h.sw.preview_capturable(),
-            "self-capture must be suppressed once streamed panes reveal xmux"
+            h.sw.terminal_view_self(),
+            "self-flag must be set once streamed panes reveal xmux"
         );
     }
 
@@ -2075,7 +1926,7 @@ mod tests {
     async fn footer_fits_narrow_width() {
         let mut sw = Switcher::new(sample());
         let mut term = Terminal::new(TestBackend::new(30, 30)).unwrap();
-        term.draw(|f| sw.render(f)).unwrap();
+        term.draw(|f| sw.render(f, None)).unwrap();
         let buf = term.backend().buffer();
         let y = buf.area.height - 1;
         let mut footer = String::new();
@@ -2090,27 +1941,6 @@ mod tests {
         assert!(
             footer.contains("? help") && footer.contains("q quit"),
             "footer still offers help and quit hints:\n{footer:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn preview_target_follows_cursor() {
-        let mut h = Harness::new(sample());
-        h.key(KeyCode::Home).await;
-        assert!(matches!(h.sw.current_ref(), Some(RowRef::Host { .. })));
-        let t = h.sw.preview_target();
-        assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "editor"));
-
-        h.key(KeyCode::Down).await; // editor
-        let t = h.sw.preview_target();
-        assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "editor"));
-
-        h.key(KeyCode::Down).await; // window 1: shell
-        assert!(matches!(h.sw.current_ref(), Some(RowRef::Window { .. })));
-        let t = h.sw.preview_target();
-        assert_eq!(
-            (t.source.as_str(), t.target.as_str()),
-            ("local", "editor:1")
         );
     }
 
@@ -2401,61 +2231,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preview_shows_loading_until_fetched() {
-        let mut h = Harness::new(sample());
-        // inference preselected (first visit) ⇒ a loading dialog.
-        assert!(
-            h.sw.dialog
-                .as_deref()
-                .is_some_and(|d| d.contains("loading")),
-            "first visit should show loading dialog, got {:?}",
-            h.sw.dialog
-        );
-        h.key(KeyCode::Down).await; // → window 1: train (also first visit)
-        assert!(
-            h.sw.dialog
-                .as_deref()
-                .is_some_and(|d| d.contains("loading")),
-            "moving to a new node should show loading"
-        );
-    }
-
-    #[tokio::test]
-    async fn preview_reconnecting_on_revisit() {
-        let mut h = Harness::new(sample());
-        h.sw.preview_cache
-            .insert("jupiter00\u{0}inference".into(), "CACHED-CONTENT".into());
-        h.key(KeyCode::Down).await; // away (window 1: train)
-        h.key(KeyCode::Up).await; // back to inference (revisit)
-        assert_eq!(
-            h.sw.preview_text, "CACHED-CONTENT",
-            "revisit keeps cached content"
-        );
-        assert!(
-            h.sw.dialog
-                .as_deref()
-                .is_some_and(|d| d.contains("reconnecting")),
-            "revisit should float reconnecting dialog, got {:?}",
-            h.sw.dialog
-        );
-    }
-
-    #[tokio::test]
-    async fn preview_blank_on_host_without_session() {
-        let mut h = Harness::new(sample());
-        h.key(KeyCode::Down).await; // inference → window 1: train
-        h.key(KeyCode::Down).await; // → db-2 (unreachable, no session ⇒ no target)
-        assert!(
-            h.sw.dialog.is_none(),
-            "host with no session must not float a dialog"
-        );
-        assert!(
-            h.sw.preview_text.trim().is_empty(),
-            "host with no session clears preview"
-        );
-    }
-
-    #[tokio::test]
     async fn levels_have_distinct_colors() {
         let h = Harness::new(sample());
         assert_eq!(h.tree_fg_of("local"), Some(COLOR_HOST));
@@ -2531,10 +2306,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preview_suppressed_when_focused_pane_runs_xmux() {
-        // A pane already running xmux would, if captured, draw this very switcher
-        // inside its own preview — an infinite overlay. Focusing it must skip the
-        // capture and show a note instead.
+    async fn terminal_view_target_follows_cursor() {
+        let mut h = Harness::new(sample());
+        h.key(KeyCode::Home).await; // local host
+        let t = h.sw.terminal_view_target();
+        assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "editor"));
+        h.key(KeyCode::Down).await; // editor
+        let t = h.sw.terminal_view_target();
+        assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "editor"));
+    }
+
+    #[tokio::test]
+    async fn self_mirror_guard_suppresses_terminal_view() {
         let groups = vec![Group {
             source: "local".into(),
             err: None,
@@ -2546,44 +2329,31 @@ mod tests {
             vec![win(0, "xmux", true, vec![pane(0, true, "xmux")])],
         );
         let h = Harness::new(Scan { groups, panes });
-        // selfsess is the only session ⇒ preselected and previewed.
         assert!(
-            !h.sw.preview_capturable(),
-            "a pane running xmux must not be captured (would mirror the UI)"
+            h.sw.terminal_view_self(),
+            "a pane running xmux must be flagged self-mirror (no live attach)"
         );
         assert!(
-            h.text().contains("Preview hidden"),
-            "the preview must show a note, not the recursive overlay:\n{}",
+            h.text().contains("running xmux"),
+            "the terminal view shows the self note:\n{}",
             h.text()
-        );
-        assert!(
-            h.sw.dialog.is_none(),
-            "a suppressed preview floats no loading/reconnecting dialog"
         );
     }
 
     #[tokio::test]
-    async fn preview_captures_when_focused_pane_is_not_xmux() {
-        // A normal pane (a shell/editor) is the "original screen" the user wants
-        // to peek — it must still be captured and shown.
-        let groups = vec![Group {
-            source: "local".into(),
-            err: None,
-            sessions: vec![sess("local", "work", 1, true, 500)],
-        }];
-        let mut panes = HashMap::new();
-        panes.insert(
-            "local/work".to_string(),
-            vec![win(0, "shell", true, vec![pane(0, true, "vim")])],
-        );
-        let h = Harness::new(Scan { groups, panes });
+    async fn render_terminal_view_draws_live_grid() {
+        use crate::proxy::screen::Grid;
+        let mut h = Harness::new(sample());
+        h.key(KeyCode::Down).await; // a normal non-xmux pane
+        let mut g = Grid::new(28, 50);
+        g.feed(b"LIVE-GRID-CONTENT");
+        // Render with the live grid supplied.
+        let sw = &mut h.sw;
+        h.term.draw(|f| sw.render(f, Some(&g))).unwrap();
+        let out = buffer_text(h.term.backend().buffer());
         assert!(
-            h.sw.preview_capturable(),
-            "a normal pane must be captured so the original screen is shown"
-        );
-        assert!(
-            !h.text().contains("Preview hidden"),
-            "a normal pane must not be treated as a self-overlay"
+            out.contains("LIVE-GRID-CONTENT"),
+            "the terminal view renders the live grid's contents:\n{out}"
         );
     }
 }
