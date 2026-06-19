@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{Event, EventStream};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use futures::StreamExt;
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use ratatui::crossterm;
 use tokio::sync::mpsc;
 
@@ -97,6 +97,66 @@ fn pump_write(out: &std::io::Stdout, chunk: &[u8]) {
     let _ = lock.flush();
 }
 
+/// A command for the dedicated PTY control thread: bytes to write to the child,
+/// or a resize to apply to the master. The async runtime is single-threaded, so
+/// routing every blocking PTY write/resize through this channel keeps a slow
+/// child (e.g. a stalled ssh remote that drains input slowly) from freezing
+/// rendering, output streaming, and the picker hotkey on the event loop.
+enum PtyCmd {
+    Input(Vec<u8>),
+    Resize { cols: u16, rows: u16 },
+}
+
+/// The blocking PTY operations the control thread performs, behind a trait so
+/// [`pty_control_loop`] is unit-testable without a real ConPTY.
+trait PtySink {
+    fn write_input(&mut self, bytes: &[u8]);
+    fn resize(&mut self, cols: u16, rows: u16);
+}
+
+/// Drains `rx` on a dedicated OS thread, performing each command on `sink`, until
+/// the channel closes. Both the writes and the resizes run here — never on the
+/// async runtime — so neither can stall the event loop. Input bytes are written in
+/// arrival order: one ordered channel, one reader.
+///
+/// On channel close it returns; in `proxy_attach` the sink owns the master, so
+/// returning drops it here. Closing the ConPTY can block on Windows older than
+/// 24H2 (`ClosePseudoConsole` waits for clients to disconnect) — but only this
+/// control thread can stall on that, never the async runtime or `proxy_attach`'s
+/// return. In the common teardown path the output pump is still draining the read
+/// pipe, which lets the close complete.
+fn pty_control_loop(rx: std::sync::mpsc::Receiver<PtyCmd>, mut sink: impl PtySink) {
+    while let Ok(cmd) = rx.recv() {
+        match cmd {
+            PtyCmd::Input(bytes) => sink.write_input(&bytes),
+            PtyCmd::Resize { cols, rows } => sink.resize(cols, rows),
+        }
+    }
+}
+
+/// The real [`PtySink`]: owns the child's PTY writer and the master, so every
+/// blocking write/resize happens on the control thread, and the master is dropped
+/// there too when the channel closes at teardown.
+struct MasterSink {
+    writer: Box<dyn Write + Send>,
+    master: Box<dyn MasterPty + Send>,
+}
+
+impl PtySink for MasterSink {
+    fn write_input(&mut self, bytes: &[u8]) {
+        let _ = self.writer.write_all(bytes);
+        let _ = self.writer.flush();
+    }
+    fn resize(&mut self, cols: u16, rows: u16) {
+        let _ = self.master.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
+    }
+}
+
 /// The proxy's internal mode. The picker overlay is a self-contained inner loop
 /// (gated by `overlay_active`, not a mode), so there is no separate Picker state.
 #[derive(PartialEq, Clone, Copy)]
@@ -157,11 +217,35 @@ pub async fn proxy_attach(
     // ------------------------------------------------------------------
     // 2. Spin up the output pump on a dedicated thread.
     //    Proven pattern from tmp/pty-spike: bounded read loop on a thread,
-    //    NOT read_to_end (deadlocks on ConPTY). The thread is never joined
-    //    and the master is never dropped — both block on ConPTY.
+    //    NOT read_to_end (deadlocks on ConPTY). The pump thread is never joined;
+    //    the master lives on the control thread below and is dropped there.
     // ------------------------------------------------------------------
     let mut reader = pair.master.try_clone_reader()?;
-    let mut pty_writer = pair.master.take_writer()?;
+    let pty_writer = pair.master.take_writer()?;
+
+    // The dedicated PTY control thread: it owns the writer AND the master, so
+    // every blocking input write and ConPTY resize runs here, never on the
+    // single-threaded async runtime — a slow child draining input can no longer
+    // freeze rendering, streaming, or the picker hotkey. The event loop only
+    // `send`s commands, which never blocks. Same off-loop pattern as the output
+    // pump and the stdin reader.
+    //
+    // The channel is intentionally unbounded: a bounded `send` on a full queue
+    // would block the runtime thread again (the freeze this removes), so it is
+    // left to grow. Against a wedged child it grows only at human typing speed and
+    // every byte is delivered in order once the child drains. Resize shares this
+    // one FIFO with input so the child sees size changes in causal order with the
+    // keystroke stream.
+    let (pty_tx, pty_rx) = std::sync::mpsc::channel::<PtyCmd>();
+    std::thread::spawn(move || {
+        pty_control_loop(
+            pty_rx,
+            MasterSink {
+                writer: pty_writer,
+                master: pair.master,
+            },
+        )
+    });
 
     // overlay_active: when true the pump does not write to stdout (the picker
     // overlay owns the terminal). Task 6 sets true before drawing, false after
@@ -280,9 +364,8 @@ pub async fn proxy_attach(
                                     // Flush pending bytes first; the prefix+action
                                     // bytes themselves are NOT forwarded to the child.
                                     if !to_forward.is_empty() {
-                                        let _ = pty_writer.write_all(&to_forward);
-                                        let _ = pty_writer.flush();
-                                        to_forward.clear();
+                                        let _ = pty_tx
+                                            .send(PtyCmd::Input(std::mem::take(&mut to_forward)));
                                     }
                                     open_picker = true;
                                 }
@@ -290,20 +373,7 @@ pub async fn proxy_attach(
                         }
                     }
                     if !to_forward.is_empty() {
-                        let _ = pty_writer.write_all(&to_forward);
-                        let _ = pty_writer.flush();
-                    }
-                    // Tick the machine to flush an armed-but-timed-out prefix.
-                    let timed_out = machine.tick(Instant::now());
-                    let mut flush_bytes: Vec<u8> = Vec::new();
-                    for action in timed_out {
-                        if let InAction::Forward(b) = action {
-                            flush_bytes.extend_from_slice(&b);
-                        }
-                    }
-                    if !flush_bytes.is_empty() {
-                        let _ = pty_writer.write_all(&flush_bytes);
-                        let _ = pty_writer.flush();
+                        let _ = pty_tx.send(PtyCmd::Input(std::mem::take(&mut to_forward)));
                     }
 
                     // The hotkey fired: run the picker overlay. The proxy stays
@@ -348,12 +418,7 @@ pub async fn proxy_attach(
                                 Some(Ok(event)) = event_stream.next() => {
                                     if let Event::Resize(cols, rows) = event {
                                         grid.resize(rows, cols);
-                                        let _ = pair.master.resize(PtySize {
-                                            rows,
-                                            cols,
-                                            pixel_width: 0,
-                                            pixel_height: 0,
-                                        });
+                                        let _ = pty_tx.send(PtyCmd::Resize { cols, rows });
                                         let _ = pcmd_tx.send(Cmd::Resize(cols, rows)).await;
                                     }
                                 }
@@ -388,12 +453,7 @@ pub async fn proxy_attach(
             Some(Ok(event)) = event_stream.next() => {
                 if let Event::Resize(cols, rows) = event {
                     grid.resize(rows, cols);
-                    let _ = pair.master.resize(PtySize {
-                        rows,
-                        cols,
-                        pixel_width: 0,
-                        pixel_height: 0,
-                    });
+                    let _ = pty_tx.send(PtyCmd::Resize { cols, rows });
                 }
             }
 
@@ -406,13 +466,15 @@ pub async fn proxy_attach(
     }
 
     // ------------------------------------------------------------------
-    // 4. Teardown: kill the child.  Do NOT join the pump thread and do NOT
-    //    drop the master — both block on an outstanding ConPTY read that
-    //    never returns after the child exits.
+    // 4. Teardown: kill the child.  Do NOT join the pump thread — it blocks on
+    //    an outstanding ConPTY read that never returns after the child exits.
     // ------------------------------------------------------------------
     let _ = child.kill();
-    // Keep master alive; process exit (or the caller's drop) reaps the pump.
-    let _keep_master = pair.master;
+    // Drop the control-thread sender so that thread's recv ends and it returns,
+    // dropping the master there. The ConPTY close can block that control thread on
+    // pre-24H2 Windows, but never this runtime thread or proxy_attach's return —
+    // the cockpit re-attaches regardless.
+    drop(pty_tx);
 
     Ok(pick_result)
 }
@@ -507,6 +569,53 @@ mod tests {
         assert_eq!(parse_prefix(Some("C-Space")), 0x00);
         assert_eq!(parse_prefix(None), 0x07);
         assert_eq!(parse_prefix(Some("garbage")), 0x07);
+    }
+
+    // -- B1: PTY control thread ------------------------------------------
+    //
+    // The async runtime is single-threaded, so a blocking write to a slow child
+    // (or a blocking ConPTY resize) on the event loop freezes rendering, output
+    // streaming, and the picker hotkey. `pty_control_loop` moves those blocking
+    // ops onto a dedicated thread fed over a channel. This proves the loop writes
+    // input bytes IN ORDER, applies resizes, and exits cleanly when the channel
+    // closes (so teardown drops the master off the runtime thread).
+    #[test]
+    fn pty_control_loop_writes_in_order_resizes_and_exits() {
+        use std::sync::mpsc;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct MockSink {
+            writes: Arc<Mutex<Vec<u8>>>,
+            resizes: Arc<Mutex<Vec<(u16, u16)>>>,
+        }
+        impl PtySink for MockSink {
+            fn write_input(&mut self, bytes: &[u8]) {
+                self.writes.lock().unwrap().extend_from_slice(bytes);
+            }
+            fn resize(&mut self, cols: u16, rows: u16) {
+                self.resizes.lock().unwrap().push((cols, rows));
+            }
+        }
+
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let resizes = Arc::new(Mutex::new(Vec::new()));
+        let sink = MockSink {
+            writes: writes.clone(),
+            resizes: resizes.clone(),
+        };
+
+        let (tx, rx) = mpsc::channel::<PtyCmd>();
+        let handle = std::thread::spawn(move || pty_control_loop(rx, sink));
+
+        tx.send(PtyCmd::Input(b"ab".to_vec())).unwrap();
+        tx.send(PtyCmd::Resize { cols: 80, rows: 24 }).unwrap();
+        tx.send(PtyCmd::Input(b"cd".to_vec())).unwrap();
+        drop(tx); // closing the channel must end the loop so we can join
+
+        handle.join().expect("control loop must return on channel close");
+        assert_eq!(&*writes.lock().unwrap(), b"abcd", "input written in order");
+        assert_eq!(&*resizes.lock().unwrap(), &[(80, 24)], "resize applied");
     }
 
     // -- C1 regression: the pump must not hold the stdout lock -------------

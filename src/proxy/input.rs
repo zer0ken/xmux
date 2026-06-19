@@ -57,28 +57,28 @@ impl InputMachine {
                     vec![InAction::Forward(vec![byte])]
                 }
             }
-            State::Armed(_) => {
+            State::Armed(t) => {
+                // A stale prefix (older than the arm window) never captures the
+                // next key: disarm and reprocess the byte as if freshly Idle.
+                if now.duration_since(t) >= self.timeout {
+                    self.state = State::Idle;
+                    return self.feed(byte, now);
+                }
                 self.state = State::Idle;
                 if byte == self.action_key {
                     vec![InAction::OpenPicker]
                 } else if byte == self.prefix {
-                    vec![InAction::Forward(vec![self.prefix])] // double-tap → one literal
+                    // Double-tap → exactly one literal prefix to the child.
+                    vec![InAction::Forward(vec![self.prefix])]
                 } else {
-                    self.track_paste(byte);
-                    vec![InAction::Forward(vec![self.prefix, byte])]
+                    // Incomplete sequence: the prefix is NOT forwarded (that would
+                    // trigger the child app's own binding) and the unrecognised
+                    // follow-up key is swallowed — pressing the prefix entered
+                    // command mode.
+                    Vec::new()
                 }
             }
         }
-    }
-
-    pub fn tick(&mut self, now: Instant) -> Vec<InAction> {
-        if let State::Armed(t) = self.state {
-            if now.duration_since(t) >= self.timeout {
-                self.state = State::Idle;
-                return vec![InAction::Forward(vec![self.prefix])];
-            }
-        }
-        Vec::new()
     }
 }
 
@@ -118,20 +118,28 @@ mod tests {
     }
 
     #[test]
-    fn prefix_then_other_forwards_prefix_then_byte() {
+    fn prefix_then_other_is_swallowed() {
         let mut im = m();
         let t = Instant::now();
         assert!(im.feed(0x07, t).is_empty());
-        assert_eq!(fwd(&im.feed(b'x', t)), vec![0x07, b'x']);
+        let out = im.feed(b'x', t);
+        assert!(fwd(&out).is_empty(), "incomplete sequence forwards nothing");
+        assert!(!out.iter().any(|a| matches!(a, InAction::OpenPicker)));
     }
 
     #[test]
-    fn armed_prefix_times_out_to_literal() {
+    fn stale_prefix_reprocesses_next_key() {
         let mut im = m();
         let t = Instant::now();
         assert!(im.feed(0x07, t).is_empty());
-        let later = t + Duration::from_millis(401);
-        assert_eq!(fwd(&im.tick(later)), vec![0x07]);
+        let stale = t + Duration::from_millis(401);
+        // The stale prefix is dropped; the plain key is reprocessed and forwarded.
+        assert_eq!(fwd(&im.feed(b'a', stale)), vec![b'a']);
+        // A stale prefix must not arm the action key.
+        assert!(im.feed(0x07, t).is_empty());
+        let out = im.feed(b's', stale);
+        assert_eq!(fwd(&out), vec![b's']);
+        assert!(!out.iter().any(|a| matches!(a, InAction::OpenPicker)));
     }
 
     #[test]
