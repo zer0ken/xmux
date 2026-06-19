@@ -30,6 +30,7 @@ use crate::session::{Session, WindowPanes};
 use crate::ui::switcher::{run_op, OpResult, Ops, Scan, SwitchResult, Switcher};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
+const ANIM_INTERVAL: Duration = Duration::from_millis(33);
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// The cockpit's last-known scan, shared so the next picker open seeds from it
@@ -219,8 +220,6 @@ pub async fn event_loop<B: Backend>(
 where
     B::Error: std::error::Error + Send + Sync + 'static,
 {
-    let mut poll = tokio::time::interval(POLL_INTERVAL);
-    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut last_click: Option<(Instant, u16, u16)> = None;
 
     loop {
@@ -228,6 +227,13 @@ where
         // polled (the runtime is current-thread; spawned probes run at the await
         // below), so the first frame is instant.
         terminal.draw(|f| switcher.render(f, None))?;
+        let tick = if switcher.dwell_pending() {
+            ANIM_INTERVAL
+        } else {
+            POLL_INTERVAL
+        };
+        let mut anim = tokio::time::interval(tick);
+        anim.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         if switcher.should_exit() {
             break;
         }
@@ -277,7 +283,7 @@ where
                     Cmd::OpDone(result) => switcher.apply_op_result(result),
                 }
             }
-            _ = poll.tick() => {}
+            _ = anim.tick() => {}
         }
     }
     Ok(())

@@ -29,6 +29,9 @@ const COLOR_PANE: Color = Color::Cyan;
 /// render dim so pending state reads apart from settled content.
 const COLOR_HINT: Color = Color::DarkGray;
 
+/// How long the cursor must rest on an attachable row before xmux attaches it.
+pub const DWELL: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// Shown in the terminal view when the focused target's active pane is itself
 /// running xmux. Attaching it would draw the switcher inside its own terminal
 /// view (an infinite overlay); the note stands in for that suppressed view.
@@ -248,6 +251,14 @@ pub struct Switcher {
     /// A slow (network) action queued by the last keypress for the event loop to
     /// run off-loop. `None` unless a create/rename/kill is pending dispatch.
     pending_op: Option<PendingOp>,
+    /// When the cursor last settled on the current attachable target; `None` when
+    /// the current row is not an attach candidate.
+    dwell_start: Option<std::time::Instant>,
+    /// The target the current dwell would attach (its address), set with
+    /// `dwell_start`. Cleared once the attach is taken.
+    dwell_addr: Option<String>,
+    /// Addresses already attached (cap residents): no dwell bar, instant view.
+    attached: HashSet<String>,
 }
 
 impl Switcher {
@@ -275,6 +286,9 @@ impl Switcher {
             result: SwitchResult::default(),
             exit: false,
             pending_op: None,
+            dwell_start: None,
+            dwell_addr: None,
+            attached: HashSet::new(),
         }
     }
 
@@ -545,6 +559,7 @@ impl Switcher {
         self.selected = idx;
         self.list_state.select(Some(idx));
         self.on_focus_changed();
+        self.rearm_dwell();
     }
 
     fn move_selection(&mut self, delta: isize) {
@@ -677,6 +692,76 @@ impl Switcher {
         }
         self.terminal_view_title = format!(" {} ", tgt.target);
         self.terminal_view_self_flag = self.focused_runs_xmux();
+    }
+
+    /// The address the current row would attach, if it is an attachable, not-yet-
+    /// attached session. Window/host/pane/loading rows and already-attached sessions
+    /// are None — only session-level rows trigger the dwell auto-attach.
+    fn dwell_candidate(&self) -> Option<String> {
+        let addr = match self.current_ref()? {
+            RowRef::Session(s) => s.address(),
+            RowRef::Window { .. } | RowRef::Host { .. } | RowRef::Pane | RowRef::Loading => {
+                return None
+            }
+        };
+        if self.terminal_view_self_flag {
+            return None; // active pane runs xmux: self-mirror guard, no auto-attach
+        }
+        if self.attached.contains(&addr) {
+            return None; // already live; shown at once, no dwell
+        }
+        Some(addr)
+    }
+
+    fn rearm_dwell(&mut self) {
+        match self.dwell_candidate() {
+            Some(addr) => {
+                self.dwell_start = Some(std::time::Instant::now());
+                self.dwell_addr = Some(addr);
+            }
+            None => {
+                self.dwell_start = None;
+                self.dwell_addr = None;
+            }
+        }
+    }
+
+    pub fn dwell_pending(&self) -> bool {
+        self.dwell_start.is_some()
+    }
+
+    pub fn dwell_progress(&self, now: std::time::Instant) -> f32 {
+        match self.dwell_start {
+            Some(start) => {
+                let elapsed = now.saturating_duration_since(start).as_secs_f32();
+                (elapsed / DWELL.as_secs_f32()).clamp(0.0, 1.0)
+            }
+            None => 0.0,
+        }
+    }
+
+    pub fn note_attached(&mut self, addr: &str) {
+        self.attached.insert(addr.to_string());
+        // If the current dwell was for this addr, cancel it (now live).
+        if self.dwell_addr.as_deref() == Some(addr) {
+            self.dwell_start = None;
+            self.dwell_addr = None;
+        }
+    }
+
+    pub fn take_dwell_attach(&mut self, now: std::time::Instant) -> Option<TerminalViewTarget> {
+        if self.dwell_progress(now) < 1.0 {
+            return None;
+        }
+        let addr = self.dwell_addr.take()?;
+        self.dwell_start = None;
+        let tgt = self.terminal_view_target();
+        // Defend against a target/addr drift: only attach the dwell's own target.
+        if tgt.target.is_empty() {
+            return None;
+        }
+        self.note_attached(&addr);
+        Some(tgt)
     }
 
     // --- key handling -------------------------------------------------------
@@ -1143,6 +1228,21 @@ impl Switcher {
 
         let list = List::new(items).block(block);
         frame.render_stateful_widget(list, area, &mut self.list_state);
+
+        // Dwell progress: fill the selected row's background left→right.
+        if self.dwell_pending() {
+            let progress = self.dwell_progress(std::time::Instant::now());
+            if progress > 0.0 {
+                let buf = frame.buffer_mut();
+                let y = self.tree_inner.y + (self.selected as u16).saturating_sub(self.list_state.offset() as u16);
+                if y >= self.tree_inner.y && y < self.tree_inner.bottom() {
+                    let fill_w = ((self.tree_inner.width as f32) * progress) as u16;
+                    for x in self.tree_inner.x..(self.tree_inner.x + fill_w).min(self.tree_inner.right()) {
+                        buf[(x, y)].set_bg(Color::DarkGray);
+                    }
+                }
+            }
+        }
     }
 
     fn render_terminal_view(&self, frame: &mut Frame, area: Rect, grid: Option<&crate::proxy::screen::Grid>) {
@@ -2360,6 +2460,81 @@ mod tests {
         assert!(
             out.contains("LIVE-GRID-CONTENT"),
             "the terminal view renders the live grid's contents:\n{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dwell_completes_after_500ms_and_yields_attach() {
+        let mut h = Harness::new(sample());
+        // inference preselected (attachable, not yet attached).
+        let start = std::time::Instant::now();
+        assert!(h.sw.dwell_pending(), "an unattached focused session starts a dwell");
+        assert!(
+            h.sw.take_dwell_attach(start).is_none(),
+            "no attach before 500ms"
+        );
+        let done = start + std::time::Duration::from_millis(500);
+        let got = h.sw.take_dwell_attach(done).expect("dwell completes");
+        assert_eq!((got.source.as_str(), got.target.as_str()), ("jupiter00", "inference"));
+        // Taken once: a second call yields nothing until the cursor moves.
+        assert!(h.sw.take_dwell_attach(done).is_none());
+    }
+
+    #[tokio::test]
+    async fn already_attached_target_skips_dwell() {
+        let mut h = Harness::new(sample());
+        h.sw.note_attached("jupiter00/inference");
+        assert!(
+            !h.sw.dwell_pending(),
+            "an already-attached target shows live at once, no dwell bar"
+        );
+    }
+
+    #[tokio::test]
+    async fn cursor_move_resets_dwell() {
+        let mut h = Harness::new(sample());
+        let t0 = std::time::Instant::now();
+        let _ = h.sw.dwell_progress(t0);
+        h.key(KeyCode::Down).await; // move to inference's window
+        // After a move, progress restarts near 0 even well past 500ms from t0.
+        let later = t0 + std::time::Duration::from_millis(600);
+        assert!(
+            h.sw.dwell_progress(later) < 1.0,
+            "moving the cursor restarts the dwell window"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_attachable_row_has_no_dwell() {
+        let mut h = Harness::new(sample());
+        h.key(KeyCode::Down).await; // inference -> window
+        h.key(KeyCode::Down).await; // -> db-2 (unreachable host, no session target)
+        assert!(matches!(
+            h.sw.current_ref(),
+            Some(RowRef::Host { unreachable: true, .. })
+        ));
+        assert!(!h.sw.dwell_pending(), "an unreachable host row starts no dwell");
+    }
+
+    #[tokio::test]
+    async fn self_mirror_session_has_no_dwell() {
+        // A session whose active pane runs xmux must not auto-attach (infinite
+        // mirror); the terminal view shows the self note instead of a dwell bar.
+        let groups = vec![Group {
+            source: "local".into(),
+            err: None,
+            sessions: vec![sess("local", "selfsess", 1, true, 500)],
+        }];
+        let mut panes = HashMap::new();
+        panes.insert(
+            "local/selfsess".to_string(),
+            vec![win(0, "xmux", true, vec![pane(0, true, "xmux")])],
+        );
+        let h = Harness::new(Scan { groups, panes });
+        assert!(h.sw.terminal_view_self(), "fixture focuses the xmux session");
+        assert!(
+            !h.sw.dwell_pending(),
+            "a self-mirror session must not start a dwell/attach"
         );
     }
 }
