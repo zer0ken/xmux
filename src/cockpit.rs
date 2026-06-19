@@ -47,7 +47,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     };
 
     let size = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
-    let (cols, body_rows) = (size.0, size.1.saturating_sub(1)); // status bar = last row
+    let (mut cols, mut body_rows) = (size.0, size.1.saturating_sub(1)); // status bar = last row
 
     let live = LiveOwner::new();
     let (eof_tx, mut eof_rx) = tokio::sync::mpsc::unbounded_channel::<u64>();
@@ -152,6 +152,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 registry.reap(id);
                 if was_fg {
                     app.enter_overlay();
+                    switcher.clear_result();
                     let _ = term.clear();
                 }
             }
@@ -198,6 +199,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         // already Overlay). Clear + the next loop-top redraw overdraw
                         // any stray chunk the demoted foreground pump may have leaked.
                         app.enter_overlay();
+                        switcher.clear_result();
                         let _ = term.clear();
                     }
                 }
@@ -242,8 +244,19 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             Some(Ok(ev)) = event_stream.next() => {
                 if let ratatui::crossterm::event::Event::Resize(c, r) = ev {
                     let body = r.saturating_sub(1);
+                    cols = c;
+                    body_rows = body;
                     registry.resize_all(c, body);
                     let _ = term.resize(ratatui::layout::Rect::new(0, 0, c, r));
+                    // If in Passthrough, recompute the status bar at the new dimensions
+                    // and push it into the attachment so the owner pump re-emits it on
+                    // the child's next full-screen redraw. The loop MUST NOT write stdout
+                    // here — the foreground pump owns stdout in Passthrough.
+                    if let crate::proxy::app::AppState::Passthrough { fg, .. } = &app.state {
+                        let fg = fg.clone();
+                        let new_status = status_bar_bytes(&fg, registry.kept(), env.cfg.keep_cap(), cols, body_rows);
+                        registry.set_status_bar(&fg, new_status);
+                    }
                 }
             }
             _ = tokio::time::sleep(tick) => { /* wake to repaint dwell progress */ }
@@ -272,9 +285,17 @@ fn attach_into_registry(
         return None;
     }
     let argv = src.attach_command(&sess.name, None);
+    // Protect both the target itself and the address the Esc key returns to (the
+    // previous foreground). While in Overlay there is no Passthrough foreground to
+    // read directly, but prev_fg (esc_target) could be evicted by rapid navigation
+    // across ≥cap sessions, forcing a cold re-attach on Esc.
+    let esc_addr: Option<String> = app.esc_target().map(|(a, _)| a);
     let mut protect: Vec<&str> = vec![addr];
     if let crate::proxy::app::AppState::Passthrough { fg, .. } = &app.state {
         protect.push(fg.as_str());
+    }
+    if let Some(ref a) = esc_addr {
+        protect.push(a.as_str());
     }
     registry.ensure(addr, &argv, cols, rows, &protect).ok()
 }
@@ -425,5 +446,35 @@ mod tests {
         assert_eq!(addr, "local/work");
         app.enter_passthrough(addr, id, b"", b"");
         assert!(live.is_owner(1));
+    }
+
+    /// Verifies that the esc_target (prev_fg) address is included in the protect
+    /// list so a rapid dwell-driven attach while in Overlay cannot LRU-evict the
+    /// session the user will Esc back to.
+    #[test]
+    fn esc_target_included_in_protect_list() {
+        use crate::proxy::app::{App, AppState};
+        use crate::proxy::run::LiveOwner;
+
+        let live = LiveOwner::new();
+        let mut app = App::new(live);
+        // First passthrough: local/work (id 1) becomes the prev_fg after overlay.
+        app.enter_passthrough("local/work".into(), 1, b"", b"");
+        app.enter_overlay();
+        // Now in Overlay: esc_target() == Some(("local/work", 1)); no Passthrough.
+        assert!(matches!(app.state, AppState::Overlay));
+        let esc_addr = app.esc_target().map(|(a, _)| a);
+        assert_eq!(esc_addr.as_deref(), Some("local/work"));
+        // Build protect the same way attach_into_registry does — target + fg + esc.
+        let target = "jupiter06/api";
+        let mut protect: Vec<&str> = vec![target];
+        // No Passthrough foreground (we are in Overlay) — no fg push here.
+        if let Some(ref a) = esc_addr {
+            protect.push(a.as_str());
+        }
+        assert!(
+            protect.contains(&"local/work"),
+            "esc_target must be in protect so it is not LRU-evicted during Overlay navigation"
+        );
     }
 }
