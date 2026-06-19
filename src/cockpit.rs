@@ -351,7 +351,7 @@ impl Attacher for RealAttacher {
         }
         let argv = src.attach_command(&target.session.name, target.window);
         let cfg = proxy::run::ProxyConfig {
-            prefix: proxy::run::prefix_from_env(),
+            prefix: proxy::run::parse_prefix(Some(&self.env.ui_prefix)),
             action_key: b's',
         };
         match proxy::run::proxy_attach(&argv, self.ops.clone(), cfg, Some(self.cache.clone())).await

@@ -28,6 +28,7 @@ pub struct Env {
     pub srcs: Vec<Source>,
     pub by_alias: HashMap<String, Source>,
     pub local_bin: String,
+    pub ui_prefix: String,
     pub xmux_dir: PathBuf,
 }
 
@@ -75,6 +76,7 @@ pub fn build_env() -> (Env, Option<anyhow::Error>) {
     let srcs = source::build(&cfg, &aliases, os, &xmux_dir, local_socket);
     let by_alias = srcs.iter().map(|s| (s.alias.clone(), s.clone())).collect();
     let local_bin = cfg.local_bin(os);
+    let ui_prefix = cfg.ui_prefix().to_string();
     (
         Env {
             cfg,
@@ -82,6 +84,7 @@ pub fn build_env() -> (Env, Option<anyhow::Error>) {
             srcs,
             by_alias,
             local_bin,
+            ui_prefix,
             xmux_dir,
         },
         cfg_err,
@@ -228,8 +231,16 @@ impl Ops for EnvOps {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
     use crate::session::Session;
     use crate::source::{RunError, Runner};
+
+    #[test]
+    fn env_carries_configured_prefix() {
+        let mut cfg = Config::default();
+        cfg.ui.prefix = "C-a".into();
+        assert_eq!(cfg.ui_prefix(), "C-a");
+    }
 
     /// Returns canned list-sessions output, ignoring the command.
     struct StaticRunner(Vec<u8>);
@@ -276,6 +287,7 @@ mod tests {
             by_alias: [(src.alias.clone(), src.clone())].into_iter().collect(),
             srcs: vec![src],
             local_bin: "tmux".into(),
+            ui_prefix: "C-g".into(),
             xmux_dir: PathBuf::from("."),
         })
     }
@@ -347,6 +359,7 @@ mod tests {
             .into_iter()
             .collect(),
             local_bin: "tmux".into(),
+            ui_prefix: "C-g".into(),
             xmux_dir: PathBuf::from("."),
         });
         let ops = env.ops();

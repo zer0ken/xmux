@@ -82,10 +82,6 @@ pub fn parse_prefix(spec: Option<&str>) -> u8 {
     }
 }
 
-/// Read `XMUX_PREFIX` from the environment and parse it.
-pub fn prefix_from_env() -> u8 {
-    parse_prefix(std::env::var("XMUX_PREFIX").ok().as_deref())
-}
 
 /// Write one chunk to stdout, acquiring and releasing the process-global stdout
 /// lock within this call. Holding a `StdoutLock` across the pump's blocking read
@@ -566,9 +562,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prefix_from_env_parses_and_defaults() {
+    fn parse_prefix_recognises_specs_and_defaults() {
         assert_eq!(parse_prefix(Some("C-g")), 0x07);
         assert_eq!(parse_prefix(Some("C-Space")), 0x00);
+        assert_eq!(parse_prefix(Some("c-a")), 0x01);
         assert_eq!(parse_prefix(None), 0x07);
         assert_eq!(parse_prefix(Some("garbage")), 0x07);
     }
