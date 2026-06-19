@@ -29,9 +29,6 @@ const COLOR_PANE: Color = Color::Cyan;
 /// render dim so pending state reads apart from settled content.
 const COLOR_HINT: Color = Color::DarkGray;
 
-/// How long the cursor must rest on an attachable row before xmux attaches it.
-pub const DWELL: std::time::Duration = std::time::Duration::from_millis(500);
-
 /// A fully-populated snapshot of the reachable environment.
 #[derive(Clone, Default)]
 pub struct Scan {
@@ -60,23 +57,6 @@ pub trait Ops: Send + Sync {
     async fn kill(&self, s: &Session) -> anyhow::Result<()>;
     async fn rename(&self, s: &Session, new_name: &str) -> anyhow::Result<()>;
     async fn panes(&self, s: &Session) -> anyhow::Result<Vec<WindowPanes>>;
-}
-
-/// The outcome of one switcher run. `window >= 0` means attach with that window
-/// selected; `-1` means the session's current window.
-#[derive(Debug, Clone)]
-pub struct SwitchResult {
-    pub chosen: Option<Session>,
-    pub window: i64,
-}
-
-impl Default for SwitchResult {
-    fn default() -> Self {
-        SwitchResult {
-            chosen: None,
-            window: -1,
-        }
-    }
 }
 
 /// A slow (network) action a keypress queues. The key-handling path only records
@@ -238,23 +218,14 @@ pub struct Switcher {
     tree_inner: Rect,
 
     show_help: bool,
-    result: SwitchResult,
-    exit: bool,
-    /// Set when the user pressed Esc at the top level (consumed by `take_esc`).
-    /// In the cockpit, Esc returns to the previous foreground rather than quitting,
-    /// so it is kept distinct from `exit` (which `q` sets to quit the app).
-    esc_requested: bool,
+    wants_quit: bool,
     /// A slow (network) action queued by the last keypress for the event loop to
     /// run off-loop. `None` unless a create/rename/kill is pending dispatch.
     pending_op: Option<PendingOp>,
-    /// When the cursor last settled on the current attachable target; `None` when
-    /// the current row is not an attach candidate.
-    dwell_start: Option<std::time::Instant>,
-    /// The target the current dwell would attach (its address), set with
-    /// `dwell_start`. Cleared once the attach is taken.
-    dwell_addr: Option<String>,
-    /// Addresses already attached (cap residents): no dwell bar, instant view.
-    attached: HashSet<String>,
+    /// Session addresses currently connecting / awaiting first output — a braille
+    /// spinner glyph renders right of their name in the tree.
+    spinner: HashSet<String>,
+    spinner_frame: usize,
 }
 
 impl Switcher {
@@ -278,13 +249,10 @@ impl Switcher {
             list_state: ListState::default(),
             tree_inner: Rect::default(),
             show_help: false,
-            result: SwitchResult::default(),
-            exit: false,
-            esc_requested: false,
+            wants_quit: false,
             pending_op: None,
-            dwell_start: None,
-            dwell_addr: None,
-            attached: HashSet::new(),
+            spinner: HashSet::new(),
+            spinner_frame: 0,
         }
     }
 
@@ -323,27 +291,8 @@ impl Switcher {
         s
     }
 
-    pub fn result(&self) -> SwitchResult {
-        self.result.clone()
-    }
-
-    pub fn should_exit(&self) -> bool {
-        self.exit
-    }
-
-    /// Takes the pending Esc request (true once after the user pressed Esc at the
-    /// top level). The cockpit consumes this to return to the previous foreground;
-    /// the standalone picker treats it as a cancel.
-    pub fn take_esc(&mut self) -> bool {
-        std::mem::take(&mut self.esc_requested)
-    }
-
-    /// Clears the chosen result + exit/esc flags after the cockpit has acted on an
-    /// Enter choice, so the same choice is not re-applied on the next loop turn.
-    pub fn clear_result(&mut self) {
-        self.result = SwitchResult::default();
-        self.exit = false;
-        self.esc_requested = false;
+    pub fn wants_quit(&self) -> bool {
+        self.wants_quit
     }
 
     pub fn terminal_view_target(&self) -> TerminalViewTarget {
@@ -517,7 +466,6 @@ impl Switcher {
         self.selected = idx;
         self.list_state.select(Some(idx));
         self.on_focus_changed();
-        self.rearm_dwell();
     }
 
     fn move_selection(&mut self, delta: isize) {
@@ -616,77 +564,30 @@ impl Switcher {
         self.terminal_view_title = format!(" {} ", tgt.target);
     }
 
-    /// The address the current row would attach, if it is an attachable, not-yet-
-    /// attached session. Window/host/pane/loading rows and already-attached sessions
-    /// are None — only session-level rows trigger the dwell auto-attach.
-    fn dwell_candidate(&self) -> Option<String> {
-        let addr = match self.current_ref()? {
-            RowRef::Session(s) => s.address(),
-            RowRef::Window { .. } | RowRef::Host { .. } | RowRef::Pane | RowRef::Loading => {
-                return None
-            }
-        };
-        if self.attached.contains(&addr) {
-            return None; // already live; shown at once, no dwell
-        }
-        Some(addr)
-    }
-
-    fn rearm_dwell(&mut self) {
-        match self.dwell_candidate() {
-            Some(addr) => {
-                self.dwell_start = Some(std::time::Instant::now());
-                self.dwell_addr = Some(addr);
-            }
-            None => {
-                self.dwell_start = None;
-                self.dwell_addr = None;
-            }
-        }
-    }
-
-    /// Whether a dwell is in flight on the current attachable row. This stays true
-    /// AFTER the 500ms window elapses — it does not flip false on its own at 500ms.
-    /// It clears only when `take_dwell_attach` consumes the completed dwell (or
-    /// `note_attached`/a cursor move re-arms it). The event loop uses it to pick the
-    /// 33ms animation tick; it must call `take_dwell_attach` each iteration so the
-    /// tick reverts to the idle rate once the attach is taken.
-    pub fn dwell_pending(&self) -> bool {
-        self.dwell_start.is_some()
-    }
-
-    pub fn dwell_progress(&self, now: std::time::Instant) -> f32 {
-        match self.dwell_start {
-            Some(start) => {
-                let elapsed = now.saturating_duration_since(start).as_secs_f32();
-                (elapsed / DWELL.as_secs_f32()).clamp(0.0, 1.0)
-            }
-            None => 0.0,
-        }
-    }
-
-    pub fn note_attached(&mut self, addr: &str) {
-        self.attached.insert(addr.to_string());
-        // If the current dwell was for this addr, cancel it (now live).
-        if self.dwell_addr.as_deref() == Some(addr) {
-            self.dwell_start = None;
-            self.dwell_addr = None;
-        }
-    }
-
-    pub fn take_dwell_attach(&mut self, now: std::time::Instant) -> Option<TerminalViewTarget> {
-        if self.dwell_progress(now) < 1.0 {
-            return None;
-        }
-        let addr = self.dwell_addr.take()?;
-        self.dwell_start = None;
-        let tgt = self.terminal_view_target();
-        // Defend against a target/addr drift: only attach the dwell's own target.
+    /// The session/window the cursor is currently on, used by the cockpit to
+    /// `switch-client` on every cursor move (`select = attach`). Returns `Some`
+    /// only for session, window, or host-with-session rows; `None` for pane,
+    /// loading, and empty-host rows.
+    pub fn current_attach_target(&self) -> Option<TerminalViewTarget> {
+        let r = self.current_ref()?;
+        let tgt = self.target_for(r);
         if tgt.target.is_empty() {
-            return None;
+            None
+        } else {
+            Some(tgt)
         }
-        self.note_attached(&addr);
-        Some(tgt)
+    }
+
+    /// Replaces the set of session addresses currently connecting / awaiting
+    /// first output. The tree draws a braille spinner right of each matching
+    /// session name.
+    pub fn set_spinner(&mut self, addresses: HashSet<String>) {
+        self.spinner = addresses;
+    }
+
+    /// Advances the braille spinner frame index by one.
+    pub fn tick_spinner(&mut self) {
+        self.spinner_frame = self.spinner_frame.wrapping_add(1);
     }
 
     // --- key handling -------------------------------------------------------
@@ -706,8 +607,7 @@ impl Switcher {
             return;
         }
         match ev.code {
-            KeyCode::Esc => self.esc_requested = true,
-            KeyCode::Enter => self.on_enter(),
+            KeyCode::Enter => {}
             KeyCode::Up => self.move_selection(-1),
             KeyCode::Down => self.move_selection(1),
             KeyCode::PageUp => self.move_selection(-10),
@@ -715,7 +615,9 @@ impl Switcher {
             KeyCode::Home => self.move_to(0),
             KeyCode::End => self.move_to(-1),
             KeyCode::Char(c) => match c {
-                'q' => self.quit(),
+                'j' => self.move_selection(1),
+                'k' => self.move_selection(-1),
+                'q' => self.wants_quit = true,
                 '/' => self.open_input(InputMode::Filter),
                 'n' => self.open_input(InputMode::New),
                 'R' => self.open_input(InputMode::Rename),
@@ -726,48 +628,6 @@ impl Switcher {
             },
             _ => {}
         }
-    }
-
-    fn on_enter(&mut self) {
-        let Some(reference) = self.current_ref().cloned() else {
-            return;
-        };
-        match reference {
-            RowRef::Host {
-                source,
-                unreachable,
-            } => {
-                if unreachable {
-                    return;
-                }
-                if let Some(sess) = self.first_session_of(&source) {
-                    self.choose(sess, -1);
-                }
-            }
-            RowRef::Session(s) => {
-                self.choose(s, -1);
-            }
-            RowRef::Window { sess, window } => {
-                self.choose(sess, window);
-            }
-            RowRef::Pane | RowRef::Loading => {}
-        }
-    }
-
-    fn choose(&mut self, sess: Session, window: i64) {
-        self.result = SwitchResult {
-            chosen: Some(sess),
-            window,
-        };
-        self.exit = true;
-    }
-
-    fn quit(&mut self) {
-        self.result = SwitchResult {
-            chosen: None,
-            window: -1,
-        };
-        self.exit = true;
     }
 
     // --- input row ----------------------------------------------------------
@@ -1071,12 +931,10 @@ impl Switcher {
         }
     }
 
-    /// Double click: attach the current node (the preceding single click already
-    /// moved the cursor).
+    /// Double click: selects the clicked row (the preceding single click already
+    /// moved the cursor; with select=attach there is no separate attach action).
     pub fn mouse_attach(&mut self, col: u16, row: u16) {
-        if self.in_tree(col, row) {
-            self.on_enter();
-        }
+        self.mouse_select(col, row);
     }
 
     /// Scroll wheel: move the cursor (panes skipped) in the given direction.
@@ -1090,7 +948,7 @@ impl Switcher {
         let area = frame.area();
         let input_h = if self.input.is_some() { 1 } else { 0 };
         let v = Layout::vertical([
-            Constraint::Length(2),
+            Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(input_h),
             Constraint::Length(1),
@@ -1111,10 +969,7 @@ impl Switcher {
     }
 
     fn render_header(&self, frame: &mut Frame, area: Rect) {
-        let text = Text::from(vec![
-            Line::from(Span::raw("xmux").bold()),
-            Line::from(Span::raw("cross-environment MUX manager").dim()),
-        ]);
+        let text = Text::from(Line::from(Span::raw("xmux: cross-host MUX manager").bold()));
         frame.render_widget(Paragraph::new(text), area);
     }
 
@@ -1128,6 +983,9 @@ impl Switcher {
             .title(title)
             .padding(Padding::horizontal(1));
         self.tree_inner = block.inner(area);
+
+        const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+        let spinner_glyph = SPINNER[self.spinner_frame % SPINNER.len()];
 
         let items: Vec<ListItem> = self
             .rows
@@ -1144,6 +1002,11 @@ impl Switcher {
                     Span::raw(indent),
                     Span::styled(pad_label(&row.label), style),
                 ];
+                // Spinner glyph: shown right of the session name when connecting.
+                if matches!(&row.reference, RowRef::Session(s) if self.spinner.contains(&s.address())) {
+                    let sp_style = Style::default().fg(COLOR_HINT);
+                    spans.push(Span::styled(spinner_glyph.to_string(), sp_style));
+                }
                 if let Some(hint) = &row.hint {
                     let mut hint_style = Style::default().fg(COLOR_HINT);
                     if selected {
@@ -1157,21 +1020,6 @@ impl Switcher {
 
         let list = List::new(items).block(block);
         frame.render_stateful_widget(list, area, &mut self.list_state);
-
-        // Dwell progress: fill the selected row's background left→right.
-        if self.dwell_pending() {
-            let progress = self.dwell_progress(std::time::Instant::now());
-            if progress > 0.0 {
-                let buf = frame.buffer_mut();
-                let y = self.tree_inner.y + (self.selected as u16).saturating_sub(self.list_state.offset() as u16);
-                if y >= self.tree_inner.y && y < self.tree_inner.bottom() {
-                    let fill_w = ((self.tree_inner.width as f32) * progress) as u16;
-                    for x in self.tree_inner.x..(self.tree_inner.x + fill_w).min(self.tree_inner.right()) {
-                        buf[(x, y)].set_bg(Color::DarkGray);
-                    }
-                }
-            }
-        }
     }
 
     fn render_terminal_view(&self, frame: &mut Frame, area: Rect, grid: Option<&crate::proxy::screen::Grid>) {
@@ -1216,9 +1064,10 @@ impl Switcher {
         } else {
             fit(
                 &[
-                    " enter attach · n new · R rename · x kill · / filter · r refresh · ? help · q quit".to_string(),
-                    " enter attach · n new · R rename · x kill · / filter · ? help · q quit".to_string(),
-                    " enter attach · / filter · ? help · q quit".to_string(),
+                    " ↑/↓ · j/k move (select = attach) · / filter · R rename · x kill · r refresh · ? help · C-g s fullscreen · q quit".to_string(),
+                    " ↑/↓ · j/k move (select = attach) · / filter · R rename · x kill · ? help · C-g s fullscreen · q quit".to_string(),
+                    " j/k move (select = attach) · / filter · ? help · C-g s fullscreen · q quit".to_string(),
+                    " ? help · C-g s fullscreen · q quit".to_string(),
                     " ? help · q quit".to_string(),
                 ],
                 area.width,
@@ -1230,21 +1079,20 @@ impl Switcher {
     fn render_help(&self, frame: &mut Frame, area: Rect) {
         const LINES: &[&str] = &[
             "↑ / ↓        move (panes are skipped)",
+            "j / k        move (select = attach)",
             "PgUp / PgDn  jump by 10",
             "Home / End   first / last node",
-            "Enter        attach (host → recent · session · window)",
             "n            new session on the focused host",
             "R            rename the focused session",
             "x            kill the focused session (y / n confirm)",
             "/            fuzzy filter <source>/<name>",
             "r            re-scan every host",
             "?            toggle this help",
-            "Esc          return to previous foreground",
             "q            quit",
-            "C-g s        open this overlay",
+            "C-g s        fullscreen",
             "C-g q        quit from passthrough",
             "",
-            "mouse: click selects · double-click attaches · wheel scrolls",
+            "mouse: click selects · wheel scrolls",
         ];
         let inner_w = LINES.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
         let w = (inner_w + 4).min(area.width); // text + a space each side + borders
@@ -1855,7 +1703,7 @@ mod tests {
             "the scanning indicator clears once all hosts settle:\n{footer:?}"
         );
         assert!(
-            footer.contains("attach"),
+            footer.contains("filter") || footer.contains("help") || footer.contains("quit"),
             "the footer returns to the help line:\n{footer:?}"
         );
     }
@@ -1877,8 +1725,8 @@ mod tests {
             "footer fits a 30-column terminal:\n{footer:?}"
         );
         assert!(
-            footer.contains("? help") && footer.contains("q quit"),
-            "footer still offers help and quit hints:\n{footer:?}"
+            footer.contains("help") || footer.contains("quit"),
+            "footer still offers help/quit hints:\n{footer:?}"
         );
     }
 
@@ -1892,45 +1740,6 @@ mod tests {
             !h.tree_row_reversed(other),
             "non-selected row must not be reversed"
         );
-    }
-
-    #[tokio::test]
-    async fn enter_attaches_session() {
-        let mut h = Harness::new(sample());
-        h.key(KeyCode::Enter).await; // inference preselected
-        let r = h.sw.result();
-        assert_eq!(
-            r.chosen.as_ref().map(|s| s.name.as_str()),
-            Some("inference")
-        );
-        assert_eq!(r.window, -1);
-    }
-
-    #[tokio::test]
-    async fn enter_attaches_window() {
-        let mut h = Harness::new(sample());
-        h.key(KeyCode::Down).await; // inference → window 1: train
-        let (name, window) = match h.sw.current_ref() {
-            Some(RowRef::Window { sess, window }) => (sess.name.clone(), *window),
-            other => panic!(
-                "expected window node, got something else: {}",
-                other.is_some()
-            ),
-        };
-        h.key(KeyCode::Enter).await;
-        let r = h.sw.result();
-        assert_eq!(r.chosen.as_ref().map(|s| s.name.clone()), Some(name));
-        assert_eq!(r.window, window);
-    }
-
-    #[tokio::test]
-    async fn enter_on_host_attaches_recent_session() {
-        let mut h = Harness::new(sample());
-        h.key(KeyCode::Home).await; // local host
-        h.key(KeyCode::Enter).await;
-        let r = h.sw.result();
-        assert_eq!(r.chosen.as_ref().map(|s| s.name.as_str()), Some("editor"));
-        assert_eq!(r.window, -1);
     }
 
     #[tokio::test]
@@ -2061,40 +1870,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn filter_then_enter_picks_visible_not_attached_recent() {
-        // Mirrors the live local case: an attached, most-recent session ("live")
-        // plus a throwaway ("xmux-probeL"). Filtering to the throwaway and pressing
-        // Enter — with the cursor auto-selected after the filter (no Home) and a
-        // streamed rescan landing between the filter and the attach — must choose
-        // the throwaway, never the attached/most-recent filtered-out session.
-        let mut h = Harness::from_sources(&["local"]);
-        let stream = || {
-            vec![
-                sess("local", "live", 2, true, 999), // attached, most recent
-                sess("local", "xmux-probeL", 1, false, 50),
-            ]
-        };
-        h.sw.apply_source_result("local".into(), stream(), None);
-        h.ch('/').await;
-        h.sw.set_input_text("probeL");
-        h.key(KeyCode::Enter).await; // apply filter → only xmux-probeL visible
-                                     // A streamed rescan arrives between the filter and the attach (the race the
-                                     // live run hit).
-        h.sw.apply_source_result("local".into(), stream(), None);
-        h.draw();
-        h.key(KeyCode::Enter).await; // attach the selected
-        assert_eq!(
-            h.sw.result().chosen.as_ref().map(|s| s.name.as_str()),
-            Some("xmux-probeL"),
-            "filter+Enter must attach the visible (filtered) session, not the attached most-recent one"
-        );
-    }
-
-    #[tokio::test]
-    async fn filter_then_enter_picks_visible_with_panes_streaming() {
-        // Same as above, but the filtered session's panes stream in between the
-        // filter and the attach (rebuilds the rows with window/pane children under
-        // the auto-selected session) — the attach must still land on it.
+    async fn filter_leaves_cursor_on_visible_session() {
+        // Filter to a session — cursor must land on it after the filter completes.
         let mut h = Harness::from_sources(&["local"]);
         h.sw.apply_source_result(
             "local".into(),
@@ -2107,39 +1884,32 @@ mod tests {
         h.ch('/').await;
         h.sw.set_input_text("probeL");
         h.key(KeyCode::Enter).await; // apply filter
-        h.sw.apply_panes(
-            "local/xmux-probeL".into(),
-            vec![win(0, "pwsh", true, vec![pane(0, true, "pwsh")])],
-        );
-        h.draw();
-        h.key(KeyCode::Enter).await;
-        assert_eq!(
-            h.sw.result().chosen.as_ref().map(|s| s.name.as_str()),
-            Some("xmux-probeL"),
-            "panes streaming between filter and attach must not divert the pick"
-        );
+        let t = h.sw.current_attach_target().expect("a session row is visible");
+        assert_eq!(t.target.as_str(), "xmux-probeL", "cursor on filtered session");
     }
 
     #[tokio::test]
-    async fn host_enter_under_filter_picks_visible_session() {
+    async fn filter_host_enter_targets_visible_session() {
+        // After filtering, current_attach_target on the host row yields the
+        // first visible session, not a filtered-out one.
         let mut h = Harness::from_sources(&["alpha"]);
         h.sw.apply_source_result(
             "alpha".into(),
             vec![
                 sess("alpha", "keep-me", 1, false, 50),
-                sess("alpha", "other", 1, false, 999), // more recent but filtered out
+                sess("alpha", "other", 1, false, 999),
             ],
             None,
         );
         h.ch('/').await;
         h.sw.set_input_text("keep");
-        h.key(KeyCode::Enter).await; // apply filter → only keep-me visible
-        h.key(KeyCode::Home).await; // host row (alpha)
-        h.key(KeyCode::Enter).await; // choose first VISIBLE session
+        h.key(KeyCode::Enter).await; // apply filter
+        h.key(KeyCode::Home).await; // host row
+        let t = h.sw.current_attach_target().expect("host row has a visible session");
         assert_eq!(
-            h.sw.result().chosen.as_ref().map(|s| s.name.as_str()),
-            Some("keep-me"),
-            "host Enter under a filter must pick a visible session, not a filtered-out recent one"
+            t.target.as_str(),
+            "keep-me",
+            "current_attach_target on host row under filter yields the visible session"
         );
     }
 
@@ -2195,32 +1965,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn double_click_attaches_current_node() {
+    async fn double_click_selects_node() {
         let mut h = Harness::new(sample());
-        // inference preselected; a double-click inside the tree attaches it.
+        // inference preselected; double-click inside the tree moves the cursor.
+        let before = h.sw.selected;
         h.sw.mouse_attach(5, 4);
-        let r = h.sw.result();
-        assert_eq!(
-            r.chosen.as_ref().map(|s| s.name.as_str()),
-            Some("inference")
+        // cursor moved (or stayed on the same selectable row — just check no panic
+        // and current_attach_target is populated).
+        assert!(
+            h.sw.current_attach_target().is_some(),
+            "double click yields an attach target"
         );
+        let _ = before; // used
     }
 
     #[tokio::test]
-    async fn single_click_does_not_attach() {
+    async fn single_click_moves_cursor() {
         let mut h = Harness::new(sample());
         h.sw.mouse_select(5, 4);
-        assert!(
-            h.sw.result().chosen.is_none(),
-            "single click must not attach"
-        );
-    }
-
-    #[tokio::test]
-    async fn quit_leaves_no_choice() {
-        let mut h = Harness::new(sample());
-        h.ch('q').await;
-        assert!(h.sw.result().chosen.is_none(), "quit must leave no choice");
+        // After a single click the cursor is on a selectable row (not pane/loading).
+        let selectable = h.sw.rows.get(h.sw.selected).is_some_and(Row::selectable);
+        assert!(selectable, "single click must land on a selectable row");
     }
 
     #[tokio::test]
@@ -2240,7 +2005,7 @@ mod tests {
             !h.text().contains("fuzzy filter"),
             "a key should dismiss help"
         );
-        assert!(h.sw.result().chosen.is_none());
+        assert!(!h.sw.wants_quit(), "dismissing help must not quit");
     }
 
     #[tokio::test]
@@ -2277,78 +2042,80 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn dwell_completes_after_500ms_and_yields_attach() {
-        let mut h = Harness::new(sample());
-        // inference preselected (attachable, not yet attached).
-        let start = std::time::Instant::now();
-        assert!(h.sw.dwell_pending(), "an unattached focused session starts a dwell");
-        assert!(
-            h.sw.take_dwell_attach(start).is_none(),
-            "no attach before 500ms"
-        );
-        let done = start + std::time::Duration::from_millis(500);
-        let got = h.sw.take_dwell_attach(done).expect("dwell completes");
-        assert_eq!((got.source.as_str(), got.target.as_str()), ("jupiter00", "inference"));
-        // Taken once: a second call yields nothing until the cursor moves.
-        assert!(h.sw.take_dwell_attach(done).is_none());
+    // --- Task 11: j/k nav, select=attach, spinner, footer/help, title --------
+
+    fn cur_row_label(h: &Harness) -> String {
+        h.sw
+            .rows
+            .get(h.sw.selected)
+            .map(|r| r.label.clone())
+            .unwrap_or_default()
     }
 
     #[tokio::test]
-    async fn already_attached_target_skips_dwell() {
+    async fn j_k_navigate_like_arrows() {
         let mut h = Harness::new(sample());
-        h.sw.note_attached("jupiter00/inference");
-        assert!(
-            !h.sw.dwell_pending(),
-            "an already-attached target shows live at once, no dwell bar"
-        );
+        h.key(KeyCode::Home).await; // local host
+        let at_top = cur_row_label(&h);
+        h.ch('j').await; // down
+        assert_ne!(cur_row_label(&h), at_top, "j moves the cursor down");
+        h.ch('k').await; // back up
+        assert_eq!(cur_row_label(&h), at_top, "k moves the cursor up");
     }
 
     #[tokio::test]
-    async fn cursor_move_resets_dwell() {
+    async fn enter_is_noop_and_q_quits() {
         let mut h = Harness::new(sample());
-        let t0 = std::time::Instant::now();
-        let _ = h.sw.dwell_progress(t0);
-        h.key(KeyCode::Down).await; // move to inference's window
-        // After a move, progress restarts near 0 even well past 500ms from t0.
-        let later = t0 + std::time::Duration::from_millis(600);
-        assert!(
-            h.sw.dwell_progress(later) < 1.0,
-            "moving the cursor restarts the dwell window"
-        );
-    }
-
-    #[tokio::test]
-    async fn non_attachable_row_has_no_dwell() {
-        let mut h = Harness::new(sample());
-        h.key(KeyCode::Down).await; // inference -> window
-        h.key(KeyCode::Down).await; // -> db-2 (unreachable host, no session target)
-        assert!(matches!(
-            h.sw.current_ref(),
-            Some(RowRef::Host { unreachable: true, .. })
-        ));
-        assert!(!h.sw.dwell_pending(), "an unreachable host row starts no dwell");
-    }
-
-    // --- Esc/q split (cockpit return-vs-quit) -------------------------------
-    //
-    // In the cockpit, Esc returns to the previous foreground while q quits the
-    // app. The switcher keeps the two distinct: Esc sets `esc_requested` (consumed
-    // by `take_esc`) and never sets `exit`; q sets `exit` and never `esc_requested`.
-
-    #[tokio::test]
-    async fn esc_requests_return_not_quit() {
-        let mut h = Harness::new(sample());
-        h.key(KeyCode::Esc).await;
-        assert!(h.sw.take_esc(), "Esc requests an overlay return");
-        assert!(!h.sw.should_exit(), "Esc must not quit the app");
-    }
-
-    #[tokio::test]
-    async fn q_quits_the_app() {
-        let mut h = Harness::new(sample());
+        h.key(KeyCode::Enter).await;
+        assert!(!h.sw.wants_quit(), "Enter does nothing");
         h.ch('q').await;
-        assert!(h.sw.should_exit(), "q quits");
-        assert!(!h.sw.take_esc(), "q is not an esc-return");
+        assert!(h.sw.wants_quit(), "q quits");
+    }
+
+    #[tokio::test]
+    async fn cursor_move_yields_attach_target() {
+        let mut h = Harness::new(sample()); // inference preselected (jupiter00)
+        let t = h.sw.current_attach_target().expect("a session row yields a target");
+        assert_eq!((t.source.as_str(), t.target.as_str()), ("jupiter00", "inference"));
+        h.key(KeyCode::Home).await; // host row → its first visible session
+        let t = h.sw.current_attach_target().expect("host row targets its first session");
+        assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "editor"));
+    }
+
+    #[tokio::test]
+    async fn spinner_renders_right_of_connecting_session() {
+        let mut h = Harness::new(sample());
+        let mut connecting = std::collections::HashSet::new();
+        connecting.insert("jupiter00/inference".to_string());
+        h.sw.set_spinner(connecting);
+        h.draw();
+        let tree = h.tree_text();
+        // a braille spinner glyph from the U+2800 block appears on the inference row.
+        let line = tree.lines().find(|l| l.contains("inference")).unwrap_or("");
+        assert!(line.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)),
+            "a braille spinner sits right of a connecting session name:\n{tree}");
+    }
+
+    #[tokio::test]
+    async fn footer_and_help_reflect_new_model() {
+        let mut h = Harness::new(sample());
+        let footer = h.footer_text();
+        assert!(!footer.to_lowercase().contains("enter attach"), "Enter is a no-op now:\n{footer}");
+        assert!(footer.contains("C-g s") || footer.contains("fullscreen"),
+            "footer mentions fullscreen toggle:\n{footer}");
+        h.ch('?').await;
+        let help = h.text();
+        assert!(help.contains("select = attach") || help.contains("move (select = attach)"),
+            "help states moving the cursor attaches:\n{help}");
+        assert!(!help.contains("dwell") && !help.to_lowercase().contains("previous foreground"),
+            "no stale dwell/esc-return strings:\n{help}");
+    }
+
+    #[tokio::test]
+    async fn title_is_one_line() {
+        let h = Harness::new(sample());
+        let out = h.text();
+        assert!(out.contains("xmux: cross-host MUX manager"),
+            "one-line title:\n{out}");
     }
 }

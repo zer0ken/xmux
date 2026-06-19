@@ -25,7 +25,6 @@ use crate::session::{Session, WindowPanes};
 use crate::ui::switcher::{run_op, OpResult, Ops, Switcher};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
-const ANIM_INTERVAL: Duration = Duration::from_millis(33);
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// A unit of work the event loop processes, from any source.
@@ -163,14 +162,10 @@ where
         // polled (the runtime is current-thread; spawned probes run at the await
         // below), so the first frame is instant.
         terminal.draw(|f| switcher.render(f, None))?;
-        let tick = if switcher.dwell_pending() {
-            ANIM_INTERVAL
-        } else {
-            POLL_INTERVAL
-        };
+        let tick = POLL_INTERVAL;
         let mut anim = tokio::time::interval(tick);
         anim.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        if switcher.should_exit() {
+        if switcher.wants_quit() {
             break;
         }
         // The seed (and each `r` re-scan) kicks one streaming probe per source.
@@ -188,7 +183,7 @@ where
                         // a cancel: no chosen session, exit the loop. The cockpit
                         // drives the switcher directly and consumes `take_esc` itself
                         // to return to its previous foreground instead of exiting.
-                        if switcher.take_esc() {
+                        if switcher.wants_quit() {
                             break;
                         }
                         // A create/rename/kill runs OFF the loop so a slow ssh
@@ -535,26 +530,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn event_loop_key_attaches_then_exits() {
-        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        let mut sw = Switcher::new(sample());
-        let (tx, rx) = mpsc::channel(16);
-        tx.send(Cmd::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)))
-            .await
-            .unwrap();
-        event_loop(&mut term, &mut sw, Arc::new(NoopOps), tx.clone(), rx)
-            .await
-            .unwrap();
-        assert_eq!(
-            sw.result().chosen.as_ref().map(|s| s.name.as_str()),
-            Some("editor")
-        );
-    }
-
-    #[tokio::test]
-    async fn event_loop_cancel_leaves_no_choice() {
-        // UC-3 / FR-B5: surveying the list and cancelling (q) leaves no chosen
-        // session — the current session is untouched.
+    async fn event_loop_q_exits() {
+        // q sets wants_quit and the event loop breaks.
         let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
         let mut sw = Switcher::new(sample());
         let (tx, rx) = mpsc::channel(16);
@@ -567,17 +544,30 @@ mod tests {
         event_loop(&mut term, &mut sw, Arc::new(NoopOps), tx.clone(), rx)
             .await
             .unwrap();
-        assert!(
-            sw.result().chosen.is_none(),
-            "cancel must leave no chosen session"
-        );
+        assert!(sw.wants_quit(), "q must set wants_quit");
     }
 
     #[tokio::test]
-    async fn event_loop_filter_then_enter_attaches_visible() {
-        // UC-4 / FR-B6, end-to-end through the live event loop: filter to one of
-        // several sessions, Enter applies the filter, Enter attaches the VISIBLE
-        // (filtered) session — never the attached/most-recent filtered-out one.
+    async fn event_loop_cancel_leaves_wants_quit() {
+        // Cancelling with q sets wants_quit on the switcher.
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut sw = Switcher::new(sample());
+        let (tx, rx) = mpsc::channel(16);
+        tx.send(Cmd::Key(KeyEvent::new(
+            KeyCode::Char('q'),
+            KeyModifiers::NONE,
+        )))
+        .await
+        .unwrap();
+        event_loop(&mut term, &mut sw, Arc::new(NoopOps), tx.clone(), rx)
+            .await
+            .unwrap();
+        assert!(sw.wants_quit(), "cancel must set wants_quit");
+    }
+
+    #[tokio::test]
+    async fn event_loop_filter_then_cursor_targets_visible() {
+        // Filter leaves the cursor on the visible session.
         let scan = Scan {
             groups: vec![Group {
                 source: "local".into(),
@@ -588,7 +578,7 @@ mod tests {
                         name: "editor".into(),
                         windows: 1,
                         attached: true,
-                        last_attached: 999, // most-recent + attached
+                        last_attached: 999,
                     },
                     Session {
                         source: "local".into(),
@@ -615,16 +605,20 @@ mod tests {
         tx.send(Cmd::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)))
             .await
             .unwrap(); // apply filter
-        tx.send(Cmd::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)))
-            .await
-            .unwrap(); // attach the filtered session
+        tx.send(Cmd::Key(KeyEvent::new(
+            KeyCode::Char('q'),
+            KeyModifiers::NONE,
+        )))
+        .await
+        .unwrap(); // exit
         event_loop(&mut term, &mut sw, Arc::new(NoopOps), tx.clone(), rx)
             .await
             .unwrap();
+        let t = sw.current_attach_target().expect("cursor on a session");
         assert_eq!(
-            sw.result().chosen.as_ref().map(|s| s.name.as_str()),
-            Some("build"),
-            "filter+Enter through the loop must attach the visible (filtered) session"
+            t.target.as_str(),
+            "build",
+            "filter leaves cursor on the visible (filtered) session"
         );
     }
 
@@ -712,7 +706,7 @@ mod tests {
         let tx2 = tx.clone();
         let loop_task = tokio::spawn(async move {
             event_loop(&mut term, &mut sw, ops, tx2, rx).await.unwrap();
-            sw.result()
+            sw.wants_quit()
         });
 
         let mut client = control::Client::dial(&sock).await.unwrap();
@@ -733,8 +727,8 @@ mod tests {
         // Quit so the loop exits.
         assert_eq!(client.do_cmd("key q").await.unwrap(), "ok");
 
-        let result = loop_task.await.unwrap();
-        assert!(result.chosen.is_none(), "quit must leave no choice");
+        let quit = loop_task.await.unwrap();
+        assert!(quit, "q must set wants_quit");
         drop(handle);
         let _ = std::fs::remove_dir_all(&dir);
     }

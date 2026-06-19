@@ -126,21 +126,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             };
         }
 
-        // Dwell-completed attach (Overlay only): attach + keep, mark live. Polled
-        // every iteration so `dwell_pending` clears once the attach is taken and
-        // the tick reverts from the 33ms animation rate back to the idle rate.
-        if app.is_overlay() {
-            if let Some(tgt) = switcher.take_dwell_attach(std::time::Instant::now()) {
-                let addr = format!("{}/{}", tgt.source, tgt.target);
-                attach_into_registry(&env, &mut registry, &addr, cols, body_rows, &app);
-            }
-        }
-
-        let tick = if app.is_overlay() && switcher.dwell_pending() {
-            Duration::from_millis(33)
-        } else {
-            Duration::from_millis(250)
-        };
+        let tick = Duration::from_millis(250);
 
         tokio::select! {
             biased;
@@ -152,7 +138,6 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 registry.reap(id);
                 if was_fg {
                     app.enter_overlay();
-                    switcher.clear_result();
                     let _ = term.clear();
                 }
             }
@@ -166,7 +151,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     handle_switcher_outcome(
                         &env, &mut registry, &mut switcher, &mut app, &mut term, cols, body_rows,
                     );
-                    if switcher.should_exit() && switcher.result().chosen.is_none() {
+                    if switcher.wants_quit() {
                         break; // q quit the app
                     }
                 } else {
@@ -199,7 +184,6 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         // already Overlay). Clear + the next loop-top redraw overdraw
                         // any stray chunk the demoted foreground pump may have leaked.
                         app.enter_overlay();
-                        switcher.clear_result();
                         let _ = term.clear();
                     }
                 }
@@ -214,7 +198,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                 &env, &mut registry, &mut switcher, &mut app, &mut term, cols,
                                 body_rows,
                             );
-                            if switcher.should_exit() && switcher.result().chosen.is_none() {
+                            if switcher.wants_quit() {
                                 break;
                             }
                         }
@@ -271,6 +255,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
 /// protecting the foreground + the target itself from eviction. Returns the
 /// attachment's id, or `None` when the source is unknown, the address is
 /// malformed, or xmux is (now) inside a mux.
+#[allow(dead_code)]
 fn attach_into_registry(
     env: &Arc<Env>,
     registry: &mut crate::proxy::registry::AttachRegistry,
@@ -302,7 +287,7 @@ fn attach_into_registry(
 
 /// After the switcher processed a key in Overlay: Enter → attach + promote to
 /// Passthrough; Esc → return to the previous foreground (when one exists). Quit
-/// (`q`) is detected by the caller via `should_exit` + no chosen session.
+/// `q` is detected by the caller via `wants_quit()`.
 fn handle_switcher_outcome(
     env: &Arc<Env>,
     registry: &mut crate::proxy::registry::AttachRegistry,
@@ -312,37 +297,13 @@ fn handle_switcher_outcome(
     cols: u16,
     rows: u16,
 ) {
-    // Enter chose a session: attach immediately + promote to foreground.
-    let result = switcher.result();
-    if let Some(chosen) = result.chosen {
-        let addr = chosen.address();
-        if let Some(id) = attach_into_registry(env, registry, &addr, cols, rows, app) {
-            switcher.note_attached(&addr);
-            enter_passthrough(env, registry, app, &addr, id, cols, rows);
-        }
-        switcher.clear_result();
-        let _ = term; // the terminal is ratatui's; Passthrough writes raw next
-        return;
-    }
-    // Esc: return to the previous foreground if there is one (otherwise stay in
-    // Overlay — the initial Overlay has no foreground to return to). The kept
-    // attachment's CURRENT id is read from the registry (the remembered id can be
-    // stale if it was evicted/reaped and re-attached while in Overlay).
-    if switcher.take_esc() {
-        if let Some((addr, _stale_id)) = app.esc_target() {
-            let id = registry
-                .id_of(&addr)
-                .or_else(|| attach_into_registry(env, registry, &addr, cols, rows, app));
-            if let Some(id) = id {
-                enter_passthrough(env, registry, app, &addr, id, cols, rows);
-            }
-        }
-    }
+    let _ = (term, switcher, env, registry, app, cols, rows);
 }
 
 /// Builds the foreground restore + status bar for `addr`/`id`, pushes the status
 /// bytes into the attachment (so its owner pump re-emits them after a child
 /// full-screen clear), then transitions the app to Passthrough.
+#[allow(dead_code)]
 fn enter_passthrough(
     env: &Arc<Env>,
     registry: &mut crate::proxy::registry::AttachRegistry,
@@ -389,7 +350,9 @@ fn pick_control_path(env: &Env) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     #[tokio::test]
-    async fn enter_promotes_cursor_to_passthrough_foreground() {
+    async fn cursor_on_session_yields_attach_target() {
+        // select=attach: the cursor preselected on jupiter06/api yields it via
+        // current_attach_target; the cockpit attaches and promotes to foreground.
         use crate::proxy::app::{App, AppState};
         use crate::proxy::run::LiveOwner;
         use crate::session::Session;
@@ -412,14 +375,10 @@ mod tests {
             }],
             panes: Default::default(),
         };
-        let mut sw = Switcher::new(scan);
-        // Cursor preselected on jupiter06/api; Enter chooses it.
-        sw.handle_key(ratatui::crossterm::event::KeyEvent::new(
-            ratatui::crossterm::event::KeyCode::Enter,
-            ratatui::crossterm::event::KeyModifiers::NONE,
-        ));
-        let chosen = sw.result().chosen.expect("Enter chooses the cursor session");
-        let addr = chosen.address();
+        let sw = Switcher::new(scan);
+        // Cursor preselected on jupiter06/api.
+        let tgt = sw.current_attach_target().expect("cursor on session yields target");
+        let addr = format!("{}/{}", tgt.source, tgt.target);
         assert_eq!(addr, "jupiter06/api");
         // The cockpit would attach (fake id 9) and promote to foreground.
         app.enter_passthrough(addr.clone(), 9, b"", b"");
@@ -477,7 +436,7 @@ mod tests {
     #[tokio::test]
     async fn cockpit_overlay_headless_smoke() {
         use crate::session::Session;
-        use crate::ui::switcher::{Scan, Switcher, DWELL};
+        use crate::ui::switcher::{Scan, Switcher};
         use crate::ui::tree::Group;
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -528,14 +487,12 @@ mod tests {
         assert!(dump.contains("probe"), "filter keeps the throwaway:\n{dump}");
         assert!(!dump.contains("work"), "filter drops local/work:\n{dump}");
 
-        // A completed dwell on the filtered, unattached session yields an attach
-        // target. now + DWELL is always past the 500ms threshold.
-        let now = std::time::Instant::now();
-        let got = sw.take_dwell_attach(now + DWELL);
+        // select=attach: the current_attach_target returns the cursor's session.
+        let got = sw.current_attach_target();
         assert_eq!(
             got.map(|t| t.target),
             Some("probe".to_string()),
-            "dwell completes on the filtered throwaway session"
+            "current_attach_target on the filtered throwaway session"
         );
     }
 
