@@ -10,8 +10,8 @@
 //! concern handled when the cockpit re-attaches (Task 7), not here.
 
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, EventStream};
@@ -98,7 +98,7 @@ fn pump_write(out: &std::io::Stdout, chunk: &[u8]) {
 /// routing every blocking PTY write/resize through this channel keeps a slow
 /// child (e.g. a stalled ssh remote that drains input slowly) from freezing
 /// rendering, output streaming, and the picker hotkey on the event loop.
-enum PtyCmd {
+pub enum PtyCmd {
     Input(Vec<u8>),
     Resize { cols: u16, rows: u16 },
 }
@@ -150,6 +150,218 @@ impl PtySink for MasterSink {
             pixel_width: 0,
             pixel_height: 0,
         });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LiveOwner — shared "who owns raw stdout" token
+// ---------------------------------------------------------------------------
+
+/// The sentinel value meaning ratatui owns the terminal; no pump writes stdout.
+const OVERLAY: u64 = u64::MAX;
+
+/// The single shared "who owns raw stdout" token. A pump writes stdout iff it is
+/// the current owner. The sentinel `OVERLAY` means ratatui owns stdout and NO
+/// pump writes. This generalizes the old `overlay_active: AtomicBool` to a
+/// per-Attachment owner check; exactly one writer touches real stdout at a time.
+#[derive(Clone)]
+pub struct LiveOwner(Arc<AtomicU64>);
+
+impl LiveOwner {
+    pub fn new() -> Self {
+        LiveOwner(Arc::new(AtomicU64::new(OVERLAY)))
+    }
+    /// Make Attachment `id` the foreground stdout owner (Passthrough).
+    pub fn set_owner(&self, id: u64) {
+        self.0.store(id, Ordering::Release);
+    }
+    /// Enter Overlay: no pump writes stdout (ratatui owns it).
+    pub fn set_overlay(&self) {
+        self.0.store(OVERLAY, Ordering::Release);
+    }
+    /// Whether Attachment `id` may write raw stdout right now.
+    pub fn is_owner(&self, id: u64) -> bool {
+        self.0.load(Ordering::Acquire) == id
+    }
+}
+
+impl Default for LiveOwner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Attachment — one kept live attach
+// ---------------------------------------------------------------------------
+
+/// One kept live attach: a ConPTY + attach child + dedicated control thread
+/// (owns writer+master) + output pump + a shared `Grid`. The pump feeds the grid
+/// always and writes raw stdout iff this attachment is the `LiveOwner`.
+pub struct Attachment {
+    pub grid: Arc<Mutex<Grid>>,
+    pub control_tx: std::sync::mpsc::Sender<PtyCmd>,
+    pub size: (u16, u16),
+    pub last_used: Instant,
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+    id: u64,
+}
+
+impl Attachment {
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+    /// Queue input bytes to the child (FIFO, off the loop).
+    pub fn input(&self, bytes: Vec<u8>) {
+        let _ = self.control_tx.send(PtyCmd::Input(bytes));
+    }
+    /// Queue a resize to the child PTY (off the loop) and resize the grid.
+    pub fn resize(&self, cols: u16, rows: u16) {
+        let _ = self.control_tx.send(PtyCmd::Resize { cols, rows });
+        if let Ok(mut g) = self.grid.lock() {
+            g.resize(rows, cols);
+        }
+    }
+    /// Tear down: kill the child, drop the control sender so the control thread
+    /// drops the master on ITS thread and exits. The pump exits on master EOF.
+    pub fn teardown(mut self) {
+        let _ = self.child.kill();
+        drop(self.control_tx);
+        // child + remaining fields drop here; the control thread owns the master.
+    }
+}
+
+/// Opens a PTY at `cols×rows`, spawns `argv` with mux nesting-guard env cleared,
+/// starts the control thread (owns writer+master) and the output pump (always
+/// feeds the grid; writes raw stdout iff `live.is_owner(id)`; sends `id` on
+/// `eof_tx` at master EOF so the registry can reap it).
+pub fn spawn_attachment(
+    argv: &[String],
+    cols: u16,
+    rows: u16,
+    id: u64,
+    live: LiveOwner,
+    stdout: std::io::Stdout,
+    eof_tx: tokio::sync::mpsc::UnboundedSender<u64>,
+) -> anyhow::Result<Attachment> {
+    anyhow::ensure!(!argv.is_empty(), "spawn_attachment: argv must not be empty");
+    let pty = native_pty_system();
+    let pair = pty.openpty(PtySize {
+        rows,
+        cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    })?;
+    let mut cmd = CommandBuilder::new(&argv[0]);
+    for arg in &argv[1..] {
+        cmd.arg(arg);
+    }
+    cmd.env_remove("PSMUX_SESSION");
+    cmd.env_remove("TMUX");
+    cmd.env_remove("TMUX_PANE");
+    let child = pair.slave.spawn_command(cmd)?;
+    drop(pair.slave);
+
+    let mut reader = pair.master.try_clone_reader()?;
+    let pty_writer = pair.master.take_writer()?;
+
+    let (control_tx, control_rx) = std::sync::mpsc::channel::<PtyCmd>();
+    std::thread::spawn(move || {
+        pty_control_loop(
+            control_rx,
+            MasterSink {
+                writer: pty_writer,
+                master: pair.master,
+            },
+        )
+    });
+
+    let grid = Arc::new(Mutex::new(Grid::new(rows, cols)));
+    let pump_grid = grid.clone();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let chunk = &buf[..n];
+                    if let Ok(mut g) = pump_grid.lock() {
+                        g.feed(chunk);
+                    }
+                    if live.is_owner(id) {
+                        pump_write(&stdout, chunk);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = eof_tx.send(id); // master EOF: ask the registry to reap us
+    });
+
+    Ok(Attachment {
+        grid,
+        control_tx,
+        size: (cols, rows),
+        last_used: Instant::now(),
+        child,
+        id,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Test-only helpers for Task 5's headless registry tests.
+// ---------------------------------------------------------------------------
+
+/// A fake `portable_pty::Child` for use in tests that need an `Attachment`
+/// without a real ConPTY.
+///
+/// `portable_pty::Child` in 0.9 requires `ChildKiller + Downcast + Send`.
+/// `Downcast` is satisfied by `downcast_rs`'s blanket impl for any `'static` type.
+/// `ChildKiller` requires `kill` + `clone_killer` (plus `Debug + Downcast + Send`).
+/// `Child` requires `try_wait`, `wait`, `process_id`, and (Windows) `as_raw_handle`.
+#[cfg(test)]
+#[derive(Debug)]
+pub struct DummyChild;
+
+#[cfg(test)]
+impl portable_pty::ChildKiller for DummyChild {
+    fn kill(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+        Box::new(DummyChild)
+    }
+}
+
+#[cfg(test)]
+impl portable_pty::Child for DummyChild {
+    fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+        Ok(Some(portable_pty::ExitStatus::with_exit_code(0)))
+    }
+    fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+        Ok(portable_pty::ExitStatus::with_exit_code(0))
+    }
+    fn process_id(&self) -> Option<u32> {
+        None
+    }
+    #[cfg(windows)]
+    fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+        None
+    }
+}
+
+/// Constructs an `Attachment` backed by a `DummyChild` and a no-op control
+/// channel. Used by Task 5's headless registry tests.
+#[cfg(test)]
+pub fn fake_attachment(id: u64) -> Attachment {
+    let (control_tx, _control_rx) = std::sync::mpsc::channel::<PtyCmd>();
+    Attachment {
+        grid: Arc::new(Mutex::new(Grid::new(24, 80))),
+        control_tx,
+        size: (80, 24),
+        last_used: Instant::now(),
+        child: Box::new(DummyChild),
+        id,
     }
 }
 
@@ -822,5 +1034,42 @@ mod tests {
             sw.result().chosen.is_none(),
             "a decoded Esc must cancel the picker with no chosen session"
         );
+    }
+
+    // -- Task 4: LiveOwner gate ----------------------------------------------
+
+    #[test]
+    fn live_owner_gates_by_id_and_overlay() {
+        let live = LiveOwner::new();
+        live.set_owner(7);
+        assert!(live.is_owner(7));
+        assert!(!live.is_owner(3), "a non-owner id must not write stdout");
+        live.set_overlay();
+        assert!(!live.is_owner(7), "in Overlay NO id is the owner");
+        assert!(!live.is_owner(3));
+        live.set_owner(3);
+        assert!(live.is_owner(3));
+        assert!(!live.is_owner(7));
+    }
+
+    // The full spawn_attachment path needs a real ConPTY (a console), so it is an
+    // #[ignore] smoke test driven on demand; the gate logic above is the headless
+    // unit. spawn_attachment is exercised live in Task 14.
+    #[ignore]
+    #[test]
+    fn spawn_attachment_feeds_grid_smoke() {
+        let live = LiveOwner::new();
+        live.set_overlay(); // do not write the test console's stdout
+        let (eof_tx, _eof_rx) = tokio::sync::mpsc::unbounded_channel::<u64>();
+        let argv: Vec<String> = vec!["cmd.exe".into()];
+        let att = spawn_attachment(&argv, 80, 24, 1, live, std::io::stdout(), eof_tx)
+            .expect("spawn");
+        att.input(b"echo SMOKE\r\n".to_vec());
+        std::thread::sleep(Duration::from_millis(800));
+        let g = att.grid.lock().unwrap();
+        let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 80, 24));
+        g.render_into(&mut buf, ratatui::layout::Rect::new(0, 0, 80, 24));
+        drop(g);
+        att.teardown();
     }
 }
