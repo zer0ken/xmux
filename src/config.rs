@@ -14,6 +14,8 @@ pub struct Config {
     pub hosts: Vec<HostConfig>,
     #[serde(default)]
     pub exclude: Vec<String>,
+    #[serde(default)]
+    pub ui: UiConfig,
 }
 
 /// Configures the mux used on the local machine.
@@ -21,6 +23,36 @@ pub struct Config {
 pub struct LocalConfig {
     #[serde(default)]
     pub mux: String,
+}
+
+/// The optional `[ui]` table: xmux's own prefix and the kept-attachment cap.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UiConfig {
+    /// xmux's prefix spec (e.g. `C-g`, `C-Space`), config-only like tmux's
+    /// `set -g prefix`. Parsed by `proxy::run::parse_prefix`.
+    #[serde(default = "default_prefix")]
+    pub prefix: String,
+    /// How many live Attachments to keep. Clamped to a minimum of 2 via
+    /// [`Config::keep_cap`] (must hold foreground + cursor).
+    #[serde(default = "default_keep_cap")]
+    pub keep_cap: usize,
+}
+
+fn default_prefix() -> String {
+    "C-g".to_string()
+}
+
+fn default_keep_cap() -> usize {
+    6
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        UiConfig {
+            prefix: default_prefix(),
+            keep_cap: default_keep_cap(),
+        }
+    }
 }
 
 /// Overrides the mux for a discovered ssh alias, or adds a host that ssh-config
@@ -82,6 +114,16 @@ impl Config {
             return "tmux".to_string();
         }
         self.local.mux.clone()
+    }
+
+    /// xmux's configured prefix spec.
+    pub fn ui_prefix(&self) -> &str {
+        &self.ui.prefix
+    }
+
+    /// The kept-attachment cap, clamped to a minimum of 2.
+    pub fn keep_cap(&self) -> usize {
+        self.ui.keep_cap.max(2)
     }
 
     /// Merges ssh-config discovery with the config file. Discovered aliases come
@@ -406,6 +448,58 @@ bogus = "nope"
             };
             assert_eq!(c.local_bin(os), want, "mux={mux:?} os={os:?}");
         }
+    }
+
+    #[test]
+    fn ui_table_defaults_and_overrides() {
+        // Missing [ui] → defaults: prefix "C-g", keep_cap 6.
+        let missing = std::env::temp_dir().join("xmux-ui-absent-xyz.toml");
+        let cfg = load(&missing).unwrap();
+        assert_eq!(cfg.ui_prefix(), "C-g");
+        assert_eq!(cfg.keep_cap(), 6);
+
+        // Explicit [ui] overrides both.
+        let path = write_temp(
+            r#"
+[ui]
+prefix = "C-Space"
+keep_cap = 10
+"#,
+            "ui-override.toml",
+        );
+        let cfg = load(&path).unwrap();
+        assert_eq!(cfg.ui_prefix(), "C-Space");
+        assert_eq!(cfg.keep_cap(), 10);
+    }
+
+    #[test]
+    fn ui_keep_cap_clamped_to_min_two() {
+        // keep_cap must hold foreground + cursor, so values below 2 clamp up to 2.
+        let path = write_temp(
+            r#"
+[ui]
+keep_cap = 1
+"#,
+            "ui-clamp.toml",
+        );
+        let cfg = load(&path).unwrap();
+        assert_eq!(cfg.keep_cap(), 2, "keep_cap below 2 must clamp to 2");
+    }
+
+    #[test]
+    fn ui_unknown_key_still_warns() {
+        // serde_ignored must still surface a typo'd key under [ui].
+        let path = write_temp(
+            r#"
+[ui]
+keep_cap = 6
+bogus = "nope"
+"#,
+            "ui-unknown.toml",
+        );
+        let (cfg, warnings) = load_verbose(&path).unwrap();
+        assert_eq!(cfg.keep_cap(), 6);
+        assert_eq!(warnings, vec![r#"unknown key "ui.bogus""#.to_string()]);
     }
 
     #[test]
