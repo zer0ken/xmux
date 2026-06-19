@@ -73,13 +73,6 @@ pub fn window_target(session: &str, window: i64) -> String {
     format!("{session}:{window}")
 }
 
-/// Prints the visible content of the target pane (a pane, or the active pane of
-/// a window/session target) to stdout — the preview source. `-e` includes the
-/// pane's ANSI colour escapes so the preview reproduces its colours.
-pub fn capture_pane(bin: &str, target: &str) -> Vec<String> {
-    argv(&[bin, "capture-pane", "-p", "-e", "-t", target])
-}
-
 /// Makes the target window active in its session.
 pub fn select_window(bin: &str, target: &str) -> Vec<String> {
     argv(&[bin, "select-window", "-t", target])
@@ -306,14 +299,6 @@ mod tests {
     #[test]
     fn target_builders() {
         assert_eq!(window_target("editor", 2), "editor:2");
-    }
-
-    #[test]
-    fn capture_pane_argv() {
-        assert_eq!(
-            capture_pane("psmux", "editor:1.0"),
-            sv(&["psmux", "capture-pane", "-p", "-e", "-t", "editor:1.0"])
-        );
     }
 
     #[test]

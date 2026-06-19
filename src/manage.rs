@@ -34,14 +34,6 @@ pub async fn panes(s: &Source, name: &str) -> Result<Vec<WindowPanes>, RunError>
     Ok(mux::parse_panes(&String::from_utf8_lossy(&out)))
 }
 
-/// Returns the visible content of a target pane (a `"session"`,
-/// `"session:window"`, or `"session:window.pane"` target) — the live preview
-/// source.
-pub async fn capture(s: &Source, target: &str) -> Result<String, RunError> {
-    let out = s.run(&mux::capture_pane(&s.binary, target)).await?;
-    Ok(String::from_utf8_lossy(&out).into_owned())
-}
-
 /// Makes a window active in its session (used before attach so the client lands
 /// on the chosen window).
 pub async fn select_window(s: &Source, sess: &str, window: i64) -> Result<(), RunError> {
@@ -186,19 +178,6 @@ mod tests {
     async fn panes_error_returns_err() {
         let fr = RecordingRunner::new("", true);
         assert!(panes(&local_source(fr), "x").await.is_err());
-    }
-
-    #[tokio::test]
-    async fn capture_targets() {
-        let fr = RecordingRunner::new("$ npm run dev\nReady\n", false);
-        let got = capture(&local_source(fr.clone()), "editor:1.0")
-            .await
-            .unwrap();
-        assert_eq!(got, "$ npm run dev\nReady\n");
-        assert_eq!(
-            fr.args(),
-            vec!["capture-pane", "-p", "-e", "-t", "editor:1.0"]
-        );
     }
 
     #[tokio::test]

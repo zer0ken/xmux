@@ -261,30 +261,6 @@ mod tests {
         }
     }
 
-    fn source_with(alias: &str, r: std::sync::Arc<dyn Runner>) -> Source {
-        Source {
-            alias: alias.into(),
-            binary: "tmux".into(),
-            remote: false,
-            control_path: String::new(),
-            os: "linux".into(),
-            socket: None,
-            runner: Some(r),
-        }
-    }
-
-    fn env_of(src: Source) -> Arc<Env> {
-        Arc::new(Env {
-            cfg: Config::default(),
-            cfg_warnings: Vec::new(),
-            by_alias: [(src.alias.clone(), src.clone())].into_iter().collect(),
-            srcs: vec![src],
-            local_bin: "tmux".into(),
-            ui_prefix: "C-g".into(),
-            xmux_dir: PathBuf::from("."),
-        })
-    }
-
     #[tokio::test]
     async fn list_sessions_probes_one_source() {
         // EnvOps::list_sessions probes a single source by alias, returning its

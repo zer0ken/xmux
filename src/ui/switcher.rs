@@ -2311,9 +2311,15 @@ mod tests {
         h.key(KeyCode::Home).await; // local host
         let t = h.sw.terminal_view_target();
         assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "editor"));
-        h.key(KeyCode::Down).await; // editor
+        h.key(KeyCode::Down).await; // editor session
         let t = h.sw.terminal_view_target();
         assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "editor"));
+        h.key(KeyCode::Down).await; // window 1 (shell) under editor
+        let t = h.sw.terminal_view_target();
+        assert_eq!(
+            (t.source.as_str(), t.target.as_str()),
+            ("local", "editor:1")
+        );
     }
 
     #[tokio::test]
