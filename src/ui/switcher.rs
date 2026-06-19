@@ -578,6 +578,14 @@ impl Switcher {
         }
     }
 
+    /// The host (source alias) the cursor is on, or `None` on a pane/loading row.
+    /// The cockpit ensures this host's control-mode client is connected on every
+    /// cursor move, so the host's `list-sessions` populates the tree even before
+    /// any session is selected (a control-mode client is the only session source).
+    pub fn current_host(&self) -> Option<String> {
+        self.current_source()
+    }
+
     /// Replaces the set of session addresses currently connecting / awaiting
     /// first output. The tree draws a braille spinner right of each matching
     /// session name.
@@ -2080,6 +2088,16 @@ mod tests {
         h.key(KeyCode::Home).await; // host row → its first visible session
         let t = h.sw.current_attach_target().expect("host row targets its first session");
         assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "editor"));
+    }
+
+    #[tokio::test]
+    async fn current_host_tracks_cursor_source() {
+        // The cockpit ensures this host on every move; a host row yields its source
+        // even when no session is selected, so the host's tree can be fetched.
+        let mut h = Harness::new(sample()); // inference preselected (jupiter00)
+        assert_eq!(h.sw.current_host().as_deref(), Some("jupiter00"));
+        h.key(KeyCode::Home).await; // jump to the local host row
+        assert_eq!(h.sw.current_host().as_deref(), Some("local"));
     }
 
     #[tokio::test]

@@ -43,6 +43,24 @@ fn select_attach(
     }
 }
 
+/// Connects the host the cursor is on (if not already), so its control-mode
+/// client's `list-sessions` streams that host's tree in. A control-mode client is
+/// the only source of a host's session list, so a host whose client is never
+/// spawned shows an empty skeleton; ensuring on cursor focus populates it lazily.
+fn ensure_current_host(
+    mgr: &mut HostManager,
+    env: &Env,
+    switcher: &crate::ui::switcher::Switcher,
+    cols: u16,
+    rows: u16,
+) {
+    if let Some(host) = switcher.current_host() {
+        if let Some(src) = env.by_alias.get(&host) {
+            let _ = mgr.ensure(&host, src, cols, rows);
+        }
+    }
+}
+
 /// The `xmux` (no subcommand) entry: the persistent cockpit. Owns the terminal,
 /// keeps a lazily-spawned control client per host, and lets the in-session overlay
 /// switch between them with no re-attach. It serves a picker control socket so a
@@ -225,6 +243,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         switcher.handle_key(key);
                     }
                     dispatch_pending_op(&mut switcher, &ops, &op_tx);
+                    ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows);
                     if let Some(tgt) = switcher.current_attach_target() {
                         select_attach(&mut mgr, &env, &tgt, cols, body_rows);
                     }
@@ -277,6 +296,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         // `xmux ctl key …` navigates + attaches headlessly.
                         switcher.handle_key(k);
                         dispatch_pending_op(&mut switcher, &ops, &op_tx);
+                        ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows);
                         if let Some(tgt) = switcher.current_attach_target() {
                             select_attach(&mut mgr, &env, &tgt, cols, body_rows);
                         }
