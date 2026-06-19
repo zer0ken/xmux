@@ -448,6 +448,97 @@ mod tests {
         assert!(live.is_owner(1));
     }
 
+    // =========================================================================
+    // Headless cockpit smoke: drives the SWITCHER half of the cockpit (Overlay
+    // tree paint, recency order, nav, filter, dwell completion) without a real
+    // PTY. Live attach + the raw passthrough screen handover are the human gate
+    // (see checklist below). Marked #[ignore] — run on demand:
+    //   cargo test -p xmux cockpit::tests::cockpit_overlay_headless_smoke -- --ignored --nocapture
+    //
+    // HUMAN VISUAL-GATE CHECKLIST (run in a REAL terminal — never headless):
+    // 1. Launch `xmux` (the cockpit) in a real terminal. Confirm it starts in
+    //    Overlay: sidebar tree on the left, terminal view on the right.
+    // 2. Cursor to `jupiter06/probe`. Hold still for ~500ms — confirm the
+    //    selected row's background fills left→right (dwell progress bar), then
+    //    the terminal view goes live once the 500ms elapses.
+    // 3. Press Enter — confirm the session promotes to full-screen Passthrough;
+    //    the last physical row shows the status bar
+    //    "jupiter06/probe · kept N/cap" in reverse-video.
+    // 4. Press the prefix (C-g) then `s` — confirm it returns to Overlay with
+    //    the previous foreground remembered. Press Esc — confirm it returns to
+    //    the jupiter06/probe Passthrough with no switch.
+    // 5. Press the prefix then `q` (or `q` in Overlay) — confirm a clean quit
+    //    and terminal restored to its previous state.
+    // 6. NEVER select or attach `local/xmux` (the live session) during this
+    //    test — only the throwaway `jupiter06`. Attaching the live session from
+    //    within itself would mirror xmux inside its own terminal view.
+    // =========================================================================
+    #[ignore]
+    #[tokio::test]
+    async fn cockpit_overlay_headless_smoke() {
+        use crate::session::Session;
+        use crate::ui::switcher::{Scan, Switcher, DWELL};
+        use crate::ui::tree::Group;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        // local pinned first by order_groups (LOCAL_SOURCE = "local"), even
+        // though jupiter06/probe has a higher last_attached (300 vs 50).
+        let scan = Scan {
+            groups: vec![
+                Group {
+                    source: "jupiter06".into(),
+                    err: None,
+                    sessions: vec![Session {
+                        source: "jupiter06".into(),
+                        name: "probe".into(),
+                        windows: 1,
+                        attached: false,
+                        last_attached: 300,
+                    }],
+                },
+                Group {
+                    source: "local".into(),
+                    err: None,
+                    sessions: vec![Session {
+                        source: "local".into(),
+                        name: "work".into(),
+                        windows: 1,
+                        attached: false,
+                        last_attached: 50,
+                    }],
+                },
+            ],
+            panes: Default::default(),
+        };
+        let mut sw = Switcher::new(scan);
+
+        // Ordering: local group pinned first (Task 10 ordering) even though
+        // jupiter06/probe is more recently attached.
+        let dump = crate::ui::run::dump_switcher(&mut sw, 100, 30);
+        let local_at = dump.find("local").expect("local present in dump");
+        let jup_at = dump.find("jupiter06").expect("jupiter06 present in dump");
+        assert!(local_at < jup_at, "local group pinned above remote:\n{dump}");
+
+        // Filter to "probe": opens the filter input (/), types the name, Enter applies.
+        for c in ['/', 'p', 'r', 'o', 'b', 'e'] {
+            sw.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        sw.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let dump = crate::ui::run::dump_switcher(&mut sw, 100, 30);
+        assert!(dump.contains("probe"), "filter keeps the throwaway:\n{dump}");
+        assert!(!dump.contains("work"), "filter drops local/work:\n{dump}");
+
+        // A completed dwell on the filtered, unattached session yields an attach
+        // target. now + DWELL is always past the 500ms threshold.
+        let now = std::time::Instant::now();
+        let got = sw.take_dwell_attach(now + DWELL);
+        assert_eq!(
+            got.map(|t| t.target),
+            Some("probe".to_string()),
+            "dwell completes on the filtered throwaway session"
+        );
+    }
+
     /// Verifies that the esc_target (prev_fg) address is included in the protect
     /// list so a rapid dwell-driven attach while in Overlay cannot LRU-evict the
     /// session the user will Esc back to.
