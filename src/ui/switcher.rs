@@ -32,11 +32,6 @@ const COLOR_HINT: Color = Color::DarkGray;
 /// How long the cursor must rest on an attachable row before xmux attaches it.
 pub const DWELL: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// Shown in the terminal view when the focused target's active pane is itself
-/// running xmux. Attaching it would draw the switcher inside its own terminal
-/// view (an infinite overlay); the note stands in for that suppressed view.
-const TERMINAL_VIEW_SELF_NOTE: &str = "  This pane is running xmux.\n\n  Live view hidden here so xmux is not\n  attached inside its own terminal view.";
-
 /// A fully-populated snapshot of the reachable environment.
 #[derive(Clone, Default)]
 pub struct Scan {
@@ -238,9 +233,6 @@ pub struct Switcher {
 
     terminal_view_target: TerminalViewTarget,
     terminal_view_title: String,
-    /// True when the focused target's active pane is itself running xmux, so a
-    /// live attach would mirror this UI recursively. Set in `on_focus_changed`.
-    terminal_view_self_flag: bool,
 
     list_state: ListState,
     tree_inner: Rect,
@@ -283,7 +275,6 @@ impl Switcher {
             flash: String::new(),
             terminal_view_target: TerminalViewTarget::default(),
             terminal_view_title: " Terminal ".into(),
-            terminal_view_self_flag: false,
             list_state: ListState::default(),
             tree_inner: Rect::default(),
             show_help: false,
@@ -357,10 +348,6 @@ impl Switcher {
 
     pub fn terminal_view_target(&self) -> TerminalViewTarget {
         self.terminal_view_target.clone()
-    }
-
-    pub fn terminal_view_self(&self) -> bool {
-        self.terminal_view_self_flag
     }
 
     /// Takes the pending rescan-kick flag (true once after seeding or an `r`
@@ -616,40 +603,6 @@ impl Switcher {
         }
     }
 
-    /// The current command of the active pane the focused target would capture,
-    /// from the already-fetched pane map. The active pane of a session target is
-    /// the active pane of its active window; of a window target, the active pane
-    /// of that window. `None` when the panes are not known.
-    fn focused_pane_command(&self, reference: &RowRef) -> Option<&str> {
-        let (address, window) = match reference {
-            RowRef::Session(s) => (s.address(), None),
-            RowRef::Window { sess, window } => (sess.address(), Some(*window)),
-            RowRef::Host { source, .. } => (self.first_session_of(source)?.address(), None),
-            RowRef::Pane | RowRef::Loading => return None,
-        };
-        let windows = self.panes.get(&address)?;
-        let win = match window {
-            Some(idx) => windows.iter().find(|w| w.index == idx)?,
-            None => windows
-                .iter()
-                .find(|w| w.active)
-                .or_else(|| windows.first())?,
-        };
-        let pane = win
-            .panes
-            .iter()
-            .find(|p| p.active)
-            .or_else(|| win.panes.first())?;
-        Some(&pane.command)
-    }
-
-    /// Whether the focused target's active pane is running xmux itself.
-    fn focused_runs_xmux(&self) -> bool {
-        self.current_ref()
-            .and_then(|r| self.focused_pane_command(r))
-            .is_some_and(command_is_xmux)
-    }
-
     fn on_focus_changed(&mut self) {
         let tgt = match self.current_ref() {
             Some(r) => self.target_for(r),
@@ -658,11 +611,9 @@ impl Switcher {
         self.terminal_view_target = tgt.clone();
         if tgt.target.is_empty() {
             self.terminal_view_title = " Terminal ".into();
-            self.terminal_view_self_flag = false;
             return;
         }
         self.terminal_view_title = format!(" {} ", tgt.target);
-        self.terminal_view_self_flag = self.focused_runs_xmux();
     }
 
     /// The address the current row would attach, if it is an attachable, not-yet-
@@ -675,9 +626,6 @@ impl Switcher {
                 return None
             }
         };
-        if self.terminal_view_self_flag {
-            return None; // active pane runs xmux: self-mirror guard, no auto-attach
-        }
         if self.attached.contains(&addr) {
             return None; // already live; shown at once, no dwell
         }
@@ -797,15 +745,9 @@ impl Switcher {
                 }
             }
             RowRef::Session(s) => {
-                if self.terminal_view_self_flag {
-                    return; // active pane runs xmux: self-mirror guard, no attach
-                }
                 self.choose(s, -1);
             }
             RowRef::Window { sess, window } => {
-                if self.terminal_view_self_flag {
-                    return; // active pane runs xmux: self-mirror guard, no attach
-                }
                 self.choose(sess, window);
             }
             RowRef::Pane | RowRef::Loading => {}
@@ -1236,10 +1178,6 @@ impl Switcher {
         let block = Block::bordered().title(self.terminal_view_title.clone());
         let inner = block.inner(area);
         frame.render_widget(block, area);
-        if self.terminal_view_self_flag {
-            frame.render_widget(Paragraph::new(TERMINAL_VIEW_SELF_NOTE), inner);
-            return;
-        }
         match grid {
             Some(g) => {
                 let buf = frame.buffer_mut();
@@ -1384,13 +1322,6 @@ fn same_node(a: &RowRef, b: &RowRef) -> bool {
         ) => x.address() == y.address() && wx == wy,
         _ => false,
     }
-}
-
-/// Whether `pane_current_command` names the xmux binary — so capturing that pane
-/// would mirror this UI. Matches the bare name and the Windows `.exe`.
-fn command_is_xmux(command: &str) -> bool {
-    let c = command.trim().to_ascii_lowercase();
-    c == "xmux" || c == "xmux.exe"
 }
 
 fn centered_rect(w: u16, h: u16, area: Rect) -> Rect {
@@ -1846,30 +1777,6 @@ mod tests {
         assert!(
             !out.contains("loading"),
             "the loading hint clears once panes arrive:\n{out}"
-        );
-    }
-
-    #[tokio::test]
-    async fn streamed_xmux_pane_suppresses_self_preview() {
-        let mut h = Harness::from_sources(&["local"]);
-        h.sw.apply_source_result(
-            "local".into(),
-            vec![sess("local", "editor", 1, false, 100)],
-            None,
-        );
-        // Before panes are known the self-flag is not set.
-        assert!(
-            !h.sw.terminal_view_self(),
-            "self-flag not set before panes are known"
-        );
-        // Panes stream in and the focused session's active pane is running xmux.
-        h.sw.apply_panes(
-            "local/editor".into(),
-            vec![win(1, "main", true, vec![pane(1, true, "xmux")])],
-        );
-        assert!(
-            h.sw.terminal_view_self(),
-            "self-flag must be set once streamed panes reveal xmux"
         );
     }
 
@@ -2354,30 +2261,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn self_mirror_guard_suppresses_terminal_view() {
-        let groups = vec![Group {
-            source: "local".into(),
-            err: None,
-            sessions: vec![sess("local", "selfsess", 1, true, 500)],
-        }];
-        let mut panes = HashMap::new();
-        panes.insert(
-            "local/selfsess".to_string(),
-            vec![win(0, "xmux", true, vec![pane(0, true, "xmux")])],
-        );
-        let h = Harness::new(Scan { groups, panes });
-        assert!(
-            h.sw.terminal_view_self(),
-            "a pane running xmux must be flagged self-mirror (no live attach)"
-        );
-        assert!(
-            h.text().contains("running xmux"),
-            "the terminal view shows the self note:\n{}",
-            h.text()
-        );
-    }
-
-    #[tokio::test]
     async fn render_terminal_view_draws_live_grid() {
         use crate::proxy::screen::Grid;
         let mut h = Harness::new(sample());
@@ -2445,56 +2328,6 @@ mod tests {
             Some(RowRef::Host { unreachable: true, .. })
         ));
         assert!(!h.sw.dwell_pending(), "an unreachable host row starts no dwell");
-    }
-
-    #[tokio::test]
-    async fn self_mirror_session_has_no_dwell() {
-        // A session whose active pane runs xmux must not auto-attach (infinite
-        // mirror); the terminal view shows the self note instead of a dwell bar.
-        let groups = vec![Group {
-            source: "local".into(),
-            err: None,
-            sessions: vec![sess("local", "selfsess", 1, true, 500)],
-        }];
-        let mut panes = HashMap::new();
-        panes.insert(
-            "local/selfsess".to_string(),
-            vec![win(0, "xmux", true, vec![pane(0, true, "xmux")])],
-        );
-        let h = Harness::new(Scan { groups, panes });
-        assert!(h.sw.terminal_view_self(), "fixture focuses the xmux session");
-        assert!(
-            !h.sw.dwell_pending(),
-            "a self-mirror session must not start a dwell/attach"
-        );
-    }
-
-    #[tokio::test]
-    async fn enter_on_self_mirror_does_not_choose() {
-        // A session whose active pane runs xmux must not be live-attached via
-        // Enter (infinite self-mirror). Enter on such a row must be a NO-OP:
-        // no chosen session, state unchanged.
-        let groups = vec![Group {
-            source: "local".into(),
-            err: None,
-            sessions: vec![sess("local", "selfsess", 1, true, 500)],
-        }];
-        let mut panes = HashMap::new();
-        panes.insert(
-            "local/selfsess".to_string(),
-            vec![win(0, "xmux", true, vec![pane(0, true, "xmux")])],
-        );
-        let mut h = Harness::new(Scan { groups, panes });
-        assert!(h.sw.terminal_view_self(), "fixture focuses the xmux session");
-        h.key(KeyCode::Enter).await;
-        assert!(
-            h.sw.result().chosen.is_none(),
-            "Enter on a self-mirror session must not choose/attach"
-        );
-        assert!(
-            !h.sw.should_exit(),
-            "Enter on a self-mirror session must not exit the switcher"
-        );
     }
 
     // --- Esc/q split (cockpit return-vs-quit) -------------------------------

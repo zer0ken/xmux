@@ -161,9 +161,10 @@ per-write `StdoutLock` (never hold it across a blocking op).
 - **Reap**: when a session's mux process exits, its pump hits EOF → the
   Attachment is removed from the registry; if it was the foreground, fall back
   to Overlay.
-- **Self-mirror guard**: before attaching, if the session's active pane command
-  is `xmux`, skip the live attach and show a note in the terminal view (extends
-  the current `preview_self` guard) — prevents infinite self-mirror.
+- **Self-mirror**: no guard is needed. `attach::nest_guard` refuses to start
+  xmux when `TMUX` is set, and xmux only previews tmux/psmux sessions (whose
+  panes always export `TMUX`). A previewable session's pane therefore cannot be
+  running xmux, so self-mirror is unreachable by construction.
 
 ## 4. Rendering
 
@@ -206,7 +207,7 @@ Visualizes the in-progress dwell on the cursor row in the sidebar.
 - On cursor move before completion: reset (fresh row).
 - Already-attached session (cap re-visit): no progress bar; the terminal view
   shows it immediately. The bar runs only when a real attach will occur.
-- Non-attachable rows (host header / self-mirror / loading): no animation.
+- Non-attachable rows (host header / loading): no animation.
 
 **Mechanics**: the event loop gains a short **animation tick (~33ms)** that is
 active **only while a dwell is pending** (idle otherwise — no wasted redraws).
@@ -311,9 +312,9 @@ Recency uses the existing server-reported `last_attached` (`session.rs`).
 - `src/proxy/screen.rs` — add the Grid→ratatui cell bridge + cursor accessor.
 - `src/proxy/input.rs` — extend prefix actions (`s` toggle, `q` quit).
 - `src/ui/switcher.rs` — terminal view (live `Grid` render) replaces the capture
-  snapshot; rename surviving `preview_*` identifiers to `terminal_view_*` (e.g.
-  the self-mirror guard); dwell progress animation; status-bar content; help
-  only in Overlay; remove `preview_cache`/capture state.
+  snapshot; rename surviving `preview_*` identifiers to `terminal_view_*`; dwell
+  progress animation; status-bar content; help only in Overlay; remove
+  `preview_cache`/capture state.
 - `src/ui/run.rs` — animation tick; integrate AppState/state machine; remove
   capture commands; keep streaming probes.
 - `src/source.rs` — reuse `attach_command`; uniform remote attach.
