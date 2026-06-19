@@ -11,11 +11,8 @@ use xmux::attach::{self, OsExecer};
 use xmux::cockpit;
 use xmux::control;
 use xmux::env::{self, ls_lines, Env};
-use xmux::manage;
-use xmux::mux;
 use xmux::session;
 use xmux::source::Source;
-use xmux::ui::run::run_switcher;
 
 #[derive(Parser)]
 #[command(
@@ -31,8 +28,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// In-mux switcher, bound via `display-popup -E "xmux popup"`.
-    Popup,
     /// List every reachable session (scriptable).
     Ls,
     /// Attach one session directly, e.g. `xmux attach prod/api`.
@@ -76,10 +71,6 @@ async fn run() -> i32 {
             Ok(env) => cockpit::run_cockpit(Arc::new(env)).await,
             Err(code) => code,
         },
-        Some(Command::Popup) => match interactive_env() {
-            Ok(env) => run_popup(Arc::new(env)).await,
-            Err(code) => code,
-        },
         Some(Command::Ls) => match interactive_env() {
             Ok(env) => run_ls(&env).await,
             Err(code) => code,
@@ -114,80 +105,6 @@ fn interactive_env() -> Result<Env, i32> {
         return Err(1);
     }
     Ok(env)
-}
-
-/// The in-mux switcher (bound via `display-popup -E "xmux popup"`). Same-server
-/// pick teleports (switch-client); cross-server detaches to the home loop. Exits
-/// after one action so the popup closes back onto the pane.
-async fn run_popup(env: Arc<Env>) -> i32 {
-    // The switcher paints host skeletons immediately and streams each source's
-    // sessions and panes in independently — nothing blocks the first frame.
-    // The popup is a one-shot process — no persistent cockpit to cache across, so
-    // it seeds fresh each time.
-    let result = match run_switcher(env.ops(), control_path(&env), None).await {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("xmux: {e}");
-            return 1;
-        }
-    };
-    let Some(chosen) = result.chosen else {
-        return 0;
-    };
-    let cockpit_sock = cockpit::read_cockpit_pointer(&env.xmux_dir);
-    match cockpit::decide_popup_action(&chosen, session::LOCAL_SOURCE, cockpit_sock.is_some()) {
-        cockpit::PopupAction::SwitchClient => {
-            // Same-server: switch-client repaints the existing client in place.
-            if result.window >= 0 {
-                if let Some(src) = env.by_alias.get(&chosen.source) {
-                    let _ = manage::select_window(src, &chosen.name, result.window).await;
-                }
-            }
-            let argv = mux::switch_client(&env.local_bin, &chosen.name);
-            if let Err(e) = attach::run_attach(&OsExecer, &argv) {
-                eprintln!("xmux: {e}");
-                return 1;
-            }
-            0
-        }
-        cockpit::PopupAction::SignalCockpit => {
-            // Cross-server: switch-client cannot cross mux servers. Signal the
-            // cockpit to re-attach the target (landing on the picked window), then
-            // detach this client — the cockpit regains the terminal and attaches
-            // with no picker between.
-            let sock = cockpit_sock.expect("SignalCockpit implies a pointer");
-            let window = (result.window >= 0).then_some(result.window);
-            match cockpit::signal_cockpit_switch(&sock, &chosen.address(), window).await {
-                Ok(true) => {
-                    let argv = mux::detach_client(&env.local_bin);
-                    if let Err(e) = attach::run_attach(&OsExecer, &argv) {
-                        eprintln!("xmux: {e}");
-                        return 1;
-                    }
-                    0
-                }
-                Ok(false) => {
-                    eprintln!("xmux: cockpit rejected the switch");
-                    1
-                }
-                Err(_) => {
-                    // The pointer named a dead cockpit (e.g. hard-killed): clear it
-                    // so the next popup takes the honest no-cockpit path at once.
-                    cockpit::remove_cockpit_pointer(&env.xmux_dir);
-                    eprintln!(
-                        "xmux: cross-host switch needs the xmux cockpit; start your terminal with `xmux`"
-                    );
-                    1
-                }
-            }
-        }
-        cockpit::PopupAction::NoCockpit => {
-            eprintln!(
-                "xmux: cross-host switch needs the xmux cockpit; start your terminal with `xmux`"
-            );
-            1
-        }
-    }
 }
 
 /// Prints every reachable session as one `<source>/<name>` line; dead sources go
@@ -265,17 +182,6 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
         }
     }
     0
-}
-
-/// The control socket path to serve for this session, unless `XMUX_CONTROL=0`
-/// disables it. A failure to create the dir or open the socket never breaks the
-/// UI (the switcher just runs without a control channel).
-fn control_path(env: &Env) -> Option<PathBuf> {
-    if std::env::var("XMUX_CONTROL").as_deref() == Ok("0") {
-        return None;
-    }
-    let _ = std::fs::create_dir_all(&env.xmux_dir);
-    Some(control::socket_path(&env.xmux_dir, std::process::id()))
 }
 
 /// Drives a running switcher over its control socket. With command args it sends

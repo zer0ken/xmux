@@ -1,6 +1,6 @@
 //! The cockpit: a persistent supervisor that owns the terminal, runs one
-//! mux-client child at a time, and serves a control socket so the in-mux popup
-//! can ask it to re-attach a session on another server — the cross-host switch.
+//! mux-client child at a time, and serves a control socket so in-attach overlay
+//! picks can signal a cross-host switch that re-attaches with no picker between.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -25,41 +25,6 @@ use crate::ui::run::{run_switcher, ScanCache};
 pub struct Target {
     pub session: Session,
     pub window: Option<i64>,
-}
-
-/// The single well-known pointer file naming the live cockpit's control socket.
-pub fn cockpit_pointer_path(xmux_dir: &Path) -> PathBuf {
-    xmux_dir.join("cockpit")
-}
-
-/// Records the cockpit socket path so the popup can find a live cockpit.
-pub fn write_cockpit_pointer(xmux_dir: &Path, socket_path: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(xmux_dir)?;
-    std::fs::write(
-        cockpit_pointer_path(xmux_dir),
-        socket_path.to_string_lossy().as_bytes(),
-    )
-}
-
-/// Reads the recorded cockpit socket path, if a pointer exists and is non-empty.
-/// Liveness is proven by dialing the socket, not by this read.
-pub fn read_cockpit_pointer(xmux_dir: &Path) -> Option<PathBuf> {
-    let s = std::fs::read_to_string(cockpit_pointer_path(xmux_dir)).ok()?;
-    let s = s.trim();
-    (!s.is_empty()).then(|| PathBuf::from(s))
-}
-
-/// Removes the pointer file (on cockpit exit).
-pub fn remove_cockpit_pointer(xmux_dir: &Path) {
-    let _ = std::fs::remove_file(cockpit_pointer_path(xmux_dir));
-}
-
-/// Removes the pointer only if it still names `sock`, so a sibling cockpit's
-/// pointer is not orphaned when this one exits.
-pub fn remove_cockpit_pointer_if_ours(xmux_dir: &Path, sock: &Path) {
-    if read_cockpit_pointer(xmux_dir).as_deref() == Some(sock) {
-        remove_cockpit_pointer(xmux_dir);
-    }
 }
 
 /// Appends a line to `~/.xmux/cockpit.log`. The cockpit cannot render UI between
@@ -112,32 +77,6 @@ fn parse_switch_arg(arg: &str) -> (Option<i64>, &str) {
             Err(_) => (None, arg),
         },
         None => (None, arg),
-    }
-}
-
-/// What the popup does with a pick.
-#[derive(Debug, PartialEq, Eq)]
-pub enum PopupAction {
-    /// Same-server pick: `switch-client` in place (instant).
-    SwitchClient,
-    /// Cross-server pick with a cockpit pointer present: signal it to re-attach.
-    SignalCockpit,
-    /// Cross-server pick with no cockpit pointer: cannot cross hosts from here.
-    NoCockpit,
-}
-
-/// Decides the popup action from the pick and whether a cockpit pointer exists.
-pub fn decide_popup_action(
-    chosen: &Session,
-    local_source: &str,
-    cockpit_available: bool,
-) -> PopupAction {
-    if chosen.source == local_source {
-        PopupAction::SwitchClient
-    } else if cockpit_available {
-        PopupAction::SignalCockpit
-    } else {
-        PopupAction::NoCockpit
     }
 }
 
@@ -219,20 +158,6 @@ pub async fn cockpit_loop(
     }
 }
 
-/// Tells the cockpit at `sock` to switch to `addr`, landing on `window` when set.
-/// Returns `Ok(true)` when the cockpit acks `ok`, `Ok(false)` on any other reply,
-/// `Err` if no cockpit answers. The wire form is `switch <window|-> <addr>`.
-pub async fn signal_cockpit_switch(
-    sock: &Path,
-    addr: &str,
-    window: Option<i64>,
-) -> anyhow::Result<bool> {
-    let w = window.map_or_else(|| "-".to_string(), |n| n.to_string());
-    let mut client = control::Client::dial(sock).await?;
-    let reply = client.do_cmd(&format!("switch {w} {addr}")).await?;
-    Ok(reply.trim() == "ok")
-}
-
 /// Tests whether a source alias is known to this cockpit (so `switch` to an
 /// unknown source is rejected).
 type KnownSource = Arc<dyn Fn(&str) -> bool + Send + Sync>;
@@ -269,22 +194,20 @@ async fn handle_cockpit_conn(conn: Stream, pending: Pending, known: KnownSource)
     }
 }
 
-/// A running cockpit socket: the accept task plus paths to clean up on drop.
+/// A running cockpit socket: the accept task plus the socket path to clean up on drop.
 struct CockpitHandle {
     task: tokio::task::JoinHandle<()>,
     sock: PathBuf,
-    xmux_dir: PathBuf,
 }
 impl Drop for CockpitHandle {
     fn drop(&mut self) {
         self.task.abort();
         let _ = std::fs::remove_file(&self.sock);
-        remove_cockpit_pointer_if_ours(&self.xmux_dir, &self.sock);
     }
 }
 
-/// Binds the cockpit socket, writes the pointer, and serves it. A bind failure
-/// returns `None` (the cockpit still runs; cross-host-from-popup is unavailable).
+/// Binds the cockpit socket and serves it. A bind failure returns `None` (the
+/// cockpit still runs; control-socket switching is unavailable).
 fn serve_cockpit(env: &Arc<Env>, sock: PathBuf, pending: Pending) -> Option<CockpitHandle> {
     let _ = std::fs::remove_file(&sock);
     let name = match control::endpoint_name(&sock) {
@@ -303,15 +226,10 @@ fn serve_cockpit(env: &Arc<Env>, sock: PathBuf, pending: Pending) -> Option<Cock
     };
     #[cfg(windows)]
     let _ = std::fs::write(&sock, b"");
-    let _ = write_cockpit_pointer(&env.xmux_dir, &sock);
     let known_keys: std::collections::HashSet<String> = env.by_alias.keys().cloned().collect();
     let known: KnownSource = Arc::new(move |s: &str| known_keys.contains(s));
     let task = tokio::spawn(cockpit_accept(listener, pending, known));
-    Some(CockpitHandle {
-        task,
-        sock,
-        xmux_dir: env.xmux_dir.clone(),
-    })
+    Some(CockpitHandle { task, sock })
 }
 
 /// The real terminal-handover attach. It runs the attach child under the PTY
@@ -459,32 +377,7 @@ fn pick_control_path(env: &Env) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use std::time::{Duration, Instant};
-
-    fn tmp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("xmux-cockpit-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        d
-    }
-
-    #[test]
-    fn pointer_round_trip_and_absent() {
-        let dir = tmp("ptr");
-        assert!(
-            read_cockpit_pointer(&dir).is_none(),
-            "absent pointer is None"
-        );
-        let sock = dir.join("cockpit-123.sock");
-        write_cockpit_pointer(&dir, &sock).unwrap();
-        assert_eq!(read_cockpit_pointer(&dir), Some(sock));
-        remove_cockpit_pointer(&dir);
-        assert!(
-            read_cockpit_pointer(&dir).is_none(),
-            "removed pointer is None"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 
     #[test]
     fn dispatch_switch_ping_and_errors() {
@@ -581,53 +474,6 @@ mod tests {
         assert!(!switch_is_fresh(at, at + Duration::from_secs(20), w));
         // A `now` earlier than `at` saturates to zero elapsed → still fresh.
         assert!(switch_is_fresh(at, at, w));
-    }
-
-    #[test]
-    fn pointer_removed_only_if_ours() {
-        let dir = tmp("ptr-ours");
-        let ours = dir.join("cockpit-111.sock");
-        let theirs = dir.join("cockpit-222.sock");
-        write_cockpit_pointer(&dir, &ours).unwrap();
-        // A different cockpit's exit must not clear our pointer.
-        remove_cockpit_pointer_if_ours(&dir, &theirs);
-        assert_eq!(read_cockpit_pointer(&dir), Some(ours.clone()));
-        // Our own exit clears it.
-        remove_cockpit_pointer_if_ours(&dir, &ours);
-        assert!(read_cockpit_pointer(&dir).is_none());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn popup_decision_table() {
-        use crate::session::{Session, LOCAL_SOURCE};
-        let local = Session {
-            source: LOCAL_SOURCE.into(),
-            name: "w".into(),
-            ..Default::default()
-        };
-        let remote = Session {
-            source: "jupiter06".into(),
-            name: "api".into(),
-            ..Default::default()
-        };
-
-        assert_eq!(
-            decide_popup_action(&local, LOCAL_SOURCE, false),
-            PopupAction::SwitchClient
-        );
-        assert_eq!(
-            decide_popup_action(&local, LOCAL_SOURCE, true),
-            PopupAction::SwitchClient
-        );
-        assert_eq!(
-            decide_popup_action(&remote, LOCAL_SOURCE, true),
-            PopupAction::SignalCockpit
-        );
-        assert_eq!(
-            decide_popup_action(&remote, LOCAL_SOURCE, false),
-            PopupAction::NoCockpit
-        );
     }
 
     fn target(source: &str, name: &str) -> Target {
@@ -859,41 +705,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[tokio::test]
-    async fn signal_cockpit_switch_acks_and_sets_pending() {
-        let dir = std::env::temp_dir().join(format!("xmux-cockpit-signal-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let sock = crate::control::cockpit_socket_path(&dir, std::process::id().wrapping_add(11));
-        let _ = std::fs::remove_file(&sock);
-        let name = crate::control::endpoint_name(&sock).unwrap();
-        let listener = ListenerOptions::new().name(name).create_tokio().unwrap();
-        #[cfg(windows)]
-        let _ = std::fs::write(&sock, b"");
-
-        let pending: Pending = Arc::new(Mutex::new(None));
-        let known: KnownSource = Arc::new(|s: &str| s == "jupiter06");
-        let task = tokio::spawn(cockpit_accept(listener, pending.clone(), known));
-
-        let ok = signal_cockpit_switch(&sock, "jupiter06/api", None)
-            .await
-            .unwrap();
-        assert!(ok, "a known target acks ok");
-        assert_eq!(
-            pending
-                .lock()
-                .unwrap()
-                .clone()
-                .unwrap()
-                .target
-                .session
-                .address(),
-            "jupiter06/api"
-        );
-
-        let rejected = signal_cockpit_switch(&sock, "nope/x", None).await.unwrap();
-        assert!(!rejected, "an unknown source is not ok");
-
-        task.abort();
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 }
