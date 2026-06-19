@@ -521,6 +521,19 @@ impl HostManager {
 }
 
 #[cfg(test)]
+impl HostManager {
+    /// Inserts a real no-op control child keyed by `host`, proving the map insert
+    /// without a live `-CC` server. `cmd.exe /c rem` spawns and exits immediately,
+    /// so its stdout EOFs at once and `teardown`'s joins return. Shared by the
+    /// `host` and `cockpit` test modules.
+    pub(crate) fn insert_fake(&mut self, host: &str) {
+        let argv: Vec<String> = ["cmd.exe", "/c", "rem"].iter().map(|s| s.to_string()).collect();
+        let client = HostClient::spawn(host, &argv, 80, 24, self.events.clone()).expect("spawn");
+        self.clients.insert(host.to_string(), client);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -678,17 +691,6 @@ mod tests {
         let client = HostClient::spawn("local", &argv, 80, 24, tx).expect("spawn");
         // echo exits immediately, closing pipes → teardown's joins return promptly.
         client.teardown();
-    }
-
-    impl HostManager {
-        /// Inserts a real no-op control child keyed by `host`, proving the map
-        /// insert without a live `-CC` server. `cmd.exe /c rem` spawns and exits
-        /// immediately, so its stdout EOFs at once and `teardown`'s joins return.
-        fn insert_fake(&mut self, host: &str) {
-            let argv: Vec<String> = ["cmd.exe", "/c", "rem"].iter().map(|s| s.to_string()).collect();
-            let client = HostClient::spawn(host, &argv, 80, 24, self.events.clone()).expect("spawn");
-            self.clients.insert(host.to_string(), client);
-        }
     }
 
     /// A constructible LOCAL `Source` whose `control_argv()` is valid (`cmd.exe`).

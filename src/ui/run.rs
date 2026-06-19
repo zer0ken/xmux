@@ -1,54 +1,28 @@
-//! The async event loop that runs the switcher: a tokio `select!` over a unified
-//! command channel (real terminal key/mouse events, control-channel injections,
-//! and streamed probe results) and a 1s idle-poll / animation tick. The core
-//! [`event_loop`] is backend-generic so it is driveable headlessly from both
-//! the cockpit and tests.
+//! The picker control socket: a per-pid local socket the headless driver dials to
+//! inject keys/text and dump the rendered switcher screen. Each request line is
+//! dispatched into the cockpit's command channel; the cockpit's `select!` loop
+//! folds the [`Cmd`]s in. The `dump_switcher` helper flattens a switcher render to
+//! text for the control channel's `dump` reply.
 
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use interprocess::local_socket::tokio::{Listener, Stream};
 use interprocess::local_socket::traits::tokio::Listener as _;
 use interprocess::local_socket::ListenerOptions;
-use ratatui::backend::{Backend, TestBackend};
-use ratatui::crossterm::event::{
-    KeyCode, KeyEvent,
-    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-};
+use ratatui::backend::TestBackend;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::control;
-use crate::session::{Session, WindowPanes};
-use crate::ui::switcher::{run_op, OpResult, Ops, Switcher};
+use crate::ui::switcher::Switcher;
 
-const POLL_INTERVAL: Duration = Duration::from_secs(1);
-const DOUBLE_CLICK: Duration = Duration::from_millis(400);
-
-/// A unit of work the event loop processes, from any source.
+/// A unit of work the cockpit loop processes, from the control socket.
 pub enum Cmd {
     Key(KeyEvent),
-    Mouse(MouseEvent),
-    /// Host terminal resized (cols, rows) — re-layout the picker.
-    Resize(u16, u16),
-    /// One source's `list-sessions` outcome, streamed in as it returns. `err` set
-    /// ⇒ the host was unreachable.
-    SourceResult {
-        source: String,
-        sessions: Vec<Session>,
-        err: Option<String>,
-    },
-    /// One session's `list-panes` outcome, streamed in independently of the rest.
-    Panes {
-        address: String,
-        panes: Vec<WindowPanes>,
-    },
     /// A control-channel `dump` request: reply with the rendered screen.
     Dump(oneshot::Sender<String>),
-    /// A slow (create/rename/kill) op finished off-loop; fold its result in.
-    OpDone(OpResult),
 }
 
 /// Renders the switcher to an off-screen buffer and flattens it — the payload the
@@ -74,157 +48,6 @@ pub fn dump_switcher(switcher: &mut Switcher, width: u16, height: u16) -> String
         out.push('\n');
     }
     out
-}
-
-/// Spawns one detached `list-sessions` probe per source; each streams its outcome
-/// back as a [`Cmd::SourceResult`] the moment it returns, so a fast host never
-/// waits on a slow one. The first `terminal.draw` runs before these are polled, so
-/// the skeleton paints instantly.
-pub(crate) fn spawn_probes(ops: &Arc<dyn Ops>, cmd_tx: &mpsc::Sender<Cmd>) {
-    for source in ops.sources() {
-        let ops = ops.clone();
-        let tx = cmd_tx.clone();
-        tokio::spawn(async move {
-            let (sessions, err) = match ops.list_sessions(&source).await {
-                Ok(s) => (s, None),
-                Err(e) => (Vec::new(), Some(e.to_string())),
-            };
-            let _ = tx
-                .send(Cmd::SourceResult {
-                    source,
-                    sessions,
-                    err,
-                })
-                .await;
-        });
-    }
-}
-
-/// Spawns one detached `list-panes` probe per session of a freshly reachable
-/// host; each streams its windows/panes back as a [`Cmd::Panes`] independently.
-pub(crate) fn spawn_panes(ops: &Arc<dyn Ops>, cmd_tx: &mpsc::Sender<Cmd>, sessions: Vec<Session>) {
-    for sess in sessions {
-        let ops = ops.clone();
-        let tx = cmd_tx.clone();
-        tokio::spawn(async move {
-            let panes = ops.panes(&sess).await.unwrap_or_default();
-            let _ = tx
-                .send(Cmd::Panes {
-                    address: sess.address(),
-                    panes,
-                })
-                .await;
-        });
-    }
-}
-
-fn handle_mouse(
-    switcher: &mut Switcher,
-    m: MouseEvent,
-    last_click: &mut Option<(Instant, u16, u16)>,
-) {
-    match m.kind {
-        MouseEventKind::Down(MouseButton::Left) => {
-            let now = Instant::now();
-            let is_double = last_click.is_some_and(|(t, c, r)| {
-                now.duration_since(t) < DOUBLE_CLICK && c == m.column && r == m.row
-            });
-            if is_double {
-                switcher.mouse_attach(m.column, m.row);
-                *last_click = None;
-            } else {
-                switcher.mouse_select(m.column, m.row);
-                *last_click = Some((now, m.column, m.row));
-            }
-        }
-        MouseEventKind::ScrollDown => switcher.mouse_scroll(true),
-        MouseEventKind::ScrollUp => switcher.mouse_scroll(false),
-        _ => {}
-    }
-}
-
-/// The backend-generic core loop. Draws after every change and exits when the
-/// switcher signals it.
-pub async fn event_loop<B: Backend>(
-    terminal: &mut Terminal<B>,
-    switcher: &mut Switcher,
-    ops: Arc<dyn Ops>,
-    cmd_tx: mpsc::Sender<Cmd>,
-    mut cmd_rx: mpsc::Receiver<Cmd>,
-) -> anyhow::Result<()>
-where
-    B::Error: std::error::Error + Send + Sync + 'static,
-{
-    let mut last_click: Option<(Instant, u16, u16)> = None;
-
-    loop {
-        // The very first draw paints the host skeletons before any probe is
-        // polled (the runtime is current-thread; spawned probes run at the await
-        // below), so the first frame is instant.
-        terminal.draw(|f| switcher.render(f, None))?;
-        let tick = POLL_INTERVAL;
-        let mut anim = tokio::time::interval(tick);
-        anim.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        if switcher.wants_quit() {
-            break;
-        }
-        // The seed (and each `r` re-scan) kicks one streaming probe per source.
-        if switcher.take_rescan_kick() {
-            spawn_probes(&ops, &cmd_tx);
-        }
-
-        tokio::select! {
-            maybe = cmd_rx.recv() => {
-                let Some(cmd) = maybe else { break };
-                match cmd {
-                    Cmd::Key(k) => {
-                        switcher.handle_key(k);
-                        // The standalone picker (and the proxy overlay) treat Esc as
-                        // a cancel: no chosen session, exit the loop. The cockpit
-                        // drives the switcher directly and consumes `take_esc` itself
-                        // to return to its previous foreground instead of exiting.
-                        if switcher.wants_quit() {
-                            break;
-                        }
-                        // A create/rename/kill runs OFF the loop so a slow ssh
-                        // round-trip never freezes rendering, streaming, or ctl.
-                        if let Some(op) = switcher.take_pending_op() {
-                            let ops = ops.clone();
-                            let tx = cmd_tx.clone();
-                            tokio::spawn(async move {
-                                let result = run_op(&op, ops.as_ref()).await;
-                                let _ = tx.send(Cmd::OpDone(result)).await;
-                            });
-                        }
-                    }
-                    Cmd::Mouse(m) => handle_mouse(switcher, m, &mut last_click),
-                    Cmd::Resize(cols, rows) => {
-                        let _ = terminal.resize(ratatui::layout::Rect::new(0, 0, cols, rows));
-                    }
-                    Cmd::SourceResult { source, sessions, err } => {
-                        let reachable = err.is_none();
-                        switcher.apply_source_result(source, sessions.clone(), err);
-                        // A reachable host's sessions each get their panes fetched.
-                        if reachable {
-                            spawn_panes(&ops, &cmd_tx, sessions);
-                        }
-                    }
-                    Cmd::Panes { address, panes } => switcher.apply_panes(address, panes),
-                    Cmd::Dump(reply) => {
-                        // A transient size-query failure must not kill the switcher;
-                        // fall back to a sane default so the dump still renders.
-                        let size = terminal
-                            .size()
-                            .unwrap_or(ratatui::layout::Size { width: 80, height: 24 });
-                        let _ = reply.send(dump_switcher(switcher, size.width, size.height));
-                    }
-                    Cmd::OpDone(result) => switcher.apply_op_result(result),
-                }
-            }
-            _ = anim.tick() => {}
-        }
-    }
-    Ok(())
 }
 
 /// A running control server: the accept-loop task plus the socket path to clean
@@ -310,42 +133,9 @@ async fn dispatch(line: &str, cmd_tx: &mpsc::Sender<Cmd>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::{Pane, Session, WindowPanes};
+    use crate::session::Session;
     use crate::ui::switcher::Scan;
     use crate::ui::tree::Group;
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
-    use std::collections::HashMap;
-
-    struct NoopOps;
-
-    #[async_trait::async_trait]
-    impl Ops for NoopOps {
-        fn sources(&self) -> Vec<String> {
-            // No sources ⇒ the loop kicks no probes, leaving a switcher built from
-            // a complete snapshot untouched (these tests don't exercise streaming).
-            Vec::new()
-        }
-        async fn list_sessions(&self, _source: &str) -> anyhow::Result<Vec<Session>> {
-            Ok(Vec::new())
-        }
-        async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session> {
-            Ok(Session {
-                source: source.into(),
-                name: name.into(),
-                windows: 1,
-                ..Default::default()
-            })
-        }
-        async fn kill(&self, _s: &Session) -> anyhow::Result<()> {
-            Ok(())
-        }
-        async fn rename(&self, _s: &Session, _n: &str) -> anyhow::Result<()> {
-            Ok(())
-        }
-        async fn panes(&self, _s: &Session) -> anyhow::Result<Vec<WindowPanes>> {
-            Ok(Vec::new())
-        }
-    }
 
     fn sample() -> Scan {
         Scan {
@@ -364,305 +154,21 @@ mod tests {
         }
     }
 
-    /// Ops that stream canned per-source sessions and per-session panes, mimicking
-    /// the real probe fan-out the event loop kicks on start.
-    struct StreamOps {
-        sources: Vec<String>,
-        sessions: HashMap<String, Vec<Session>>,
-        panes: HashMap<String, Vec<WindowPanes>>,
-    }
-
-    impl StreamOps {
-        /// A local host plus a remote host, the remote session carrying pane detail.
-        fn local_and_remote() -> Self {
-            let mut sessions = HashMap::new();
-            sessions.insert(
-                "local".to_string(),
-                vec![Session {
-                    source: "local".into(),
-                    name: "editor".into(),
-                    windows: 1,
-                    attached: false,
-                    last_attached: 100,
-                }],
-            );
-            sessions.insert(
-                "remote".to_string(),
-                vec![Session {
-                    source: "remote".into(),
-                    name: "api".into(),
-                    windows: 1,
-                    attached: false,
-                    last_attached: 50,
-                }],
-            );
-            let mut panes = HashMap::new();
-            panes.insert(
-                "remote/api".to_string(),
-                vec![WindowPanes {
-                    index: 1,
-                    name: "serve".into(),
-                    active: true,
-                    panes: vec![Pane {
-                        index: 1,
-                        active: true,
-                        command: "node".into(),
-                    }],
-                }],
-            );
-            StreamOps {
-                sources: vec!["local".into(), "remote".into()],
-                sessions,
-                panes,
-            }
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl Ops for StreamOps {
-        fn sources(&self) -> Vec<String> {
-            self.sources.clone()
-        }
-        async fn list_sessions(&self, source: &str) -> anyhow::Result<Vec<Session>> {
-            Ok(self.sessions.get(source).cloned().unwrap_or_default())
-        }
-        async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session> {
-            Ok(Session {
-                source: source.into(),
-                name: name.into(),
-                windows: 1,
-                ..Default::default()
-            })
-        }
-        async fn kill(&self, _s: &Session) -> anyhow::Result<()> {
-            Ok(())
-        }
-        async fn rename(&self, _s: &Session, _n: &str) -> anyhow::Result<()> {
-            Ok(())
-        }
-        async fn panes(&self, s: &Session) -> anyhow::Result<Vec<WindowPanes>> {
-            Ok(self.panes.get(&s.address()).cloned().unwrap_or_default())
-        }
-    }
-
     #[tokio::test]
-    async fn event_loop_streams_source_result() {
-        // A `Cmd::SourceResult` flowing through the loop turns a scanning host
-        // into its sessions.
-        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        let mut sw = Switcher::from_sources(vec!["local".into()]);
-        let (tx, rx) = mpsc::channel(16);
-        tx.send(Cmd::SourceResult {
-            source: "local".into(),
-            sessions: vec![Session {
-                source: "local".into(),
-                name: "editor".into(),
-                windows: 1,
-                attached: false,
-                last_attached: 100,
-            }],
-            err: None,
-        })
-        .await
-        .unwrap();
-        let (reply_tx, reply_rx) = oneshot::channel();
-        tx.send(Cmd::Dump(reply_tx)).await.unwrap();
-        tx.send(Cmd::Key(KeyEvent::new(
-            KeyCode::Char('q'),
-            KeyModifiers::NONE,
-        )))
-        .await
-        .unwrap();
-        event_loop(&mut term, &mut sw, Arc::new(NoopOps), tx.clone(), rx)
-            .await
-            .unwrap();
-        let dump = reply_rx.await.unwrap();
-        assert!(
-            dump.contains("editor"),
-            "a SourceResult must stream the session into the tree:\n{dump}"
-        );
-    }
-
-    #[tokio::test]
-    async fn event_loop_kicks_probes_on_start() {
-        // On start the loop kicks one `list-sessions` probe per source; a reachable
-        // host's sessions then get their panes fetched — all streaming in without a
-        // key/poll nudge, starting from a bare host skeleton.
-        let (tx, rx) = mpsc::channel::<Cmd>(64);
-        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        let mut sw = Switcher::from_sources(vec!["local".into(), "remote".into()]);
-        let ops: Arc<dyn Ops> = Arc::new(StreamOps::local_and_remote());
+    async fn dispatch_dump_and_key_still_work() {
+        let (tx, mut rx) = mpsc::channel::<Cmd>(8);
+        // key down → a Cmd::Key flows
+        let r = dispatch("key down", &tx).await;
+        assert_eq!(r, "ok");
+        assert!(matches!(rx.recv().await, Some(Cmd::Key(_))));
+        // dump → a Cmd::Dump flows (answered by a parallel responder)
         let tx2 = tx.clone();
-        let loop_task = tokio::spawn(async move {
-            event_loop(&mut term, &mut sw, ops, tx2, rx).await.unwrap();
+        tokio::spawn(async move {
+            if let Some(Cmd::Dump(reply)) = rx.recv().await {
+                let _ = reply.send("SCREEN".into());
+            }
         });
-
-        let mut got_remote = false;
-        let mut got_panes = false;
-        for _ in 0..200 {
-            let (rtx, rrx) = oneshot::channel();
-            if tx.send(Cmd::Dump(rtx)).await.is_err() {
-                break;
-            }
-            let dump = rrx.await.unwrap_or_default();
-            got_remote |= dump.contains("api");
-            got_panes |= dump.contains("window 1: serve");
-            if got_remote && got_panes {
-                break;
-            }
-        }
-        assert!(
-            got_remote,
-            "the remote host's sessions must stream in on start"
-        );
-        assert!(
-            got_panes,
-            "each reachable session's panes must stream in on start"
-        );
-
-        tx.send(Cmd::Key(KeyEvent::new(
-            KeyCode::Char('q'),
-            KeyModifiers::NONE,
-        )))
-        .await
-        .unwrap();
-        loop_task.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn event_loop_q_exits() {
-        // q sets wants_quit and the event loop breaks.
-        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        let mut sw = Switcher::new(sample());
-        let (tx, rx) = mpsc::channel(16);
-        tx.send(Cmd::Key(KeyEvent::new(
-            KeyCode::Char('q'),
-            KeyModifiers::NONE,
-        )))
-        .await
-        .unwrap();
-        event_loop(&mut term, &mut sw, Arc::new(NoopOps), tx.clone(), rx)
-            .await
-            .unwrap();
-        assert!(sw.wants_quit(), "q must set wants_quit");
-    }
-
-    #[tokio::test]
-    async fn event_loop_cancel_leaves_wants_quit() {
-        // Cancelling with q sets wants_quit on the switcher.
-        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        let mut sw = Switcher::new(sample());
-        let (tx, rx) = mpsc::channel(16);
-        tx.send(Cmd::Key(KeyEvent::new(
-            KeyCode::Char('q'),
-            KeyModifiers::NONE,
-        )))
-        .await
-        .unwrap();
-        event_loop(&mut term, &mut sw, Arc::new(NoopOps), tx.clone(), rx)
-            .await
-            .unwrap();
-        assert!(sw.wants_quit(), "cancel must set wants_quit");
-    }
-
-    #[tokio::test]
-    async fn event_loop_filter_then_cursor_targets_visible() {
-        // Filter leaves the cursor on the visible session.
-        let scan = Scan {
-            groups: vec![Group {
-                source: "local".into(),
-                err: None,
-                sessions: vec![
-                    Session {
-                        source: "local".into(),
-                        name: "editor".into(),
-                        windows: 1,
-                        attached: true,
-                        last_attached: 999,
-                    },
-                    Session {
-                        source: "local".into(),
-                        name: "build".into(),
-                        windows: 1,
-                        attached: false,
-                        last_attached: 10,
-                    },
-                ],
-            }],
-            panes: Default::default(),
-        };
-        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        let mut sw = Switcher::new(scan);
-        let (tx, rx) = mpsc::channel(32);
-        for k in ['/', 'b', 'u', 'i', 'l', 'd'] {
-            tx.send(Cmd::Key(KeyEvent::new(
-                KeyCode::Char(k),
-                KeyModifiers::NONE,
-            )))
-            .await
-            .unwrap();
-        }
-        tx.send(Cmd::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)))
-            .await
-            .unwrap(); // apply filter
-        tx.send(Cmd::Key(KeyEvent::new(
-            KeyCode::Char('q'),
-            KeyModifiers::NONE,
-        )))
-        .await
-        .unwrap(); // exit
-        event_loop(&mut term, &mut sw, Arc::new(NoopOps), tx.clone(), rx)
-            .await
-            .unwrap();
-        let t = sw.current_attach_target().expect("cursor on a session");
-        assert_eq!(
-            t.target.as_str(),
-            "build",
-            "filter leaves cursor on the visible (filtered) session"
-        );
-    }
-
-    #[tokio::test]
-    async fn event_loop_dump_renders_screen() {
-        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        let mut sw = Switcher::new(sample());
-        let (tx, rx) = mpsc::channel(16);
-        let (reply_tx, reply_rx) = oneshot::channel();
-        tx.send(Cmd::Dump(reply_tx)).await.unwrap();
-        // Then quit so the loop exits.
-        tx.send(Cmd::Key(KeyEvent::new(
-            KeyCode::Char('q'),
-            KeyModifiers::NONE,
-        )))
-        .await
-        .unwrap();
-        event_loop(&mut term, &mut sw, Arc::new(NoopOps), tx.clone(), rx)
-            .await
-            .unwrap();
-        let dump = reply_rx.await.unwrap();
-        assert!(
-            dump.contains("editor"),
-            "dump should render the tree:\n{dump}"
-        );
-        assert!(
-            dump.contains("xmux"),
-            "dump should render the header:\n{dump}"
-        );
-    }
-
-    #[tokio::test]
-    async fn resize_cmd_is_handled_then_quit() {
-        let ops: Arc<dyn Ops> = Arc::new(NoopOps);
-        let (tx, rx) = mpsc::channel::<Cmd>(16);
-        let mut switcher = Switcher::from_sources(ops.sources());
-        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        // a resize then a quit key
-        tx.send(Cmd::Resize(100, 40)).await.unwrap();
-        tx.send(Cmd::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)))
-            .await
-            .unwrap();
-        let r = event_loop(&mut term, &mut switcher, ops, tx.clone(), rx).await;
-        assert!(r.is_ok(), "Cmd::Resize must be handled without error");
+        assert_eq!(dispatch("dump", &tx2).await, "SCREEN");
     }
 
     #[tokio::test]
@@ -697,15 +203,26 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let sock = control::socket_path(&dir, std::process::id());
 
-        let (tx, rx) = mpsc::channel::<Cmd>(64);
+        let (tx, mut rx) = mpsc::channel::<Cmd>(64);
         let handle = serve_control(sock.clone(), tx.clone()).expect("bind control socket");
 
-        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        // A minimal in-test consumer drives the switcher directly off the channel,
+        // standing in for the cockpit loop: it answers `dump` and applies keys.
         let mut sw = Switcher::new(sample());
-        let ops: Arc<dyn Ops> = Arc::new(NoopOps);
-        let tx2 = tx.clone();
-        let loop_task = tokio::spawn(async move {
-            event_loop(&mut term, &mut sw, ops, tx2, rx).await.unwrap();
+        let consumer = tokio::spawn(async move {
+            while let Some(cmd) = rx.recv().await {
+                match cmd {
+                    Cmd::Key(k) => {
+                        sw.handle_key(k);
+                        if sw.wants_quit() {
+                            break;
+                        }
+                    }
+                    Cmd::Dump(reply) => {
+                        let _ = reply.send(dump_switcher(&mut sw, 100, 30));
+                    }
+                }
+            }
             sw.wants_quit()
         });
 
@@ -724,10 +241,10 @@ mod tests {
             client.do_cmd("bogus").await.unwrap(),
             "err: unknown command"
         );
-        // Quit so the loop exits.
+        // Quit so the consumer exits.
         assert_eq!(client.do_cmd("key q").await.unwrap(), "ok");
 
-        let quit = loop_task.await.unwrap();
+        let quit = consumer.await.unwrap();
         assert!(quit, "q must set wants_quit");
         drop(handle);
         let _ = std::fs::remove_dir_all(&dir);
