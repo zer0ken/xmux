@@ -1,6 +1,6 @@
 //! Per-host data types shared between the reader thread, writer thread, and cockpit.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,6 +24,9 @@ pub struct HostInventory {
     pub attached_session: Option<String>,
     /// `"%N"` of the attached session.
     pub active_pane: Option<String>,
+    /// Panes the server paused for flow control (`%pause`); cleared on `%continue`.
+    /// The cockpit resumes each after the renderer has caught up.
+    pub paused_panes: HashSet<String>,
 }
 
 impl HostInventory {
@@ -33,6 +36,7 @@ impl HostInventory {
             panes: HashMap::new(),
             attached_session: None,
             active_pane: None,
+            paused_panes: HashSet::new(),
         }
     }
 }
@@ -103,7 +107,24 @@ pub fn run_reader<E: FnMut(HostEvent)>(
     let mut decode_buf: Vec<u8> = Vec::with_capacity(4096);
     // num, kind, body — the open `%begin` block, if any.
     let mut block: Option<(u64, PendingReply, Vec<String>)> = None;
+    // A `-CC` client emits an unsolicited startup `%begin…%end` banner introduced
+    // by the entry DCS `\x1bP1000p` ([research §1]), BEFORE the first command reply.
+    // That banner must consume ZERO FIFO entries, else every later pop shifts by one
+    // and command replies resolve against the wrong correlator. This flag, armed by
+    // the DCS, marks the very next `%begin` as the banner (opened with `Ignore`, no
+    // FIFO pop) in BOTH framings: a lone DCS line, and the DCS glued to `%begin`.
+    let mut expect_startup_block = false;
     for line in lines {
+        // The entry DCS may arrive alone or glued to the first `%begin`. Strip it
+        // and arm the flag; a lone DCS becomes empty (falls through as Body), a
+        // glued line continues to classify its stripped remainder as `%begin`.
+        let line = match line.strip_prefix("\x1bP1000p") {
+            Some(rest) => {
+                expect_startup_block = true;
+                rest.to_string()
+            }
+            None => line,
+        };
         // Inside a block, only the matching %end/%error closes it; everything
         // else is body (notifications never appear inside a block).
         if let Some((num, _, _)) = block.as_ref() {
@@ -120,11 +141,18 @@ pub fn run_reader<E: FnMut(HostEvent)>(
         }
         match classify(&line) {
             Line::Begin { num } => {
-                let kind = in_flight
-                    .lock()
-                    .unwrap()
-                    .pop_front()
-                    .unwrap_or(PendingReply::Ignore);
+                let kind = if expect_startup_block {
+                    // The startup banner: ignore its body and do NOT pop the FIFO,
+                    // so the real command replies stay in lockstep.
+                    expect_startup_block = false;
+                    PendingReply::Ignore
+                } else {
+                    in_flight
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .unwrap_or(PendingReply::Ignore)
+                };
                 block = Some((num, kind, Vec::new()));
             }
             Line::Output { data, .. } => {
@@ -225,7 +253,13 @@ fn dispatch_notif<E: FnMut(HostEvent)>(
         Notif::ClientDetached => {
             emit(HostEvent::Exited { host: host.to_string(), reason: None });
         }
-        Notif::Pause { .. } | Notif::Continue { .. } | Notif::LayoutChange { .. } | Notif::Other => {}
+        Notif::Pause { pane } => {
+            state.inventory.lock().unwrap().paused_panes.insert(pane.to_string());
+        }
+        Notif::Continue { pane } => {
+            state.inventory.lock().unwrap().paused_panes.remove(pane);
+        }
+        Notif::LayoutChange { .. } | Notif::Other => {}
     }
 }
 
@@ -310,6 +344,9 @@ pub struct HostClient {
     child: Child,
     reader: Option<JoinHandle<()>>,
     writer: Option<JoinHandle<()>>,
+    /// Drains the child's stderr to EOF so a child that writes more than the pipe
+    /// buffer (ssh banners/warnings) cannot block and wedge the connection.
+    stderr_drain: Option<JoinHandle<()>>,
 }
 
 impl HostClient {
@@ -344,6 +381,17 @@ impl HostClient {
             .stdin
             .take()
             .ok_or_else(|| anyhow::anyhow!("child stdin missing"))?;
+        let mut stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("child stderr missing"))?;
+
+        // Drain stderr to EOF and discard it. Without this, a child that writes more
+        // than the pipe buffer to stderr (ssh banners/warnings) blocks and wedges the
+        // connection. EOF arrives when the child dies (like stdout), so the join is bounded.
+        let stderr_drain = std::thread::spawn(move || {
+            let _ = std::io::copy(&mut stderr, &mut std::io::sink());
+        });
 
         // Grid::new takes ROWS first.
         let grid = Arc::new(Mutex::new(Grid::new(rows, cols)));
@@ -403,6 +451,7 @@ impl HostClient {
             child,
             reader: Some(reader),
             writer: Some(writer),
+            stderr_drain: Some(stderr_drain),
         })
     }
 
@@ -422,6 +471,14 @@ impl HostClient {
             .send(HostCmd::SwitchClient { target: session.into() });
     }
 
+    /// Resume a pane the server paused for flow control, once the renderer has
+    /// caught up (queues `refresh-client -A %pane:continue`).
+    pub fn resume_pane(&self, pane: &str) {
+        let _ = self.cmd_tx.send(HostCmd::Send(
+            crate::proxy::control_proto::continue_pane_line(pane),
+        ));
+    }
+
     /// Forward a raw input burst to `pane`.
     pub fn send_keys(&self, pane: impl Into<String>, bytes: Vec<u8>) {
         let _ = self
@@ -437,11 +494,12 @@ impl HostClient {
     }
 
     /// Stop the host: the writer returns on `Shutdown`, `child.kill()` closes the
-    /// child's stdout so the reader's `lines()` hits EOF, then both threads join.
+    /// child's stdout/stderr so the reader's `lines()` and the stderr drain both
+    /// hit EOF, then all threads join.
     ///
     /// The join is bounded in practice: we use PIPES (not ConPTY), so killing the
-    /// child closes stdout immediately and the reader reaches EOF — no
-    /// `ClosePseudoConsole` stall is possible here (that risk is PTY-only).
+    /// child closes stdout/stderr immediately and the reader + stderr drain reach
+    /// EOF — no `ClosePseudoConsole` stall is possible here (that risk is PTY-only).
     pub fn teardown(mut self) {
         let _ = self.cmd_tx.send(HostCmd::Shutdown);
         let _ = self.child.kill();
@@ -449,6 +507,9 @@ impl HostClient {
             let _ = h.join();
         }
         if let Some(h) = self.reader.take() {
+            let _ = h.join();
+        }
+        if let Some(h) = self.stderr_drain.take() {
             let _ = h.join();
         }
     }
@@ -618,6 +679,75 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, HostEvent::Attached { session, .. } if session == "api")));
+    }
+
+    #[test]
+    fn reader_marks_and_clears_paused_pane() {
+        let state = test_state(80, 24);
+        let in_flight: InFlight = Default::default();
+        run_reader("h", vec!["%pause %3".to_string()].into_iter(), &state, &in_flight, |_| {});
+        assert!(state.inventory.lock().unwrap().paused_panes.contains("%3"));
+        run_reader("h", vec!["%continue %3".to_string()].into_iter(), &state, &in_flight, |_| {});
+        assert!(!state.inventory.lock().unwrap().paused_panes.contains("%3"));
+    }
+
+    #[test]
+    fn resume_pane_queues_continue_line() {
+        let (tx, rx) = std::sync::mpsc::channel::<HostCmd>();
+        let in_flight: InFlight = Default::default();
+        tx.send(HostCmd::Send(crate::proxy::control_proto::continue_pane_line("%3"))).unwrap();
+        tx.send(HostCmd::Shutdown).unwrap();
+        drop(tx);
+        let mut out = Vec::new();
+        run_writer(rx, &mut out, &in_flight);
+        assert!(String::from_utf8(out).unwrap().contains("refresh-client -A %3:continue\n"));
+    }
+
+    /// The `-CC` entry DCS `\x1bP1000p` introduces an unsolicited startup banner
+    /// `%begin…%end` block BEFORE the first command reply. That banner must consume
+    /// zero FIFO entries; otherwise the queued `ListSessions` resolves against the
+    /// empty banner block and the real list-sessions reply is misattributed. Proven
+    /// in BOTH framings: the DCS on its own line, and the DCS glued to `%begin`.
+    #[test]
+    fn reader_startup_banner_keeps_fifo_lockstep() {
+        // SEPARATE-line framing: a lone DCS line, then the empty banner block, then
+        // the real list-sessions reply.
+        {
+            let state = test_state(80, 24);
+            let in_flight: InFlight = Default::default();
+            in_flight.lock().unwrap().push_back(PendingReply::ListSessions);
+            let lines = vec![
+                "\x1bP1000p".to_string(),
+                "%begin 1 1 0".to_string(),
+                "%end 1 1 0".to_string(),
+                "%begin 1 2 0".to_string(),
+                "2\t1\t1700000000\tapi".to_string(),
+                "%end 1 2 0".to_string(),
+            ]
+            .into_iter();
+            run_reader("jupiter06", lines, &state, &in_flight, |_| {});
+            let inv = state.inventory.lock().unwrap();
+            assert_eq!(inv.sessions.len(), 1, "startup banner stole the ListSessions entry");
+            assert_eq!(inv.sessions[0].name, "api");
+        }
+        // GLUED framing: the DCS prefixed onto the first `%begin` line.
+        {
+            let state = test_state(80, 24);
+            let in_flight: InFlight = Default::default();
+            in_flight.lock().unwrap().push_back(PendingReply::ListSessions);
+            let lines = vec![
+                "\x1bP1000p%begin 1 1 0".to_string(),
+                "%end 1 1 0".to_string(),
+                "%begin 1 2 0".to_string(),
+                "2\t1\t1700000000\tapi".to_string(),
+                "%end 1 2 0".to_string(),
+            ]
+            .into_iter();
+            run_reader("jupiter06", lines, &state, &in_flight, |_| {});
+            let inv = state.inventory.lock().unwrap();
+            assert_eq!(inv.sessions.len(), 1, "glued startup banner stole the ListSessions entry");
+            assert_eq!(inv.sessions[0].name, "api");
+        }
     }
 
     #[test]
