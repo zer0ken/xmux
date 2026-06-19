@@ -514,6 +514,7 @@ pub async fn proxy_attach(
     let mut machine = InputMachine::new(
         cfg.prefix,
         cfg.action_key,
+        b'q',
         Duration::from_millis(400),
     );
     let mut mode = Mode::Forwarding;
@@ -569,7 +570,7 @@ pub async fn proxy_attach(
                         for action in actions {
                             match action {
                                 InAction::Forward(b) => to_forward.extend_from_slice(&b),
-                                InAction::OpenPicker => {
+                                InAction::OpenOverlay => {
                                     // Flush pending bytes first; the prefix+action
                                     // bytes themselves are NOT forwarded to the child.
                                     if !to_forward.is_empty() {
@@ -578,6 +579,7 @@ pub async fn proxy_attach(
                                     }
                                     open_picker = true;
                                 }
+                                InAction::Quit => { mode = Mode::Quitting; }
                             }
                         }
                     }
