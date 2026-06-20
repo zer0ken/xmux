@@ -54,6 +54,10 @@ pub trait Ops: Send + Sync {
     /// unreachable (the message is shown as the host's failure reason).
     async fn list_sessions(&self, source: &str) -> anyhow::Result<Vec<Session>>;
     async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session>;
+    /// Creates a new window in `session` on `source` (the `n` action on a session row).
+    async fn new_window(&self, source: &str, session: &str, name: &str) -> anyhow::Result<()>;
+    /// Splits `target` (`session:window`) into a new pane (the `n` action on a window row).
+    async fn split_window(&self, source: &str, target: &str, vertical: bool) -> anyhow::Result<()>;
     async fn kill(&self, s: &Session) -> anyhow::Result<()>;
     async fn rename(&self, s: &Session, new_name: &str) -> anyhow::Result<()>;
     async fn panes(&self, s: &Session) -> anyhow::Result<Vec<WindowPanes>>;
@@ -65,6 +69,8 @@ pub trait Ops: Send + Sync {
 #[derive(Debug, Clone)]
 pub enum PendingOp {
     Create { source: String, name: String },
+    NewWindow { source: String, session: String, name: String },
+    SplitWindow { source: String, target: String, session: String, vertical: bool },
     Rename { sess: Session, new_name: String },
     Kill { sess: Session },
 }
@@ -85,6 +91,12 @@ pub enum OpResult {
     Killed {
         address: String,
     },
+    /// A session's windows/panes were re-fetched after a new-window/split so the
+    /// tree shows the change.
+    PanesRefreshed {
+        address: String,
+        panes: Vec<WindowPanes>,
+    },
     Failed {
         message: String,
     },
@@ -104,6 +116,18 @@ pub async fn run_op(op: &PendingOp, ops: &dyn Ops) -> OpResult {
                 message: format!("create failed: {e}"),
             },
         },
+        PendingOp::NewWindow { source, session, name } => {
+            match ops.new_window(source, session, name).await {
+                Ok(()) => refreshed_panes(ops, source, session).await,
+                Err(e) => OpResult::Failed { message: format!("new window failed: {e}") },
+            }
+        }
+        PendingOp::SplitWindow { source, target, session, vertical } => {
+            match ops.split_window(source, target, *vertical).await {
+                Ok(()) => refreshed_panes(ops, source, session).await,
+                Err(e) => OpResult::Failed { message: format!("split failed: {e}") },
+            }
+        }
         PendingOp::Rename { sess, new_name } => match ops.rename(sess, new_name).await {
             Ok(()) => OpResult::Renamed {
                 source: sess.source.clone(),
@@ -122,6 +146,22 @@ pub async fn run_op(op: &PendingOp, ops: &dyn Ops) -> OpResult {
                 message: format!("kill failed: {e}"),
             },
         },
+    }
+}
+
+/// Re-fetches a session's windows/panes after a structural change (new window /
+/// split) so the tree reflects it. A failed fetch still resolves (empty) rather
+/// than erroring the whole op.
+async fn refreshed_panes(ops: &dyn Ops, source: &str, session: &str) -> OpResult {
+    let sess = Session {
+        source: source.to_string(),
+        name: session.to_string(),
+        ..Default::default()
+    };
+    let panes = ops.panes(&sess).await.unwrap_or_default();
+    OpResult::PanesRefreshed {
+        address: sess.address(),
+        panes,
     }
 }
 
@@ -172,6 +212,8 @@ pub struct TerminalViewTarget {
 enum InputMode {
     Filter,
     New,
+    NewWindow,
+    SplitWindow,
     Rename,
 }
 
@@ -184,6 +226,8 @@ struct Input {
     /// moved the cursor by the time they pressed Enter.
     source: Option<String>,
     sess: Option<Session>,
+    /// The split target (`session:window`) for [`InputMode::SplitWindow`].
+    target: Option<String>,
 }
 
 /// The switcher state machine.
@@ -625,7 +669,7 @@ impl Switcher {
                 'k' => self.move_selection(-1),
                 'q' => self.wants_quit = true,
                 '/' => self.open_input(InputMode::Filter),
-                'n' => self.open_input(InputMode::New),
+                'n' => self.open_new(),
                 'R' => self.open_input(InputMode::Rename),
                 'x' => self.arm_kill(),
                 'r' => self.request_rescan(),
@@ -648,22 +692,7 @@ impl Switcher {
                     buffer: self.filter.clone(),
                     source: None,
                     sess: None,
-                });
-            }
-            InputMode::New => {
-                let Some(source) = self.current_source() else {
-                    return;
-                };
-                if self.current_host_unreachable() {
-                    self.flash = "host unreachable — cannot create here".into();
-                    return;
-                }
-                self.input = Some(Input {
-                    mode,
-                    label: " new session name (empty = auto): ".into(),
-                    buffer: String::new(),
-                    source: Some(source),
-                    sess: None,
+                    target: None,
                 });
             }
             InputMode::Rename => {
@@ -676,9 +705,57 @@ impl Switcher {
                     buffer: sess.name.clone(),
                     source: None,
                     sess: Some(sess),
+                    target: None,
                 });
             }
+            // New/NewWindow/SplitWindow are opened by `open_new` (level-aware).
+            InputMode::New | InputMode::NewWindow | InputMode::SplitWindow => {}
         }
+    }
+
+    /// The level-aware `n` action: a new SESSION on a host row, a new WINDOW on a
+    /// session row, or a new PANE (split) on a window row (prompting the split
+    /// direction). The prompt context is captured up front so a streamed cursor
+    /// move cannot retarget it.
+    fn open_new(&mut self) {
+        self.flash.clear();
+        if self.current_host_unreachable() {
+            self.flash = "host unreachable — cannot create here".into();
+            return;
+        }
+        let Some(reference) = self.current_ref().cloned() else {
+            return;
+        };
+        self.input = match reference {
+            RowRef::Host { source, .. } => Some(Input {
+                mode: InputMode::New,
+                label: " new session name (empty = auto): ".into(),
+                buffer: String::new(),
+                source: Some(source),
+                sess: None,
+                target: None,
+            }),
+            RowRef::Session(sess) => Some(Input {
+                mode: InputMode::NewWindow,
+                label: format!(" new window in {} (name optional): ", sess.name),
+                buffer: String::new(),
+                source: Some(sess.source.clone()),
+                sess: Some(sess),
+                target: None,
+            }),
+            RowRef::Window { sess, window } => {
+                let target = format!("{}:{}", sess.name, window);
+                Some(Input {
+                    mode: InputMode::SplitWindow,
+                    label: " split [v]ertical / [h]orizontal (default v): ".into(),
+                    buffer: String::new(),
+                    source: Some(sess.source.clone()),
+                    sess: Some(sess),
+                    target: Some(target),
+                })
+            }
+            RowRef::Pane | RowRef::Loading => None,
+        };
     }
 
     fn close_input(&mut self) {
@@ -688,13 +765,14 @@ impl Switcher {
     fn handle_input_key(&mut self, ev: KeyEvent) {
         match ev.code {
             KeyCode::Enter => {
-                let (mode, val, source, sess) = {
+                let (mode, val, source, sess, target) = {
                     let input = self.input.as_ref().expect("input active");
                     (
                         input.mode,
                         input.buffer.trim().to_string(),
                         input.source.clone(),
                         input.sess.clone(),
+                        input.target.clone(),
                     )
                 };
                 match mode {
@@ -705,6 +783,14 @@ impl Switcher {
                     }
                     InputMode::New => {
                         self.queue_create(source, &val);
+                        self.close_input();
+                    }
+                    InputMode::NewWindow => {
+                        self.queue_new_window(source, sess, &val);
+                        self.close_input();
+                    }
+                    InputMode::SplitWindow => {
+                        self.queue_split(source, sess, target, &val);
                         self.close_input();
                     }
                     InputMode::Rename => {
@@ -745,6 +831,40 @@ impl Switcher {
         self.pending_op = Some(PendingOp::Create {
             source,
             name: name.to_string(),
+        });
+    }
+
+    /// Queues a new-window in the captured session (the `n` action on a session
+    /// row). An empty name lets the mux auto-name the window.
+    fn queue_new_window(&mut self, source: Option<String>, sess: Option<Session>, name: &str) {
+        let (Some(source), Some(sess)) = (source, sess) else {
+            return;
+        };
+        self.pending_op = Some(PendingOp::NewWindow {
+            source,
+            session: sess.name,
+            name: name.to_string(),
+        });
+    }
+
+    /// Queues a split of the captured window target (the `n` action on a window
+    /// row). The direction defaults to vertical unless the buffer starts with `h`.
+    fn queue_split(
+        &mut self,
+        source: Option<String>,
+        sess: Option<Session>,
+        target: Option<String>,
+        dir: &str,
+    ) {
+        let (Some(source), Some(sess), Some(target)) = (source, sess, target) else {
+            return;
+        };
+        let vertical = !dir.trim().eq_ignore_ascii_case("h");
+        self.pending_op = Some(PendingOp::SplitWindow {
+            source,
+            target,
+            session: sess.name,
+            vertical,
         });
     }
 
@@ -805,6 +925,11 @@ impl Switcher {
                 self.panes_loaded.remove(&address);
                 self.groups = tree::remove_session(&self.groups, &address);
                 self.rebuild();
+            }
+            OpResult::PanesRefreshed { address, panes } => {
+                // A new window or split: replace the session's subtree so the new
+                // window/pane shows. apply_panes restores the cursor.
+                self.apply_panes(address, panes);
             }
             OpResult::Failed { message } => {
                 self.flash = message;
@@ -1235,6 +1360,8 @@ mod tests {
         killed: Mutex<Vec<Session>>,
         created: Mutex<Vec<String>>,
         renamed: Mutex<Vec<String>>,
+        windowed: Mutex<Vec<String>>,
+        split: Mutex<Vec<String>>,
     }
 
     #[async_trait::async_trait]
@@ -1256,6 +1383,20 @@ mod tests {
                 windows: 1,
                 ..Default::default()
             })
+        }
+        async fn new_window(&self, source: &str, session: &str, name: &str) -> anyhow::Result<()> {
+            self.windowed
+                .lock()
+                .unwrap()
+                .push(format!("{source}/{session}:{name}"));
+            Ok(())
+        }
+        async fn split_window(&self, source: &str, target: &str, vertical: bool) -> anyhow::Result<()> {
+            self.split
+                .lock()
+                .unwrap()
+                .push(format!("{source}/{target}:{}", if vertical { "v" } else { "h" }));
+            Ok(())
         }
         async fn kill(&self, s: &Session) -> anyhow::Result<()> {
             self.killed.lock().unwrap().push(s.clone());
@@ -1829,7 +1970,8 @@ mod tests {
     #[tokio::test]
     async fn create_adds_and_selects() {
         let mut h = Harness::new(sample());
-        h.ch('n').await; // inference preselected ⇒ create on jupiter00
+        h.key(KeyCode::Up).await; // inference preselected → up to the jupiter00 HOST row
+        h.ch('n').await; // n on a host row ⇒ create a session
         h.sw.set_input_text("scratch");
         h.key(KeyCode::Enter).await;
         assert_eq!(*h.ops.created.lock().unwrap(), vec!["jupiter00/scratch"]);
@@ -1841,7 +1983,8 @@ mod tests {
         // The key-handling path must NOT perform the network create (which would
         // freeze the UI on a slow remote); it only queues the op for the loop.
         let mut h = Harness::new(sample());
-        h.ch('n').await; // open New on jupiter00
+        h.key(KeyCode::Up).await; // move to the jupiter00 HOST row
+        h.ch('n').await; // open New (create a session) on jupiter00
         h.sw.set_input_text("scratch");
         h.sw.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)); // raw: not pumped
         assert!(
@@ -1861,6 +2004,39 @@ mod tests {
         assert!(
             h.sw.row_of_session("jupiter00/scratch").is_some(),
             "applying the result folds the new session into the tree"
+        );
+    }
+
+    #[tokio::test]
+    async fn n_on_session_row_creates_a_window() {
+        // The `n` action is level-aware: on a SESSION row it creates a window.
+        let mut h = Harness::new(sample());
+        // inference is preselected (a session row).
+        h.ch('n').await;
+        h.sw.set_input_text("logs");
+        h.key(KeyCode::Enter).await;
+        assert_eq!(
+            *h.ops.windowed.lock().unwrap(),
+            vec!["jupiter00/inference:logs"],
+            "n on a session row queues a new window"
+        );
+        assert!(h.ops.created.lock().unwrap().is_empty(), "not a session create");
+    }
+
+    #[tokio::test]
+    async fn n_on_window_row_splits_a_pane() {
+        // On a WINDOW row, `n` splits the pane (direction from the prompt).
+        let mut h = Harness::new(sample());
+        h.key(KeyCode::Home).await; // local host row
+        h.key(KeyCode::Down).await; // local/editor (session)
+        h.key(KeyCode::Down).await; // editor's first window (a window row)
+        h.ch('n').await;
+        h.sw.set_input_text("h"); // horizontal split
+        h.key(KeyCode::Enter).await;
+        assert_eq!(
+            *h.ops.split.lock().unwrap(),
+            vec!["local/editor:1:h"],
+            "n on a window row queues a horizontal split of that window"
         );
     }
 

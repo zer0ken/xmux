@@ -34,6 +34,19 @@ pub async fn panes(s: &Source, name: &str) -> Result<Vec<WindowPanes>, RunError>
     Ok(mux::parse_panes(&String::from_utf8_lossy(&out)))
 }
 
+/// Creates a new window in a session (optionally named).
+pub async fn new_window(s: &Source, session: &str, name: &str) -> Result<(), RunError> {
+    s.run(&mux::new_window(&s.binary, session, name)).await?;
+    Ok(())
+}
+
+/// Splits a window/session target into a new pane (`vertical` → stacked, else
+/// side-by-side).
+pub async fn split_window(s: &Source, target: &str, vertical: bool) -> Result<(), RunError> {
+    s.run(&mux::split_window(&s.binary, target, vertical)).await?;
+    Ok(())
+}
+
 /// Makes a window active in its session (used before attach so the client lands
 /// on the chosen window).
 pub async fn select_window(s: &Source, sess: &str, window: i64) -> Result<(), RunError> {

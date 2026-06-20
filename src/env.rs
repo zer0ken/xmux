@@ -203,6 +203,16 @@ impl Ops for EnvOps {
         })
     }
 
+    async fn new_window(&self, source: &str, session: &str, name: &str) -> anyhow::Result<()> {
+        let src = self.source(source)?;
+        with_timeout(DETAIL_TIMEOUT, manage::new_window(&src, session, name)).await
+    }
+
+    async fn split_window(&self, source: &str, target: &str, vertical: bool) -> anyhow::Result<()> {
+        let src = self.source(source)?;
+        with_timeout(DETAIL_TIMEOUT, manage::split_window(&src, target, vertical)).await
+    }
+
     async fn kill(&self, s: &Session) -> anyhow::Result<()> {
         let src = self.source(&s.source)?;
         with_timeout(DETAIL_TIMEOUT, manage::kill(&src, &s.name)).await

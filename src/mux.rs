@@ -72,6 +72,22 @@ pub fn kill_session(bin: &str, name: &str) -> Vec<String> {
     argv(&[bin, "kill-session", "-t", name])
 }
 
+/// Creates a new window in `session` (optionally named).
+pub fn new_window(bin: &str, session: &str, name: &str) -> Vec<String> {
+    let mut v = argv(&[bin, "new-window", "-t", session]);
+    if !name.is_empty() {
+        v.push("-n".to_string());
+        v.push(name.to_string());
+    }
+    v
+}
+
+/// Splits `target` (a `session` or `session:window`): `-v` stacks the new pane
+/// below, `-h` puts it to the right.
+pub fn split_window(bin: &str, target: &str, vertical: bool) -> Vec<String> {
+    argv(&[bin, "split-window", if vertical { "-v" } else { "-h" }, "-t", target])
+}
+
 /// Renames session `old_name` to `new_name`.
 pub fn rename_session(bin: &str, old_name: &str, new_name: &str) -> Vec<String> {
     argv(&[bin, "rename-session", "-t", old_name, new_name])
