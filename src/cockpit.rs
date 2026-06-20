@@ -11,6 +11,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use ratatui::crossterm::event::KeyCode;
+
 use crate::attach;
 use crate::env::Env;
 use crate::host::{HostManager, HostEvent};
@@ -95,6 +97,73 @@ fn ensure_current_host(
 /// bound is the host count (one connection per host); each connect runs its
 /// handshake on its own reader/writer threads, so this returns at once and the
 /// trees fill in asynchronously as each host responds.
+/// Processes a batch of TREE-focus input bytes through ONE path — used for both
+/// real stdin and bytes replayed after a terminal→tree switch, so replayed input
+/// behaves identically to input arriving in a later read. Handles prefix arming
+/// (`C-g` then Tab/←/→ → focus terminal, `q` → quit), plain →/Enter/Tab → focus
+/// terminal (unless an inline input is open), otherwise switcher navigation; then
+/// the off-loop op dispatch, ensure/select, and the `r` re-scan. Returns
+/// `(focus_terminal, quit)`.
+#[allow(clippy::too_many_arguments)]
+fn handle_tree_bytes(
+    bytes: &[u8],
+    tree_decoder: &mut crate::proxy::decode::KeyDecoder,
+    tree_armed: &mut bool,
+    prefix: u8,
+    switcher: &mut crate::ui::switcher::Switcher,
+    mgr: &mut HostManager,
+    env: &Env,
+    ops: &Arc<dyn crate::ui::switcher::Ops>,
+    op_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
+    enum_tx: &tokio::sync::mpsc::UnboundedSender<LocalEnum>,
+    panes_requested: &mut std::collections::HashSet<String>,
+    cols: u16,
+    rows: u16,
+) -> (bool, bool) {
+    let mut focus_terminal = false;
+    let mut quit = false;
+    for key in tree_decoder.feed(bytes) {
+        if *tree_armed {
+            *tree_armed = false;
+            match key.code {
+                KeyCode::Char('\t') | KeyCode::Left | KeyCode::Right => focus_terminal = true,
+                KeyCode::Char('q') => quit = true,
+                _ => {}
+            }
+            continue;
+        }
+        if !switcher.is_inputting() && key.code == KeyCode::Char(prefix as char) {
+            *tree_armed = true;
+            continue;
+        }
+        if !switcher.is_inputting()
+            && matches!(key.code, KeyCode::Right | KeyCode::Enter | KeyCode::Char('\t'))
+        {
+            focus_terminal = true;
+            continue;
+        }
+        switcher.handle_key(key);
+    }
+    dispatch_pending_op(switcher, ops, op_tx);
+    ensure_current_host(mgr, env, switcher, cols, rows);
+    if let Some(tgt) = switcher.current_attach_target() {
+        select_attach(mgr, env, &tgt, cols, rows);
+    }
+    if switcher.take_rescan_kick() {
+        // 'r' re-scan: re-enumerate per-session (local) sources and re-list
+        // host-level (remote) ones; let panes re-request.
+        panes_requested.clear();
+        for src in &env.srcs {
+            if src.control_per_session() {
+                spawn_local_enumeration(src.clone(), enum_tx.clone());
+            } else if let Some(c) = mgr.get(&src.alias) {
+                c.list_sessions();
+            }
+        }
+    }
+    (focus_terminal, quit)
+}
+
 fn connect_all_sources(
     mgr: &mut HostManager,
     env: &Env,
@@ -222,7 +291,6 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     use crate::proxy::app::App;
     use crate::proxy::decode::KeyDecoder;
     use crate::proxy::input::{TermAction, TermInput};
-    use ratatui::crossterm::event::KeyCode;
     use crate::proxy::term::{parse_prefix, TermGuard};
     use crate::ui::run::{dump_overlay, serve_control, AppStateKind, Cmd};
     use crate::ui::switcher::Switcher;
@@ -415,50 +483,14 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 // read; replayed into the tree after focus flips (not lost).
                 let mut tree_replay: Vec<u8> = Vec::new();
                 if app.is_overlay() {
-                    // TREE focus: decode keys. While editing an input (filter/rename)
-                    // every key goes to the switcher. Otherwise plain →/Enter/Tab move
-                    // focus to the terminal, and C-g then Tab/←/→ toggles too.
-                    for key in tree_decoder.feed(&bytes) {
-                        if tree_armed {
-                            tree_armed = false;
-                            match key.code {
-                                KeyCode::Char('\t') | KeyCode::Left | KeyCode::Right => {
-                                    focus_terminal = true;
-                                }
-                                KeyCode::Char('q') => quit = true,
-                                _ => {}
-                            }
-                            continue;
-                        }
-                        if !switcher.is_inputting() && key.code == KeyCode::Char(prefix as char) {
-                            tree_armed = true;
-                            continue;
-                        }
-                        if !switcher.is_inputting()
-                            && matches!(key.code, KeyCode::Right | KeyCode::Enter | KeyCode::Char('\t'))
-                        {
-                            focus_terminal = true;
-                            continue;
-                        }
-                        switcher.handle_key(key);
-                    }
-                    dispatch_pending_op(&mut switcher, &ops, &op_tx);
-                    ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows);
-                    if let Some(tgt) = switcher.current_attach_target() {
-                        select_attach(&mut mgr, &env, &tgt, cols, body_rows);
-                    }
-                    if switcher.take_rescan_kick() {
-                        // 'r' re-scan: re-enumerate per-session (local) sources and
-                        // re-list host-level (remote) ones; let panes re-request.
-                        panes_requested.clear();
-                        for src in &env.srcs {
-                            if src.control_per_session() {
-                                spawn_local_enumeration(src.clone(), enum_tx.clone());
-                            } else if let Some(c) = mgr.get(&src.alias) {
-                                c.list_sessions();
-                            }
-                        }
-                    }
+                    // TREE focus: one shared path (also used by the replay below).
+                    let (ft, q) = handle_tree_bytes(
+                        &bytes, &mut tree_decoder, &mut tree_armed, prefix, &mut switcher,
+                        &mut mgr, &env, &ops, &op_tx, &enum_tx, &mut panes_requested,
+                        cols, body_rows,
+                    );
+                    focus_terminal = ft;
+                    quit = q;
                 } else {
                     // TERMINAL focus: forward raw bytes to the session's active pane;
                     // TermInput intercepts the prefix (→ tree / quit / literal prefix).
@@ -488,17 +520,20 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 if focus_tree && !app.is_overlay() {
                     app.toggle();
                     let _ = term.clear();
-                    // Replay the bytes that trailed the switch command into the tree
-                    // (they belong to the now-focused tree, not the pane).
+                    // Replay the bytes that trailed the switch command through the
+                    // SAME tree path, so they behave exactly as a later read would
+                    // (prefix arming, plain →/Enter/Tab → terminal, etc.).
                     if !tree_replay.is_empty() {
-                        for key in tree_decoder.feed(&tree_replay) {
-                            switcher.handle_key(key);
+                        let (ft, q) = handle_tree_bytes(
+                            &tree_replay, &mut tree_decoder, &mut tree_armed, prefix,
+                            &mut switcher, &mut mgr, &env, &ops, &op_tx, &enum_tx,
+                            &mut panes_requested, cols, body_rows,
+                        );
+                        if ft && app.is_overlay() {
+                            app.toggle(); // a replayed →/Enter/Tab flips straight back
+                            let _ = term.clear();
                         }
-                        dispatch_pending_op(&mut switcher, &ops, &op_tx);
-                        ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows);
-                        if let Some(tgt) = switcher.current_attach_target() {
-                            select_attach(&mut mgr, &env, &tgt, cols, body_rows);
-                        }
+                        quit = quit || q;
                     }
                 }
                 if quit || switcher.wants_quit() {
