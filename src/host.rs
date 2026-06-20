@@ -359,9 +359,13 @@ pub fn run_writer<W: Write>(
                 // target), but the correlator validates against the SESSION NAME —
                 // `%session-changed` reports the name, not `session:window`, so a
                 // bare `target` would never match and the pane would stay unset.
+                // Quote the target for the command lines (a name with spaces/quotes
+                // would otherwise split into several control-mode args); the session
+                // name for validation comes from the RAW target.
                 let session = crate::mux::session_name(&target).to_string();
+                let qt = crate::mux::quote_target(&target);
                 in_flight.lock().unwrap().push_back(PendingReply::Ignore);
-                if w.write_all(format!("switch-client -t {target}\n").as_bytes()).is_err() {
+                if w.write_all(format!("switch-client -t {qt}\n").as_bytes()).is_err() {
                     return;
                 }
                 in_flight
@@ -370,7 +374,7 @@ pub fn run_writer<W: Write>(
                     .push_back(PendingReply::ActivePane { session, local: false });
                 if w
                     .write_all(
-                        format!("display-message -p -t {target} 'PANE=#{{pane_id}} WIN=#{{window_index}}'\n")
+                        format!("display-message -p -t {qt} 'PANE=#{{pane_id}} WIN=#{{window_index}}'\n")
                             .as_bytes(),
                     )
                     .is_err()
@@ -1213,6 +1217,31 @@ mod tests {
                 .any(|r| matches!(r, PendingReply::ActivePane { session, .. } if session == "api")),
             "correlator validates against the session NAME, not the session:window target"
         );
+    }
+
+    #[test]
+    fn writer_switch_client_quotes_target_with_spaces() {
+        // A session/window name with a space must be quoted for the control-mode
+        // parser (else it splits into several args), while the correlator still
+        // validates against the raw session name.
+        let (tx, rx) = std::sync::mpsc::channel::<HostCmd>();
+        let in_flight: InFlight = Default::default();
+        tx.send(HostCmd::SwitchClient { target: "my proj:2".into() }).unwrap();
+        tx.send(HostCmd::Shutdown).unwrap();
+        drop(tx);
+        let mut out: Vec<u8> = Vec::new();
+        run_writer(rx, &mut out, &in_flight);
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("switch-client -t 'my proj:2'\n"), "switch quoted: {s}");
+        assert!(
+            s.contains("display-message -p -t 'my proj:2' 'PANE=#{pane_id} WIN=#{window_index}'\n"),
+            "probe quoted: {s}"
+        );
+        assert!(in_flight
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| matches!(r, PendingReply::ActivePane { session, .. } if session == "my proj")));
     }
 
     #[test]
