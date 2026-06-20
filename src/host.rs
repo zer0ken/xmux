@@ -535,14 +535,17 @@ impl HostClient {
         });
     }
 
-    /// Probe the active pane of the attached session (`display-message -p
-    /// 'PANE=#{pane_id}'`). A per-session local (psmux) connection never issues
-    /// switch-client — the connection IS its session — so without this its
-    /// `active_pane` stays `None` and terminal input finds no pane to forward to.
-    pub fn probe_active_pane(&self, session: impl Into<String>) {
+    /// Probe the active pane + window of `session` (`display-message -p 'PANE=%N
+    /// WIN=<idx>'`). `local = true` for a per-session psmux connection, which never
+    /// issues switch-client — the connection IS its session — so its reply is
+    /// accepted while `attached_session` is unset (otherwise `active_pane` stays
+    /// `None` and input finds no pane). `local = false` for a host-level (tmux)
+    /// probe (e.g. on a window change), which stays strict so a stale reply from a
+    /// rapid re-switch cannot set the pane for a session we already left.
+    pub fn probe_active_pane(&self, session: impl Into<String>, local: bool) {
         let _ = self.cmd_tx.send(HostCmd::Query {
             line: "display-message -p 'PANE=#{pane_id} WIN=#{window_index}'\n".to_string(),
-            reply: PendingReply::ActivePane { session: session.into(), local: true },
+            reply: PendingReply::ActivePane { session: session.into(), local },
         });
     }
 

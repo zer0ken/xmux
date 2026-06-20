@@ -81,9 +81,11 @@ fn select_attach(
                 client.capture_screen(&tgt.target);
                 // psmux has no control-mode switch-client, so the active pane is
                 // never resolved by an attach probe. Resolve it once on connect so
-                // terminal input has a pane to forward to (issue #6).
+                // terminal input has a pane to forward to (issue #6). `local = true`:
+                // this per-session connection's reply is valid even before its
+                // `%session-changed` arrives.
                 if fresh {
-                    client.probe_active_pane(session);
+                    client.probe_active_pane(session, true);
                 }
                 true
             }
@@ -355,9 +357,11 @@ fn handle_host_event(
                     if let Some(session) = attached {
                         // Refresh the (active) window marker in the tree, then probe
                         // the new active window so the Focus event syncs the cursor.
+                        // `local = false`: a host-level probe stays strict (the
+                        // session is already attached here).
                         let address = format!("{host}/{session}");
                         client.list_panes(&session, address);
-                        client.probe_active_pane(session);
+                        client.probe_active_pane(session, false);
                     }
                 }
             }
@@ -563,8 +567,13 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             }
         }
 
+        // NOT biased: a biased select polls host_rx first every iteration, so a
+        // sustained %output flood (host_rx always ready) would starve stdin, the
+        // control socket, ops, enumeration, and the animation/resize tick — the
+        // bounded drain caps one burst but the next select would just re-pick
+        // host_rx. Unbiased select polls from a rotating start, so every branch
+        // gets a fair share even while host_rx stays ready.
         tokio::select! {
-            biased;
             Some(ev) = host_rx.recv() => {
                 handle_host_event(ev, &mut mgr, &mut switcher, &mut connected, &mut panes_requested);
                 // Coalesce the rest of an in-flight burst into ONE redraw: a busy
