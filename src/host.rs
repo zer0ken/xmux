@@ -244,11 +244,15 @@ fn resolve_block<E: FnMut(HostEvent)>(
             emit(HostEvent::Focus { host: host.to_string(), session: session.clone(), window });
         }
         PendingReply::CaptureScreen => {
-            // Repaint the grid from the captured screen: clear it, home the cursor,
-            // then feed the captured lines. control mode never resends a static
-            // session's screen on switch-client, so this seeds it; live %output
-            // takes over for subsequent changes.
-            let mut bytes: Vec<u8> = b"\x1b[2J\x1b[3J\x1b[H".to_vec();
+            // Repaint the grid from the captured screen: reset the SGR state, clear
+            // it, home the cursor, then feed the captured lines. The leading
+            // `\x1b[m` matters because `\x1b[2J` paints cleared cells with the
+            // currently-active background (background-colour erase); without the
+            // reset, a non-default background left over from the previous screen
+            // bleeds onto every cell the capture does not cover. control mode never
+            // resends a static session's screen on switch-client, so this seeds it;
+            // live %output takes over for subsequent changes.
+            let mut bytes: Vec<u8> = b"\x1b[m\x1b[2J\x1b[3J\x1b[H".to_vec();
             for (i, line) in body.iter().enumerate() {
                 if i > 0 {
                     bytes.extend_from_slice(b"\r\n");
@@ -861,6 +865,38 @@ mod tests {
         let row0: String = (0..30).map(|x| buf[(x, 0)].symbol()).collect();
         assert!(row0.starts_with("hello from the captured screen"), "grid row0 = {row0:?}");
         assert!(events.iter().any(|e| matches!(e, HostEvent::Output { .. })));
+    }
+
+    #[test]
+    fn reader_capture_screen_repaint_resets_stale_background() {
+        // A prior screen can leave a non-default background active in the grid's
+        // SGR state. `\x1b[2J` fills cleared cells with the CURRENTLY-ACTIVE
+        // background (background-colour erase), so without an SGR reset first the
+        // newly-captured screen inherits the stale background on every cell the
+        // capture does not cover (issue #2: switching windows left the old
+        // background uncleared).
+        let state = test_state(80, 24);
+        // The previous window left a red background active in the grid.
+        state.grid.lock().unwrap().feed(b"\x1b[41m");
+        let in_flight: InFlight = Default::default();
+        in_flight.lock().unwrap().push_back(PendingReply::CaptureScreen);
+        let lines = vec![
+            "%begin 1 5 1".to_string(),
+            "hi".to_string(),
+            "%end 1 5 1".to_string(),
+        ]
+        .into_iter();
+        run_reader("local/work", lines, &state, &in_flight, |_| {});
+        let g = state.grid.lock().unwrap();
+        let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 80, 24));
+        g.render_into(&mut buf, ratatui::layout::Rect::new(0, 0, 80, 24));
+        // A cell the capture never covered (row 1) must be the default background,
+        // not the stale red the clear would otherwise have painted.
+        assert_eq!(
+            buf[(0, 1)].bg,
+            ratatui::style::Color::Reset,
+            "cleared cell must use the default bg, not the stale red"
+        );
     }
 
     #[test]
