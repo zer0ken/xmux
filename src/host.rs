@@ -443,11 +443,17 @@ impl HostClient {
         cmd.args(&argv[1..])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .env_remove("PSMUX_SESSION")
-            .env_remove("TMUX")
-            .env_remove("TMUX_PANE");
-        // Per-session local psmux targets its session via PSMUX_SESSION_NAME.
+            .stderr(Stdio::piped());
+        // Strip EVERY mux session var (all `PSMUX*`, `TMUX`, `TMUX_PANE` — see
+        // `source::is_mux_var`), not just `PSMUX_SESSION`: a per-session psmux
+        // control child must not inherit stale psmux routing state (e.g. an
+        // ambient `PSMUX_SESSION_NAME`) that could override its `-s <session>`
+        // target and attach the wrong server.
+        for (k, _) in std::env::vars() {
+            if crate::source::is_mux_var(&k) {
+                cmd.env_remove(&k);
+            }
+        }
         for (k, v) in extra_env {
             cmd.env(k, v);
         }

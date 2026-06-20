@@ -69,7 +69,7 @@ impl Runner for ExecRunner {
     }
 }
 
-fn is_mux_var(key: &str) -> bool {
+pub fn is_mux_var(key: &str) -> bool {
     // Exactly tmux's session markers and any psmux var; NOT a blanket `TMUX`
     // prefix, which would also drop unrelated vars like `TMUX_TMPDIR` (selects
     // the socket dir) or `TMUXP_*` (the separate tmuxp tool).
