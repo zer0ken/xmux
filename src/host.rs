@@ -10,7 +10,7 @@ use std::thread::JoinHandle;
 use crate::mux::{parse_panes, parse_sessions, SESSION_FORMAT};
 use crate::proxy::control_proto::{
     classify, decode_output_into, pause_after_line, refresh_size_line, send_keys_line,
-    strip_extended_prefix, Line, Notif,
+    send_keys_lines_literal, strip_extended_prefix, Line, Notif,
 };
 use crate::proxy::screen::Grid;
 use crate::session::{Session, WindowPanes};
@@ -337,6 +337,7 @@ pub fn run_writer<W: Write>(
     rx: std::sync::mpsc::Receiver<HostCmd>,
     w: &mut W,
     in_flight: &InFlight,
+    literal_keys: bool,
 ) {
     while let Ok(cmd) = rx.recv() {
         match cmd {
@@ -347,9 +348,17 @@ pub fn run_writer<W: Write>(
                 }
             }
             HostCmd::SendKeys { pane, bytes } => {
-                let line = send_keys_line(&pane, &bytes);
-                // Empty burst yields no command line → push nothing (keeps lockstep).
-                if !line.is_empty() {
+                // psmux ignores `-H`, so its keys go as `-l` literals + key names
+                // (possibly several lines); tmux takes one batched `-H` line. Each
+                // line gets ONE FIFO entry, matching its `%begin`/`%end` ack.
+                let lines = if literal_keys {
+                    send_keys_lines_literal(&pane, &bytes)
+                } else {
+                    let line = send_keys_line(&pane, &bytes);
+                    // Empty burst yields no command line → push nothing (keeps lockstep).
+                    if line.is_empty() { Vec::new() } else { vec![line] }
+                };
+                for line in lines {
                     in_flight.lock().unwrap().push_back(PendingReply::Ignore);
                     if w.write_all(line.as_bytes()).is_err() {
                         return;
@@ -439,6 +448,7 @@ impl HostClient {
         rows: u16,
         events: tokio::sync::mpsc::UnboundedSender<HostEvent>,
         extra_env: &[(&str, &str)],
+        literal_keys: bool,
     ) -> anyhow::Result<HostClient> {
         anyhow::ensure!(!argv.is_empty(), "HostClient::spawn: argv must not be empty");
         let host = host.into();
@@ -518,7 +528,7 @@ impl HostClient {
         // Writer thread: owns the child stdin, drains the command channel.
         let writer_in_flight = Arc::clone(&in_flight);
         let writer = std::thread::spawn(move || {
-            run_writer(cmd_rx, &mut stdin, &writer_in_flight);
+            run_writer(cmd_rx, &mut stdin, &writer_in_flight, literal_keys);
         });
 
         // Connect sequence: refresh-client -C size, enable flow control, list.
@@ -699,7 +709,15 @@ impl HostManager {
         if self.clients.contains_key(host) {
             return Ok(false);
         }
-        let client = HostClient::spawn(host, &src.control_argv(), cols, rows, self.events.clone(), &[])?;
+        let client = HostClient::spawn(
+            host,
+            &src.control_argv(),
+            cols,
+            rows,
+            self.events.clone(),
+            &[],
+            src.literal_send_keys(),
+        )?;
         self.clients.insert(host.to_string(), client);
         Ok(true)
     }
@@ -727,6 +745,7 @@ impl HostManager {
             rows,
             self.events.clone(),
             &[],
+            src.literal_send_keys(),
         )?;
         self.clients.insert(key.to_string(), client);
         Ok(true)
@@ -770,7 +789,8 @@ impl HostManager {
     /// `host` and `cockpit` test modules.
     pub(crate) fn insert_fake(&mut self, host: &str) {
         let argv: Vec<String> = ["cmd.exe", "/c", "rem"].iter().map(|s| s.to_string()).collect();
-        let client = HostClient::spawn(host, &argv, 80, 24, self.events.clone(), &[]).expect("spawn");
+        let client =
+            HostClient::spawn(host, &argv, 80, 24, self.events.clone(), &[], false).expect("spawn");
         self.clients.insert(host.to_string(), client);
     }
 }
@@ -1077,7 +1097,7 @@ mod tests {
         tx.send(HostCmd::Shutdown).unwrap();
         drop(tx);
         let mut out = Vec::new();
-        run_writer(rx, &mut out, &in_flight);
+        run_writer(rx, &mut out, &in_flight, false);
         assert!(String::from_utf8(out).unwrap().contains("refresh-client -A %3:continue\n"));
     }
 
@@ -1202,7 +1222,7 @@ mod tests {
         tx.send(HostCmd::Shutdown).unwrap();
         drop(tx);
         let mut out: Vec<u8> = Vec::new();
-        run_writer(rx, &mut out, &in_flight);
+        run_writer(rx, &mut out, &in_flight, false);
         let s = String::from_utf8(out).unwrap();
         assert!(s.contains("refresh-client -f pause-after=2\n"));
         assert!(s.contains("send-keys -t %0 -H 03\n"));
@@ -1219,7 +1239,7 @@ mod tests {
         tx.send(HostCmd::Shutdown).unwrap();
         drop(tx);
         let mut out: Vec<u8> = Vec::new();
-        run_writer(rx, &mut out, &in_flight);
+        run_writer(rx, &mut out, &in_flight, false);
         let s = String::from_utf8(out).unwrap();
         assert!(s.contains("switch-client -t api\n"));
         // PANE=/WIN= prefixes + message-arg form so the reader parses the active
@@ -1247,7 +1267,7 @@ mod tests {
         tx.send(HostCmd::Shutdown).unwrap();
         drop(tx);
         let mut out: Vec<u8> = Vec::new();
-        run_writer(rx, &mut out, &in_flight);
+        run_writer(rx, &mut out, &in_flight, false);
         let s = String::from_utf8(out).unwrap();
         assert!(s.contains("switch-client -t api:2\n"));
         assert!(s.contains("display-message -p -t api:2 'PANE=#{pane_id} WIN=#{window_index}'\n"));
@@ -1272,7 +1292,7 @@ mod tests {
         tx.send(HostCmd::Shutdown).unwrap();
         drop(tx);
         let mut out: Vec<u8> = Vec::new();
-        run_writer(rx, &mut out, &in_flight);
+        run_writer(rx, &mut out, &in_flight, false);
         let s = String::from_utf8(out).unwrap();
         assert!(s.contains("switch-client -t 'my proj:2'\n"), "switch quoted: {s}");
         assert!(
@@ -1328,7 +1348,7 @@ mod tests {
         tx.send(HostCmd::Shutdown).unwrap();
         drop(tx);
         let mut out: Vec<u8> = Vec::new();
-        run_writer(rx, &mut out, &in_flight);
+        run_writer(rx, &mut out, &in_flight, false);
         let s = String::from_utf8(out).unwrap();
         assert!(s.contains("list-panes -s -t if -F"), "writes the list-panes command: {s}");
         assert!(
@@ -1345,7 +1365,7 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let client = HostClient::spawn("local", &argv, 80, 24, tx, &[]).expect("spawn");
+        let client = HostClient::spawn("local", &argv, 80, 24, tx, &[], false).expect("spawn");
         // echo exits immediately, closing pipes → teardown's joins return promptly.
         client.teardown();
     }

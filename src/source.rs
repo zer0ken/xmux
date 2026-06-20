@@ -233,6 +233,14 @@ impl Source {
         !self.remote && self.binary == "psmux"
     }
 
+    /// True when this source's mux ignores `send-keys -H` (hex) over control mode
+    /// and must instead have keystrokes forwarded as `-l '<literal>'` runs plus
+    /// key names (see [`crate::proxy::control_proto::send_keys_lines_literal`]).
+    /// psmux echoes `-H` digits as literal text; tmux honours `-H`.
+    pub fn literal_send_keys(&self) -> bool {
+        self.binary == "psmux"
+    }
+
     /// The argv for a per-session local psmux control child attaching `session`.
     /// `psmux -CC new-session -A -s <session>` routes to that session's own server
     /// (one-server-per-session) and attaches the REAL session. `psmux -CC` with

@@ -187,6 +187,56 @@ pub fn send_keys_line(pane: &str, bytes: &[u8]) -> String {
     s
 }
 
+/// The tmux key name that, sent via `send-keys` (no `-l`), produces the single
+/// control byte `b`. Used by [`send_keys_lines_literal`] for psmux, whose
+/// `send-keys -H` is a no-op. `Enter`/`Tab`/`Escape`/`BSpace` are spelled out for
+/// clarity; every other C0 byte (and DEL handled above) maps to `C-<char>` where
+/// `<char> = b | 0x40` (`0x01..=0x1a` → `C-A..C-Z`, `0x1b..=0x1f` → `C-[ \ ] ^ _`,
+/// `0x00` → `C-@`) — psmux masks the control char with `0x1f`, recovering `b`.
+fn ctrl_key_name(b: u8) -> String {
+    match b {
+        0x09 => "Tab".to_string(),
+        0x0d => "Enter".to_string(),
+        0x1b => "Escape".to_string(),
+        0x7f => "BSpace".to_string(),
+        _ => format!("C-{}", (b | 0x40) as char),
+    }
+}
+
+/// `send-keys` command lines forwarding `bytes` to `pane` for **psmux**, which
+/// does NOT honour `-H` (hex) over control mode — it echoes the hex digits as
+/// literal text. Instead each run of printable bytes is sent as a single-quoted
+/// `-l '<run>'` literal (psmux's control parser keeps a single-quoted argument
+/// verbatim, spaces and all), each control byte (and DEL) as the key NAME that
+/// produces it, and a literal apostrophe — which a single-quoted run cannot hold
+/// — as `"'"` (a double-quoted, non-`-l` key token psmux passes through). One
+/// command line per segment; an empty `bytes` yields no lines.
+pub fn send_keys_lines_literal(pane: &str, bytes: &[u8]) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut run: Vec<u8> = Vec::new();
+    for &b in bytes {
+        // Printable ASCII (minus apostrophe) and UTF-8 bytes accumulate into the
+        // single-quoted run; everything else flushes the run and is sent on its own.
+        if b >= 0x20 && b != 0x7f && b != b'\'' {
+            run.push(b);
+            continue;
+        }
+        if !run.is_empty() {
+            lines.push(format!("send-keys -t {pane} -l '{}'\n", String::from_utf8_lossy(&run)));
+            run.clear();
+        }
+        if b == b'\'' {
+            lines.push(format!("send-keys -t {pane} \"'\"\n"));
+        } else {
+            lines.push(format!("send-keys -t {pane} {}\n", ctrl_key_name(b)));
+        }
+    }
+    if !run.is_empty() {
+        lines.push(format!("send-keys -t {pane} -l '{}'\n", String::from_utf8_lossy(&run)));
+    }
+    lines
+}
+
 /// `refresh-client -C WxH` — the `x`-form is correct for 3.3.x (`[research §7]`).
 pub fn refresh_size_line(cols: u16, rows: u16) -> String {
     format!("refresh-client -C {cols}x{rows}\n")
@@ -320,6 +370,42 @@ mod tests {
         // Up-arrow CSI ESC [ A → 1b 5b 41.
         assert_eq!(send_keys_line("%2", b"\x1b[A"), "send-keys -t %2 -H 1b 5b 41\n");
         assert_eq!(send_keys_line("%0", b""), "", "empty burst yields no command");
+    }
+
+    #[test]
+    fn send_keys_literal_encodes_printable_runs_and_keys() {
+        // psmux ignores `-H`: a printable run is one single-quoted `-l` literal.
+        assert_eq!(
+            send_keys_lines_literal("%0", b"echo hi"),
+            vec!["send-keys -t %0 -l 'echo hi'\n"]
+        );
+        // A trailing carriage return is the Enter key, on its own line.
+        assert_eq!(
+            send_keys_lines_literal("%1", b"ls\r"),
+            vec!["send-keys -t %1 -l 'ls'\n", "send-keys -t %1 Enter\n"]
+        );
+        // Ctrl-C (0x03) → C-C; Tab/Escape/BSpace spelled out.
+        assert_eq!(send_keys_lines_literal("%0", b"\x03"), vec!["send-keys -t %0 C-C\n"]);
+        assert_eq!(send_keys_lines_literal("%0", b"\t"), vec!["send-keys -t %0 Tab\n"]);
+        assert_eq!(send_keys_lines_literal("%0", &[0x7f]), vec!["send-keys -t %0 BSpace\n"]);
+        // Up-arrow CSI (ESC [ A): Escape key, then the printable "[A" literal —
+        // the bytes arrive contiguously and reconstruct the arrow.
+        assert_eq!(
+            send_keys_lines_literal("%0", b"\x1b[A"),
+            vec!["send-keys -t %0 Escape\n", "send-keys -t %0 -l '[A'\n"]
+        );
+        // A literal apostrophe cannot sit in a single-quoted run — it splits out
+        // as a double-quoted, non-`-l` key token.
+        assert_eq!(
+            send_keys_lines_literal("%0", b"a'b"),
+            vec![
+                "send-keys -t %0 -l 'a'\n",
+                "send-keys -t %0 \"'\"\n",
+                "send-keys -t %0 -l 'b'\n"
+            ]
+        );
+        // Empty burst → no lines (keeps the FIFO in lockstep).
+        assert!(send_keys_lines_literal("%0", b"").is_empty());
     }
 
     #[test]
