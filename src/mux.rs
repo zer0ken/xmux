@@ -62,6 +62,23 @@ pub fn window_target(session: &str, window: i64) -> String {
     format!("{session}:{window}")
 }
 
+/// Quotes a `-t` target for a CONTROL-MODE command line (the tmux/psmux command
+/// parser, not a shell). A name of only safe characters passes through bare;
+/// anything else (space, quote, metachar) is single-quoted with embedded single
+/// quotes escaped as `'\''` — the parser reads a backslash-escaped quote outside
+/// quotes as a literal, so `a'b` becomes `'a'\''b'`.
+pub fn quote_target(t: &str) -> String {
+    let safe = !t.is_empty()
+        && t.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b':' | b'/' | b'@' | b'%')
+        });
+    if safe {
+        t.to_string()
+    } else {
+        format!("'{}'", t.replace('\'', "'\\''"))
+    }
+}
+
 /// Makes the target window active in its session.
 pub fn select_window(bin: &str, target: &str) -> Vec<String> {
     argv(&[bin, "select-window", "-t", target])
@@ -220,6 +237,18 @@ mod tests {
             list_sessions("tmux"),
             sv(&["tmux", "list-sessions", "-F", SESSION_FORMAT])
         );
+    }
+
+    #[test]
+    fn quote_target_bare_and_quoted() {
+        // Safe names pass through bare (so simple sessions/windows are unchanged).
+        assert_eq!(quote_target("0"), "0");
+        assert_eq!(quote_target("editor:1"), "editor:1");
+        assert_eq!(quote_target("api-2"), "api-2");
+        // Spaces and quotes are escaped for the control-mode parser.
+        assert_eq!(quote_target("my proj"), "'my proj'");
+        assert_eq!(quote_target("a'b"), "'a'\\''b'");
+        assert_eq!(quote_target(""), "''");
     }
 
     #[test]

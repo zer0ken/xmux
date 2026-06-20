@@ -10,8 +10,10 @@
 pub enum TermAction {
     /// Raw bytes to forward to the focused session's active pane.
     Forward(Vec<u8>),
-    /// `prefix` then Left/Right/Tab/Esc — move focus back to the tree.
-    FocusTree,
+    /// `prefix` then Left/Right/Tab/Esc — move focus back to the tree. Carries any
+    /// bytes that followed the switch command in the same read: focus has changed,
+    /// so the caller must hand them to the tree, not the pane.
+    FocusTree(Vec<u8>),
     /// `prefix` then `q` — quit the cockpit.
     Quit,
 }
@@ -75,7 +77,8 @@ impl TermInput {
                     if !fwd.is_empty() {
                         out.push(TermAction::Forward(std::mem::take(&mut fwd)));
                     }
-                    out.push(TermAction::FocusTree);
+                    // Hand the rest of the read to the tree (focus is switching).
+                    out.push(TermAction::FocusTree(bytes[i + 1..].to_vec()));
                     break;
                 }
                 if b0 == b'q' {
@@ -136,7 +139,7 @@ mod tests {
     fn prefix_then_tab_focuses_tree() {
         let mut t = m();
         assert!(t.feed(&[0x07]).is_empty(), "prefix alone is held");
-        assert_eq!(t.feed(b"\t"), vec![TermAction::FocusTree]);
+        assert_eq!(t.feed(b"\t"), vec![TermAction::FocusTree(vec![])]);
     }
 
     #[test]
@@ -144,17 +147,26 @@ mod tests {
         for seq in [&b"\x1b[D"[..], &b"\x1b[C"[..], &b"\x1b"[..]] {
             let mut t = m();
             t.feed(&[0x07]);
-            assert_eq!(t.feed(seq), vec![TermAction::FocusTree], "seq {seq:?} → tree");
+            assert!(
+                matches!(t.feed(seq).as_slice(), [TermAction::FocusTree(_)]),
+                "seq {seq:?} → tree"
+            );
         }
     }
 
     #[test]
     fn prefix_then_left_in_one_read_focuses_tree() {
-        // The whole prefix + arrow arriving in a single read must still resolve as
-        // one Left (not a stray Esc that drops the [D bytes to the pane).
+        // The whole prefix + arrow arriving in a single read still leaves to tree.
         let mut t = m();
-        let out = t.feed(b"\x07\x1b[D");
-        assert_eq!(out, vec![TermAction::FocusTree]);
+        assert!(matches!(t.feed(b"\x07\x1b[D").as_slice(), [TermAction::FocusTree(_)]));
+    }
+
+    #[test]
+    fn prefix_then_tab_then_trailing_goes_to_tree() {
+        // `C-g Tab abc` in one read: focus leaves to the tree carrying `abc` (no
+        // byte loss — the trailing input belongs to the new focus).
+        let mut t = m();
+        assert_eq!(t.feed(b"\x07\tabc"), vec![TermAction::FocusTree(b"abc".to_vec())]);
     }
 
     #[test]
@@ -198,7 +210,7 @@ mod tests {
     fn bytes_before_prefix_forward_then_intercept() {
         let mut t = m();
         let out = t.feed(b"hi\x07\t");
-        assert_eq!(out, vec![TermAction::Forward(b"hi".to_vec()), TermAction::FocusTree]);
+        assert_eq!(out, vec![TermAction::Forward(b"hi".to_vec()), TermAction::FocusTree(vec![])]);
     }
 
     #[test]
@@ -214,6 +226,6 @@ mod tests {
         }
         // after the paste the prefix arms again
         assert!(t.feed(&[0x07]).is_empty());
-        assert_eq!(t.feed(b"\t"), vec![TermAction::FocusTree]);
+        assert_eq!(t.feed(b"\t"), vec![TermAction::FocusTree(vec![])]);
     }
 }

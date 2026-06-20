@@ -411,6 +411,9 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 let mut quit = false;
                 let mut focus_terminal = false;
                 let mut focus_tree = false;
+                // Bytes that followed a terminal→tree switch command in the same
+                // read; replayed into the tree after focus flips (not lost).
+                let mut tree_replay: Vec<u8> = Vec::new();
                 if app.is_overlay() {
                     // TREE focus: decode keys. While editing an input (filter/rename)
                     // every key goes to the switcher. Otherwise plain →/Enter/Tab move
@@ -470,7 +473,10 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                     }
                                 }
                             }
-                            TermAction::FocusTree => focus_tree = true,
+                            TermAction::FocusTree(rest) => {
+                                focus_tree = true;
+                                tree_replay = rest;
+                            }
                             TermAction::Quit => quit = true,
                         }
                     }
@@ -482,6 +488,18 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 if focus_tree && !app.is_overlay() {
                     app.toggle();
                     let _ = term.clear();
+                    // Replay the bytes that trailed the switch command into the tree
+                    // (they belong to the now-focused tree, not the pane).
+                    if !tree_replay.is_empty() {
+                        for key in tree_decoder.feed(&tree_replay) {
+                            switcher.handle_key(key);
+                        }
+                        dispatch_pending_op(&mut switcher, &ops, &op_tx);
+                        ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows);
+                        if let Some(tgt) = switcher.current_attach_target() {
+                            select_attach(&mut mgr, &env, &tgt, cols, body_rows);
+                        }
+                    }
                 }
                 if quit || switcher.wants_quit() {
                     break;
