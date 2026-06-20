@@ -18,11 +18,26 @@ use crate::env::Env;
 use crate::host::{HostManager, HostEvent};
 use crate::ui::switcher::TerminalViewTarget;
 
+/// The size to give a host's grid + `refresh-client -C`: the terminal-view pane
+/// (right of the tree + divider), NOT the whole terminal. Sizing a host to the
+/// full terminal makes the remote wrap at a width wider than the visible pane, so
+/// a line overflows the right edge (and a double-width char straddles the clip
+/// boundary, wrapping to col 0 of the next line), and the bottom status row falls
+/// outside the pane. The view width is `cols - TREE_WIDTH - 1` (tree + the single
+/// divider rule); the view height is the body height. Both clamp to at least 1.
+fn terminal_view_size(cols: u16, body_rows: u16) -> (u16, u16) {
+    let view_cols = cols
+        .saturating_sub(crate::ui::switcher::TREE_WIDTH + 1)
+        .max(1);
+    (view_cols, body_rows.max(1))
+}
+
 /// Ensures `tgt`'s host is connected (spawning its control client lazily) and
 /// queues a `switch-client` to its session on that client. Returns `true` when a
 /// switch was queued, `false` when the source is unknown or the client could not
 /// be spawned. Extracted from the loop so the `select = attach` decision is
-/// unit-testable without a real terminal.
+/// unit-testable without a real terminal. `cols`/`rows` are the terminal body
+/// size; the host is sized to the terminal-view pane via [`terminal_view_size`].
 fn select_attach(
     mgr: &mut HostManager,
     env: &Env,
@@ -30,6 +45,7 @@ fn select_attach(
     cols: u16,
     rows: u16,
 ) -> bool {
+    let (cols, rows) = terminal_view_size(cols, rows);
     let Some(src) = env.by_alias.get(&tgt.source) else {
         return false;
     };
@@ -78,6 +94,7 @@ fn ensure_current_host(
     cols: u16,
     rows: u16,
 ) {
+    let (cols, rows) = terminal_view_size(cols, rows);
     if let Some(host) = switcher.current_host() {
         if let Some(src) = env.by_alias.get(&host) {
             // Per-session sources (local psmux) enumerate via plain commands and
@@ -171,6 +188,7 @@ fn connect_all_sources(
     rows: u16,
     enum_tx: &tokio::sync::mpsc::UnboundedSender<LocalEnum>,
 ) {
+    let (cols, rows) = terminal_view_size(cols, rows);
     for src in &env.srcs {
         if src.control_per_session() {
             // Per-session (local psmux): enumerate the tree with plain commands;
@@ -638,7 +656,8 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         let body = r.saturating_sub(1);
                         cols = c;
                         body_rows = body;
-                        mgr.resize_all(c, body);
+                        let (vc, vr) = terminal_view_size(c, body);
+                        mgr.resize_all(vc, vr);
                         let _ = term.autoresize();
                     }
                 }
@@ -778,6 +797,25 @@ mod tests {
         assert!(mgr.get("jupiter00").is_some(), "jupiter00 connected at startup");
         assert!(mgr.get("local").is_some(), "local connected at startup");
         mgr.teardown_all();
+    }
+
+    #[test]
+    fn terminal_view_size_subtracts_tree_and_divider() {
+        use crate::ui::switcher::TREE_WIDTH;
+        // The host grid + refresh-client must be sized to the terminal-view pane
+        // (right of the tree + divider), not the full terminal — else the remote
+        // wraps at the wrong width and a wide char straddles the clip boundary.
+        let (vc, vr) = terminal_view_size(143, 39);
+        assert_eq!(vc, 143 - (TREE_WIDTH + 1), "cols minus tree minus divider");
+        assert_eq!(vr, 39, "rows pass through (the body height)");
+    }
+
+    #[test]
+    fn terminal_view_size_clamps_to_at_least_one() {
+        // A terminal narrower/shorter than the tree must never size a host to 0.
+        let (vc, vr) = terminal_view_size(10, 0);
+        assert_eq!(vc, 1);
+        assert_eq!(vr, 1);
     }
 
     #[test]

@@ -62,7 +62,12 @@ impl Grid {
                     continue;
                 };
                 let cell = &mut buf[(area.x + c, area.y + r)];
-                if vcell.has_contents() {
+                if vcell.is_wide() && c + 1 >= cols {
+                    // A double-width char whose second half falls outside the
+                    // clipped pane would overflow the right edge and wrap to col 0
+                    // of the next line; blank it so the pane stays aligned.
+                    cell.set_symbol(" ");
+                } else if vcell.has_contents() {
                     cell.set_symbol(vcell.contents());
                 } else {
                     cell.set_symbol(" ");
@@ -150,6 +155,34 @@ mod tests {
         assert_eq!(buf[(2, 0)].symbol(), "L");
         // Column 3 was outside the area and must be untouched (default space).
         assert_eq!(buf[(3, 0)].symbol(), " ");
+    }
+
+    #[test]
+    fn render_into_blanks_wide_char_straddling_right_edge() {
+        // A grid wider than the area can place a double-width char at the last
+        // visible column, whose second half falls outside the area. Drawing it
+        // would overflow the real terminal's right edge and wrap to col 0 of the
+        // next line (the Hangul "overlap at col 0" bug). render_into must blank it.
+        let mut g = Grid::new(1, 10);
+        g.feed("한국어".as_bytes()); // 한=cols0-1, 국=2-3, 어=4-5 (each double-width)
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 1));
+        // 5-wide area: 한(0-1) and 국(2-3) fit; 어 needs cols 4-5 but col 5 is
+        // outside the area → it must be blanked, not drawn at col 4.
+        g.render_into(&mut buf, Rect::new(0, 0, 5, 1));
+        assert_eq!(buf[(0, 0)].symbol(), "한");
+        assert_eq!(buf[(2, 0)].symbol(), "국");
+        assert_eq!(buf[(4, 0)].symbol(), " ", "straddling wide char blanked, no overflow");
+    }
+
+    #[test]
+    fn render_into_keeps_wide_char_fully_inside_area() {
+        // A double-width char with room for both halves inside the area is drawn.
+        let mut g = Grid::new(1, 10);
+        g.feed("한국".as_bytes()); // 한=0-1, 국=2-3
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 1));
+        g.render_into(&mut buf, Rect::new(0, 0, 4, 1));
+        assert_eq!(buf[(0, 0)].symbol(), "한");
+        assert_eq!(buf[(2, 0)].symbol(), "국", "fully-inside wide char is kept");
     }
 
     #[test]
