@@ -322,9 +322,13 @@ fn clear_connecting(state: &ReaderState) {
 }
 
 /// Drains the command channel, writing exact command bytes to `w` and pushing ONE
-/// correlation entry per command LINE written, so the FIFO stays in lockstep with
-/// the `%begin` blocks the reader pops. Flushes after each write so a real child
-/// sees commands promptly. Returns on `Shutdown` (or channel close).
+/// correlation entry per command LINE, so the FIFO stays in lockstep with the
+/// `%begin` blocks the reader pops. The correlator is pushed BEFORE the bytes
+/// reach the child, so the reader can never observe the reply's `%begin` before
+/// its FIFO entry exists (the writer thread and the reader thread race otherwise).
+/// A write error means the pipe is broken (the child died) — return so no further
+/// stale entries are queued; the reader hits EOF and the client is reaped. Flushes
+/// after each command so a real child sees it promptly. Returns on `Shutdown`.
 pub fn run_writer<W: Write>(
     rx: std::sync::mpsc::Receiver<HostCmd>,
     w: &mut W,
@@ -333,39 +337,58 @@ pub fn run_writer<W: Write>(
     while let Ok(cmd) = rx.recv() {
         match cmd {
             HostCmd::Send(line) => {
-                let _ = w.write_all(line.as_bytes());
                 in_flight.lock().unwrap().push_back(PendingReply::Ignore);
+                if w.write_all(line.as_bytes()).is_err() {
+                    return;
+                }
             }
             HostCmd::SendKeys { pane, bytes } => {
                 let line = send_keys_line(&pane, &bytes);
                 // Empty burst yields no command line → push nothing (keeps lockstep).
                 if !line.is_empty() {
-                    let _ = w.write_all(line.as_bytes());
                     in_flight.lock().unwrap().push_back(PendingReply::Ignore);
+                    if w.write_all(line.as_bytes()).is_err() {
+                        return;
+                    }
                 }
             }
             HostCmd::SwitchClient { target } => {
                 // Two lines, two FIFO entries: the switch's own ack (Ignore), then
-                // the active-pane probe. The probe MUST emit a `PANE=#{pane_id}`
-                // body so the reader's `strip_prefix("PANE=")` resolver parses it.
-                let _ = w.write_all(format!("switch-client -t {target}\n").as_bytes());
+                // the active-pane probe. The probe targets the full `target` (so it
+                // reports the SELECTED window's pane + index for a `session:window`
+                // target), but the correlator validates against the SESSION NAME —
+                // `%session-changed` reports the name, not `session:window`, so a
+                // bare `target` would never match and the pane would stay unset.
+                let session = target.split(':').next().unwrap_or(&target).to_string();
                 in_flight.lock().unwrap().push_back(PendingReply::Ignore);
-                let _ = w.write_all(
-                    format!("display-message -p -t {target} 'PANE=#{{pane_id}} WIN=#{{window_index}}'\n")
-                        .as_bytes(),
-                );
+                if w.write_all(format!("switch-client -t {target}\n").as_bytes()).is_err() {
+                    return;
+                }
                 in_flight
                     .lock()
                     .unwrap()
-                    .push_back(PendingReply::ActivePane { session: target, local: false });
+                    .push_back(PendingReply::ActivePane { session, local: false });
+                if w
+                    .write_all(
+                        format!("display-message -p -t {target} 'PANE=#{{pane_id}} WIN=#{{window_index}}'\n")
+                            .as_bytes(),
+                    )
+                    .is_err()
+                {
+                    return;
+                }
             }
             HostCmd::Resize { cols, rows } => {
-                let _ = w.write_all(refresh_size_line(cols, rows).as_bytes());
                 in_flight.lock().unwrap().push_back(PendingReply::Ignore);
+                if w.write_all(refresh_size_line(cols, rows).as_bytes()).is_err() {
+                    return;
+                }
             }
             HostCmd::Query { line, reply } => {
-                let _ = w.write_all(line.as_bytes());
                 in_flight.lock().unwrap().push_back(reply);
+                if w.write_all(line.as_bytes()).is_err() {
+                    return;
+                }
             }
             HostCmd::Shutdown => return,
         }
@@ -1146,6 +1169,33 @@ mod tests {
             .unwrap()
             .iter()
             .any(|r| matches!(r, PendingReply::ActivePane { .. })));
+    }
+
+    #[test]
+    fn writer_switch_client_window_target_correlates_by_session_name() {
+        // Selecting a WINDOW row switches to `session:window`; the probe targets
+        // the full `session:window` (to report that window's pane + index) but the
+        // correlator validates against the SESSION NAME (`%session-changed` reports
+        // `api`, not `api:2`) — else the active pane stays unset and input to a
+        // window-row selection is dropped.
+        let (tx, rx) = std::sync::mpsc::channel::<HostCmd>();
+        let in_flight: InFlight = Default::default();
+        tx.send(HostCmd::SwitchClient { target: "api:2".into() }).unwrap();
+        tx.send(HostCmd::Shutdown).unwrap();
+        drop(tx);
+        let mut out: Vec<u8> = Vec::new();
+        run_writer(rx, &mut out, &in_flight);
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("switch-client -t api:2\n"));
+        assert!(s.contains("display-message -p -t api:2 'PANE=#{pane_id} WIN=#{window_index}'\n"));
+        assert!(
+            in_flight
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|r| matches!(r, PendingReply::ActivePane { session, .. } if session == "api")),
+            "correlator validates against the session NAME, not the session:window target"
+        );
     }
 
     #[test]
