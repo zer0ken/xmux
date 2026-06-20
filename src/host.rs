@@ -90,6 +90,10 @@ pub enum PendingReply {
     ListSessions,
     ListPanes { address: String },
     ActivePane { session: String },
+    /// `capture-pane -p -e` of the now-attached session: its body is the current
+    /// screen, fed into the grid so a freshly-switched (static) session shows its
+    /// content immediately instead of staying blank until it next changes.
+    CaptureScreen,
     Ignore,
 }
 
@@ -214,6 +218,21 @@ fn resolve_block<E: FnMut(HostEvent)>(
                     inv.active_pane = Some(pane.to_string());
                 }
             }
+        }
+        PendingReply::CaptureScreen => {
+            // Repaint the grid from the captured screen: clear it, home the cursor,
+            // then feed the captured lines. control mode never resends a static
+            // session's screen on switch-client, so this seeds it; live %output
+            // takes over for subsequent changes.
+            let mut bytes: Vec<u8> = b"\x1b[2J\x1b[3J\x1b[H".to_vec();
+            for (i, line) in body.iter().enumerate() {
+                if i > 0 {
+                    bytes.extend_from_slice(b"\r\n");
+                }
+                bytes.extend_from_slice(line.as_bytes());
+            }
+            state.grid.lock().unwrap().feed(&bytes);
+            emit(HostEvent::Output { host: host.to_string() });
         }
         PendingReply::Ignore => {}
     }
@@ -483,6 +502,18 @@ impl HostClient {
             .send(HostCmd::SwitchClient { target: session.into() });
     }
 
+    /// Seed the grid with `target`'s current screen via `capture-pane -p -e` (its
+    /// reply feeds the grid). Control mode only streams a pane on CHANGE, so a
+    /// just-selected static session would otherwise stay blank (or show the
+    /// previous session's stale content) until it next redraws; capturing paints
+    /// it at once. `-e` keeps SGR colors; `-p` prints to the reply.
+    pub fn capture_screen(&self, target: &str) {
+        let _ = self.cmd_tx.send(HostCmd::Query {
+            line: format!("capture-pane -p -e -t {target}\n"),
+            reply: PendingReply::CaptureScreen,
+        });
+    }
+
     /// Resume a pane the server paused for flow control, once the renderer has
     /// caught up (queues `refresh-client -A %pane:continue`).
     pub fn resume_pane(&self, pane: &str) {
@@ -673,6 +704,29 @@ mod tests {
         assert_eq!(inv.sessions[0].source, "jupiter06");
         assert!(events.iter().any(|e| matches!(e, HostEvent::Connected { .. })));
         assert!(!state.connecting.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn reader_capture_screen_block_feeds_the_grid() {
+        // A capture-pane reply must repaint the grid with the captured screen so a
+        // freshly-switched static session is not blank.
+        let state = test_state(80, 24);
+        let in_flight: InFlight = Default::default();
+        in_flight.lock().unwrap().push_back(PendingReply::CaptureScreen);
+        let mut events = Vec::new();
+        let lines = vec![
+            "%begin 1 5 0".to_string(),
+            "hello from the captured screen".to_string(),
+            "%end 1 5 0".to_string(),
+        ]
+        .into_iter();
+        run_reader("jupiter00", lines, &state, &in_flight, |e| events.push(e));
+        let g = state.grid.lock().unwrap();
+        let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 80, 24));
+        g.render_into(&mut buf, ratatui::layout::Rect::new(0, 0, 80, 24));
+        let row0: String = (0..30).map(|x| buf[(x, 0)].symbol()).collect();
+        assert!(row0.starts_with("hello from the captured screen"), "grid row0 = {row0:?}");
+        assert!(events.iter().any(|e| matches!(e, HostEvent::Output { .. })));
     }
 
     #[test]

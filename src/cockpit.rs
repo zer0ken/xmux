@@ -37,6 +37,10 @@ fn select_attach(
     match mgr.get(&tgt.source) {
         Some(client) => {
             client.switch_client(tgt.target.clone());
+            // Seed the grid with this target's current screen: switch-client alone
+            // does not repaint in control mode, so a static session would stay blank
+            // (or show the previous session's content) without this.
+            client.capture_screen(&tgt.target);
             true
         }
         None => false,
