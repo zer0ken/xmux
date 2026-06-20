@@ -74,11 +74,22 @@ impl TermInput {
                 // this read belongs to the new focus and is delivered on the next
                 // read; flush what was forwarded and stop here.
                 if b0 == b'\t' || b0 == 0x1b {
+                    // Consume the WHOLE command key, including a multi-byte arrow
+                    // (ESC [ A/B/C/D), so its tail isn't replayed as stray tree input.
+                    let cmd_len = if b0 == 0x1b
+                        && bytes[i..].len() >= 3
+                        && bytes[i + 1] == b'['
+                        && matches!(bytes[i + 2], b'A' | b'B' | b'C' | b'D')
+                    {
+                        3
+                    } else {
+                        1
+                    };
                     if !fwd.is_empty() {
                         out.push(TermAction::Forward(std::mem::take(&mut fwd)));
                     }
-                    // Hand the rest of the read to the tree (focus is switching).
-                    out.push(TermAction::FocusTree(bytes[i + 1..].to_vec()));
+                    // Hand any bytes AFTER the command to the tree (focus switching).
+                    out.push(TermAction::FocusTree(bytes[i + cmd_len..].to_vec()));
                     break;
                 }
                 if b0 == b'q' {
@@ -144,21 +155,24 @@ mod tests {
 
     #[test]
     fn prefix_then_left_or_right_or_esc_focuses_tree() {
+        // Each command key is consumed whole, so the replay tail is empty (no stray
+        // `[D` leaking to the tree).
         for seq in [&b"\x1b[D"[..], &b"\x1b[C"[..], &b"\x1b"[..]] {
             let mut t = m();
             t.feed(&[0x07]);
-            assert!(
-                matches!(t.feed(seq).as_slice(), [TermAction::FocusTree(_)]),
-                "seq {seq:?} → tree"
-            );
+            assert_eq!(t.feed(seq), vec![TermAction::FocusTree(vec![])], "seq {seq:?} → tree");
         }
     }
 
     #[test]
-    fn prefix_then_left_in_one_read_focuses_tree() {
-        // The whole prefix + arrow arriving in a single read still leaves to tree.
+    fn prefix_then_arrow_in_one_read_consumes_the_whole_arrow() {
+        // `C-g Left` in one read leaves to tree with NO replay tail (the `[D` of the
+        // arrow must not leak as stray tree input).
         let mut t = m();
-        assert!(matches!(t.feed(b"\x07\x1b[D").as_slice(), [TermAction::FocusTree(_)]));
+        assert_eq!(t.feed(b"\x07\x1b[D"), vec![TermAction::FocusTree(vec![])]);
+        // With trailing input after the arrow, only that trailing input is replayed.
+        let mut t2 = m();
+        assert_eq!(t2.feed(b"\x07\x1b[Dabc"), vec![TermAction::FocusTree(b"abc".to_vec())]);
     }
 
     #[test]
