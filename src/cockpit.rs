@@ -118,7 +118,8 @@ fn note_host_exited(
 pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     use crate::proxy::app::App;
     use crate::proxy::decode::KeyDecoder;
-    use crate::proxy::input::{InAction, InputMachine};
+    use crate::proxy::input::{TermAction, TermInput};
+    use ratatui::crossterm::event::KeyCode;
     use crate::proxy::term::{parse_prefix, TermGuard};
     use crate::ui::run::{dump_overlay, serve_control, AppStateKind, Cmd};
     use crate::ui::switcher::Switcher;
@@ -180,13 +181,15 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         }
     });
 
-    // Prefix + Tab toggles focus (tree ⇄ terminal); prefix + q quits.
-    let mut machine = InputMachine::new(
-        parse_prefix(Some(&env.ui_prefix)),
-        b'\t',
-        b'q',
-        Duration::from_millis(400),
-    );
+    // The prefix byte (default C-g). In tree focus, plain →/Enter/Tab move focus to
+    // the terminal and C-g then Tab/←/→ toggles; in terminal focus, TermInput
+    // intercepts C-g + a command key (Tab/←/→/Esc → tree, q → quit).
+    let prefix = parse_prefix(Some(&env.ui_prefix));
+    let mut term_input = TermInput::new(prefix);
+    // Persistent across reads: the tree-focus key decoder and its prefix-arm flag,
+    // so a split escape sequence or a C-g prefix sequence survives a read boundary.
+    let mut tree_decoder = KeyDecoder::new();
+    let mut tree_armed = false;
 
     // ratatui terminal over the real stdout (draws every frame in BOTH states).
     let mut term =
@@ -287,46 +290,66 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 }
             }
             Some(bytes) = stdin_rx.recv() => {
-                // The InputMachine intercepts the prefix in BOTH focus states so
-                // `C-g Tab` can toggle focus either way; all other bytes route by
-                // the focused side.
-                let now = std::time::Instant::now();
-                let mut fwd: Vec<u8> = Vec::new();
-                let mut toggle = false;
                 let mut quit = false;
-                for b in bytes {
-                    for action in machine.feed(b, now) {
-                        match action {
-                            InAction::Forward(f) => fwd.extend_from_slice(&f),
-                            InAction::ToggleFocus => toggle = true,
-                            InAction::Quit => quit = true,
-                        }
-                    }
-                }
+                let mut focus_terminal = false;
+                let mut focus_tree = false;
                 if app.is_overlay() {
-                    // Tree focus: forwarded bytes are tree navigation/commands.
-                    if !fwd.is_empty() {
-                        let mut decoder = KeyDecoder::new();
-                        for key in decoder.feed(&fwd) {
-                            switcher.handle_key(key);
+                    // TREE focus: decode keys. While editing an input (filter/rename)
+                    // every key goes to the switcher. Otherwise plain →/Enter/Tab move
+                    // focus to the terminal, and C-g then Tab/←/→ toggles too.
+                    for key in tree_decoder.feed(&bytes) {
+                        if tree_armed {
+                            tree_armed = false;
+                            match key.code {
+                                KeyCode::Char('\t') | KeyCode::Left | KeyCode::Right => {
+                                    focus_terminal = true;
+                                }
+                                KeyCode::Char('q') => quit = true,
+                                _ => {}
+                            }
+                            continue;
                         }
-                        dispatch_pending_op(&mut switcher, &ops, &op_tx);
-                        ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows);
-                        if let Some(tgt) = switcher.current_attach_target() {
-                            select_attach(&mut mgr, &env, &tgt, cols, body_rows);
+                        if !switcher.is_inputting() && key.code == KeyCode::Char(prefix as char) {
+                            tree_armed = true;
+                            continue;
                         }
+                        if !switcher.is_inputting()
+                            && matches!(key.code, KeyCode::Right | KeyCode::Enter | KeyCode::Char('\t'))
+                        {
+                            focus_terminal = true;
+                            continue;
+                        }
+                        switcher.handle_key(key);
                     }
-                } else if !fwd.is_empty() {
-                    // Terminal focus: forwarded bytes go to the session's pane.
-                    let tv = switcher.terminal_view_target();
-                    if let Some(client) = mgr.get(&tv.source) {
-                        let pane = client.inventory.lock().unwrap().active_pane.clone();
-                        if let Some(pane) = pane {
-                            client.send_keys(pane, fwd);
+                    dispatch_pending_op(&mut switcher, &ops, &op_tx);
+                    ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows);
+                    if let Some(tgt) = switcher.current_attach_target() {
+                        select_attach(&mut mgr, &env, &tgt, cols, body_rows);
+                    }
+                } else {
+                    // TERMINAL focus: forward raw bytes to the session's active pane;
+                    // TermInput intercepts the prefix (→ tree / quit / literal prefix).
+                    for action in term_input.feed(&bytes) {
+                        match action {
+                            TermAction::Forward(f) => {
+                                let tv = switcher.terminal_view_target();
+                                if let Some(client) = mgr.get(&tv.source) {
+                                    let pane = client.inventory.lock().unwrap().active_pane.clone();
+                                    if let Some(pane) = pane {
+                                        client.send_keys(pane, f);
+                                    }
+                                }
+                            }
+                            TermAction::FocusTree => focus_tree = true,
+                            TermAction::Quit => quit = true,
                         }
                     }
                 }
-                if toggle {
+                if focus_terminal && app.is_overlay() {
+                    app.toggle();
+                    let _ = term.clear();
+                }
+                if focus_tree && !app.is_overlay() {
                     app.toggle();
                     let _ = term.clear();
                 }
@@ -376,20 +399,10 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         };
                     }
                     Cmd::Keys(bytes) => {
-                        // Run the bytes through the same Passthrough forwarding path
-                        // as stdin bytes in Passthrough state: feed through the input
-                        // machine so the prefix is intercepted, then send any Forward
-                        // output to the active pane.
-                        let now = std::time::Instant::now();
-                        let mut to_fg: Vec<u8> = Vec::new();
-                        for b in bytes {
-                            for action in machine.feed(b, now) {
-                                if let InAction::Forward(f) = action {
-                                    to_fg.extend_from_slice(&f);
-                                }
-                            }
-                        }
-                        if !to_fg.is_empty() {
+                        // Headless key injection: forward the bytes straight to the
+                        // selected session's active pane (the automation path doesn't
+                        // intercept the prefix).
+                        if !bytes.is_empty() {
                             let tv = switcher.terminal_view_target();
                             if let Some(client) = mgr.get(&tv.source) {
                                 let pane = client
@@ -399,7 +412,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                     .active_pane
                                     .clone();
                                 if let Some(pane) = pane {
-                                    client.send_keys(pane, to_fg);
+                                    client.send_keys(pane, bytes);
                                 }
                             }
                         }

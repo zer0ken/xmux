@@ -1,36 +1,46 @@
-//! Byte-level prefix detection on the host input stream. The prefix is a C0
-//! control byte, so it cannot collide with UTF-8 continuation bytes or appear
-//! mid-CSI; bracketed paste is the only framing the matcher must respect.
-use std::time::{Duration, Instant};
+//! Terminal-focus input handling. When the terminal pane has focus every byte is
+//! forwarded raw to the session's active pane (so a real program — vim, a pager —
+//! sees exact input), EXCEPT a prefix (default `C-g`) followed by a command key,
+//! which is intercepted to leave the terminal: `prefix Left|Right|Tab|Esc` returns
+//! focus to the tree, `prefix q` quits, and a doubled prefix sends one literal
+//! prefix byte. The prefix is a C0 control byte, so it cannot collide with a UTF-8
+//! continuation byte or appear mid-CSI; bracketed paste is respected so a prefix
+//! pasted as data is never intercepted.
+use super::decode::KeyDecoder;
+use ratatui::crossterm::event::KeyCode;
 
 #[derive(Debug, PartialEq)]
-pub enum InAction {
+pub enum TermAction {
+    /// Raw bytes to forward to the focused session's active pane.
     Forward(Vec<u8>),
-    /// The prefix + action key: toggle focus between the tree and the terminal
-    /// pane (both panes stay on screen; only the active side changes).
-    ToggleFocus,
+    /// `prefix` then Left/Right/Tab/Esc — move focus back to the tree.
+    FocusTree,
+    /// `prefix` then `q` — quit the cockpit.
     Quit,
 }
 
-#[derive(PartialEq)]
-enum State { Idle, Armed(Instant) }
-
-pub struct InputMachine {
+pub struct TermInput {
     prefix: u8,
-    action_key: u8,
-    quit_key: u8,
-    timeout: Duration,
-    state: State,
+    /// Decodes the one command key that follows the prefix (so multi-byte arrows
+    /// resolve correctly); reset after each resolution.
+    decoder: KeyDecoder,
+    armed: bool,
     in_paste: bool,
-    paste_scan: Vec<u8>, // rolling tail to detect the paste markers
+    paste_scan: Vec<u8>,
 }
 
 const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
 
-impl InputMachine {
-    pub fn new(prefix: u8, action_key: u8, quit_key: u8, timeout: Duration) -> Self {
-        Self { prefix, action_key, quit_key, timeout, state: State::Idle, in_paste: false, paste_scan: Vec::new() }
+impl TermInput {
+    pub fn new(prefix: u8) -> Self {
+        Self {
+            prefix,
+            decoder: KeyDecoder::new(),
+            armed: false,
+            in_paste: false,
+            paste_scan: Vec::new(),
+        }
     }
 
     fn track_paste(&mut self, byte: u8) {
@@ -45,131 +55,161 @@ impl InputMachine {
         }
     }
 
-    pub fn feed(&mut self, byte: u8, now: Instant) -> Vec<InAction> {
-        // Inside a paste, everything is literal — never arm.
-        if self.in_paste {
-            self.track_paste(byte);
-            return vec![InAction::Forward(vec![byte])];
-        }
-        match self.state {
-            State::Idle => {
-                if byte == self.prefix {
-                    self.state = State::Armed(now);
-                    Vec::new()
-                } else {
-                    self.track_paste(byte);
-                    vec![InAction::Forward(vec![byte])]
+    /// Processes one stdin read. Forwarded bytes are coalesced; an intercepted
+    /// prefix sequence produces FocusTree/Quit (or a literal prefix byte).
+    pub fn feed(&mut self, bytes: &[u8]) -> Vec<TermAction> {
+        let mut out = Vec::new();
+        let mut fwd: Vec<u8> = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if self.armed {
+                // Resolve exactly ONE command key from the remaining bytes (fed as
+                // a slice so a multi-byte arrow resolves whole, not as a stray Esc).
+                // The command consumes the rest of this read (we break below).
+                let keys = self.decoder.feed(&bytes[i..]);
+                let Some(k) = keys.into_iter().next() else {
+                    break; // incomplete — stay armed, resolve on the next read
+                };
+                self.armed = false;
+                self.decoder = KeyDecoder::new();
+                match k.code {
+                    KeyCode::Left | KeyCode::Right | KeyCode::Esc => {
+                        if !fwd.is_empty() {
+                            out.push(TermAction::Forward(std::mem::take(&mut fwd)));
+                        }
+                        out.push(TermAction::FocusTree);
+                    }
+                    // Tab decodes as a literal HT char (the picker decoder has no
+                    // dedicated Tab key).
+                    KeyCode::Char('\t') => {
+                        if !fwd.is_empty() {
+                            out.push(TermAction::Forward(std::mem::take(&mut fwd)));
+                        }
+                        out.push(TermAction::FocusTree);
+                    }
+                    KeyCode::Char('q') => {
+                        if !fwd.is_empty() {
+                            out.push(TermAction::Forward(std::mem::take(&mut fwd)));
+                        }
+                        out.push(TermAction::Quit);
+                    }
+                    KeyCode::Char(c) if c as u32 == self.prefix as u32 => {
+                        // Doubled prefix → one literal prefix byte to the pane.
+                        fwd.push(self.prefix);
+                    }
+                    _ => {} // any other follow-up: command mode, swallowed
                 }
+                break;
             }
-            State::Armed(t) => {
-                // A stale prefix (older than the arm window) never captures the
-                // next key: disarm and reprocess the byte as if freshly Idle.
-                if now.duration_since(t) >= self.timeout {
-                    self.state = State::Idle;
-                    return self.feed(byte, now);
+
+            let b = bytes[i];
+            self.track_paste(b);
+            if !self.in_paste && b == self.prefix {
+                if !fwd.is_empty() {
+                    out.push(TermAction::Forward(std::mem::take(&mut fwd)));
                 }
-                self.state = State::Idle;
-                if byte == self.action_key {
-                    vec![InAction::ToggleFocus]
-                } else if byte == self.quit_key {
-                    vec![InAction::Quit]
-                } else if byte == self.prefix {
-                    // Double-tap → exactly one literal prefix to the child.
-                    vec![InAction::Forward(vec![self.prefix])]
-                } else {
-                    // Incomplete sequence: the prefix is NOT forwarded (that would
-                    // trigger the child app's own binding) and the unrecognised
-                    // follow-up key is swallowed — pressing the prefix entered
-                    // command mode.
-                    Vec::new()
-                }
+                self.armed = true;
+            } else {
+                fwd.push(b);
             }
+            i += 1;
         }
+        if !fwd.is_empty() {
+            out.push(TermAction::Forward(fwd));
+        }
+        out
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, Instant};
 
-    fn m() -> InputMachine { InputMachine::new(0x07, b's', b'q', Duration::from_millis(400)) }
-    fn fwd(a: &[InAction]) -> Vec<u8> {
-        a.iter().flat_map(|x| match x { InAction::Forward(b) => b.clone(), _ => vec![] }).collect()
+    fn m() -> TermInput {
+        TermInput::new(0x07)
+    }
+    fn fwd(a: &[TermAction]) -> Vec<u8> {
+        a.iter()
+            .flat_map(|x| match x {
+                TermAction::Forward(b) => b.clone(),
+                _ => vec![],
+            })
+            .collect()
     }
 
     #[test]
-    fn plain_bytes_pass_through() {
-        let mut im = m();
-        let now = Instant::now();
-        assert_eq!(fwd(&im.feed(b'a', now)), vec![b'a']);
-        assert_eq!(fwd(&im.feed(b'b', now)), vec![b'b']);
+    fn plain_bytes_forward() {
+        let mut t = m();
+        assert_eq!(fwd(&t.feed(b"ab")), b"ab");
     }
 
     #[test]
-    fn prefix_then_action_key_toggles_focus() {
-        let mut im = m();
-        let t = Instant::now();
-        assert!(im.feed(0x07, t).is_empty(), "prefix is swallowed while arming");
-        let out = im.feed(b's', t);
-        assert!(matches!(out.as_slice(), [InAction::ToggleFocus]));
+    fn prefix_then_tab_focuses_tree() {
+        let mut t = m();
+        assert!(t.feed(&[0x07]).is_empty(), "prefix alone is held");
+        assert_eq!(t.feed(b"\t"), vec![TermAction::FocusTree]);
+    }
+
+    #[test]
+    fn prefix_then_left_or_right_or_esc_focuses_tree() {
+        for seq in [&b"\x1b[D"[..], &b"\x1b[C"[..], &b"\x1b"[..]] {
+            let mut t = m();
+            t.feed(&[0x07]);
+            assert_eq!(t.feed(seq), vec![TermAction::FocusTree], "seq {seq:?} → tree");
+        }
+    }
+
+    #[test]
+    fn prefix_then_left_in_one_read_focuses_tree() {
+        // The whole prefix + arrow arriving in a single read must still resolve as
+        // one Left (not a stray Esc that drops the [D bytes to the pane).
+        let mut t = m();
+        let out = t.feed(b"\x07\x1b[D");
+        assert_eq!(out, vec![TermAction::FocusTree]);
     }
 
     #[test]
     fn prefix_then_q_quits() {
-        let mut im = m();
-        let t = Instant::now();
-        assert!(im.feed(0x07, t).is_empty());
-        let out = im.feed(b'q', t);
-        assert!(matches!(out.as_slice(), [InAction::Quit]));
+        let mut t = m();
+        t.feed(&[0x07]);
+        assert_eq!(t.feed(b"q"), vec![TermAction::Quit]);
     }
 
     #[test]
     fn double_prefix_sends_one_literal() {
-        let mut im = m();
-        let t = Instant::now();
-        assert!(im.feed(0x07, t).is_empty());
-        assert_eq!(fwd(&im.feed(0x07, t)), vec![0x07]);
+        let mut t = m();
+        t.feed(&[0x07]);
+        assert_eq!(fwd(&t.feed(&[0x07])), vec![0x07]);
     }
 
     #[test]
-    fn prefix_then_other_is_swallowed() {
-        let mut im = m();
-        let t = Instant::now();
-        assert!(im.feed(0x07, t).is_empty());
-        let out = im.feed(b'x', t);
-        assert!(fwd(&out).is_empty(), "incomplete sequence forwards nothing");
-        assert!(!out.iter().any(|a| matches!(a, InAction::ToggleFocus)));
+    fn prefix_then_other_key_is_swallowed() {
+        let mut t = m();
+        t.feed(&[0x07]);
+        let out = t.feed(b"x");
+        assert!(out.is_empty(), "unrecognised follow-up is swallowed: {out:?}");
     }
 
     #[test]
-    fn stale_prefix_reprocesses_next_key() {
-        let mut im = m();
-        let t = Instant::now();
-        assert!(im.feed(0x07, t).is_empty());
-        let stale = t + Duration::from_millis(401);
-        // The stale prefix is dropped; the plain key is reprocessed and forwarded.
-        assert_eq!(fwd(&im.feed(b'a', stale)), vec![b'a']);
-        // A stale prefix must not arm the action key.
-        assert!(im.feed(0x07, t).is_empty());
-        let out = im.feed(b's', stale);
-        assert_eq!(fwd(&out), vec![b's']);
-        assert!(!out.iter().any(|a| matches!(a, InAction::ToggleFocus)));
+    fn bytes_before_prefix_forward_then_intercept() {
+        let mut t = m();
+        let out = t.feed(b"hi\x07\t");
+        assert_eq!(out, vec![TermAction::Forward(b"hi".to_vec()), TermAction::FocusTree]);
     }
 
     #[test]
     fn prefix_inside_bracketed_paste_is_literal() {
-        let mut im = m();
-        let t = Instant::now();
-        // enter paste: ESC [ 2 0 0 ~
-        for b in b"\x1b[200~" { let _ = im.feed(*b, t); }
-        // a 0x07 inside the paste must be forwarded, never open the overlay
-        let out = im.feed(0x07, t);
-        assert_eq!(fwd(&out), vec![0x07]);
-        assert!(!out.iter().any(|a| matches!(a, InAction::ToggleFocus)));
-        // leave paste: ESC [ 2 0 1 ~ — afterwards the prefix arms again
-        for b in b"\x1b[201~" { let _ = im.feed(*b, t); }
-        assert!(im.feed(0x07, t).is_empty());
-        assert!(matches!(im.feed(b's', t).as_slice(), [InAction::ToggleFocus]));
+        let mut t = m();
+        for b in b"\x1b[200~" {
+            let _ = t.feed(&[*b]);
+        }
+        // a 0x07 inside the paste forwards literally, never arms
+        assert_eq!(fwd(&t.feed(&[0x07])), vec![0x07]);
+        for b in b"\x1b[201~" {
+            let _ = t.feed(&[*b]);
+        }
+        // after the paste the prefix arms again
+        assert!(t.feed(&[0x07]).is_empty());
+        assert_eq!(t.feed(b"\t"), vec![TermAction::FocusTree]);
     }
 }

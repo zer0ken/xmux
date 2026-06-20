@@ -293,6 +293,12 @@ impl Switcher {
         self.wants_quit
     }
 
+    /// True while an inline input is open (filter or rename). The cockpit routes
+    /// every key to the switcher then (no focus-switch hijack of →/Enter/Tab).
+    pub fn is_inputting(&self) -> bool {
+        self.input.is_some()
+    }
+
     pub fn terminal_view_target(&self) -> TerminalViewTarget {
         self.terminal_view_target.clone()
     }
@@ -1092,10 +1098,10 @@ impl Switcher {
         } else {
             fit(
                 &[
-                    " ↑/↓ · j/k move (select = attach) · / filter · R rename · x kill · r refresh · ? help · C-g Tab focus · q quit".to_string(),
-                    " ↑/↓ · j/k move (select = attach) · / filter · R rename · x kill · ? help · C-g Tab focus · q quit".to_string(),
-                    " j/k move (select = attach) · / filter · ? help · C-g Tab focus · q quit".to_string(),
-                    " ? help · C-g Tab focus · q quit".to_string(),
+                    " ↑/↓ move · →/Enter focus pane · / filter · n new · R rename · x kill · r refresh · ? help · q quit".to_string(),
+                    " ↑/↓ move · →/Enter focus pane · / filter · n new · x kill · ? help · q quit".to_string(),
+                    " move · →/Enter focus pane · / filter · ? help · q quit".to_string(),
+                    " →/Enter focus pane · ? help · q quit".to_string(),
                     " ? help · q quit".to_string(),
                 ],
                 area.width,
@@ -1106,19 +1112,19 @@ impl Switcher {
 
     fn render_help(&self, frame: &mut Frame, area: Rect) {
         const LINES: &[&str] = &[
-            "↑ / ↓        move (panes are skipped)",
-            "j / k        move (select = attach)",
-            "PgUp / PgDn  jump by 10",
-            "Home / End   first / last node",
-            "n            new session on the focused host",
-            "R            rename the focused session",
-            "x            kill the focused session (y / n confirm)",
-            "/            fuzzy filter <source>/<name>",
-            "r            re-scan every host",
-            "?            toggle this help",
-            "q            quit",
-            "C-g Tab      focus tree ⇄ terminal",
-            "C-g q        quit",
+            "↑ / ↓ / j / k     move",
+            "→ / Enter / Tab   focus the terminal pane",
+            "C-g ← / Tab / Esc back to the tree",
+            "C-g Tab / ← / →   toggle focus either way",
+            "PgUp / PgDn       jump by 10",
+            "Home / End        first / last node",
+            "n                 new (session / window / pane, by level)",
+            "R                 rename the focused session",
+            "x                 kill the focused session (y / n confirm)",
+            "/                 fuzzy filter <source>/<name>",
+            "r                 re-scan every host",
+            "?                 toggle this help",
+            "q                 quit",
             "",
             "mouse: click selects · wheel scrolls",
         ];
@@ -2139,12 +2145,14 @@ mod tests {
         let mut h = Harness::new(sample());
         let footer = h.footer_text();
         assert!(!footer.to_lowercase().contains("enter attach"), "Enter is a no-op now:\n{footer}");
-        assert!(footer.contains("C-g Tab") || footer.contains("focus"),
-            "footer mentions the focus toggle:\n{footer}");
+        assert!(footer.contains("focus"),
+            "footer mentions focusing the terminal pane:\n{footer}");
         h.ch('?').await;
         let help = h.text();
-        assert!(help.contains("select = attach") || help.contains("move (select = attach)"),
-            "help states moving the cursor attaches:\n{help}");
+        assert!(help.contains("focus the terminal"),
+            "help explains focusing the terminal pane:\n{help}");
+        assert!(!help.contains("select = attach"),
+            "no useless 'select = attach' noise in help:\n{help}");
         assert!(!help.contains("dwell") && !help.to_lowercase().contains("previous foreground"),
             "no stale dwell/esc-return strings:\n{help}");
     }
