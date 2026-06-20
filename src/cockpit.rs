@@ -67,12 +67,19 @@ fn select_attach(
         // session; seed the grid with its current screen.
         let session = target_session(&tgt.target);
         let key = format!("{}/{}", tgt.source, session);
-        if mgr.ensure_session(&key, src, session, cols, rows).is_err() {
-            return false;
-        }
+        let fresh = match mgr.ensure_session(&key, src, session, cols, rows) {
+            Ok(fresh) => fresh,
+            Err(_) => return false,
+        };
         match mgr.get(&key) {
             Some(client) => {
                 client.capture_screen(&tgt.target);
+                // psmux has no control-mode switch-client, so the active pane is
+                // never resolved by an attach probe. Resolve it once on connect so
+                // terminal input has a pane to forward to (issue #6).
+                if fresh {
+                    client.probe_active_pane(session);
+                }
                 true
             }
             None => false,

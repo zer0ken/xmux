@@ -226,23 +226,29 @@ impl Source {
     /// True when this source's control mode is **one session per server** (psmux),
     /// so a single `-CC` connection cannot enumerate or switch across the host's
     /// sessions the way tmux can. xmux works around it by enumerating with a plain
-    /// `list-sessions` and opening a control connection per session (targeted by
-    /// the `PSMUX_SESSION_NAME` env, see [`Source::control_argv_session`]). Scoped
-    /// to LOCAL psmux — a remote psmux would need the env set on the far side.
+    /// `list-sessions` and opening a control connection per session (see
+    /// [`Source::control_argv_session`]). Scoped to LOCAL psmux — a remote psmux
+    /// would need a far-side mechanism.
     pub fn control_per_session(&self) -> bool {
         !self.remote && self.binary == "psmux"
     }
 
-    /// The argv for a per-session local psmux control child. `psmux -CC` (no
-    /// subcommand) attaches to the session named by `PSMUX_SESSION_NAME`, which the
-    /// spawner sets — so the argv carries no session, only `-CC` (+ `-S socket`).
-    pub fn control_argv_session(&self) -> Vec<String> {
+    /// The argv for a per-session local psmux control child attaching `session`.
+    /// `psmux -CC new-session -A -s <session>` routes to that session's own server
+    /// (one-server-per-session) and attaches the REAL session. `psmux -CC` with
+    /// `PSMUX_SESSION_NAME` set instead connected a fresh 1-window warm clone, and
+    /// `-CC attach -t` ignored the target — neither reached the user's session.
+    pub fn control_argv_session(&self, session: &str) -> Vec<String> {
         let mut v = vec![self.binary.clone()];
         if let Some(sock) = self.socket.as_deref().filter(|s| !s.is_empty()) {
             v.push("-S".into());
             v.push(sock.to_string());
         }
         v.push("-CC".into());
+        v.push("new-session".into());
+        v.push("-A".into());
+        v.push("-s".into());
+        v.push(session.to_string());
         v
     }
 
@@ -712,14 +718,23 @@ mod tests {
     }
 
     #[test]
-    fn control_argv_session_is_cc_without_attach() {
-        // `psmux -CC` (no subcommand) attaches to PSMUX_SESSION_NAME, set by the
-        // spawner — so the argv carries no session and no `attach`.
+    fn control_argv_session_attaches_real_session_via_new_session_a() {
+        // `psmux -CC new-session -A -s <name>` routes to the named session's own
+        // server (one-server-per-session) and attaches it. The previous
+        // `PSMUX_SESSION_NAME=<name> psmux -CC` (no subcommand) connected a fresh
+        // 1-window warm CLONE, and `-CC attach -t` ignored the target — both
+        // verified live, so neither shows the user's real session.
         let loc = src("local", "psmux", false, "windows", "");
-        assert_eq!(loc.control_argv_session(), vec!["psmux", "-CC"]);
+        assert_eq!(
+            loc.control_argv_session("work"),
+            vec!["psmux", "-CC", "new-session", "-A", "-s", "work"]
+        );
         let mut s = src("local", "psmux", false, "windows", "");
         s.socket = Some("C:/run/sock".into());
-        assert_eq!(s.control_argv_session(), vec!["psmux", "-S", "C:/run/sock", "-CC"]);
+        assert_eq!(
+            s.control_argv_session("work"),
+            vec!["psmux", "-S", "C:/run/sock", "-CC", "new-session", "-A", "-s", "work"]
+        );
     }
 
     #[test]

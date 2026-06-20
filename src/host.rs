@@ -214,7 +214,14 @@ fn resolve_block<E: FnMut(HostEvent)>(
                 .find_map(|ln| ln.split_whitespace().find_map(|f| f.strip_prefix("PANE=")))
             {
                 let mut inv = state.inventory.lock().unwrap();
-                if inv.attached_session.as_deref() == Some(session.as_str()) {
+                // Record the pane when it belongs to the attached session, OR when
+                // no session is attached yet: a per-session local connection never
+                // switch-clients (so attached_session stays None), and a probe reply
+                // can beat the `%session-changed`. The match still rejects a stale
+                // reply for a session we have since left.
+                if inv.attached_session.is_none()
+                    || inv.attached_session.as_deref() == Some(session.as_str())
+                {
                     inv.active_pane = Some(pane.to_string());
                 }
             }
@@ -506,6 +513,17 @@ impl HostClient {
         });
     }
 
+    /// Probe the active pane of the attached session (`display-message -p
+    /// 'PANE=#{pane_id}'`). A per-session local (psmux) connection never issues
+    /// switch-client — the connection IS its session — so without this its
+    /// `active_pane` stays `None` and terminal input finds no pane to forward to.
+    pub fn probe_active_pane(&self, session: impl Into<String>) {
+        let _ = self.cmd_tx.send(HostCmd::Query {
+            line: "display-message -p 'PANE=#{pane_id}'\n".to_string(),
+            reply: PendingReply::ActivePane { session: session.into() },
+        });
+    }
+
     /// Switch this client to `session` (writer also probes the active pane).
     pub fn switch_client(&self, session: impl Into<String>) {
         let _ = self
@@ -608,10 +626,10 @@ impl HostManager {
     }
 
     /// Ensures a per-SESSION local psmux client keyed by `key` (the session
-    /// address), spawned with `PSMUX_SESSION_NAME=<session>` so `psmux -CC`
-    /// attaches to that session's server (psmux is one-session-per-server, so a
-    /// single host-level connection cannot reach the others). A no-op if `key` is
-    /// already connected.
+    /// address), attaching `session` via `psmux -CC new-session -A -s <session>`
+    /// so it routes to that session's own server (psmux is one-server-per-session,
+    /// so a single host-level connection cannot reach the others). A no-op if `key`
+    /// is already connected; returns `true` when a fresh client was spawned.
     pub fn ensure_session(
         &mut self,
         key: &str,
@@ -625,11 +643,11 @@ impl HostManager {
         }
         let client = HostClient::spawn(
             key,
-            &src.control_argv_session(),
+            &src.control_argv_session(session),
             cols,
             rows,
             self.events.clone(),
-            &[("PSMUX_SESSION_NAME", session)],
+            &[],
         )?;
         self.clients.insert(key.to_string(), client);
         Ok(true)
@@ -768,6 +786,50 @@ mod tests {
         let row0: String = (0..30).map(|x| buf[(x, 0)].symbol()).collect();
         assert!(row0.starts_with("hello from the captured screen"), "grid row0 = {row0:?}");
         assert!(events.iter().any(|e| matches!(e, HostEvent::Output { .. })));
+    }
+
+    #[test]
+    fn reader_active_pane_resolves_when_attached_session_unset() {
+        // A per-session local (psmux) connection never issues switch-client, so
+        // `attached_session` can still be None when the active-pane probe resolves
+        // (or the probe reply beats the `%session-changed`). The resolver must then
+        // still record the pane — otherwise local terminal input finds no active
+        // pane and is silently dropped (issue #6).
+        let state = test_state(80, 24);
+        let in_flight: InFlight = Default::default();
+        in_flight
+            .lock()
+            .unwrap()
+            .push_back(PendingReply::ActivePane { session: "work".into() });
+        let lines = vec![
+            "%begin 1 5 0".to_string(),
+            "PANE=%7".to_string(),
+            "%end 1 5 0".to_string(),
+        ]
+        .into_iter();
+        run_reader("local/work", lines, &state, &in_flight, |_| {});
+        assert_eq!(state.inventory.lock().unwrap().active_pane.as_deref(), Some("%7"));
+    }
+
+    #[test]
+    fn reader_active_pane_ignores_stale_reply_for_a_left_session() {
+        // Once attached to session B, a late probe reply for session A must NOT
+        // clobber the active pane (the guard still protects a real switch).
+        let state = test_state(80, 24);
+        state.inventory.lock().unwrap().attached_session = Some("B".into());
+        let in_flight: InFlight = Default::default();
+        in_flight
+            .lock()
+            .unwrap()
+            .push_back(PendingReply::ActivePane { session: "A".into() });
+        let lines = vec![
+            "%begin 1 5 0".to_string(),
+            "PANE=%99".to_string(),
+            "%end 1 5 0".to_string(),
+        ]
+        .into_iter();
+        run_reader("h", lines, &state, &in_flight, |_| {});
+        assert_eq!(state.inventory.lock().unwrap().active_pane, None, "stale reply ignored");
     }
 
     #[test]
