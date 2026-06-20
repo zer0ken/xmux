@@ -394,9 +394,15 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         switcher.set_spinner(HashSet::new());
                     }
                     HostEvent::Exited { host, reason } => {
-                        // A client that dies before it ever connected is marked
-                        // unreachable so its host stops spinning on "scanning…".
-                        note_host_exited(&mut switcher, &connected, &host, reason);
+                        // A HOST-level client that dies before it ever connected is
+                        // marked unreachable so its host stops spinning on
+                        // "scanning…". A per-session local client (key `source/session`)
+                        // is NOT a host — its tree is owned by the plain enumeration,
+                        // so marking it would inject a phantom `source/session` host
+                        // row; just reap it.
+                        if !host.contains('/') {
+                            note_host_exited(&mut switcher, &connected, &host, reason);
+                        }
                         mgr.reap(&host);
                     }
                 }
@@ -555,6 +561,16 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     }
                     LocalEnum::Panes { address, panes } => {
                         switcher.apply_panes(address, panes);
+                    }
+                }
+                // A host-level client auto-attaches its session on connect, so its
+                // grid fills without help; a per-session (local) target has no client
+                // until selected, so once enumeration preselects one, attach it now —
+                // otherwise the preselected local session's pane would read
+                // "(attaching…)" until the first cursor move.
+                if let Some(tgt) = switcher.current_attach_target() {
+                    if mgr.get(&target_conn_key(&env, &tgt)).is_none() {
+                        select_attach(&mut mgr, &env, &tgt, cols, body_rows);
                     }
                 }
             }
