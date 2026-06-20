@@ -118,24 +118,13 @@ pub fn run_reader<E: FnMut(HostEvent)>(
     let mut decode_buf: Vec<u8> = Vec::with_capacity(4096);
     // num, kind, body — the open `%begin` block, if any.
     let mut block: Option<(u64, PendingReply, Vec<String>)> = None;
-    // A `-CC` client emits an unsolicited startup `%begin…%end` banner introduced
-    // by the entry DCS `\x1bP1000p` ([research §1]), BEFORE the first command reply.
-    // That banner must consume ZERO FIFO entries, else every later pop shifts by one
-    // and command replies resolve against the wrong correlator. This flag, armed by
-    // the DCS, marks the very next `%begin` as the banner (opened with `Ignore`, no
-    // FIFO pop) in BOTH framings: a lone DCS line, and the DCS glued to `%begin`.
-    let mut expect_startup_block = false;
     for line in lines {
-        // The entry DCS may arrive alone or glued to the first `%begin`. Strip it
-        // and arm the flag; a lone DCS becomes empty (falls through as Body), a
-        // glued line continues to classify its stripped remainder as `%begin`.
-        let line = match line.strip_prefix("\x1bP1000p") {
-            Some(rest) => {
-                expect_startup_block = true;
-                rest.to_string()
-            }
-            None => line,
-        };
+        // The entry DCS `\x1bP1000p` ([research §1]) introduces control mode. It may
+        // arrive on its own line or glued to the first `%begin`. Strip it; a lone DCS
+        // becomes empty (Body, ignored), a glued line classifies its remainder as
+        // `%begin`. Correlation does NOT depend on it: blocks are matched by the
+        // `%begin` flags bit (see below), not by a fragile startup-banner heuristic.
+        let line = line.strip_prefix("\x1bP1000p").map(str::to_string).unwrap_or(line);
         // Inside a block, only the matching %end/%error closes it; everything
         // else is body (notifications never appear inside a block).
         if let Some((num, _, _)) = block.as_ref() {
@@ -151,18 +140,21 @@ pub fn run_reader<E: FnMut(HostEvent)>(
             continue;
         }
         match classify(&line) {
-            Line::Begin { num } => {
-                let kind = if expect_startup_block {
-                    // The startup banner: ignore its body and do NOT pop the FIFO,
-                    // so the real command replies stay in lockstep.
-                    expect_startup_block = false;
-                    PendingReply::Ignore
-                } else {
+            Line::Begin { num, control } => {
+                // A block replying to a command WE sent (flags bit 0 set) pops the
+                // correlation FIFO; a spontaneous block (startup banner, another
+                // client's command, a hook — flags bit 0 clear) consumes ZERO FIFO
+                // entries, so it can never shift our replies. This is robust across
+                // tmux versions (3.4 emits a separate flags=0 banner; 3.5a glues the
+                // DCS to the first flags=1 reply and trails a flags=0 block).
+                let kind = if control {
                     in_flight
                         .lock()
                         .unwrap()
                         .pop_front()
                         .unwrap_or(PendingReply::Ignore)
+                } else {
+                    PendingReply::Ignore
                 };
                 block = Some((num, kind, Vec::new()));
             }
@@ -774,9 +766,9 @@ mod tests {
         in_flight.lock().unwrap().push_back(PendingReply::ListSessions);
         let mut events = Vec::new();
         let lines = vec![
-            "%begin 1 5 0".to_string(),
+            "%begin 1 5 1".to_string(),
             "2\t1\t1700000000\tapi".to_string(),
-            "%end 1 5 0".to_string(),
+            "%end 1 5 1".to_string(),
         ]
         .into_iter();
         run_reader("jupiter06", lines, &state, &in_flight, |e| events.push(e));
@@ -797,9 +789,9 @@ mod tests {
         in_flight.lock().unwrap().push_back(PendingReply::CaptureScreen);
         let mut events = Vec::new();
         let lines = vec![
-            "%begin 1 5 0".to_string(),
+            "%begin 1 5 1".to_string(),
             "hello from the captured screen".to_string(),
-            "%end 1 5 0".to_string(),
+            "%end 1 5 1".to_string(),
         ]
         .into_iter();
         run_reader("jupiter00", lines, &state, &in_flight, |e| events.push(e));
@@ -825,9 +817,9 @@ mod tests {
             .unwrap()
             .push_back(PendingReply::ActivePane { session: "work".into() });
         let lines = vec![
-            "%begin 1 5 0".to_string(),
+            "%begin 1 5 1".to_string(),
             "PANE=%7".to_string(),
-            "%end 1 5 0".to_string(),
+            "%end 1 5 1".to_string(),
         ]
         .into_iter();
         run_reader("local/work", lines, &state, &in_flight, |_| {});
@@ -846,9 +838,9 @@ mod tests {
             .unwrap()
             .push_back(PendingReply::ActivePane { session: "A".into() });
         let lines = vec![
-            "%begin 1 5 0".to_string(),
+            "%begin 1 5 1".to_string(),
             "PANE=%99".to_string(),
-            "%end 1 5 0".to_string(),
+            "%end 1 5 1".to_string(),
         ]
         .into_iter();
         run_reader("h", lines, &state, &in_flight, |_| {});
@@ -869,9 +861,9 @@ mod tests {
             .push_back(PendingReply::ActivePane { session: "api".into() });
         let mut events = Vec::new();
         let lines = vec![
-            "%begin 1 5 0".to_string(),
+            "%begin 1 5 1".to_string(),
             "PANE=%4 WIN=2".to_string(),
-            "%end 1 5 0".to_string(),
+            "%end 1 5 1".to_string(),
         ]
         .into_iter();
         run_reader("jupiter06", lines, &state, &in_flight, |e| events.push(e));
@@ -894,9 +886,9 @@ mod tests {
             .push_back(PendingReply::ActivePane { session: "A".into() });
         let mut events = Vec::new();
         let lines = vec![
-            "%begin 1 5 0".to_string(),
+            "%begin 1 5 1".to_string(),
             "PANE=%9 WIN=7".to_string(),
-            "%end 1 5 0".to_string(),
+            "%end 1 5 1".to_string(),
         ]
         .into_iter();
         run_reader("h", lines, &state, &in_flight, |e| events.push(e));
@@ -964,15 +956,15 @@ mod tests {
         assert!(String::from_utf8(out).unwrap().contains("refresh-client -A %3:continue\n"));
     }
 
-    /// The `-CC` entry DCS `\x1bP1000p` introduces an unsolicited startup banner
-    /// `%begin…%end` block BEFORE the first command reply. That banner must consume
-    /// zero FIFO entries; otherwise the queued `ListSessions` resolves against the
-    /// empty banner block and the real list-sessions reply is misattributed. Proven
-    /// in BOTH framings: the DCS on its own line, and the DCS glued to `%begin`.
+    /// The `-CC` entry DCS `\x1bP1000p` introduces control mode, and tmux 3.3.6/3.4
+    /// emit a flags=0 startup banner block BEFORE the first command reply. The
+    /// banner (flags=0) must consume zero FIFO entries; the real list-sessions reply
+    /// (flags=1) pops `ListSessions`. Proven in BOTH framings: the DCS on its own
+    /// line, and the DCS glued to the banner `%begin`.
     #[test]
     fn reader_startup_banner_keeps_fifo_lockstep() {
-        // SEPARATE-line framing: a lone DCS line, then the empty banner block, then
-        // the real list-sessions reply.
+        // SEPARATE-line framing: a lone DCS line, the flags=0 banner, then the
+        // flags=1 list-sessions reply.
         {
             let state = test_state(80, 24);
             let in_flight: InFlight = Default::default();
@@ -981,17 +973,17 @@ mod tests {
                 "\x1bP1000p".to_string(),
                 "%begin 1 1 0".to_string(),
                 "%end 1 1 0".to_string(),
-                "%begin 1 2 0".to_string(),
+                "%begin 1 2 1".to_string(),
                 "2\t1\t1700000000\tapi".to_string(),
-                "%end 1 2 0".to_string(),
+                "%end 1 2 1".to_string(),
             ]
             .into_iter();
             run_reader("jupiter06", lines, &state, &in_flight, |_| {});
             let inv = state.inventory.lock().unwrap();
-            assert_eq!(inv.sessions.len(), 1, "startup banner stole the ListSessions entry");
+            assert_eq!(inv.sessions.len(), 1, "flags=0 banner stole the ListSessions entry");
             assert_eq!(inv.sessions[0].name, "api");
         }
-        // GLUED framing: the DCS prefixed onto the first `%begin` line.
+        // GLUED framing: the DCS prefixed onto the flags=0 banner `%begin` line.
         {
             let state = test_state(80, 24);
             let in_flight: InFlight = Default::default();
@@ -999,16 +991,62 @@ mod tests {
             let lines = vec![
                 "\x1bP1000p%begin 1 1 0".to_string(),
                 "%end 1 1 0".to_string(),
-                "%begin 1 2 0".to_string(),
+                "%begin 1 2 1".to_string(),
                 "2\t1\t1700000000\tapi".to_string(),
-                "%end 1 2 0".to_string(),
+                "%end 1 2 1".to_string(),
             ]
             .into_iter();
             run_reader("jupiter06", lines, &state, &in_flight, |_| {});
             let inv = state.inventory.lock().unwrap();
-            assert_eq!(inv.sessions.len(), 1, "glued startup banner stole the ListSessions entry");
+            assert_eq!(inv.sessions.len(), 1, "glued flags=0 banner stole the ListSessions entry");
             assert_eq!(inv.sessions[0].name, "api");
         }
+    }
+
+    #[test]
+    fn reader_uses_begin_flags_to_correlate_not_a_banner_heuristic() {
+        // A %begin block replying to a command WE sent carries flags=1; a
+        // spontaneous block (startup banner, another client's command, a hook) is
+        // flags=0. The reader pops the correlation FIFO only for flags=1, so a
+        // spontaneous block never shifts the replies. tmux 3.5a glues the entry DCS
+        // to the FIRST real reply (flags=1) and emits a trailing spontaneous block
+        // (flags=0); the old single-banner-skip heuristic mis-skipped the real
+        // reply, desynced the FIFO, and resolved list-sessions empty.
+        let state = test_state(80, 24);
+        let in_flight: InFlight = Default::default();
+        in_flight.lock().unwrap().push_back(PendingReply::ListSessions);
+        let lines = vec![
+            "\x1bP1000p%begin 1 10 1".to_string(), // DCS glued to the first reply
+            "2\t1\t1700000000\tapi".to_string(),
+            "%end 1 10 1".to_string(),
+            "%begin 1 11 0".to_string(), // spontaneous: must NOT consume a correlator
+            "%end 1 11 0".to_string(),
+        ]
+        .into_iter();
+        run_reader("jupiter00", lines, &state, &in_flight, |_| {});
+        let inv = state.inventory.lock().unwrap();
+        assert_eq!(inv.sessions.len(), 1, "list-sessions resolved against the flags=1 block");
+        assert_eq!(inv.sessions[0].name, "api");
+    }
+
+    #[test]
+    fn reader_spontaneous_block_does_not_steal_a_pending_reply() {
+        // A flags=0 block arriving BEFORE our command reply (another client ran a
+        // command first) must not consume our queued correlator.
+        let state = test_state(80, 24);
+        let in_flight: InFlight = Default::default();
+        in_flight.lock().unwrap().push_back(PendingReply::ListSessions);
+        let lines = vec![
+            "%begin 1 5 0".to_string(), // spontaneous, flags=0
+            "noise".to_string(),
+            "%end 1 5 0".to_string(),
+            "%begin 1 6 1".to_string(), // our list-sessions reply, flags=1
+            "3\t1\t1700000000\twork".to_string(),
+            "%end 1 6 1".to_string(),
+        ]
+        .into_iter();
+        run_reader("h", lines, &state, &in_flight, |_| {});
+        assert_eq!(state.inventory.lock().unwrap().sessions.len(), 1);
     }
 
     #[test]
@@ -1086,9 +1124,9 @@ mod tests {
         // PANE_FORMAT: window_index, window_active, pane_index, pane_active,
         // pane_current_command, window_name.
         let lines = vec![
-            "%begin 1 5 0".to_string(),
+            "%begin 1 5 1".to_string(),
             "0\t1\t0\t1\tbash\tmain".to_string(),
-            "%end 1 5 0".to_string(),
+            "%end 1 5 1".to_string(),
         ]
         .into_iter();
         run_reader("jupiter00", lines, &state, &in_flight, |e| events.push(e));

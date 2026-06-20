@@ -11,7 +11,11 @@
 /// determines the line shape.
 #[derive(Debug, PartialEq)]
 pub enum Line<'a> {
-    Begin { num: u64 },
+    /// `control` is the `%begin` flags bit 0: `true` when the block replies to a
+    /// command THIS control client sent (`!!(state->flags & CMDQ_STATE_CONTROL)`
+    /// in tmux), `false` for a spontaneous block (startup banner, another client's
+    /// command, a hook). The reader pops the correlation FIFO only for `control`.
+    Begin { num: u64, control: bool },
     End { num: u64 },
     Error { num: u64 },
     Output { pane: &'a str, data: &'a str },
@@ -50,7 +54,7 @@ pub enum Notif<'a> {
 pub fn classify(line: &str) -> Line<'_> {
     if let Some(rest) = line.strip_prefix("%begin ") {
         return match frame_num_after(rest) {
-            Some(num) => Line::Begin { num },
+            Some(num) => Line::Begin { num, control: frame_is_control(rest) },
             None => Line::Notification(Notif::Other),
         };
     }
@@ -85,9 +89,20 @@ pub fn classify(line: &str) -> Line<'_> {
 }
 
 /// `rest` is the line with `%<verb> ` stripped: `"<unix-time> <num> <flags>"`.
-/// `<num>` is the second whitespace field; `<flags>` is ignored.
+/// `<num>` is the second whitespace field.
 fn frame_num_after(rest: &str) -> Option<u64> {
     rest.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// `<flags>` (the third whitespace field) bit 0: `1` means the block replies to a
+/// command from THIS control client, `0` means a spontaneous block. Absent or
+/// unparseable flags default to `true` (treat as a command reply) so a malformed
+/// line preserves the common correlate-and-pop path.
+fn frame_is_control(rest: &str) -> bool {
+    match rest.split_whitespace().nth(2) {
+        Some(f) => f.parse::<u32>().map(|v| v & 1 != 0).unwrap_or(true),
+        None => true,
+    }
 }
 
 /// Parses a `%`-prefixed notification line into a `Notif` variant.
@@ -208,7 +223,9 @@ mod tests {
 
     #[test]
     fn classify_frames_and_output() {
-        assert!(matches!(classify("%begin 1363006971 2 1"), Line::Begin { num: 2 }));
+        assert!(matches!(classify("%begin 1363006971 2 1"), Line::Begin { num: 2, control: true }));
+        // flags bit 0 clear ⇒ a spontaneous block (not a reply to our command).
+        assert!(matches!(classify("%begin 1363006971 3 0"), Line::Begin { num: 3, control: false }));
         assert!(matches!(classify("%end 1363006971 2 1"), Line::End { num: 2 }));
         assert!(matches!(classify("%error 1363006971 5 0"), Line::Error { num: 5 }));
         match classify("%output %0 hi\\012") {
@@ -224,8 +241,9 @@ mod tests {
 
     #[test]
     fn classify_begin_num_is_the_correlator() {
-        // %begin <time> <num> <flags> — num is field 2, flags (field 3) ignored.
-        assert!(matches!(classify("%begin 999 17 0"), Line::Begin { num: 17 }));
+        // %begin <time> <num> <flags> — num is field 2, flags (field 3) bit 0 is
+        // the control-reply marker.
+        assert!(matches!(classify("%begin 999 17 0"), Line::Begin { num: 17, control: false }));
         // A malformed begin (non-numeric num) classifies as an Other notification,
         // never panics.
         assert!(matches!(classify("%begin x y z"), Line::Notification(_)));
