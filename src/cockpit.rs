@@ -24,6 +24,11 @@ use crate::ui::switcher::TerminalViewTarget;
 /// starves under a `%output` flood.
 const SPINNER_FRAME_MS: u64 = 120;
 
+/// Max host events drained into one redraw before the loop yields back to
+/// `select!` (servicing stdin, the control socket, ops, and the tick). Coalesces
+/// a %output burst without letting a sustained flood monopolize the single thread.
+const HOST_EVENT_DRAIN_BUDGET: usize = 512;
+
 /// The braille-spinner frame index for `elapsed` since the cockpit started. Render
 /// wraps it modulo the glyph count, so the raw count growing without bound is fine.
 fn spinner_frame_at(elapsed: std::time::Duration) -> usize {
@@ -357,19 +362,15 @@ fn handle_host_event(
                 }
             }
         }
-        HostEvent::Focus { host, window } => {
-            // Sync the sidebar cursor to the attached session's active window so it
-            // follows an external window change (the grid already follows via
-            // %output). select_window only moves when the cursor is on a window row
-            // of that session, so it never yanks a user browsing elsewhere.
+        HostEvent::Focus { host, session, window } => {
+            // Sync the sidebar cursor to the active window of the session the probe
+            // was VALIDATED for (carried in the event — not re-read here, which
+            // could have changed). select_window only moves when the cursor is on a
+            // window row of that session, so it never yanks a user browsing
+            // elsewhere or syncs the wrong session.
             if !host.contains('/') {
                 if let Some(idx) = window {
-                    let attached = mgr
-                        .get(&host)
-                        .and_then(|c| c.inventory.lock().unwrap().attached_session.clone());
-                    if let Some(session) = attached {
-                        switcher.select_window(&host, &session, idx);
-                    }
+                    switcher.select_window(&host, &session, idx);
                 }
             }
         }
@@ -566,13 +567,23 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             biased;
             Some(ev) = host_rx.recv() => {
                 handle_host_event(ev, &mut mgr, &mut switcher, &mut connected, &mut panes_requested);
-                // Coalesce the rest of an in-flight burst: a busy session can flood
-                // %output, so drain everything already queued and redraw ONCE at the
-                // loop top. Without this the single-threaded runtime spends a full
-                // blocking term.draw per event and never yields, starving spawned ops
-                // (the 6s new-window timeout), the animation tick, and resize polling.
-                while let Ok(ev) = host_rx.try_recv() {
-                    handle_host_event(ev, &mut mgr, &mut switcher, &mut connected, &mut panes_requested);
+                // Coalesce the rest of an in-flight burst into ONE redraw: a busy
+                // session can flood %output, and a redraw per event would make the
+                // single-threaded runtime never yield, starving spawned ops (the 6s
+                // new-window timeout), the animation tick, and resize polling. The
+                // drain is BUDGET-BOUNDED, not `while empty`: the reader OS threads
+                // can keep an unbounded channel non-empty under a sustained flood, so
+                // an unbounded drain would itself block stdin/ctl/the tick. After the
+                // budget we redraw and re-enter select, then resume draining.
+                let mut budget = HOST_EVENT_DRAIN_BUDGET;
+                while budget > 0 {
+                    match host_rx.try_recv() {
+                        Ok(ev) => {
+                            handle_host_event(ev, &mut mgr, &mut switcher, &mut connected, &mut panes_requested);
+                            budget -= 1;
+                        }
+                        Err(_) => break,
+                    }
                 }
             }
             Some(bytes) = stdin_rx.recv() => {

@@ -71,10 +71,12 @@ pub enum HostEvent {
     Output { host: String },
     /// `%session-changed` confirmed.
     Attached { host: String, session: String },
-    /// An active-pane/window probe resolved. `window` is the attached session's
-    /// active window INDEX (when the probe was for the still-attached session), so
-    /// the cockpit can sync the sidebar cursor to it after an external window change.
-    Focus { host: String, window: Option<i64> },
+    /// An active-pane/window probe resolved. `session` is the session the probe was
+    /// validated against (carried so the cockpit need not re-read `attached_session`,
+    /// which may have changed by the time it handles this event). `window` is that
+    /// session's active window INDEX, `Some` only when the probe still matched, so
+    /// the cockpit can sync the sidebar cursor after an external window change.
+    Focus { host: String, session: String, window: Option<i64> },
     /// `%session-window-changed`: the attached session's active window changed
     /// (e.g. another client switched it). The cockpit probes the new active window.
     WindowChanged { host: String },
@@ -96,7 +98,13 @@ pub type InFlight = Arc<Mutex<VecDeque<PendingReply>>>;
 pub enum PendingReply {
     ListSessions,
     ListPanes { address: String },
-    ActivePane { session: String },
+    /// An active-pane/window probe for `session`. `local` marks a per-session
+    /// (psmux) connection, which never issues switch-client: there the reply may
+    /// beat the `%session-changed`, so it is accepted while `attached_session` is
+    /// unset. A host-level (tmux) probe (`local = false`) is accepted ONLY when
+    /// `session` still matches the attached one, so a stale reply from a rapid
+    /// re-switch cannot set the active pane for a session we already left.
+    ActivePane { session: String, local: bool },
     /// `capture-pane -p -e` of the now-attached session: its body is the current
     /// screen, fed into the grid so a freshly-switched (static) session shows its
     /// content immediately instead of staying blank until it next changes.
@@ -204,7 +212,7 @@ fn resolve_block<E: FnMut(HostEvent)>(
             state.inventory.lock().unwrap().panes.insert(address, panes);
             emit(HostEvent::Inventory { host: host.to_string() });
         }
-        PendingReply::ActivePane { session } => {
+        PendingReply::ActivePane { session, local } => {
             // Body is a `display-message` line `PANE=%N WIN=<index>`. Record the
             // active pane and emit Focus carrying the active WINDOW index so the
             // cockpit can sync the sidebar cursor after an external window change.
@@ -215,16 +223,15 @@ fn resolve_block<E: FnMut(HostEvent)>(
                 .iter()
                 .find_map(|ln| ln.split_whitespace().find_map(|f| f.strip_prefix("WIN=")))
                 .and_then(|w| w.parse::<i64>().ok());
-            // Record the pane when it belongs to the attached session, OR when no
-            // session is attached yet: a per-session local connection never
-            // switch-clients (so attached_session stays None), and a probe reply can
-            // beat the `%session-changed`. A stale reply for a session we have since
-            // left is rejected — and carries no window index (it would sync the
-            // cursor to the wrong session's window).
+            // Accept a HOST-level (tmux) probe only when `session` is still the
+            // attached one (a stale reply from a rapid re-switch must not set the
+            // pane). A per-session (psmux) probe never switch-clients, so its reply
+            // can beat the `%session-changed` — accept it while unset too. A
+            // rejected reply carries no window (it would sync the wrong session).
             let window = {
                 let mut inv = state.inventory.lock().unwrap();
-                let matched = inv.attached_session.is_none()
-                    || inv.attached_session.as_deref() == Some(session.as_str());
+                let matched = inv.attached_session.as_deref() == Some(session.as_str())
+                    || (local && inv.attached_session.is_none());
                 if matched {
                     if let Some(p) = pane {
                         inv.active_pane = Some(p);
@@ -234,7 +241,7 @@ fn resolve_block<E: FnMut(HostEvent)>(
                     None
                 }
             };
-            emit(HostEvent::Focus { host: host.to_string(), window });
+            emit(HostEvent::Focus { host: host.to_string(), session: session.clone(), window });
         }
         PendingReply::CaptureScreen => {
             // Repaint the grid from the captured screen: clear it, home the cursor,
@@ -350,7 +357,7 @@ pub fn run_writer<W: Write>(
                 in_flight
                     .lock()
                     .unwrap()
-                    .push_back(PendingReply::ActivePane { session: target });
+                    .push_back(PendingReply::ActivePane { session: target, local: false });
             }
             HostCmd::Resize { cols, rows } => {
                 let _ = w.write_all(refresh_size_line(cols, rows).as_bytes());
@@ -535,7 +542,7 @@ impl HostClient {
     pub fn probe_active_pane(&self, session: impl Into<String>) {
         let _ = self.cmd_tx.send(HostCmd::Query {
             line: "display-message -p 'PANE=#{pane_id} WIN=#{window_index}'\n".to_string(),
-            reply: PendingReply::ActivePane { session: session.into() },
+            reply: PendingReply::ActivePane { session: session.into(), local: true },
         });
     }
 
@@ -815,7 +822,7 @@ mod tests {
         in_flight
             .lock()
             .unwrap()
-            .push_back(PendingReply::ActivePane { session: "work".into() });
+            .push_back(PendingReply::ActivePane { session: "work".into(), local: true });
         let lines = vec![
             "%begin 1 5 1".to_string(),
             "PANE=%7".to_string(),
@@ -836,7 +843,7 @@ mod tests {
         in_flight
             .lock()
             .unwrap()
-            .push_back(PendingReply::ActivePane { session: "A".into() });
+            .push_back(PendingReply::ActivePane { session: "A".into(), local: false });
         let lines = vec![
             "%begin 1 5 1".to_string(),
             "PANE=%99".to_string(),
@@ -858,7 +865,7 @@ mod tests {
         in_flight
             .lock()
             .unwrap()
-            .push_back(PendingReply::ActivePane { session: "api".into() });
+            .push_back(PendingReply::ActivePane { session: "api".into(), local: false });
         let mut events = Vec::new();
         let lines = vec![
             "%begin 1 5 1".to_string(),
@@ -868,9 +875,38 @@ mod tests {
         .into_iter();
         run_reader("jupiter06", lines, &state, &in_flight, |e| events.push(e));
         assert_eq!(state.inventory.lock().unwrap().active_pane.as_deref(), Some("%4"));
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, HostEvent::Focus { host, window: Some(2) } if host == "jupiter06")));
+        // Focus carries the validated session so the cockpit need not re-read the
+        // (possibly-changed) attached_session when it handles the event.
+        assert!(events.iter().any(|e| matches!(
+            e,
+            HostEvent::Focus { host, session, window: Some(2) } if host == "jupiter06" && session == "api"
+        )));
+    }
+
+    #[test]
+    fn reader_host_level_probe_rejected_when_attached_session_unset() {
+        // A HOST-level (tmux) active-pane probe (local=false) must NOT set the pane
+        // while attached_session is unset: during a rapid re-switch a stale reply
+        // could land before `%session-changed`. Only a per-session (local=true)
+        // probe accepts the unset case.
+        let state = test_state(80, 24);
+        let in_flight: InFlight = Default::default();
+        in_flight
+            .lock()
+            .unwrap()
+            .push_back(PendingReply::ActivePane { session: "api".into(), local: false });
+        let lines = vec![
+            "%begin 1 5 1".to_string(),
+            "PANE=%3 WIN=0".to_string(),
+            "%end 1 5 1".to_string(),
+        ]
+        .into_iter();
+        run_reader("jupiter06", lines, &state, &in_flight, |_| {});
+        assert_eq!(
+            state.inventory.lock().unwrap().active_pane,
+            None,
+            "host-level probe must be rejected while attached_session is unset"
+        );
     }
 
     #[test]
@@ -883,7 +919,7 @@ mod tests {
         in_flight
             .lock()
             .unwrap()
-            .push_back(PendingReply::ActivePane { session: "A".into() });
+            .push_back(PendingReply::ActivePane { session: "A".into(), local: false });
         let mut events = Vec::new();
         let lines = vec![
             "%begin 1 5 1".to_string(),
