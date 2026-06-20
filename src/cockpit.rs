@@ -31,19 +31,37 @@ fn select_attach(
     let Some(src) = env.by_alias.get(&tgt.source) else {
         return false;
     };
-    if mgr.ensure(&tgt.source, src, cols, rows).is_err() {
-        return false;
-    }
-    match mgr.get(&tgt.source) {
-        Some(client) => {
-            client.switch_client(tgt.target.clone());
-            // Seed the grid with this target's current screen: switch-client alone
-            // does not repaint in control mode, so a static session would stay blank
-            // (or show the previous session's content) without this.
-            client.capture_screen(&tgt.target);
-            true
+    if src.control_per_session() {
+        // Local psmux: one connection per session (PSMUX_SESSION_NAME), no
+        // control-mode switch-client (psmux rejects it). The connection IS the
+        // session; seed the grid with its current screen.
+        let session = target_session(&tgt.target);
+        let key = format!("{}/{}", tgt.source, session);
+        if mgr.ensure_session(&key, src, session, cols, rows).is_err() {
+            return false;
         }
-        None => false,
+        match mgr.get(&key) {
+            Some(client) => {
+                client.capture_screen(&tgt.target);
+                true
+            }
+            None => false,
+        }
+    } else {
+        if mgr.ensure(&tgt.source, src, cols, rows).is_err() {
+            return false;
+        }
+        match mgr.get(&tgt.source) {
+            Some(client) => {
+                client.switch_client(tgt.target.clone());
+                // Seed the grid with this target's current screen: switch-client
+                // alone does not repaint in control mode, so a static session would
+                // stay blank (or show the previous session's content) without this.
+                client.capture_screen(&tgt.target);
+                true
+            }
+            None => false,
+        }
     }
 }
 
@@ -60,7 +78,12 @@ fn ensure_current_host(
 ) {
     if let Some(host) = switcher.current_host() {
         if let Some(src) = env.by_alias.get(&host) {
-            let _ = mgr.ensure(&host, src, cols, rows);
+            // Per-session sources (local psmux) enumerate via plain commands and
+            // open their control connections per session on select — there is no
+            // useful host-level connection to ensure here.
+            if !src.control_per_session() {
+                let _ = mgr.ensure(&host, src, cols, rows);
+            }
         }
     }
 }
@@ -72,10 +95,86 @@ fn ensure_current_host(
 /// bound is the host count (one connection per host); each connect runs its
 /// handshake on its own reader/writer threads, so this returns at once and the
 /// trees fill in asynchronously as each host responds.
-fn connect_all_sources(mgr: &mut HostManager, env: &Env, cols: u16, rows: u16) {
+fn connect_all_sources(
+    mgr: &mut HostManager,
+    env: &Env,
+    cols: u16,
+    rows: u16,
+    enum_tx: &tokio::sync::mpsc::UnboundedSender<LocalEnum>,
+) {
     for src in &env.srcs {
-        let _ = mgr.ensure(&src.alias, src, cols, rows);
+        if src.control_per_session() {
+            // Per-session (local psmux): enumerate the tree with plain commands;
+            // its control connections are opened per session on selection.
+            spawn_local_enumeration(src.clone(), enum_tx.clone());
+        } else {
+            let _ = mgr.ensure(&src.alias, src, cols, rows);
+        }
     }
+}
+
+/// A plain-enumeration result for a `control_per_session` source (local psmux):
+/// its control connections are per-session and cannot enumerate the host, so the
+/// tree is filled from a plain `list-sessions` + per-session `list-panes` run off
+/// the loop and folded back through this channel.
+enum LocalEnum {
+    Sessions {
+        source: String,
+        sessions: Vec<crate::session::Session>,
+        err: Option<String>,
+    },
+    Panes {
+        address: String,
+        panes: Vec<crate::session::WindowPanes>,
+    },
+}
+
+/// The strip of a terminal-view target before any `:window` suffix — the session
+/// name, which keys a per-session local connection and `capture-pane`.
+fn target_session(target: &str) -> &str {
+    target.split(':').next().unwrap_or(target)
+}
+
+/// The HostManager key for `source`'s connection to `session`: the source alias
+/// for a host-level (tmux) connection, or `source/session` for a per-session
+/// (local psmux) connection.
+fn conn_key(env: &Env, source: &str, session: &str) -> String {
+    match env.by_alias.get(source) {
+        Some(s) if s.control_per_session() => format!("{source}/{session}"),
+        _ => source.to_string(),
+    }
+}
+
+/// The connection key for the cursor's current terminal-view target.
+fn target_conn_key(env: &Env, tgt: &TerminalViewTarget) -> String {
+    conn_key(env, &tgt.source, target_session(&tgt.target))
+}
+
+/// Enumerates a `control_per_session` source off the loop (plain `list-sessions`
+/// then `list-panes` per session) and streams the results back through `tx`. A
+/// control connection per session would each see only its own session, so the
+/// tree must come from the plain, server-aggregating commands instead.
+fn spawn_local_enumeration(
+    src: crate::source::Source,
+    tx: tokio::sync::mpsc::UnboundedSender<LocalEnum>,
+) {
+    let source = src.alias.clone();
+    tokio::spawn(async move {
+        let (sessions, err) = match src.list_sessions().await {
+            Ok(s) => (s, None),
+            Err(e) => (Vec::new(), Some(e.to_string())),
+        };
+        let addrs: Vec<(String, String)> = sessions
+            .iter()
+            .map(|s| (s.name.clone(), s.address()))
+            .collect();
+        let _ = tx.send(LocalEnum::Sessions { source, sessions, err });
+        for (name, address) in addrs {
+            if let Ok(panes) = crate::manage::panes(&src, &name).await {
+                let _ = tx.send(LocalEnum::Panes { address, panes });
+            }
+        }
+    });
 }
 
 /// Requests `list-panes` for each of a host's sessions whose panes have not been
@@ -215,6 +314,9 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     // channel (replacing the removed Cmd::OpDone arm).
     let (op_tx, mut op_rx) = tokio::sync::mpsc::unbounded_channel();
 
+    // Plain-enumeration results for per-session (local psmux) sources.
+    let (enum_tx, mut enum_rx) = tokio::sync::mpsc::unbounded_channel::<LocalEnum>();
+
     // Connect EVERY source up front so each control client's list-sessions
     // streams its host's tree in without waiting for a cursor move. `connected`
     // tracks the hosts that have reached a connected state, so a connection that
@@ -224,15 +326,16 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     // Session addresses whose list-panes has been requested, so a session's
     // subtree is asked for exactly once (repeat Inventory events don't re-issue).
     let mut panes_requested: HashSet<String> = HashSet::new();
-    connect_all_sources(&mut mgr, &env, cols, body_rows);
+    connect_all_sources(&mut mgr, &env, cols, body_rows, &enum_tx);
 
     loop {
         // Always draw the split: the tree (left) and the cursor session's live
         // grid (right), with the divider colored to mark the focused side. The
         // app state selects focus + key routing, not what is drawn.
         let tgt = switcher.terminal_view_target();
+        let tgt_key = target_conn_key(&env, &tgt);
         let grid_arc = (!tgt.target.is_empty())
-            .then(|| mgr.get(&tgt.source).map(|c| c.grid.clone()))
+            .then(|| mgr.get(&tgt_key).map(|c| c.grid.clone()))
             .flatten();
         let terminal_focused = !app.is_overlay();
         let _ = match &grid_arc {
@@ -246,7 +349,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // The renderer has now caught up, so it is safe to resume any panes the
         // server paused for flow control. Snapshot + clear the set under a brief
         // lock, then resume each outside the lock (never across an `.await`).
-        if let Some(client) = mgr.get(&tgt.source) {
+        if let Some(client) = mgr.get(&tgt_key) {
             let paused: Vec<String> = {
                 let mut inv = client.inventory.lock().unwrap();
                 inv.paused_panes.drain().collect()
@@ -264,18 +367,23 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 match ev {
                     HostEvent::Connected { host } | HostEvent::Inventory { host } => {
                         connected.insert(host.clone());
-                        // Rebuild this host's tree from its live inventory, then ask
-                        // for each session's panes (once) so its subtree loads.
-                        if let Some(client) = mgr.get(&host) {
-                            let sessions = {
-                                let inv = client.inventory.lock().unwrap();
-                                switcher.apply_source_result(host.clone(), inv.sessions.clone(), None);
-                                for (addr, windows) in inv.panes.iter() {
-                                    switcher.apply_panes(addr.clone(), windows.clone());
-                                }
-                                inv.sessions.clone()
-                            };
-                            request_session_panes(client, &sessions, &mut panes_requested);
+                        // A per-session local client (key `source/session`) only
+                        // knows its OWN session, so it must NOT rebuild the tree
+                        // (the plain enumeration owns it) — its events only feed the
+                        // grid, redrawn on the next loop top. A host-level (tmux)
+                        // client owns its host's tree.
+                        if !host.contains('/') {
+                            if let Some(client) = mgr.get(&host) {
+                                let sessions = {
+                                    let inv = client.inventory.lock().unwrap();
+                                    switcher.apply_source_result(host.clone(), inv.sessions.clone(), None);
+                                    for (addr, windows) in inv.panes.iter() {
+                                        switcher.apply_panes(addr.clone(), windows.clone());
+                                    }
+                                    inv.sessions.clone()
+                                };
+                                request_session_panes(client, &sessions, &mut panes_requested);
+                            }
                         }
                     }
                     HostEvent::Output { .. } => { /* redraw on the next loop top */ }
@@ -330,6 +438,18 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     if let Some(tgt) = switcher.current_attach_target() {
                         select_attach(&mut mgr, &env, &tgt, cols, body_rows);
                     }
+                    if switcher.take_rescan_kick() {
+                        // 'r' re-scan: re-enumerate per-session (local) sources and
+                        // re-list host-level (remote) ones; let panes re-request.
+                        panes_requested.clear();
+                        for src in &env.srcs {
+                            if src.control_per_session() {
+                                spawn_local_enumeration(src.clone(), enum_tx.clone());
+                            } else if let Some(c) = mgr.get(&src.alias) {
+                                c.list_sessions();
+                            }
+                        }
+                    }
                 } else {
                     // TERMINAL focus: forward raw bytes to the session's active pane;
                     // TermInput intercepts the prefix (→ tree / quit / literal prefix).
@@ -337,7 +457,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         match action {
                             TermAction::Forward(f) => {
                                 let tv = switcher.terminal_view_target();
-                                if let Some(client) = mgr.get(&tv.source) {
+                                if let Some(client) = mgr.get(&target_conn_key(&env, &tv)) {
                                     let pane = client.inventory.lock().unwrap().active_pane.clone();
                                     if let Some(pane) = pane {
                                         client.send_keys(pane, f);
@@ -385,7 +505,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             .unwrap_or(ratatui::layout::Size { width: 80, height: 24 });
                         let tgt = switcher.terminal_view_target();
                         let grid_arc = (!tgt.target.is_empty())
-                            .then(|| mgr.get(&tgt.source).map(|c| c.grid.clone()))
+                            .then(|| mgr.get(&target_conn_key(&env, &tgt)).map(|c| c.grid.clone()))
                             .flatten();
                         let dump = match &grid_arc {
                             Some(g) => {
@@ -408,7 +528,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         // intercept the prefix).
                         if !bytes.is_empty() {
                             let tv = switcher.terminal_view_target();
-                            if let Some(client) = mgr.get(&tv.source) {
+                            if let Some(client) = mgr.get(&target_conn_key(&env, &tv)) {
                                 let pane = client
                                     .inventory
                                     .lock()
@@ -425,6 +545,18 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             }
             Some(result) = op_rx.recv() => {
                 switcher.apply_op_result(result);
+            }
+            Some(le) = enum_rx.recv() => {
+                // Plain-enumeration results for a per-session (local psmux) source
+                // fill its tree (its per-session control clients can't enumerate).
+                match le {
+                    LocalEnum::Sessions { source, sessions, err } => {
+                        switcher.apply_source_result(source, sessions, err);
+                    }
+                    LocalEnum::Panes { address, panes } => {
+                        switcher.apply_panes(address, panes);
+                    }
+                }
             }
             _ = tokio::time::sleep(tick) => {
                 // The dedicated stdin thread is the sole fd-0 reader; resize is
@@ -447,7 +579,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 let mut sp = HashSet::new();
                 let tv = switcher.terminal_view_target();
                 if !tv.target.is_empty() {
-                    let connecting = match mgr.get(&tv.source) {
+                    let connecting = match mgr.get(&target_conn_key(&env, &tv)) {
                         Some(c) => c.connecting.load(std::sync::atomic::Ordering::Acquire),
                         None => true,
                     };
@@ -568,12 +700,61 @@ mod tests {
         // "scanning…" until the user happened to focus them.
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
         let mut mgr = HostManager::new(tx);
+        // fake sources use the cmd.exe binary (not psmux), so they take the
+        // host-level connect path; the enum channel is unused here.
+        let (enum_tx, _enum_rx) = tokio::sync::mpsc::unbounded_channel();
         let env = fake_env_with_sources(&["jupiter06", "jupiter00", "local"]);
-        connect_all_sources(&mut mgr, &env, 80, 24);
+        connect_all_sources(&mut mgr, &env, 80, 24, &enum_tx);
         assert!(mgr.get("jupiter06").is_some(), "jupiter06 connected at startup");
         assert!(mgr.get("jupiter00").is_some(), "jupiter00 connected at startup");
         assert!(mgr.get("local").is_some(), "local connected at startup");
         mgr.teardown_all();
+    }
+
+    #[test]
+    fn target_session_strips_window_suffix() {
+        assert_eq!(target_session("api"), "api");
+        assert_eq!(target_session("api:2"), "api");
+    }
+
+    #[test]
+    fn conn_key_is_per_session_for_psmux_else_host() {
+        let psmux = Source {
+            alias: "local".into(),
+            binary: "psmux".into(),
+            remote: false,
+            control_path: String::new(),
+            os: "windows".into(),
+            socket: None,
+            runner: None,
+        };
+        let tmux = Source {
+            alias: "jup".into(),
+            binary: "tmux".into(),
+            remote: true,
+            control_path: String::new(),
+            os: "linux".into(),
+            socket: None,
+            runner: None,
+        };
+        let by_alias: HashMap<String, Source> = [
+            ("local".to_string(), psmux.clone()),
+            ("jup".to_string(), tmux.clone()),
+        ]
+        .into_iter()
+        .collect();
+        let env = Env {
+            cfg: Config::default(),
+            cfg_warnings: Vec::new(),
+            srcs: vec![psmux, tmux],
+            by_alias,
+            local_bin: "psmux".into(),
+            ui_prefix: "C-g".into(),
+            xmux_dir: std::path::PathBuf::from("."),
+        };
+        // Local psmux → one connection per session; remote tmux → one per host.
+        assert_eq!(conn_key(&env, "local", "0"), "local/0");
+        assert_eq!(conn_key(&env, "jup", "api"), "jup");
     }
 
     #[tokio::test]

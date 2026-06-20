@@ -223,6 +223,29 @@ impl Source {
         v
     }
 
+    /// True when this source's control mode is **one session per server** (psmux),
+    /// so a single `-CC` connection cannot enumerate or switch across the host's
+    /// sessions the way tmux can. xmux works around it by enumerating with a plain
+    /// `list-sessions` and opening a control connection per session (targeted by
+    /// the `PSMUX_SESSION_NAME` env, see [`Source::control_argv_session`]). Scoped
+    /// to LOCAL psmux — a remote psmux would need the env set on the far side.
+    pub fn control_per_session(&self) -> bool {
+        !self.remote && self.binary == "psmux"
+    }
+
+    /// The argv for a per-session local psmux control child. `psmux -CC` (no
+    /// subcommand) attaches to the session named by `PSMUX_SESSION_NAME`, which the
+    /// spawner sets — so the argv carries no session, only `-CC` (+ `-S socket`).
+    pub fn control_argv_session(&self) -> Vec<String> {
+        let mut v = vec![self.binary.clone()];
+        if let Some(sock) = self.socket.as_deref().filter(|s| !s.is_empty()) {
+            v.push("-S".into());
+            v.push(sock.to_string());
+        }
+        v.push("-CC".into());
+        v
+    }
+
     fn run_with(&self) -> &dyn Runner {
         match &self.runner {
             Some(r) => r.as_ref(),
@@ -675,6 +698,28 @@ mod tests {
             "the control connection must never hang on a prompt: {got:?}"
         );
         assert_eq!(got.last().unwrap(), "tmux -CC attach");
+    }
+
+    #[test]
+    fn control_per_session_is_local_psmux_only() {
+        // Local psmux is one-session-per-server → per-session control connections.
+        assert!(src("local", "psmux", false, "windows", "").control_per_session());
+        // Local tmux enumerates + switches over one connection — no workaround.
+        assert!(!src("local", "tmux", false, "linux", "").control_per_session());
+        // Remote psmux would need PSMUX_SESSION_NAME on the far side (out of scope).
+        assert!(!src("prod", "psmux", true, "linux", "").control_per_session());
+        assert!(!src("prod", "tmux", true, "linux", "").control_per_session());
+    }
+
+    #[test]
+    fn control_argv_session_is_cc_without_attach() {
+        // `psmux -CC` (no subcommand) attaches to PSMUX_SESSION_NAME, set by the
+        // spawner — so the argv carries no session and no `attach`.
+        let loc = src("local", "psmux", false, "windows", "");
+        assert_eq!(loc.control_argv_session(), vec!["psmux", "-CC"]);
+        let mut s = src("local", "psmux", false, "windows", "");
+        s.socket = Some("C:/run/sock".into());
+        assert_eq!(s.control_argv_session(), vec!["psmux", "-S", "C:/run/sock", "-CC"]);
     }
 
     #[test]

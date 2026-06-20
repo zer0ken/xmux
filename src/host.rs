@@ -378,19 +378,24 @@ impl HostClient {
         cols: u16,
         rows: u16,
         events: tokio::sync::mpsc::UnboundedSender<HostEvent>,
+        extra_env: &[(&str, &str)],
     ) -> anyhow::Result<HostClient> {
         anyhow::ensure!(!argv.is_empty(), "HostClient::spawn: argv must not be empty");
         let host = host.into();
 
-        let mut child = Command::new(&argv[0])
-            .args(&argv[1..])
+        let mut cmd = Command::new(&argv[0]);
+        cmd.args(&argv[1..])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .env_remove("PSMUX_SESSION")
             .env_remove("TMUX")
-            .env_remove("TMUX_PANE")
-            .spawn()?;
+            .env_remove("TMUX_PANE");
+        // Per-session local psmux targets its session via PSMUX_SESSION_NAME.
+        for (k, v) in extra_env {
+            cmd.env(k, v);
+        }
+        let mut child = cmd.spawn()?;
 
         let stdout = child
             .stdout
@@ -589,8 +594,36 @@ impl HostManager {
         if self.clients.contains_key(host) {
             return Ok(false);
         }
-        let client = HostClient::spawn(host, &src.control_argv(), cols, rows, self.events.clone())?;
+        let client = HostClient::spawn(host, &src.control_argv(), cols, rows, self.events.clone(), &[])?;
         self.clients.insert(host.to_string(), client);
+        Ok(true)
+    }
+
+    /// Ensures a per-SESSION local psmux client keyed by `key` (the session
+    /// address), spawned with `PSMUX_SESSION_NAME=<session>` so `psmux -CC`
+    /// attaches to that session's server (psmux is one-session-per-server, so a
+    /// single host-level connection cannot reach the others). A no-op if `key` is
+    /// already connected.
+    pub fn ensure_session(
+        &mut self,
+        key: &str,
+        src: &crate::source::Source,
+        session: &str,
+        cols: u16,
+        rows: u16,
+    ) -> anyhow::Result<bool> {
+        if self.clients.contains_key(key) {
+            return Ok(false);
+        }
+        let client = HostClient::spawn(
+            key,
+            &src.control_argv_session(),
+            cols,
+            rows,
+            self.events.clone(),
+            &[("PSMUX_SESSION_NAME", session)],
+        )?;
+        self.clients.insert(key.to_string(), client);
         Ok(true)
     }
 
@@ -632,7 +665,7 @@ impl HostManager {
     /// `host` and `cockpit` test modules.
     pub(crate) fn insert_fake(&mut self, host: &str) {
         let argv: Vec<String> = ["cmd.exe", "/c", "rem"].iter().map(|s| s.to_string()).collect();
-        let client = HostClient::spawn(host, &argv, 80, 24, self.events.clone()).expect("spawn");
+        let client = HostClient::spawn(host, &argv, 80, 24, self.events.clone(), &[]).expect("spawn");
         self.clients.insert(host.to_string(), client);
     }
 }
@@ -935,7 +968,7 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let client = HostClient::spawn("local", &argv, 80, 24, tx).expect("spawn");
+        let client = HostClient::spawn("local", &argv, 80, 24, tx, &[]).expect("spawn");
         // echo exits immediately, closing pipes → teardown's joins return promptly.
         client.teardown();
     }
