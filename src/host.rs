@@ -494,8 +494,10 @@ impl HostClient {
     /// on the "loading…" placeholder forever — the control client never volunteers
     /// pane data, it must be asked.
     pub fn list_panes(&self, session: &str, address: String) {
+        // Single-quote the target so a session name with spaces survives the
+        // control-mode command parser (it splits on whitespace).
         let _ = self.cmd_tx.send(HostCmd::Query {
-            line: format!("list-panes -s -t {session} -F '{}'\n", crate::mux::PANE_FORMAT),
+            line: format!("list-panes -s -t '{session}' -F '{}'\n", crate::mux::PANE_FORMAT),
             reply: PendingReply::ListPanes { address },
         });
     }
@@ -513,8 +515,10 @@ impl HostClient {
     /// previous session's stale content) until it next redraws; capturing paints
     /// it at once. `-e` keeps SGR colors; `-p` prints to the reply.
     pub fn capture_screen(&self, target: &str) {
+        // Single-quote the target so a session/window name with spaces survives the
+        // control-mode command parser.
         let _ = self.cmd_tx.send(HostCmd::Query {
-            line: format!("capture-pane -p -e -t {target}\n"),
+            line: format!("capture-pane -p -e -t '{target}'\n"),
             reply: PendingReply::CaptureScreen,
         });
     }

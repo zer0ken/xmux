@@ -6,9 +6,6 @@
 //! prefix byte. The prefix is a C0 control byte, so it cannot collide with a UTF-8
 //! continuation byte or appear mid-CSI; bracketed paste is respected so a prefix
 //! pasted as data is never intercepted.
-use super::decode::KeyDecoder;
-use ratatui::crossterm::event::KeyCode;
-
 #[derive(Debug, PartialEq)]
 pub enum TermAction {
     /// Raw bytes to forward to the focused session's active pane.
@@ -21,9 +18,6 @@ pub enum TermAction {
 
 pub struct TermInput {
     prefix: u8,
-    /// Decodes the one command key that follows the prefix (so multi-byte arrows
-    /// resolve correctly); reset after each resolution.
-    decoder: KeyDecoder,
     armed: bool,
     in_paste: bool,
     paste_scan: Vec<u8>,
@@ -36,7 +30,6 @@ impl TermInput {
     pub fn new(prefix: u8) -> Self {
         Self {
             prefix,
-            decoder: KeyDecoder::new(),
             armed: false,
             in_paste: false,
             paste_scan: Vec::new(),
@@ -56,50 +49,46 @@ impl TermInput {
     }
 
     /// Processes one stdin read. Forwarded bytes are coalesced; an intercepted
-    /// prefix sequence produces FocusTree/Quit (or a literal prefix byte).
+    /// prefix sequence produces FocusTree/Quit (or a literal prefix byte). The
+    /// command key after a prefix is resolved at the byte level and consumes ONLY
+    /// its own byte(s), so any trailing bytes in the same read resume as normal
+    /// input (e.g. `C-g C-g abc` forwards a literal prefix then `abc`).
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<TermAction> {
         let mut out = Vec::new();
         let mut fwd: Vec<u8> = Vec::new();
         let mut i = 0;
         while i < bytes.len() {
             if self.armed {
-                // Resolve exactly ONE command key from the remaining bytes (fed as
-                // a slice so a multi-byte arrow resolves whole, not as a stray Esc).
-                // The command consumes the rest of this read (we break below).
-                let keys = self.decoder.feed(&bytes[i..]);
-                let Some(k) = keys.into_iter().next() else {
-                    break; // incomplete — stay armed, resolve on the next read
-                };
                 self.armed = false;
-                self.decoder = KeyDecoder::new();
-                match k.code {
-                    KeyCode::Left | KeyCode::Right | KeyCode::Esc => {
-                        if !fwd.is_empty() {
-                            out.push(TermAction::Forward(std::mem::take(&mut fwd)));
-                        }
-                        out.push(TermAction::FocusTree);
-                    }
-                    // Tab decodes as a literal HT char (the picker decoder has no
-                    // dedicated Tab key).
-                    KeyCode::Char('\t') => {
-                        if !fwd.is_empty() {
-                            out.push(TermAction::Forward(std::mem::take(&mut fwd)));
-                        }
-                        out.push(TermAction::FocusTree);
-                    }
-                    KeyCode::Char('q') => {
-                        if !fwd.is_empty() {
-                            out.push(TermAction::Forward(std::mem::take(&mut fwd)));
-                        }
-                        out.push(TermAction::Quit);
-                    }
-                    KeyCode::Char(c) if c as u32 == self.prefix as u32 => {
-                        // Doubled prefix → one literal prefix byte to the pane.
-                        fwd.push(self.prefix);
-                    }
-                    _ => {} // any other follow-up: command mode, swallowed
+                let b0 = bytes[i];
+                if b0 == self.prefix {
+                    // Doubled prefix → one literal prefix byte; rest is normal input.
+                    fwd.push(self.prefix);
+                    i += 1;
+                    continue;
                 }
-                break;
+                // Tab, or any ESC sequence (Esc / Left / Right / other arrows) →
+                // leave the terminal. Focus is switching away, so the remainder of
+                // this read belongs to the new focus and is delivered on the next
+                // read; flush what was forwarded and stop here.
+                if b0 == b'\t' || b0 == 0x1b {
+                    if !fwd.is_empty() {
+                        out.push(TermAction::Forward(std::mem::take(&mut fwd)));
+                    }
+                    out.push(TermAction::FocusTree);
+                    break;
+                }
+                if b0 == b'q' {
+                    if !fwd.is_empty() {
+                        out.push(TermAction::Forward(std::mem::take(&mut fwd)));
+                    }
+                    out.push(TermAction::Quit);
+                    break;
+                }
+                // Unrecognized single-byte follow-up: command mode swallows just this
+                // key; the rest of the read resumes as normal input.
+                i += 1;
+                continue;
             }
 
             let b = bytes[i];
@@ -188,6 +177,21 @@ mod tests {
         t.feed(&[0x07]);
         let out = t.feed(b"x");
         assert!(out.is_empty(), "unrecognised follow-up is swallowed: {out:?}");
+    }
+
+    #[test]
+    fn double_prefix_then_trailing_forwards_literal_and_rest() {
+        // `C-g C-g abc` in one read: a literal prefix byte then the trailing input
+        // (no byte loss).
+        let mut t = m();
+        assert_eq!(fwd(&t.feed(b"\x07\x07abc")), vec![0x07, b'a', b'b', b'c']);
+    }
+
+    #[test]
+    fn prefix_then_unknown_then_trailing_forwards_rest() {
+        // `C-g x abc`: x is swallowed as command mode; abc still forwards.
+        let mut t = m();
+        assert_eq!(fwd(&t.feed(b"\x07xabc")), b"abc");
     }
 
     #[test]
