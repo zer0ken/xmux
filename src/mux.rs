@@ -89,9 +89,13 @@ pub fn kill_session(bin: &str, name: &str) -> Vec<String> {
     argv(&[bin, "kill-session", "-t", name])
 }
 
-/// Creates a new window in `session` (optionally named).
+/// Creates a new window in `session` (optionally named). The target is
+/// `<session>:` (trailing colon) so a numeric session name — `"0"`, the
+/// tmux/psmux default — is parsed as the SESSION, not a window index: a bare
+/// `-t 0` is read as "create at window index 0" and fails with "index 0 in use".
 pub fn new_window(bin: &str, session: &str, name: &str) -> Vec<String> {
-    let mut v = argv(&[bin, "new-window", "-t", session]);
+    let target = format!("{session}:");
+    let mut v = argv(&[bin, "new-window", "-t", &target]);
     if !name.is_empty() {
         v.push("-n".to_string());
         v.push(name.to_string());
@@ -320,6 +324,21 @@ mod tests {
     #[test]
     fn target_builders() {
         assert_eq!(window_target("editor", 2), "editor:2");
+    }
+
+    #[test]
+    fn new_window_targets_session_unambiguously() {
+        // The target carries a trailing `:` so a numeric session name (e.g. "0",
+        // the tmux/psmux default) is parsed as the SESSION, not a window index — a
+        // bare `-t 0` is read as "window index 0" and fails "index 0 in use".
+        assert_eq!(
+            new_window("tmux", "0", ""),
+            sv(&["tmux", "new-window", "-t", "0:"])
+        );
+        assert_eq!(
+            new_window("tmux", "work", "logs"),
+            sv(&["tmux", "new-window", "-t", "work:", "-n", "logs"])
+        );
     }
 
     #[test]
