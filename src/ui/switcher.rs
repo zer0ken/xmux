@@ -635,9 +635,11 @@ impl Switcher {
         self.spinner = addresses;
     }
 
-    /// Advances the braille spinner frame index by one.
-    pub fn tick_spinner(&mut self) {
-        self.spinner_frame = self.spinner_frame.wrapping_add(1);
+    /// Sets the braille spinner frame index. The cockpit derives it from elapsed
+    /// wall-clock time, so the spinner animates on every render rather than once
+    /// per animation tick (which can starve under a `%output` flood).
+    pub fn set_spinner_frame(&mut self, frame: usize) {
+        self.spinner_frame = frame;
     }
 
     // --- key handling -------------------------------------------------------

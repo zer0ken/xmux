@@ -18,6 +18,18 @@ use crate::env::Env;
 use crate::host::{HostManager, HostEvent};
 use crate::ui::switcher::TerminalViewTarget;
 
+/// Milliseconds per braille-spinner frame. The frame index is derived from
+/// elapsed wall-clock time (see [`spinner_frame_at`]), not a per-tick counter, so
+/// the spinner animates on every render and never freezes when the animation tick
+/// starves under a `%output` flood.
+const SPINNER_FRAME_MS: u64 = 120;
+
+/// The braille-spinner frame index for `elapsed` since the cockpit started. Render
+/// wraps it modulo the glyph count, so the raw count growing without bound is fine.
+fn spinner_frame_at(elapsed: std::time::Duration) -> usize {
+    (elapsed.as_millis() / SPINNER_FRAME_MS as u128) as usize
+}
+
 /// The size to give a host's grid + `refresh-client -C`: the terminal-view pane
 /// (right of the tree + divider), NOT the whole terminal. Sizing a host to the
 /// full terminal makes the remote wrap at a width wider than the visible pane, so
@@ -282,6 +294,58 @@ fn request_session_panes(
     }
 }
 
+/// Applies one [`HostEvent`] to the cockpit state (tree, connected set, spinner,
+/// reap). Extracted so a burst of events can be drained in one loop iteration
+/// (one redraw per burst), which keeps a `%output` flood from monopolizing the
+/// single-threaded runtime and starving spawned ops / timers / the reactor.
+fn handle_host_event(
+    ev: HostEvent,
+    mgr: &mut HostManager,
+    switcher: &mut crate::ui::switcher::Switcher,
+    connected: &mut std::collections::HashSet<String>,
+    panes_requested: &mut std::collections::HashSet<String>,
+) {
+    match ev {
+        HostEvent::Connected { host } | HostEvent::Inventory { host } => {
+            connected.insert(host.clone());
+            // A per-session local client (key `source/session`) only knows its OWN
+            // session, so it must NOT rebuild the tree (the plain enumeration owns
+            // it) — its events only feed the grid, redrawn on the next loop top. A
+            // host-level (tmux) client owns its host's tree.
+            if !host.contains('/') {
+                if let Some(client) = mgr.get(&host) {
+                    let sessions = {
+                        let inv = client.inventory.lock().unwrap();
+                        switcher.apply_source_result(host.clone(), inv.sessions.clone(), None);
+                        for (addr, windows) in inv.panes.iter() {
+                            switcher.apply_panes(addr.clone(), windows.clone());
+                        }
+                        inv.sessions.clone()
+                    };
+                    request_session_panes(client, &sessions, panes_requested);
+                }
+            }
+        }
+        HostEvent::Output { .. } => { /* redraw on the next loop top */ }
+        HostEvent::Attached { .. } => {
+            // A confirmed switch: the live grid is now feeding, so the spinner
+            // clears. The next animation tick recomputes the connecting set.
+            switcher.set_spinner(std::collections::HashSet::new());
+        }
+        HostEvent::Exited { host, reason } => {
+            // A HOST-level client that dies before it ever connected is marked
+            // unreachable so its host stops spinning on "scanning…". A per-session
+            // local client (key `source/session`) is NOT a host — its tree is owned
+            // by the plain enumeration, so marking it would inject a phantom row;
+            // just reap it.
+            if !host.contains('/') {
+                note_host_exited(switcher, connected, &host, reason);
+            }
+            mgr.reap(&host);
+        }
+    }
+}
+
 /// Handles a host's control client dying. If the host never reached a connected
 /// state, marks it unreachable in the switcher so it renders "⚠ unreachable"
 /// instead of spinning on "scanning…" forever; a host that had connected keeps
@@ -414,7 +478,19 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     let mut panes_requested: HashSet<String> = HashSet::new();
     connect_all_sources(&mut mgr, &env, cols, body_rows, &enum_tx);
 
+    // The braille spinner advances by wall-clock elapsed, not a per-tick counter,
+    // so it animates on every render even when the animation tick starves under a
+    // %output flood. A PERSISTENT interval (not a `sleep` recreated each loop
+    // iteration, whose deadline would reset every time the biased select lets
+    // host_rx win) drives idle redraws + resize polling on an absolute schedule.
+    let spinner_start = std::time::Instant::now();
+    let mut tick = tokio::time::interval(Duration::from_millis(SPINNER_FRAME_MS));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     loop {
+        // Advance the spinner from wall-clock so it animates regardless of which
+        // select arm fired.
+        switcher.set_spinner_frame(spinner_frame_at(spinner_start.elapsed()));
         // Always draw the split: the tree (left) and the cursor session's live
         // grid (right), with the divider colored to mark the focused side. The
         // app state selects focus + key routing, not what is drawn.
@@ -445,52 +521,17 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             }
         }
 
-        let tick = Duration::from_millis(250);
-
         tokio::select! {
             biased;
             Some(ev) = host_rx.recv() => {
-                match ev {
-                    HostEvent::Connected { host } | HostEvent::Inventory { host } => {
-                        connected.insert(host.clone());
-                        // A per-session local client (key `source/session`) only
-                        // knows its OWN session, so it must NOT rebuild the tree
-                        // (the plain enumeration owns it) — its events only feed the
-                        // grid, redrawn on the next loop top. A host-level (tmux)
-                        // client owns its host's tree.
-                        if !host.contains('/') {
-                            if let Some(client) = mgr.get(&host) {
-                                let sessions = {
-                                    let inv = client.inventory.lock().unwrap();
-                                    switcher.apply_source_result(host.clone(), inv.sessions.clone(), None);
-                                    for (addr, windows) in inv.panes.iter() {
-                                        switcher.apply_panes(addr.clone(), windows.clone());
-                                    }
-                                    inv.sessions.clone()
-                                };
-                                request_session_panes(client, &sessions, &mut panes_requested);
-                            }
-                        }
-                    }
-                    HostEvent::Output { .. } => { /* redraw on the next loop top */ }
-                    HostEvent::Attached { .. } => {
-                        // A confirmed switch: the live grid is now feeding, so the
-                        // spinner clears. The next animation tick recomputes the
-                        // connecting set from scratch.
-                        switcher.set_spinner(HashSet::new());
-                    }
-                    HostEvent::Exited { host, reason } => {
-                        // A HOST-level client that dies before it ever connected is
-                        // marked unreachable so its host stops spinning on
-                        // "scanning…". A per-session local client (key `source/session`)
-                        // is NOT a host — its tree is owned by the plain enumeration,
-                        // so marking it would inject a phantom `source/session` host
-                        // row; just reap it.
-                        if !host.contains('/') {
-                            note_host_exited(&mut switcher, &connected, &host, reason);
-                        }
-                        mgr.reap(&host);
-                    }
+                handle_host_event(ev, &mut mgr, &mut switcher, &mut connected, &mut panes_requested);
+                // Coalesce the rest of an in-flight burst: a busy session can flood
+                // %output, so drain everything already queued and redraw ONCE at the
+                // loop top. Without this the single-threaded runtime spends a full
+                // blocking term.draw per event and never yields, starving spawned ops
+                // (the 6s new-window timeout), the animation tick, and resize polling.
+                while let Ok(ev) = host_rx.try_recv() {
+                    handle_host_event(ev, &mut mgr, &mut switcher, &mut connected, &mut panes_requested);
                 }
             }
             Some(bytes) = stdin_rx.recv() => {
@@ -645,7 +686,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     }
                 }
             }
-            _ = tokio::time::sleep(tick) => {
+            _ = tick.tick() => {
                 // The dedicated stdin thread is the sole fd-0 reader; resize is
                 // detected here by polling the console size (an ioctl/Win32
                 // console-info call, NOT a stdin read — no fd contention). On a
@@ -661,9 +702,9 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         let _ = term.autoresize();
                     }
                 }
-                // Animation tick: advance the braille spinner and rebuild the
-                // spinner set from the hosts still connecting (the cursor's target).
-                switcher.tick_spinner();
+                // Rebuild the spinner set from the hosts still connecting (the
+                // cursor's target); the frame itself advances from wall-clock at the
+                // loop top, so the spinner animates even between ticks.
                 let mut sp = HashSet::new();
                 let tv = switcher.terminal_view_target();
                 if !tv.target.is_empty() {
@@ -797,6 +838,17 @@ mod tests {
         assert!(mgr.get("jupiter00").is_some(), "jupiter00 connected at startup");
         assert!(mgr.get("local").is_some(), "local connected at startup");
         mgr.teardown_all();
+    }
+
+    #[test]
+    fn spinner_frame_advances_with_wall_clock() {
+        use std::time::Duration;
+        // The spinner frame is derived from elapsed wall-clock time, NOT a per-tick
+        // counter, so it animates smoothly on every render even when the 250ms tick
+        // arm starves under a %output flood (the freeze/stutter bug).
+        assert_eq!(spinner_frame_at(Duration::from_millis(0)), 0);
+        assert_eq!(spinner_frame_at(Duration::from_millis(SPINNER_FRAME_MS)), 1);
+        assert_eq!(spinner_frame_at(Duration::from_millis(SPINNER_FRAME_MS * 3 + 10)), 3);
     }
 
     #[test]
