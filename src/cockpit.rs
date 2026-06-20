@@ -67,26 +67,29 @@ fn select_attach(
         return false;
     };
     if src.control_per_session() {
-        // Local psmux: one connection per session (PSMUX_SESSION_NAME), no
-        // control-mode switch-client (psmux rejects it). The connection IS the
-        // session; seed the grid with its current screen.
+        // Local psmux: one connection per session (`-CC new-session -A -s`), no
+        // control-mode switch-client. The connection IS the session.
         let session = target_session(&tgt.target);
         let key = format!("{}/{}", tgt.source, session);
-        let fresh = match mgr.ensure_session(&key, src, session, cols, rows) {
-            Ok(fresh) => fresh,
-            Err(_) => return false,
-        };
+        if mgr.ensure_session(&key, src, session, cols, rows).is_err() {
+            return false;
+        }
         match mgr.get(&key) {
             Some(client) => {
-                client.capture_screen(&tgt.target);
-                // psmux has no control-mode switch-client, so the active pane is
-                // never resolved by an attach probe. Resolve it once on connect so
-                // terminal input has a pane to forward to (issue #6). `local = true`:
-                // this per-session connection's reply is valid even before its
-                // `%session-changed` arrives.
-                if fresh {
-                    client.probe_active_pane(session, true);
+                // For a window-row target, make that window the session's active one
+                // (psmux has no switch-client) so its live %output streams and the
+                // active-pane probe resolves THAT window's pane — otherwise input
+                // would go to the previously-active window's pane.
+                if tgt.target.contains(':') {
+                    client.select_window_on(&tgt.target);
                 }
+                client.capture_screen(&tgt.target);
+                // Resolve the active pane of the SELECTED target on every select
+                // (not just first connect): reselecting a different window must
+                // refresh active_pane, else terminal input keeps going to the old
+                // window's pane (issue #6). `local = true`: this per-session
+                // connection's reply is valid even before its `%session-changed`.
+                client.probe_active_pane(&tgt.target, true);
                 true
             }
             None => false,
@@ -245,7 +248,7 @@ enum LocalEnum {
 /// The strip of a terminal-view target before any `:window` suffix — the session
 /// name, which keys a per-session local connection and `capture-pane`.
 fn target_session(target: &str) -> &str {
-    target.split(':').next().unwrap_or(target)
+    crate::mux::session_name(target)
 }
 
 /// The HostManager key for `source`'s connection to `session`: the source alias
@@ -361,7 +364,7 @@ fn handle_host_event(
                         // session is already attached here).
                         let address = format!("{host}/{session}");
                         client.list_panes(&session, address);
-                        client.probe_active_pane(session, false);
+                        client.probe_active_pane(&session, false);
                     }
                 }
             }

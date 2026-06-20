@@ -359,7 +359,7 @@ pub fn run_writer<W: Write>(
                 // target), but the correlator validates against the SESSION NAME —
                 // `%session-changed` reports the name, not `session:window`, so a
                 // bare `target` would never match and the pane would stay unset.
-                let session = target.split(':').next().unwrap_or(&target).to_string();
+                let session = crate::mux::session_name(&target).to_string();
                 in_flight.lock().unwrap().push_back(PendingReply::Ignore);
                 if w.write_all(format!("switch-client -t {target}\n").as_bytes()).is_err() {
                     return;
@@ -558,18 +558,35 @@ impl HostClient {
         });
     }
 
-    /// Probe the active pane + window of `session` (`display-message -p 'PANE=%N
-    /// WIN=<idx>'`). `local = true` for a per-session psmux connection, which never
-    /// issues switch-client — the connection IS its session — so its reply is
-    /// accepted while `attached_session` is unset (otherwise `active_pane` stays
-    /// `None` and input finds no pane). `local = false` for a host-level (tmux)
-    /// probe (e.g. on a window change), which stays strict so a stale reply from a
-    /// rapid re-switch cannot set the pane for a session we already left.
-    pub fn probe_active_pane(&self, session: impl Into<String>, local: bool) {
+    /// Probe the active pane + window index of `target` (`display-message -p -t
+    /// <target> 'PANE=%N WIN=<idx>'`). `target` may be a session (`api`) or a
+    /// `session:window`; the reply's correlator validates against the SESSION NAME
+    /// (the part before `:`), since `%session-changed` reports the name. `local =
+    /// true` for a per-session psmux connection, which never issues switch-client —
+    /// the connection IS its session — so its reply is accepted while
+    /// `attached_session` is unset (otherwise `active_pane` stays `None` and input
+    /// finds no pane). `local = false` for a host-level (tmux) probe, which stays
+    /// strict so a stale reply from a rapid re-switch cannot set a left session's pane.
+    pub fn probe_active_pane(&self, target: &str, local: bool) {
+        let session = crate::mux::session_name(target).to_string();
         let _ = self.cmd_tx.send(HostCmd::Query {
-            line: "display-message -p 'PANE=#{pane_id} WIN=#{window_index}'\n".to_string(),
-            reply: PendingReply::ActivePane { session: session.into(), local },
+            line: format!(
+                "display-message -p -t {} 'PANE=#{{pane_id}} WIN=#{{window_index}}'\n",
+                crate::mux::quote_target(target)
+            ),
+            reply: PendingReply::ActivePane { session, local },
         });
+    }
+
+    /// Make `target` (`session:window`) the active window of its session
+    /// (`select-window -t <target>`). Used for a per-session psmux window-row
+    /// selection so the connection streams that window's live `%output` and its
+    /// active pane resolves — psmux has no control-mode switch-client to do it.
+    pub fn select_window_on(&self, target: &str) {
+        let _ = self.cmd_tx.send(HostCmd::Send(format!(
+            "select-window -t {}\n",
+            crate::mux::quote_target(target)
+        )));
     }
 
     /// Switch this client to `session` (writer also probes the active pane).
