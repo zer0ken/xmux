@@ -339,6 +339,40 @@ fn handle_host_event(
             // clears. The next animation tick recomputes the connecting set.
             switcher.set_spinner(std::collections::HashSet::new());
         }
+        HostEvent::WindowChanged { host } => {
+            // The attached session's active window changed (another client switched
+            // it). Probe the new active window index on a HOST-level (tmux) client;
+            // the resulting Focus syncs the sidebar cursor. (Per-session local rows
+            // come from the plain enumeration, not this client — skip them.)
+            if !host.contains('/') {
+                if let Some(client) = mgr.get(&host) {
+                    let attached = client.inventory.lock().unwrap().attached_session.clone();
+                    if let Some(session) = attached {
+                        // Refresh the (active) window marker in the tree, then probe
+                        // the new active window so the Focus event syncs the cursor.
+                        let address = format!("{host}/{session}");
+                        client.list_panes(&session, address);
+                        client.probe_active_pane(session);
+                    }
+                }
+            }
+        }
+        HostEvent::Focus { host, window } => {
+            // Sync the sidebar cursor to the attached session's active window so it
+            // follows an external window change (the grid already follows via
+            // %output). select_window only moves when the cursor is on a window row
+            // of that session, so it never yanks a user browsing elsewhere.
+            if !host.contains('/') {
+                if let Some(idx) = window {
+                    let attached = mgr
+                        .get(&host)
+                        .and_then(|c| c.inventory.lock().unwrap().attached_session.clone());
+                    if let Some(session) = attached {
+                        switcher.select_window(&host, &session, idx);
+                    }
+                }
+            }
+        }
         HostEvent::Exited { host, reason } => {
             // A HOST-level client that dies before it ever connected is marked
             // unreachable so its host stops spinning on "scanning…". A per-session

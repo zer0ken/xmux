@@ -71,6 +71,13 @@ pub enum HostEvent {
     Output { host: String },
     /// `%session-changed` confirmed.
     Attached { host: String, session: String },
+    /// An active-pane/window probe resolved. `window` is the attached session's
+    /// active window INDEX (when the probe was for the still-attached session), so
+    /// the cockpit can sync the sidebar cursor to it after an external window change.
+    Focus { host: String, window: Option<i64> },
+    /// `%session-window-changed`: the attached session's active window changed
+    /// (e.g. another client switched it). The cockpit probes the new active window.
+    WindowChanged { host: String },
     /// `%exit` / EOF — reap.
     Exited { host: String, reason: Option<String> },
 }
@@ -206,25 +213,36 @@ fn resolve_block<E: FnMut(HostEvent)>(
             emit(HostEvent::Inventory { host: host.to_string() });
         }
         PendingReply::ActivePane { session } => {
-            // Body is a `display-message` line `PANE=%N …`. Record the active pane
-            // only when it belongs to the session that is currently attached, so a
-            // late reply for a session we have since left does not clobber state.
-            if let Some(pane) = body
+            // Body is a `display-message` line `PANE=%N WIN=<index>`. Record the
+            // active pane and emit Focus carrying the active WINDOW index so the
+            // cockpit can sync the sidebar cursor after an external window change.
+            let pane = body.iter().find_map(|ln| {
+                ln.split_whitespace().find_map(|f| f.strip_prefix("PANE=").map(str::to_string))
+            });
+            let window = body
                 .iter()
-                .find_map(|ln| ln.split_whitespace().find_map(|f| f.strip_prefix("PANE=")))
-            {
+                .find_map(|ln| ln.split_whitespace().find_map(|f| f.strip_prefix("WIN=")))
+                .and_then(|w| w.parse::<i64>().ok());
+            // Record the pane when it belongs to the attached session, OR when no
+            // session is attached yet: a per-session local connection never
+            // switch-clients (so attached_session stays None), and a probe reply can
+            // beat the `%session-changed`. A stale reply for a session we have since
+            // left is rejected — and carries no window index (it would sync the
+            // cursor to the wrong session's window).
+            let window = {
                 let mut inv = state.inventory.lock().unwrap();
-                // Record the pane when it belongs to the attached session, OR when
-                // no session is attached yet: a per-session local connection never
-                // switch-clients (so attached_session stays None), and a probe reply
-                // can beat the `%session-changed`. The match still rejects a stale
-                // reply for a session we have since left.
-                if inv.attached_session.is_none()
-                    || inv.attached_session.as_deref() == Some(session.as_str())
-                {
-                    inv.active_pane = Some(pane.to_string());
+                let matched = inv.attached_session.is_none()
+                    || inv.attached_session.as_deref() == Some(session.as_str());
+                if matched {
+                    if let Some(p) = pane {
+                        inv.active_pane = Some(p);
+                    }
+                    window
+                } else {
+                    None
                 }
-            }
+            };
+            emit(HostEvent::Focus { host: host.to_string(), window });
         }
         PendingReply::CaptureScreen => {
             // Repaint the grid from the captured screen: clear it, home the cursor,
@@ -268,7 +286,11 @@ fn dispatch_notif<E: FnMut(HostEvent)>(
             state.inventory.lock().unwrap().active_pane = Some(pane.to_string());
         }
         Notif::SessionWindowChanged { .. } => {
-            emit(HostEvent::Inventory { host: host.to_string() });
+            // The attached session's active window changed (often another client
+            // switched it). The cockpit probes the new active window and syncs the
+            // sidebar cursor; the session list/pane structure is unchanged, so this
+            // is NOT a tree rebuild.
+            emit(HostEvent::WindowChanged { host: host.to_string() });
         }
         Notif::Exit { reason } => {
             emit(HostEvent::Exited {
@@ -330,7 +352,8 @@ pub fn run_writer<W: Write>(
                 let _ = w.write_all(format!("switch-client -t {target}\n").as_bytes());
                 in_flight.lock().unwrap().push_back(PendingReply::Ignore);
                 let _ = w.write_all(
-                    format!("display-message -p -t {target} 'PANE=#{{pane_id}}'\n").as_bytes(),
+                    format!("display-message -p -t {target} 'PANE=#{{pane_id}} WIN=#{{window_index}}'\n")
+                        .as_bytes(),
                 );
                 in_flight
                     .lock()
@@ -519,7 +542,7 @@ impl HostClient {
     /// `active_pane` stays `None` and terminal input finds no pane to forward to.
     pub fn probe_active_pane(&self, session: impl Into<String>) {
         let _ = self.cmd_tx.send(HostCmd::Query {
-            line: "display-message -p 'PANE=#{pane_id}'\n".to_string(),
+            line: "display-message -p 'PANE=#{pane_id} WIN=#{window_index}'\n".to_string(),
             reply: PendingReply::ActivePane { session: session.into() },
         });
     }
@@ -833,6 +856,75 @@ mod tests {
     }
 
     #[test]
+    fn reader_active_pane_probe_parses_window_and_emits_focus() {
+        // The focus probe returns `PANE=%N WIN=<index>`; the reader records the
+        // pane and emits Focus carrying the active window index so the cockpit can
+        // sync the sidebar cursor after an external window change (issue #5).
+        let state = test_state(80, 24);
+        state.inventory.lock().unwrap().attached_session = Some("api".into());
+        let in_flight: InFlight = Default::default();
+        in_flight
+            .lock()
+            .unwrap()
+            .push_back(PendingReply::ActivePane { session: "api".into() });
+        let mut events = Vec::new();
+        let lines = vec![
+            "%begin 1 5 0".to_string(),
+            "PANE=%4 WIN=2".to_string(),
+            "%end 1 5 0".to_string(),
+        ]
+        .into_iter();
+        run_reader("jupiter06", lines, &state, &in_flight, |e| events.push(e));
+        assert_eq!(state.inventory.lock().unwrap().active_pane.as_deref(), Some("%4"));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, HostEvent::Focus { host, window: Some(2) } if host == "jupiter06")));
+    }
+
+    #[test]
+    fn reader_focus_window_is_none_for_a_stale_session_reply() {
+        // A probe reply for a session we have since left must not carry a window
+        // index (it would sync the cursor to the wrong session's window).
+        let state = test_state(80, 24);
+        state.inventory.lock().unwrap().attached_session = Some("B".into());
+        let in_flight: InFlight = Default::default();
+        in_flight
+            .lock()
+            .unwrap()
+            .push_back(PendingReply::ActivePane { session: "A".into() });
+        let mut events = Vec::new();
+        let lines = vec![
+            "%begin 1 5 0".to_string(),
+            "PANE=%9 WIN=7".to_string(),
+            "%end 1 5 0".to_string(),
+        ]
+        .into_iter();
+        run_reader("h", lines, &state, &in_flight, |e| events.push(e));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, HostEvent::Focus { window: None, .. })));
+    }
+
+    #[test]
+    fn reader_session_window_changed_emits_window_changed() {
+        // An external client switching the attached session's active window makes
+        // tmux emit %session-window-changed; the cockpit probes the new window.
+        let state = test_state(80, 24);
+        let in_flight: InFlight = Default::default();
+        let mut events = Vec::new();
+        run_reader(
+            "jupiter06",
+            vec!["%session-window-changed $0 @1".to_string()].into_iter(),
+            &state,
+            &in_flight,
+            |e| events.push(e),
+        );
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, HostEvent::WindowChanged { host } if host == "jupiter06")));
+    }
+
+    #[test]
     fn reader_session_changed_sets_attached_and_emits() {
         let state = test_state(80, 24);
         let in_flight: InFlight = Default::default();
@@ -967,9 +1059,9 @@ mod tests {
         run_writer(rx, &mut out, &in_flight);
         let s = String::from_utf8(out).unwrap();
         assert!(s.contains("switch-client -t api\n"));
-        // PANE= prefix + message-arg form so the Task-8 reader's `strip_prefix("PANE=")`
-        // resolver parses the active pane (a bare `-F '#{pane_id}'` would not match).
-        assert!(s.contains("display-message -p -t api 'PANE=#{pane_id}'\n"));
+        // PANE=/WIN= prefixes + message-arg form so the reader parses the active
+        // pane AND the active window index (for the sidebar window sync).
+        assert!(s.contains("display-message -p -t api 'PANE=#{pane_id} WIN=#{window_index}'\n"));
         // switch-client's ack pushes an Ignore ahead, so the ActivePane is not at
         // the front — it just must be present and lockstep-correct.
         assert!(in_flight

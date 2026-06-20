@@ -628,6 +628,34 @@ impl Switcher {
         self.current_source()
     }
 
+    /// Syncs the sidebar cursor to window `window` of `source`/`session` when the
+    /// cursor is currently on a WINDOW row of that same session — used to follow
+    /// another client's active-window change (the live grid already follows via
+    /// `%output`). A no-op when the cursor is elsewhere (another host/session, or
+    /// the session row itself), so it never yanks a user who is browsing. Returns
+    /// whether it moved.
+    pub fn select_window(&mut self, source: &str, session: &str, window: i64) -> bool {
+        let on_this_session_window = matches!(
+            self.current_ref(),
+            Some(RowRef::Window { sess, .. }) if sess.source == source && sess.name == session
+        );
+        if !on_this_session_window {
+            return false;
+        }
+        let target = self.rows.iter().position(|r| {
+            matches!(&r.reference, RowRef::Window { sess, window: w }
+                if sess.source == source && sess.name == session && *w == window)
+        });
+        match target {
+            Some(i) if i != self.selected => {
+                self.user_moved = true;
+                self.set_selected(i);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Replaces the set of session addresses currently connecting / awaiting
     /// first output. The tree draws a braille spinner right of each matching
     /// session name.
@@ -1632,6 +1660,57 @@ mod tests {
             RowRef::Session(s) => Some(s.name.clone()),
             _ => None,
         }
+    }
+
+    fn two_window_scan() -> Scan {
+        let mut panes = HashMap::new();
+        panes.insert(
+            "jup/api".to_string(),
+            vec![
+                win(0, "w0", true, vec![pane(0, true, "bash")]),
+                win(1, "w1", false, vec![pane(0, true, "bash")]),
+            ],
+        );
+        Scan {
+            groups: vec![Group {
+                source: "jup".into(),
+                err: None,
+                sessions: vec![sess("jup", "api", 2, false, 100)],
+            }],
+            panes,
+        }
+    }
+
+    #[test]
+    fn select_window_follows_external_change_on_a_window_row() {
+        // Cursor on window 1's row; an external client switches the session's
+        // active window to 0. The sidebar cursor must follow to window 0's row.
+        let mut sw = Switcher::new(two_window_scan());
+        sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // session -> window 0
+        sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // window 0 -> window 1
+        assert!(matches!(sw.current_ref(), Some(RowRef::Window { window: 1, .. })));
+        assert!(sw.select_window("jup", "api", 0), "moved to the new active window");
+        assert!(matches!(sw.current_ref(), Some(RowRef::Window { window: 0, .. })));
+    }
+
+    #[test]
+    fn select_window_no_move_from_a_session_row() {
+        // On the session row the user is not tracking a specific window, so an
+        // external window change must not yank the cursor onto a window row.
+        let mut sw = Switcher::new(two_window_scan());
+        assert!(matches!(sw.current_ref(), Some(RowRef::Session(_))));
+        assert!(!sw.select_window("jup", "api", 0));
+        assert!(matches!(sw.current_ref(), Some(RowRef::Session(_))));
+    }
+
+    #[test]
+    fn select_window_no_move_for_another_session() {
+        // A window change on a session the cursor is NOT on must not move it.
+        let mut sw = Switcher::new(two_window_scan());
+        sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // on window 1
+        assert!(!sw.select_window("jup", "other", 0));
+        assert!(matches!(sw.current_ref(), Some(RowRef::Window { window: 1, .. })));
     }
 
     // --- tests --------------------------------------------------------------
