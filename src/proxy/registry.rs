@@ -11,19 +11,43 @@ use std::sync::{Arc, Mutex};
 use crate::proxy::run::{spawn_attachment, Attachment, PtyEvent};
 use crate::proxy::screen::Grid;
 
+/// How the registry spawns a new attachment. Defaults to `spawn_attachment` (the
+/// live PTY path); a test injects a fake via `with_spawner` to exercise `ensure`'s
+/// dedup/id bookkeeping without a real PTY.
+type AttachmentSpawner = Box<
+    dyn Fn(
+            &[String],
+            u16,
+            u16,
+            u64,
+            tokio::sync::mpsc::UnboundedSender<PtyEvent>,
+        ) -> anyhow::Result<Attachment>
+        + Send
+        + Sync,
+>;
+
 pub struct AttachRegistry {
     /// Keyed by `Session::address()` (`source/session`).
     map: HashMap<String, Attachment>,
     next_id: u64,
     events: tokio::sync::mpsc::UnboundedSender<PtyEvent>,
+    spawner: AttachmentSpawner,
 }
 
 impl AttachRegistry {
     pub fn new(events: tokio::sync::mpsc::UnboundedSender<PtyEvent>) -> Self {
+        Self::with_spawner(events, Box::new(spawn_attachment))
+    }
+
+    pub fn with_spawner(
+        events: tokio::sync::mpsc::UnboundedSender<PtyEvent>,
+        spawner: AttachmentSpawner,
+    ) -> Self {
         AttachRegistry {
             map: HashMap::new(),
             next_id: 1,
             events,
+            spawner,
         }
     }
 
@@ -105,7 +129,7 @@ impl AttachRegistry {
         }
         let id = self.next_id;
         self.next_id += 1;
-        let att = spawn_attachment(argv, cols, rows, id, self.events.clone())?;
+        let att = (self.spawner)(argv, cols, rows, id, self.events.clone())?;
         self.map.insert(addr.to_string(), att);
         Ok(id)
     }
@@ -241,5 +265,29 @@ mod tests {
         reg.clear_grid("local/a");
         assert!(reg.grid("local/a").unwrap().lock().unwrap().is_blank(), "clear_grid wipes the grid");
         reg.clear_grid("absent"); // must not panic
+    }
+
+    #[test]
+    fn registry_ensure_uses_injected_spawner() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_spawner = calls.clone();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::proxy::run::PtyEvent>();
+        let mut registry = AttachRegistry::with_spawner(
+            tx,
+            Box::new(move |_argv, _cols, _rows, id, _events| {
+                calls_for_spawner.fetch_add(1, Ordering::SeqCst);
+                Ok(crate::proxy::run::fake_attachment(id))
+            }),
+        );
+
+        let argv = vec!["cmd.exe".to_string(), "/c".to_string(), "rem".to_string()];
+        assert_eq!(registry.ensure("local/a", &argv, 80, 24).unwrap(), 1);
+        assert_eq!(registry.ensure("local/a", &argv, 80, 24).unwrap(), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }
