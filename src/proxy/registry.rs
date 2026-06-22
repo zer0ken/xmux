@@ -114,6 +114,21 @@ impl AttachRegistry {
         self.map.keys().cloned().collect()
     }
 
+    /// Issues the next attachment id WITHOUT spawning — for the off-loop path where the
+    /// worker spawns and the cockpit inserts the finished attachment under this id.
+    pub fn alloc_id(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    /// Inserts a finished attachment under its address key (the off-loop handoff: the
+    /// worker spawned it on its OS thread, the cockpit stores it here so `grid`/`input`/
+    /// `reap` reach it). Overwrites any prior attachment at `addr`.
+    pub fn insert(&mut self, addr: &str, att: Attachment) {
+        self.map.insert(addr.to_string(), att);
+    }
+
     /// Ensures `addr` is attached, spawning a real `attach` child on a PTY if absent.
     /// `argv` is the attach argv (`Source::attach_command`). A no-op (returns the
     /// existing id) when already attached. Returns the attachment's id.
@@ -289,6 +304,18 @@ mod tests {
         assert_eq!(registry.ensure("local/a", &argv, 80, 24).unwrap(), 1);
         assert_eq!(registry.ensure("local/a", &argv, 80, 24).unwrap(), 1);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn alloc_id_increments_and_insert_registers_attachment() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
+        let mut reg = AttachRegistry::new(tx);
+        let id0 = reg.alloc_id();
+        let id1 = reg.alloc_id();
+        assert_eq!((id0, id1), (1, 2), "ids are issued sequentially from 1");
+        reg.insert("local/a", crate::proxy::run::fake_attachment(id0));
+        assert!(reg.contains("local/a"));
+        assert!(reg.grid("local/a").is_some(), "inserted attachment exposes its grid");
     }
 
     #[test]
