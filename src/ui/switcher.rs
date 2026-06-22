@@ -61,6 +61,8 @@ pub trait Ops: Send + Sync {
     async fn kill(&self, s: &Session) -> anyhow::Result<()>;
     async fn rename(&self, s: &Session, new_name: &str) -> anyhow::Result<()>;
     async fn panes(&self, s: &Session) -> anyhow::Result<Vec<WindowPanes>>;
+    async fn kill_window(&self, source: &str, target: &str) -> anyhow::Result<()>;
+    async fn rename_window(&self, source: &str, target: &str, new_name: &str) -> anyhow::Result<()>;
 }
 
 /// A slow (network) action a keypress queues. The key-handling path only records
@@ -73,6 +75,8 @@ pub enum PendingOp {
     SplitWindow { source: String, target: String, session: String, vertical: bool },
     Rename { sess: Session, new_name: String },
     Kill { sess: Session },
+    KillWindow { source: String, session: String, target: String },
+    RenameWindow { source: String, session: String, target: String, new_name: String },
 }
 
 /// The outcome of a [`PendingOp`], applied back into the switcher state by
@@ -146,6 +150,18 @@ pub async fn run_op(op: &PendingOp, ops: &dyn Ops) -> OpResult {
                 message: format!("kill failed: {e}"),
             },
         },
+        PendingOp::KillWindow { source, session, target } => {
+            match ops.kill_window(source, target).await {
+                Ok(()) => refreshed_panes(ops, source, session).await,
+                Err(e) => OpResult::Failed { message: format!("kill window failed: {e}") },
+            }
+        }
+        PendingOp::RenameWindow { source, session, target, new_name } => {
+            match ops.rename_window(source, target, new_name).await {
+                Ok(()) => refreshed_panes(ops, source, session).await,
+                Err(e) => OpResult::Failed { message: format!("rename window failed: {e}") },
+            }
+        }
     }
 }
 
@@ -256,6 +272,7 @@ pub struct Switcher {
     filter: String,
     input: Option<Input>,
     pending_kill: Option<Session>,
+    pending_kill_window: Option<(String, String, String)>,
     flash: String,
 
     terminal_view_target: TerminalViewTarget,
@@ -294,6 +311,7 @@ impl Switcher {
             filter: String::new(),
             input: None,
             pending_kill: None,
+            pending_kill_window: None,
             flash: String::new(),
             terminal_view_target: TerminalViewTarget::default(),
             list_state: ListState::default(),
@@ -832,7 +850,7 @@ impl Switcher {
             self.show_help = false;
             return;
         }
-        if self.pending_kill.is_some() {
+        if self.pending_kill.is_some() || self.pending_kill_window.is_some() {
             self.resolve_kill(ev);
             return;
         }
@@ -879,17 +897,38 @@ impl Switcher {
                 });
             }
             InputMode::Rename => {
-                let Some(sess) = self.current_session() else {
-                    return;
-                };
-                self.input = Some(Input {
-                    mode,
-                    label: " rename to: ".into(),
-                    buffer: sess.name.clone(),
-                    source: None,
-                    sess: Some(sess),
-                    target: None,
-                });
+                match self.current_ref().cloned() {
+                    Some(RowRef::Host { .. }) => {
+                        self.flash = "cannot rename a host".into();
+                    }
+                    Some(RowRef::Session(sess)) => {
+                        self.input = Some(Input {
+                            mode,
+                            label: " rename to: ".into(),
+                            buffer: sess.name.clone(),
+                            source: None,
+                            sess: Some(sess),
+                            target: None,
+                        });
+                    }
+                    Some(RowRef::Window { sess, window }) => {
+                        let win_name = self.panes
+                            .get(&sess.address())
+                            .and_then(|ws| ws.iter().find(|w| w.index == window))
+                            .map(|w| w.name.clone())
+                            .unwrap_or_default();
+                        let target = format!("{}:{}", sess.name, window);
+                        self.input = Some(Input {
+                            mode,
+                            label: " rename window to: ".into(),
+                            buffer: win_name,
+                            source: Some(sess.source.clone()),
+                            sess: Some(sess),
+                            target: Some(target),
+                        });
+                    }
+                    _ => {}
+                }
             }
             // New/NewWindow/SplitWindow are opened by `open_new` (level-aware).
             InputMode::New | InputMode::NewWindow | InputMode::SplitWindow => {}
@@ -977,7 +1016,11 @@ impl Switcher {
                         self.close_input();
                     }
                     InputMode::Rename => {
-                        self.queue_rename(sess, &val);
+                        if target.is_some() {
+                            self.queue_rename_window(source, sess, target, &val);
+                        } else {
+                            self.queue_rename(sess, &val);
+                        }
                         self.close_input();
                     }
                 }
@@ -1071,6 +1114,31 @@ impl Switcher {
         });
     }
 
+    fn queue_rename_window(
+        &mut self,
+        source: Option<String>,
+        sess: Option<Session>,
+        target: Option<String>,
+        new_name: &str,
+    ) {
+        let (Some(source), Some(sess), Some(target)) = (source, sess, target) else {
+            return;
+        };
+        if new_name.is_empty() {
+            return;
+        }
+        if new_name.starts_with('-') {
+            self.flash = "rename: name cannot start with '-'".into();
+            return;
+        }
+        self.pending_op = Some(PendingOp::RenameWindow {
+            source,
+            session: sess.name,
+            target,
+            new_name: new_name.to_string(),
+        });
+    }
+
     /// Applies a completed [`PendingOp`] to the in-memory tree. Runs on the event
     /// loop once [`run_op`] returns, so the state mutation that used to follow the
     /// inline network call now follows the off-loop one.
@@ -1135,15 +1203,31 @@ impl Switcher {
     // --- kill (inline confirm) ----------------------------------------------
 
     fn arm_kill(&mut self) {
-        if let Some(sess) = self.current_session() {
-            self.pending_kill = Some(sess);
+        match self.current_ref().cloned() {
+            Some(RowRef::Host { .. }) => {
+                self.flash = "cannot kill a host".into();
+            }
+            Some(RowRef::Session(sess)) => {
+                self.pending_kill = Some(sess);
+            }
+            Some(RowRef::Window { sess, window }) => {
+                let target = format!("{}:{}", sess.name, window);
+                self.pending_kill_window = Some((sess.source.clone(), sess.name.clone(), target));
+            }
+            _ => {}
         }
     }
 
     fn resolve_kill(&mut self, ev: KeyEvent) {
+        let confirmed = matches!(ev.code, KeyCode::Char('y') | KeyCode::Char('Y'));
         if let Some(sess) = self.pending_kill.take() {
-            if matches!(ev.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+            if confirmed {
                 self.pending_op = Some(PendingOp::Kill { sess });
+            }
+        }
+        if let Some((source, session, target)) = self.pending_kill_window.take() {
+            if confirmed {
+                self.pending_op = Some(PendingOp::KillWindow { source, session, target });
             }
         }
     }
@@ -1382,9 +1466,11 @@ impl Switcher {
     }
 
     fn render_footer(&self, frame: &mut Frame, area: Rect) {
-        let is_kill = self.pending_kill.is_some();
+        let is_kill = self.pending_kill.is_some() || self.pending_kill_window.is_some();
         let text = if let Some(sess) = &self.pending_kill {
             format!(" kill {}? [y]es / [n]o", sess.address())
+        } else if let Some((source, _session, target)) = &self.pending_kill_window {
+            format!(" kill {}/{}? [y]es / [n]o", source, target)
         } else if !self.flash.is_empty() {
             format!(" {}", self.flash)
         } else if !self.scanning.is_empty() {
@@ -1549,6 +1635,8 @@ mod tests {
         renamed: Mutex<Vec<String>>,
         windowed: Mutex<Vec<String>>,
         split: Mutex<Vec<String>>,
+        killed_windows: Mutex<Vec<String>>,
+        renamed_windows: Mutex<Vec<String>>,
     }
 
     #[async_trait::async_trait]
@@ -1598,6 +1686,14 @@ mod tests {
         }
         async fn panes(&self, _s: &Session) -> anyhow::Result<Vec<WindowPanes>> {
             Ok(Vec::new())
+        }
+        async fn kill_window(&self, _source: &str, target: &str) -> anyhow::Result<()> {
+            self.killed_windows.lock().unwrap().push(target.to_string());
+            Ok(())
+        }
+        async fn rename_window(&self, _source: &str, target: &str, new_name: &str) -> anyhow::Result<()> {
+            self.renamed_windows.lock().unwrap().push(format!("{target}->{new_name}"));
+            Ok(())
         }
     }
 
@@ -2744,5 +2840,68 @@ mod tests {
             .find(|c| c.symbol() == "k") // "kill ...": first 'k'
             .expect("kill confirm text present");
         assert_eq!(cell.fg, ratatui::style::Color::Red, "kill confirm must be red");
+    }
+
+    #[tokio::test]
+    async fn kill_on_window_row_targets_the_window() {
+        let mut h = Harness::new(sample());
+        h.key(KeyCode::Home).await;   // local host
+        h.key(KeyCode::Right).await;  // → editor (session)
+        h.key(KeyCode::Right).await;  // → editor's first window (window 1)
+        h.sw.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)); // arm kill (raw, not pumped)
+        assert!(
+            h.sw.pending_kill_window.is_some(),
+            "kill on window row must set pending_kill_window"
+        );
+        let (_, _, target) = h.sw.pending_kill_window.as_ref().unwrap();
+        assert_eq!(target, "editor:1");
+        // confirm with y
+        h.sw.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        let op = h.sw.take_pending_op().expect("kill window queued");
+        assert!(matches!(op, PendingOp::KillWindow { ref target, .. } if target == "editor:1"));
+    }
+
+    #[tokio::test]
+    async fn rename_on_window_row_targets_the_window() {
+        let mut h = Harness::new(sample());
+        h.key(KeyCode::Home).await;   // local host
+        h.key(KeyCode::Right).await;  // → editor (session)
+        h.key(KeyCode::Right).await;  // → editor's first window (window 1, name "shell")
+        h.sw.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE)); // open rename (raw)
+        // input should be open for window rename
+        assert!(h.sw.input.is_some(), "rename on window row must open input");
+        assert!(h.sw.input.as_ref().unwrap().target.is_some(), "rename on window must have a target");
+        h.sw.set_input_text("newname");
+        h.sw.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)); // confirm (raw)
+        let op = h.sw.take_pending_op().expect("rename window queued");
+        assert!(matches!(op, PendingOp::RenameWindow { ref target, ref new_name, .. }
+            if target == "editor:1" && new_name == "newname"));
+    }
+
+    #[tokio::test]
+    async fn kill_on_host_row_flashes_error() {
+        let mut h = Harness::new(sample());
+        h.key(KeyCode::Home).await; // local host row
+        h.ch('x').await;
+        assert!(
+            h.sw.flash.to_lowercase().contains("cannot kill"),
+            "kill on host row must flash an error, got {:?}",
+            h.sw.flash
+        );
+        assert!(h.sw.pending_kill.is_none(), "no kill queued");
+        assert!(h.sw.pending_kill_window.is_none(), "no window kill queued");
+    }
+
+    #[tokio::test]
+    async fn rename_on_host_row_flashes_error() {
+        let mut h = Harness::new(sample());
+        h.key(KeyCode::Home).await; // local host row
+        h.ch('R').await;
+        assert!(
+            h.sw.flash.to_lowercase().contains("cannot rename"),
+            "rename on host row must flash an error, got {:?}",
+            h.sw.flash
+        );
+        assert!(h.sw.input.is_none(), "no input opened");
     }
 }

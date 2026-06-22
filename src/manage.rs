@@ -27,6 +27,19 @@ pub async fn rename(s: &Source, old_name: &str, new_name: &str) -> Result<(), Ru
     Ok(())
 }
 
+/// Kills a window by `session:window` target.
+pub async fn kill_window(s: &Source, target: &str) -> Result<(), RunError> {
+    s.run(&mux::kill_window(&s.binary, target)).await?;
+    Ok(())
+}
+
+/// Renames a window.
+pub async fn rename_window(s: &Source, target: &str, new_name: &str) -> Result<(), RunError> {
+    s.run(&mux::rename_window(&s.binary, target, new_name))
+        .await?;
+    Ok(())
+}
+
 /// Returns the source session's windows-with-panes (for the tree's child loading
 /// and active-pane resolution).
 pub async fn panes(s: &Source, name: &str) -> Result<Vec<WindowPanes>, RunError> {

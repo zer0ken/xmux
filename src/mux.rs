@@ -122,6 +122,16 @@ pub fn rename_session(bin: &str, old_name: &str, new_name: &str) -> Vec<String> 
     argv(&[bin, "rename-session", "-t", old_name, new_name])
 }
 
+/// Kills the window `target` (`session:window`).
+pub fn kill_window(bin: &str, target: &str) -> Vec<String> {
+    argv(&[bin, "kill-window", "-t", target])
+}
+
+/// Renames the window `target` (`session:window`) to `new_name`.
+pub fn rename_window(bin: &str, target: &str, new_name: &str) -> Vec<String> {
+    argv(&[bin, "rename-window", "-t", target, new_name])
+}
+
 /// Splits raw mux output into non-blank lines, tolerating both `\r\n` and `\n`.
 fn split_lines(out: &str) -> Vec<&str> {
     out.split('\n')
@@ -327,6 +337,13 @@ mod tests {
             rename_session("tmux", "old", "new"),
             sv(&["tmux", "rename-session", "-t", "old", "new"])
         );
+    }
+
+    #[test]
+    fn kill_and_rename_window_argv() {
+        assert_eq!(kill_window("tmux", "api:2"), sv(&["tmux", "kill-window", "-t", "api:2"]));
+        assert_eq!(rename_window("tmux", "api:2", "logs"),
+            sv(&["tmux", "rename-window", "-t", "api:2", "logs"]));
     }
 
     #[test]
