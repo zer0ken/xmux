@@ -158,8 +158,9 @@ impl AttachRegistry {
     }
 
     /// Removes the attachment whose id == `id` (its master hit EOF), tearing it down.
-    /// A no-op if it was already removed.
-    pub fn reap(&mut self, id: u64) {
+    /// Returns `true` if an attachment was removed, `false` if no attachment with that id
+    /// was registered (e.g. its off-loop `Ready` insert has not happened yet).
+    pub fn reap(&mut self, id: u64) -> bool {
         let addr = self
             .map
             .iter()
@@ -168,8 +169,10 @@ impl AttachRegistry {
         if let Some(addr) = addr {
             if let Some(att) = self.map.remove(&addr) {
                 att.teardown();
+                return true;
             }
         }
+        false
     }
 
     /// Resizes every kept attachment to `cols×rows` (one `PtyCmd::Resize` each, off
@@ -224,7 +227,7 @@ mod tests {
         let mut reg = empty_registry();
         reg.insert_fake("jupiter06/b", 2);
         assert!(reg.contains("jupiter06/b"));
-        reg.reap(2);
+        assert!(reg.reap(2), "reap of a live id returns true");
         assert!(!reg.contains("jupiter06/b"), "reap removes the EOF'd attachment");
     }
 
@@ -232,7 +235,7 @@ mod tests {
     fn reap_unknown_id_is_noop() {
         let mut reg = empty_registry();
         reg.insert_fake("local/work", 1);
-        reg.reap(999);
+        assert!(!reg.reap(999), "reap of an unknown id returns false");
         assert!(reg.contains("local/work"), "reaping an unknown id leaves the map intact");
     }
 

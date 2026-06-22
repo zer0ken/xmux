@@ -683,6 +683,10 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     // spinner shows "(attaching…)" before the Ready reply and a duplicate request is skipped.
     let mut in_flight: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     let mut attach_seq: u64 = 0;
+    // Ids whose Exited arrived BEFORE their off-loop Ready insert: the pump already ended,
+    // so the Ready arm must tear the dead attachment down instead of registering an
+    // unreapable, permanently-frozen pane.
+    let mut reaped_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
 
     // The live mutate ops (create/rename/kill) — NOT tree probing (that comes from
     // the control clients' inventory + local enumeration).
@@ -862,11 +866,20 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 // A kept attachment's pump fed its grid (Output → redraw on the next
                 // loop top) or its master hit EOF (Exited → reap). Coalesce a burst
                 // into one redraw so a busy session cannot monopolize the thread.
-                if let PtyEvent::Exited { id } = ev { registry.reap(id); }
+                if let PtyEvent::Exited { id } = ev {
+                    if !registry.reap(id) {
+                        reaped_ids.insert(id);
+                    }
+                }
                 let mut budget = EVENT_DRAIN_BUDGET;
                 while budget > 0 {
                     match pty_rx.try_recv() {
-                        Ok(PtyEvent::Exited { id }) => { registry.reap(id); budget -= 1; }
+                        Ok(PtyEvent::Exited { id }) => {
+                            if !registry.reap(id) {
+                                reaped_ids.insert(id);
+                            }
+                            budget -= 1;
+                        }
                         Ok(PtyEvent::Output { .. }) => { budget -= 1; }
                         Err(_) => break,
                     }
@@ -875,12 +888,17 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             Some(ev) = worker.recv() => {
                 match ev {
                     DisplayEvent::Ready { seq, key, attachment } => {
-                        if attach_reply_is_current(&in_flight, &key, seq) {
+                        if reaped_ids.remove(&attachment.id()) {
+                            // Exited raced ahead of this Ready: the child already died and its
+                            // pump (one Exited at EOF) has ended. Inserting now would leave a
+                            // dead, never-reaped pane that contains() refuses to re-attach.
+                            // Tear it down and clear in-flight so the next settle re-requests.
+                            in_flight.remove(&key);
+                            attachment.teardown();
+                        } else if attach_reply_is_current(&in_flight, &key, seq) {
                             in_flight.remove(&key);
                             registry.insert(&key, attachment);
                         } else {
-                            // Stale (the cursor moved on / the key was reaped): kill the child
-                            // we no longer want rather than leaking it.
                             attachment.teardown();
                         }
                     }
