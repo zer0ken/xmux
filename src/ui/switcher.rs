@@ -1598,17 +1598,18 @@ impl Switcher {
             "↑ / ↓ / j / k     move",
             "Enter              focus the terminal pane",
             "C-g Esc           back to the tree",
+            "C-g C-←/→ or h/l   resize the tree column",
             "PgUp / PgDn       jump by 10",
             "Home / End        first / last node",
             "n                 new (session / window / pane, by level)",
-            "R                 rename the focused session",
-            "x                 kill the focused session (y / n confirm)",
+            "R                 rename the focused session or window",
+            "x                 kill the focused session or window (y / n confirm)",
             "/                 fuzzy filter <source>/<name>",
             "r                 re-scan every host",
             "?                 toggle this help",
             "q                 quit",
             "",
-            "mouse: click selects · wheel scrolls",
+            "mouse → the focused mux pane (enable mouse in the mux)",
         ];
         let inner_w = LINES.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
         let w = (inner_w + 4).min(area.width); // text + a space each side + borders
