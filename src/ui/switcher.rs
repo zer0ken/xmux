@@ -921,7 +921,7 @@ impl Switcher {
                     }
                     Some(RowRef::Window { sess, window }) => {
                         let win_name = self.window_name(&sess.address(), window).unwrap_or_default();
-                        let target = format!("{}:{}", sess.name, window);
+                        let target = crate::mux::window_target(&sess.name, window);
                         self.input = Some(Input {
                             mode,
                             label: " rename window to: ".into(),
@@ -1225,7 +1225,7 @@ impl Switcher {
                 self.pending_kill = Some(sess);
             }
             Some(RowRef::Window { sess, window }) => {
-                let target = format!("{}:{}", sess.name, window);
+                let target = crate::mux::window_target(&sess.name, window);
                 self.pending_kill_window = Some((sess.source.clone(), sess.name.clone(), target));
             }
             _ => {}
@@ -1342,12 +1342,13 @@ impl Switcher {
     /// sibling at `indent`, else the nearest preceding selectable row at a shallower
     /// indent (the parent). Operates on the freshly rebuilt `self.rows`.
     fn fallback_after_removal(&self, indent: usize, prior_selected: usize) -> Option<usize> {
-        let prev_sibling = self.rows[..prior_selected.min(self.rows.len())]
+        let prior = &self.rows[..prior_selected.min(self.rows.len())];
+        let prev_sibling = prior
             .iter().enumerate().rev()
             .find(|(_, r)| r.indent == indent && r.selectable())
             .map(|(i, _)| i);
         prev_sibling.or_else(|| {
-            self.rows[..prior_selected.min(self.rows.len())]
+            prior
                 .iter().enumerate().rev()
                 .find(|(_, r)| r.indent < indent && r.selectable())
                 .map(|(i, _)| i)
