@@ -10,9 +10,10 @@
 //! State is explicit: [`Selection`] (the canonical `source`/`session`/`window`) is
 //! the single source of truth the display reads — the `Switcher` owns only the tree
 //! and cursor. One `select!` loop interleaves stdin, host events, PTY events, the
-//! control socket, terminal resize, and an animation tick. ratatui owns stdout in
-//! both states: Overlay draws the switcher + the selected PTY grid; Passthrough
-//! draws that grid fullscreen plus a status bar.
+//! control socket, terminal resize, and an animation tick. ratatui owns stdout and
+//! draws the SAME split (tree + selected PTY grid) in both focus states — Overlay
+//! (tree focused) and Passthrough (terminal focused) differ only in the divider
+//! colour and where keys go, so toggling focus needs no screen clear.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -685,6 +686,10 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
 
     // The switcher, seeded from the source skeletons; events stream the tree in.
     let mut switcher = Switcher::from_sources(env.srcs.iter().map(|s| s.alias.clone()).collect());
+    // Restore the session the user last had selected (persisted across runs), so the
+    // preselect lands there once its host streams in instead of guessing from the
+    // unreliable cross-host `session_last_attached` (#1).
+    switcher.set_preferred(crate::state::load_last_session(&env.xmux_dir));
     let mut app = App::new();
 
     // The canonical selection; committed from the switcher's cursor at the loop top.
@@ -693,6 +698,9 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     // deadline after which a settled selection is attached (see ATTACH_DEBOUNCE_MS).
     let mut last_attached_sel = Selection::default();
     let mut attach_deadline: Option<std::time::Instant> = None;
+    // The session address last persisted as the user's last-selected (#1), so it is
+    // not rewritten on every window step within the same session.
+    let mut last_saved_session = String::new();
     // Off-loop attach: keys with a spawn request in flight (key → latest request seq), so the
     // spinner shows "(attaching…)" before the Ready reply and a duplicate request is skipped.
     let mut in_flight: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
@@ -778,12 +786,26 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     frame.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut dirty = true;
     let mut last_draw = std::time::Instant::now() - Duration::from_millis(FRAME_MS);
+    // DIAG (temp): detect if the parent console's raw mode gets reset out from under us.
+    let mut prev_raw = ratatui::crossterm::terminal::is_raw_mode_enabled().unwrap_or(true);
 
     loop {
         // Advance the spinner from wall-clock so it animates regardless of which arm
         // fired, then commit the cursor's target into the canonical selection. A
         // changed selection ensures its PTY + (for a window row) switches the window.
         switcher.set_spinner_frame(spinner_frame_at(spinner_start.elapsed()));
+        // DIAG (temp): log the exact iteration where raw mode flips off (terminal goes
+        // canonical → keys echo on screen, xmux stops receiving input). The line just
+        // before this in debug.log shows what activity (attach/reap/draw) preceded it.
+        {
+            let raw_now = ratatui::crossterm::terminal::is_raw_mode_enabled().unwrap_or(true);
+            if prev_raw && !raw_now {
+                dbg_log(&env.xmux_dir, "DIAG RAW_LOST (raw mode flipped off this iteration)");
+            } else if !prev_raw && raw_now {
+                dbg_log(&env.xmux_dir, "DIAG RAW_REGAINED");
+            }
+            prev_raw = raw_now;
+        }
         let new_sel = Selection::from_target(&switcher.terminal_view_target());
         if new_sel != selection {
             selection = new_sel;
@@ -802,6 +824,14 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             // reconnect sweep, or the pane stays blank). Record it only on a real
             // attach, so a failed attach does not latch and suppress the retry.
             if !selection.is_empty() {
+                // Persist the settled session as the user's last-selected, so the next
+                // launch restores it (#1). Only on an address change, so stepping
+                // between windows of one session does not rewrite it every settle.
+                let addr = selection.address();
+                if addr != last_saved_session {
+                    crate::state::save_last_session(&env.xmux_dir, &addr);
+                    last_saved_session = addr;
+                }
                 let key = display_key(&env, &selection);
                 if selection != last_attached_sel
                     || (!registry.contains(&key) && !in_flight.contains_key(&key))
@@ -834,14 +864,29 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 .flatten();
             let terminal_focused = !app.is_overlay();
             let t_draw = std::time::Instant::now();
+            // Split the draw cost: `render` is the in-memory buffer build (tree +
+            // grid → cells); the remainder of `draw` is crossterm's diff + console
+            // flush. On Windows the flush (writing changed cells to the console) is
+            // the suspected dominant stall during a remote repaint flood — the split
+            // tells render-cost from flush-cost so the off-loop-draw fix targets the
+            // right half (#2). XMUX_DEBUG-gated like the other probes.
+            let xmux_dir = env.xmux_dir.clone();
             let _ = match &grid_arc {
                 Some(g) => {
                     let t_lock = std::time::Instant::now();
                     let guard = g.lock().ok();
                     dbg_ms(&env.xmux_dir, "grid_lock", t_lock);
-                    term.draw(|f| switcher.render(f, guard.as_deref(), terminal_focused))
+                    term.draw(|f| {
+                        let t_render = std::time::Instant::now();
+                        switcher.render(f, guard.as_deref(), terminal_focused);
+                        dbg_ms(&xmux_dir, "render", t_render);
+                    })
                 }
-                None => term.draw(|f| switcher.render(f, None, terminal_focused)),
+                None => term.draw(|f| {
+                    let t_render = std::time::Instant::now();
+                    switcher.render(f, None, terminal_focused);
+                    dbg_ms(&xmux_dir, "render", t_render);
+                }),
             };
             dbg_ms(&env.xmux_dir, "draw", t_draw);
             // The grids are now on screen — clear every attachment's output-coalescing
@@ -912,6 +957,11 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         } else if attach_reply_is_current(&in_flight, &key, seq) {
                             in_flight.remove(&key);
                             registry.insert(&key, attachment);
+                            // DIAG (temp): was raw mode already off right after an attach landed?
+                            // If RAW off here, the ConPTY spawn on the worker thread reset it.
+                            if !ratatui::crossterm::terminal::is_raw_mode_enabled().unwrap_or(true) {
+                                dbg_log(&env.xmux_dir, &format!("DIAG raw OFF right after attach insert key={key}"));
+                            }
                             // The selection may have moved to another session of the same host
                             // while this first-attach was in flight; clearing the latch makes the
                             // next pass re-run select_attach, which (now that the host PTY exists)
@@ -957,11 +1007,14 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 }
                 if focus_terminal && app.is_overlay() {
                     app.toggle();
-                    let _ = term.clear();
+                    // No term.clear(): both states draw the SAME split layout (only the
+                    // divider colour changes), so clearing would blank the screen and
+                    // force a full repaint for nothing. Mirror the displayed window in
+                    // the sidebar as focus enters the terminal (#3).
+                    switcher.select_active_window();
                 }
                 if focus_tree && !app.is_overlay() {
                     app.toggle();
-                    let _ = term.clear();
                     if !tree_replay.is_empty() {
                         let (ft, q) = handle_tree_bytes(
                             &tree_replay, &mut tree_decoder, &mut tree_armed, prefix,
@@ -969,7 +1022,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         );
                         if ft && app.is_overlay() {
                             app.toggle();
-                            let _ = term.clear();
+                            switcher.select_active_window();
                         }
                         quit = quit || q;
                     }
@@ -1045,6 +1098,13 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     }
                     LocalEnum::Panes { address, panes } => {
                         switcher.apply_panes(address, panes);
+                        // Local psmux has no `%`-event stream, so a window switched
+                        // INSIDE the displayed local session is only seen on the poll.
+                        // When the terminal has focus, follow the cursor to the newly
+                        // active window so the sidebar mirrors the mux (#3, local path).
+                        if !app.is_overlay() {
+                            switcher.select_active_window();
+                        }
                     }
                 }
             }
@@ -1396,8 +1456,8 @@ mod tests {
             panes,
         };
         let mut switcher = Switcher::new(scan);
-        // session row -> window 0 -> window 1.
-        switcher.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        // session row -> (→ descend) window 0 -> (↓ sibling) window 1.
+        switcher.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         switcher.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(switcher.terminal_view_target().target, "api:1", "cursor on window 1");
 
@@ -1450,8 +1510,8 @@ mod tests {
             panes,
         };
         let mut switcher = Switcher::new(scan);
-        switcher.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        switcher.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // cursor on window 1
+        switcher.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → window 0
+        switcher.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // ↓ → window 1
         assert_eq!(switcher.terminal_view_target().target, "api:1");
 
         let (htx, _hrx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
@@ -1554,8 +1614,9 @@ mod tests {
     //    real attached terminal instantly (it is pre-attached + kept alive), with a
     //    spinner while a session's attach is still establishing.
     // 3. Select a WINDOW row — confirm the attached client switches to that window.
-    // 4. Press C-g then `s` — fullscreen Passthrough of the selected session; type
-    //    and confirm keystrokes reach the real attached pane.
+    // 4. Press C-g then `s` — focus the terminal (Passthrough); the split is
+    //    unchanged (divider turns green) and keystrokes reach the real attached pane.
+    //    Confirm the toggle does NOT blank/flash the screen.
     // 5. Create / kill a window or session inside a pane — confirm the sidebar tree
     //    syncs (remote via control events, local within the poll interval) and the
     //    PTY set follows (new session attaches, killed session's PTY is reaped).

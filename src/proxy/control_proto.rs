@@ -116,9 +116,17 @@ pub fn parse_notif(line: &str) -> Notif<'_> {
             _ => Notif::Other,
         },
         "%sessions-changed" => Notif::SessionsChanged,
-        "%window-add" => it.next().map_or(Notif::Other, |w| Notif::WindowAdd { window: w }),
-        "%window-close" => it.next().map_or(Notif::Other, |w| Notif::WindowClose { window: w }),
-        "%window-renamed" => match (it.next(), it.next()) {
+        // `%unlinked-window-*` is the same structural change as `%window-*` but for a
+        // window NOT in the control client's own attached session — tmux sends the
+        // unlinked form there. Both must refetch (→ Changed), so they map to the same
+        // variants; the displayed session is usually not the control client's session.
+        "%window-add" | "%unlinked-window-add" => {
+            it.next().map_or(Notif::Other, |w| Notif::WindowAdd { window: w })
+        }
+        "%window-close" | "%unlinked-window-close" => {
+            it.next().map_or(Notif::Other, |w| Notif::WindowClose { window: w })
+        }
+        "%window-renamed" | "%unlinked-window-renamed" => match (it.next(), it.next()) {
             (Some(w), Some(name)) => Notif::WindowRenamed { window: w, name },
             _ => Notif::Other,
         },
@@ -196,7 +204,13 @@ mod tests {
         assert!(matches!(parse_notif("%pause %9"), Notif::Pause { pane: "%9" }));
         assert!(matches!(parse_notif("%continue %9"), Notif::Continue { pane: "%9" }));
         assert!(matches!(parse_notif("%client-detached client0"), Notif::ClientDetached));
-        assert!(matches!(parse_notif("%unlinked-window-add @9"), Notif::Other));
+        // `%unlinked-window-*` (a structural change in a session that is not the
+        // control client's own) maps to the same variants as the linked form so the
+        // cockpit refetches the tree for it too.
+        assert!(matches!(parse_notif("%unlinked-window-add @9"), Notif::WindowAdd { window: "@9" }));
+        assert!(matches!(parse_notif("%unlinked-window-close @9"), Notif::WindowClose { window: "@9" }));
+        assert!(matches!(parse_notif("%unlinked-window-renamed @9 logs"),
+            Notif::WindowRenamed { window: "@9", name: "logs" }));
     }
 
     #[test]

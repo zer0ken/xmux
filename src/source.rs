@@ -47,6 +47,12 @@ impl Runner for ExecRunner {
     async fn run(&self, name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
         let mut cmd = tokio::process::Command::new(name);
         cmd.args(args);
+        // Isolate stdin: these are non-interactive mux/ssh commands (list-sessions,
+        // switch-client, …) that read no input. Without this, ssh inherits the parent
+        // console tty and resets its mode (raw → canonical) for its own escape handling,
+        // wrecking the cockpit's raw mode until ssh exits — the terminal then echoes keys
+        // and only flushes input on Enter.
+        cmd.stdin(std::process::Stdio::null());
         cmd.kill_on_drop(true); // a cancelled (timed-out) scan kills the child
         cmd.env_clear();
         for (k, v) in std::env::vars() {

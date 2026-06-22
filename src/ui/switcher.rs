@@ -7,7 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
@@ -272,6 +272,11 @@ pub struct Switcher {
     /// spinner glyph renders right of their name in the tree.
     spinner: HashSet<String>,
     spinner_frame: usize,
+    /// The persisted last-selected session address (`source/session`) used to
+    /// preselect on launch; `None` ⇒ the local-first preselect. Drives only the
+    /// initial preselect (while the user has not moved); once `user_moved` is set,
+    /// `restore_focus` keeps the cursor and this is ignored.
+    preferred: Option<String>,
 }
 
 impl Switcher {
@@ -298,6 +303,7 @@ impl Switcher {
             pending_op: None,
             spinner: HashSet::new(),
             spinner_frame: 0,
+            preferred: None,
         }
     }
 
@@ -356,6 +362,15 @@ impl Switcher {
         std::mem::take(&mut self.rescan_kick)
     }
 
+    /// Sets the persisted last-selected session address (`source/session`) to
+    /// preselect on launch (see [`crate::state`]). Takes effect on the next rebuild
+    /// as sessions stream in; `None` clears it (local-first preselect). Set once
+    /// before sessions stream — the seed has no session rows, so it is inert until
+    /// then.
+    pub fn set_preferred(&mut self, address: Option<String>) {
+        self.preferred = address;
+    }
+
     // --- tree model ---------------------------------------------------------
 
     fn visible_groups(&self) -> Vec<Group> {
@@ -394,8 +409,14 @@ impl Switcher {
         }
 
         let mut rows = Vec::new();
-        let mut preselect: Option<usize> = None;
-        let mut best_recency = i64::MIN;
+        // Preselect priority: the persisted last-selected session (restored on
+        // launch) wins; otherwise the FIRST session row — which order_groups pins to
+        // the LOCAL source's most-recent session — so an untouched cursor never jumps
+        // to a remote on a global-recency tiebreak (#1). `session_last_attached` is
+        // not a reliable cross-host "most recent" signal (xmux's own pre-attaching and
+        // clock skew corrupt it), so it is no longer used to drive the preselect.
+        let mut preferred_row: Option<usize> = None;
+        let mut first_session_row: Option<usize> = None;
 
         for g in &groups {
             let scanning = self.scanning.contains(&g.source);
@@ -415,9 +436,12 @@ impl Switcher {
                 continue;
             }
             for sess in &g.sessions {
-                if sess.last_attached > best_recency {
-                    best_recency = sess.last_attached;
-                    preselect = Some(rows.len());
+                let row_idx = rows.len();
+                if first_session_row.is_none() {
+                    first_session_row = Some(row_idx);
+                }
+                if self.preferred.as_deref() == Some(sess.address().as_str()) {
+                    preferred_row = Some(row_idx);
                 }
                 rows.push(Row {
                     label: self.session_label(sess),
@@ -469,7 +493,8 @@ impl Switcher {
         }
 
         self.rows = rows;
-        let target = preselect
+        let target = preferred_row
+            .or(first_session_row)
             .or_else(|| self.rows.iter().position(Row::selectable))
             .unwrap_or(0);
         self.set_selected(target);
@@ -703,18 +728,20 @@ impl Switcher {
         self.current_source()
     }
 
-    /// Syncs the sidebar cursor to window `window` of `source`/`session` when the
-    /// cursor is currently on a WINDOW row of that same session — used to follow
-    /// another client's active-window change (the live grid already follows via
-    /// `%output`). A no-op when the cursor is elsewhere (another host/session, or
-    /// the session row itself), so it never yanks a user who is browsing. Returns
-    /// whether it moved.
+    /// Moves the sidebar cursor to window `window` of `source`/`session` when the
+    /// cursor is currently within THAT session's subtree — on its session row OR any
+    /// of its window rows. Used to follow the displayed session's active-window
+    /// change; the cockpit gates this on TERMINAL focus, where the user is no longer
+    /// driving the tree cursor (stdin goes to the PTY), so following from the session
+    /// row mirrors the mux without yanking a tree-navigating user. A no-op when the
+    /// cursor is on a different host/session. Returns whether it moved.
     pub fn select_window(&mut self, source: &str, session: &str, window: i64) -> bool {
-        let on_this_session_window = matches!(
-            self.current_ref(),
-            Some(RowRef::Window { sess, .. }) if sess.source == source && sess.name == session
-        );
-        if !on_this_session_window {
+        let on_this_session = match self.current_ref() {
+            Some(RowRef::Session(s)) => s.source == source && s.name == session,
+            Some(RowRef::Window { sess, .. }) => sess.source == source && sess.name == session,
+            _ => false,
+        };
+        if !on_this_session {
             return false;
         }
         let target = self.rows.iter().position(|r| {
@@ -729,6 +756,28 @@ impl Switcher {
             }
             _ => false,
         }
+    }
+
+    /// Moves the cursor to the ACTIVE window row of the cursor's current session
+    /// (read from cached pane data), from either the session row or a window row.
+    /// Used when focus moves to the terminal so the sidebar mirrors the window the
+    /// mux is currently displaying (#3). A no-op when the cursor is not on a
+    /// session/window row or the session's active window is unknown. Returns whether
+    /// it moved.
+    pub fn select_active_window(&mut self) -> bool {
+        let Some(sess) = self.current_session() else {
+            return false;
+        };
+        let addr = sess.address();
+        let Some(window) = self
+            .panes
+            .get(&addr)
+            .and_then(|ws| ws.iter().find(|w| w.active))
+            .map(|w| w.index)
+        else {
+            return false;
+        };
+        self.select_window(&sess.source, &sess.name, window)
     }
 
     /// Marks `window` as the active window of `source`/`session` in the cached
@@ -787,24 +836,20 @@ impl Switcher {
             self.resolve_kill(ev);
             return;
         }
-        let ctrl = ev.modifiers.contains(KeyModifiers::CONTROL);
         match ev.code {
             KeyCode::Enter => {}
-            // Ctrl+↑/↓ moves between SIBLINGS at the current level (next/prev session
-            // when on a session, skipping its windows); plain ↑/↓ steps every row.
-            KeyCode::Up if ctrl => self.move_sibling(-1),
-            KeyCode::Down if ctrl => self.move_sibling(1),
-            KeyCode::Up => self.move_selection(-1),
-            KeyCode::Down => self.move_selection(1),
-            KeyCode::Right => self.descend(),
-            KeyCode::Left => self.ascend(),
+            // ↑/↓ (and k/j) move between SIBLINGS at the current tree level (next/prev
+            // node at the same depth); →/← (and l/h) change level — → descends to the
+            // first child, ← ascends to the parent. hjkl mirror the arrows. (#1, #2)
+            KeyCode::Up | KeyCode::Char('k') => self.move_sibling(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.move_sibling(1),
+            KeyCode::Right | KeyCode::Char('l') => self.descend(),
+            KeyCode::Left | KeyCode::Char('h') => self.ascend(),
             KeyCode::PageUp => self.move_selection(-10),
             KeyCode::PageDown => self.move_selection(10),
             KeyCode::Home => self.move_to(0),
             KeyCode::End => self.move_to(-1),
             KeyCode::Char(c) => match c {
-                'j' => self.move_selection(1),
-                'k' => self.move_selection(-1),
                 'q' => self.wants_quit = true,
                 '/' => self.open_input(InputMode::Filter),
                 'n' => self.open_new(),
@@ -1828,8 +1873,8 @@ mod tests {
         // Cursor on window 1's row; an external client switches the session's
         // active window to 0. The sidebar cursor must follow to window 0's row.
         let mut sw = Switcher::new(two_window_scan());
-        sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // session -> window 0
-        sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // window 0 -> window 1
+        sw.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → window 0
+        sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // ↓ → window 1
         assert!(matches!(sw.current_ref(), Some(RowRef::Window { window: 1, .. })));
         assert!(sw.select_window("jup", "api", 0), "moved to the new active window");
         assert!(matches!(sw.current_ref(), Some(RowRef::Window { window: 0, .. })));
@@ -1851,21 +1896,29 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_down_moves_to_next_sibling_session() {
-        // On a session, Ctrl+↓ jumps to the NEXT SESSION, skipping that session's
-        // windows/panes (level-aware sibling navigation).
-        let mut sw = Switcher::new(sample());
-        sw.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)); // local host
-        sw.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → "editor" session
+    fn up_down_move_within_level_and_hjkl_match_arrows() {
+        // ↑/↓ (and k/j) move between SIBLINGS at the current tree level — they do NOT
+        // descend into children. →/← (and l/h) change level (descend/ascend). (#1,#2)
+        let mut sw = Switcher::new(sample()); // editor (local) preselected
         assert!(matches!(sw.current_ref(), Some(RowRef::Session(s)) if s.name == "editor"));
-        sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL)); // Ctrl+↓
-        assert!(matches!(sw.current_ref(), Some(RowRef::Session(s)) if s.name == "build"), "Ctrl+↓ skips editor's windows → next session");
-        // A plain ↓ from "editor" would instead step into its first window.
+        sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert!(
+            matches!(sw.current_ref(), Some(RowRef::Session(s)) if s.name == "build"),
+            "↓ moves to the next session sibling, not into a window"
+        );
+        sw.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert!(matches!(sw.current_ref(), Some(RowRef::Window { .. })), "→ descends into a window");
+
+        // hjkl mirror the arrows exactly.
         let mut sw2 = Switcher::new(sample());
-        sw2.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
-        sw2.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        sw2.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // plain ↓
-        assert!(matches!(sw2.current_ref(), Some(RowRef::Window { .. })), "plain ↓ steps into the window");
+        sw2.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert!(matches!(sw2.current_ref(), Some(RowRef::Session(s)) if s.name == "build"), "j == ↓");
+        sw2.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
+        assert!(matches!(sw2.current_ref(), Some(RowRef::Window { .. })), "l == →");
+        sw2.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        assert!(matches!(sw2.current_ref(), Some(RowRef::Session(s)) if s.name == "build"), "h == ←");
+        sw2.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert!(matches!(sw2.current_ref(), Some(RowRef::Session(s)) if s.name == "editor"), "k == ↑");
     }
 
     #[test]
@@ -1877,21 +1930,37 @@ mod tests {
     }
 
     #[test]
-    fn select_window_no_move_from_a_session_row() {
-        // On the session row the user is not tracking a specific window, so an
-        // external window change must not yank the cursor onto a window row.
+    fn select_window_follows_from_a_session_row() {
+        // When the terminal pane has focus the user is no longer driving the tree
+        // cursor (stdin goes to the PTY), so the cockpit only calls select_window
+        // then. An active-window change must move the cursor to that window even from
+        // the SESSION row — this is how focus→mux and in-mux window navigation keep
+        // the sidebar mirroring the displayed window (#3).
         let mut sw = Switcher::new(two_window_scan());
         assert!(matches!(sw.current_ref(), Some(RowRef::Session(_))));
-        assert!(!sw.select_window("jup", "api", 0));
+        assert!(sw.select_window("jup", "api", 1), "follows from the session row to window 1");
+        assert!(matches!(sw.current_ref(), Some(RowRef::Window { window: 1, .. })));
+    }
+
+    #[test]
+    fn select_active_window_moves_to_cached_active_window() {
+        // focus→mux: with the cursor on the session row, select_active_window moves
+        // it to the session's currently-active window (from cached panes) so the
+        // sidebar mirrors the window the mux is displaying (#3). Window 0 is active.
+        let mut sw = Switcher::new(two_window_scan());
         assert!(matches!(sw.current_ref(), Some(RowRef::Session(_))));
+        assert!(sw.select_active_window(), "moved to the cached active window");
+        assert!(matches!(sw.current_ref(), Some(RowRef::Window { window: 0, .. })));
+        // Idempotent: re-applying when already on the active window reports no move.
+        assert!(!sw.select_active_window(), "no-op when already on the active window");
     }
 
     #[test]
     fn select_window_no_move_for_another_session() {
         // A window change on a session the cursor is NOT on must not move it.
         let mut sw = Switcher::new(two_window_scan());
-        sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // on window 1
+        sw.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → window 0
+        sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // ↓ → window 1
         assert!(!sw.select_window("jup", "other", 0));
         assert!(matches!(sw.current_ref(), Some(RowRef::Window { window: 1, .. })));
     }
@@ -1921,25 +1990,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preselects_most_recent_session() {
+    async fn preselects_local_first_session() {
+        // With no persisted last-selected session, the preselect lands on the LOCAL
+        // source's most-recent session (order_groups pins local first), NOT the
+        // globally most-recent remote — so first launch never jumps to a remote (#1).
         let h = Harness::new(sample());
-        assert_eq!(cur_session_name(&h).as_deref(), Some("inference"));
+        assert_eq!(cur_session_name(&h).as_deref(), Some("editor"));
     }
 
     #[tokio::test]
     async fn panes_are_not_selectable() {
         let mut h = Harness::new(sample());
-        h.key(KeyCode::Home).await;
+        h.key(KeyCode::Home).await; // local host
+        h.key(KeyCode::Right).await; // → editor (session)
+        h.key(KeyCode::Right).await; // → editor's first window
+        assert!(matches!(h.sw.current_ref(), Some(RowRef::Window { .. })), "→ reaches a window");
+        // → on a window does NOT descend onto a pane (panes are not selectable).
+        h.key(KeyCode::Right).await;
+        assert!(matches!(h.sw.current_ref(), Some(RowRef::Window { .. })), "→ on a window is a no-op (its panes are not selectable)");
+        // ↓/↑ cycle window siblings; the cursor must never land on a pane.
         let mut saw_window = false;
-        for _ in 0..14 {
+        for _ in 0..8 {
             let r = h.sw.current_ref();
-            assert!(r.is_some(), "cursor landed on a non-selectable node");
+            assert!(r.is_some(), "cursor landed on a node");
+            assert!(!matches!(r, Some(RowRef::Pane)), "cursor must never land on a pane");
             if matches!(r, Some(RowRef::Window { .. })) {
                 saw_window = true;
             }
             h.key(KeyCode::Down).await;
         }
-        assert!(saw_window, "navigation should reach window nodes");
+        assert!(saw_window, "navigation reaches window nodes");
     }
 
     #[tokio::test]
@@ -2068,9 +2148,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn streaming_auto_advances_to_recent_when_untouched() {
-        // While the user has not moved the cursor, each result advances the
-        // preselect toward the globally most-recent session.
+    async fn streaming_keeps_local_preselect_when_untouched() {
+        // With no persisted last-selected session, an untouched cursor preselects the
+        // LOCAL source's most-recent session, and a later more-recent REMOTE session
+        // streaming in must NOT steal the cursor. This kills the old global-recency
+        // jump (cursor leaping to a remote on first launch — #1). order_groups pins
+        // local first, so the local-first fallback is the first session row.
         let mut h = Harness::from_sources(&["local", "jupiter00"]);
         h.sw.apply_source_result(
             "local".into(),
@@ -2087,8 +2170,35 @@ mod tests {
         h.draw();
         assert_eq!(
             cur_session_name(&h).as_deref(),
+            Some("editor"),
+            "an untouched cursor stays on the local preselect; a recent remote must not steal it"
+        );
+    }
+
+    #[tokio::test]
+    async fn preferred_session_wins_preselect_when_it_streams_in() {
+        // The persisted last-selected session is restored on launch: once its host
+        // streams in it wins the preselect over the local-first default (#1).
+        let mut h = Harness::from_sources(&["local", "jupiter00"]);
+        h.sw.set_preferred(Some("jupiter00/infer".to_string()));
+        h.sw.apply_source_result(
+            "local".into(),
+            vec![sess("local", "editor", 1, false, 100)],
+            None,
+        );
+        h.draw();
+        // The preferred host has not streamed yet → the local-first default stands.
+        assert_eq!(cur_session_name(&h).as_deref(), Some("editor"));
+        h.sw.apply_source_result(
+            "jupiter00".into(),
+            vec![sess("jupiter00", "infer", 1, false, 300)],
+            None,
+        );
+        h.draw();
+        assert_eq!(
+            cur_session_name(&h).as_deref(),
             Some("infer"),
-            "an untouched cursor follows the most-recent session as it streams in"
+            "the persisted last-selected session is restored once it streams in"
         );
     }
 
@@ -2172,8 +2282,8 @@ mod tests {
     #[tokio::test]
     async fn selected_node_renders_reverse_video() {
         let h = Harness::new(sample());
-        let sel = h.tree_row_of("inference").expect("inference row");
-        let other = h.tree_row_of("editor").expect("editor row");
+        let sel = h.tree_row_of("editor").expect("editor row");
+        let other = h.tree_row_of("inference").expect("inference row");
         assert!(h.tree_row_reversed(sel), "selected row must be reversed");
         assert!(
             !h.tree_row_reversed(other),
@@ -2211,22 +2321,23 @@ mod tests {
     #[tokio::test]
     async fn kill_removes_session_and_cache() {
         let mut h = Harness::new(sample());
-        assert!(h.sw.panes.contains_key("jupiter00/inference"));
+        // editor (local) is the default preselect; kill the focused session.
+        assert!(h.sw.panes.contains_key("local/editor"));
         h.ch('x').await; // arm
         assert!(
-            h.text().contains("kill jupiter00/inference?"),
+            h.text().contains("kill local/editor?"),
             "expected inline kill confirm:\n{}",
             h.text()
         );
         h.ch('y').await;
         assert_eq!(h.ops.killed.lock().unwrap().len(), 1);
-        assert_eq!(h.ops.killed.lock().unwrap()[0].name, "inference");
+        assert_eq!(h.ops.killed.lock().unwrap()[0].name, "editor");
         assert!(
-            !h.sw.panes.contains_key("jupiter00/inference"),
+            !h.sw.panes.contains_key("local/editor"),
             "kill must invalidate cache"
         );
         assert!(
-            !h.text().contains("inference"),
+            !h.text().contains("editor"),
             "killed session must disappear"
         );
     }
@@ -2234,11 +2345,11 @@ mod tests {
     #[tokio::test]
     async fn create_adds_and_selects() {
         let mut h = Harness::new(sample());
-        h.key(KeyCode::Up).await; // inference preselected → up to the jupiter00 HOST row
+        h.key(KeyCode::Left).await; // editor preselected → ← ascend to the local HOST row
         h.ch('n').await; // n on a host row ⇒ create a session
         h.sw.set_input_text("scratch");
         h.key(KeyCode::Enter).await;
-        assert_eq!(*h.ops.created.lock().unwrap(), vec!["jupiter00/scratch"]);
+        assert_eq!(*h.ops.created.lock().unwrap(), vec!["local/scratch"]);
         assert_eq!(cur_session_name(&h).as_deref(), Some("scratch"));
     }
 
@@ -2247,8 +2358,8 @@ mod tests {
         // The key-handling path must NOT perform the network create (which would
         // freeze the UI on a slow remote); it only queues the op for the loop.
         let mut h = Harness::new(sample());
-        h.key(KeyCode::Up).await; // move to the jupiter00 HOST row
-        h.ch('n').await; // open New (create a session) on jupiter00
+        h.key(KeyCode::Left).await; // ← ascend to the local HOST row
+        h.ch('n').await; // open New (create a session) on local
         h.sw.set_input_text("scratch");
         h.sw.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)); // raw: not pumped
         assert!(
@@ -2266,7 +2377,7 @@ mod tests {
         );
         h.sw.apply_op_result(r);
         assert!(
-            h.sw.row_of_session("jupiter00/scratch").is_some(),
+            h.sw.row_of_session("local/scratch").is_some(),
             "applying the result folds the new session into the tree"
         );
     }
@@ -2275,13 +2386,13 @@ mod tests {
     async fn n_on_session_row_creates_a_window() {
         // The `n` action is level-aware: on a SESSION row it creates a window.
         let mut h = Harness::new(sample());
-        // inference is preselected (a session row).
+        // editor (local) is preselected (a session row).
         h.ch('n').await;
         h.sw.set_input_text("logs");
         h.key(KeyCode::Enter).await;
         assert_eq!(
             *h.ops.windowed.lock().unwrap(),
-            vec!["jupiter00/inference:logs"],
+            vec!["local/editor:logs"],
             "n on a session row queues a new window"
         );
         assert!(h.ops.created.lock().unwrap().is_empty(), "not a session create");
@@ -2292,8 +2403,8 @@ mod tests {
         // On a WINDOW row, `n` splits the pane (direction from the prompt).
         let mut h = Harness::new(sample());
         h.key(KeyCode::Home).await; // local host row
-        h.key(KeyCode::Down).await; // local/editor (session)
-        h.key(KeyCode::Down).await; // editor's first window (a window row)
+        h.key(KeyCode::Right).await; // → local/editor (session)
+        h.key(KeyCode::Right).await; // → editor's first window (a window row)
         h.ch('n').await;
         h.sw.set_input_text("h"); // horizontal split
         h.key(KeyCode::Enter).await;
@@ -2390,9 +2501,8 @@ mod tests {
     #[tokio::test]
     async fn create_on_unreachable_host_refused() {
         let mut h = Harness::new(sample());
-        // from inference: Down → its window, Down → the unreachable db-2 host.
-        h.key(KeyCode::Down).await;
-        h.key(KeyCode::Down).await;
+        // jump to the last host row — the unreachable db-2.
+        h.key(KeyCode::End).await;
         assert!(
             matches!(
                 h.sw.current_ref(),
@@ -2488,10 +2598,10 @@ mod tests {
         h.key(KeyCode::Home).await; // local host
         let t = h.sw.terminal_view_target();
         assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "editor"));
-        h.key(KeyCode::Down).await; // editor session
+        h.key(KeyCode::Right).await; // → editor session
         let t = h.sw.terminal_view_target();
         assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "editor"));
-        h.key(KeyCode::Down).await; // window 1 (shell) under editor
+        h.key(KeyCode::Right).await; // → window 1 (shell) under editor
         let t = h.sw.terminal_view_target();
         assert_eq!(
             (t.source.as_str(), t.target.as_str()),
@@ -2548,10 +2658,10 @@ mod tests {
 
     #[tokio::test]
     async fn cursor_move_yields_attach_target() {
-        let mut h = Harness::new(sample()); // inference preselected (jupiter00)
+        let mut h = Harness::new(sample()); // editor preselected (local session)
         let t = h.sw.current_attach_target().expect("a session row yields a target");
-        assert_eq!((t.source.as_str(), t.target.as_str()), ("jupiter00", "inference"));
-        h.key(KeyCode::Home).await; // host row → its first visible session
+        assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "editor"));
+        h.key(KeyCode::Left).await; // ← ascend to the local HOST row
         let t = h.sw.current_attach_target().expect("host row targets its first session");
         assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "editor"));
     }
@@ -2560,10 +2670,10 @@ mod tests {
     async fn current_host_tracks_cursor_source() {
         // The cockpit ensures this host on every move; a host row yields its source
         // even when no session is selected, so the host's tree can be fetched.
-        let mut h = Harness::new(sample()); // inference preselected (jupiter00)
-        assert_eq!(h.sw.current_host().as_deref(), Some("jupiter00"));
-        h.key(KeyCode::Home).await; // jump to the local host row
+        let mut h = Harness::new(sample()); // editor preselected (local)
         assert_eq!(h.sw.current_host().as_deref(), Some("local"));
+        h.key(KeyCode::End).await; // jump to the last host row (db-2)
+        assert_eq!(h.sw.current_host().as_deref(), Some("db-2"));
     }
 
     #[tokio::test]

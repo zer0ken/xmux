@@ -705,6 +705,30 @@ mod tests {
     }
 
     #[test]
+    fn reader_unlinked_window_notifications_emit_changed() {
+        // A window added/closed/renamed in a session OTHER than the control client's
+        // OWN attached session arrives as `%unlinked-window-*` (tmux sends the plain
+        // `%window-*` form only for the client's current session). The displayed
+        // session is usually NOT the control client's session, so without handling
+        // these the sidebar misses real-time window add/delete there. They must emit
+        // Changed exactly like their linked counterparts so the cockpit refetches.
+        for line in [
+            "%unlinked-window-add @4",
+            "%unlinked-window-close @4",
+            "%unlinked-window-renamed @4 logs",
+        ] {
+            let state = test_state(80, 24);
+            let in_flight: InFlight = Default::default();
+            let mut events = Vec::new();
+            run_reader("jupiter06", vec![line.to_string()].into_iter(), &state, &in_flight, |e| events.push(e));
+            assert!(
+                events.iter().any(|e| matches!(e, HostEvent::Changed { host } if host == "jupiter06")),
+                "{line:?} must emit Changed"
+            );
+        }
+    }
+
+    #[test]
     fn session_window_changed_emits_window_changed_not_changed() {
         // A session's ACTIVE WINDOW switched (`%session-window-changed $id @win`):
         // emit the dedicated WindowChanged so the cockpit not only refetches the
