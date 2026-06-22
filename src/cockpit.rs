@@ -158,6 +158,20 @@ fn terminal_view_size(cols: u16, body_rows: u16, tree_width: u16) -> (u16, u16) 
     (view_cols, body_rows.max(1))
 }
 
+/// Maps a 1-based SGR mouse cell to 1-based grid-local coords if it falls inside
+/// `area` (a 0-based screen Rect), else None. SGR uses 1-based coordinates; ratatui
+/// Rects use 0-based screen positions. The result is 1-based so it can be directly
+/// re-encoded in a new SGR sequence forwarded to the mux.
+fn to_grid_local(area: ratatui::layout::Rect, col: u16, row: u16) -> Option<(u16, u16)> {
+    let c0 = col.checked_sub(1)?; // SGR 1-based → 0-based screen cell
+    let r0 = row.checked_sub(1)?;
+    if c0 >= area.x && c0 < area.x + area.width && r0 >= area.y && r0 < area.y + area.height {
+        Some((c0 - area.x + 1, r0 - area.y + 1)) // back to 1-based, grid-local
+    } else {
+        None
+    }
+}
+
 /// The `AttachRegistry` key for a selection. REMOTE tmux keeps ONE PTY per HOST
 /// (keyed by the source) and moves it between the host's sessions with
 /// `switch-client`; LOCAL psmux is one-server-per-session, so it keeps one PTY per
@@ -1006,9 +1020,39 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 let mut focus_terminal = false;
                 let mut focus_tree = false;
                 let mut tree_replay: Vec<u8> = Vec::new();
+                // Scan for SGR mouse sequences BEFORE routing to Overlay/Passthrough branches.
+                // Mouse capture is global, so mouse bytes arrive in both states; scanning here
+                // prevents them from reaching handle_tree_bytes (which would mis-decode them)
+                // or TermInput's prefix logic. Split into: mouse events + non-mouse byte stream.
+                // Edge case: a sequence split across reads parses as None and falls into
+                // non_mouse — rare in practice; no cross-read buffering in v1.
+                let (vw, vh) = terminal_view_size(cols, body_rows, tree_width);
+                let term_area = ratatui::layout::Rect::new(tree_width + 1, 0, vw, vh);
+                let mut non_mouse: Vec<u8> = Vec::with_capacity(bytes.len());
+                {
+                    let mut i = 0;
+                    while i < bytes.len() {
+                        if let Some((ev, len)) = crate::proxy::mouse::parse_sgr_mouse(&bytes[i..]) {
+                            if !app.is_overlay() {
+                                if let Some((gc, gr)) = to_grid_local(term_area, ev.col, ev.row) {
+                                    registry.input(
+                                        &display_key(&env, &selection),
+                                        crate::proxy::mouse::encode_sgr_mouse(&ev, gc, gr),
+                                    );
+                                }
+                                // outside the terminal area → dropped
+                            }
+                            // Overlay → dropped entirely
+                            i += len;
+                        } else {
+                            non_mouse.push(bytes[i]);
+                            i += 1;
+                        }
+                    }
+                }
                 if app.is_overlay() {
                     let (ft, q, wd) = handle_tree_bytes(
-                        &bytes, &mut tree_decoder, &mut tree_armed, prefix, &mut switcher,
+                        &non_mouse, &mut tree_decoder, &mut tree_armed, prefix, &mut switcher,
                         &mut mgr, &env, &ops, &op_tx, &enum_tx, cols, body_rows, tree_width,
                     );
                     focus_terminal = ft;
@@ -1023,7 +1067,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 } else {
                     // TERMINAL focus: forward raw bytes to the selected session's PTY;
                     // TermInput intercepts the prefix (→ tree / quit / literal prefix).
-                    for action in term_input.feed(&bytes) {
+                    for action in term_input.feed(&non_mouse) {
                         match action {
                             TermAction::Forward(f) => registry.input(&display_key(&env, &selection), f),
                             TermAction::FocusTree(rest) => {
@@ -1446,6 +1490,36 @@ mod tests {
         assert_eq!(vr, 1);
     }
 
+    #[test]
+    fn to_grid_local_inside_area_maps_correctly() {
+        // Terminal area starts at screen col 50 (x=49 0-based), row 0, size 80×24.
+        // SGR cell (52,3) = 0-based (51,2) which is inside (49..129, 0..24).
+        // grid-local = (51-49+1, 2-0+1) = (3, 3) in 1-based.
+        let area = ratatui::layout::Rect::new(49, 0, 80, 24);
+        assert_eq!(to_grid_local(area, 52, 3), Some((3, 3)));
+    }
+
+    #[test]
+    fn to_grid_local_in_tree_column_returns_none() {
+        // Terminal area starts at screen col 50 (0-based). SGR col 10 is in the tree.
+        let area = ratatui::layout::Rect::new(49, 0, 80, 24);
+        assert_eq!(to_grid_local(area, 10, 5), None);
+    }
+
+    #[test]
+    fn to_grid_local_boundary_cells() {
+        // area (49,0,80,24): valid cols 49..129, valid rows 0..24 (0-based).
+        // Top-left corner: SGR (50,1) → 0-based (49,0) → grid-local (1,1).
+        let area = ratatui::layout::Rect::new(49, 0, 80, 24);
+        assert_eq!(to_grid_local(area, 50, 1), Some((1, 1)));
+        // Bottom-right corner: SGR (129,24) → 0-based (128,23) → grid-local (80,24).
+        assert_eq!(to_grid_local(area, 129, 24), Some((80, 24)));
+        // One past the right edge: 0-based col 129 >= 49+80=129 → None.
+        assert_eq!(to_grid_local(area, 130, 1), None);
+        // One past the bottom: 0-based row 24 >= 0+24=24 → None.
+        assert_eq!(to_grid_local(area, 50, 25), None);
+    }
+
     #[tokio::test]
     async fn host_exited_before_connect_marks_unreachable() {
         use crate::ui::run::dump_overlay;
@@ -1669,5 +1743,9 @@ mod tests {
     // 6. C-g then `q` — clean quit, terminal restored.
     // 7. NEVER attach the session that owns xmux (xmux refuses to run inside a mux,
     //    so in normal use no session mirrors the UI).
+    // 8. In Passthrough, mouse clicks/scroll inside the terminal view reach the mux
+    //    (status-bar click, pane select, scroll). Mux mouse forwarding requires the
+    //    mux to have `mouse on` (`set -g mouse on`); xmux only forwards.
+    //    In Overlay, mouse clicks do NOT forward to the mux (dropped).
     // =========================================================================
 }

@@ -1,26 +1,27 @@
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 
-/// RAII guard owning the terminal for the cockpit's lifetime: enables raw mode
-/// and enters the alternate screen on construction (so pre-launch shell output
-/// never bleeds under the UI — issue #1), and on drop leaves the alternate
-/// screen + disables raw mode, restoring the user's pre-launch screen on normal
-/// return AND on a panic (release builds unwind; see Cargo.toml `panic`).
+/// RAII guard owning the terminal for the cockpit's lifetime: enables raw mode,
+/// enters the alternate screen, and enables SGR mouse capture on construction, then
+/// on drop disables mouse capture, leaves the alternate screen, and disables raw mode.
+/// Restores the user's pre-launch screen on normal return AND on a panic (release
+/// builds unwind; see Cargo.toml `panic`).
 pub struct TermGuard;
 
 impl TermGuard {
     pub fn enter() -> anyhow::Result<Self> {
         enable_raw_mode()?;
-        execute!(std::io::stdout(), EnterAlternateScreen)?;
+        execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
         Ok(TermGuard)
     }
 }
 
 impl Drop for TermGuard {
     fn drop(&mut self) {
-        let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+        let _ = execute!(std::io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
         let _ = disable_raw_mode();
     }
 }
