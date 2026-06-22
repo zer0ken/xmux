@@ -149,13 +149,14 @@ impl Selection {
 /// divider), NOT the whole terminal. Sizing a session to the full terminal makes
 /// the remote wrap at a width wider than the visible pane, so a line overflows the
 /// right edge (and a double-width char straddles the clip boundary). The view width
-/// is `cols - tree_width - 1` (tree + the single divider rule); the view height is
-/// the body height. Both clamp to at least 1.
+/// is `cols - tree_width - 1` (tree + the single divider rule); the view HEIGHT is
+/// the full terminal height (`body_rows + 1`) because the footer and input occupy
+/// the tree column, leaving the terminal column the full height. Both clamp to at least 1.
 fn terminal_view_size(cols: u16, body_rows: u16, tree_width: u16) -> (u16, u16) {
     let view_cols = cols
         .saturating_sub(tree_width + 1)
         .max(1);
-    (view_cols, body_rows.max(1))
+    (view_cols, (body_rows + 1).max(1))
 }
 
 /// Maps a 1-based SGR mouse cell to 1-based grid-local coords if it falls inside
@@ -1479,7 +1480,9 @@ mod tests {
         use crate::ui::switcher::TREE_WIDTH;
         let (vc, vr) = terminal_view_size(143, 39, TREE_WIDTH);
         assert_eq!(vc, 143 - (TREE_WIDTH + 1), "cols minus tree minus divider");
-        assert_eq!(vr, 39, "rows pass through (the body height)");
+        // The footer and input live in the tree column, so the terminal column
+        // spans the full terminal height (body_rows + 1).
+        assert_eq!(vr, 40, "height is the full terminal height (body_rows + 1)");
     }
 
     #[test]
@@ -1487,6 +1490,7 @@ mod tests {
         use crate::ui::switcher::TREE_WIDTH;
         let (vc, vr) = terminal_view_size(10, 0, TREE_WIDTH);
         assert_eq!(vc, 1);
+        // (0 + 1).max(1) = 1: clamping still holds for zero body rows.
         assert_eq!(vr, 1);
     }
 

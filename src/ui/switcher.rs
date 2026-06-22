@@ -422,6 +422,12 @@ impl Switcher {
     }
 
     fn rebuild(&mut self) {
+        // A tree change (streamed update, refetch, rescan) can move or replace the
+        // node a kill was armed on — including reusing a window index — so any
+        // in-flight kill confirm is invalidated; the user re-arms against the new tree.
+        self.pending_kill = None;
+        self.pending_kill_window = None;
+
         let groups = self.visible_groups();
 
         self.name_col_width = 0;
@@ -2970,6 +2976,38 @@ mod tests {
         h.sw.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
         let op = h.sw.take_pending_op().expect("kill window queued");
         assert!(matches!(op, PendingOp::KillWindow { ref target, .. } if target == "editor:1"));
+    }
+
+    #[tokio::test]
+    async fn rebuild_cancels_armed_kill_confirm() {
+        // Arm a window kill (raw, no pump so no auto-confirm), then trigger a
+        // rebuild via apply_panes — simulating a streamed tree update that can
+        // move or index-reuse the armed node.  The in-flight confirm must be
+        // cleared so a subsequent 'y' does not queue a stale kill.
+        let mut h = Harness::new(sample());
+        h.key(KeyCode::Home).await;   // local host
+        h.key(KeyCode::Right).await;  // → editor (session)
+        h.key(KeyCode::Right).await;  // → editor's first window (window 1, name "shell")
+        h.sw.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)); // arm kill (raw)
+        assert!(
+            h.sw.pending_kill_window.is_some(),
+            "arm_kill must set pending_kill_window"
+        );
+        // Force a rebuild by streaming in panes for editor — the same windows,
+        // but any rebuild must invalidate the armed confirm.
+        let s = sample();
+        let editor_panes = s.panes["local/editor"].clone();
+        h.sw.apply_panes("local/editor".to_string(), editor_panes);
+        assert!(
+            h.sw.pending_kill_window.is_none(),
+            "a rebuild must cancel an armed kill confirm"
+        );
+        // A 'y' after the rebuild must not queue any op (stale kill guard).
+        h.sw.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert!(
+            h.sw.take_pending_op().is_none(),
+            "no stale kill queued after rebuild"
+        );
     }
 
     #[tokio::test]
