@@ -1,53 +1,28 @@
 //! The `AttachRegistry`: an `Address → Attachment` map holding one live PTY-attached
-//! mux client per session. Sessions are added on discovery (`ensure`) and removed on
-//! close (`remove`) or master EOF (`reap`); the user mandate is to keep EVERY session
-//! attached and alive, so there is no cap or LRU eviction — the map size tracks the
-//! live session count. All blocking PTY work lives on each `Attachment`'s control and
-//! pump threads, so registry methods never block the event loop.
+//! mux client per session. Sessions are added via `insert` (the DisplayWorker spawns
+//! and hands off the finished attachment) and removed on close (`remove`) or master
+//! EOF (`reap`); the user mandate is to keep EVERY session attached and alive, so
+//! there is no cap or LRU eviction — the map size tracks the live session count. All
+//! blocking PTY work lives on each `Attachment`'s control and pump threads, so
+//! registry methods never block the event loop.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::proxy::run::{spawn_attachment, Attachment, PtyEvent};
+use crate::proxy::run::Attachment;
 use crate::proxy::screen::Grid;
-
-/// How the registry spawns a new attachment. Defaults to `spawn_attachment` (the
-/// live PTY path); a test injects a fake via `with_spawner` to exercise `ensure`'s
-/// dedup/id bookkeeping without a real PTY.
-type AttachmentSpawner = Box<
-    dyn Fn(
-            &[String],
-            u16,
-            u16,
-            u64,
-            tokio::sync::mpsc::UnboundedSender<PtyEvent>,
-        ) -> anyhow::Result<Attachment>
-        + Send
-        + Sync,
->;
 
 pub struct AttachRegistry {
     /// Keyed by `Session::address()` (`source/session`).
     map: HashMap<String, Attachment>,
     next_id: u64,
-    events: tokio::sync::mpsc::UnboundedSender<PtyEvent>,
-    spawner: AttachmentSpawner,
 }
 
 impl AttachRegistry {
-    pub fn new(events: tokio::sync::mpsc::UnboundedSender<PtyEvent>) -> Self {
-        Self::with_spawner(events, Box::new(spawn_attachment))
-    }
-
-    pub fn with_spawner(
-        events: tokio::sync::mpsc::UnboundedSender<PtyEvent>,
-        spawner: AttachmentSpawner,
-    ) -> Self {
+    pub fn new() -> Self {
         AttachRegistry {
             map: HashMap::new(),
             next_id: 1,
-            events,
-            spawner,
         }
     }
 
@@ -129,26 +104,6 @@ impl AttachRegistry {
         self.map.insert(addr.to_string(), att);
     }
 
-    /// Ensures `addr` is attached, spawning a real `attach` child on a PTY if absent.
-    /// `argv` is the attach argv (`Source::attach_command`). A no-op (returns the
-    /// existing id) when already attached. Returns the attachment's id.
-    pub fn ensure(
-        &mut self,
-        addr: &str,
-        argv: &[String],
-        cols: u16,
-        rows: u16,
-    ) -> anyhow::Result<u64> {
-        if let Some(att) = self.map.get(addr) {
-            return Ok(att.id());
-        }
-        let id = self.next_id;
-        self.next_id += 1;
-        let att = (self.spawner)(argv, cols, rows, id, self.events.clone())?;
-        self.map.insert(addr.to_string(), att);
-        Ok(id)
-    }
-
     /// Tears down and removes `addr`'s attachment (its session closed). A no-op if
     /// it is not attached.
     pub fn remove(&mut self, addr: &str) {
@@ -192,6 +147,12 @@ impl AttachRegistry {
     }
 }
 
+impl Default for AttachRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 impl AttachRegistry {
     /// Test-only: insert a fake entry without a real PTY, to exercise membership /
@@ -207,8 +168,7 @@ mod tests {
     use super::*;
 
     fn empty_registry() -> AttachRegistry {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
-        AttachRegistry::new(tx)
+        AttachRegistry::new()
     }
 
     #[test]
@@ -286,60 +246,13 @@ mod tests {
     }
 
     #[test]
-    fn registry_ensure_uses_injected_spawner() {
-        use std::sync::{
-            atomic::{AtomicUsize, Ordering},
-            Arc,
-        };
-
-        let calls = Arc::new(AtomicUsize::new(0));
-        let calls_for_spawner = calls.clone();
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::proxy::run::PtyEvent>();
-        let mut registry = AttachRegistry::with_spawner(
-            tx,
-            Box::new(move |_argv, _cols, _rows, id, _events| {
-                calls_for_spawner.fetch_add(1, Ordering::SeqCst);
-                Ok(crate::proxy::run::fake_attachment(id))
-            }),
-        );
-
-        let argv = vec!["cmd.exe".to_string(), "/c".to_string(), "rem".to_string()];
-        assert_eq!(registry.ensure("local/a", &argv, 80, 24).unwrap(), 1);
-        assert_eq!(registry.ensure("local/a", &argv, 80, 24).unwrap(), 1);
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
     fn alloc_id_increments_and_insert_registers_attachment() {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
-        let mut reg = AttachRegistry::new(tx);
+        let mut reg = AttachRegistry::new();
         let id0 = reg.alloc_id();
         let id1 = reg.alloc_id();
         assert_eq!((id0, id1), (1, 2), "ids are issued sequentially from 1");
         reg.insert("local/a", crate::proxy::run::fake_attachment(id0));
         assert!(reg.contains("local/a"));
         assert!(reg.grid("local/a").is_some(), "inserted attachment exposes its grid");
-    }
-
-    #[test]
-    fn synchronous_ensure_with_slow_spawner_exceeds_responsiveness_budget() {
-        use std::time::{Duration, Instant};
-
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::proxy::run::PtyEvent>();
-        let mut registry = AttachRegistry::with_spawner(
-            tx,
-            Box::new(move |_argv, _cols, _rows, id, _events| {
-                std::thread::sleep(Duration::from_millis(100));
-                Ok(crate::proxy::run::fake_attachment(id))
-            }),
-        );
-
-        let argv = vec!["cmd.exe".to_string(), "/c".to_string(), "rem".to_string()];
-        let started = Instant::now();
-        let _ = registry.ensure("local/slow", &argv, 80, 24).unwrap();
-        assert!(
-            started.elapsed() >= Duration::from_millis(100),
-            "current synchronous ensure blocks the caller"
-        );
     }
 }

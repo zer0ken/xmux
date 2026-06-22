@@ -677,8 +677,8 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
 
     // The live PTY attachments: one real attached mux client per session.
     let (pty_tx, mut pty_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
-    let mut worker = DisplayWorker::new(pty_tx.clone());
-    let mut registry = AttachRegistry::new(pty_tx);
+    let mut worker = DisplayWorker::new(pty_tx);
+    let mut registry = AttachRegistry::new();
 
     // The switcher, seeded from the source skeletons; events stream the tree in.
     let mut switcher = Switcher::from_sources(env.srcs.iter().map(|s| s.alias.clone()).collect());
@@ -1396,7 +1396,7 @@ mod tests {
         let (htx, _hrx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
         let mut mgr = HostManager::new(htx);
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
-        let mut registry = AttachRegistry::new(ptx.clone());
+        let mut registry = AttachRegistry::new();
         let worker = DisplayWorker::new(ptx);
         let mut in_flight = HashMap::new();
         let mut attach_seq = 0u64;
@@ -1449,7 +1449,7 @@ mod tests {
         let (htx, _hrx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
         let mut mgr = HostManager::new(htx);
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
-        let mut registry = AttachRegistry::new(ptx.clone());
+        let mut registry = AttachRegistry::new();
         let worker = DisplayWorker::new(ptx);
         let mut in_flight = HashMap::new();
         let mut attach_seq = 0u64;
