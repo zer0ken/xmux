@@ -1417,7 +1417,17 @@ impl Switcher {
         .split(v[0]);
         self.render_tree(frame, mid[0]);
         self.render_divider(frame, mid[1], terminal_focused);
-        self.render_terminal_view(frame, mid[2], grid);
+        let term_area = mid[2];
+        self.render_terminal_view(frame, term_area, grid);
+        // In passthrough, place the real cursor at the grid's cursor so typing in the
+        // mux is visible and tracks. Skipped when the child hid its cursor.
+        if terminal_focused {
+            if let Some(g) = grid {
+                if !g.hide_cursor() {
+                    frame.set_cursor_position(terminal_cursor_pos(term_area, g.cursor()));
+                }
+            }
+        }
         if input_h == 1 {
             self.render_input(frame, v[1]);
         }
@@ -1653,6 +1663,14 @@ fn same_node(a: &RowRef, b: &RowRef) -> bool {
             },
         ) => x.address() == y.address() && wx == wy,
         _ => false,
+    }
+}
+
+fn terminal_cursor_pos(area: Rect, cursor: (u16, u16)) -> ratatui::layout::Position {
+    let (col, row) = cursor;
+    ratatui::layout::Position {
+        x: (area.x + col).min(area.x + area.width.saturating_sub(1)),
+        y: (area.y + row).min(area.y + area.height.saturating_sub(1)),
     }
 }
 
@@ -2992,5 +3010,15 @@ mod tests {
         sw.apply_panes("jup/api".into(), vec![]);
         assert!(matches!(sw.current_ref(), Some(RowRef::Session(s)) if s.name == "api"),
             "topmost removed → parent (session row)");
+    }
+
+    #[test]
+    fn mux_cursor_maps_into_terminal_view_area() {
+        use ratatui::layout::{Position, Rect};
+        let pos = terminal_cursor_pos(Rect::new(49, 0, 80, 24), (3, 2));
+        assert_eq!(pos, Position { x: 52, y: 2 });
+        // clamped to the area:
+        let pos = terminal_cursor_pos(Rect::new(49, 0, 4, 2), (100, 100));
+        assert_eq!(pos, Position { x: 52, y: 1 });
     }
 }
