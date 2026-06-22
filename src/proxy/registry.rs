@@ -290,4 +290,26 @@ mod tests {
         assert_eq!(registry.ensure("local/a", &argv, 80, 24).unwrap(), 1);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
+
+    #[test]
+    fn synchronous_ensure_with_slow_spawner_exceeds_responsiveness_budget() {
+        use std::time::{Duration, Instant};
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::proxy::run::PtyEvent>();
+        let mut registry = AttachRegistry::with_spawner(
+            tx,
+            Box::new(move |_argv, _cols, _rows, id, _events| {
+                std::thread::sleep(Duration::from_millis(100));
+                Ok(crate::proxy::run::fake_attachment(id))
+            }),
+        );
+
+        let argv = vec!["cmd.exe".to_string(), "/c".to_string(), "rem".to_string()];
+        let started = Instant::now();
+        let _ = registry.ensure("local/slow", &argv, 80, 24).unwrap();
+        assert!(
+            started.elapsed() >= Duration::from_millis(100),
+            "current synchronous ensure blocks the caller"
+        );
+    }
 }
