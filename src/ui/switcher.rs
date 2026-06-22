@@ -1403,22 +1403,26 @@ impl Switcher {
         tree_width: u16,
     ) {
         let area = frame.area();
-        let input_h = if self.input.is_some() { 1 } else { 0 };
-        let v = Layout::vertical([
-            Constraint::Min(0),
-            Constraint::Length(input_h),
-            Constraint::Length(1),
-        ])
-        .split(area);
-        let mid = Layout::horizontal([
+        let cols = Layout::horizontal([
             Constraint::Length(tree_width),
             Constraint::Length(1),
             Constraint::Min(0),
         ])
-        .split(v[0]);
-        self.render_tree(frame, mid[0]);
-        self.render_divider(frame, mid[1], terminal_focused);
-        let term_area = mid[2];
+        .split(area);
+        let input_h = if self.input.is_some() { 1 } else { 0 };
+        let left = Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(input_h),
+            Constraint::Length(1),
+        ])
+        .split(cols[0]);
+        self.render_tree(frame, left[0]);
+        if input_h == 1 {
+            self.render_input(frame, left[1]);
+        }
+        self.render_footer(frame, left[2]);
+        self.render_divider(frame, cols[1], terminal_focused);
+        let term_area = cols[2];
         self.render_terminal_view(frame, term_area, grid);
         // In passthrough, place the real cursor at the grid's cursor so typing in the
         // mux is visible and tracks. Skipped when the child hid its cursor.
@@ -1429,10 +1433,6 @@ impl Switcher {
                 }
             }
         }
-        if input_h == 1 {
-            self.render_input(frame, v[1]);
-        }
-        self.render_footer(frame, v[2]);
         if self.show_help {
             self.render_help(frame, area);
         }
@@ -2897,6 +2897,27 @@ mod tests {
 
         term.draw(|f| sw.render(f, None, false, TREE_WIDTH)).unwrap();
         assert!(!divider_is_green(term.backend().buffer()), "tree-focused divider is not green");
+    }
+
+    #[tokio::test]
+    async fn footer_and_input_live_under_the_tree_only() {
+        let mut h = Harness::new(sample());
+        h.ch('/').await; // open the filter input
+        let buf = h.buf();
+        let last = buf.area.height - 1;
+        // The footer renders in the LEFT (tree) column only:
+        assert!(
+            (0..TREE_WIDTH).any(|x| buf[(x, last)].symbol() != " "),
+            "footer renders in the tree column"
+        );
+        // The divider spans the FULL height — at the bottom row the cell at
+        // x = TREE_WIDTH is the divider '│', proving the terminal/divider now
+        // extend under where the global footer used to be.
+        assert_eq!(
+            buf[(TREE_WIDTH, last)].symbol(),
+            "│",
+            "divider spans full height; footer no longer spans the terminal column"
+        );
     }
 
     #[tokio::test]
