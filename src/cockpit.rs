@@ -81,13 +81,19 @@ fn dbg_log(dir: &std::path::Path, msg: &str) {
     }
 }
 
+/// Formats one slow-step debug line: `SLOW <label> <ms>ms`. Kept separate from
+/// [`dbg_ms`] so the line format is unit-testable without timing or filesystem I/O.
+fn slow_log_line(label: &str, ms: u128) -> String {
+    format!("SLOW {label} {ms}ms")
+}
+
 /// Logs `label` to the debug log when a synchronous step took at least 10ms — used
 /// to locate what stalls the single-threaded event loop during rapid navigation
 /// (a no-op unless `XMUX_DEBUG` is set, like [`dbg_log`]).
 fn dbg_ms(dir: &std::path::Path, label: &str, start: std::time::Instant) {
     let ms = start.elapsed().as_millis();
     if ms >= 10 {
-        dbg_log(dir, &format!("SLOW {label} {ms}ms"));
+        dbg_log(dir, &slow_log_line(label, ms));
     }
 }
 
@@ -187,7 +193,10 @@ fn select_attach(
             // First attach for this host — land directly on the selected session
             // (window folded into the same ssh -t).
             let argv = src.attach_command(&sel.session, sel.window);
-            if registry.ensure(&key, &argv, cols, rows).is_err() {
+            let t = std::time::Instant::now();
+            let r = registry.ensure(&key, &argv, cols, rows);
+            dbg_ms(&env.xmux_dir, "select_attach.ensure", t);
+            if r.is_err() {
                 return false;
             }
             host_session.insert(sel.source.clone(), sel.session.clone());
@@ -198,7 +207,9 @@ fn select_attach(
             // cleared grid with the new session's content (a brief blank, not stale
             // colours/glyphs). The per-host PTY reuses ONE grid across sessions, so
             // without this the old session's uncovered cells stay on screen.
+            let t = std::time::Instant::now();
             registry.clear_grid(&key);
+            dbg_ms(&env.xmux_dir, "clear_grid", t);
             let cmd = src.switch_client_remote_cmd(&sel.session);
             let src2 = src.clone();
             tokio::spawn(async move {
@@ -209,7 +220,10 @@ fn select_attach(
     } else {
         // LOCAL psmux: one PTY per session.
         let argv = src.attach_command(&sel.session, None);
-        if registry.ensure(&key, &argv, cols, rows).is_err() {
+        let t = std::time::Instant::now();
+        let r = registry.ensure(&key, &argv, cols, rows);
+        dbg_ms(&env.xmux_dir, "select_attach.ensure", t);
+        if r.is_err() {
             return false;
         }
     }
@@ -266,7 +280,9 @@ fn sync_source_terminals(
         // (and forget its session) when the host has no sessions.
         match sessions.first() {
             Some(first) if !registry.contains(source) => {
+                let t = std::time::Instant::now();
                 let _ = registry.ensure(source, &src.attach_command(&first.name, None), cols, rows);
+                dbg_ms(&env.xmux_dir, "sync.ensure", t);
                 host_session.insert(source.to_string(), first.name.clone());
             }
             None => {
@@ -282,7 +298,9 @@ fn sync_source_terminals(
     for s in sessions {
         let addr = s.address();
         desired.insert(addr.clone());
+        let t = std::time::Instant::now();
         let _ = registry.ensure(&addr, &src.attach_command(&s.name, None), cols, rows);
+        dbg_ms(&env.xmux_dir, "sync.ensure", t);
     }
     for addr in addresses_to_reap(&registry.addresses(), &desired, source) {
         registry.remove(&addr);
@@ -757,7 +775,9 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             let t_draw = std::time::Instant::now();
             let _ = match &grid_arc {
                 Some(g) => {
+                    let t_lock = std::time::Instant::now();
                     let guard = g.lock().ok();
+                    dbg_ms(&env.xmux_dir, "grid_lock", t_lock);
                     term.draw(|f| switcher.render(f, guard.as_deref(), terminal_focused))
                 }
                 None => term.draw(|f| switcher.render(f, None, terminal_focused)),
@@ -983,7 +1003,9 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         None => continue,
                     };
                     if let Some(s) = first {
+                        let t = std::time::Instant::now();
                         let _ = registry.ensure(&src.alias, &src.attach_command(&s.name, None), vc, vr);
+                        dbg_ms(&env.xmux_dir, "reconnect.ensure", t);
                         host_session.insert(src.alias.clone(), s.name.clone());
                     }
                 }
@@ -1076,6 +1098,12 @@ mod tests {
             ui_prefix: "C-g".into(),
             xmux_dir: std::path::PathBuf::from("."),
         }
+    }
+
+    #[test]
+    fn slow_log_line_includes_label_and_elapsed_ms() {
+        let line = slow_log_line("registry.ensure", 42);
+        assert_eq!(line, "SLOW registry.ensure 42ms");
     }
 
     #[test]
