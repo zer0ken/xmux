@@ -220,6 +220,14 @@ impl Row {
     }
 }
 
+/// Snapshot of the cursor taken before a rebuild so `restore_focus` can
+/// recover or gracefully redirect it afterward.
+struct PriorFocus {
+    reference: Option<RowRef>,
+    selected: usize,
+    indent: usize,
+}
+
 /// The terminal-view target whose active pane attaching here would land on.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct TerminalViewTarget {
@@ -817,9 +825,9 @@ impl Switcher {
             w.active = want;
         }
         if changed {
-            let focus = self.current_ref().cloned();
+            let prior = self.capture_focus();
             self.rebuild();
-            self.restore_focus(focus);
+            self.restore_focus(prior);
         }
         changed
     }
@@ -1249,7 +1257,7 @@ impl Switcher {
     /// back in exactly as on first launch. Keeps the cursor on the focused host
     /// if the user had moved it there.
     pub fn request_rescan(&mut self) {
-        let focus = self.current_ref().cloned();
+        let prior = self.capture_focus();
         self.scanning = self.groups.iter().map(|g| g.source.clone()).collect();
         for g in self.groups.iter_mut() {
             g.err = None;
@@ -1259,7 +1267,7 @@ impl Switcher {
         self.panes_loaded.clear();
         self.rescan_kick = true;
         self.rebuild();
-        self.restore_focus(focus);
+        self.restore_focus(prior);
     }
 
     /// Streams in one source's `list-sessions` outcome: clears its scanning
@@ -1271,7 +1279,7 @@ impl Switcher {
         mut sessions: Vec<Session>,
         err: Option<String>,
     ) {
-        let focus = self.current_ref().cloned();
+        let prior = self.capture_focus();
         self.scanning.remove(&source);
         tree::sort_by_recency(&mut sessions);
         if let Some(g) = self.groups.iter_mut().find(|g| g.source == source) {
@@ -1285,30 +1293,65 @@ impl Switcher {
             });
         }
         self.rebuild();
-        self.restore_focus(focus);
+        self.restore_focus(prior);
     }
 
     /// Streams in one session's `list-panes` outcome, clearing its loading
     /// placeholder. An empty `panes` (a failed/timed-out fetch) still resolves the
     /// session — it shows no children rather than spinning forever.
     pub fn apply_panes(&mut self, address: String, panes: Vec<WindowPanes>) {
-        let focus = self.current_ref().cloned();
+        let prior = self.capture_focus();
         self.panes_loaded.insert(address.clone());
         self.panes.insert(address, panes);
         self.rebuild();
-        self.restore_focus(focus);
+        self.restore_focus(prior);
+    }
+
+    /// Captures the cursor state needed to restore or gracefully redirect focus
+    /// after a rebuild.
+    fn capture_focus(&self) -> PriorFocus {
+        PriorFocus {
+            reference: self.current_ref().cloned(),
+            selected: self.selected,
+            indent: self.rows.get(self.selected).map(|r| r.indent).unwrap_or(0),
+        }
     }
 
     /// After a streamed update rebuilds the rows: if the user has driven the
-    /// cursor, keep it on the focused node when it survives; otherwise let the
-    /// rebuild's recency preselect stand, so an untouched cursor follows the
-    /// most-recent session as hosts stream in.
-    fn restore_focus(&mut self, focus: Option<RowRef>) {
-        if self.user_moved {
-            if let Some(i) = focus.and_then(|f| self.row_matching(&f)) {
-                self.set_selected(i);
-            }
+    /// cursor, keep it on the focused node when it survives; if the node
+    /// vanished (killed/removed), land on the previous sibling at the same
+    /// indent or, when there is none, the parent. An untouched cursor follows
+    /// the rebuild's recency preselect.
+    fn restore_focus(&mut self, prior: PriorFocus) {
+        if !self.user_moved {
+            return;
         }
+        let Some(focus) = prior.reference.as_ref() else { return };
+        if let Some(i) = self.row_matching(focus) {
+            self.set_selected(i);
+            return;
+        }
+        // The focused node vanished (killed/removed): land on the previous sibling
+        // at its level, else the parent.
+        if let Some(i) = self.fallback_after_removal(prior.indent, prior.selected) {
+            self.set_selected(i);
+        }
+    }
+
+    /// The row to land on after the focused node vanished: the previous selectable
+    /// sibling at `indent`, else the nearest preceding selectable row at a shallower
+    /// indent (the parent). Operates on the freshly rebuilt `self.rows`.
+    fn fallback_after_removal(&self, indent: usize, prior_selected: usize) -> Option<usize> {
+        let prev_sibling = self.rows[..prior_selected.min(self.rows.len())]
+            .iter().enumerate().rev()
+            .find(|(_, r)| r.indent == indent && r.selectable())
+            .map(|(i, _)| i);
+        prev_sibling.or_else(|| {
+            self.rows[..prior_selected.min(self.rows.len())]
+                .iter().enumerate().rev()
+                .find(|(_, r)| r.indent < indent && r.selectable())
+                .map(|(i, _)| i)
+        })
     }
 
     /// The row index targeting the same node as `focus`, if it survives a
@@ -2928,5 +2971,26 @@ mod tests {
             h.sw.flash
         );
         assert!(h.sw.input.is_none(), "no input opened");
+    }
+
+    #[test]
+    fn removed_window_selection_falls_to_previous_sibling_then_parent() {
+        // two windows under jup/api; cursor on window 1. Remove window 1 → cursor to
+        // window 0 (previous sibling). Remove window 0 (now the only/topmost) → cursor
+        // to the session row (parent).
+        let mut sw = Switcher::new(two_window_scan());
+        sw.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → window 0
+        sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));  // ↓ window 1
+        assert!(matches!(sw.current_ref(), Some(RowRef::Window { window: 1, .. })));
+        // simulate window 1 removed: re-apply panes without window 1.
+        sw.apply_panes("jup/api".into(), vec![
+            win(0, "w0", true, vec![pane(0, true, "bash")]),
+        ]);
+        assert!(matches!(sw.current_ref(), Some(RowRef::Window { window: 0, .. })),
+            "removed window → previous sibling");
+        // remove window 0 too (session now has no window rows): cursor to the session.
+        sw.apply_panes("jup/api".into(), vec![]);
+        assert!(matches!(sw.current_ref(), Some(RowRef::Session(s)) if s.name == "api"),
+            "topmost removed → parent (session row)");
     }
 }
