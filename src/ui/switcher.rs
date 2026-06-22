@@ -1508,10 +1508,10 @@ impl Switcher {
         } else {
             fit(
                 &[
-                    " ↑/↓ move · →/Enter focus pane · / filter · n new · R rename · x kill · r refresh · ? help · q quit".to_string(),
-                    " ↑/↓ move · →/Enter focus pane · / filter · n new · x kill · ? help · q quit".to_string(),
-                    " move · →/Enter focus pane · / filter · ? help · q quit".to_string(),
-                    " →/Enter focus pane · ? help · q quit".to_string(),
+                    " ↑/↓ move · Enter focus pane · / filter · n new · R rename · x kill · r refresh · ? help · q quit".to_string(),
+                    " ↑/↓ move · Enter focus pane · / filter · n new · x kill · ? help · q quit".to_string(),
+                    " move · Enter focus pane · / filter · ? help · q quit".to_string(),
+                    " Enter focus pane · ? help · q quit".to_string(),
                     " ? help · q quit".to_string(),
                 ],
                 area.width,
@@ -1527,9 +1527,8 @@ impl Switcher {
     fn render_help(&self, frame: &mut Frame, area: Rect) {
         const LINES: &[&str] = &[
             "↑ / ↓ / j / k     move",
-            "→ / Enter / Tab   focus the terminal pane",
-            "C-g ← / Tab / Esc back to the tree",
-            "C-g Tab / ← / →   toggle focus either way",
+            "Enter              focus the terminal pane",
+            "C-g Esc           back to the tree",
             "PgUp / PgDn       jump by 10",
             "Home / End        first / last node",
             "n                 new (session / window / pane, by level)",

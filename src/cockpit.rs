@@ -408,13 +408,18 @@ fn connect_all_sources(
     }
 }
 
+/// The single key that moves focus from the tree into the terminal pane.
+/// (Arrows navigate the tree; the prefix-Esc path returns focus — see TermInput.)
+fn is_focus_in(code: KeyCode) -> bool {
+    matches!(code, KeyCode::Enter)
+}
+
 /// Processes a batch of TREE-focus input bytes through ONE path — used for both real
 /// stdin and bytes replayed after a terminal→tree switch. Handles prefix arming
-/// (`C-g` then Tab/←/→ → focus terminal, `q` → quit), plain →/Enter/Tab → focus
-/// terminal (unless an inline input is open), otherwise switcher navigation; then
-/// the off-loop op dispatch, ensure-current-host, and the `r` re-scan. Returns
-/// `(focus_terminal, quit)`. The selection is committed at the loop top, so this
-/// only drives navigation + metadata, not the display.
+/// (`C-g` then `q` → quit), Enter → focus terminal (unless an inline input is open),
+/// ←/→ navigate the tree; then the off-loop op dispatch, ensure-current-host, and
+/// the `r` re-scan. Returns `(focus_terminal, quit)`. The selection is committed at
+/// the loop top, so this only drives navigation + metadata, not the display.
 #[allow(clippy::too_many_arguments)]
 fn handle_tree_bytes(
     bytes: &[u8],
@@ -435,12 +440,9 @@ fn handle_tree_bytes(
     for key in tree_decoder.feed(bytes) {
         if *tree_armed {
             *tree_armed = false;
-            // After the prefix: Tab focuses the terminal, q quits. Arrows have NO
-            // function after the prefix (←/→ are tree navigation, handled below).
-            match key.code {
-                KeyCode::Char('\t') => focus_terminal = true,
-                KeyCode::Char('q') => quit = true,
-                _ => {}
+            // After the prefix: q quits.
+            if let KeyCode::Char('q') = key.code {
+                quit = true;
             }
             continue;
         }
@@ -448,9 +450,9 @@ fn handle_tree_bytes(
             *tree_armed = true;
             continue;
         }
-        // Enter/Tab focus the terminal pane. ←/→ are NOT focus keys: they navigate the
-        // tree (→ descend to a child, ← ascend to the parent) in `switcher.handle_key`.
-        if !switcher.is_inputting() && matches!(key.code, KeyCode::Enter | KeyCode::Char('\t')) {
+        // Enter focuses the terminal pane. ←/→ navigate the tree (→ descends to a child,
+        // ← ascends to the parent) in `switcher.handle_key`.
+        if !switcher.is_inputting() && is_focus_in(key.code) {
             focus_terminal = true;
             continue;
         }
@@ -1302,6 +1304,13 @@ mod tests {
         let sel = Selection::from_target(&TerminalViewTarget::default());
         assert!(sel.is_empty());
         assert_eq!(sel.window, None);
+    }
+
+    #[test]
+    fn enter_focuses_terminal_tab_does_not() {
+        assert!(is_focus_in(KeyCode::Enter));
+        assert!(!is_focus_in(KeyCode::Char('\t')));
+        assert!(!is_focus_in(KeyCode::Right));
     }
 
     #[test]
