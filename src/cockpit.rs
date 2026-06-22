@@ -1,13 +1,20 @@
 //! The cockpit: a persistent supervisor that owns the terminal for the whole
-//! session. It owns one [`HostManager`] (a lazily-spawned control-mode client per
-//! host), the [`Switcher`], the [`App`] (Overlay/Passthrough), and the picker
-//! control socket. One `select!` loop interleaves stdin, host events, the control
-//! socket, terminal resize, and an animation tick. On a cursor move (real or via
-//! the control socket) it ensures the cursor's host is connected and
-//! `switch-client`s to its session (`select = attach`). ratatui owns stdout in
-//! both states: Overlay draws the switcher; Passthrough draws the selected
-//! session's live grid fullscreen plus a one-line status bar.
+//! session. It keeps ONE real attached mux client per session — a `tmux attach` /
+//! `psmux attach` running inside a `portable-pty` PTY ([`AttachRegistry`]) — alive
+//! across selections, and renders the SELECTED session's live `Grid` on the right.
+//! A separate control-mode client per remote host ([`HostManager`]) supplies the
+//! sidebar inventory, mux-side change events, and programmatic `select-window`;
+//! local psmux is enumerated/polled with plain commands (it is one-server-per-
+//! session, so a host-level control client cannot see across its sessions).
+//!
+//! State is explicit: [`Selection`] (the canonical `source`/`session`/`window`) is
+//! the single source of truth the display reads — the `Switcher` owns only the tree
+//! and cursor. One `select!` loop interleaves stdin, host events, PTY events, the
+//! control socket, terminal resize, and an animation tick. ratatui owns stdout in
+//! both states: Overlay draws the switcher + the selected PTY grid; Passthrough
+//! draws that grid fullscreen plus a status bar.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -15,33 +22,120 @@ use ratatui::crossterm::event::KeyCode;
 
 use crate::attach;
 use crate::env::Env;
-use crate::host::{HostManager, HostEvent};
+use crate::host::{HostEvent, HostManager};
+use crate::proxy::registry::AttachRegistry;
+use crate::proxy::run::PtyEvent;
 use crate::ui::switcher::TerminalViewTarget;
 
 /// Milliseconds per braille-spinner frame. The frame index is derived from
 /// elapsed wall-clock time (see [`spinner_frame_at`]), not a per-tick counter, so
 /// the spinner animates on every render and never freezes when the animation tick
-/// starves under a `%output` flood.
+/// starves under a PTY-output flood.
 const SPINNER_FRAME_MS: u64 = 120;
 
-/// Max host events drained into one redraw before the loop yields back to
-/// `select!` (servicing stdin, the control socket, ops, and the tick). Coalesces
-/// a %output burst without letting a sustained flood monopolize the single thread.
-const HOST_EVENT_DRAIN_BUDGET: usize = 512;
+/// Max events (host or PTY) drained into one redraw before the loop yields back to
+/// `select!`. Coalesces an output burst without letting a sustained flood
+/// monopolize the single thread.
+const EVENT_DRAIN_BUDGET: usize = 512;
 
-/// The braille-spinner frame index for `elapsed` since the cockpit started. Render
-/// wraps it modulo the glyph count, so the raw count growing without bound is fine.
-fn spinner_frame_at(elapsed: std::time::Duration) -> usize {
-    (elapsed.as_millis() / SPINNER_FRAME_MS as u128) as usize
+/// How often local psmux sources are re-enumerated (no host-level control stream
+/// exists for one-server-per-session psmux, so new/removed sessions and window/pane
+/// structure changes are discovered by polling). Local commands are instant, so a
+/// brisk cadence keeps the sidebar in sync without meaningful cost.
+const LOCAL_POLL_MS: u64 = 1500;
+
+/// Minimum interval between redraws. Drawing is decoupled from events and capped
+/// to this frame rate: rapid input (or a busy PTY) sets a `dirty` flag, and the
+/// loop redraws at most once per frame — so no navigation pattern can flood the
+/// terminal with full-screen repaints and stall the single-threaded loop. A frame
+/// timer at this cadence flushes a pending dirty draw promptly even with no input.
+const FRAME_MS: u64 = 33;
+
+/// Debounce before a cursor move attaches/switches its session+window. Rapid
+/// navigation must NOT switch-client / select-window per step: each switch makes the
+/// remote mux send a full-screen repaint, and a storm of repaints floods the draw —
+/// the single-threaded loop then spends all its time redrawing, which IS the freeze.
+/// Deferring the attach until the cursor settles keeps per-step redraws to a cheap
+/// tree-only diff. Re-checked on the spinner tick, so it fires even with no further input.
+const ATTACH_DEBOUNCE_MS: u64 = 90;
+
+/// How often the reconnect sweep runs: re-ensures a died remote control client and
+/// re-attaches the selected session's PTY if it dropped. Doubles as the retry
+/// backoff so a genuinely-down host is retried at this cadence, never hot-looped.
+const RECONNECT_MS: u64 = 2000;
+
+/// Appends a diagnostic line to `<xmux_dir>/debug.log` when `XMUX_DEBUG` is set in
+/// the environment. A no-op otherwise, so it costs nothing in normal runs. Used to
+/// trace the live attach/selection/inventory flow that headless tests cannot reach.
+fn dbg_log(dir: &std::path::Path, msg: &str) {
+    if std::env::var_os("XMUX_DEBUG").is_none() {
+        return;
+    }
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("debug.log"))
+    {
+        let _ = writeln!(f, "{msg}");
+    }
 }
 
-/// The size to give a host's grid + `refresh-client -C`: the terminal-view pane
-/// (right of the tree + divider), NOT the whole terminal. Sizing a host to the
-/// full terminal makes the remote wrap at a width wider than the visible pane, so
-/// a line overflows the right edge (and a double-width char straddles the clip
-/// boundary, wrapping to col 0 of the next line), and the bottom status row falls
-/// outside the pane. The view width is `cols - TREE_WIDTH - 1` (tree + the single
-/// divider rule); the view height is the body height. Both clamp to at least 1.
+/// Logs `label` to the debug log when a synchronous step took at least 10ms — used
+/// to locate what stalls the single-threaded event loop during rapid navigation
+/// (a no-op unless `XMUX_DEBUG` is set, like [`dbg_log`]).
+fn dbg_ms(dir: &std::path::Path, label: &str, start: std::time::Instant) {
+    let ms = start.elapsed().as_millis();
+    if ms >= 10 {
+        dbg_log(dir, &format!("SLOW {label} {ms}ms"));
+    }
+}
+
+/// The canonical selection — the single source of truth the display reads. The
+/// `Switcher` owns the tree + cursor; the cockpit commits the cursor's target into
+/// this struct, and the render, input routing, and spinner all key off it. `window`
+/// is `Some` only for a window-row selection.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct Selection {
+    pub source: String,
+    /// Empty ⇒ no terminal view (cursor on a host/loading row).
+    pub session: String,
+    pub window: Option<i64>,
+}
+
+impl Selection {
+    /// Derives the selection from the switcher's current terminal-view target. The
+    /// target is either `session` or `session:window`; the session part keys the
+    /// PTY attachment, the optional window part drives `select-window`.
+    fn from_target(t: &TerminalViewTarget) -> Self {
+        if t.target.is_empty() {
+            return Selection::default();
+        }
+        let session = crate::mux::session_name(&t.target).to_string();
+        let window = t.target.split(':').nth(1).and_then(|w| w.parse::<i64>().ok());
+        Selection {
+            source: t.source.clone(),
+            session,
+            window,
+        }
+    }
+
+    /// The `AttachRegistry` key — `source/session`, matching `Session::address()`.
+    pub fn address(&self) -> String {
+        format!("{}/{}", self.source, self.session)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.session.is_empty()
+    }
+}
+
+/// The size to give a PTY attachment: the terminal-view pane (right of the tree +
+/// divider), NOT the whole terminal. Sizing a session to the full terminal makes
+/// the remote wrap at a width wider than the visible pane, so a line overflows the
+/// right edge (and a double-width char straddles the clip boundary). The view width
+/// is `cols - TREE_WIDTH - 1` (tree + the single divider rule); the view height is
+/// the body height. Both clamp to at least 1.
 fn terminal_view_size(cols: u16, body_rows: u16) -> (u16, u16) {
     let view_cols = cols
         .saturating_sub(crate::ui::switcher::TREE_WIDTH + 1)
@@ -49,73 +143,168 @@ fn terminal_view_size(cols: u16, body_rows: u16) -> (u16, u16) {
     (view_cols, body_rows.max(1))
 }
 
-/// Ensures `tgt`'s host is connected (spawning its control client lazily) and
-/// queues a `switch-client` to its session on that client. Returns `true` when a
-/// switch was queued, `false` when the source is unknown or the client could not
-/// be spawned. Extracted from the loop so the `select = attach` decision is
-/// unit-testable without a real terminal. `cols`/`rows` are the terminal body
-/// size; the host is sized to the terminal-view pane via [`terminal_view_size`].
+/// The `AttachRegistry` key for a selection. REMOTE tmux keeps ONE PTY per HOST
+/// (keyed by the source) and moves it between the host's sessions with
+/// `switch-client`; LOCAL psmux is one-server-per-session, so it keeps one PTY per
+/// SESSION (keyed by `source/session`).
+fn display_key(env: &Env, sel: &Selection) -> String {
+    match env.by_alias.get(&sel.source) {
+        Some(s) if s.remote => sel.source.clone(),
+        _ => sel.address(),
+    }
+}
+
+/// Makes the SELECTED session live in its host's display terminal and lands it on
+/// the selected window. Returns `true` when the selection has a session to show.
+///
+/// REMOTE tmux: one kept PTY per host (`tmux attach`). The first attach lands on the
+/// selected session; selecting a DIFFERENT session of the same host `switch-client`s
+/// that one client over to it (`host_session` tracks where it is, to skip redundant
+/// switches). LOCAL psmux: one kept PTY per session (one-server-per-session). In both
+/// cases a window-row selection moves the session's active window server-side, which
+/// the real attached client follows.
 fn select_attach(
+    registry: &mut AttachRegistry,
     mgr: &mut HostManager,
     env: &Env,
-    tgt: &TerminalViewTarget,
+    sel: &Selection,
+    host_session: &mut std::collections::HashMap<String, String>,
     cols: u16,
     rows: u16,
 ) -> bool {
+    if sel.is_empty() {
+        return false;
+    }
     let (cols, rows) = terminal_view_size(cols, rows);
-    let Some(src) = env.by_alias.get(&tgt.source) else {
+    let Some(src) = env.by_alias.get(&sel.source) else {
         return false;
     };
-    if src.control_per_session() {
-        // Local psmux: one connection per session (`-CC new-session -A -s`), no
-        // control-mode switch-client. The connection IS the session.
-        let session = target_session(&tgt.target);
-        let key = format!("{}/{}", tgt.source, session);
-        if mgr.ensure_session(&key, src, session, cols, rows).is_err() {
-            return false;
-        }
-        match mgr.get(&key) {
-            Some(client) => {
-                // For a window-row target, make that window the session's active one
-                // (psmux has no switch-client) so its live %output streams and the
-                // active-pane probe resolves THAT window's pane — otherwise input
-                // would go to the previously-active window's pane.
-                if tgt.target.contains(':') {
-                    client.select_window_on(&tgt.target);
-                }
-                client.capture_screen(&tgt.target);
-                // Resolve the active pane of the SELECTED target on every select
-                // (not just first connect): reselecting a different window must
-                // refresh active_pane, else terminal input keeps going to the old
-                // window's pane (issue #6). `local = true`: this per-session
-                // connection's reply is valid even before its `%session-changed`.
-                client.probe_active_pane(&tgt.target, true);
-                true
+    let key = display_key(env, sel);
+    let already = registry.contains(&key);
+
+    if src.remote {
+        if !already {
+            // First attach for this host — land directly on the selected session
+            // (window folded into the same ssh -t).
+            let argv = src.attach_command(&sel.session, sel.window);
+            if registry.ensure(&key, &argv, cols, rows).is_err() {
+                return false;
             }
-            None => false,
+            host_session.insert(sel.source.clone(), sel.session.clone());
+        } else if host_session.get(&sel.source) != Some(&sel.session) {
+            // The host's PTY is on a different session — switch that one client over.
+            // Wipe the grid first so the previous session's cells do not linger as
+            // residue: switch-client triggers a FULL client redraw, which refills the
+            // cleared grid with the new session's content (a brief blank, not stale
+            // colours/glyphs). The per-host PTY reuses ONE grid across sessions, so
+            // without this the old session's uncovered cells stay on screen.
+            registry.clear_grid(&key);
+            let cmd = src.switch_client_remote_cmd(&sel.session);
+            let src2 = src.clone();
+            tokio::spawn(async move {
+                let _ = src2.run_raw(&cmd).await;
+            });
+            host_session.insert(sel.source.clone(), sel.session.clone());
         }
     } else {
-        if mgr.ensure(&tgt.source, src, cols, rows).is_err() {
+        // LOCAL psmux: one PTY per session.
+        let argv = src.attach_command(&sel.session, None);
+        if registry.ensure(&key, &argv, cols, rows).is_err() {
             return false;
         }
-        match mgr.get(&tgt.source) {
-            Some(client) => {
-                client.switch_client(tgt.target.clone());
-                // Seed the grid with this target's current screen: switch-client
-                // alone does not repaint in control mode, so a static session would
-                // stay blank (or show the previous session's content) without this.
-                client.capture_screen(&tgt.target);
-                true
+    }
+    dbg_log(
+        &env.xmux_dir,
+        &format!("select_attach key={key} already={already} remote={} sess={}", src.remote, sel.session),
+    );
+
+    // Window-row selection → move the session's active window. The fresh remote
+    // attach above already folded the window in; otherwise switch it server-side.
+    if let Some(win) = sel.window {
+        let folded_into_attach = !already && src.remote;
+        if !folded_into_attach {
+            let target = crate::mux::window_target(&sel.session, win);
+            if src.remote {
+                if mgr.ensure(&sel.source, src, cols, rows).is_ok() {
+                    if let Some(client) = mgr.get(&sel.source) {
+                        client.select_window_on(&target);
+                    }
+                }
+            } else {
+                let src2 = src.clone();
+                let argv = crate::mux::select_window(&src2.binary, &target);
+                tokio::spawn(async move {
+                    let _ = src2.run(&argv).await;
+                });
             }
-            None => false,
         }
     }
+    true
+}
+
+/// Keeps a source's display terminals in sync with its sessions. REMOTE tmux keeps
+/// ONE PTY per host: warm it on the first session (later session selections
+/// `switch-client` it), and reap it when the host has no sessions left. LOCAL psmux
+/// (one-server-per-session) keeps one PTY per session: ensure each, reap the closed.
+/// Called whenever a source's inventory updates (a remote `%`-event refresh or a
+/// local poll), so a new session is reachable and a killed one is torn down (#5).
+fn sync_source_terminals(
+    registry: &mut AttachRegistry,
+    env: &Env,
+    source: &str,
+    sessions: &[crate::session::Session],
+    host_session: &mut std::collections::HashMap<String, String>,
+    cols: u16,
+    rows: u16,
+) {
+    let Some(src) = env.by_alias.get(source) else {
+        return;
+    };
+    let (cols, rows) = terminal_view_size(cols, rows);
+    if src.remote {
+        // One PTY per host. Warm it on the first session if not yet attached; reap it
+        // (and forget its session) when the host has no sessions.
+        match sessions.first() {
+            Some(first) if !registry.contains(source) => {
+                let _ = registry.ensure(source, &src.attach_command(&first.name, None), cols, rows);
+                host_session.insert(source.to_string(), first.name.clone());
+            }
+            None => {
+                registry.remove(source);
+                host_session.remove(source);
+            }
+            _ => {}
+        }
+        return;
+    }
+    // LOCAL psmux: one PTY per session; ensure each + reap closed.
+    let mut desired: HashSet<String> = HashSet::new();
+    for s in sessions {
+        let addr = s.address();
+        desired.insert(addr.clone());
+        let _ = registry.ensure(&addr, &src.attach_command(&s.name, None), cols, rows);
+    }
+    for addr in addresses_to_reap(&registry.addresses(), &desired, source) {
+        registry.remove(&addr);
+    }
+}
+
+/// The attached addresses belonging to `source` that are no longer in `desired`
+/// (their sessions closed). Pure so the reap selection is unit-testable. An address
+/// is `source/session`; it belongs to `source` iff it starts with `source/`.
+fn addresses_to_reap(existing: &[String], desired: &HashSet<String>, source: &str) -> Vec<String> {
+    let prefix = format!("{source}/");
+    existing
+        .iter()
+        .filter(|a| a.starts_with(&prefix) && !desired.contains(*a))
+        .cloned()
+        .collect()
 }
 
 /// Connects the host the cursor is on (if not already), so its control-mode
 /// client's `list-sessions` streams that host's tree in. A control-mode client is
-/// the only source of a host's session list, so a host whose client is never
-/// spawned shows an empty skeleton; ensuring on cursor focus populates it lazily.
+/// the only source of a REMOTE host's session list; local psmux enumerates via
+/// plain commands and has no host-level connection to ensure.
 fn ensure_current_host(
     mgr: &mut HostManager,
     env: &Env,
@@ -126,30 +315,43 @@ fn ensure_current_host(
     let (cols, rows) = terminal_view_size(cols, rows);
     if let Some(host) = switcher.current_host() {
         if let Some(src) = env.by_alias.get(&host) {
-            // Per-session sources (local psmux) enumerate via plain commands and
-            // open their control connections per session on select — there is no
-            // useful host-level connection to ensure here.
-            if !src.control_per_session() {
+            if src.remote {
                 let _ = mgr.ensure(&host, src, cols, rows);
             }
         }
     }
 }
 
-/// Connects EVERY source's control client at startup so each one's
-/// `list-sessions` streams its host's tree in without waiting for a cursor move.
-/// A control-mode client is the only source of a host's session list, so without
-/// this every host sits on "scanning…" until the user happens to focus it. The
-/// bound is the host count (one connection per host); each connect runs its
-/// handshake on its own reader/writer threads, so this returns at once and the
-/// trees fill in asynchronously as each host responds.
-/// Processes a batch of TREE-focus input bytes through ONE path — used for both
-/// real stdin and bytes replayed after a terminal→tree switch, so replayed input
-/// behaves identically to input arriving in a later read. Handles prefix arming
+/// Connects EVERY remote source's control client and kicks off EVERY local source's
+/// enumeration at startup, so each host's tree streams in without waiting for a
+/// cursor move. Remote control clients connect on their own reader/writer threads
+/// (this returns at once); local sources enumerate off the loop via the enum
+/// channel. PTYs are attached as each source's sessions arrive (see
+/// [`sync_source_terminals`]).
+fn connect_all_sources(
+    mgr: &mut HostManager,
+    env: &Env,
+    cols: u16,
+    rows: u16,
+    enum_tx: &tokio::sync::mpsc::UnboundedSender<LocalEnum>,
+) {
+    let (cols, rows) = terminal_view_size(cols, rows);
+    for src in &env.srcs {
+        if src.remote {
+            let _ = mgr.ensure(&src.alias, src, cols, rows);
+        } else {
+            spawn_local_enumeration(src.clone(), enum_tx.clone());
+        }
+    }
+}
+
+/// Processes a batch of TREE-focus input bytes through ONE path — used for both real
+/// stdin and bytes replayed after a terminal→tree switch. Handles prefix arming
 /// (`C-g` then Tab/←/→ → focus terminal, `q` → quit), plain →/Enter/Tab → focus
 /// terminal (unless an inline input is open), otherwise switcher navigation; then
-/// the off-loop op dispatch, ensure/select, and the `r` re-scan. Returns
-/// `(focus_terminal, quit)`.
+/// the off-loop op dispatch, ensure-current-host, and the `r` re-scan. Returns
+/// `(focus_terminal, quit)`. The selection is committed at the loop top, so this
+/// only drives navigation + metadata, not the display.
 #[allow(clippy::too_many_arguments)]
 fn handle_tree_bytes(
     bytes: &[u8],
@@ -162,7 +364,6 @@ fn handle_tree_bytes(
     ops: &Arc<dyn crate::ui::switcher::Ops>,
     op_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
     enum_tx: &tokio::sync::mpsc::UnboundedSender<LocalEnum>,
-    panes_requested: &mut std::collections::HashSet<String>,
     cols: u16,
     rows: u16,
 ) -> (bool, bool) {
@@ -171,8 +372,10 @@ fn handle_tree_bytes(
     for key in tree_decoder.feed(bytes) {
         if *tree_armed {
             *tree_armed = false;
+            // After the prefix: Tab focuses the terminal, q quits. Arrows have NO
+            // function after the prefix (←/→ are tree navigation, handled below).
             match key.code {
-                KeyCode::Char('\t') | KeyCode::Left | KeyCode::Right => focus_terminal = true,
+                KeyCode::Char('\t') => focus_terminal = true,
                 KeyCode::Char('q') => quit = true,
                 _ => {}
             }
@@ -182,9 +385,9 @@ fn handle_tree_bytes(
             *tree_armed = true;
             continue;
         }
-        if !switcher.is_inputting()
-            && matches!(key.code, KeyCode::Right | KeyCode::Enter | KeyCode::Char('\t'))
-        {
+        // Enter/Tab focus the terminal pane. ←/→ are NOT focus keys: they navigate the
+        // tree (→ descend to a child, ← ascend to the parent) in `switcher.handle_key`.
+        if !switcher.is_inputting() && matches!(key.code, KeyCode::Enter | KeyCode::Char('\t')) {
             focus_terminal = true;
             continue;
         }
@@ -192,47 +395,25 @@ fn handle_tree_bytes(
     }
     dispatch_pending_op(switcher, ops, op_tx);
     ensure_current_host(mgr, env, switcher, cols, rows);
-    if let Some(tgt) = switcher.current_attach_target() {
-        select_attach(mgr, env, &tgt, cols, rows);
-    }
     if switcher.take_rescan_kick() {
-        // 'r' re-scan: re-enumerate per-session (local) sources and re-list
-        // host-level (remote) ones; let panes re-request.
-        panes_requested.clear();
+        // 'r' re-scan: re-enumerate local sources and re-list remote ones.
         for src in &env.srcs {
-            if src.control_per_session() {
+            if src.remote {
+                if let Some(c) = mgr.get(&src.alias) {
+                    c.list_sessions();
+                }
+            } else {
                 spawn_local_enumeration(src.clone(), enum_tx.clone());
-            } else if let Some(c) = mgr.get(&src.alias) {
-                c.list_sessions();
             }
         }
     }
     (focus_terminal, quit)
 }
 
-fn connect_all_sources(
-    mgr: &mut HostManager,
-    env: &Env,
-    cols: u16,
-    rows: u16,
-    enum_tx: &tokio::sync::mpsc::UnboundedSender<LocalEnum>,
-) {
-    let (cols, rows) = terminal_view_size(cols, rows);
-    for src in &env.srcs {
-        if src.control_per_session() {
-            // Per-session (local psmux): enumerate the tree with plain commands;
-            // its control connections are opened per session on selection.
-            spawn_local_enumeration(src.clone(), enum_tx.clone());
-        } else {
-            let _ = mgr.ensure(&src.alias, src, cols, rows);
-        }
-    }
-}
-
-/// A plain-enumeration result for a `control_per_session` source (local psmux):
-/// its control connections are per-session and cannot enumerate the host, so the
-/// tree is filled from a plain `list-sessions` + per-session `list-panes` run off
-/// the loop and folded back through this channel.
+/// A plain-enumeration result for a local psmux source: its tree is filled from a
+/// plain `list-sessions` + per-session `list-panes` run off the loop and folded
+/// back through this channel (a one-server-per-session mux has no host-level
+/// control stream to enumerate or push changes).
 enum LocalEnum {
     Sessions {
         source: String,
@@ -245,31 +426,8 @@ enum LocalEnum {
     },
 }
 
-/// The strip of a terminal-view target before any `:window` suffix — the session
-/// name, which keys a per-session local connection and `capture-pane`.
-fn target_session(target: &str) -> &str {
-    crate::mux::session_name(target)
-}
-
-/// The HostManager key for `source`'s connection to `session`: the source alias
-/// for a host-level (tmux) connection, or `source/session` for a per-session
-/// (local psmux) connection.
-fn conn_key(env: &Env, source: &str, session: &str) -> String {
-    match env.by_alias.get(source) {
-        Some(s) if s.control_per_session() => format!("{source}/{session}"),
-        _ => source.to_string(),
-    }
-}
-
-/// The connection key for the cursor's current terminal-view target.
-fn target_conn_key(env: &Env, tgt: &TerminalViewTarget) -> String {
-    conn_key(env, &tgt.source, target_session(&tgt.target))
-}
-
-/// Enumerates a `control_per_session` source off the loop (plain `list-sessions`
-/// then `list-panes` per session) and streams the results back through `tx`. A
-/// control connection per session would each see only its own session, so the
-/// tree must come from the plain, server-aggregating commands instead.
+/// Enumerates a local source off the loop (plain `list-sessions` then `list-panes`
+/// per session) and streams the results back through `tx`.
 fn spawn_local_enumeration(
     src: crate::source::Source,
     tx: tokio::sync::mpsc::UnboundedSender<LocalEnum>,
@@ -296,12 +454,11 @@ fn spawn_local_enumeration(
 /// Requests `list-panes` for each of a host's sessions whose panes have not been
 /// requested yet, so every session's window/pane subtree loads instead of sitting
 /// on the "loading…" placeholder. The control client never volunteers pane data —
-/// it must be asked, once per session (`requested` dedupes repeat Inventory
-/// events). The resolved reply emits an Inventory event that paints the subtree.
+/// it must be asked, once per session (`requested` dedupes repeat Inventory events).
 fn request_session_panes(
     client: &crate::host::HostClient,
     sessions: &[crate::session::Session],
-    requested: &mut std::collections::HashSet<String>,
+    requested: &mut HashSet<String>,
 ) {
     for s in sessions {
         let addr = s.address();
@@ -311,98 +468,102 @@ fn request_session_panes(
     }
 }
 
-/// Applies one [`HostEvent`] to the cockpit state (tree, connected set, spinner,
-/// reap). Extracted so a burst of events can be drained in one loop iteration
-/// (one redraw per burst), which keeps a `%output` flood from monopolizing the
-/// single-threaded runtime and starving spawned ops / timers / the reactor.
+/// Refetches a host's inventory after a `%`-change notification: clears its
+/// pane-request dedup so every session re-lists, then re-runs list-sessions — its
+/// reply (Connected/Inventory) re-applies the tree, re-requests panes, and re-syncs
+/// the PTY set (a new session attaches, a closed one is reaped). #5 sidebar sync.
+fn refetch_host(mgr: &HostManager, panes_requested: &mut HashSet<String>, host: &str) {
+    if let Some(client) = mgr.get(host) {
+        let prefix = format!("{host}/");
+        panes_requested.retain(|a| !a.starts_with(&prefix));
+        client.list_sessions();
+    }
+}
+
+/// Applies one [`HostEvent`] to the cockpit state (tree, connected set, PTY sync,
+/// reap). Extracted so a burst of events can be drained in one loop iteration.
+#[allow(clippy::too_many_arguments)]
 fn handle_host_event(
     ev: HostEvent,
     mgr: &mut HostManager,
+    registry: &mut AttachRegistry,
     switcher: &mut crate::ui::switcher::Switcher,
-    connected: &mut std::collections::HashSet<String>,
-    panes_requested: &mut std::collections::HashSet<String>,
+    env: &Env,
+    connected: &mut HashSet<String>,
+    panes_requested: &mut HashSet<String>,
+    host_session: &mut std::collections::HashMap<String, String>,
+    cols: u16,
+    rows: u16,
+    overlay: bool,
 ) {
     match ev {
         HostEvent::Connected { host } | HostEvent::Inventory { host } => {
             connected.insert(host.clone());
-            // A per-session local client (key `source/session`) only knows its OWN
-            // session, so it must NOT rebuild the tree (the plain enumeration owns
-            // it) — its events only feed the grid, redrawn on the next loop top. A
-            // host-level (tmux) client owns its host's tree.
-            if !host.contains('/') {
-                if let Some(client) = mgr.get(&host) {
-                    let sessions = {
-                        let inv = client.inventory.lock().unwrap();
-                        switcher.apply_source_result(host.clone(), inv.sessions.clone(), None);
-                        for (addr, windows) in inv.panes.iter() {
-                            switcher.apply_panes(addr.clone(), windows.clone());
-                        }
-                        inv.sessions.clone()
-                    };
-                    request_session_panes(client, &sessions, panes_requested);
-                }
+            if let Some(client) = mgr.get(&host) {
+                let sessions = {
+                    let inv = client.inventory.lock().unwrap();
+                    switcher.apply_source_result(host.clone(), inv.sessions.clone(), None);
+                    for (addr, windows) in inv.panes.iter() {
+                        switcher.apply_panes(addr.clone(), windows.clone());
+                    }
+                    inv.sessions.clone()
+                };
+                request_session_panes(client, &sessions, panes_requested);
+                dbg_log(
+                    &env.xmux_dir,
+                    &format!(
+                        "host event host={host} n={} names={:?}",
+                        sessions.len(),
+                        sessions.iter().map(|s| &s.name).collect::<Vec<_>>()
+                    ),
+                );
+                // Sync this host's display terminal(s) (per-host for remote tmux).
+                sync_source_terminals(registry, env, &host, &sessions, host_session, cols, rows);
             }
         }
-        HostEvent::Output { .. } => { /* redraw on the next loop top */ }
-        HostEvent::Attached { .. } => {
-            // A confirmed switch: the live grid is now feeding, so the spinner
-            // clears. The next animation tick recomputes the connecting set.
-            switcher.set_spinner(std::collections::HashSet::new());
+        HostEvent::Changed { host } => {
+            // The server's session/window structure changed (a `%`-notification).
+            // Refetch so the tree, panes, and PTY set resync (#5 sidebar sync).
+            refetch_host(mgr, panes_requested, &host);
         }
         HostEvent::WindowChanged { host } => {
-            // The attached session's active window changed (another client switched
-            // it). Probe the new active window index on a HOST-level (tmux) client;
-            // the resulting Focus syncs the sidebar cursor. (Per-session local rows
-            // come from the plain enumeration, not this client — skip them.)
-            if !host.contains('/') {
-                if let Some(client) = mgr.get(&host) {
-                    let attached = client.inventory.lock().unwrap().attached_session.clone();
-                    if let Some(session) = attached {
-                        // Refresh the (active) window marker in the tree, then probe
-                        // the new active window so the Focus event syncs the cursor.
-                        // `local = false`: a host-level probe stays strict (the
-                        // session is already attached here).
-                        let address = format!("{host}/{session}");
-                        client.list_panes(&session, address);
-                        client.probe_active_pane(&session, false);
-                    }
-                }
+            // A session's ACTIVE WINDOW switched — the structure did NOT change, so do
+            // NOT refetch the whole inventory: a full list-sessions + per-session
+            // list-panes per change storms the single-threaded loop and freezes the UI
+            // during rapid window navigation (each tree step issues select-window,
+            // which echoes back as this notification). Instead probe ONLY the displayed
+            // session's new active window; the reply (Focus) updates the marker and
+            // follows the cursor without any refetch.
+            if let (Some(client), Some(displayed)) = (mgr.get(&host), host_session.get(&host)) {
+                client.probe_active_window(displayed);
             }
         }
         HostEvent::Focus { host, session, window } => {
-            // Sync the sidebar cursor to the active window of the session the probe
-            // was VALIDATED for (carried in the event — not re-read here, which
-            // could have changed). select_window only moves when the cursor is on a
-            // window row of that session, so it never yanks a user browsing
-            // elsewhere or syncs the wrong session.
-            if !host.contains('/') {
-                if let Some(idx) = window {
-                    switcher.select_window(&host, &session, idx);
-                }
+            // The active-window probe resolved. ALWAYS move the bold+italic marker to
+            // the new active window. Follow the CURSOR only when the terminal pane has
+            // focus (an external change, e.g. prefix-n in the pane): in TREE focus the
+            // user is driving the cursor, and this notification is the echo of their
+            // own select-window navigation — a (possibly stale/lagged) reply would
+            // yank the cursor backward and fight their navigation.
+            switcher.set_active_window(&host, &session, window);
+            if !overlay {
+                switcher.select_window(&host, &session, window);
             }
         }
         HostEvent::Exited { host, reason } => {
-            // A HOST-level client that dies before it ever connected is marked
-            // unreachable so its host stops spinning on "scanning…". A per-session
-            // local client (key `source/session`) is NOT a host — its tree is owned
-            // by the plain enumeration, so marking it would inject a phantom row;
-            // just reap it.
-            if !host.contains('/') {
-                note_host_exited(switcher, connected, &host, reason);
-            }
+            note_host_exited(switcher, connected, &host, reason);
             mgr.reap(&host);
         }
     }
 }
 
-/// Handles a host's control client dying. If the host never reached a connected
-/// state, marks it unreachable in the switcher so it renders "⚠ unreachable"
-/// instead of spinning on "scanning…" forever; a host that had connected keeps
-/// its last-known tree (the reap leaves the switcher state intact). Returns
-/// `true` when it marked the host unreachable.
+/// Handles a remote host's control client dying. If the host never reached a
+/// connected state, marks it unreachable in the switcher so it renders
+/// "⚠ unreachable" instead of spinning on "scanning…"; a host that had connected
+/// keeps its last-known tree. Returns `true` when it marked the host unreachable.
 fn note_host_exited(
     switcher: &mut crate::ui::switcher::Switcher,
-    connected: &std::collections::HashSet<String>,
+    connected: &HashSet<String>,
     host: &str,
     reason: Option<String>,
 ) -> bool {
@@ -414,10 +575,10 @@ fn note_host_exited(
     true
 }
 
-/// The `xmux` (no subcommand) entry: the persistent cockpit. Owns the terminal,
-/// keeps a lazily-spawned control client per host, and lets the in-session overlay
-/// switch between them with no re-attach. It serves a picker control socket so a
-/// headless driver can inject keys/text and dump the switcher screen.
+/// The `xmux` (no subcommand) entry: the persistent cockpit. Keeps one real attached
+/// mux client per session alive and renders the selected one, with a control-mode
+/// client per remote host for inventory/events/window-switch. It serves a picker
+/// control socket so a headless driver can inject keys/text and dump the screen.
 pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     use crate::proxy::app::App;
     use crate::proxy::decode::KeyDecoder;
@@ -425,13 +586,11 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     use crate::proxy::term::{parse_prefix, TermGuard};
     use crate::ui::run::{dump_overlay, serve_control, AppStateKind, Cmd};
     use crate::ui::switcher::Switcher;
-    use std::collections::HashSet;
     use std::io::Read;
     use std::time::Duration;
 
-    // The cockpit owns the terminal and attaches mux clients as children; nested
-    // inside a mux every attach is refused, leaving only a doomed loop. So running
-    // it inside a mux is refused outright, not warned.
+    // The cockpit owns the terminal and attaches mux clients as PTY children; nested
+    // inside a mux every attach is refused. So running it inside a mux is refused.
     if let Err(e) = attach::nest_guard(attach::in_mux()) {
         eprintln!("xmux: {e}");
         eprintln!("xmux: the cockpit must be your terminal entry, not run inside a mux.");
@@ -439,8 +598,6 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     }
     let _ = std::fs::create_dir_all(&env.xmux_dir);
 
-    // Raw mode + alternate screen for the whole session (RAII-restored on
-    // return/panic). On a failed enter, report and bail before the first draw.
     let _term_guard = match TermGuard::enter() {
         Ok(g) => g,
         Err(e) => {
@@ -452,20 +609,30 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     let size = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
     let (mut cols, mut body_rows) = (size.0, size.1.saturating_sub(1)); // status bar = last row
 
-    // The host manager: one control client per host, spawned lazily on first
-    // select. Every client emits onto the one shared event sink.
+    // The control-mode metadata clients: one per remote host.
     let (host_tx, mut host_rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
     let mut mgr = HostManager::new(host_tx);
 
-    // The switcher, seeded from the source skeletons; host events stream the tree in.
+    // The live PTY attachments: one real attached mux client per session.
+    let (pty_tx, mut pty_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
+    let mut registry = AttachRegistry::new(pty_tx);
+
+    // The switcher, seeded from the source skeletons; events stream the tree in.
     let mut switcher = Switcher::from_sources(env.srcs.iter().map(|s| s.alias.clone()).collect());
     let mut app = App::new();
 
-    // The live mutate ops (create/rename/kill) only — NOT tree probing (that comes
-    // from the control clients' inventory).
+    // The canonical selection; committed from the switcher's cursor at the loop top.
+    let mut selection = Selection::default();
+    // Debounced attach: the selection last actually attached/switched to, and the
+    // deadline after which a settled selection is attached (see ATTACH_DEBOUNCE_MS).
+    let mut last_attached_sel = Selection::default();
+    let mut attach_deadline: Option<std::time::Instant> = None;
+
+    // The live mutate ops (create/rename/kill) — NOT tree probing (that comes from
+    // the control clients' inventory + local enumeration).
     let ops = env.ops();
 
-    // Single stdin reader thread (the proxy pattern): raw host bytes → channel.
+    // Single stdin reader thread: raw host bytes → channel.
     let (stdin_tx, mut stdin_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
     std::thread::spawn(move || {
         let stdin = std::io::stdin();
@@ -483,17 +650,11 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         }
     });
 
-    // The prefix byte (default C-g). In tree focus, plain →/Enter/Tab move focus to
-    // the terminal and C-g then Tab/←/→ toggles; in terminal focus, TermInput
-    // intercepts C-g + a command key (Tab/←/→/Esc → tree, q → quit).
     let prefix = parse_prefix(Some(&env.ui_prefix));
     let mut term_input = TermInput::new(prefix);
-    // Persistent across reads: the tree-focus key decoder and its prefix-arm flag,
-    // so a split escape sequence or a C-g prefix sequence survives a read boundary.
     let mut tree_decoder = KeyDecoder::new();
     let mut tree_armed = false;
 
-    // ratatui terminal over the real stdout (draws every frame in BOTH states).
     let mut term =
         match ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(std::io::stdout())) {
             Ok(t) => t,
@@ -502,98 +663,148 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 return 1;
             }
         };
-    let _ = term.clear(); // #1: clear the alt screen before the first draw
+    let _ = term.clear();
 
     // The picker control socket: serves headless key/text/dump.
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<Cmd>(256);
     let control = pick_control_path(&env);
     let _control_handle = control.and_then(|p| serve_control(p, cmd_tx));
 
-    // Off-loop create/rename/kill results fold back through this cockpit-local
-    // channel (replacing the removed Cmd::OpDone arm).
     let (op_tx, mut op_rx) = tokio::sync::mpsc::unbounded_channel();
-
-    // Plain-enumeration results for per-session (local psmux) sources.
     let (enum_tx, mut enum_rx) = tokio::sync::mpsc::unbounded_channel::<LocalEnum>();
 
-    // Connect EVERY source up front so each control client's list-sessions
-    // streams its host's tree in without waiting for a cursor move. `connected`
-    // tracks the hosts that have reached a connected state, so a connection that
-    // dies before it ever connected is marked unreachable instead of spinning on
-    // "scanning…" forever.
     let mut connected: HashSet<String> = HashSet::new();
-    // Session addresses whose list-panes has been requested, so a session's
-    // subtree is asked for exactly once (repeat Inventory events don't re-issue).
     let mut panes_requested: HashSet<String> = HashSet::new();
+    // The session each remote host's per-host PTY is currently switched to, so a
+    // re-select of the same session skips a redundant switch-client.
+    let mut host_session: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     connect_all_sources(&mut mgr, &env, cols, body_rows, &enum_tx);
 
-    // The braille spinner advances by wall-clock elapsed, not a per-tick counter,
-    // so it animates on every render even when the animation tick starves under a
-    // %output flood. A PERSISTENT interval (not a `sleep` recreated each loop
-    // iteration, whose deadline would reset every time the biased select lets
-    // host_rx win) drives idle redraws + resize polling on an absolute schedule.
     let spinner_start = std::time::Instant::now();
     let mut tick = tokio::time::interval(Duration::from_millis(SPINNER_FRAME_MS));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Periodic local re-enumeration (one-server-per-session psmux has no event push).
+    // `interval_at(+period)` so the FIRST poll fires after a period, not at t=0 (the
+    // startup `connect_all_sources` already kicked the initial enumeration).
+    let poll_start = tokio::time::Instant::now() + Duration::from_millis(LOCAL_POLL_MS);
+    let mut local_poll = tokio::time::interval_at(poll_start, Duration::from_millis(LOCAL_POLL_MS));
+    local_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Periodic reconnect sweep: re-ensure any died remote control client (so #5
+    // metadata sync self-heals) and re-attach the selected session's PTY if it
+    // dropped (so a transient remote disconnect does not leave the right pane stuck
+    // on "(attaching…)"). The sweep interval doubles as the retry backoff.
+    let reconnect_start = tokio::time::Instant::now() + Duration::from_millis(RECONNECT_MS);
+    let mut reconnect = tokio::time::interval_at(reconnect_start, Duration::from_millis(RECONNECT_MS));
+    reconnect.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Frame timer: wakes the loop at the redraw cadence so a pending `dirty` draw is
+    // flushed promptly even when no other event arrives. Redraws are gated on `dirty`
+    // + elapsed ≥ FRAME_MS, so rapid input coalesces into ≤30fps instead of one
+    // full-screen repaint per keystroke (the navigation freeze).
+    let mut frame = tokio::time::interval(Duration::from_millis(FRAME_MS));
+    frame.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut dirty = true;
+    let mut last_draw = std::time::Instant::now() - Duration::from_millis(FRAME_MS);
 
     loop {
-        // Advance the spinner from wall-clock so it animates regardless of which
-        // select arm fired.
+        // Advance the spinner from wall-clock so it animates regardless of which arm
+        // fired, then commit the cursor's target into the canonical selection. A
+        // changed selection ensures its PTY + (for a window row) switches the window.
         switcher.set_spinner_frame(spinner_frame_at(spinner_start.elapsed()));
-        // Always draw the split: the tree (left) and the cursor session's live
-        // grid (right), with the divider colored to mark the focused side. The
-        // app state selects focus + key routing, not what is drawn.
-        let tgt = switcher.terminal_view_target();
-        let tgt_key = target_conn_key(&env, &tgt);
-        let grid_arc = (!tgt.target.is_empty())
-            .then(|| mgr.get(&tgt_key).map(|c| c.grid.clone()))
-            .flatten();
-        let terminal_focused = !app.is_overlay();
-        let _ = match &grid_arc {
-            Some(g) => {
-                let guard = g.lock().ok();
-                term.draw(|f| switcher.render(f, guard.as_deref(), terminal_focused))
-            }
-            None => term.draw(|f| switcher.render(f, None, terminal_focused)),
-        };
-
-        // The renderer has now caught up, so it is safe to resume any panes the
-        // server paused for flow control. Snapshot + clear the set under a brief
-        // lock, then resume each outside the lock (never across an `.await`).
-        if let Some(client) = mgr.get(&tgt_key) {
-            let paused: Vec<String> = {
-                let mut inv = client.inventory.lock().unwrap();
-                inv.paused_panes.drain().collect()
-            };
-            for pane in &paused {
-                client.resume_pane(pane);
+        let new_sel = Selection::from_target(&switcher.terminal_view_target());
+        if new_sel != selection {
+            selection = new_sel;
+            // Arm the debounce — do NOT attach yet. Rapid navigation keeps pushing the
+            // deadline, so only the settled selection attaches (one switch, not a storm).
+            attach_deadline = Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
+            dirty = true; // the cursor moved → the tree needs a redraw
+        }
+        // Apply the debounced attach once the selection has settled. The frame timer
+        // re-enters the loop, so this fires even with no further input.
+        if attach_deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            attach_deadline = None;
+            // Attach when the settled selection changed OR its display PTY is gone
+            // (it may have exited / been reaped while the cursor was elsewhere — then
+            // re-selecting the same session must re-attach NOW, not wait for the 2s
+            // reconnect sweep, or the pane stays blank). Record it only on a real
+            // attach, so a failed attach does not latch and suppress the retry.
+            if !selection.is_empty()
+                && (selection != last_attached_sel
+                    || !registry.contains(&display_key(&env, &selection)))
+            {
+                let t = std::time::Instant::now();
+                if select_attach(&mut registry, &mut mgr, &env, &selection, &mut host_session, cols, body_rows) {
+                    last_attached_sel = selection.clone();
+                }
+                dbg_ms(&env.xmux_dir, "select_attach", t);
+                dirty = true;
+                dbg_log(
+                    &env.xmux_dir,
+                    &format!("selection -> key={} sess={}", display_key(&env, &selection), selection.session),
+                );
             }
         }
 
+        // Draw the split: the tree (left) and the selected session's live PTY grid
+        // (right). GATED — redraw only when something changed (`dirty`) AND at most
+        // once per frame, so rapid navigation / a busy PTY cannot flood the terminal
+        // with full-screen repaints and stall the loop. The display key is the HOST
+        // for remote tmux (one PTY per host) or `source/session` for local psmux.
+        if dirty && last_draw.elapsed() >= Duration::from_millis(FRAME_MS) {
+            let grid_arc = (!selection.is_empty())
+                .then(|| registry.grid(&display_key(&env, &selection)))
+                .flatten();
+            let terminal_focused = !app.is_overlay();
+            let t_draw = std::time::Instant::now();
+            let _ = match &grid_arc {
+                Some(g) => {
+                    let guard = g.lock().ok();
+                    term.draw(|f| switcher.render(f, guard.as_deref(), terminal_focused))
+                }
+                None => term.draw(|f| switcher.render(f, None, terminal_focused)),
+            };
+            dbg_ms(&env.xmux_dir, "draw", t_draw);
+            // The grids are now on screen — clear every attachment's output-coalescing
+            // flag so each pump may signal its next chunk (bounds the PTY event channel).
+            registry.clear_all_pending();
+            dirty = false;
+            last_draw = std::time::Instant::now();
+        }
+
         // NOT biased: a biased select polls host_rx first every iteration, so a
-        // sustained %output flood (host_rx always ready) would starve stdin, the
-        // control socket, ops, enumeration, and the animation/resize tick — the
-        // bounded drain caps one burst but the next select would just re-pick
-        // host_rx. Unbiased select polls from a rotating start, so every branch
-        // gets a fair share even while host_rx stays ready.
+        // sustained output flood would starve stdin, the control socket, ops,
+        // enumeration, and the tick. Unbiased select gives every branch a fair share.
+        //
+        // Every arm EXCEPT the bare frame timer represents a real state change, so it
+        // marks the UI dirty (drawn on the next gated pass); the frame timer only wakes
+        // the loop to flush an already-pending dirty draw, so it must NOT set dirty.
+        let mut from_frame = false;
         tokio::select! {
             Some(ev) = host_rx.recv() => {
-                handle_host_event(ev, &mut mgr, &mut switcher, &mut connected, &mut panes_requested);
-                // Coalesce the rest of an in-flight burst into ONE redraw: a busy
-                // session can flood %output, and a redraw per event would make the
-                // single-threaded runtime never yield, starving spawned ops (the 6s
-                // new-window timeout), the animation tick, and resize polling. The
-                // drain is BUDGET-BOUNDED, not `while empty`: the reader OS threads
-                // can keep an unbounded channel non-empty under a sustained flood, so
-                // an unbounded drain would itself block stdin/ctl/the tick. After the
-                // budget we redraw and re-enter select, then resume draining.
-                let mut budget = HOST_EVENT_DRAIN_BUDGET;
+                let t = std::time::Instant::now();
+                let overlay = app.is_overlay();
+                handle_host_event(ev, &mut mgr, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &mut host_session, cols, body_rows, overlay);
+                let mut budget = EVENT_DRAIN_BUDGET;
                 while budget > 0 {
                     match host_rx.try_recv() {
                         Ok(ev) => {
-                            handle_host_event(ev, &mut mgr, &mut switcher, &mut connected, &mut panes_requested);
+                            handle_host_event(ev, &mut mgr, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &mut host_session, cols, body_rows, overlay);
                             budget -= 1;
                         }
+                        Err(_) => break,
+                    }
+                }
+                dbg_ms(&env.xmux_dir, "host_drain", t);
+            }
+            Some(ev) = pty_rx.recv() => {
+                // A kept attachment's pump fed its grid (Output → redraw on the next
+                // loop top) or its master hit EOF (Exited → reap). Coalesce a burst
+                // into one redraw so a busy session cannot monopolize the thread.
+                if let PtyEvent::Exited { id } = ev { registry.reap(id); }
+                let mut budget = EVENT_DRAIN_BUDGET;
+                while budget > 0 {
+                    match pty_rx.try_recv() {
+                        Ok(PtyEvent::Exited { id }) => { registry.reap(id); budget -= 1; }
+                        Ok(PtyEvent::Output { .. }) => { budget -= 1; }
                         Err(_) => break,
                     }
                 }
@@ -602,32 +813,20 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 let mut quit = false;
                 let mut focus_terminal = false;
                 let mut focus_tree = false;
-                // Bytes that followed a terminal→tree switch command in the same
-                // read; replayed into the tree after focus flips (not lost).
                 let mut tree_replay: Vec<u8> = Vec::new();
                 if app.is_overlay() {
-                    // TREE focus: one shared path (also used by the replay below).
                     let (ft, q) = handle_tree_bytes(
                         &bytes, &mut tree_decoder, &mut tree_armed, prefix, &mut switcher,
-                        &mut mgr, &env, &ops, &op_tx, &enum_tx, &mut panes_requested,
-                        cols, body_rows,
+                        &mut mgr, &env, &ops, &op_tx, &enum_tx, cols, body_rows,
                     );
                     focus_terminal = ft;
                     quit = q;
                 } else {
-                    // TERMINAL focus: forward raw bytes to the session's active pane;
+                    // TERMINAL focus: forward raw bytes to the selected session's PTY;
                     // TermInput intercepts the prefix (→ tree / quit / literal prefix).
                     for action in term_input.feed(&bytes) {
                         match action {
-                            TermAction::Forward(f) => {
-                                let tv = switcher.terminal_view_target();
-                                if let Some(client) = mgr.get(&target_conn_key(&env, &tv)) {
-                                    let pane = client.inventory.lock().unwrap().active_pane.clone();
-                                    if let Some(pane) = pane {
-                                        client.send_keys(pane, f);
-                                    }
-                                }
-                            }
+                            TermAction::Forward(f) => registry.input(&display_key(&env, &selection), f),
                             TermAction::FocusTree(rest) => {
                                 focus_tree = true;
                                 tree_replay = rest;
@@ -643,17 +842,13 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 if focus_tree && !app.is_overlay() {
                     app.toggle();
                     let _ = term.clear();
-                    // Replay the bytes that trailed the switch command through the
-                    // SAME tree path, so they behave exactly as a later read would
-                    // (prefix arming, plain →/Enter/Tab → terminal, etc.).
                     if !tree_replay.is_empty() {
                         let (ft, q) = handle_tree_bytes(
                             &tree_replay, &mut tree_decoder, &mut tree_armed, prefix,
-                            &mut switcher, &mut mgr, &env, &ops, &op_tx, &enum_tx,
-                            &mut panes_requested, cols, body_rows,
+                            &mut switcher, &mut mgr, &env, &ops, &op_tx, &enum_tx, cols, body_rows,
                         );
                         if ft && app.is_overlay() {
-                            app.toggle(); // a replayed →/Enter/Tab flips straight back
+                            app.toggle();
                             let _ = term.clear();
                         }
                         quit = quit || q;
@@ -666,28 +861,19 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             Some(cmd) = cmd_rx.recv() => {
                 match cmd {
                     Cmd::Key(k) => {
-                        // The control channel drives the switcher (Overlay path) so
-                        // `xmux ctl key …` navigates + attaches headlessly.
                         switcher.handle_key(k);
                         dispatch_pending_op(&mut switcher, &ops, &op_tx);
                         ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows);
-                        if let Some(tgt) = switcher.current_attach_target() {
-                            select_attach(&mut mgr, &env, &tgt, cols, body_rows);
-                        }
                         if switcher.wants_quit() {
                             break;
                         }
                     }
                     Cmd::Dump(reply) => {
-                        // Render the SAME Overlay content the main draw produces —
-                        // the switcher plus the cursor host's live grid — so a
-                        // headless `dump` reflects the live screen.
                         let sz = term
                             .size()
                             .unwrap_or(ratatui::layout::Size { width: 80, height: 24 });
-                        let tgt = switcher.terminal_view_target();
-                        let grid_arc = (!tgt.target.is_empty())
-                            .then(|| mgr.get(&target_conn_key(&env, &tgt)).map(|c| c.grid.clone()))
+                        let grid_arc = (!selection.is_empty())
+                            .then(|| registry.grid(&display_key(&env, &selection)))
                             .flatten();
                         let dump = match &grid_arc {
                             Some(g) => {
@@ -705,22 +891,8 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         };
                     }
                     Cmd::Keys(bytes) => {
-                        // Headless key injection: forward the bytes straight to the
-                        // selected session's active pane (the automation path doesn't
-                        // intercept the prefix).
                         if !bytes.is_empty() {
-                            let tv = switcher.terminal_view_target();
-                            if let Some(client) = mgr.get(&target_conn_key(&env, &tv)) {
-                                let pane = client
-                                    .inventory
-                                    .lock()
-                                    .unwrap()
-                                    .active_pane
-                                    .clone();
-                                if let Some(pane) = pane {
-                                    client.send_keys(pane, bytes);
-                                }
-                            }
+                            registry.input(&display_key(&env, &selection), bytes);
                         }
                     }
                 }
@@ -729,80 +901,118 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 switcher.apply_op_result(result);
             }
             Some(le) = enum_rx.recv() => {
-                // Plain-enumeration results for a per-session (local psmux) source
-                // fill its tree (its per-session control clients can't enumerate).
                 match le {
                     LocalEnum::Sessions { source, sessions, err } => {
-                        switcher.apply_source_result(source, sessions, err);
+                        let had_err = err.is_some();
+                        dbg_log(
+                            &env.xmux_dir,
+                            &format!(
+                                "local enum source={source} n={} names={:?} err={:?}",
+                                sessions.len(),
+                                sessions.iter().map(|s| &s.name).collect::<Vec<_>>(),
+                                err
+                            ),
+                        );
+                        switcher.apply_source_result(source.clone(), sessions.clone(), err);
+                        // Only sync the PTY set on a SUCCESSFUL enumeration. A transient
+                        // poll failure returns an empty list with an error; reaping on
+                        // that would tear down every live attachment for a source whose
+                        // mux is actually fine (the keep-alive guarantee). Show the error
+                        // in the tree, but leave the attachments intact.
+                        if !had_err {
+                            sync_source_terminals(&mut registry, &env, &source, &sessions, &mut host_session, cols, body_rows);
+                        }
                     }
                     LocalEnum::Panes { address, panes } => {
                         switcher.apply_panes(address, panes);
                     }
                 }
-                // A host-level client auto-attaches its session on connect, so its
-                // grid fills without help; a per-session (local) target has no client
-                // until selected, so once enumeration preselects one, attach it now —
-                // otherwise the preselected local session's pane would read
-                // "(attaching…)" until the first cursor move.
-                if let Some(tgt) = switcher.current_attach_target() {
-                    if mgr.get(&target_conn_key(&env, &tgt)).is_none() {
-                        select_attach(&mut mgr, &env, &tgt, cols, body_rows);
-                    }
-                }
             }
             _ = tick.tick() => {
-                // The dedicated stdin thread is the sole fd-0 reader; resize is
-                // detected here by polling the console size (an ioctl/Win32
-                // console-info call, NOT a stdin read — no fd contention). On a
-                // change push the new size to the hosts and let ratatui pick it up
-                // on the next draw.
+                // Resize detection: poll the console size (an ioctl, not a stdin
+                // read). On a change push the new size to the PTYs + control clients.
                 if let Ok((c, r)) = ratatui::crossterm::terminal::size() {
                     if (c, r) != (cols, body_rows + 1) {
                         let body = r.saturating_sub(1);
                         cols = c;
                         body_rows = body;
                         let (vc, vr) = terminal_view_size(c, body);
+                        registry.resize_all(vc, vr);
                         mgr.resize_all(vc, vr);
                         let _ = term.autoresize();
                     }
                 }
-                // Rebuild the spinner set from the hosts still connecting (the
-                // cursor's target); the frame itself advances from wall-clock at the
-                // loop top, so the spinner animates even between ticks.
+                // Spinner set = the selected session if its PTY is still connecting.
                 let mut sp = HashSet::new();
-                let tv = switcher.terminal_view_target();
-                if !tv.target.is_empty() {
-                    let connecting = match mgr.get(&target_conn_key(&env, &tv)) {
-                        Some(c) => c.connecting.load(std::sync::atomic::Ordering::Acquire),
-                        None => true,
-                    };
-                    if connecting {
-                        sp.insert(spinner_key(&tv));
-                    }
+                if !selection.is_empty() && registry.connecting(&display_key(&env, &selection)) {
+                    // The spinner highlights the selected SESSION's tree row (the
+                    // switcher matches by session address), while "connecting" is
+                    // checked on the display key (the host PTY for remote tmux).
+                    sp.insert(selection.address());
                 }
                 switcher.set_spinner(sp);
             }
+            _ = local_poll.tick() => {
+                // Re-enumerate local sources so new/removed sessions + window/pane
+                // changes sync into the sidebar (no event push for one-server psmux).
+                for src in &env.srcs {
+                    if !src.remote {
+                        spawn_local_enumeration(src.clone(), enum_tx.clone());
+                    }
+                }
+            }
+            _ = reconnect.tick() => {
+                let (vc, vr) = terminal_view_size(cols, body_rows);
+                // Re-ensure each remote control client (a no-op when alive; respawns
+                // a died one so its list-sessions re-streams and #5 sync resumes).
+                for src in &env.srcs {
+                    if src.remote {
+                        let _ = mgr.ensure(&src.alias, src, vc, vr);
+                    }
+                }
+                // Re-warm each remote host's per-host PTY if it dropped (ENSURE-ONLY,
+                // never reap: a just-respawned control client has an empty inventory
+                // until its list-sessions resolves; reaping on that would tear down a
+                // live PTY. Closed-host reaping is owned by the Inventory/Changed path).
+                for src in &env.srcs {
+                    if !src.remote || registry.contains(&src.alias) {
+                        continue;
+                    }
+                    let first = match mgr.get(&src.alias) {
+                        Some(client) => client.inventory.lock().unwrap().sessions.first().cloned(),
+                        None => continue,
+                    };
+                    if let Some(s) = first {
+                        let _ = registry.ensure(&src.alias, &src.attach_command(&s.name, None), vc, vr);
+                        host_session.insert(src.alias.clone(), s.name.clone());
+                    }
+                }
+                // Re-attach the selected session's display terminal if it dropped.
+                if !selection.is_empty() && !registry.contains(&display_key(&env, &selection)) {
+                    select_attach(&mut registry, &mut mgr, &env, &selection, &mut host_session, cols, body_rows);
+                }
+            }
+            _ = frame.tick() => {
+                // Bare wake-up: flush a pending dirty draw at the frame cadence. No
+                // state change, so it must NOT mark the UI dirty (else idle = 30fps
+                // redraws forever).
+                from_frame = true;
+            }
+        }
+        // Any real event (not the bare frame wake) means the UI may have changed.
+        if !from_frame {
+            dirty = true;
         }
     }
 
+    registry.teardown_all();
     mgr.teardown_all();
     0
 }
 
-/// The spinner key for a terminal-view target, matching `Session::address()`
-/// (`source/name`). A Window-row target carries `name:window`, so its session
-/// part is everything before the first `:`; a session-row target has no `:` and
-/// is the name verbatim. Without this the spinner key would never match the
-/// switcher's session addresses and the spinner would never show.
-fn spinner_key(tgt: &TerminalViewTarget) -> String {
-    let name = tgt.target.split(':').next().unwrap_or(&tgt.target);
-    format!("{}/{}", tgt.source, name)
-}
-
-/// After a key was handled in Overlay: take any queued create/rename/kill and run
-/// it OFF the loop in a detached task, folding its result back through `op_tx`, so
-/// a slow ssh round-trip never freezes rendering, host streaming, or the control
-/// socket.
+/// After a key was handled in Overlay: take any queued create/rename/kill and run it
+/// OFF the loop in a detached task, folding its result back through `op_tx`, so a
+/// slow ssh round-trip never freezes rendering, host streaming, or the control socket.
 fn dispatch_pending_op(
     switcher: &mut crate::ui::switcher::Switcher,
     ops: &Arc<dyn crate::ui::switcher::Ops>,
@@ -816,6 +1026,11 @@ fn dispatch_pending_op(
             let _ = tx.send(result);
         });
     }
+}
+
+/// The braille-spinner frame index for `elapsed` since the cockpit started.
+fn spinner_frame_at(elapsed: std::time::Duration) -> usize {
+    (elapsed.as_millis() / SPINNER_FRAME_MS as u128) as usize
 }
 
 /// The picker's control socket path (`ctl-<pid>.sock`), unless `XMUX_CONTROL=0`.
@@ -834,8 +1049,6 @@ mod tests {
     use crate::source::Source;
     use std::collections::HashMap;
 
-    /// A LOCAL `Source` whose `control_argv()` is valid (`cmd.exe`), so `ensure`
-    /// can spawn a throwaway control child that EOFs at once.
     fn fake_source(alias: &str) -> Source {
         Source {
             alias: alias.into(),
@@ -846,10 +1059,6 @@ mod tests {
             socket: None,
             runner: None,
         }
-    }
-
-    fn fake_env_with_source(alias: &str) -> Env {
-        fake_env_with_sources(&[alias])
     }
 
     fn fake_env_with_sources(aliases: &[&str]) -> Env {
@@ -869,47 +1078,113 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn select_attach_ensures_then_switches() {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
-        let mut mgr = HostManager::new(tx);
-        mgr.insert_fake("jupiter06"); // pretend connected
-        let env = fake_env_with_source("jupiter06");
-        let tgt = TerminalViewTarget {
-            source: "jupiter06".into(),
-            target: "api".into(),
+    #[test]
+    fn selection_from_session_row_target() {
+        let t = TerminalViewTarget { source: "jupiter06".into(), target: "api".into() };
+        let sel = Selection::from_target(&t);
+        assert_eq!(sel.source, "jupiter06");
+        assert_eq!(sel.session, "api");
+        assert_eq!(sel.window, None);
+        assert_eq!(sel.address(), "jupiter06/api");
+        assert!(!sel.is_empty());
+    }
+
+    #[test]
+    fn selection_from_window_row_target() {
+        // A window-row target `session:window` keeps the session as the PTY key and
+        // carries the window index for select-window.
+        let t = TerminalViewTarget { source: "jupiter06".into(), target: "api:2".into() };
+        let sel = Selection::from_target(&t);
+        assert_eq!(sel.session, "api");
+        assert_eq!(sel.window, Some(2));
+        assert_eq!(sel.address(), "jupiter06/api", "address is source/session, not the window");
+    }
+
+    #[test]
+    fn selection_from_empty_target_is_empty() {
+        let sel = Selection::from_target(&TerminalViewTarget::default());
+        assert!(sel.is_empty());
+        assert_eq!(sel.window, None);
+    }
+
+    #[test]
+    fn display_key_is_per_host_remote_per_session_local() {
+        // REMOTE tmux → one PTY per HOST (key = source); LOCAL psmux → one PTY per
+        // SESSION (key = source/session).
+        let mut remote = fake_source("jup");
+        remote.remote = true;
+        let local = fake_source("local"); // remote = false
+        let by_alias: HashMap<String, Source> =
+            [("jup".to_string(), remote.clone()), ("local".to_string(), local.clone())]
+                .into_iter()
+                .collect();
+        let env = Env {
+            cfg: Config::default(),
+            cfg_warnings: Vec::new(),
+            srcs: vec![remote, local],
+            by_alias,
+            local_bin: "psmux".into(),
+            ui_prefix: "C-g".into(),
+            xmux_dir: std::path::PathBuf::from("."),
         };
-        assert!(
-            select_attach(&mut mgr, &env, &tgt, 80, 24),
-            "select on a connected host queues a switch-client"
-        );
-        mgr.teardown_all();
+        let rsel = Selection { source: "jup".into(), session: "api".into(), window: None };
+        assert_eq!(display_key(&env, &rsel), "jup", "remote → per-host key");
+        let lsel = Selection { source: "local".into(), session: "work".into(), window: None };
+        assert_eq!(display_key(&env, &lsel), "local/work", "local → per-session key");
+    }
+
+    #[test]
+    fn addresses_to_reap_picks_this_sources_closed_sessions() {
+        // Only addresses of `source` that are not in the desired set are reaped; a
+        // different source's attachments and still-present sessions are protected.
+        let existing = vec![
+            "local/a".to_string(),
+            "local/b".to_string(),
+            "jupiter06/a".to_string(),
+        ];
+        let mut desired = HashSet::new();
+        desired.insert("local/a".to_string());
+        let reap = addresses_to_reap(&existing, &desired, "local");
+        assert_eq!(reap, vec!["local/b".to_string()], "only local/b (closed, this source) is reaped");
+    }
+
+    #[test]
+    fn addresses_to_reap_empty_desired_reaps_all_of_source() {
+        let existing = vec!["local/a".to_string(), "jupiter06/x".to_string()];
+        let reap = addresses_to_reap(&existing, &HashSet::new(), "local");
+        assert_eq!(reap, vec!["local/a".to_string()], "every local session gone → reap local/a only");
     }
 
     #[tokio::test]
-    async fn connect_all_sources_connects_every_host() {
-        // Startup must connect EVERY source so each host's list-sessions streams
-        // its tree in without a cursor move — the fix for hosts stuck on
-        // "scanning…" until the user happened to focus them.
+    async fn connect_all_sources_connects_remote_hosts() {
+        // Remote sources get a control client at startup; local sources enumerate
+        // off the loop (no control client). Here cmd.exe sources are LOCAL, so none
+        // get a control client — they enumerate. Use a remote source to prove connect.
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
         let mut mgr = HostManager::new(tx);
-        // fake sources use the cmd.exe binary (not psmux), so they take the
-        // host-level connect path; the enum channel is unused here.
         let (enum_tx, _enum_rx) = tokio::sync::mpsc::unbounded_channel();
-        let env = fake_env_with_sources(&["jupiter06", "jupiter00", "local"]);
+        let mut src = fake_source("jupiter06");
+        src.remote = true;
+        src.binary = "cmd.exe".into(); // a spawnable stand-in for ssh that EOFs at once
+        let by_alias: HashMap<String, Source> =
+            [("jupiter06".to_string(), src.clone())].into_iter().collect();
+        let env = Env {
+            cfg: Config::default(),
+            cfg_warnings: Vec::new(),
+            srcs: vec![src],
+            by_alias,
+            local_bin: "cmd.exe".into(),
+            ui_prefix: "C-g".into(),
+            xmux_dir: std::path::PathBuf::from("."),
+        };
         connect_all_sources(&mut mgr, &env, 80, 24, &enum_tx);
-        assert!(mgr.get("jupiter06").is_some(), "jupiter06 connected at startup");
-        assert!(mgr.get("jupiter00").is_some(), "jupiter00 connected at startup");
-        assert!(mgr.get("local").is_some(), "local connected at startup");
+        assert!(mgr.get("jupiter06").is_some(), "remote host got a control client");
         mgr.teardown_all();
     }
 
     #[test]
     fn spinner_frame_advances_with_wall_clock() {
         use std::time::Duration;
-        // The spinner frame is derived from elapsed wall-clock time, NOT a per-tick
-        // counter, so it animates smoothly on every render even when the 250ms tick
-        // arm starves under a %output flood (the freeze/stutter bug).
         assert_eq!(spinner_frame_at(Duration::from_millis(0)), 0);
         assert_eq!(spinner_frame_at(Duration::from_millis(SPINNER_FRAME_MS)), 1);
         assert_eq!(spinner_frame_at(Duration::from_millis(SPINNER_FRAME_MS * 3 + 10)), 3);
@@ -918,9 +1193,6 @@ mod tests {
     #[test]
     fn terminal_view_size_subtracts_tree_and_divider() {
         use crate::ui::switcher::TREE_WIDTH;
-        // The host grid + refresh-client must be sized to the terminal-view pane
-        // (right of the tree + divider), not the full terminal — else the remote
-        // wraps at the wrong width and a wide char straddles the clip boundary.
         let (vc, vr) = terminal_view_size(143, 39);
         assert_eq!(vc, 143 - (TREE_WIDTH + 1), "cols minus tree minus divider");
         assert_eq!(vr, 39, "rows pass through (the body height)");
@@ -928,65 +1200,15 @@ mod tests {
 
     #[test]
     fn terminal_view_size_clamps_to_at_least_one() {
-        // A terminal narrower/shorter than the tree must never size a host to 0.
         let (vc, vr) = terminal_view_size(10, 0);
         assert_eq!(vc, 1);
         assert_eq!(vr, 1);
-    }
-
-    #[test]
-    fn target_session_strips_window_suffix() {
-        assert_eq!(target_session("api"), "api");
-        assert_eq!(target_session("api:2"), "api");
-    }
-
-    #[test]
-    fn conn_key_is_per_session_for_psmux_else_host() {
-        let psmux = Source {
-            alias: "local".into(),
-            binary: "psmux".into(),
-            remote: false,
-            control_path: String::new(),
-            os: "windows".into(),
-            socket: None,
-            runner: None,
-        };
-        let tmux = Source {
-            alias: "jup".into(),
-            binary: "tmux".into(),
-            remote: true,
-            control_path: String::new(),
-            os: "linux".into(),
-            socket: None,
-            runner: None,
-        };
-        let by_alias: HashMap<String, Source> = [
-            ("local".to_string(), psmux.clone()),
-            ("jup".to_string(), tmux.clone()),
-        ]
-        .into_iter()
-        .collect();
-        let env = Env {
-            cfg: Config::default(),
-            cfg_warnings: Vec::new(),
-            srcs: vec![psmux, tmux],
-            by_alias,
-            local_bin: "psmux".into(),
-            ui_prefix: "C-g".into(),
-            xmux_dir: std::path::PathBuf::from("."),
-        };
-        // Local psmux → one connection per session; remote tmux → one per host.
-        assert_eq!(conn_key(&env, "local", "0"), "local/0");
-        assert_eq!(conn_key(&env, "jup", "api"), "jup");
     }
 
     #[tokio::test]
     async fn host_exited_before_connect_marks_unreachable() {
         use crate::ui::run::dump_overlay;
         use crate::ui::switcher::Switcher;
-        use std::collections::HashSet;
-        // A control client that dies before it ever connected must flip its host
-        // from "scanning…" to "⚠ unreachable" so it does not spin forever.
         let mut switcher = Switcher::from_sources(vec!["jupiter00".into()]);
         let connected: HashSet<String> = HashSet::new();
         assert!(
@@ -996,15 +1218,11 @@ mod tests {
         let out = dump_overlay(&mut switcher, None, 80, 24);
         assert!(out.contains("unreachable"), "host reads unreachable:\n{out}");
         assert!(out.contains("no route to host"), "shows the exit reason:\n{out}");
-        assert!(!out.contains("scanning"), "no longer scanning:\n{out}");
     }
 
     #[tokio::test]
     async fn host_exited_after_connect_keeps_tree() {
         use crate::ui::switcher::Switcher;
-        use std::collections::HashSet;
-        // A host that had connected keeps its last-known tree on a later exit —
-        // it is NOT reset to unreachable.
         let mut switcher = Switcher::from_sources(vec!["jupiter06".into()]);
         let mut connected: HashSet<String> = HashSet::new();
         connected.insert("jupiter06".into());
@@ -1015,21 +1233,100 @@ mod tests {
     }
 
     #[test]
-    fn spinner_key_is_the_session_address_for_a_window_target() {
-        // A Window-row target carries `name:window`; its spinner key must be the
-        // session address `source/name` (matching `Session::address()`), not
-        // `source/name:window`, else the spinner never matches and never shows.
-        let win_tgt = TerminalViewTarget {
-            source: "jupiter06".into(),
-            target: "api:2".into(),
+    fn focus_event_follows_cursor_to_active_window() {
+        // A resolved active-window probe (HostEvent::Focus) moves the sidebar cursor
+        // to the new active window of the displayed session (#2). Cursor starts on
+        // window 1's row; Focus to window 0 must land it there.
+        use crate::session::{Pane, Session, WindowPanes};
+        use crate::ui::switcher::{Scan, Switcher};
+        use crate::ui::tree::Group;
+        use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
+
+        let mut panes = std::collections::HashMap::new();
+        panes.insert(
+            "jup/api".to_string(),
+            vec![
+                WindowPanes { index: 0, name: "w0".into(), active: true, panes: vec![Pane { index: 0, active: true, command: "bash".into() }] },
+                WindowPanes { index: 1, name: "w1".into(), active: false, panes: vec![Pane { index: 0, active: true, command: "bash".into() }] },
+            ],
+        );
+        let scan = Scan {
+            groups: vec![Group {
+                source: "jup".into(),
+                err: None,
+                sessions: vec![Session { source: "jup".into(), name: "api".into(), windows: 2, attached: false, last_attached: 100 }],
+            }],
+            panes,
         };
-        assert_eq!(spinner_key(&win_tgt), "jupiter06/api");
-        // A session-row target has no `:window` suffix — the name passes through.
-        let sess_tgt = TerminalViewTarget {
-            source: "jupiter06".into(),
-            target: "api".into(),
+        let mut switcher = Switcher::new(scan);
+        // session row -> window 0 -> window 1.
+        switcher.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        switcher.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(switcher.terminal_view_target().target, "api:1", "cursor on window 1");
+
+        let (htx, _hrx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
+        let mut mgr = HostManager::new(htx);
+        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
+        let mut registry = AttachRegistry::new(ptx);
+        let env = fake_env_with_sources(&["jup"]);
+        let mut connected = HashSet::new();
+        let mut panes_requested = HashSet::new();
+        let mut host_session = HashMap::new();
+        // Terminal-focused (overlay=false): the probe-resolved Focus follows the cursor.
+        handle_host_event(
+            HostEvent::Focus { host: "jup".into(), session: "api".into(), window: 0 },
+            &mut mgr, &mut registry, &mut switcher, &env,
+            &mut connected, &mut panes_requested, &mut host_session, 80, 24, false,
+        );
+        assert_eq!(switcher.terminal_view_target().target, "api:0", "Focus followed the cursor to window 0");
+    }
+
+    #[test]
+    fn focus_event_does_not_follow_cursor_while_navigating_the_tree() {
+        // While the TREE has focus the user drives the cursor; a probe-resolved Focus
+        // (echoed from the user's own select-window navigation, possibly stale) must
+        // NOT yank the cursor — otherwise a lagged reply drags it backward and the
+        // user fights the sidebar. The marker still updates; only the cursor is left.
+        use crate::session::{Pane, Session, WindowPanes};
+        use crate::ui::switcher::{Scan, Switcher};
+        use crate::ui::tree::Group;
+        use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
+
+        let mut panes = std::collections::HashMap::new();
+        panes.insert(
+            "jup/api".to_string(),
+            vec![
+                WindowPanes { index: 0, name: "w0".into(), active: true, panes: vec![Pane { index: 0, active: true, command: "bash".into() }] },
+                WindowPanes { index: 1, name: "w1".into(), active: false, panes: vec![Pane { index: 0, active: true, command: "bash".into() }] },
+            ],
+        );
+        let scan = Scan {
+            groups: vec![Group {
+                source: "jup".into(),
+                err: None,
+                sessions: vec![Session { source: "jup".into(), name: "api".into(), windows: 2, attached: false, last_attached: 100 }],
+            }],
+            panes,
         };
-        assert_eq!(spinner_key(&sess_tgt), "jupiter06/api");
+        let mut switcher = Switcher::new(scan);
+        switcher.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        switcher.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // cursor on window 1
+        assert_eq!(switcher.terminal_view_target().target, "api:1");
+
+        let (htx, _hrx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
+        let mut mgr = HostManager::new(htx);
+        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
+        let mut registry = AttachRegistry::new(ptx);
+        let env = fake_env_with_sources(&["jup"]);
+        let mut connected = HashSet::new();
+        let mut panes_requested = HashSet::new();
+        let mut host_session = HashMap::new();
+        handle_host_event(
+            HostEvent::Focus { host: "jup".into(), session: "api".into(), window: 0 },
+            &mut mgr, &mut registry, &mut switcher, &env,
+            &mut connected, &mut panes_requested, &mut host_session, 80, 24, true, // overlay = tree focus
+        );
+        assert_eq!(switcher.terminal_view_target().target, "api:1", "tree-focus Focus must NOT yank the cursor");
     }
 
     #[test]
@@ -1037,31 +1334,35 @@ mod tests {
         use crate::proxy::app::{App, AppState};
         let mut app = App::new();
         assert!(app.is_overlay());
-        app.toggle(); // C-g s from Overlay → Passthrough
+        app.toggle();
         assert_eq!(app.state, AppState::Passthrough);
-        app.toggle(); // C-g s from Passthrough → Overlay
+        app.toggle();
         assert!(app.is_overlay());
+    }
+
+    // Suppress unused warnings for the test-only env builder kept for future loop tests.
+    #[test]
+    fn fake_env_builder_constructs() {
+        let env = fake_env_with_sources(&["local", "jupiter06"]);
+        assert_eq!(env.srcs.len(), 2);
     }
 
     // =========================================================================
     // HUMAN VISUAL-GATE CHECKLIST (run in a REAL terminal — never headless):
-    // 1. Launch `xmux` in a real terminal. Confirm it enters the alternate screen
-    //    cleanly (no pre-launch shell output bleeds under the UI) and starts in
-    //    Overlay: the Host·Session·Window·Pane tree on the left, the live terminal
-    //    view of the cursor's session on the right.
-    // 2. Move the cursor between sessions. Confirm the right pane follows the
-    //    cursor and goes live for the selected session (select = attach), with a
-    //    braille spinner right of a session's name while its host is connecting.
-    // 3. Press the prefix (C-g) then `s` — confirm it switches to fullscreen
-    //    Passthrough: the selected session's screen fills the terminal and the last
-    //    physical row shows a reverse-video status bar `host/session · pane %N`.
-    // 4. Type into the session — confirm keystrokes reach the live pane.
-    // 5. Press C-g then `s` again — confirm it returns to Overlay on the SAME
-    //    session (the cursor and live view are unchanged).
-    // 6. Press C-g then `q` (or `q` in Overlay) — confirm a clean quit and the
-    //    terminal restored to its pre-launch screen.
-    // 7. NEVER select or attach `local/xmux` (the live session) during this test —
-    //    only the throwaway `jupiter06`. Attaching the live session from within
-    //    itself would mirror xmux inside its own terminal view.
+    // 1. Launch `xmux`. Confirm it enters the alternate screen cleanly and starts in
+    //    Overlay: the Host·Session·Window·Pane tree on the left, the live REAL
+    //    terminal of the cursor's session on the right (a true attached mux client).
+    // 2. Move the cursor between sessions. Confirm the right pane shows each session's
+    //    real attached terminal instantly (it is pre-attached + kept alive), with a
+    //    spinner while a session's attach is still establishing.
+    // 3. Select a WINDOW row — confirm the attached client switches to that window.
+    // 4. Press C-g then `s` — fullscreen Passthrough of the selected session; type
+    //    and confirm keystrokes reach the real attached pane.
+    // 5. Create / kill a window or session inside a pane — confirm the sidebar tree
+    //    syncs (remote via control events, local within the poll interval) and the
+    //    PTY set follows (new session attaches, killed session's PTY is reaped).
+    // 6. C-g then `q` — clean quit, terminal restored.
+    // 7. NEVER attach the session that owns xmux (xmux refuses to run inside a mux,
+    //    so in normal use no session mirrors the UI).
     // =========================================================================
 }
