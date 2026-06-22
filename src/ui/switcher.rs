@@ -912,11 +912,7 @@ impl Switcher {
                         });
                     }
                     Some(RowRef::Window { sess, window }) => {
-                        let win_name = self.panes
-                            .get(&sess.address())
-                            .and_then(|ws| ws.iter().find(|w| w.index == window))
-                            .map(|w| w.name.clone())
-                            .unwrap_or_default();
+                        let win_name = self.window_name(&sess.address(), window).unwrap_or_default();
                         let target = format!("{}:{}", sess.name, window);
                         self.input = Some(Input {
                             mode,
@@ -1094,6 +1090,13 @@ impl Switcher {
         });
     }
 
+    /// The current name of window `index` under the session at `sess_addr`, if its panes are loaded.
+    fn window_name(&self, sess_addr: &str, index: i64) -> Option<String> {
+        self.panes.get(sess_addr)
+            .and_then(|ws| ws.iter().find(|w| w.index == index))
+            .map(|w| w.name.clone())
+    }
+
     /// Queues a rename for the event loop after the synchronous validation that
     /// needs no network. See [`Switcher::queue_create`] for why the op is deferred.
     fn queue_rename(&mut self, sess: Option<Session>, new_name: &str) {
@@ -1124,7 +1127,10 @@ impl Switcher {
         let (Some(source), Some(sess), Some(target)) = (source, sess, target) else {
             return;
         };
-        if new_name.is_empty() {
+        let cur = target.rsplit(':').next()
+            .and_then(|i| i.parse::<i64>().ok())
+            .and_then(|idx| self.window_name(&sess.address(), idx));
+        if new_name.is_empty() || cur.as_deref() == Some(new_name) {
             return;
         }
         if new_name.starts_with('-') {
@@ -1219,6 +1225,10 @@ impl Switcher {
     }
 
     fn resolve_kill(&mut self, ev: KeyEvent) {
+        debug_assert!(
+            !(self.pending_kill.is_some() && self.pending_kill_window.is_some()),
+            "only one kill confirm may be armed at a time"
+        );
         let confirmed = matches!(ev.code, KeyCode::Char('y') | KeyCode::Char('Y'));
         if let Some(sess) = self.pending_kill.take() {
             if confirmed {
@@ -2876,6 +2886,22 @@ mod tests {
         let op = h.sw.take_pending_op().expect("rename window queued");
         assert!(matches!(op, PendingOp::RenameWindow { ref target, ref new_name, .. }
             if target == "editor:1" && new_name == "newname"));
+    }
+
+    #[tokio::test]
+    async fn rename_window_unchanged_name_is_ignored() {
+        let mut h = Harness::new(sample());
+        h.key(KeyCode::Home).await;   // local host
+        h.key(KeyCode::Right).await;  // → editor (session)
+        h.key(KeyCode::Right).await;  // → editor's first window (window 1, name "shell")
+        h.sw.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE)); // open rename (raw)
+        assert!(h.sw.input.is_some(), "rename on window row must open input");
+        h.sw.set_input_text("shell"); // same as current name
+        h.sw.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            h.sw.take_pending_op().is_none(),
+            "unchanged window name must not queue a RenameWindow op"
+        );
     }
 
     #[tokio::test]
