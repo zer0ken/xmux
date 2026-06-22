@@ -222,13 +222,16 @@ fn select_attach(
 
     if src.remote {
         if !already {
-            // Off-loop: request the spawn on the worker thread (skip if one is already in
-            // flight for this key). The Ready reply inserts the finished attachment.
+            // Off-loop first-attach: request the spawn ONLY if one is not already in flight.
+            // Do NOT overwrite host_session while an attach is in flight — the in-flight attach
+            // lands on its ORIGINAL target session, and the post-Ready re-evaluation (see the
+            // Ready arm) issues a switch-client to the current selection. Overwriting it here
+            // would make the switch-client guard think the PTY is already on the new session.
             if !in_flight.contains_key(&key) {
                 let argv = src.attach_command(&sel.session, sel.window);
                 request_attach(registry, worker, in_flight, attach_seq, &key, argv, cols, rows);
+                host_session.insert(sel.source.clone(), sel.session.clone());
             }
-            host_session.insert(sel.source.clone(), sel.session.clone());
         } else if host_session.get(&sel.source) != Some(&sel.session) {
             // The host's PTY is on a different session — switch that one client over.
             // Wipe the grid first so the previous session's cells do not linger as
@@ -909,6 +912,11 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         } else if attach_reply_is_current(&in_flight, &key, seq) {
                             in_flight.remove(&key);
                             registry.insert(&key, attachment);
+                            // The selection may have moved to another session of the same host
+                            // while this first-attach was in flight; clearing the latch makes the
+                            // next pass re-run select_attach, which (now that the host PTY exists)
+                            // issues the deferred switch-client to the current selection.
+                            last_attached_sel = Selection::default();
                         } else {
                             attachment.teardown();
                         }
@@ -1491,6 +1499,50 @@ mod tests {
         assert!(attach_reply_is_current(&f, "k", 5));
         assert!(!attach_reply_is_current(&f, "k", 4), "older seq is stale");
         assert!(!attach_reply_is_current(&f, "absent", 5), "no in-flight request → stale");
+    }
+
+    #[test]
+    fn remote_second_session_in_flight_keeps_original_host_session() {
+        use std::collections::HashMap;
+        let mut remote = fake_source("jup");
+        remote.remote = true;
+        let by_alias: HashMap<String, Source> =
+            [("jup".to_string(), remote.clone())].into_iter().collect();
+        let env = Env {
+            cfg: Config::default(),
+            cfg_warnings: Vec::new(),
+            srcs: vec![remote],
+            by_alias,
+            local_bin: "cmd.exe".into(),
+            ui_prefix: "C-g".into(),
+            xmux_dir: std::path::PathBuf::from("."),
+        };
+        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
+        let worker = crate::display::DisplayWorker::new(ptx);
+        let mut registry = AttachRegistry::new();
+        let (htx, _hrx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
+        let mut mgr = HostManager::new(htx);
+        let mut host_session: HashMap<String, String> = HashMap::new();
+        let mut in_flight: HashMap<String, u64> = HashMap::new();
+        let mut attach_seq = 0u64;
+
+        let sel_a = Selection { source: "jup".into(), session: "a".into(), window: None };
+        let sel_b = Selection { source: "jup".into(), session: "b".into(), window: None };
+
+        // First attach (session a): requests off-loop, latches host_session=a, marks in-flight.
+        assert!(select_attach(&mut registry, &mut mgr, &env, &sel_a, &mut host_session,
+            &worker, &mut in_flight, &mut attach_seq, 80, 24));
+        assert_eq!(host_session.get("jup"), Some(&"a".to_string()));
+        assert!(in_flight.contains_key("jup"), "first attach is in flight");
+
+        // Select session b of the SAME host before a's Ready arrives: must NOT overwrite host_session
+        // (else the switch-client to b after a lands would never fire).
+        assert!(select_attach(&mut registry, &mut mgr, &env, &sel_b, &mut host_session,
+            &worker, &mut in_flight, &mut attach_seq, 80, 24));
+        assert_eq!(host_session.get("jup"), Some(&"a".to_string()),
+            "an in-flight attach must not latch host_session to the new target");
+
+        mgr.teardown_all();
     }
 
     // =========================================================================
