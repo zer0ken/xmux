@@ -1400,6 +1400,7 @@ impl Switcher {
         frame: &mut Frame,
         grid: Option<&crate::proxy::screen::Grid>,
         terminal_focused: bool,
+        tree_width: u16,
     ) {
         let area = frame.area();
         let input_h = if self.input.is_some() { 1 } else { 0 };
@@ -1410,7 +1411,7 @@ impl Switcher {
         ])
         .split(area);
         let mid = Layout::horizontal([
-            Constraint::Length(TREE_WIDTH),
+            Constraint::Length(tree_width),
             Constraint::Length(1),
             Constraint::Min(0),
         ])
@@ -1828,7 +1829,7 @@ mod tests {
 
         fn draw(&mut self) {
             let sw = &mut self.sw;
-            self.term.draw(|f| sw.render(f, None, false)).unwrap();
+            self.term.draw(|f| sw.render(f, None, false, TREE_WIDTH)).unwrap();
         }
 
         async fn key(&mut self, code: KeyCode) {
@@ -2432,7 +2433,7 @@ mod tests {
     async fn footer_fits_narrow_width() {
         let mut sw = Switcher::new(sample());
         let mut term = Terminal::new(TestBackend::new(30, 30)).unwrap();
-        term.draw(|f| sw.render(f, None, false)).unwrap();
+        term.draw(|f| sw.render(f, None, false, TREE_WIDTH)).unwrap();
         let buf = term.backend().buffer();
         let y = buf.area.height - 1;
         let mut footer = String::new();
@@ -2789,7 +2790,7 @@ mod tests {
         g.feed(b"LIVE-GRID-CONTENT");
         // Render with the live grid supplied.
         let sw = &mut h.sw;
-        h.term.draw(|f| sw.render(f, Some(&g), false)).unwrap();
+        h.term.draw(|f| sw.render(f, Some(&g), false, TREE_WIDTH)).unwrap();
         let out = buffer_text(h.term.backend().buffer());
         assert!(
             out.contains("LIVE-GRID-CONTENT"),
@@ -2891,10 +2892,10 @@ mod tests {
                 .any(|y| buf[(div_x, y)].symbol() == "│" && buf[(div_x, y)].fg == Color::Green)
         };
 
-        term.draw(|f| sw.render(f, None, true)).unwrap();
+        term.draw(|f| sw.render(f, None, true, TREE_WIDTH)).unwrap();
         assert!(divider_is_green(term.backend().buffer()), "terminal-focused divider is green");
 
-        term.draw(|f| sw.render(f, None, false)).unwrap();
+        term.draw(|f| sw.render(f, None, false, TREE_WIDTH)).unwrap();
         assert!(!divider_is_green(term.backend().buffer()), "tree-focused divider is not green");
     }
 

@@ -59,7 +59,7 @@ pub fn dump_overlay(
         Ok(t) => t,
         Err(_) => return String::new(),
     };
-    if term.draw(|f| switcher.render(f, grid, false)).is_err() {
+    if term.draw(|f| switcher.render(f, grid, false, crate::ui::switcher::TREE_WIDTH)).is_err() {
         return String::new();
     }
     flatten_buffer(term.backend().buffer())

@@ -19,7 +19,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use ratatui::crossterm::event::KeyCode;
+use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::attach;
 use crate::display::{DisplayEnsure, DisplayEvent, DisplayWorker};
@@ -65,6 +65,13 @@ const ATTACH_DEBOUNCE_MS: u64 = 90;
 /// re-attaches the selected session's PTY if it dropped. Doubles as the retry
 /// backoff so a genuinely-down host is retried at this cadence, never hot-looped.
 const RECONNECT_MS: u64 = 2000;
+
+const TREE_WIDTH_MIN: u16 = 20;
+const TREE_WIDTH_MAX: u16 = 100;
+
+fn adjust_tree_width(w: u16, delta: i32) -> u16 {
+    (w as i32 + delta).clamp(TREE_WIDTH_MIN as i32, TREE_WIDTH_MAX as i32) as u16
+}
 
 /// Appends a diagnostic line to `<xmux_dir>/debug.log` when `XMUX_DEBUG` is set in
 /// the environment. A no-op otherwise, so it costs nothing in normal runs. Used to
@@ -142,11 +149,11 @@ impl Selection {
 /// divider), NOT the whole terminal. Sizing a session to the full terminal makes
 /// the remote wrap at a width wider than the visible pane, so a line overflows the
 /// right edge (and a double-width char straddles the clip boundary). The view width
-/// is `cols - TREE_WIDTH - 1` (tree + the single divider rule); the view height is
+/// is `cols - tree_width - 1` (tree + the single divider rule); the view height is
 /// the body height. Both clamp to at least 1.
-fn terminal_view_size(cols: u16, body_rows: u16) -> (u16, u16) {
+fn terminal_view_size(cols: u16, body_rows: u16, tree_width: u16) -> (u16, u16) {
     let view_cols = cols
-        .saturating_sub(crate::ui::switcher::TREE_WIDTH + 1)
+        .saturating_sub(tree_width + 1)
         .max(1);
     (view_cols, body_rows.max(1))
 }
@@ -210,11 +217,12 @@ fn select_attach(
     attach_seq: &mut u64,
     cols: u16,
     rows: u16,
+    tree_width: u16,
 ) -> bool {
     if sel.is_empty() {
         return false;
     }
-    let (cols, rows) = terminal_view_size(cols, rows);
+    let (cols, rows) = terminal_view_size(cols, rows, tree_width);
     let Some(src) = env.by_alias.get(&sel.source) else {
         return false;
     };
@@ -304,11 +312,12 @@ fn sync_source_terminals(
     attach_seq: &mut u64,
     cols: u16,
     rows: u16,
+    tree_width: u16,
 ) {
     let Some(src) = env.by_alias.get(source) else {
         return;
     };
-    let (cols, rows) = terminal_view_size(cols, rows);
+    let (cols, rows) = terminal_view_size(cols, rows, tree_width);
     if src.remote {
         // One PTY per host. Warm it on the first session if not yet attached; reap it
         // (and forget its session) when the host has no sessions.
@@ -374,8 +383,9 @@ fn ensure_current_host(
     switcher: &crate::ui::switcher::Switcher,
     cols: u16,
     rows: u16,
+    tree_width: u16,
 ) {
-    let (cols, rows) = terminal_view_size(cols, rows);
+    let (cols, rows) = terminal_view_size(cols, rows, tree_width);
     if let Some(host) = switcher.current_host() {
         if let Some(src) = env.by_alias.get(&host) {
             if src.remote {
@@ -396,9 +406,10 @@ fn connect_all_sources(
     env: &Env,
     cols: u16,
     rows: u16,
+    tree_width: u16,
     enum_tx: &tokio::sync::mpsc::UnboundedSender<LocalEnum>,
 ) {
-    let (cols, rows) = terminal_view_size(cols, rows);
+    let (cols, rows) = terminal_view_size(cols, rows, tree_width);
     for src in &env.srcs {
         if src.remote {
             let _ = mgr.ensure(&src.alias, src, cols, rows);
@@ -416,10 +427,11 @@ fn is_focus_in(code: KeyCode) -> bool {
 
 /// Processes a batch of TREE-focus input bytes through ONE path — used for both real
 /// stdin and bytes replayed after a terminal→tree switch. Handles prefix arming
-/// (`C-g` then `q` → quit), Enter → focus terminal (unless an inline input is open),
+/// (`C-g` then `q` → quit, `h`/`Ctrl+←` → shrink tree, `l`/`Ctrl+→` → grow tree),
+/// Enter → focus terminal (unless an inline input is open),
 /// ←/→ navigate the tree; then the off-loop op dispatch, ensure-current-host, and
-/// the `r` re-scan. Returns `(focus_terminal, quit)`. The selection is committed at
-/// the loop top, so this only drives navigation + metadata, not the display.
+/// the `r` re-scan. Returns `(focus_terminal, quit, width_delta)`. The selection is
+/// committed at the loop top, so this only drives navigation + metadata, not the display.
 #[allow(clippy::too_many_arguments)]
 fn handle_tree_bytes(
     bytes: &[u8],
@@ -434,15 +446,22 @@ fn handle_tree_bytes(
     enum_tx: &tokio::sync::mpsc::UnboundedSender<LocalEnum>,
     cols: u16,
     rows: u16,
-) -> (bool, bool) {
+    tree_width: u16,
+) -> (bool, bool, i32) {
     let mut focus_terminal = false;
     let mut quit = false;
+    let mut width_delta = 0i32;
     for key in tree_decoder.feed(bytes) {
         if *tree_armed {
             *tree_armed = false;
-            // After the prefix: q quits.
-            if let KeyCode::Char('q') = key.code {
-                quit = true;
+            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            match key.code {
+                KeyCode::Char('q') => quit = true,
+                KeyCode::Left if ctrl => width_delta = -1,
+                KeyCode::Right if ctrl => width_delta = 1,
+                KeyCode::Char('h') => width_delta = -1,
+                KeyCode::Char('l') => width_delta = 1,
+                _ => {}
             }
             continue;
         }
@@ -459,7 +478,7 @@ fn handle_tree_bytes(
         switcher.handle_key(key);
     }
     dispatch_pending_op(switcher, ops, op_tx);
-    ensure_current_host(mgr, env, switcher, cols, rows);
+    ensure_current_host(mgr, env, switcher, cols, rows, tree_width);
     if switcher.take_rescan_kick() {
         // 'r' re-scan: re-enumerate local sources and re-list remote ones.
         for src in &env.srcs {
@@ -472,7 +491,7 @@ fn handle_tree_bytes(
             }
         }
     }
-    (focus_terminal, quit)
+    (focus_terminal, quit, width_delta)
 }
 
 /// A plain-enumeration result for a local psmux source: its tree is filled from a
@@ -562,6 +581,7 @@ fn handle_host_event(
     attach_seq: &mut u64,
     cols: u16,
     rows: u16,
+    tree_width: u16,
 ) {
     match ev {
         HostEvent::Connected { host } | HostEvent::Inventory { host } => {
@@ -585,7 +605,7 @@ fn handle_host_event(
                     ),
                 );
                 // Sync this host's display terminal(s) (per-host for remote tmux).
-                sync_source_terminals(registry, env, &host, &sessions, host_session, worker, in_flight, attach_seq, cols, rows);
+                sync_source_terminals(registry, env, &host, &sessions, host_session, worker, in_flight, attach_seq, cols, rows, tree_width);
             }
         }
         HostEvent::Changed { host } => {
@@ -669,6 +689,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
 
     let size = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
     let (mut cols, mut body_rows) = (size.0, size.1.saturating_sub(1)); // status bar = last row
+    let mut tree_width = crate::ui::switcher::TREE_WIDTH;
 
     // The control-mode metadata clients: one per remote host.
     let (host_tx, mut host_rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
@@ -755,7 +776,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     // The session each remote host's per-host PTY is currently switched to, so a
     // re-select of the same session skips a redundant switch-client.
     let mut host_session: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    connect_all_sources(&mut mgr, &env, cols, body_rows, &enum_tx);
+    connect_all_sources(&mut mgr, &env, cols, body_rows, tree_width, &enum_tx);
 
     let spinner_start = std::time::Instant::now();
     let mut tick = tokio::time::interval(Duration::from_millis(SPINNER_FRAME_MS));
@@ -841,7 +862,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     let t = std::time::Instant::now();
                     if select_attach(
                         &mut registry, &mut mgr, &env, &selection, &mut host_session,
-                        &worker, &mut in_flight, &mut attach_seq, cols, body_rows,
+                        &worker, &mut in_flight, &mut attach_seq, cols, body_rows, tree_width,
                     ) {
                         last_attached_sel = selection.clone();
                     }
@@ -880,13 +901,13 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     dbg_ms(&env.xmux_dir, "grid_lock", t_lock);
                     term.draw(|f| {
                         let t_render = std::time::Instant::now();
-                        switcher.render(f, guard.as_deref(), terminal_focused);
+                        switcher.render(f, guard.as_deref(), terminal_focused, tree_width);
                         dbg_ms(&xmux_dir, "render", t_render);
                     })
                 }
                 None => term.draw(|f| {
                     let t_render = std::time::Instant::now();
-                    switcher.render(f, None, terminal_focused);
+                    switcher.render(f, None, terminal_focused, tree_width);
                     dbg_ms(&xmux_dir, "render", t_render);
                 }),
             };
@@ -909,12 +930,12 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         tokio::select! {
             Some(ev) = host_rx.recv() => {
                 let t = std::time::Instant::now();
-                handle_host_event(ev, &mut mgr, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &mut host_session, &worker, &mut in_flight, &mut attach_seq, cols, body_rows);
+                handle_host_event(ev, &mut mgr, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &mut host_session, &worker, &mut in_flight, &mut attach_seq, cols, body_rows, tree_width);
                 let mut budget = EVENT_DRAIN_BUDGET;
                 while budget > 0 {
                     match host_rx.try_recv() {
                         Ok(ev) => {
-                            handle_host_event(ev, &mut mgr, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &mut host_session, &worker, &mut in_flight, &mut attach_seq, cols, body_rows);
+                            handle_host_event(ev, &mut mgr, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &mut host_session, &worker, &mut in_flight, &mut attach_seq, cols, body_rows, tree_width);
                             budget -= 1;
                         }
                         Err(_) => break,
@@ -986,12 +1007,19 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 let mut focus_tree = false;
                 let mut tree_replay: Vec<u8> = Vec::new();
                 if app.is_overlay() {
-                    let (ft, q) = handle_tree_bytes(
+                    let (ft, q, wd) = handle_tree_bytes(
                         &bytes, &mut tree_decoder, &mut tree_armed, prefix, &mut switcher,
-                        &mut mgr, &env, &ops, &op_tx, &enum_tx, cols, body_rows,
+                        &mut mgr, &env, &ops, &op_tx, &enum_tx, cols, body_rows, tree_width,
                     );
                     focus_terminal = ft;
                     quit = q;
+                    if wd != 0 {
+                        tree_width = adjust_tree_width(tree_width, wd);
+                        let (vc, vr) = terminal_view_size(cols, body_rows, tree_width);
+                        registry.resize_all(vc, vr);
+                        mgr.resize_all(vc, vr);
+                        dirty = true;
+                    }
                 } else {
                     // TERMINAL focus: forward raw bytes to the selected session's PTY;
                     // TermInput intercepts the prefix (→ tree / quit / literal prefix).
@@ -1015,14 +1043,21 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 if focus_tree && !app.is_overlay() {
                     app.toggle();
                     if !tree_replay.is_empty() {
-                        let (ft, q) = handle_tree_bytes(
+                        let (ft, q, wd) = handle_tree_bytes(
                             &tree_replay, &mut tree_decoder, &mut tree_armed, prefix,
-                            &mut switcher, &mut mgr, &env, &ops, &op_tx, &enum_tx, cols, body_rows,
+                            &mut switcher, &mut mgr, &env, &ops, &op_tx, &enum_tx, cols, body_rows, tree_width,
                         );
                         if ft && app.is_overlay() {
                             app.toggle();
                         }
                         quit = quit || q;
+                        if wd != 0 {
+                            tree_width = adjust_tree_width(tree_width, wd);
+                            let (vc, vr) = terminal_view_size(cols, body_rows, tree_width);
+                            registry.resize_all(vc, vr);
+                            mgr.resize_all(vc, vr);
+                            dirty = true;
+                        }
                     }
                 }
                 if quit || switcher.wants_quit() {
@@ -1034,7 +1069,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     Cmd::Key(k) => {
                         switcher.handle_key(k);
                         dispatch_pending_op(&mut switcher, &ops, &op_tx);
-                        ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows);
+                        ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows, tree_width);
                         if switcher.wants_quit() {
                             break;
                         }
@@ -1091,7 +1126,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         // mux is actually fine (the keep-alive guarantee). Show the error
                         // in the tree, but leave the attachments intact.
                         if !had_err {
-                            sync_source_terminals(&mut registry, &env, &source, &sessions, &mut host_session, &worker, &mut in_flight, &mut attach_seq, cols, body_rows);
+                            sync_source_terminals(&mut registry, &env, &source, &sessions, &mut host_session, &worker, &mut in_flight, &mut attach_seq, cols, body_rows, tree_width);
                         }
                     }
                     LocalEnum::Panes { address, panes } => {
@@ -1109,7 +1144,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         let body = r.saturating_sub(1);
                         cols = c;
                         body_rows = body;
-                        let (vc, vr) = terminal_view_size(c, body);
+                        let (vc, vr) = terminal_view_size(c, body, tree_width);
                         registry.resize_all(vc, vr);
                         mgr.resize_all(vc, vr);
                         let _ = term.autoresize();
@@ -1135,7 +1170,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 }
             }
             _ = reconnect.tick() => {
-                let (vc, vr) = terminal_view_size(cols, body_rows);
+                let (vc, vr) = terminal_view_size(cols, body_rows, tree_width);
                 // Re-ensure each remote control client (a no-op when alive; respawns
                 // a died one so its list-sessions re-streams and #5 sync resumes).
                 for src in &env.srcs {
@@ -1171,7 +1206,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     if !registry.contains(&key) && !in_flight.contains_key(&key) {
                         select_attach(
                             &mut registry, &mut mgr, &env, &selection, &mut host_session,
-                            &worker, &mut in_flight, &mut attach_seq, cols, body_rows,
+                            &worker, &mut in_flight, &mut attach_seq, cols, body_rows, tree_width,
                         );
                     }
                 }
@@ -1374,7 +1409,7 @@ mod tests {
             ui_prefix: "C-g".into(),
             xmux_dir: std::path::PathBuf::from("."),
         };
-        connect_all_sources(&mut mgr, &env, 80, 24, &enum_tx);
+        connect_all_sources(&mut mgr, &env, 80, 24, crate::ui::switcher::TREE_WIDTH, &enum_tx);
         assert!(mgr.get("jupiter06").is_some(), "remote host got a control client");
         mgr.teardown_all();
     }
@@ -1388,16 +1423,25 @@ mod tests {
     }
 
     #[test]
+    fn tree_width_adjust_clamps() {
+        assert_eq!(adjust_tree_width(48, 1), 49);
+        assert_eq!(adjust_tree_width(48, -1), 47);
+        assert_eq!(adjust_tree_width(20, -1), 20, "clamped at min");
+        assert_eq!(adjust_tree_width(100, 1), 100, "clamped at max");
+    }
+
+    #[test]
     fn terminal_view_size_subtracts_tree_and_divider() {
         use crate::ui::switcher::TREE_WIDTH;
-        let (vc, vr) = terminal_view_size(143, 39);
+        let (vc, vr) = terminal_view_size(143, 39, TREE_WIDTH);
         assert_eq!(vc, 143 - (TREE_WIDTH + 1), "cols minus tree minus divider");
         assert_eq!(vr, 39, "rows pass through (the body height)");
     }
 
     #[test]
     fn terminal_view_size_clamps_to_at_least_one() {
-        let (vc, vr) = terminal_view_size(10, 0);
+        use crate::ui::switcher::TREE_WIDTH;
+        let (vc, vr) = terminal_view_size(10, 0, TREE_WIDTH);
         assert_eq!(vc, 1);
         assert_eq!(vr, 1);
     }
@@ -1478,7 +1522,7 @@ mod tests {
             HostEvent::Focus { host: "jup".into(), session: "api".into(), window: 0 },
             &mut mgr, &mut registry, &mut switcher, &env,
             &mut connected, &mut panes_requested, &mut host_session,
-            &worker, &mut in_flight, &mut attach_seq, 80, 24,
+            &worker, &mut in_flight, &mut attach_seq, 80, 24, crate::ui::switcher::TREE_WIDTH,
         );
         // The loop-top follow (simulated here) consumes the marker and moves the cursor.
         switcher.select_active_window();
@@ -1531,7 +1575,7 @@ mod tests {
             HostEvent::Focus { host: "jup".into(), session: "api".into(), window: 0 },
             &mut mgr, &mut registry, &mut switcher, &env,
             &mut connected, &mut panes_requested, &mut host_session,
-            &worker, &mut in_flight, &mut attach_seq, 80, 24,
+            &worker, &mut in_flight, &mut attach_seq, 80, 24, crate::ui::switcher::TREE_WIDTH,
         );
         assert_eq!(switcher.terminal_view_target().target, "api:1", "handler alone must not move the cursor");
     }
@@ -1593,14 +1637,14 @@ mod tests {
 
         // First attach (session a): requests off-loop, latches host_session=a, marks in-flight.
         assert!(select_attach(&mut registry, &mut mgr, &env, &sel_a, &mut host_session,
-            &worker, &mut in_flight, &mut attach_seq, 80, 24));
+            &worker, &mut in_flight, &mut attach_seq, 80, 24, crate::ui::switcher::TREE_WIDTH));
         assert_eq!(host_session.get("jup"), Some(&"a".to_string()));
         assert!(in_flight.contains_key("jup"), "first attach is in flight");
 
         // Select session b of the SAME host before a's Ready arrives: must NOT overwrite host_session
         // (else the switch-client to b after a lands would never fire).
         assert!(select_attach(&mut registry, &mut mgr, &env, &sel_b, &mut host_session,
-            &worker, &mut in_flight, &mut attach_seq, 80, 24));
+            &worker, &mut in_flight, &mut attach_seq, 80, 24, crate::ui::switcher::TREE_WIDTH));
         assert_eq!(host_session.get("jup"), Some(&"a".to_string()),
             "an in-flight attach must not latch host_session to the new target");
 
