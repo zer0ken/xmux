@@ -21,6 +21,7 @@ use std::sync::Arc;
 use ratatui::crossterm::event::KeyCode;
 
 use crate::attach;
+use crate::display::{DisplayEnsure, DisplayEvent, DisplayWorker};
 use crate::env::Env;
 use crate::host::{HostEvent, HostManager};
 use crate::proxy::registry::AttachRegistry;
@@ -160,6 +161,33 @@ fn display_key(env: &Env, sel: &Selection) -> String {
     }
 }
 
+/// Issues an OFF-LOOP attach for `key`: allocates the attachment id, records the request's
+/// seq in `in_flight`, and asks the worker to spawn. The worker's `Ready` reply (handled in
+/// the cockpit loop) inserts the finished attachment into the registry.
+#[allow(clippy::too_many_arguments)]
+fn request_attach(
+    registry: &mut AttachRegistry,
+    worker: &DisplayWorker,
+    in_flight: &mut std::collections::HashMap<String, u64>,
+    attach_seq: &mut u64,
+    key: &str,
+    argv: Vec<String>,
+    cols: u16,
+    rows: u16,
+) {
+    let id = registry.alloc_id();
+    *attach_seq += 1;
+    in_flight.insert(key.to_string(), *attach_seq);
+    worker.ensure(DisplayEnsure {
+        seq: *attach_seq,
+        key: key.to_string(),
+        argv,
+        cols,
+        rows,
+        id,
+    });
+}
+
 /// Makes the SELECTED session live in its host's display terminal and lands it on
 /// the selected window. Returns `true` when the selection has a session to show.
 ///
@@ -169,12 +197,16 @@ fn display_key(env: &Env, sel: &Selection) -> String {
 /// switches). LOCAL psmux: one kept PTY per session (one-server-per-session). In both
 /// cases a window-row selection moves the session's active window server-side, which
 /// the real attached client follows.
+#[allow(clippy::too_many_arguments)]
 fn select_attach(
     registry: &mut AttachRegistry,
     mgr: &mut HostManager,
     env: &Env,
     sel: &Selection,
     host_session: &mut std::collections::HashMap<String, String>,
+    worker: &DisplayWorker,
+    in_flight: &mut std::collections::HashMap<String, u64>,
+    attach_seq: &mut u64,
     cols: u16,
     rows: u16,
 ) -> bool {
@@ -190,14 +222,11 @@ fn select_attach(
 
     if src.remote {
         if !already {
-            // First attach for this host — land directly on the selected session
-            // (window folded into the same ssh -t).
-            let argv = src.attach_command(&sel.session, sel.window);
-            let t = std::time::Instant::now();
-            let r = registry.ensure(&key, &argv, cols, rows);
-            dbg_ms(&env.xmux_dir, "select_attach.ensure", t);
-            if r.is_err() {
-                return false;
+            // Off-loop: request the spawn on the worker thread (skip if one is already in
+            // flight for this key). The Ready reply inserts the finished attachment.
+            if !in_flight.contains_key(&key) {
+                let argv = src.attach_command(&sel.session, sel.window);
+                request_attach(registry, worker, in_flight, attach_seq, &key, argv, cols, rows);
             }
             host_session.insert(sel.source.clone(), sel.session.clone());
         } else if host_session.get(&sel.source) != Some(&sel.session) {
@@ -218,13 +247,10 @@ fn select_attach(
             host_session.insert(sel.source.clone(), sel.session.clone());
         }
     } else {
-        // LOCAL psmux: one PTY per session.
-        let argv = src.attach_command(&sel.session, None);
-        let t = std::time::Instant::now();
-        let r = registry.ensure(&key, &argv, cols, rows);
-        dbg_ms(&env.xmux_dir, "select_attach.ensure", t);
-        if r.is_err() {
-            return false;
+        // LOCAL psmux: one PTY per session — off-loop attach, deduped by in-flight + contains.
+        if !already && !in_flight.contains_key(&key) {
+            let argv = src.attach_command(&sel.session, None);
+            request_attach(registry, worker, in_flight, attach_seq, &key, argv, cols, rows);
         }
     }
     dbg_log(
@@ -317,6 +343,13 @@ fn addresses_to_reap(existing: &[String], desired: &HashSet<String>, source: &st
         .filter(|a| a.starts_with(&prefix) && !desired.contains(*a))
         .cloned()
         .collect()
+}
+
+/// True when a worker `Ready`/`Failed` reply is still the latest in-flight request for its
+/// key. A stale reply (the key was re-requested after a reap, so a newer seq is in flight, or
+/// the key is no longer in flight at all) must not register or clear state.
+fn attach_reply_is_current(in_flight: &std::collections::HashMap<String, u64>, key: &str, seq: u64) -> bool {
+    in_flight.get(key) == Some(&seq)
 }
 
 /// Connects the host the cursor is on (if not already), so its control-mode
@@ -633,6 +666,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
 
     // The live PTY attachments: one real attached mux client per session.
     let (pty_tx, mut pty_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
+    let mut worker = DisplayWorker::new(pty_tx.clone());
     let mut registry = AttachRegistry::new(pty_tx);
 
     // The switcher, seeded from the source skeletons; events stream the tree in.
@@ -645,6 +679,10 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     // deadline after which a settled selection is attached (see ATTACH_DEBOUNCE_MS).
     let mut last_attached_sel = Selection::default();
     let mut attach_deadline: Option<std::time::Instant> = None;
+    // Off-loop attach: keys with a spawn request in flight (key → latest request seq), so the
+    // spinner shows "(attaching…)" before the Ready reply and a duplicate request is skipped.
+    let mut in_flight: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    let mut attach_seq: u64 = 0;
 
     // The live mutate ops (create/rename/kill) — NOT tree probing (that comes from
     // the control clients' inventory + local enumeration).
@@ -745,20 +783,25 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             // re-selecting the same session must re-attach NOW, not wait for the 2s
             // reconnect sweep, or the pane stays blank). Record it only on a real
             // attach, so a failed attach does not latch and suppress the retry.
-            if !selection.is_empty()
-                && (selection != last_attached_sel
-                    || !registry.contains(&display_key(&env, &selection)))
-            {
-                let t = std::time::Instant::now();
-                if select_attach(&mut registry, &mut mgr, &env, &selection, &mut host_session, cols, body_rows) {
-                    last_attached_sel = selection.clone();
+            if !selection.is_empty() {
+                let key = display_key(&env, &selection);
+                if selection != last_attached_sel
+                    || (!registry.contains(&key) && !in_flight.contains_key(&key))
+                {
+                    let t = std::time::Instant::now();
+                    if select_attach(
+                        &mut registry, &mut mgr, &env, &selection, &mut host_session,
+                        &worker, &mut in_flight, &mut attach_seq, cols, body_rows,
+                    ) {
+                        last_attached_sel = selection.clone();
+                    }
+                    dbg_ms(&env.xmux_dir, "select_attach", t);
+                    dirty = true;
+                    dbg_log(
+                        &env.xmux_dir,
+                        &format!("selection -> key={} sess={}", display_key(&env, &selection), selection.session),
+                    );
                 }
-                dbg_ms(&env.xmux_dir, "select_attach", t);
-                dirty = true;
-                dbg_log(
-                    &env.xmux_dir,
-                    &format!("selection -> key={} sess={}", display_key(&env, &selection), selection.session),
-                );
             }
         }
 
@@ -826,6 +869,26 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         Ok(PtyEvent::Exited { id }) => { registry.reap(id); budget -= 1; }
                         Ok(PtyEvent::Output { .. }) => { budget -= 1; }
                         Err(_) => break,
+                    }
+                }
+            }
+            Some(ev) = worker.recv() => {
+                match ev {
+                    DisplayEvent::Ready { seq, key, attachment } => {
+                        if attach_reply_is_current(&in_flight, &key, seq) {
+                            in_flight.remove(&key);
+                            registry.insert(&key, attachment);
+                        } else {
+                            // Stale (the cursor moved on / the key was reaped): kill the child
+                            // we no longer want rather than leaking it.
+                            attachment.teardown();
+                        }
+                    }
+                    DisplayEvent::Failed { seq, key, message } => {
+                        if attach_reply_is_current(&in_flight, &key, seq) {
+                            in_flight.remove(&key);
+                        }
+                        dbg_log(&env.xmux_dir, &format!("attach failed key={key}: {message}"));
                     }
                 }
             }
@@ -964,11 +1027,11 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 }
                 // Spinner set = the selected session if its PTY is still connecting.
                 let mut sp = HashSet::new();
-                if !selection.is_empty() && registry.connecting(&display_key(&env, &selection)) {
-                    // The spinner highlights the selected SESSION's tree row (the
-                    // switcher matches by session address), while "connecting" is
-                    // checked on the display key (the host PTY for remote tmux).
-                    sp.insert(selection.address());
+                if !selection.is_empty() {
+                    let key = display_key(&env, &selection);
+                    if in_flight.contains_key(&key) || registry.connecting(&key) {
+                        sp.insert(selection.address());
+                    }
                 }
                 switcher.set_spinner(sp);
             }
@@ -1010,8 +1073,14 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     }
                 }
                 // Re-attach the selected session's display terminal if it dropped.
-                if !selection.is_empty() && !registry.contains(&display_key(&env, &selection)) {
-                    select_attach(&mut registry, &mut mgr, &env, &selection, &mut host_session, cols, body_rows);
+                if !selection.is_empty() {
+                    let key = display_key(&env, &selection);
+                    if !registry.contains(&key) && !in_flight.contains_key(&key) {
+                        select_attach(
+                            &mut registry, &mut mgr, &env, &selection, &mut host_session,
+                            &worker, &mut in_flight, &mut attach_seq, cols, body_rows,
+                        );
+                    }
                 }
             }
             _ = frame.tick() => {
@@ -1373,6 +1442,15 @@ mod tests {
     fn fake_env_builder_constructs() {
         let env = fake_env_with_sources(&["local", "jupiter06"]);
         assert_eq!(env.srcs.len(), 2);
+    }
+
+    #[test]
+    fn attach_reply_is_current_only_for_latest_seq() {
+        let mut f = std::collections::HashMap::new();
+        f.insert("k".to_string(), 5u64);
+        assert!(attach_reply_is_current(&f, "k", 5));
+        assert!(!attach_reply_is_current(&f, "k", 4), "older seq is stale");
+        assert!(!attach_reply_is_current(&f, "absent", 5), "no in-flight request → stale");
     }
 
     // =========================================================================
