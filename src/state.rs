@@ -1,9 +1,8 @@
-//! Tiny cross-run UI state: the session the user last had selected. The next
-//! launch restores it instead of guessing from `session_last_attached`, which
-//! xmux's own pre-attaching (it keeps a live client per session) and cross-host
-//! clock differences make an unreliable signal of true user interaction. This is a
-//! best-effort hint only — a stale/missing value just falls back to the local-first
-//! preselect, so xmux stays stateless about sessions themselves.
+//! Persists the last-selected session across runs so the next launch can preselect
+//! it. (`session_last_attached` is not used: xmux's own pre-attaching and
+//! cross-host clock differences make it an unreliable interaction signal.) This is
+//! a best-effort hint only — a stale/missing value just falls back to the
+//! local-first preselect, so xmux stays stateless about sessions themselves.
 
 use std::path::Path;
 

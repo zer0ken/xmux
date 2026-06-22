@@ -440,7 +440,8 @@ impl Switcher {
         // the LOCAL source's most-recent session — so an untouched cursor never jumps
         // to a remote on a global-recency tiebreak (#1). `session_last_attached` is
         // not a reliable cross-host "most recent" signal (xmux's own pre-attaching and
-        // clock skew corrupt it), so it is no longer used to drive the preselect.
+        // clock skew corrupt it), so the preselect uses the persisted last-selected
+        // session, falling back to the local-first first session.
         let mut preferred_row: Option<usize> = None;
         let mut first_session_row: Option<usize> = None;
 
@@ -620,9 +621,9 @@ impl Switcher {
         }
     }
 
-    /// Ctrl+↑/↓: move to the next/prev SIBLING — the next selectable row at the SAME
-    /// indent level as the current one (e.g. session→next session, skipping the
-    /// windows/panes nested under it). Wraps like `move_selection`.
+    /// ↑/↓ (or k/j): move to the next/prev sibling at the current tree level — the
+    /// next selectable row at the SAME indent level (e.g. session→next session,
+    /// skipping windows/panes nested under it). Wraps like `move_selection`.
     fn move_sibling(&mut self, delta: isize) {
         let Some(cur_indent) = self.rows.get(self.selected).map(|r| r.indent) else {
             return;
@@ -1153,9 +1154,9 @@ impl Switcher {
         });
     }
 
-    /// Applies a completed [`PendingOp`] to the in-memory tree. Runs on the event
-    /// loop once [`run_op`] returns, so the state mutation that used to follow the
-    /// inline network call now follows the off-loop one.
+    /// Applies a completed [`PendingOp`] to the in-memory tree. The result is
+    /// applied on the event loop after `run_op` returns off-loop, so a slow ssh
+    /// round-trip never blocks rendering.
     pub fn apply_op_result(&mut self, result: OpResult) {
         match result {
             OpResult::Created { session, panes } => {
@@ -2911,13 +2912,12 @@ mod tests {
             (0..TREE_WIDTH).any(|x| buf[(x, last)].symbol() != " "),
             "footer renders in the tree column"
         );
-        // The divider spans the FULL height — at the bottom row the cell at
-        // x = TREE_WIDTH is the divider '│', proving the terminal/divider now
-        // extend under where the global footer used to be.
+        // The divider spans the FULL height — the divider and terminal column
+        // span all rows; the footer is confined to the tree column.
         assert_eq!(
             buf[(TREE_WIDTH, last)].symbol(),
             "│",
-            "divider spans full height; footer no longer spans the terminal column"
+            "divider spans the full height; footer is confined to the tree column"
         );
     }
 
@@ -2933,6 +2933,24 @@ mod tests {
             .find(|c| c.symbol() == "k") // "kill ...": first 'k'
             .expect("kill confirm text present");
         assert_eq!(cell.fg, ratatui::style::Color::Red, "kill confirm must be red");
+    }
+
+    #[tokio::test]
+    async fn kill_window_confirm_footer_is_red() {
+        let mut h = Harness::new(sample());
+        h.key(KeyCode::Home).await;   // local host
+        h.key(KeyCode::Right).await;  // → editor (session)
+        h.key(KeyCode::Right).await;  // → editor's first window (window 1)
+        h.ch('x').await;              // arm window kill (pumps + draws)
+        assert!(h.sw.pending_kill_window.is_some(), "kill on window row must set pending_kill_window");
+        // The footer is the LAST row; find a cell of the confirm text and assert red fg.
+        let buf = h.buf();
+        let y = buf.area.height - 1;
+        let cell = (0..buf.area.width)
+            .map(|x| &buf[(x, y)])
+            .find(|c| c.symbol() == "k") // "kill ...": first 'k'
+            .expect("kill confirm text present");
+        assert_eq!(cell.fg, ratatui::style::Color::Red, "window kill confirm must be red");
     }
 
     #[tokio::test]
@@ -2984,6 +3002,27 @@ mod tests {
         assert!(
             h.sw.take_pending_op().is_none(),
             "unchanged window name must not queue a RenameWindow op"
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_window_rejects_leading_dash() {
+        let mut h = Harness::new(sample());
+        h.key(KeyCode::Home).await;   // local host
+        h.key(KeyCode::Right).await;  // → editor (session)
+        h.key(KeyCode::Right).await;  // → editor's first window (window 1)
+        h.sw.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE)); // open rename (raw)
+        assert!(h.sw.input.is_some(), "rename on window row must open input");
+        h.sw.set_input_text("-bad");
+        h.sw.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            h.sw.take_pending_op().is_none(),
+            "leading-dash window rename must be refused"
+        );
+        assert!(
+            h.sw.flash.contains("cannot start with"),
+            "leading-dash window rename must set a flash message, got {:?}",
+            h.sw.flash
         );
     }
 

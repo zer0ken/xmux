@@ -1520,6 +1520,13 @@ mod tests {
         assert_eq!(to_grid_local(area, 50, 25), None);
     }
 
+    #[test]
+    fn to_grid_local_zero_col_or_row_returns_none() {
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        assert_eq!(to_grid_local(area, 0, 5), None, "col=0 triggers checked_sub None");
+        assert_eq!(to_grid_local(area, 5, 0), None, "row=0 triggers checked_sub None");
+    }
+
     #[tokio::test]
     async fn host_exited_before_connect_marks_unreachable() {
         use crate::ui::run::dump_overlay;

@@ -120,6 +120,11 @@ mod tests {
     }
 
     #[test]
+    fn parse_overflow_coord_returns_none() {
+        assert!(parse_sgr_mouse(b"\x1b[<0;65536;5M").is_none(), "coordinate >= 65536 must parse as None");
+    }
+
+    #[test]
     fn encode_release() {
         let ev = MouseEvent { cb: 0, col: 5, row: 3, pressed: false };
         let encoded = encode_sgr_mouse(&ev, 5, 3);
