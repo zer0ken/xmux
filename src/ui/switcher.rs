@@ -181,6 +181,14 @@ async fn refreshed_panes(ops: &dyn Ops, source: &str, session: &str) -> OpResult
     }
 }
 
+/// An armed kill confirm (awaiting y/n). One slot enforces "at most one armed".
+#[derive(Debug, Clone)]
+enum PendingKill {
+    Session(Session),
+    /// (source, session, target="session:window")
+    Window { source: String, session: String, target: String },
+}
+
 /// What a tree row references. Hosts, sessions, and windows are selectable; panes
 /// and loading placeholders are shown for context but never selectable, so the
 /// cursor skips them.
@@ -279,8 +287,7 @@ pub struct Switcher {
 
     filter: String,
     input: Option<Input>,
-    pending_kill: Option<Session>,
-    pending_kill_window: Option<(String, String, String)>,
+    pending_kill: Option<PendingKill>,
     flash: String,
 
     terminal_view_target: TerminalViewTarget,
@@ -319,7 +326,6 @@ impl Switcher {
             filter: String::new(),
             input: None,
             pending_kill: None,
-            pending_kill_window: None,
             flash: String::new(),
             terminal_view_target: TerminalViewTarget::default(),
             list_state: ListState::default(),
@@ -426,7 +432,6 @@ impl Switcher {
         // node a kill was armed on — including reusing a window index — so any
         // in-flight kill confirm is invalidated; the user re-arms against the new tree.
         self.pending_kill = None;
-        self.pending_kill_window = None;
 
         let groups = self.visible_groups();
 
@@ -865,7 +870,7 @@ impl Switcher {
             self.show_help = false;
             return;
         }
-        if self.pending_kill.is_some() || self.pending_kill_window.is_some() {
+        if self.pending_kill.is_some() {
             self.resolve_kill(ev);
             return;
         }
@@ -1229,30 +1234,32 @@ impl Switcher {
                 self.flash = "cannot kill a host".into();
             }
             Some(RowRef::Session(sess)) => {
-                self.pending_kill = Some(sess);
+                self.pending_kill = Some(PendingKill::Session(sess));
             }
             Some(RowRef::Window { sess, window }) => {
                 let target = crate::mux::window_target(&sess.name, window);
-                self.pending_kill_window = Some((sess.source.clone(), sess.name.clone(), target));
+                self.pending_kill = Some(PendingKill::Window {
+                    source: sess.source.clone(),
+                    session: sess.name.clone(),
+                    target,
+                });
             }
             _ => {}
         }
     }
 
     fn resolve_kill(&mut self, ev: KeyEvent) {
-        debug_assert!(
-            !(self.pending_kill.is_some() && self.pending_kill_window.is_some()),
-            "only one kill confirm may be armed at a time"
-        );
         let confirmed = matches!(ev.code, KeyCode::Char('y') | KeyCode::Char('Y'));
-        if let Some(sess) = self.pending_kill.take() {
+        if let Some(armed) = self.pending_kill.take() {
             if confirmed {
-                self.pending_op = Some(PendingOp::Kill { sess });
-            }
-        }
-        if let Some((source, session, target)) = self.pending_kill_window.take() {
-            if confirmed {
-                self.pending_op = Some(PendingOp::KillWindow { source, session, target });
+                match armed {
+                    PendingKill::Session(sess) => {
+                        self.pending_op = Some(PendingOp::Kill { sess });
+                    }
+                    PendingKill::Window { source, session, target } => {
+                        self.pending_op = Some(PendingOp::KillWindow { source, session, target });
+                    }
+                }
             }
         }
     }
@@ -1538,10 +1545,10 @@ impl Switcher {
     }
 
     fn render_footer(&self, frame: &mut Frame, area: Rect) {
-        let is_kill = self.pending_kill.is_some() || self.pending_kill_window.is_some();
-        let text = if let Some(sess) = &self.pending_kill {
+        let is_kill = self.pending_kill.is_some();
+        let text = if let Some(PendingKill::Session(sess)) = &self.pending_kill {
             format!(" kill {}? [y]es / [n]o", sess.address())
-        } else if let Some((source, _session, target)) = &self.pending_kill_window {
+        } else if let Some(PendingKill::Window { source, target, .. }) = &self.pending_kill {
             format!(" kill {}/{}? [y]es / [n]o", source, target)
         } else if !self.flash.is_empty() {
             format!(" {}", self.flash)
@@ -2948,7 +2955,7 @@ mod tests {
         h.key(KeyCode::Right).await;  // → editor (session)
         h.key(KeyCode::Right).await;  // → editor's first window (window 1)
         h.ch('x').await;              // arm window kill (pumps + draws)
-        assert!(h.sw.pending_kill_window.is_some(), "kill on window row must set pending_kill_window");
+        assert!(matches!(h.sw.pending_kill, Some(PendingKill::Window { .. })), "kill on window row must set a window PendingKill");
         // The footer is the LAST row; find a cell of the confirm text and assert red fg.
         let buf = h.buf();
         let y = buf.area.height - 1;
@@ -2967,10 +2974,13 @@ mod tests {
         h.key(KeyCode::Right).await;  // → editor's first window (window 1)
         h.sw.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)); // arm kill (raw, not pumped)
         assert!(
-            h.sw.pending_kill_window.is_some(),
-            "kill on window row must set pending_kill_window"
+            matches!(h.sw.pending_kill, Some(PendingKill::Window { .. })),
+            "kill on window row must set a window PendingKill"
         );
-        let (_, _, target) = h.sw.pending_kill_window.as_ref().unwrap();
+        let target = match h.sw.pending_kill.as_ref().unwrap() {
+            PendingKill::Window { target, .. } => target.clone(),
+            _ => panic!("expected Window variant"),
+        };
         assert_eq!(target, "editor:1");
         // confirm with y
         h.sw.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
@@ -2990,8 +3000,8 @@ mod tests {
         h.key(KeyCode::Right).await;  // → editor's first window (window 1, name "shell")
         h.sw.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)); // arm kill (raw)
         assert!(
-            h.sw.pending_kill_window.is_some(),
-            "arm_kill must set pending_kill_window"
+            matches!(h.sw.pending_kill, Some(PendingKill::Window { .. })),
+            "arm_kill must set a window PendingKill"
         );
         // Force a rebuild by streaming in panes for editor — the same windows,
         // but any rebuild must invalidate the armed confirm.
@@ -2999,7 +3009,7 @@ mod tests {
         let editor_panes = s.panes["local/editor"].clone();
         h.sw.apply_panes("local/editor".to_string(), editor_panes);
         assert!(
-            h.sw.pending_kill_window.is_none(),
+            h.sw.pending_kill.is_none(),
             "a rebuild must cancel an armed kill confirm"
         );
         // A 'y' after the rebuild must not queue any op (stale kill guard).
@@ -3075,7 +3085,6 @@ mod tests {
             h.sw.flash
         );
         assert!(h.sw.pending_kill.is_none(), "no kill queued");
-        assert!(h.sw.pending_kill_window.is_none(), "no window kill queued");
     }
 
     #[tokio::test]
