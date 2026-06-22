@@ -102,10 +102,14 @@ mod tests {
         }
     }
 
+    // A generic source for the scan-behavior tests (ordering, unreachable
+    // propagation, concurrency, timeout) — all source-type-agnostic. Uses `tmux`
+    // (the aggregate-server path) so `list_sessions` exercises the runner directly;
+    // local psmux's one-server-per-session registry path is tested in `source`.
     fn local_source(alias: &str, r: Arc<dyn Runner>) -> Source {
         Source {
             alias: alias.into(),
-            binary: "psmux".into(),
+            binary: "tmux".into(),
             remote: false,
             control_path: String::new(),
             os: "linux".into(),

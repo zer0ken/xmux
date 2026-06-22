@@ -4,7 +4,7 @@
 //! reachable-but-empty vs unreachable distinction — so the layers above speak in
 //! sessions, not transports.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -223,43 +223,6 @@ impl Source {
         v
     }
 
-    /// True when this source's control mode is **one session per server** (psmux),
-    /// so a single `-CC` connection cannot enumerate or switch across the host's
-    /// sessions the way tmux can. xmux works around it by enumerating with a plain
-    /// `list-sessions` and opening a control connection per session (see
-    /// [`Source::control_argv_session`]). Scoped to LOCAL psmux — a remote psmux
-    /// would need a far-side mechanism.
-    pub fn control_per_session(&self) -> bool {
-        !self.remote && self.binary == "psmux"
-    }
-
-    /// True when this source's mux ignores `send-keys -H` (hex) over control mode
-    /// and must instead have keystrokes forwarded as `-l '<literal>'` runs plus
-    /// key names (see [`crate::proxy::control_proto::send_keys_lines_literal`]).
-    /// psmux echoes `-H` digits as literal text; tmux honours `-H`.
-    pub fn literal_send_keys(&self) -> bool {
-        self.binary == "psmux"
-    }
-
-    /// The argv for a per-session local psmux control child attaching `session`.
-    /// `psmux -CC new-session -A -s <session>` routes to that session's own server
-    /// (one-server-per-session) and attaches the REAL session. `psmux -CC` with
-    /// `PSMUX_SESSION_NAME` set instead connected a fresh 1-window warm clone, and
-    /// `-CC attach -t` ignored the target — neither reached the user's session.
-    pub fn control_argv_session(&self, session: &str) -> Vec<String> {
-        let mut v = vec![self.binary.clone()];
-        if let Some(sock) = self.socket.as_deref().filter(|s| !s.is_empty()) {
-            v.push("-S".into());
-            v.push(sock.to_string());
-        }
-        v.push("-CC".into());
-        v.push("new-session".into());
-        v.push("-A".into());
-        v.push("-s".into());
-        v.push(session.to_string());
-        v
-    }
-
     fn run_with(&self) -> &dyn Runner {
         match &self.runner {
             Some(r) => r.as_ref(),
@@ -273,9 +236,64 @@ impl Source {
         self.run_with().run(&name, &args).await
     }
 
+    /// Runs a RAW remote shell command over ssh (the string is passed verbatim to
+    /// the remote login shell, NOT quoted per-arg like [`Source::run`]) — for a
+    /// command that itself needs shell features (`$(...)`, pipes). Remote-only; any
+    /// untrusted value inside `remote_cmd` must already be [`quote`]d by the caller.
+    pub async fn run_raw(&self, remote_cmd: &str) -> Result<Vec<u8>, RunError> {
+        if !self.remote {
+            return Ok(Vec::new());
+        }
+        let mut args = self.ssh_args(false);
+        args.push(remote_cmd.to_string());
+        self.run_with().run("ssh", &args).await
+    }
+
+    /// The remote shell command that switches THIS host's per-host PTY client to
+    /// `session`. The per-host model keeps one `tmux attach` client per host; to move
+    /// it between sessions we `switch-client -c <that client> -t <session>`. The
+    /// client is identified as the one whose `client_flags` lack `control-mode` (the
+    /// `-CC` metadata connection has it); a plain `tmux switch-client` would instead
+    /// move the control client. Returns the snippet for [`Source::run_raw`].
+    pub fn switch_client_remote_cmd(&self, session: &str) -> String {
+        let b = &self.binary;
+        let s = quote(session);
+        format!(
+            "{b} switch-client -c \"$({b} list-clients -F '#{{client_tty}} #{{client_flags}}' | grep -v control-mode | head -n1 | cut -d' ' -f1)\" -t {s}"
+        )
+    }
+
+    /// True for a LOCAL psmux source. psmux is one-server-per-session (no aggregate
+    /// server): a bare `list-sessions` returns at most the one server it routed to,
+    /// so its sessions must be enumerated from psmux's filesystem registry instead.
+    pub fn is_local_psmux(&self) -> bool {
+        !self.remote && self.binary == "psmux"
+    }
+
+    /// Enumerates the local psmux default-socket sessions. psmux is one-server-per-
+    /// session over localhost TCP with no aggregate server: a bare `list-sessions`
+    /// aggregates every live session WHEN its default route reaches a live server,
+    /// but that route can land on a dead/stale server and return nothing even though
+    /// sessions exist. So the filesystem registry (`~/.psmux/<name>.port`, the
+    /// substrate psmux itself discovers with) is the authoritative EXISTENCE set, and
+    /// a single `list-sessions` supplies the display detail; the two are merged so
+    /// every live session surfaces with full detail when available.
+    async fn list_sessions_psmux(&self) -> Result<Vec<Session>, RunError> {
+        let names = read_psmux_registry_dir(&psmux_registry_dir());
+        let detail = match self.run(&mux::list_sessions(&self.binary)).await {
+            Ok(out) => mux::parse_sessions(&self.alias, &String::from_utf8_lossy(&out)),
+            // The default route could not answer; the registry names still surface.
+            Err(_) => Vec::new(),
+        };
+        Ok(merge_psmux_sessions(&self.alias, names, detail))
+    }
+
     /// Returns the source's sessions. A reachable mux with no sessions returns an
     /// empty vec; an unreachable source returns an error.
     pub async fn list_sessions(&self) -> Result<Vec<Session>, RunError> {
+        if self.is_local_psmux() {
+            return self.list_sessions_psmux().await;
+        }
         match self.run(&mux::list_sessions(&self.binary)).await {
             Ok(out) => Ok(mux::parse_sessions(
                 &self.alias,
@@ -316,6 +334,69 @@ pub fn is_no_sessions(err: &RunError) -> bool {
         }
     }
     false
+}
+
+/// psmux's per-machine session registry directory (`~/.psmux`). Each live session
+/// has a `<name>.port` file there (psmux is one-server-per-session over localhost
+/// TCP, with this directory as its discovery substrate — there is no aggregate
+/// server to list).
+fn psmux_registry_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".psmux")
+}
+
+/// The live DEFAULT-SOCKET session names among psmux registry filenames. A live
+/// session is a `<base>.port` file; sibling `.key`/`.sid`/bookkeeping files are
+/// ignored. A base containing `__` is excluded: it is either the warm-pool standby
+/// (`__warm__`) or a `-L`-namespaced session (`<ns>__<name>`), neither of which is
+/// a default-socket session. Sorted + deduped for a stable order.
+fn psmux_session_names(filenames: &[String]) -> Vec<String> {
+    let mut names: Vec<String> = filenames
+        .iter()
+        .filter_map(|f| f.strip_suffix(".port"))
+        .filter(|base| !base.contains("__"))
+        .map(str::to_string)
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Reads psmux's registry `dir` and returns its live default-socket session names.
+/// A missing/unreadable directory yields an empty list (no local sessions).
+fn read_psmux_registry_dir(dir: &Path) -> Vec<String> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let files: Vec<String> = rd
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    psmux_session_names(&files)
+}
+
+/// Merges psmux's registry session NAMES (authoritative existence) with the
+/// `list-sessions` DETAIL rows. A `list-sessions` row wins for a session it covers
+/// (full windows/attached/recency); a registry name it omits is still surfaced with
+/// a minimal placeholder, so a failed/partial `list-sessions` never blanks the
+/// sidebar. Deduped on name (a session in both sources appears once).
+fn merge_psmux_sessions(source: &str, names: Vec<String>, detail: Vec<Session>) -> Vec<Session> {
+    let covered: std::collections::HashSet<String> =
+        detail.iter().map(|s| s.name.clone()).collect();
+    let mut out = detail;
+    for name in names {
+        if !covered.contains(&name) {
+            out.push(Session {
+                source: source.to_string(),
+                name,
+                windows: 1,
+                attached: false,
+                last_attached: 0,
+            });
+        }
+    }
+    out
 }
 
 /// Renders one argument safe for a POSIX shell. A string of only safe characters
@@ -571,7 +652,10 @@ mod tests {
 
     #[tokio::test]
     async fn list_sessions_parses_output() {
-        let mut s = src("local", "psmux", false, "", "");
+        // The generic (aggregate-server) path: a single list-sessions returns every
+        // session. Local tmux / any remote mux uses it; local psmux does NOT (it is
+        // one-server-per-session — see the psmux registry tests below).
+        let mut s = src("local", "tmux", false, "", "");
         s.runner = Some(FakeRunner::ok("3\t1\t1781246739\teditor\n1\t0\t\tbuild\n"));
         let got = s.list_sessions().await.unwrap();
         assert_eq!(got.len(), 2);
@@ -580,6 +664,106 @@ mod tests {
         assert!(got[0].attached);
         assert_eq!(got[0].source, "local");
         assert_eq!(got[1].last_attached, 0);
+    }
+
+    #[test]
+    fn is_local_psmux_only_for_local_psmux() {
+        // psmux is one-server-per-session; the registry enumeration path is taken
+        // only for a LOCAL psmux source, never local tmux or any remote.
+        assert!(src("local", "psmux", false, "", "").is_local_psmux());
+        assert!(!src("local", "tmux", false, "", "").is_local_psmux());
+        assert!(!src("prod", "psmux", true, "", "").is_local_psmux());
+    }
+
+    #[test]
+    fn psmux_session_names_excludes_warm_namespaced_and_non_port() {
+        // psmux writes `<base>.port` per live session in its registry dir. A base
+        // containing `__` is the warm-pool standby (`__warm__`) or a `-L`-namespaced
+        // session (`<ns>__<name>`); neither is a default-socket session. Sibling
+        // `.key`/`.sid`/bookkeeping files are not `.port` and are ignored.
+        let files: Vec<String> = [
+            "xmux.port",
+            "build.port",
+            "__warm__.port",
+            "ns__sess.port",
+            "xmux.key",
+            "xmux.sid",
+            "last_session",
+            "next_session_id",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            psmux_session_names(&files),
+            vec!["build".to_string(), "xmux".to_string()]
+        );
+    }
+
+    #[test]
+    fn psmux_session_names_empty() {
+        assert!(psmux_session_names(&[]).is_empty());
+    }
+
+    #[test]
+    fn read_psmux_registry_dir_scans_port_files() {
+        let dir = std::env::temp_dir().join(format!("xmux-psmux-reg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in ["alpha.port", "beta.port", "__warm__.port", "x__y.port", "alpha.key"] {
+            std::fs::write(dir.join(f), b"1234").unwrap();
+        }
+        let got = read_psmux_registry_dir(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(got, vec!["alpha".to_string(), "beta".to_string()]);
+    }
+
+    #[test]
+    fn read_psmux_registry_dir_missing_is_empty() {
+        let dir = std::env::temp_dir().join("xmux-psmux-absent-zzzz-does-not-exist");
+        assert!(read_psmux_registry_dir(&dir).is_empty());
+    }
+
+    #[test]
+    fn merge_psmux_sessions_prefers_detail_and_keeps_registry_only() {
+        // psmux's `list-sessions` aggregates every live default-socket session in one
+        // call, so its rows carry the real detail (windows/attached/recency). The
+        // registry (`*.port`) is the authoritative EXISTENCE set: a name present in
+        // the registry but missing from the (possibly failed/partial) list-sessions
+        // output is still surfaced, with minimal placeholder detail.
+        let detail = vec![
+            Session { source: "local".into(), name: "editor".into(), windows: 3, attached: true, last_attached: 200 },
+        ];
+        let names = vec!["editor".to_string(), "build".to_string()];
+        let got = merge_psmux_sessions("local", names, detail);
+        assert_eq!(got.len(), 2, "no duplicate for the session in both sources");
+        let editor = got.iter().find(|s| s.name == "editor").unwrap();
+        assert_eq!(editor.windows, 3, "detail row wins (full info)");
+        assert!(editor.attached);
+        let build = got.iter().find(|s| s.name == "build").unwrap();
+        assert_eq!(build.source, "local");
+        assert_eq!(build.windows, 1, "registry-only session gets minimal placeholder detail");
+    }
+
+    #[test]
+    fn merge_psmux_sessions_empty_registry_falls_back_to_detail() {
+        // If the registry read yields nothing (e.g. unreadable), the list-sessions
+        // detail still stands on its own.
+        let detail = vec![
+            Session { source: "local".into(), name: "only".into(), windows: 1, attached: false, last_attached: 5 },
+        ];
+        let got = merge_psmux_sessions("local", Vec::new(), detail);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].name, "only");
+    }
+
+    #[test]
+    fn merge_psmux_sessions_no_detail_surfaces_registry_names() {
+        // The reported failure: list-sessions returns nothing even though sessions
+        // exist. The registry names must still surface so the sidebar is not blank.
+        let got = merge_psmux_sessions("local", vec!["a".into(), "b".into()], Vec::new());
+        let names: Vec<&str> = got.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["a", "b"]);
+        assert!(got.iter().all(|s| s.source == "local"));
     }
 
     #[tokio::test]
@@ -715,34 +899,25 @@ mod tests {
     }
 
     #[test]
-    fn control_per_session_is_local_psmux_only() {
-        // Local psmux is one-session-per-server → per-session control connections.
-        assert!(src("local", "psmux", false, "windows", "").control_per_session());
-        // Local tmux enumerates + switches over one connection — no workaround.
-        assert!(!src("local", "tmux", false, "linux", "").control_per_session());
-        // Remote psmux would need PSMUX_SESSION_NAME on the far side (out of scope).
-        assert!(!src("prod", "psmux", true, "linux", "").control_per_session());
-        assert!(!src("prod", "tmux", true, "linux", "").control_per_session());
+    fn switch_client_remote_cmd_targets_the_non_control_client() {
+        let rem = src("prod", "tmux", true, "linux", "");
+        let cmd = rem.switch_client_remote_cmd("api");
+        // Finds the non-control client's tty (the -CC metadata client is excluded by
+        // `grep -v control-mode`) and switch-clients IT to the session.
+        assert!(cmd.contains("list-clients -F '#{client_tty} #{client_flags}'"), "{cmd}");
+        assert!(cmd.contains("grep -v control-mode"), "{cmd}");
+        assert!(cmd.contains("switch-client -c "), "{cmd}");
+        assert!(cmd.trim_end().ends_with("-t api"), "{cmd}");
+        // A session name with shell metacharacters is quoted (injection-safe).
+        let evil = rem.switch_client_remote_cmd("a;rm -rf /");
+        assert!(evil.contains("-t 'a;rm -rf /'"), "{evil}");
     }
 
-    #[test]
-    fn control_argv_session_attaches_real_session_via_new_session_a() {
-        // `psmux -CC new-session -A -s <name>` routes to the named session's own
-        // server (one-server-per-session) and attaches it. The previous
-        // `PSMUX_SESSION_NAME=<name> psmux -CC` (no subcommand) connected a fresh
-        // 1-window warm CLONE, and `-CC attach -t` ignored the target — both
-        // verified live, so neither shows the user's real session.
+    #[tokio::test]
+    async fn run_raw_is_noop_for_local() {
+        // run_raw is remote-only (a raw remote shell command); local returns empty.
         let loc = src("local", "psmux", false, "windows", "");
-        assert_eq!(
-            loc.control_argv_session("work"),
-            vec!["psmux", "-CC", "new-session", "-A", "-s", "work"]
-        );
-        let mut s = src("local", "psmux", false, "windows", "");
-        s.socket = Some("C:/run/sock".into());
-        assert_eq!(
-            s.control_argv_session("work"),
-            vec!["psmux", "-S", "C:/run/sock", "-CC", "new-session", "-A", "-s", "work"]
-        );
+        assert!(loc.run_raw("anything").await.unwrap().is_empty());
     }
 
     #[test]
