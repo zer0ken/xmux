@@ -288,12 +288,16 @@ fn select_attach(
 /// (one-server-per-session) keeps one PTY per session: ensure each, reap the closed.
 /// Called whenever a source's inventory updates (a remote `%`-event refresh or a
 /// local poll), so a new session is reachable and a killed one is torn down (#5).
+#[allow(clippy::too_many_arguments)]
 fn sync_source_terminals(
     registry: &mut AttachRegistry,
     env: &Env,
     source: &str,
     sessions: &[crate::session::Session],
     host_session: &mut std::collections::HashMap<String, String>,
+    worker: &DisplayWorker,
+    in_flight: &mut std::collections::HashMap<String, u64>,
+    attach_seq: &mut u64,
     cols: u16,
     rows: u16,
 ) {
@@ -305,10 +309,11 @@ fn sync_source_terminals(
         // One PTY per host. Warm it on the first session if not yet attached; reap it
         // (and forget its session) when the host has no sessions.
         match sessions.first() {
-            Some(first) if !registry.contains(source) => {
-                let t = std::time::Instant::now();
-                let _ = registry.ensure(source, &src.attach_command(&first.name, None), cols, rows);
-                dbg_ms(&env.xmux_dir, "sync.ensure", t);
+            Some(first) if !registry.contains(source) && !in_flight.contains_key(source) => {
+                request_attach(
+                    registry, worker, in_flight, attach_seq,
+                    source, src.attach_command(&first.name, None), cols, rows,
+                );
                 host_session.insert(source.to_string(), first.name.clone());
             }
             None => {
@@ -319,14 +324,17 @@ fn sync_source_terminals(
         }
         return;
     }
-    // LOCAL psmux: one PTY per session; ensure each + reap closed.
+    // LOCAL psmux: one PTY per session; request each off-loop + reap closed.
     let mut desired: HashSet<String> = HashSet::new();
     for s in sessions {
         let addr = s.address();
         desired.insert(addr.clone());
-        let t = std::time::Instant::now();
-        let _ = registry.ensure(&addr, &src.attach_command(&s.name, None), cols, rows);
-        dbg_ms(&env.xmux_dir, "sync.ensure", t);
+        if !registry.contains(&addr) && !in_flight.contains_key(&addr) {
+            request_attach(
+                registry, worker, in_flight, attach_seq,
+                &addr, src.attach_command(&s.name, None), cols, rows,
+            );
+        }
     }
     for addr in addresses_to_reap(&registry.addresses(), &desired, source) {
         registry.remove(&addr);
@@ -543,6 +551,9 @@ fn handle_host_event(
     connected: &mut HashSet<String>,
     panes_requested: &mut HashSet<String>,
     host_session: &mut std::collections::HashMap<String, String>,
+    worker: &DisplayWorker,
+    in_flight: &mut std::collections::HashMap<String, u64>,
+    attach_seq: &mut u64,
     cols: u16,
     rows: u16,
     overlay: bool,
@@ -569,7 +580,7 @@ fn handle_host_event(
                     ),
                 );
                 // Sync this host's display terminal(s) (per-host for remote tmux).
-                sync_source_terminals(registry, env, &host, &sessions, host_session, cols, rows);
+                sync_source_terminals(registry, env, &host, &sessions, host_session, worker, in_flight, attach_seq, cols, rows);
             }
         }
         HostEvent::Changed { host } => {
@@ -849,12 +860,12 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             Some(ev) = host_rx.recv() => {
                 let t = std::time::Instant::now();
                 let overlay = app.is_overlay();
-                handle_host_event(ev, &mut mgr, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &mut host_session, cols, body_rows, overlay);
+                handle_host_event(ev, &mut mgr, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &mut host_session, &worker, &mut in_flight, &mut attach_seq, cols, body_rows, overlay);
                 let mut budget = EVENT_DRAIN_BUDGET;
                 while budget > 0 {
                     match host_rx.try_recv() {
                         Ok(ev) => {
-                            handle_host_event(ev, &mut mgr, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &mut host_session, cols, body_rows, overlay);
+                            handle_host_event(ev, &mut mgr, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &mut host_session, &worker, &mut in_flight, &mut attach_seq, cols, body_rows, overlay);
                             budget -= 1;
                         }
                         Err(_) => break,
@@ -1021,7 +1032,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         // mux is actually fine (the keep-alive guarantee). Show the error
                         // in the tree, but leave the attachments intact.
                         if !had_err {
-                            sync_source_terminals(&mut registry, &env, &source, &sessions, &mut host_session, cols, body_rows);
+                            sync_source_terminals(&mut registry, &env, &source, &sessions, &mut host_session, &worker, &mut in_flight, &mut attach_seq, cols, body_rows);
                         }
                     }
                     LocalEnum::Panes { address, panes } => {
@@ -1084,10 +1095,13 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         None => continue,
                     };
                     if let Some(s) = first {
-                        let t = std::time::Instant::now();
-                        let _ = registry.ensure(&src.alias, &src.attach_command(&s.name, None), vc, vr);
-                        dbg_ms(&env.xmux_dir, "reconnect.ensure", t);
-                        host_session.insert(src.alias.clone(), s.name.clone());
+                        if !in_flight.contains_key(&src.alias) {
+                            request_attach(
+                                &mut registry, &worker, &mut in_flight, &mut attach_seq,
+                                &src.alias, src.attach_command(&s.name, None), vc, vr,
+                            );
+                            host_session.insert(src.alias.clone(), s.name.clone());
+                        }
                     }
                 }
                 // Re-attach the selected session's display terminal if it dropped.
@@ -1382,7 +1396,10 @@ mod tests {
         let (htx, _hrx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
         let mut mgr = HostManager::new(htx);
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
-        let mut registry = AttachRegistry::new(ptx);
+        let mut registry = AttachRegistry::new(ptx.clone());
+        let worker = DisplayWorker::new(ptx);
+        let mut in_flight = HashMap::new();
+        let mut attach_seq = 0u64;
         let env = fake_env_with_sources(&["jup"]);
         let mut connected = HashSet::new();
         let mut panes_requested = HashSet::new();
@@ -1391,7 +1408,8 @@ mod tests {
         handle_host_event(
             HostEvent::Focus { host: "jup".into(), session: "api".into(), window: 0 },
             &mut mgr, &mut registry, &mut switcher, &env,
-            &mut connected, &mut panes_requested, &mut host_session, 80, 24, false,
+            &mut connected, &mut panes_requested, &mut host_session,
+            &worker, &mut in_flight, &mut attach_seq, 80, 24, false,
         );
         assert_eq!(switcher.terminal_view_target().target, "api:0", "Focus followed the cursor to window 0");
     }
@@ -1431,7 +1449,10 @@ mod tests {
         let (htx, _hrx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
         let mut mgr = HostManager::new(htx);
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
-        let mut registry = AttachRegistry::new(ptx);
+        let mut registry = AttachRegistry::new(ptx.clone());
+        let worker = DisplayWorker::new(ptx);
+        let mut in_flight = HashMap::new();
+        let mut attach_seq = 0u64;
         let env = fake_env_with_sources(&["jup"]);
         let mut connected = HashSet::new();
         let mut panes_requested = HashSet::new();
@@ -1439,7 +1460,8 @@ mod tests {
         handle_host_event(
             HostEvent::Focus { host: "jup".into(), session: "api".into(), window: 0 },
             &mut mgr, &mut registry, &mut switcher, &env,
-            &mut connected, &mut panes_requested, &mut host_session, 80, 24, true, // overlay = tree focus
+            &mut connected, &mut panes_requested, &mut host_session,
+            &worker, &mut in_flight, &mut attach_seq, 80, 24, true, // overlay = tree focus
         );
         assert_eq!(switcher.terminal_view_target().target, "api:1", "tree-focus Focus must NOT yank the cursor");
     }
