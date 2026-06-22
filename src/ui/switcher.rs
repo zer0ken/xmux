@@ -1382,6 +1382,7 @@ impl Switcher {
     }
 
     fn render_footer(&self, frame: &mut Frame, area: Rect) {
+        let is_kill = self.pending_kill.is_some();
         let text = if let Some(sess) = &self.pending_kill {
             format!(" kill {}? [y]es / [n]o", sess.address())
         } else if !self.flash.is_empty() {
@@ -1420,7 +1421,11 @@ impl Switcher {
                 area.width,
             )
         };
-        frame.render_widget(Paragraph::new(text), area);
+        let mut para = Paragraph::new(text);
+        if is_kill {
+            para = para.style(Style::default().fg(Color::Red));
+        }
+        frame.render_widget(para, area);
     }
 
     fn render_help(&self, frame: &mut Frame, area: Rect) {
@@ -2725,5 +2730,19 @@ mod tests {
 
         term.draw(|f| sw.render(f, None, false)).unwrap();
         assert!(!divider_is_green(term.backend().buffer()), "tree-focused divider is not green");
+    }
+
+    #[tokio::test]
+    async fn kill_confirm_footer_is_red() {
+        let mut h = Harness::new(sample());
+        h.ch('x').await; // arm kill on the selected session
+        // The footer is the LAST row; find a cell of the confirm text and assert red fg.
+        let buf = h.buf();
+        let y = buf.area.height - 1;
+        let cell = (0..buf.area.width)
+            .map(|x| &buf[(x, y)])
+            .find(|c| c.symbol() == "k") // "kill ...": first 'k'
+            .expect("kill confirm text present");
+        assert_eq!(cell.fg, ratatui::style::Color::Red, "kill confirm must be red");
     }
 }
