@@ -7,7 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
@@ -193,6 +193,9 @@ struct Row {
     indent: usize,
     color: Color,
     reference: RowRef,
+    /// The active window / active pane of its session — rendered BOLD (replaces a
+    /// trailing "(active)" text marker).
+    active: bool,
 }
 
 impl Row {
@@ -406,6 +409,7 @@ impl Switcher {
                     source: g.source.clone(),
                     unreachable,
                 },
+                active: false,
             });
             if scanning || unreachable {
                 continue;
@@ -421,6 +425,7 @@ impl Switcher {
                     indent: 2,
                     color: COLOR_SESSION,
                     reference: RowRef::Session(sess.clone()),
+                    active: false,
                 });
                 if self.panes_loaded.contains(&sess.address()) {
                     if let Some(windows) = self.panes.get(&sess.address()) {
@@ -434,6 +439,7 @@ impl Switcher {
                                     sess: sess.clone(),
                                     window: w.index,
                                 },
+                                active: w.active,
                             });
                             for p in &w.panes {
                                 rows.push(Row {
@@ -442,6 +448,7 @@ impl Switcher {
                                     indent: 6,
                                     color: COLOR_PANE,
                                     reference: RowRef::Pane,
+                                    active: p.active,
                                 });
                             }
                         }
@@ -455,6 +462,7 @@ impl Switcher {
                         indent: 4,
                         color: COLOR_HINT,
                         reference: RowRef::Loading,
+                        active: false,
                     });
                 }
             }
@@ -482,17 +490,13 @@ impl Switcher {
     }
 
     fn session_label(&self, sess: &Session) -> String {
+        // No "attached" dot: the cockpit pre-attaches EVERY session (a PTY client per
+        // session), so `session_attached` is true for ~all of them — the marker would
+        // be noise. The active window/pane is shown BOLD instead.
         let pad = self
             .name_col_width
             .saturating_sub(sess.name.chars().count());
-        let star = if sess.attached { "  ●" } else { "" };
-        format!(
-            "{}{}   {}{}",
-            sess.name,
-            " ".repeat(pad),
-            plural(sess.windows),
-            star
-        )
+        format!("{}{}   {}", sess.name, " ".repeat(pad), plural(sess.windows))
     }
 
     // --- selection / navigation --------------------------------------------
@@ -526,6 +530,67 @@ impl Switcher {
         let n = sel.len() as isize;
         let next = ((cur + delta) % n + n) % n;
         self.set_selected(sel[next as usize]);
+    }
+
+    /// `→`: descend to the FIRST child of the selected node (host→its first session,
+    /// session→its first window). The flattened rows place children immediately after
+    /// their parent at a deeper indent, so the child is the next row when its indent
+    /// is greater. A no-op when the only children are non-selectable (a window's
+    /// panes) or there are none.
+    fn descend(&mut self) {
+        let cur = self.selected;
+        let Some(cur_indent) = self.rows.get(cur).map(|r| r.indent) else {
+            return;
+        };
+        if let Some(child) = self.rows.get(cur + 1) {
+            if child.indent > cur_indent && child.selectable() {
+                self.user_moved = true;
+                self.set_selected(cur + 1);
+            }
+        }
+    }
+
+    /// `←`: ascend to the PARENT of the selected node (window→its session, session→its
+    /// host) — the nearest preceding row at a shallower indent. A no-op on a host row.
+    fn ascend(&mut self) {
+        let cur = self.selected;
+        let Some(cur_indent) = self.rows.get(cur).map(|r| r.indent) else {
+            return;
+        };
+        if cur_indent == 0 {
+            return;
+        }
+        for i in (0..cur).rev() {
+            if self.rows[i].indent < cur_indent {
+                self.user_moved = true;
+                self.set_selected(i);
+                return;
+            }
+        }
+    }
+
+    /// Ctrl+↑/↓: move to the next/prev SIBLING — the next selectable row at the SAME
+    /// indent level as the current one (e.g. session→next session, skipping the
+    /// windows/panes nested under it). Wraps like `move_selection`.
+    fn move_sibling(&mut self, delta: isize) {
+        let Some(cur_indent) = self.rows.get(self.selected).map(|r| r.indent) else {
+            return;
+        };
+        let siblings: Vec<usize> = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.indent == cur_indent && r.selectable())
+            .map(|(i, _)| i)
+            .collect();
+        if siblings.is_empty() {
+            return;
+        }
+        self.user_moved = true;
+        let pos = siblings.iter().position(|&i| i == self.selected).unwrap_or(0) as isize;
+        let n = siblings.len() as isize;
+        let next = ((pos + delta) % n + n) % n;
+        self.set_selected(siblings[next as usize]);
     }
 
     fn move_to(&mut self, pos: isize) {
@@ -570,12 +635,22 @@ impl Switcher {
     // --- preview ------------------------------------------------------------
 
     fn first_session_of(&self, source: &str) -> Option<Session> {
-        // Visible (filtered) groups, so a host's Enter/preview picks a session the
-        // user can actually see — never a filtered-out one.
-        self.visible_groups()
-            .into_iter()
-            .find(|g| g.source == source && !g.sessions.is_empty())
-            .map(|g| g.sessions[0].clone())
+        // The source's first VISIBLE session (its sessions are kept recency-sorted),
+        // mirroring `filter_groups` for just this one group — NOT cloning every host's
+        // sessions via `visible_groups`, since this runs on every cursor move onto a
+        // host row (the navigation hot path).
+        let g = self.groups.iter().find(|g| g.source == source)?;
+        if g.err.is_some() {
+            return None; // unreachable host: its sessions carry no meaning
+        }
+        if self.filter.is_empty() || tree::fuzzy_match(&self.filter, &g.source) {
+            g.sessions.first().cloned()
+        } else {
+            g.sessions
+                .iter()
+                .find(|s| tree::fuzzy_match(&self.filter, &s.address()))
+                .cloned()
+        }
     }
 
     fn target_for(&self, reference: &RowRef) -> TerminalViewTarget {
@@ -656,6 +731,32 @@ impl Switcher {
         }
     }
 
+    /// Marks `window` as the active window of `source`/`session` in the cached
+    /// pane data, flipping the bold/italic marker WITHOUT a full inventory refetch
+    /// (the control-client probe resolves an external `%session-window-changed` to
+    /// the new active window; a blanket refetch per change would storm the loop).
+    /// Returns whether the active window actually changed.
+    pub fn set_active_window(&mut self, source: &str, session: &str, window: i64) -> bool {
+        let addr = format!("{source}/{session}");
+        let Some(windows) = self.panes.get_mut(&addr) else {
+            return false;
+        };
+        let mut changed = false;
+        for w in windows.iter_mut() {
+            let want = w.index == window;
+            if w.active != want {
+                changed = true;
+            }
+            w.active = want;
+        }
+        if changed {
+            let focus = self.current_ref().cloned();
+            self.rebuild();
+            self.restore_focus(focus);
+        }
+        changed
+    }
+
     /// Replaces the set of session addresses currently connecting / awaiting
     /// first output. The tree draws a braille spinner right of each matching
     /// session name.
@@ -686,10 +787,17 @@ impl Switcher {
             self.resolve_kill(ev);
             return;
         }
+        let ctrl = ev.modifiers.contains(KeyModifiers::CONTROL);
         match ev.code {
             KeyCode::Enter => {}
+            // Ctrl+↑/↓ moves between SIBLINGS at the current level (next/prev session
+            // when on a session, skipping its windows); plain ↑/↓ steps every row.
+            KeyCode::Up if ctrl => self.move_sibling(-1),
+            KeyCode::Down if ctrl => self.move_sibling(1),
             KeyCode::Up => self.move_selection(-1),
             KeyCode::Down => self.move_selection(1),
+            KeyCode::Right => self.descend(),
+            KeyCode::Left => self.ascend(),
             KeyCode::PageUp => self.move_selection(-10),
             KeyCode::PageDown => self.move_selection(10),
             KeyCode::Home => self.move_to(0),
@@ -1178,6 +1286,11 @@ impl Switcher {
                 if selected {
                     style = style.add_modifier(Modifier::REVERSED);
                 }
+                // The active window / pane reads BOLD+ITALIC (replaces the "(active)"
+                // text) — the currently-displayed window of each session.
+                if row.active {
+                    style = style.add_modifier(Modifier::BOLD | Modifier::ITALIC);
+                }
                 let mut spans = vec![
                     Span::raw(indent),
                     Span::styled(pad_label(&row.label), style),
@@ -1320,20 +1433,14 @@ fn fit(candidates: &[String], width: u16) -> String {
         .unwrap_or_else(|| candidates.last().cloned().unwrap_or_default())
 }
 
+// The active window / pane is shown BOLD (the `Row::active` flag), not with a
+// trailing "(active)" text marker.
 fn window_label(w: &WindowPanes) -> String {
-    let mut s = format!("window {}: {}", w.index, w.name);
-    if w.active {
-        s.push_str("  (active)");
-    }
-    s
+    format!("window {}: {}", w.index, w.name)
 }
 
 fn pane_label(p: &Pane) -> String {
-    let mut s = format!("pane {}  {}", p.index, p.command);
-    if p.active {
-        s.push_str("  (active)");
-    }
-    s
+    format!("pane {}  {}", p.index, p.command)
 }
 
 /// Adds a space each side so the reverse-video selection has breathing room.
@@ -1544,6 +1651,10 @@ mod tests {
         fn tree_fg_of(&self, text: &str) -> Option<Color> {
             fg_of(self.buf(), text, TREE_WIDTH)
         }
+
+        fn tree_modifier_of(&self, text: &str) -> Option<Modifier> {
+            locate(self.buf(), text, TREE_WIDTH).map(|(x, y)| self.buf()[(x, y)].modifier)
+        }
     }
 
     fn buffer_text(buf: &Buffer) -> String {
@@ -1682,6 +1793,37 @@ mod tests {
     }
 
     #[test]
+    fn active_window_is_bold_italic() {
+        // The active window of a session (the one whose live terminal is shown) reads
+        // BOLD+ITALIC; an inactive window has neither.
+        let h = Harness::new(two_window_scan());
+        let m0 = h.tree_modifier_of("window 0").expect("window 0 row present");
+        assert!(
+            m0.contains(Modifier::BOLD) && m0.contains(Modifier::ITALIC),
+            "the active window is bold+italic: {m0:?}"
+        );
+        let m1 = h.tree_modifier_of("window 1").expect("window 1 row present");
+        assert!(!m1.contains(Modifier::BOLD) && !m1.contains(Modifier::ITALIC),
+            "an inactive window is neither bold nor italic: {m1:?}");
+    }
+
+    #[test]
+    fn set_active_window_moves_the_marker() {
+        // An external active-window change (resolved via the control-client probe)
+        // moves the bold+italic marker, without a full inventory refetch.
+        let mut h = Harness::new(two_window_scan());
+        assert!(h.sw.set_active_window("jup", "api", 1), "active window moved 0 -> 1");
+        h.draw();
+        let m1 = h.tree_modifier_of("window 1").expect("window 1 row present");
+        assert!(m1.contains(Modifier::BOLD) && m1.contains(Modifier::ITALIC),
+            "window 1 is now the active window: {m1:?}");
+        let m0 = h.tree_modifier_of("window 0").expect("window 0 row present");
+        assert!(!m0.contains(Modifier::ITALIC), "window 0 no longer active: {m0:?}");
+        // Idempotent: re-applying the same active window reports no change.
+        assert!(!h.sw.set_active_window("jup", "api", 1), "no-op when already active");
+    }
+
+    #[test]
     fn select_window_follows_external_change_on_a_window_row() {
         // Cursor on window 1's row; an external client switches the session's
         // active window to 0. The sidebar cursor must follow to window 0's row.
@@ -1691,6 +1833,47 @@ mod tests {
         assert!(matches!(sw.current_ref(), Some(RowRef::Window { window: 1, .. })));
         assert!(sw.select_window("jup", "api", 0), "moved to the new active window");
         assert!(matches!(sw.current_ref(), Some(RowRef::Window { window: 0, .. })));
+    }
+
+    #[test]
+    fn right_descends_left_ascends_tree_levels() {
+        let mut sw = Switcher::new(sample());
+        sw.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)); // local host
+        assert!(matches!(sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "local"));
+        sw.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → first session
+        assert!(matches!(sw.current_ref(), Some(RowRef::Session(s)) if s.name == "editor"), "→ descends host → first session");
+        sw.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → first window
+        assert!(matches!(sw.current_ref(), Some(RowRef::Window { window: 1, .. })), "→ descends to a window");
+        sw.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)); // ← parent session
+        assert!(matches!(sw.current_ref(), Some(RowRef::Session(s)) if s.name == "editor"), "← ascends window → session");
+        sw.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)); // ← parent host
+        assert!(matches!(sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "local"), "← ascends session → host");
+    }
+
+    #[test]
+    fn ctrl_down_moves_to_next_sibling_session() {
+        // On a session, Ctrl+↓ jumps to the NEXT SESSION, skipping that session's
+        // windows/panes (level-aware sibling navigation).
+        let mut sw = Switcher::new(sample());
+        sw.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)); // local host
+        sw.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → "editor" session
+        assert!(matches!(sw.current_ref(), Some(RowRef::Session(s)) if s.name == "editor"));
+        sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL)); // Ctrl+↓
+        assert!(matches!(sw.current_ref(), Some(RowRef::Session(s)) if s.name == "build"), "Ctrl+↓ skips editor's windows → next session");
+        // A plain ↓ from "editor" would instead step into its first window.
+        let mut sw2 = Switcher::new(sample());
+        sw2.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        sw2.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        sw2.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // plain ↓
+        assert!(matches!(sw2.current_ref(), Some(RowRef::Window { .. })), "plain ↓ steps into the window");
+    }
+
+    #[test]
+    fn active_window_pane_have_no_text_marker() {
+        // The active window/pane is shown BOLD (Row::active), not with "(active)" text.
+        let w = win(2, "logs", true, vec![pane(1, true, "tail")]);
+        assert_eq!(window_label(&w), "window 2: logs", "no (active) text on the window label");
+        assert_eq!(pane_label(&w.panes[0]), "pane 1  tail", "no (active) text on the pane label");
     }
 
     #[test]
