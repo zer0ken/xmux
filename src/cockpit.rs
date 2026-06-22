@@ -562,7 +562,6 @@ fn handle_host_event(
     attach_seq: &mut u64,
     cols: u16,
     rows: u16,
-    overlay: bool,
 ) {
     match ev {
         HostEvent::Connected { host } | HostEvent::Inventory { host } => {
@@ -607,16 +606,10 @@ fn handle_host_event(
             }
         }
         HostEvent::Focus { host, session, window } => {
-            // The active-window probe resolved. ALWAYS move the bold+italic marker to
-            // the new active window. Follow the CURSOR only when the terminal pane has
-            // focus (an external change, e.g. prefix-n in the pane): in TREE focus the
-            // user is driving the cursor, and this notification is the echo of their
-            // own select-window navigation — a (possibly stale/lagged) reply would
-            // yank the cursor backward and fight their navigation.
+            // The active-window probe resolved. Updates the bold+italic marker so the
+            // sidebar reflects the mux's current active window. Cursor follow in
+            // passthrough happens at the loop top (single unified call), not here.
             switcher.set_active_window(&host, &session, window);
-            if !overlay {
-                switcher.select_window(&host, &session, window);
-            }
         }
         HostEvent::Exited { host, reason } => {
             note_host_exited(switcher, connected, &host, reason);
@@ -808,6 +801,13 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             }
             prev_raw = raw_now;
         }
+        // In passthrough the user no longer drives the tree cursor (stdin goes to the
+        // PTY), so the tree selection tracks the displayed session's active window — always.
+        // select_active_window is idempotent (no move when already on the active window or
+        // when the session's panes are unknown), so calling it each iteration is cheap.
+        if !app.is_overlay() {
+            switcher.select_active_window();
+        }
         let new_sel = Selection::from_target(&switcher.terminal_view_target());
         if new_sel != selection {
             selection = new_sel;
@@ -909,13 +909,12 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         tokio::select! {
             Some(ev) = host_rx.recv() => {
                 let t = std::time::Instant::now();
-                let overlay = app.is_overlay();
-                handle_host_event(ev, &mut mgr, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &mut host_session, &worker, &mut in_flight, &mut attach_seq, cols, body_rows, overlay);
+                handle_host_event(ev, &mut mgr, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &mut host_session, &worker, &mut in_flight, &mut attach_seq, cols, body_rows);
                 let mut budget = EVENT_DRAIN_BUDGET;
                 while budget > 0 {
                     match host_rx.try_recv() {
                         Ok(ev) => {
-                            handle_host_event(ev, &mut mgr, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &mut host_session, &worker, &mut in_flight, &mut attach_seq, cols, body_rows, overlay);
+                            handle_host_event(ev, &mut mgr, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &mut host_session, &worker, &mut in_flight, &mut attach_seq, cols, body_rows);
                             budget -= 1;
                         }
                         Err(_) => break,
@@ -1011,9 +1010,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     app.toggle();
                     // No term.clear(): both states draw the SAME split layout (only the
                     // divider colour changes), so clearing would blank the screen and
-                    // force a full repaint for nothing. Mirror the displayed window in
-                    // the sidebar as focus enters the terminal (#3).
-                    switcher.select_active_window();
+                    // force a full repaint for nothing.
                 }
                 if focus_tree && !app.is_overlay() {
                     app.toggle();
@@ -1024,7 +1021,6 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         );
                         if ft && app.is_overlay() {
                             app.toggle();
-                            switcher.select_active_window();
                         }
                         quit = quit || q;
                     }
@@ -1100,13 +1096,8 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     }
                     LocalEnum::Panes { address, panes } => {
                         switcher.apply_panes(address, panes);
-                        // Local psmux has no `%`-event stream, so a window switched
-                        // INSIDE the displayed local session is only seen on the poll.
-                        // When the terminal has focus, follow the cursor to the newly
-                        // active window so the sidebar mirrors the mux (#3, local path).
-                        if !app.is_overlay() {
-                            switcher.select_active_window();
-                        }
+                        // Local psmux has no `%`-event stream, so window changes inside
+                        // the displayed session are only seen on the poll.
                     }
                 }
             }
@@ -1439,10 +1430,11 @@ mod tests {
     }
 
     #[test]
-    fn focus_event_follows_cursor_to_active_window() {
-        // A resolved active-window probe (HostEvent::Focus) moves the sidebar cursor
-        // to the new active window of the displayed session (#2). Cursor starts on
-        // window 1's row; Focus to window 0 must land it there.
+    fn active_window_probe_moves_sidebar_cursor() {
+        // A resolved active-window probe (HostEvent::Focus) sets the cached active-window
+        // marker; the loop-top select_active_window then moves the cursor. Cursor starts
+        // on window 1's row; Focus to window 0 sets the marker, and select_active_window
+        // (simulating the loop-top call) lands the cursor on window 0.
         use crate::session::{Pane, Session, WindowPanes};
         use crate::ui::switcher::{Scan, Switcher};
         use crate::ui::tree::Group;
@@ -1481,22 +1473,23 @@ mod tests {
         let mut connected = HashSet::new();
         let mut panes_requested = HashSet::new();
         let mut host_session = HashMap::new();
-        // Terminal-focused (overlay=false): the probe-resolved Focus follows the cursor.
+        // Focus sets the cached active-window marker (window 0).
         handle_host_event(
             HostEvent::Focus { host: "jup".into(), session: "api".into(), window: 0 },
             &mut mgr, &mut registry, &mut switcher, &env,
             &mut connected, &mut panes_requested, &mut host_session,
-            &worker, &mut in_flight, &mut attach_seq, 80, 24, false,
+            &worker, &mut in_flight, &mut attach_seq, 80, 24,
         );
-        assert_eq!(switcher.terminal_view_target().target, "api:0", "Focus followed the cursor to window 0");
+        // The loop-top follow (simulated here) consumes the marker and moves the cursor.
+        switcher.select_active_window();
+        assert_eq!(switcher.terminal_view_target().target, "api:0", "loop-top follow moved cursor to active window 0");
     }
 
     #[test]
-    fn focus_event_does_not_follow_cursor_while_navigating_the_tree() {
-        // While the TREE has focus the user drives the cursor; a probe-resolved Focus
-        // (echoed from the user's own select-window navigation, possibly stale) must
-        // NOT yank the cursor — otherwise a lagged reply drags it backward and the
-        // user fights the sidebar. The marker still updates; only the cursor is left.
+    fn focus_event_updates_marker_without_moving_cursor() {
+        // handle_host_event(Focus) updates the active-window marker but never moves
+        // the cursor — cursor follow is a loop-top concern. The cursor is left wherever
+        // the caller placed it (here, window 1) regardless of the Focus payload.
         use crate::session::{Pane, Session, WindowPanes};
         use crate::ui::switcher::{Scan, Switcher};
         use crate::ui::tree::Group;
@@ -1538,9 +1531,9 @@ mod tests {
             HostEvent::Focus { host: "jup".into(), session: "api".into(), window: 0 },
             &mut mgr, &mut registry, &mut switcher, &env,
             &mut connected, &mut panes_requested, &mut host_session,
-            &worker, &mut in_flight, &mut attach_seq, 80, 24, true, // overlay = tree focus
+            &worker, &mut in_flight, &mut attach_seq, 80, 24,
         );
-        assert_eq!(switcher.terminal_view_target().target, "api:1", "tree-focus Focus must NOT yank the cursor");
+        assert_eq!(switcher.terminal_view_target().target, "api:1", "handler alone must not move the cursor");
     }
 
     #[test]
