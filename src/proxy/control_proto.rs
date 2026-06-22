@@ -1,7 +1,7 @@
-//! Pure control-mode (`-CC`) wire functions: `%output` octal decode, line
-//! framing/classification, the notification parse table, the `send-keys -H`
-//! batched-hex builder, and the `refresh-client -C WxH` formatter. No I/O — every
-//! wire detail is unit-testable headlessly against tmux 3.3.x.
+//! Pure control-mode (`-CC`) wire functions for the metadata channel: line
+//! framing/classification, the notification parse table, and the
+//! `refresh-client -C WxH` size formatter. No I/O — every wire detail is
+//! unit-testable headlessly against tmux 3.3.x.
 
 /// A single stdout line from tmux control mode, classified by shape.
 ///
@@ -142,129 +142,9 @@ pub fn parse_notif(line: &str) -> Notif<'_> {
     }
 }
 
-#[inline]
-fn is_octal_digit(b: u8) -> bool {
-    (b'0'..=b'7').contains(&b)
-}
-
-/// Decodes a `%output` value into `out` (cleared first, capacity retained). Every
-/// `\ooo` 3-digit octal escape becomes one byte; all other bytes pass through.
-pub fn decode_output_into(out: &mut Vec<u8>, data: &[u8]) {
-    out.clear();
-    let n = data.len();
-    let mut i = 0;
-    while i < n {
-        let b = data[i];
-        if b == b'\\'
-            && i + 3 < n
-            && is_octal_digit(data[i + 1])
-            && is_octal_digit(data[i + 2])
-            && is_octal_digit(data[i + 3])
-        {
-            let v = (data[i + 1] - b'0') * 64 + (data[i + 2] - b'0') * 8 + (data[i + 3] - b'0');
-            out.push(v);
-            i += 4;
-        } else {
-            out.push(b);
-            i += 1;
-        }
-    }
-}
-
-use std::fmt::Write as _;
-
-/// One batched `send-keys -H` line forwarding `bytes` to `pane` (`[research §5]`).
-/// `-H` is the faithful raw-byte path in 3.3 (no `-K`); each byte is one hex arg.
-pub fn send_keys_line(pane: &str, bytes: &[u8]) -> String {
-    if bytes.is_empty() {
-        return String::new();
-    }
-    let mut s = format!("send-keys -t {pane} -H");
-    for b in bytes {
-        let _ = write!(s, " {b:02x}");
-    }
-    s.push('\n');
-    s
-}
-
-/// The tmux key name that, sent via `send-keys` (no `-l`), produces the single
-/// control byte `b`. Used by [`send_keys_lines_literal`] for psmux, whose
-/// `send-keys -H` is a no-op. `Enter`/`Tab`/`Escape`/`BSpace` are spelled out for
-/// clarity; every other C0 byte (and DEL handled above) maps to `C-<char>` where
-/// `<char> = b | 0x40` (`0x01..=0x1a` → `C-A..C-Z`, `0x1b..=0x1f` → `C-[ \ ] ^ _`,
-/// `0x00` → `C-@`) — psmux masks the control char with `0x1f`, recovering `b`.
-fn ctrl_key_name(b: u8) -> String {
-    match b {
-        0x09 => "Tab".to_string(),
-        0x0d => "Enter".to_string(),
-        0x1b => "Escape".to_string(),
-        0x7f => "BSpace".to_string(),
-        _ => format!("C-{}", (b | 0x40) as char),
-    }
-}
-
-/// `send-keys` command lines forwarding `bytes` to `pane` for **psmux**, which
-/// does NOT honour `-H` (hex) over control mode — it echoes the hex digits as
-/// literal text. Instead each run of printable bytes is sent as a single-quoted
-/// `-l '<run>'` literal (psmux's control parser keeps a single-quoted argument
-/// verbatim, spaces and all), each control byte (and DEL) as the key NAME that
-/// produces it, and a literal apostrophe — which a single-quoted run cannot hold
-/// — as `"'"` (a double-quoted, non-`-l` key token psmux passes through). One
-/// command line per segment; an empty `bytes` yields no lines.
-pub fn send_keys_lines_literal(pane: &str, bytes: &[u8]) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut run: Vec<u8> = Vec::new();
-    for &b in bytes {
-        // Printable ASCII (minus apostrophe) and UTF-8 bytes accumulate into the
-        // single-quoted run; everything else flushes the run and is sent on its own.
-        if b >= 0x20 && b != 0x7f && b != b'\'' {
-            run.push(b);
-            continue;
-        }
-        if !run.is_empty() {
-            lines.push(format!("send-keys -t {pane} -l '{}'\n", String::from_utf8_lossy(&run)));
-            run.clear();
-        }
-        if b == b'\'' {
-            lines.push(format!("send-keys -t {pane} \"'\"\n"));
-        } else {
-            lines.push(format!("send-keys -t {pane} {}\n", ctrl_key_name(b)));
-        }
-    }
-    if !run.is_empty() {
-        lines.push(format!("send-keys -t {pane} -l '{}'\n", String::from_utf8_lossy(&run)));
-    }
-    lines
-}
-
 /// `refresh-client -C WxH` — the `x`-form is correct for 3.3.x (`[research §7]`).
 pub fn refresh_size_line(cols: u16, rows: u16) -> String {
     format!("refresh-client -C {cols}x{rows}\n")
-}
-
-/// Enables flow control so a firehose pane cannot make the client buffer
-/// unbounded or be killed "too far behind" (`[research §8]`).
-pub fn pause_after_line(secs: u32) -> String {
-    format!("refresh-client -f pause-after={secs}\n")
-}
-
-/// Resumes a paused pane after the renderer caught up (`[research §8]`).
-pub fn continue_pane_line(pane: &str) -> String {
-    format!("refresh-client -A {pane}:continue\n")
-}
-
-/// For `%extended-output`, returns the data part after the single `:` separator
-/// (`[research §3, §8]`); the bytes up to and including the first `:` are the age
-/// and future-args field, ignored. No `:` ⇒ the input is returned unchanged.
-pub fn strip_extended_prefix(data: &[u8]) -> &[u8] {
-    match data.iter().position(|&b| b == b':') {
-        Some(i) => {
-            let rest = &data[i + 1..];
-            // tmux emits "<age> ... : <data>" with a space after the colon.
-            rest.strip_prefix(b" ").unwrap_or(rest)
-        }
-        None => data,
-    }
 }
 
 #[cfg(test)]
@@ -299,43 +179,6 @@ mod tests {
         assert!(matches!(classify("%begin x y z"), Line::Notification(_)));
     }
 
-    #[test]
-    fn decode_handles_octal_and_literals() {
-        let mut out = Vec::new();
-        decode_output_into(&mut out, b"\\134");        // backslash
-        assert_eq!(out, b"\\");
-        decode_output_into(&mut out, b"\\012");        // LF
-        assert_eq!(out, b"\n");
-        decode_output_into(&mut out, b"\\015");        // CR
-        assert_eq!(out, b"\r");
-        decode_output_into(&mut out, b"\\000");        // NUL
-        assert_eq!(out, b"\x00");
-        decode_output_into(&mut out, b"\\033[31mhi");  // ESC + literal tail
-        assert_eq!(out, b"\x1b[31mhi");
-        decode_output_into(&mut out, &[0xc3, 0xa9]);   // UTF-8 é passes through raw
-        assert_eq!(out, &[0xc3, 0xa9]);
-        decode_output_into(&mut out, b"\x7f");          // DEL (0x7f) is NOT escaped
-        assert_eq!(out, b"\x7f");
-    }
-
-    #[test]
-    fn decode_reuses_buffer_no_growth_per_call() {
-        let mut out = Vec::with_capacity(64);
-        decode_output_into(&mut out, b"first");
-        let cap = out.capacity();
-        decode_output_into(&mut out, b"second");
-        assert_eq!(out, b"second", "each call refills from scratch");
-        assert!(out.capacity() >= cap, "capacity is retained for reuse");
-    }
-
-    #[test]
-    fn strip_extended_prefix_drops_age_and_future_args() {
-        // %extended-output %0 <age> ...future... : <data>  — the reader has already
-        // split off "%extended-output %0 "; this fn gets "<age> ... : <data>".
-        assert_eq!(strip_extended_prefix(b"512 : \\033[2J"), b"\\033[2J");
-        assert_eq!(strip_extended_prefix(b"7 future stuff : payload"), b"payload");
-        assert_eq!(strip_extended_prefix(b"no colon here"), b"no colon here");
-    }
 
     #[test]
     fn parse_notif_full_table() {
@@ -364,54 +207,7 @@ mod tests {
     }
 
     #[test]
-    fn send_keys_batches_bytes_as_hex() {
-        // Ctrl-C then "ab": one line, hex per byte.
-        assert_eq!(send_keys_line("%0", &[0x03, b'a', b'b']), "send-keys -t %0 -H 03 61 62\n");
-        // Up-arrow CSI ESC [ A → 1b 5b 41.
-        assert_eq!(send_keys_line("%2", b"\x1b[A"), "send-keys -t %2 -H 1b 5b 41\n");
-        assert_eq!(send_keys_line("%0", b""), "", "empty burst yields no command");
-    }
-
-    #[test]
-    fn send_keys_literal_encodes_printable_runs_and_keys() {
-        // psmux ignores `-H`: a printable run is one single-quoted `-l` literal.
-        assert_eq!(
-            send_keys_lines_literal("%0", b"echo hi"),
-            vec!["send-keys -t %0 -l 'echo hi'\n"]
-        );
-        // A trailing carriage return is the Enter key, on its own line.
-        assert_eq!(
-            send_keys_lines_literal("%1", b"ls\r"),
-            vec!["send-keys -t %1 -l 'ls'\n", "send-keys -t %1 Enter\n"]
-        );
-        // Ctrl-C (0x03) → C-C; Tab/Escape/BSpace spelled out.
-        assert_eq!(send_keys_lines_literal("%0", b"\x03"), vec!["send-keys -t %0 C-C\n"]);
-        assert_eq!(send_keys_lines_literal("%0", b"\t"), vec!["send-keys -t %0 Tab\n"]);
-        assert_eq!(send_keys_lines_literal("%0", &[0x7f]), vec!["send-keys -t %0 BSpace\n"]);
-        // Up-arrow CSI (ESC [ A): Escape key, then the printable "[A" literal —
-        // the bytes arrive contiguously and reconstruct the arrow.
-        assert_eq!(
-            send_keys_lines_literal("%0", b"\x1b[A"),
-            vec!["send-keys -t %0 Escape\n", "send-keys -t %0 -l '[A'\n"]
-        );
-        // A literal apostrophe cannot sit in a single-quoted run — it splits out
-        // as a double-quoted, non-`-l` key token.
-        assert_eq!(
-            send_keys_lines_literal("%0", b"a'b"),
-            vec![
-                "send-keys -t %0 -l 'a'\n",
-                "send-keys -t %0 \"'\"\n",
-                "send-keys -t %0 -l 'b'\n"
-            ]
-        );
-        // Empty burst → no lines (keeps the FIFO in lockstep).
-        assert!(send_keys_lines_literal("%0", b"").is_empty());
-    }
-
-    #[test]
-    fn size_and_flow_control_lines() {
-        assert_eq!(refresh_size_line(80, 24), "refresh-client -C 80x24\n");  // x-form, NOT comma
-        assert_eq!(pause_after_line(2), "refresh-client -f pause-after=2\n");
-        assert_eq!(continue_pane_line("%5"), "refresh-client -A %5:continue\n");
+    fn size_line_uses_x_form() {
+        assert_eq!(refresh_size_line(80, 24), "refresh-client -C 80x24\n"); // x-form, NOT comma
     }
 }

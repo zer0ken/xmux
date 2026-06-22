@@ -18,6 +18,16 @@ impl Grid {
         self.parser.process(bytes);
     }
 
+    /// Wipes the grid to a blank slate (a fresh parser at the same size). Used when
+    /// the displayed session/window switches so stale cells from the previous
+    /// content never linger behind the new repaint — the mux sends a full redraw on
+    /// switch-client / select-window, so the cleared grid fills with the new content
+    /// rather than leaving residue.
+    pub fn clear(&mut self) {
+        let (rows, cols) = self.parser.screen().size();
+        self.parser = vt100::Parser::new(rows, cols, 0);
+    }
+
     pub fn resize(&mut self, rows: u16, cols: u16) {
         self.parser.screen_mut().set_size(rows, cols);
     }
@@ -45,6 +55,12 @@ impl Grid {
     /// Whether the child has hidden its cursor.
     pub fn hide_cursor(&self) -> bool {
         self.parser.screen().hide_cursor()
+    }
+
+    /// Whether the grid has no visible content (all blank) — used to diagnose an
+    /// attachment whose PTY child has not produced output yet.
+    pub fn is_blank(&self) -> bool {
+        self.parser.screen().contents().trim().is_empty()
     }
 
     /// Writes a top-left clip of the grid into `area` of `buf`, mapping each
@@ -130,6 +146,17 @@ mod tests {
             vt_color_to_ratatui(vt100::Color::Rgb(10, 20, 30)),
             RColor::Rgb(10, 20, 30)
         );
+    }
+
+    #[test]
+    fn clear_blanks_the_grid() {
+        // On a session/window switch the grid is wiped so no stale cells linger
+        // behind the mux's fresh repaint.
+        let mut g = Grid::new(24, 80);
+        g.feed(b"residue content that must vanish");
+        assert!(!g.is_blank(), "precondition: grid has content");
+        g.clear();
+        assert!(g.is_blank(), "clear wipes all visible content");
     }
 
     #[test]

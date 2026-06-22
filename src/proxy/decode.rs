@@ -33,20 +33,21 @@ impl KeyDecoder {
                         // j now points at the final byte.
                         let final_byte = self.buf[j];
                         let csi_len = j + 1 - i; // total bytes: ESC [ params... final
-                        // Bare arrows have no params/intermediates (seq_start == j).
-                        if j == seq_start {
-                            let code = match final_byte {
-                                b'A' => Some(KeyCode::Up),
-                                b'B' => Some(KeyCode::Down),
-                                b'C' => Some(KeyCode::Right),
-                                b'D' => Some(KeyCode::Left),
-                                _ => None,
-                            };
-                            if let Some(c) = code {
-                                out.push(KeyEvent::new(c, KeyModifiers::NONE));
-                                i += csi_len;
-                                continue;
-                            }
+                        // Arrows, bare (`ESC[A`) or with a modifier (`ESC[1;5A` =
+                        // Ctrl-Up): the params between `[` and the final byte carry the
+                        // modifier code in their 2nd `;`-field.
+                        let code = match final_byte {
+                            b'A' => Some(KeyCode::Up),
+                            b'B' => Some(KeyCode::Down),
+                            b'C' => Some(KeyCode::Right),
+                            b'D' => Some(KeyCode::Left),
+                            _ => None,
+                        };
+                        if let Some(c) = code {
+                            let mods = csi_modifiers(&self.buf[seq_start..j]);
+                            out.push(KeyEvent::new(c, mods));
+                            i += csi_len;
+                            continue;
                         }
                         // Any other complete CSI — consume silently (no Esc spurion).
                         i += csi_len;
@@ -81,6 +82,26 @@ fn utf8_len(lead: u8) -> usize {
     if lead < 0x80 { 1 } else if lead < 0xe0 { 2 } else if lead < 0xf0 { 3 } else { 4 }
 }
 
+/// Decodes the modifier from a CSI arrow's params (`1;<m>` → bitfield in `m-1`:
+/// Shift=1, Alt=2, Ctrl=4). Empty/absent params (a bare arrow) → no modifiers.
+fn csi_modifiers(params: &[u8]) -> KeyModifiers {
+    let m = std::str::from_utf8(params)
+        .ok()
+        .and_then(|s| s.split(';').nth(1))
+        .and_then(|n| n.parse::<u8>().ok());
+    match m {
+        Some(m) if m >= 1 => {
+            let bits = m - 1;
+            let mut mods = KeyModifiers::NONE;
+            if bits & 1 != 0 { mods |= KeyModifiers::SHIFT; }
+            if bits & 2 != 0 { mods |= KeyModifiers::ALT; }
+            if bits & 4 != 0 { mods |= KeyModifiers::CONTROL; }
+            mods
+        }
+        _ => KeyModifiers::NONE,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,6 +129,21 @@ mod tests {
         assert_eq!(codes(b"\x1b[B"), vec![KeyCode::Down]);
         assert_eq!(codes(b"\x1b[C"), vec![KeyCode::Right]);
         assert_eq!(codes(b"\x1b[D"), vec![KeyCode::Left]);
+    }
+
+    #[test]
+    fn csi_arrows_with_ctrl_modifier() {
+        // `ESC[1;5A` = Ctrl+Up; the modifier param `5` = 1 + Ctrl(4). Bare arrows
+        // stay NONE. Used for the level-aware Ctrl+↑/↓ sibling navigation.
+        let ev = KeyDecoder::new().feed(b"\x1b[1;5A");
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0].code, KeyCode::Up);
+        assert!(ev[0].modifiers.contains(KeyModifiers::CONTROL));
+        let down = KeyDecoder::new().feed(b"\x1b[1;5B");
+        assert_eq!(down[0].code, KeyCode::Down);
+        assert!(down[0].modifiers.contains(KeyModifiers::CONTROL));
+        // A bare arrow carries no modifiers.
+        assert!(KeyDecoder::new().feed(b"\x1b[A")[0].modifiers.is_empty());
     }
 
     #[test]
