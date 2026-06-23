@@ -1185,6 +1185,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 let term_area = ratatui::layout::Rect::new(term_x, 0, vw, vh);
                 let mut non_mouse: Vec<u8> = Vec::with_capacity(bytes.len());
                 let mut mouse_focus_toggle = false;
+                let mut wheel_scrolled = false;
                 {
                     let mut i = 0;
                     while i < bytes.len() {
@@ -1196,12 +1197,6 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             let is_press = ev.pressed && (ev.cb & 0x60) == 0;
                             // Wheel events carry the 0x40 bit (cb 64=up, 65=down; +16=Ctrl).
                             let is_wheel = ev.pressed && (ev.cb & 0x40) != 0;
-                            // DIAG (temp): log every wheel-bit event so a "2 notches per move"
-                            // report can be traced to what the terminal actually sends per notch
-                            // (event count + cb + press/release). XMUX_DEBUG-gated.
-                            if (ev.cb & 0x40) != 0 {
-                                dbg_log(&env.xmux_dir, &format!("WHEEL cb={} pressed={} col={} row={}", ev.cb, ev.pressed, ev.col, ev.row));
-                            }
                             // Divider drag: grab the divider rule (the column at the effective
                             // tree width, only when the tree is shown) with the left button and
                             // drag to resize. Once grabbed it owns every mouse event until the
@@ -1248,17 +1243,20 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                 }
                             }
                             if is_wheel && app.is_overlay() {
-                                // Tree focus: wheel scrolls the cursor (↑/↓ siblings); Ctrl+wheel
-                                // changes level (← ascend / → descend). Inject the equivalent arrow
-                                // bytes so the normal tree path (decode → handle_key → ensure host)
-                                // drives it — no duplicated nav logic.
-                                let arrow: &[u8] = match ((ev.cb & 0x10) != 0, (ev.cb & 0x01) != 0) {
-                                    (false, false) => b"\x1b[A", // wheel up → up
-                                    (false, true) => b"\x1b[B",  // wheel down → down
-                                    (true, false) => b"\x1b[D",  // Ctrl+wheel up → ascend
-                                    (true, true) => b"\x1b[C",   // Ctrl+wheel down → descend
-                                };
-                                non_mouse.extend_from_slice(arrow);
+                                let down = (ev.cb & 0x01) != 0;
+                                if (ev.cb & 0x10) != 0 {
+                                    // Ctrl+wheel → change level (← ascend / → descend); inject the
+                                    // arrow so the tree path (decode → handle_key → ensure) drives it.
+                                    non_mouse.extend_from_slice(if down { b"\x1b[C" } else { b"\x1b[D" });
+                                } else {
+                                    // Plain wheel → scroll the cursor LINEARLY through every row
+                                    // (move_selection), like any list. NOT sibling-cycle: arrows do
+                                    // that (move_sibling), but it wraps within a level, so a 2-sibling
+                                    // level just bounces — the "two notches per move" report.
+                                    switcher.mouse_scroll(down);
+                                    wheel_scrolled = true;
+                                    dirty = true;
+                                }
                             } else if is_press && app.is_overlay() && in_mux.is_some() {
                                 app.toggle(); // tree → mux focus
                                 mouse_focus_toggle = true;
@@ -1300,6 +1298,11 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 }
                 if mouse_focus_toggle {
                     dirty = true;
+                }
+                if wheel_scrolled {
+                    // The plain-wheel scroll moved the cursor; connect the host it landed on
+                    // so its subtree streams in (mirrors handle_tree_bytes's ensure step).
+                    ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows, tree_width);
                 }
                 // Resize-repeat: while the window from a prefix-driven resize is open, a
                 // bare Ctrl+←/→ (no prefix, in either focus) keeps resizing and refreshes
