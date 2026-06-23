@@ -222,5 +222,7 @@ config.toml ──load──▶ Config
 - **4) 포커스 표시 중 구분선 상하 분할**: `render_divider`가 accent(green) 절반의 위치로 활성 쪽을 표시(상단=트리, 하단=mux). 색은 현재 green/darkgray 하드코딩.
 - **help 팝업 CJK 안전 여백**: `popup_clear_rect`가 팝업 외곽선 좌우로 반각 1칸씩 Clear 여백을 둬 경계에 걸친 전각문자 잔상을 제거.
 - **트리 너비 런타임 영속화**: prefix h/l로 조정한 `tree_width_natural`을 `state`(`~/.xmux/tree_width`)에 저장하고 다음 실행에 복원(범위 밖 stale 값은 클램프). 설정 파일 `tree-width` 초기값(1번)과는 별개 — 런타임 조정값 유지 요구를 충족.
+- **prefix 명령 focus 일관화**: help(`?` 토글)·너비(`h`/`l`·`Ctrl+←/→`) 명령이 트리·mux 포커스 **양쪽**에서 동일하게 동작(`TermInput`에 `ShowHelp`/`Width` 액션 추가, `apply_width_delta`로 적용 단일화). focus 의존은 입력 전달·토글 방향·literal prefix에만 남김.
+- **tmux식 반복 리사이즈**: prefix로 리사이즈하면 `RESIZE_REPEAT_MS`(400ms) "반복 창"이 열려, 그동안 prefix 없이 `Ctrl+←/→`만으로 계속 리사이즈되고 매 입력마다 창이 갱신됨(`repeat_until` + `ctrl_arrow_delta`). 화살표 아닌 키/타임아웃 시 종료. 양쪽 포커스 공통.
 
 별도 회차(미구현): `[ui] tree-width` 설정 키(파일 기반 초기값), `[ui.style]`/`[ui.keys]`(색·키 설정화 = `COLOR_*`/Theme/Keymap), 그리고 4번의 **비활성 페인 흐림**(`dim_inactive`/`window-style` 대응)과 구분선 accent 색의 설정화.

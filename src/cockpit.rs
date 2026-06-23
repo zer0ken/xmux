@@ -69,8 +69,36 @@ const RECONNECT_MS: u64 = 2000;
 const TREE_WIDTH_MIN: u16 = 20;
 const TREE_WIDTH_MAX: u16 = 100;
 
+/// How long the resize-repeat window stays open after a prefix-driven tree resize:
+/// during it a bare Ctrl+←/→ (no prefix) keeps resizing and refreshes the window —
+/// tmux's `bind -r` repeat applied to the tree width. Each repeat resets the window.
+const RESIZE_REPEAT_MS: u64 = 400;
+
 fn adjust_tree_width(w: u16, delta: i32) -> u16 {
     (w as i32 + delta).clamp(TREE_WIDTH_MIN as i32, TREE_WIDTH_MAX as i32) as u16
+}
+
+/// Applies a tree-width delta to the natural width: clamps to the allowed range and
+/// persists it. A no-op for a zero delta. Shared by the tree- and mux-focus resize
+/// paths so the adjust + save lives in one place.
+fn apply_width_delta(wd: i32, natural: &mut u16, xmux_dir: &std::path::Path) {
+    if wd == 0 {
+        return;
+    }
+    *natural = adjust_tree_width(*natural, wd);
+    crate::state::save_tree_width(xmux_dir, *natural);
+}
+
+/// The resize delta for a lone Ctrl+←/→ key — the only keys that continue a
+/// resize-repeat window: `ESC [ 1 ; 5 D` → -1 (narrower), `ESC [ 1 ; 5 C` → +1 (wider).
+/// `None` for anything else, which ends the repeat. Restricted to Ctrl-arrows (not bare
+/// arrows or h/l) so the window never hijacks navigation or typed pane input.
+fn ctrl_arrow_delta(bytes: &[u8]) -> Option<i32> {
+    match bytes {
+        b"\x1b[1;5C" => Some(1),
+        b"\x1b[1;5D" => Some(-1),
+        _ => None,
+    }
 }
 
 /// The EFFECTIVE tree width to render and size the mux against. Hidden (0, mux
@@ -493,7 +521,7 @@ fn handle_tree_bytes(
                 KeyCode::Right if ctrl => width_delta = 1,
                 KeyCode::Char('h') => width_delta = -1,
                 KeyCode::Char('l') => width_delta = 1,
-                KeyCode::Char('?') => switcher.show_help(),
+                KeyCode::Char('?') => switcher.toggle_help(),
                 // prefix →/Tab: focus the mux pane (prefix ←/Esc: focus the tree, where
                 // we already are — a no-op that falls through).
                 KeyCode::Right | KeyCode::Tab => focus_terminal = true,
@@ -749,6 +777,9 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     );
     let mut tree_width = tree_width_natural;
     let hide_tree_on_focus = env.cfg.ui_hide_tree_on_focus();
+    // The resize-repeat window: set when a prefix-driven resize fires, it lets a bare
+    // Ctrl+←/→ keep resizing (no re-prefix) until it lapses (see RESIZE_REPEAT_MS).
+    let mut repeat_until: Option<std::time::Instant> = None;
 
     // The control-mode metadata clients: one per remote host.
     let (host_tx, mut host_rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
@@ -1142,7 +1173,23 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 if mouse_focus_toggle {
                     dirty = true;
                 }
-                if app.is_overlay() {
+                // Resize-repeat: while the window from a prefix-driven resize is open, a
+                // lone Ctrl+←/→ (no prefix, in either focus) keeps resizing and refreshes
+                // the window. Any other key (or a lapse) ends it and falls through to the
+                // normal tree/mux routing below.
+                let mut consumed_by_repeat = false;
+                if repeat_until.is_some_and(|d| std::time::Instant::now() < d) {
+                    if let Some(d) = ctrl_arrow_delta(&non_mouse) {
+                        apply_width_delta(d, &mut tree_width_natural, &env.xmux_dir);
+                        repeat_until =
+                            Some(std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS));
+                        dirty = true;
+                        consumed_by_repeat = true;
+                    } else {
+                        repeat_until = None;
+                    }
+                }
+                if !consumed_by_repeat && app.is_overlay() {
                     let (ft, q, wd) = handle_tree_bytes(
                         &non_mouse, &mut tree_decoder, &mut tree_armed, prefix, &mut switcher,
                         &mut mgr, &env, &ops, &op_tx, &enum_tx, cols, body_rows, tree_width,
@@ -1150,14 +1197,15 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     focus_terminal = ft;
                     quit = q;
                     if wd != 0 {
-                        // Adjust only the natural width; the loop-top reconcile owns the
-                        // effective tree_width + the PTY resize and applies it next pass.
-                        tree_width_natural = adjust_tree_width(tree_width_natural, wd);
-                        crate::state::save_tree_width(&env.xmux_dir, tree_width_natural);
+                        // A prefix-driven resize: apply it and open the repeat window so the
+                        // next bare Ctrl+←/→ keeps resizing without re-pressing the prefix.
+                        apply_width_delta(wd, &mut tree_width_natural, &env.xmux_dir);
+                        repeat_until =
+                            Some(std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS));
                     }
-                } else {
+                } else if !consumed_by_repeat {
                     // TERMINAL focus: forward raw bytes to the selected session's PTY;
-                    // TermInput intercepts the prefix (→ tree / quit / literal prefix).
+                    // TermInput intercepts the prefix (→ tree / quit / help / resize / literal).
                     for action in term_input.feed(&non_mouse) {
                         match action {
                             TermAction::Forward(f) => registry.input(&display_key(&env, &selection), f),
@@ -1166,6 +1214,18 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                 tree_replay = rest;
                             }
                             TermAction::Quit => quit = true,
+                            TermAction::ShowHelp => {
+                                switcher.toggle_help();
+                                dirty = true;
+                            }
+                            TermAction::Width(d) => {
+                                // Same resize + repeat-window as the tree path, so a resize
+                                // started from the mux pane chains with bare Ctrl+←/→ too.
+                                apply_width_delta(d, &mut tree_width_natural, &env.xmux_dir);
+                                repeat_until = Some(
+                                    std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS),
+                                );
+                            }
                         }
                     }
                 }
@@ -1187,10 +1247,11 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         }
                         quit = quit || q;
                         if wd != 0 {
-                            // Adjust only the natural width; the loop-top reconcile owns the
-                            // effective tree_width + the PTY resize and applies it next pass.
-                            tree_width_natural = adjust_tree_width(tree_width_natural, wd);
-                            crate::state::save_tree_width(&env.xmux_dir, tree_width_natural);
+                            // A prefix-driven resize on the replayed bytes: apply + open the
+                            // repeat window, same as the direct tree-focus path above.
+                            apply_width_delta(wd, &mut tree_width_natural, &env.xmux_dir);
+                            repeat_until =
+                                Some(std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS));
                         }
                     }
                 }
@@ -1564,6 +1625,31 @@ mod tests {
         assert_eq!(reconciled_tree_width(true, true, 48), 0);
         // Mux focused + setting off: stays shown at natural width.
         assert_eq!(reconciled_tree_width(true, false, 48), 48);
+    }
+
+    #[test]
+    fn ctrl_arrow_delta_matches_only_ctrl_arrows() {
+        assert_eq!(ctrl_arrow_delta(b"\x1b[1;5C"), Some(1), "Ctrl-Right widens");
+        assert_eq!(ctrl_arrow_delta(b"\x1b[1;5D"), Some(-1), "Ctrl-Left narrows");
+        // Bare arrows, h/l, and anything with trailing bytes do NOT continue a repeat.
+        assert_eq!(ctrl_arrow_delta(b"\x1b[C"), None, "bare arrow is not a repeat key");
+        assert_eq!(ctrl_arrow_delta(b"l"), None, "h/l are not repeat keys");
+        assert_eq!(ctrl_arrow_delta(b"\x1b[1;5Cx"), None, "trailing bytes end the repeat");
+    }
+
+    #[test]
+    fn apply_width_delta_clamps_and_ignores_zero() {
+        let dir = std::env::temp_dir().join(format!("xmux-awd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut w = 48u16;
+        apply_width_delta(1, &mut w, &dir);
+        assert_eq!(w, 49);
+        apply_width_delta(0, &mut w, &dir);
+        assert_eq!(w, 49, "zero delta is a no-op");
+        let mut hi = TREE_WIDTH_MAX;
+        apply_width_delta(10, &mut hi, &dir);
+        assert_eq!(hi, TREE_WIDTH_MAX, "clamps at the max");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

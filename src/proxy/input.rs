@@ -1,12 +1,13 @@
 //! Terminal-focus input handling. When the terminal pane has focus every byte is
 //! forwarded raw to the session's active pane (so a real program — vim, a pager —
 //! sees exact input), EXCEPT a prefix (default `C-g`) followed by a command key,
-//! which is intercepted to leave the terminal: `prefix Left|Tab|Esc` returns focus to
-//! the tree, `prefix Right` keeps focus on the (already-focused) mux pane, `prefix q`
-//! quits, and a doubled prefix sends one literal
-//! prefix byte. The prefix is a C0 control byte, so it cannot collide with a UTF-8
-//! continuation byte or appear mid-CSI; bracketed paste is respected so a prefix
-//! pasted as data is never intercepted.
+//! which is intercepted: `prefix Left|Tab|Esc` returns focus to the tree, `prefix Right`
+//! keeps focus on the (already-focused) mux pane, `prefix q` quits, `prefix ?` toggles
+//! the keys help, `prefix h`/`l` and `prefix Ctrl+←/→` resize the tree, and a doubled
+//! prefix sends one literal prefix byte. The same command set works in tree focus, so a
+//! command behaves identically regardless of which pane holds focus. The prefix is a C0
+//! control byte, so it cannot collide with a UTF-8 continuation byte or appear mid-CSI;
+//! bracketed paste is respected so a prefix pasted as data is never intercepted.
 #[derive(Debug, PartialEq)]
 pub enum TermAction {
     /// Raw bytes to forward to the focused session's active pane.
@@ -17,6 +18,11 @@ pub enum TermAction {
     FocusTree(Vec<u8>),
     /// `prefix` then `q` — quit the cockpit.
     Quit,
+    /// `prefix ?` — toggle the keys help overlay. Focus stays on the mux pane.
+    ShowHelp,
+    /// `prefix h`/`l` or `prefix Ctrl+←/→` — adjust the tree width by this signed
+    /// delta. Focus stays on the mux pane (the resize is a layout change).
+    Width(i32),
 }
 
 pub struct TermInput {
@@ -68,6 +74,39 @@ impl TermInput {
                     // Doubled prefix → one literal prefix byte; rest is normal input.
                     fwd.push(self.prefix);
                     i += 1;
+                    continue;
+                }
+                // prefix ? / h / l keep mux focus (help toggle, tree resize), so the
+                // rest of the read still forwards to the pane — flush, emit, continue.
+                if b0 == b'?' {
+                    if !fwd.is_empty() {
+                        out.push(TermAction::Forward(std::mem::take(&mut fwd)));
+                    }
+                    out.push(TermAction::ShowHelp);
+                    i += 1;
+                    continue;
+                }
+                if b0 == b'h' || b0 == b'l' {
+                    if !fwd.is_empty() {
+                        out.push(TermAction::Forward(std::mem::take(&mut fwd)));
+                    }
+                    out.push(TermAction::Width(if b0 == b'l' { 1 } else { -1 }));
+                    i += 1;
+                    continue;
+                }
+                // prefix Ctrl+←/→ (ESC [ 1 ; 5 D/C) → resize. Matched before the plain
+                // ESC/arrow focus handling below so the Ctrl-arrow is not read as Esc.
+                if b0 == 0x1b
+                    && bytes[i..].len() >= 6
+                    && bytes[i + 1] == b'['
+                    && &bytes[i + 2..i + 5] == b"1;5"
+                    && matches!(bytes[i + 5], b'C' | b'D')
+                {
+                    if !fwd.is_empty() {
+                        out.push(TermAction::Forward(std::mem::take(&mut fwd)));
+                    }
+                    out.push(TermAction::Width(if bytes[i + 5] == b'C' { 1 } else { -1 }));
+                    i += 6;
                     continue;
                 }
                 // Tab, or any ESC sequence (Esc / Left / Right / other arrows) →
@@ -207,6 +246,53 @@ mod tests {
         let mut t = m();
         t.feed(&[0x07]);
         assert_eq!(t.feed(b"q"), vec![TermAction::Quit]);
+    }
+
+    #[test]
+    fn prefix_then_question_toggles_help() {
+        let mut t = m();
+        t.feed(&[0x07]);
+        assert_eq!(t.feed(b"?"), vec![TermAction::ShowHelp]);
+    }
+
+    #[test]
+    fn prefix_then_h_or_l_resizes() {
+        let mut t = m();
+        t.feed(&[0x07]);
+        assert_eq!(t.feed(b"h"), vec![TermAction::Width(-1)], "h narrows");
+        let mut t2 = m();
+        t2.feed(&[0x07]);
+        assert_eq!(t2.feed(b"l"), vec![TermAction::Width(1)], "l widens");
+    }
+
+    #[test]
+    fn prefix_then_ctrl_arrow_resizes() {
+        let mut t = m();
+        t.feed(&[0x07]);
+        assert_eq!(t.feed(b"\x1b[1;5C"), vec![TermAction::Width(1)], "Ctrl-Right widens");
+        let mut t2 = m();
+        t2.feed(&[0x07]);
+        assert_eq!(t2.feed(b"\x1b[1;5D"), vec![TermAction::Width(-1)], "Ctrl-Left narrows");
+    }
+
+    #[test]
+    fn prefix_command_keeps_focus_and_forwards_rest() {
+        // help/resize keep mux focus, so trailing bytes in the same read still forward.
+        let mut t = m();
+        assert_eq!(
+            t.feed(b"\x07?abc"),
+            vec![TermAction::ShowHelp, TermAction::Forward(b"abc".to_vec())]
+        );
+        // Bytes before the prefix flush first, preserving order around the command.
+        let mut t2 = m();
+        assert_eq!(
+            t2.feed(b"ab\x07lcd"),
+            vec![
+                TermAction::Forward(b"ab".to_vec()),
+                TermAction::Width(1),
+                TermAction::Forward(b"cd".to_vec()),
+            ]
+        );
     }
 
     #[test]

@@ -860,10 +860,16 @@ impl Switcher {
 
     // --- key handling -------------------------------------------------------
 
-    /// Open the modal keys overlay. Driven by the cockpit's `prefix ?` (tree focus);
-    /// any key dismisses it (see `handle_key`).
+    /// Open the modal keys overlay. In tree focus any key then dismisses it (see
+    /// `handle_key`); [`toggle_help`] is the focus-independent open/close entry point.
     pub fn show_help(&mut self) {
         self.show_help = true;
+    }
+
+    /// Toggle the keys overlay. Driven by `prefix ?` in EITHER focus so help opens
+    /// and closes the same way regardless of which pane holds focus.
+    pub fn toggle_help(&mut self) {
+        self.show_help = !self.show_help;
     }
 
     pub fn handle_key(&mut self, ev: KeyEvent) {
@@ -1655,7 +1661,7 @@ impl Switcher {
             Key("Enter · C-g →", "focus the mux pane"),
             Key("C-g Tab", "toggle focus between tree and mux"),
             Key("C-g ← · C-g Esc", "focus the tree"),
-            Key("C-g C-←/→ · h/l", "resize the tree column"),
+            Key("C-g C-←/→ · h/l", "resize the tree (C-←/→ then repeats briefly)"),
             Key("C-g ?", "toggle this help"),
             Key("click a pane", "focus that pane"),
             Key("C-g q", "quit"),
@@ -3047,6 +3053,16 @@ mod tests {
         // Box flush against both edges: no room for margin → clamps to the area.
         let clear = popup_clear_rect(Rect::new(0, 0, 20, 10), area);
         assert_eq!((clear.x, clear.width), (0, 20));
+    }
+
+    #[test]
+    fn toggle_help_flips_visibility() {
+        let mut sw = Switcher::new(sample());
+        assert!(!sw.show_help);
+        sw.toggle_help();
+        assert!(sw.show_help);
+        sw.toggle_help();
+        assert!(!sw.show_help);
     }
 
     #[tokio::test]
