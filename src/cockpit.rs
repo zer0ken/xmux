@@ -89,16 +89,21 @@ fn apply_width_delta(wd: i32, natural: &mut u16, xmux_dir: &std::path::Path) {
     crate::state::save_tree_width(xmux_dir, *natural);
 }
 
-/// The resize delta for a lone Ctrl+←/→ key — the only keys that continue a
-/// resize-repeat window: `ESC [ 1 ; 5 D` → -1 (narrower), `ESC [ 1 ; 5 C` → +1 (wider).
-/// `None` for anything else, which ends the repeat. Restricted to Ctrl-arrows (not bare
-/// arrows or h/l) so the window never hijacks navigation or typed pane input.
-fn ctrl_arrow_delta(bytes: &[u8]) -> Option<i32> {
-    match bytes {
-        b"\x1b[1;5C" => Some(1),
-        b"\x1b[1;5D" => Some(-1),
-        _ => None,
+/// If `bytes` STARTS with a Ctrl+←/→ (`ESC [ 1 ; 5 D/C`), the resize delta and the
+/// 6-byte length it consumed; else `None`. Peeling leading Ctrl-arrows (rather than
+/// matching the whole read) lets a coalesced autorepeat burst — several presses
+/// delivered in one stdin read — keep resizing instead of ending the repeat window.
+/// Restricted to Ctrl-arrows (not bare arrows or h/l) so it never hijacks navigation
+/// or typed pane input outside the window.
+fn leading_ctrl_arrow(bytes: &[u8]) -> Option<(i32, usize)> {
+    if bytes.len() >= 6 && bytes[0] == 0x1b && bytes[1] == b'[' && &bytes[2..5] == b"1;5" {
+        match bytes[5] {
+            b'C' => return Some((1, 6)),
+            b'D' => return Some((-1, 6)),
+            _ => {}
+        }
     }
+    None
 }
 
 /// The EFFECTIVE tree width to render and size the mux against. Hidden (0, mux
@@ -1174,19 +1179,37 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     dirty = true;
                 }
                 // Resize-repeat: while the window from a prefix-driven resize is open, a
-                // lone Ctrl+←/→ (no prefix, in either focus) keeps resizing and refreshes
-                // the window. Any other key (or a lapse) ends it and falls through to the
-                // normal tree/mux routing below.
+                // bare Ctrl+←/→ (no prefix, in either focus) keeps resizing and refreshes
+                // the window. Gated on NOT being mid-prefix (an armed prefix's next key is
+                // a command, not a repeat — else skipping the input path would leave the
+                // prefix armed and mis-read the following key). A pure-mouse read (empty
+                // non_mouse) leaves the window untouched. Leading Ctrl-arrows are peeled off
+                // (handles a coalesced autorepeat burst); any remaining bytes end the window
+                // and fall through to the normal tree/mux routing below.
                 let mut consumed_by_repeat = false;
-                if repeat_until.is_some_and(|d| std::time::Instant::now() < d) {
-                    if let Some(d) = ctrl_arrow_delta(&non_mouse) {
+                if repeat_until.is_some_and(|d| std::time::Instant::now() < d)
+                    && !tree_armed
+                    && !term_input.is_armed()
+                    && !non_mouse.is_empty()
+                {
+                    let mut n = 0;
+                    while let Some((d, len)) = leading_ctrl_arrow(&non_mouse[n..]) {
                         apply_width_delta(d, &mut tree_width_natural, &env.xmux_dir);
-                        repeat_until =
-                            Some(std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS));
+                        n += len;
+                    }
+                    if n > 0 {
+                        non_mouse.drain(0..n);
                         dirty = true;
-                        consumed_by_repeat = true;
+                        if non_mouse.is_empty() {
+                            repeat_until = Some(
+                                std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS),
+                            );
+                            consumed_by_repeat = true;
+                        } else {
+                            repeat_until = None; // trailing non-arrow bytes end + route below
+                        }
                     } else {
-                        repeat_until = None;
+                        repeat_until = None; // first key isn't a Ctrl-arrow → end the window
                     }
                 }
                 if !consumed_by_repeat && app.is_overlay() {
@@ -1628,13 +1651,17 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_arrow_delta_matches_only_ctrl_arrows() {
-        assert_eq!(ctrl_arrow_delta(b"\x1b[1;5C"), Some(1), "Ctrl-Right widens");
-        assert_eq!(ctrl_arrow_delta(b"\x1b[1;5D"), Some(-1), "Ctrl-Left narrows");
-        // Bare arrows, h/l, and anything with trailing bytes do NOT continue a repeat.
-        assert_eq!(ctrl_arrow_delta(b"\x1b[C"), None, "bare arrow is not a repeat key");
-        assert_eq!(ctrl_arrow_delta(b"l"), None, "h/l are not repeat keys");
-        assert_eq!(ctrl_arrow_delta(b"\x1b[1;5Cx"), None, "trailing bytes end the repeat");
+    fn leading_ctrl_arrow_peels_one_and_ignores_others() {
+        assert_eq!(leading_ctrl_arrow(b"\x1b[1;5C"), Some((1, 6)), "Ctrl-Right widens");
+        assert_eq!(leading_ctrl_arrow(b"\x1b[1;5D"), Some((-1, 6)), "Ctrl-Left narrows");
+        // A LEADING Ctrl-arrow is peeled even with trailing bytes (the caller loops /
+        // routes the remainder) — this is what makes a coalesced autorepeat keep going.
+        assert_eq!(leading_ctrl_arrow(b"\x1b[1;5C\x1b[1;5C"), Some((1, 6)), "peels the first of a burst");
+        assert_eq!(leading_ctrl_arrow(b"\x1b[1;5Cx"), Some((1, 6)), "peels past trailing input");
+        // Bare arrows and h/l are not repeat keys.
+        assert_eq!(leading_ctrl_arrow(b"\x1b[C"), None, "bare arrow is not a repeat key");
+        assert_eq!(leading_ctrl_arrow(b"l"), None, "h/l are not repeat keys");
+        assert_eq!(leading_ctrl_arrow(b""), None, "empty is not a repeat key");
     }
 
     #[test]

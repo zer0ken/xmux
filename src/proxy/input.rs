@@ -45,6 +45,13 @@ impl TermInput {
         }
     }
 
+    /// Whether a prefix is armed awaiting its command key. The cockpit checks this so
+    /// its resize-repeat intercept does not skip a read while a prefix sequence is mid-flight
+    /// (which would leave the prefix armed and mis-read the following key as a command).
+    pub fn is_armed(&self) -> bool {
+        self.armed
+    }
+
     fn track_paste(&mut self, byte: u8) {
         self.paste_scan.push(byte);
         if self.paste_scan.len() > PASTE_START.len().max(PASTE_END.len()) {
