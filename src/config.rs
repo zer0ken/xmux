@@ -32,6 +32,11 @@ pub struct UiConfig {
     /// `set -g prefix`. Parsed by `proxy::term::parse_prefix`.
     #[serde(default = "default_prefix")]
     pub prefix: String,
+    /// When true, focusing the mux hides the tree and gives the mux the full
+    /// terminal width; the tree returns when focus returns to it. Default false
+    /// keeps the tree shown in both focus states.
+    #[serde(rename = "hide-tree-on-focus", default)]
+    pub hide_tree_on_focus: bool,
 }
 
 fn default_prefix() -> String {
@@ -42,6 +47,7 @@ impl Default for UiConfig {
     fn default() -> Self {
         UiConfig {
             prefix: default_prefix(),
+            hide_tree_on_focus: false,
         }
     }
 }
@@ -110,6 +116,11 @@ impl Config {
     /// xmux's configured prefix spec.
     pub fn ui_prefix(&self) -> &str {
         &self.ui.prefix
+    }
+
+    /// Whether focusing the mux hides the tree (full-width mux). Default false.
+    pub fn ui_hide_tree_on_focus(&self) -> bool {
+        self.ui.hide_tree_on_focus
     }
 
     /// Merges ssh-config discovery with the config file. Discovered aliases come
@@ -485,6 +496,29 @@ bogus = "nope"
             warnings.iter().any(|w| w.contains("ui.keep_cap")),
             "keep_cap is now an unknown key: {warnings:?}"
         );
+    }
+
+    #[test]
+    fn ui_hide_tree_on_focus_round_trip() {
+        // Missing file → false.
+        let missing = std::env::temp_dir().join("xmux-hide-absent-xyz.toml");
+        assert!(!load(&missing).unwrap().ui_hide_tree_on_focus());
+
+        // [ui] present but key missing → false; prefix still loads.
+        let path = write_temp("[ui]\nprefix = \"C-g\"\n", "hide-missing.toml");
+        let cfg = load(&path).unwrap();
+        assert!(!cfg.ui_hide_tree_on_focus());
+        assert_eq!(cfg.ui_prefix(), "C-g");
+
+        // Explicit true.
+        let path = write_temp("[ui]\nhide-tree-on-focus = true\n", "hide-true.toml");
+        let cfg = load(&path).unwrap();
+        assert!(cfg.ui_hide_tree_on_focus());
+        assert_eq!(cfg.ui_prefix(), "C-g"); // prefix unaffected, still defaults
+
+        // Explicit false.
+        let path = write_temp("[ui]\nhide-tree-on-focus = false\n", "hide-false.toml");
+        assert!(!load(&path).unwrap().ui_hide_tree_on_focus());
     }
 
     #[test]
