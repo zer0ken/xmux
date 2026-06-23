@@ -89,6 +89,12 @@ fn apply_width_delta(wd: i32, natural: &mut u16, xmux_dir: &std::path::Path) {
     crate::state::save_tree_width(xmux_dir, *natural);
 }
 
+/// The tree width a divider drag to 1-based screen column `col` sets: the dragged
+/// column becomes the divider position (= the tree width), clamped to the allowed range.
+fn divider_drag_width(col: u16) -> u16 {
+    col.saturating_sub(1).clamp(TREE_WIDTH_MIN, TREE_WIDTH_MAX)
+}
+
 /// If `bytes` STARTS with a Ctrl+←/→ (`ESC [ 1 ; 5 D/C`), the resize delta and the
 /// 6-byte length it consumed; else `None`. Peeling leading Ctrl-arrows (rather than
 /// matching the whole read) lets a coalesced autorepeat burst — several presses
@@ -785,6 +791,8 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     // The resize-repeat window: set when a prefix-driven resize fires, it lets a bare
     // Ctrl+←/→ keep resizing (no re-prefix) until it lapses (see RESIZE_REPEAT_MS).
     let mut repeat_until: Option<std::time::Instant> = None;
+    // True while the left button is dragging the tree/mux divider rule to resize.
+    let mut dragging_divider = false;
 
     // The control-mode metadata clients: one per remote host.
     let (host_tx, mut host_rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
@@ -1141,6 +1149,32 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             let is_press = ev.pressed && (ev.cb & 0x60) == 0;
                             // Wheel events carry the 0x40 bit (cb 64=up, 65=down; +16=Ctrl).
                             let is_wheel = ev.pressed && (ev.cb & 0x40) != 0;
+                            // Divider drag: grab the divider rule (the column at the effective
+                            // tree width, only when the tree is shown) with the left button and
+                            // drag to resize. Once grabbed it owns every mouse event until the
+                            // button is released. Sets the NATURAL width; the loop-top reconcile
+                            // applies it and resizes the PTYs (same path as prefix h/l).
+                            let col0 = ev.col.saturating_sub(1); // 1-based SGR → 0-based screen col
+                            if dragging_divider {
+                                if !ev.pressed {
+                                    dragging_divider = false; // button up ends the drag
+                                } else if !is_wheel {
+                                    let target = divider_drag_width(ev.col);
+                                    if target != tree_width_natural {
+                                        tree_width_natural = target;
+                                        crate::state::save_tree_width(&env.xmux_dir, tree_width_natural);
+                                        dirty = true;
+                                    }
+                                }
+                                i += len;
+                                continue;
+                            }
+                            let is_left_press = is_press && (ev.cb & 0x03) == 0;
+                            if is_left_press && tree_width > 0 && col0 == tree_width {
+                                dragging_divider = true; // grabbed the divider
+                                i += len;
+                                continue;
+                            }
                             if is_wheel && app.is_overlay() {
                                 // Tree focus: wheel scrolls the cursor (↑/↓ siblings); Ctrl+wheel
                                 // changes level (← ascend / → descend). Inject the equivalent arrow
@@ -1677,6 +1711,14 @@ mod tests {
         apply_width_delta(10, &mut hi, &dir);
         assert_eq!(hi, TREE_WIDTH_MAX, "clamps at the max");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn divider_drag_width_clamps_to_range() {
+        // The dragged 1-based column becomes the 0-based tree width, clamped to range.
+        assert_eq!(divider_drag_width(51), 50);
+        assert_eq!(divider_drag_width(5), TREE_WIDTH_MIN, "too far left clamps to min");
+        assert_eq!(divider_drag_width(500), TREE_WIDTH_MAX, "too far right clamps to max");
     }
 
     #[test]

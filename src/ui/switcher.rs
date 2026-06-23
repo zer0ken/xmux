@@ -1664,6 +1664,7 @@ impl Switcher {
             Key("C-g C-←/→ · h/l", "resize the tree (C-←/→ then repeats briefly)"),
             Key("C-g ?", "toggle this help"),
             Key("click a pane", "focus that pane"),
+            Key("drag the divider", "resize the tree"),
             Key("C-g q", "quit"),
             Key("C-g C-g", "send a literal C-g to the mux"),
             Gap,
