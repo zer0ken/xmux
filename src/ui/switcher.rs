@@ -1472,15 +1472,31 @@ impl Switcher {
         }
     }
 
-    /// The single vertical rule between the tree (left) and terminal (right). Its
-    /// color marks the focused side — green when the terminal pane has focus, dim
-    /// otherwise — so the active side reads at a glance (tmux pane-border
-    /// convention). Replaces the per-pane box borders.
+    /// The vertical rule between the tree (left) and terminal (right). It splits into
+    /// a top and bottom half: the accent (green) half marks WHICH pane holds focus —
+    /// top = tree (left), bottom = mux (right) — and the other half stays dim. A single
+    /// vertical rule cannot lean left/right, so the accent half's position carries the
+    /// signal (adapting tmux's active-pane border). Replaces the per-pane box borders.
     fn render_divider(&self, frame: &mut Frame, area: Rect, terminal_focused: bool) {
-        let color = if terminal_focused { Color::Green } else { COLOR_HINT };
-        let bars = Text::from(
+        const ACCENT: Color = Color::Green;
+        let colors: Vec<Color> = if area.height <= 1 {
+            // Too short to split: show the active-marker color in the single cell.
+            vec![ACCENT; area.height as usize]
+        } else {
+            let top_rows = area.height.div_ceil(2); // top takes the extra row on odd heights
+            let (top, bottom) = if terminal_focused {
+                (COLOR_HINT, ACCENT) // mux focused → accent on the bottom (mux side)
+            } else {
+                (ACCENT, COLOR_HINT) // tree focused → accent on the top (tree side)
+            };
             (0..area.height)
-                .map(|_| Line::from(Span::styled("│", Style::default().fg(color))))
+                .map(|y| if y < top_rows { top } else { bottom })
+                .collect()
+        };
+        let bars = Text::from(
+            colors
+                .into_iter()
+                .map(|c| Line::from(Span::styled("│", Style::default().fg(c))))
                 .collect::<Vec<_>>(),
         );
         frame.render_widget(Paragraph::new(bars), area);
@@ -1682,7 +1698,9 @@ impl Switcher {
         let w = (inner_w + 3).min(area.width); // borders + a cell of right padding
         let h = (lines.len() as u16 + 2).min(area.height);
         let rect = centered_rect(w, h, area);
-        frame.render_widget(Clear, rect);
+        // Clear one extra cell on each horizontal side so a double-width (CJK) glyph
+        // straddling the box's left/right border edge has its orphaned half wiped too.
+        frame.render_widget(Clear, popup_clear_rect(rect, area));
         frame.render_widget(
             Paragraph::new(Text::from(lines)).block(Block::bordered().title(" keys ")),
             rect,
@@ -1762,6 +1780,21 @@ fn centered_rect(w: u16, h: u16, area: Rect) -> Rect {
         y,
         width: w,
         height: h,
+    }
+}
+
+/// The region to `Clear` behind a popup: the box plus one half-width cell of margin
+/// on each horizontal side, clamped to `area`. The margin wipes a double-width (CJK)
+/// glyph straddling the box's left/right border edge, whose orphaned half would
+/// otherwise render as garbage beside the box.
+fn popup_clear_rect(box_rect: Rect, area: Rect) -> Rect {
+    let x = box_rect.x.saturating_sub(1).max(area.x);
+    let right = (box_rect.x + box_rect.width + 1).min(area.x + area.width);
+    Rect {
+        x,
+        y: box_rect.y,
+        width: right.saturating_sub(x),
+        height: box_rect.height,
     }
 }
 
@@ -2976,23 +3009,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn divider_color_marks_the_focused_side() {
-        // The single rule between tree and terminal is green when the terminal
-        // pane has focus, dim otherwise — the only focus indicator (tmux-style).
+    async fn divider_splits_top_bottom_to_mark_focused_side() {
+        // The rule splits into halves: the accent (green) half marks WHICH pane has
+        // focus — top = tree (left), bottom = mux (right) — and the other half is dim.
         let backend = TestBackend::new(100, 30);
         let mut term = Terminal::new(backend).unwrap();
         let mut sw = Switcher::new(sample());
-        let div_x = TREE_WIDTH;
-        let divider_is_green = |buf: &Buffer| {
-            (0..buf.area.height)
-                .any(|y| buf[(div_x, y)].symbol() == "│" && buf[(div_x, y)].fg == Color::Green)
-        };
+        let x = TREE_WIDTH;
+        let (top, bottom) = (2u16, 27u16); // within the top / bottom halves of height 30
+        let fg = |buf: &Buffer, y: u16| buf[(x, y)].fg;
 
+        // Mux focused: accent on the bottom (mux side), dim on top.
         term.draw(|f| sw.render(f, None, true, TREE_WIDTH)).unwrap();
-        assert!(divider_is_green(term.backend().buffer()), "terminal-focused divider is green");
+        let buf = term.backend().buffer().clone();
+        assert_eq!(buf[(x, top)].symbol(), "│", "divider still drawn");
+        assert_eq!(fg(&buf, bottom), Color::Green, "mux focus: bottom half accent");
+        assert_eq!(fg(&buf, top), Color::DarkGray, "mux focus: top half dim");
 
+        // Tree focused: accent on the top (tree side), dim on bottom.
         term.draw(|f| sw.render(f, None, false, TREE_WIDTH)).unwrap();
-        assert!(!divider_is_green(term.backend().buffer()), "tree-focused divider is not green");
+        let buf = term.backend().buffer().clone();
+        assert_eq!(fg(&buf, top), Color::Green, "tree focus: top half accent");
+        assert_eq!(fg(&buf, bottom), Color::DarkGray, "tree focus: bottom half dim");
+    }
+
+    #[test]
+    fn popup_clear_rect_adds_one_cell_margin_each_side() {
+        let area = Rect::new(0, 0, 100, 30);
+        let clear = popup_clear_rect(Rect::new(40, 10, 20, 8), area);
+        assert_eq!((clear.x, clear.width), (39, 22), "1-cell margin left and right");
+        assert_eq!((clear.y, clear.height), (10, 8), "vertical extent unchanged");
+    }
+
+    #[test]
+    fn popup_clear_rect_clamps_at_area_edges() {
+        let area = Rect::new(0, 0, 20, 10);
+        // Box flush against both edges: no room for margin → clamps to the area.
+        let clear = popup_clear_rect(Rect::new(0, 0, 20, 10), area);
+        assert_eq!((clear.x, clear.width), (0, 20));
     }
 
     #[tokio::test]

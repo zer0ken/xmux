@@ -217,4 +217,9 @@ config.toml ──load──▶ Config
 
 ### 이번 회차 구현 범위
 
-위 4개 기능 중 **5) hide-tree-on-focus만** 구현한다. 나머지(tree-width·style·keys·포커스 표시)는 설계만 유지, 별도 회차. 구현 슬라이스: config.rs(필드+헬퍼+테스트), switcher.rs(`render`/`terminal_view_size`의 tree_width==0 sentinel+테스트), cockpit.rs(`eff_tree_width`+포커스 전환 resize). `terminal_view_size`가 0 sentinel을 다루므로 switcher.rs의 일부 함수만 건드리고 COLOR_*/Theme/Keymap은 손대지 않는다.
+구현된 것:
+- **5) hide-tree-on-focus**: config.rs(필드+헬퍼+테스트), switcher.rs(`render`/`terminal_view_size`의 tree_width==0 sentinel+테스트), cockpit.rs(`tree_width`=effective + `tree_width_natural` + 루프 최상단 reconcile가 effective width·resize의 단일 소유자).
+- **4) 포커스 표시 중 구분선 상하 분할**: `render_divider`가 accent(green) 절반의 위치로 활성 쪽을 표시(상단=트리, 하단=mux). 색은 현재 green/darkgray 하드코딩.
+- **help 팝업 CJK 안전 여백**: `popup_clear_rect`가 팝업 외곽선 좌우로 반각 1칸씩 Clear 여백을 둬 경계에 걸친 전각문자 잔상을 제거.
+
+별도 회차(미구현): tree-width 초기값, `[ui.style]`/`[ui.keys]`(색·키 설정화 = `COLOR_*`/Theme/Keymap), 그리고 4번의 **비활성 페인 흐림**(`dim_inactive`/`window-style` 대응)과 구분선 accent 색의 설정화.
