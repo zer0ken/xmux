@@ -1157,12 +1157,14 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             let col0 = ev.col.saturating_sub(1); // 1-based SGR → 0-based screen col
                             if dragging_divider {
                                 if !ev.pressed {
-                                    dragging_divider = false; // button up ends the drag
+                                    // Button up ends the drag; persist the final width once
+                                    // (motion resizes live but does not write per cell).
+                                    dragging_divider = false;
+                                    crate::state::save_tree_width(&env.xmux_dir, tree_width_natural);
                                 } else if !is_wheel {
                                     let target = divider_drag_width(ev.col);
                                     if target != tree_width_natural {
                                         tree_width_natural = target;
-                                        crate::state::save_tree_width(&env.xmux_dir, tree_width_natural);
                                         dirty = true;
                                     }
                                 }
@@ -1208,6 +1210,16 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             i += 1;
                         }
                     }
+                }
+                // Watchdog: a divider drag is normally ended by the button-up event, but a
+                // release can be lost (split across reads, released off-window, or a terminal
+                // that omits it) — which would strand `dragging_divider` and eat all later
+                // mouse input. Any non-mouse byte (a keystroke, or the split release's own
+                // leftover bytes) ends the drag and persists the final width, so the user is
+                // never trapped past the next input.
+                if dragging_divider && !non_mouse.is_empty() {
+                    dragging_divider = false;
+                    crate::state::save_tree_width(&env.xmux_dir, tree_width_natural);
                 }
                 if mouse_focus_toggle {
                     dirty = true;
