@@ -280,24 +280,19 @@ mod tests {
         let handle = serve_control(sock.clone(), tx.clone()).expect("bind control socket");
 
         // A minimal in-test consumer drives the switcher directly off the channel,
-        // standing in for the cockpit loop: it answers `dump` and applies keys.
+        // standing in for the cockpit loop: it answers `dump` and applies keys. It
+        // exits when the channel closes (all senders dropped).
         let mut sw = Switcher::new(sample());
         let consumer = tokio::spawn(async move {
             while let Some(cmd) = rx.recv().await {
                 match cmd {
-                    Cmd::Key(k) => {
-                        sw.handle_key(k);
-                        if sw.wants_quit() {
-                            break;
-                        }
-                    }
+                    Cmd::Key(k) => sw.handle_key(k),
                     Cmd::Dump(reply) => {
                         let _ = reply.send(dump_switcher(&mut sw, 100, 30));
                     }
                     Cmd::SetState(_) | Cmd::Keys(_) => {}
                 }
             }
-            sw.wants_quit()
         });
 
         let mut client = control::Client::dial(&sock).await.unwrap();
@@ -315,12 +310,12 @@ mod tests {
             client.do_cmd("bogus").await.unwrap(),
             "err: unknown command"
         );
-        // Quit so the consumer exits.
-        assert_eq!(client.do_cmd("key q").await.unwrap(), "ok");
 
-        let quit = consumer.await.unwrap();
-        assert!(quit, "q must set wants_quit");
+        // Close the channel (drop every sender) so the consumer exits.
+        drop(client);
         drop(handle);
+        drop(tx);
+        consumer.await.unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

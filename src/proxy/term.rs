@@ -4,6 +4,13 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 
+// SGR mouse tracking: button press/release (1000h) + drag (1002h) + SGR encoding
+// (1006h). Deliberately NOT 1003h (any-motion) — idle moves would flood the PTY.
+#[cfg(windows)]
+const SGR_MOUSE_ON: &[u8] = b"\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+#[cfg(windows)]
+const SGR_MOUSE_OFF: &[u8] = b"\x1b[?1006l\x1b[?1002l\x1b[?1000l";
+
 /// RAII guard owning the terminal for the cockpit's lifetime: enables raw mode,
 /// enters the alternate screen, and enables SGR mouse capture on construction, then
 /// on drop disables mouse capture, leaves the alternate screen, and disables raw mode.
@@ -15,16 +22,103 @@ impl TermGuard {
     pub fn enter() -> anyhow::Result<Self> {
         enable_raw_mode()?;
         execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+        #[cfg(windows)]
+        windows_mouse::enable()?;
         Ok(TermGuard)
     }
 }
 
 impl Drop for TermGuard {
     fn drop(&mut self) {
+        #[cfg(windows)]
+        {
+            use std::io::Write;
+            let mut out = std::io::stdout();
+            let _ = out.write_all(SGR_MOUSE_OFF);
+            let _ = out.flush();
+        }
         let _ = execute!(std::io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
         let _ = disable_raw_mode();
     }
 }
+
+/// Windows mouse setup the cockpit needs but crossterm doesn't provide. crossterm's
+/// `EnableMouseCapture` takes the WinAPI path on Windows (its `is_ansi_code_supported`
+/// is false): it sets the legacy `ENABLE_MOUSE_INPUT` console flag but neither enables
+/// virtual-terminal input nor emits the SGR mouse-tracking DECSET. The cockpit reads
+/// raw stdin and parses SGR mouse sequences, so without VT input ConPTY delivers mouse
+/// as legacy INPUT_RECORDs (a `read()` never sees them), and without the DECSET the
+/// terminal keeps its native drag-to-select. This adds both.
+#[cfg(windows)]
+mod windows_mouse {
+    use std::io::Write;
+    use windows_sys::Win32::System::Console::{
+        GetConsoleMode, GetStdHandle, SetConsoleMode, ENABLE_ECHO_INPUT, ENABLE_EXTENDED_FLAGS,
+        ENABLE_LINE_INPUT, ENABLE_MOUSE_INPUT, ENABLE_PROCESSED_INPUT, ENABLE_QUICK_EDIT_MODE,
+        ENABLE_VIRTUAL_TERMINAL_INPUT, STD_INPUT_HANDLE,
+    };
+
+    pub fn enable() -> anyhow::Result<()> {
+        // SAFETY: standard console handle; the calls are read-then-write of a mode flag.
+        unsafe {
+            let h = GetStdHandle(STD_INPUT_HANDLE);
+            let mut mode = 0u32;
+            if GetConsoleMode(h, &mut mode) != 0 {
+                let want = (mode
+                    | ENABLE_VIRTUAL_TERMINAL_INPUT
+                    | ENABLE_MOUSE_INPUT
+                    | ENABLE_EXTENDED_FLAGS)
+                    & !ENABLE_QUICK_EDIT_MODE
+                    & !ENABLE_LINE_INPUT
+                    & !ENABLE_ECHO_INPUT
+                    & !ENABLE_PROCESSED_INPUT;
+                SetConsoleMode(h, want);
+            }
+        }
+        let mut out = std::io::stdout();
+        out.write_all(super::SGR_MOUSE_ON)?;
+        out.flush()?;
+        Ok(())
+    }
+}
+
+/// Reads the current console INPUT (CONIN) mode for diagnostics; 0 if unavailable.
+/// Used to detect whether the mouse / VT-input bits get cleared during operation.
+#[cfg(windows)]
+pub fn conin_mode() -> u32 {
+    use windows_sys::Win32::System::Console::{GetConsoleMode, GetStdHandle, STD_INPUT_HANDLE};
+    // SAFETY: standard handle; a plain mode read.
+    unsafe {
+        let h = GetStdHandle(STD_INPUT_HANDLE);
+        let mut m = 0u32;
+        if GetConsoleMode(h, &mut m) != 0 {
+            m
+        } else {
+            0
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn conin_mode() -> u32 {
+    0
+}
+
+/// Re-applies the mouse-capture console mode + SGR tracking if the console has lost
+/// `ENABLE_MOUSE_INPUT`. Spawning a `portable-pty` child (ConPTY) clears that bit on the
+/// PARENT's CONIN, silently killing mouse capture mid-session (VT-input survives, so the
+/// keyboard keeps working — only the mouse dies). The cockpit calls this each loop
+/// iteration; it is a cheap mode read and re-applies only on drift. No-op off Windows.
+#[cfg(windows)]
+pub fn ensure_mouse_capture() {
+    use windows_sys::Win32::System::Console::ENABLE_MOUSE_INPUT;
+    if conin_mode() & ENABLE_MOUSE_INPUT == 0 {
+        let _ = windows_mouse::enable();
+    }
+}
+
+#[cfg(not(windows))]
+pub fn ensure_mouse_capture() {}
 
 /// Parse an `XMUX_PREFIX`-style spec into a C0 control byte.
 ///

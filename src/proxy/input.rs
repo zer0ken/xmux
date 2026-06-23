@@ -1,8 +1,9 @@
 //! Terminal-focus input handling. When the terminal pane has focus every byte is
 //! forwarded raw to the session's active pane (so a real program — vim, a pager —
 //! sees exact input), EXCEPT a prefix (default `C-g`) followed by a command key,
-//! which is intercepted to leave the terminal: `prefix Left|Right|Tab|Esc` returns
-//! focus to the tree, `prefix q` quits, and a doubled prefix sends one literal
+//! which is intercepted to leave the terminal: `prefix Left|Tab|Esc` returns focus to
+//! the tree, `prefix Right` keeps focus on the (already-focused) mux pane, `prefix q`
+//! quits, and a doubled prefix sends one literal
 //! prefix byte. The prefix is a C0 control byte, so it cannot collide with a UTF-8
 //! continuation byte or appear mid-CSI; bracketed paste is respected so a prefix
 //! pasted as data is never intercepted.
@@ -10,7 +11,7 @@
 pub enum TermAction {
     /// Raw bytes to forward to the focused session's active pane.
     Forward(Vec<u8>),
-    /// `prefix` then Left/Right/Tab/Esc — move focus back to the tree. Carries any
+    /// `prefix` then Left/Tab/Esc — move focus back to the tree. Carries any
     /// bytes that followed the switch command in the same read: focus has changed,
     /// so the caller must hand them to the tree, not the pane.
     FocusTree(Vec<u8>),
@@ -85,6 +86,12 @@ impl TermInput {
                     } else {
                         1
                     };
+                    // prefix → (Right): focus the right (mux) pane — already focused here,
+                    // so swallow it and stay; the rest of the read resumes as mux input.
+                    if cmd_len == 3 && bytes[i + 2] == b'C' {
+                        i += cmd_len;
+                        continue;
+                    }
                     if !fwd.is_empty() {
                         out.push(TermAction::Forward(std::mem::take(&mut fwd)));
                     }
@@ -154,14 +161,26 @@ mod tests {
     }
 
     #[test]
-    fn prefix_then_left_or_right_or_esc_focuses_tree() {
+    fn prefix_then_left_or_esc_focuses_tree() {
         // Each command key is consumed whole, so the replay tail is empty (no stray
         // `[D` leaking to the tree).
-        for seq in [&b"\x1b[D"[..], &b"\x1b[C"[..], &b"\x1b"[..]] {
+        for seq in [&b"\x1b[D"[..], &b"\x1b"[..]] {
             let mut t = m();
             t.feed(&[0x07]);
             assert_eq!(t.feed(seq), vec![TermAction::FocusTree(vec![])], "seq {seq:?} → tree");
         }
+    }
+
+    #[test]
+    fn prefix_then_right_stays_in_terminal() {
+        // prefix → focuses the (already-focused) mux pane: swallowed, no FocusTree,
+        // and any trailing bytes resume as forwarded input.
+        let mut t = m();
+        t.feed(&[0x07]);
+        assert!(t.feed(b"\x1b[C").is_empty(), "prefix → produces no action (stays in mux)");
+        let mut t2 = m();
+        t2.feed(&[0x07]);
+        assert_eq!(fwd(&t2.feed(b"\x1b[Cabc")), b"abc", "trailing input after prefix → forwards");
     }
 
     #[test]

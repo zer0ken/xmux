@@ -296,7 +296,6 @@ pub struct Switcher {
     tree_inner: Rect,
 
     show_help: bool,
-    wants_quit: bool,
     /// A slow (network) action queued by the last keypress for the event loop to
     /// run off-loop. `None` unless a create/rename/kill is pending dispatch.
     pending_op: Option<PendingOp>,
@@ -331,7 +330,6 @@ impl Switcher {
             list_state: ListState::default(),
             tree_inner: Rect::default(),
             show_help: false,
-            wants_quit: false,
             pending_op: None,
             spinner: HashSet::new(),
             spinner_frame: 0,
@@ -372,10 +370,6 @@ impl Switcher {
         s.rescan_kick = true; // the event loop kicks the probes on the first frame
         s.rebuild();
         s
-    }
-
-    pub fn wants_quit(&self) -> bool {
-        self.wants_quit
     }
 
     /// True while an inline input is open (filter or rename). The cockpit routes
@@ -683,10 +677,14 @@ impl Switcher {
         }
     }
 
-    fn current_session(&self) -> Option<Session> {
+    /// The session the mux is DISPLAYING for the cursor's row: the cursor's own session
+    /// (session/window row) or, on a host row, the host's recent session — the same
+    /// resolution `target_for` uses. Lets the passthrough follow descend from a host.
+    fn displayed_session(&self) -> Option<Session> {
         match self.current_ref()? {
             RowRef::Session(s) => Some(s.clone()),
             RowRef::Window { sess, .. } => Some(sess.clone()),
+            RowRef::Host { source, .. } => self.first_session_of(source),
             _ => None,
         }
     }
@@ -777,6 +775,8 @@ impl Switcher {
         let on_this_session = match self.current_ref() {
             Some(RowRef::Session(s)) => s.source == source && s.name == session,
             Some(RowRef::Window { sess, .. }) => sess.source == source && sess.name == session,
+            // A host row descends into its displayed (recent) session's active window.
+            Some(RowRef::Host { source: src, .. }) => src == source,
             _ => false,
         };
         if !on_this_session {
@@ -796,14 +796,14 @@ impl Switcher {
         }
     }
 
-    /// Moves the cursor to the ACTIVE window row of the cursor's current session
-    /// (read from cached pane data), from either the session row or a window row.
-    /// Used when focus moves to the terminal so the sidebar mirrors the window the
-    /// mux is currently displaying (#3). A no-op when the cursor is not on a
-    /// session/window row or the session's active window is unknown. Returns whether
-    /// it moved.
+    /// Moves the cursor to the ACTIVE window row of the DISPLAYED session (read from
+    /// cached pane data) — from a session row, a window row, OR a host row (which
+    /// descends into the host's recent session). Used when focus moves to the terminal
+    /// so the sidebar mirrors the window the mux is showing (#3). A no-op when the
+    /// displayed session or its active window is unknown (e.g. panes not yet loaded, or
+    /// an unreachable host). Returns whether it moved.
     pub fn select_active_window(&mut self) -> bool {
-        let Some(sess) = self.current_session() else {
+        let Some(sess) = self.displayed_session() else {
             return false;
         };
         let addr = sess.address();
@@ -860,6 +860,12 @@ impl Switcher {
 
     // --- key handling -------------------------------------------------------
 
+    /// Open the modal keys overlay. Driven by the cockpit's `prefix ?` (tree focus);
+    /// any key dismisses it (see `handle_key`).
+    pub fn show_help(&mut self) {
+        self.show_help = true;
+    }
+
     pub fn handle_key(&mut self, ev: KeyEvent) {
         if self.input.is_some() {
             self.handle_input_key(ev);
@@ -888,13 +894,11 @@ impl Switcher {
             KeyCode::Home => self.move_to(0),
             KeyCode::End => self.move_to(-1),
             KeyCode::Char(c) => match c {
-                'q' => self.wants_quit = true,
                 '/' => self.open_input(InputMode::Filter),
                 'n' => self.open_new(),
                 'R' => self.open_input(InputMode::Rename),
                 'x' => self.arm_kill(),
                 'r' => self.request_rescan(),
-                '?' => self.show_help = true,
                 _ => {}
             },
             _ => {}
@@ -1559,7 +1563,7 @@ impl Switcher {
             let done = total.saturating_sub(self.scanning.len());
             fit(
                 &[
-                    format!(" ⟳ scanning hosts {done}/{total}… · q quit · ? help"),
+                    format!(" ⟳ scanning hosts {done}/{total}… · C-g q quit · C-g ? help"),
                     format!(" ⟳ scanning {done}/{total}…"),
                 ],
                 area.width,
@@ -1569,7 +1573,7 @@ impl Switcher {
             // shows in the footer (with how to clear it).
             fit(
                 &[
-                    format!(" filter: {} · / edit · Esc clear · ? help · q quit", self.filter),
+                    format!(" filter: {} · / edit · Esc clear · C-g ? help · C-g q quit", self.filter),
                     format!(" filter: {}", self.filter),
                 ],
                 area.width,
@@ -1577,11 +1581,11 @@ impl Switcher {
         } else {
             fit(
                 &[
-                    " ↑/↓ move · Enter focus pane · / filter · n new · R rename · x kill · r refresh · ? help · q quit".to_string(),
-                    " ↑/↓ move · Enter focus pane · / filter · n new · x kill · ? help · q quit".to_string(),
-                    " move · Enter focus pane · / filter · ? help · q quit".to_string(),
-                    " Enter focus pane · ? help · q quit".to_string(),
-                    " ? help · q quit".to_string(),
+                    " ↑/↓ move · Enter/C-g→ focus mux · / filter · n new · R rename · x kill · r refresh · C-g ? help · C-g q quit".to_string(),
+                    " ↑/↓ move · Enter focus mux · / filter · n new · x kill · C-g ? help · C-g q quit".to_string(),
+                    " move · Enter focus mux · / filter · C-g ? help · C-g q quit".to_string(),
+                    " Enter focus mux · C-g ? help · C-g q quit".to_string(),
+                    " C-g ? help · C-g q quit".to_string(),
                 ],
                 area.width,
             )
@@ -1594,36 +1598,78 @@ impl Switcher {
     }
 
     fn render_help(&self, frame: &mut Frame, area: Rect) {
-        const LINES: &[&str] = &[
-            "↑ / ↓ / j / k     move",
-            "Enter              focus the terminal pane",
-            "C-g Esc           back to the tree",
-            "C-g C-←/→ or h/l   resize the tree column",
-            "PgUp / PgDn       jump by 10",
-            "Home / End        first / last node",
-            "n                 new (session / window / pane, by level)",
-            "R                 rename the focused session or window",
-            "x                 kill the focused session or window (y / n confirm)",
-            "/                 fuzzy filter <source>/<name>",
-            "r                 re-scan every host",
-            "?                 toggle this help",
-            "q                 quit",
-            "",
-            "mouse → the focused mux pane (enable mouse in the mux)",
+        // tmux mode-tree style: a right-aligned, bold key column, a `│` rule, then
+        // the description. `Head` breaks the flat list into tree/focus/mux sections;
+        // `Note` is a description-only row (the mux state has no keys of its own).
+        enum HelpRow {
+            Head(&'static str),
+            Key(&'static str, &'static str),
+            Note(&'static str),
+            Gap,
+        }
+        use HelpRow::*;
+        const ROWS: &[HelpRow] = &[
+            Head("tree"),
+            Key("↑/↓ · j/k", "move between siblings"),
+            Key("→/l · ←/h", "descend into / ascend out of a node"),
+            Key("PgUp/PgDn", "jump by 10"),
+            Key("Home/End", "first / last node"),
+            Key("n", "new (session / window, by level)"),
+            Key("R", "rename the focused session or window"),
+            Key("x", "kill it (y / n confirm)"),
+            Key("/", "fuzzy filter <source>/<name>"),
+            Key("r", "re-scan every host"),
+            Gap,
+            Head("focus (C-g = prefix)"),
+            Key("Enter · C-g →", "focus the mux pane"),
+            Key("C-g Tab", "toggle focus between tree and mux"),
+            Key("C-g ← · C-g Esc", "focus the tree"),
+            Key("C-g C-←/→ · h/l", "resize the tree column"),
+            Key("C-g ?", "toggle this help"),
+            Key("click a pane", "focus that pane"),
+            Key("C-g q", "quit"),
+            Key("C-g C-g", "send a literal C-g to the mux"),
+            Gap,
+            Head("mux (focused)"),
+            Note("keys, scroll & clicks go to the pane"),
+            Note("(the mux needs its own mouse mode on)"),
         ];
-        let inner_w = LINES.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
-        let w = (inner_w + 4).min(area.width); // text + a space each side + borders
-        let h = (LINES.len() as u16 + 2).min(area.height);
+        let kw = ROWS
+            .iter()
+            .filter_map(|r| match r {
+                Key(k, _) => Some(k.chars().count()),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        let bold = Style::new().add_modifier(Modifier::BOLD);
+        let lines: Vec<Line> = ROWS
+            .iter()
+            .map(|r| match r {
+                Gap => Line::from(""),
+                Head(h) => Line::from(Span::styled(
+                    format!(" {h}"),
+                    bold.add_modifier(Modifier::UNDERLINED),
+                )),
+                Key(k, d) => Line::from(vec![
+                    Span::styled(format!(" {k:>kw$} "), bold),
+                    Span::raw("│ "),
+                    Span::raw(*d),
+                ]),
+                Note(n) => Line::from(vec![
+                    Span::raw(format!(" {:>kw$} ", "")),
+                    Span::raw("│ "),
+                    Span::raw(*n),
+                ]),
+            })
+            .collect();
+        let inner_w = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
+        let w = (inner_w + 3).min(area.width); // borders + a cell of right padding
+        let h = (lines.len() as u16 + 2).min(area.height);
         let rect = centered_rect(w, h, area);
-        let text = Text::from(
-            LINES
-                .iter()
-                .map(|l| Line::from(format!(" {l}")))
-                .collect::<Vec<_>>(),
-        );
         frame.render_widget(Clear, rect);
         frame.render_widget(
-            Paragraph::new(text).block(Block::bordered().title(" keys ")),
+            Paragraph::new(Text::from(lines)).block(Block::bordered().title(" keys ")),
             rect,
         );
     }
@@ -2141,6 +2187,20 @@ mod tests {
         assert!(matches!(sw.current_ref(), Some(RowRef::Window { window: 0, .. })));
         // Idempotent: re-applying when already on the active window reports no move.
         assert!(!sw.select_active_window(), "no-op when already on the active window");
+    }
+
+    #[test]
+    fn select_active_window_descends_from_a_host_row() {
+        // focus→mux from a HOST row must descend into the host's recent session's active
+        // window (the window the mux displays), not leave the cursor stuck on the host.
+        let mut sw = Switcher::new(two_window_scan());
+        sw.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)); // ascend: session → host
+        assert!(matches!(sw.current_ref(), Some(RowRef::Host { .. })), "cursor on the host row");
+        assert!(sw.select_active_window(), "descends from host to the active window");
+        assert!(
+            matches!(sw.current_ref(), Some(RowRef::Window { window: 0, .. })),
+            "landed on the recent session's active window (0)"
+        );
     }
 
     #[test]
@@ -2764,11 +2824,12 @@ mod tests {
     async fn help_overlay_toggles() {
         let mut h = Harness::new(sample());
         assert!(!h.text().contains("keys"), "help hidden initially");
-        h.ch('?').await;
+        h.sw.show_help(); // driven by the cockpit's `prefix ?`
+        h.draw();
         let out = h.text();
         assert!(
             out.contains("keys"),
-            "? should show the help overlay:\n{out}"
+            "show_help opens the overlay:\n{out}"
         );
         assert!(out.contains("fuzzy filter"), "help should list keybindings");
         // Any key dismisses the modal without acting on the tree.
@@ -2777,7 +2838,6 @@ mod tests {
             !h.text().contains("fuzzy filter"),
             "a key should dismiss help"
         );
-        assert!(!h.sw.wants_quit(), "dismissing help must not quit");
     }
 
     #[tokio::test]
@@ -2836,12 +2896,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn enter_is_noop_and_q_quits() {
+    async fn enter_and_bare_q_are_noops() {
+        // Enter is consumed by the cockpit (focus the mux), not the switcher; bare q does
+        // nothing — quit is `prefix q` at the cockpit level. Neither moves the cursor or
+        // opens an input here.
         let mut h = Harness::new(sample());
+        let before = cur_row_label(&h);
         h.key(KeyCode::Enter).await;
-        assert!(!h.sw.wants_quit(), "Enter does nothing");
         h.ch('q').await;
-        assert!(h.sw.wants_quit(), "q quits");
+        assert!(!h.sw.is_inputting(), "neither opens an input");
+        assert_eq!(cur_row_label(&h), before, "neither moves the cursor");
     }
 
     #[tokio::test]
@@ -2885,10 +2949,11 @@ mod tests {
         assert!(!footer.to_lowercase().contains("enter attach"), "Enter is a no-op now:\n{footer}");
         assert!(footer.contains("focus"),
             "footer mentions focusing the terminal pane:\n{footer}");
-        h.ch('?').await;
+        h.sw.show_help(); // driven by the cockpit's `prefix ?`
+        h.draw();
         let help = h.text();
-        assert!(help.contains("focus the terminal"),
-            "help explains focusing the terminal pane:\n{help}");
+        assert!(help.contains("focus the mux"),
+            "help explains focusing the mux pane:\n{help}");
         assert!(!help.contains("select = attach"),
             "no useless 'select = attach' noise in help:\n{help}");
         assert!(!help.contains("dwell") && !help.to_lowercase().contains("previous foreground"),

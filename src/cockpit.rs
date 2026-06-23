@@ -476,6 +476,10 @@ fn handle_tree_bytes(
                 KeyCode::Right if ctrl => width_delta = 1,
                 KeyCode::Char('h') => width_delta = -1,
                 KeyCode::Char('l') => width_delta = 1,
+                KeyCode::Char('?') => switcher.show_help(),
+                // prefix →/Tab: focus the mux pane (prefix ←/Esc: focus the tree, where
+                // we already are — a no-op that falls through).
+                KeyCode::Right | KeyCode::Tab => focus_terminal = true,
                 _ => {}
             }
             continue;
@@ -702,6 +706,19 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         }
     };
 
+    // Route panic output to a file instead of stderr so a panic never corrupts the
+    // alternate screen. Worker threads (PTY pumps) catch+recover their own panics
+    // (see Grid::feed); TermGuard restores the screen on a main-thread unwind.
+    {
+        let log = env.xmux_dir.join("panic.log");
+        std::panic::set_hook(Box::new(move |info| {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log) {
+                let _ = writeln!(f, "{info}");
+            }
+        }));
+    }
+
     let size = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
     let (mut cols, mut body_rows) = (size.0, size.1.saturating_sub(1)); // status bar = last row
     let mut tree_width = crate::ui::switcher::TREE_WIDTH;
@@ -837,6 +854,9 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             }
             prev_raw = raw_now;
         }
+        // A portable-pty child spawn clears ENABLE_MOUSE_INPUT on the parent CONIN,
+        // killing mouse capture; re-assert it whenever it drifts off.
+        crate::proxy::term::ensure_mouse_capture();
         // In passthrough the user no longer drives the tree cursor (stdin goes to the
         // PTY), so the tree selection tracks the displayed session's active window — always.
         // select_active_window is idempotent (no move when already on the active window or
@@ -1030,26 +1050,54 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 let (vw, vh) = terminal_view_size(cols, body_rows, tree_width);
                 let term_area = ratatui::layout::Rect::new(tree_width + 1, 0, vw, vh);
                 let mut non_mouse: Vec<u8> = Vec::with_capacity(bytes.len());
+                let mut mouse_focus_toggle = false;
                 {
                     let mut i = 0;
                     while i < bytes.len() {
                         if let Some((ev, len)) = crate::proxy::mouse::parse_sgr_mouse(&bytes[i..]) {
-                            if !app.is_overlay() {
-                                if let Some((gc, gr)) = to_grid_local(term_area, ev.col, ev.row) {
+                            let in_mux = to_grid_local(term_area, ev.col, ev.row);
+                            // A button press (not motion/wheel/release) in the UNFOCUSED pane
+                            // switches focus to that pane — focus only; the click is not
+                            // delivered. Within the focused mux pane, the click forwards.
+                            let is_press = ev.pressed && (ev.cb & 0x60) == 0;
+                            // Wheel events carry the 0x40 bit (cb 64=up, 65=down; +16=Ctrl).
+                            let is_wheel = ev.pressed && (ev.cb & 0x40) != 0;
+                            if is_wheel && app.is_overlay() {
+                                // Tree focus: wheel scrolls the cursor (↑/↓ siblings); Ctrl+wheel
+                                // changes level (← ascend / → descend). Inject the equivalent arrow
+                                // bytes so the normal tree path (decode → handle_key → ensure host)
+                                // drives it — no duplicated nav logic.
+                                let arrow: &[u8] = match ((ev.cb & 0x10) != 0, (ev.cb & 0x01) != 0) {
+                                    (false, false) => b"\x1b[A", // wheel up → up
+                                    (false, true) => b"\x1b[B",  // wheel down → down
+                                    (true, false) => b"\x1b[D",  // Ctrl+wheel up → ascend
+                                    (true, true) => b"\x1b[C",   // Ctrl+wheel down → descend
+                                };
+                                non_mouse.extend_from_slice(arrow);
+                            } else if is_press && app.is_overlay() && in_mux.is_some() {
+                                app.toggle(); // tree → mux focus
+                                mouse_focus_toggle = true;
+                            } else if is_press && !app.is_overlay() && in_mux.is_none() {
+                                app.toggle(); // mux → tree focus
+                                mouse_focus_toggle = true;
+                            } else if !app.is_overlay() {
+                                if let Some((gc, gr)) = in_mux {
                                     registry.input(
                                         &display_key(&env, &selection),
                                         crate::proxy::mouse::encode_sgr_mouse(&ev, gc, gr),
                                     );
                                 }
-                                // outside the terminal area → dropped
                             }
-                            // Overlay → dropped entirely
+                            // Overlay + a tree-column click → focus only (no select) → dropped.
                             i += len;
                         } else {
                             non_mouse.push(bytes[i]);
                             i += 1;
                         }
                     }
+                }
+                if mouse_focus_toggle {
+                    dirty = true;
                 }
                 if app.is_overlay() {
                     let (ft, q, wd) = handle_tree_bytes(
@@ -1105,7 +1153,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         }
                     }
                 }
-                if quit || switcher.wants_quit() {
+                if quit {
                     break;
                 }
             }
@@ -1115,9 +1163,6 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         switcher.handle_key(k);
                         dispatch_pending_op(&mut switcher, &ops, &op_tx);
                         ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows, tree_width);
-                        if switcher.wants_quit() {
-                            break;
-                        }
                     }
                     Cmd::Dump(reply) => {
                         let sz = term
@@ -1745,18 +1790,21 @@ mod tests {
     //    real attached terminal instantly (it is pre-attached + kept alive), with a
     //    spinner while a session's attach is still establishing.
     // 3. Select a WINDOW row — confirm the attached client switches to that window.
-    // 4. Press C-g then `s` — focus the terminal (Passthrough); the split is
-    //    unchanged (divider turns green) and keystrokes reach the real attached pane.
-    //    Confirm the toggle does NOT blank/flash the screen.
+    // 4. Press Enter (or C-g → / C-g Tab) — focus the terminal (Passthrough); the split
+    //    is unchanged (divider turns green) and keystrokes reach the real attached pane.
+    //    C-g ← / C-g Esc / C-g Tab return focus to the tree. Confirm no blank/flash.
     // 5. Create / kill a window or session inside a pane — confirm the sidebar tree
     //    syncs (remote via control events, local within the poll interval) and the
     //    PTY set follows (new session attaches, killed session's PTY is reaped).
     // 6. C-g then `q` — clean quit, terminal restored.
     // 7. NEVER attach the session that owns xmux (xmux refuses to run inside a mux,
     //    so in normal use no session mirrors the UI).
-    // 8. In Passthrough, mouse clicks/scroll inside the terminal view reach the mux
-    //    (status-bar click, pane select, scroll). Mux mouse forwarding requires the
-    //    mux to have `mouse on` (`set -g mouse on`); xmux only forwards.
-    //    In Overlay, mouse clicks do NOT forward to the mux (dropped).
+    // 8. Mouse: dragging never selects native terminal text (the cockpit captures the
+    //    mouse). A button press in the UNFOCUSED pane switches focus to it (focus only —
+    //    the click is not delivered). Once the mux pane is focused, clicks/scroll/
+    //    right-click reach the mux (status-bar click, pane select, scroll, context menu).
+    //    Mux mouse forwarding requires the mux to have `mouse on` (`set -g mouse on`);
+    //    xmux only forwards. (Windows: capture needs ENABLE_VIRTUAL_TERMINAL_INPUT +
+    //    the SGR DECSET that crossterm's WinAPI path omits — see proxy::term.)
     // =========================================================================
 }

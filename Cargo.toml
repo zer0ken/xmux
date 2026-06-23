@@ -37,3 +37,6 @@ tokio = { version = "1.52.3", features = ["rt", "rt-multi-thread", "macros", "pr
 toml = "1.1.2"
 vt100 = "0.16"
 portable-pty = "0.9"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Console", "Win32_Foundation"] }
