@@ -15,7 +15,18 @@ impl Grid {
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
-        self.parser.process(bytes);
+        // vt100 0.16.2 panics (screen.rs `Screen::text` unwrap on None) when a wide
+        // (CJK) glyph lands on the last column in some cursor states — common after a
+        // grid shrink. Catch it so the PTY pump thread survives; reset the parser so
+        // the next mux repaint refills the grid cleanly instead of re-panicking on the
+        // same stale cursor.
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.parser.process(bytes);
+        }));
+        if res.is_err() {
+            let (rows, cols) = self.parser.screen().size();
+            self.parser = vt100::Parser::new(rows, cols, 0);
+        }
     }
 
     /// Wipes the grid to a blank slate (a fresh parser at the same size). Used when
@@ -157,6 +168,27 @@ mod tests {
         assert!(!g.is_blank(), "precondition: grid has content");
         g.clear();
         assert!(g.is_blank(), "clear wipes all visible content");
+    }
+
+    // NOTE: this test deliberately triggers the vt100 panic that Grid::feed catches, so
+    // `cargo test` prints one "thread panicked at vt100 ... screen.rs" line to stderr —
+    // expected, not a failure. (The hook is not silenced here because it is process-
+    // global and tests run in parallel.)
+    #[test]
+    fn feed_survives_wide_char_at_last_column() {
+        // Regression: vt100 0.16.2 panics (drawing_cell_mut(col+1).unwrap() on None) when
+        // a wide CJK glyph prints on the last column — observed crashing the PTY pump
+        // thread. Grid::feed must catch+recover so the pump survives and the grid stays
+        // usable (a subsequent repaint lands).
+        let mut g = Grid::new(1, 4);
+        g.feed(b"\x1b[1;3H"); // cursor to 0-based col 2
+        g.feed("한".as_bytes()); // wide glyph occupies cols 2-3 (the right edge)
+        g.resize(1, 3); // shrink → the wide glyph's second half (col 3) is truncated
+        g.feed(b"\x1b[1;3HX"); // overwrite the now-edge wide glyph → vt100 panics here
+        g.feed(b"\x1b[H\x1b[2JOK"); // recovered grid still repaints
+        let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));
+        g.render_into(&mut buf, Rect::new(0, 0, 3, 1));
+        assert_eq!(buf[(0, 0)].symbol(), "O", "grid usable after the wide-char edge case");
     }
 
     #[test]
