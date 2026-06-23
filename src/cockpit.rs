@@ -1196,6 +1196,12 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             let is_press = ev.pressed && (ev.cb & 0x60) == 0;
                             // Wheel events carry the 0x40 bit (cb 64=up, 65=down; +16=Ctrl).
                             let is_wheel = ev.pressed && (ev.cb & 0x40) != 0;
+                            // DIAG (temp): log every wheel-bit event so a "2 notches per move"
+                            // report can be traced to what the terminal actually sends per notch
+                            // (event count + cb + press/release). XMUX_DEBUG-gated.
+                            if (ev.cb & 0x40) != 0 {
+                                dbg_log(&env.xmux_dir, &format!("WHEEL cb={} pressed={} col={} row={}", ev.cb, ev.pressed, ev.col, ev.row));
+                            }
                             // Divider drag: grab the divider rule (the column at the effective
                             // tree width, only when the tree is shown) with the left button and
                             // drag to resize. Once grabbed it owns every mouse event until the
@@ -1256,6 +1262,13 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             } else if is_press && app.is_overlay() && in_mux.is_some() {
                                 app.toggle(); // tree → mux focus
                                 mouse_focus_toggle = true;
+                            } else if is_left_press && app.is_overlay() && in_mux.is_none() {
+                                // Left-click a tree row → move the cursor to it (select). The
+                                // loop top commits the new selection (attach); ensure the
+                                // clicked row's host connects so its subtree streams in.
+                                switcher.mouse_select(col0, ev.row.saturating_sub(1));
+                                ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows, tree_width);
+                                dirty = true;
                             } else if is_press && !app.is_overlay() && in_mux.is_none() {
                                 app.toggle(); // mux → tree focus
                                 mouse_focus_toggle = true;
