@@ -1310,7 +1310,13 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         repeat_until = None; // first key isn't a Ctrl-arrow → end the window
                     }
                 }
-                if !consumed_by_repeat && app.is_overlay() {
+                if !consumed_by_repeat && !non_mouse.is_empty() && switcher.feed_help_key(&non_mouse) {
+                    // The help overlay is modal (tmux view-mode style): while open it
+                    // captures every key in EITHER focus — q/Esc closes it, the rest are
+                    // swallowed — so nothing leaks to the tree or the mux pane. Above the
+                    // tree/mux split so the behavior is identical regardless of focus.
+                    dirty = true;
+                } else if !consumed_by_repeat && app.is_overlay() {
                     let (ft, q, wd, th) = handle_tree_bytes(
                         &non_mouse, &mut tree_decoder, &mut tree_armed, prefix, &mut switcher,
                         &mut mgr, &env, &ops, &op_tx, &enum_tx, cols, body_rows, tree_width,

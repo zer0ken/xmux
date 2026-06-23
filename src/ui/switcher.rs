@@ -892,14 +892,27 @@ impl Switcher {
         self.show_help = !self.show_help;
     }
 
+    /// Modal help input, tmux view-mode style. While the overlay is open it captures
+    /// the whole key read (returns true ⇒ consumed — nothing reaches the tree or the
+    /// mux pane); `q` or Esc closes it, every other key is swallowed. Returns false
+    /// when help is closed, so the read falls through to normal routing. The single
+    /// owner of help dismissal — the cockpit calls it above the tree/mux split, so the
+    /// behavior is identical in both focuses.
+    pub fn feed_help_key(&mut self, bytes: &[u8]) -> bool {
+        if !self.show_help {
+            return false;
+        }
+        // `q`, or a real Esc (a lone ESC, not the ESC `[` that starts an arrow/CSI).
+        let esc = bytes.contains(&0x1b) && !bytes.windows(2).any(|w| w == [0x1b, b'[']);
+        if bytes.contains(&b'q') || esc {
+            self.show_help = false;
+        }
+        true
+    }
+
     pub fn handle_key(&mut self, ev: KeyEvent) {
         if self.input.is_some() {
             self.handle_input_key(ev);
-            return;
-        }
-        if self.show_help {
-            // The help overlay is modal: any key dismisses it.
-            self.show_help = false;
             return;
         }
         if self.pending_kill.is_some() {
@@ -1708,7 +1721,7 @@ impl Switcher {
             Key("C-g ← · C-g Esc", "focus the tree"),
             Key("C-g C-←/→ · h/l", "resize the tree (C-←/→ then repeats briefly)"),
             Key("C-g t", "toggle auto-hide-tree (║ divider = on)"),
-            Key("C-g ?", "toggle this help"),
+            Key("C-g ?", "show this help (q / Esc closes)"),
             Key("click a pane", "focus that pane"),
             Key("drag the divider", "resize the tree"),
             Key("C-g q", "quit"),
@@ -2922,7 +2935,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn help_overlay_toggles() {
+    async fn help_overlay_renders_and_closes_on_q() {
         let mut h = Harness::new(sample());
         assert!(!h.text().contains("keys"), "help hidden initially");
         h.sw.show_help(); // driven by the cockpit's `prefix ?`
@@ -2933,11 +2946,13 @@ mod tests {
             "show_help opens the overlay:\n{out}"
         );
         assert!(out.contains("fuzzy filter"), "help should list keybindings");
-        // Any key dismisses the modal without acting on the tree.
-        h.key(KeyCode::Down).await;
+        // Modal dismissal (tmux view-mode): the cockpit routes keys to feed_help_key
+        // above the tree/mux split — q closes it; other keys are swallowed (no nav).
+        assert!(h.sw.feed_help_key(b"q"), "q is consumed while help is open");
+        h.draw();
         assert!(
             !h.text().contains("fuzzy filter"),
-            "a key should dismiss help"
+            "q closes the help overlay"
         );
     }
 
@@ -3149,6 +3164,27 @@ mod tests {
         assert!(sw.show_help);
         sw.toggle_help();
         assert!(!sw.show_help);
+    }
+
+    #[test]
+    fn feed_help_key_is_modal_and_closes_on_q_or_esc() {
+        // tmux view-mode style: while open, every key is consumed; q/Esc closes, the
+        // rest are swallowed; while closed, nothing is consumed (falls through).
+        let mut sw = Switcher::new(sample());
+        assert!(!sw.feed_help_key(b"q"), "closed → not consumed, routes normally");
+
+        sw.toggle_help();
+        assert!(sw.feed_help_key(b"j"), "open → consumed");
+        assert!(sw.show_help, "a non-close key is swallowed but keeps help open");
+        assert!(sw.feed_help_key(b"\x1b[A"), "an arrow (ESC [) is swallowed, not a close");
+        assert!(sw.show_help, "arrow keeps help open");
+
+        assert!(sw.feed_help_key(b"q"), "q → consumed");
+        assert!(!sw.show_help, "q closes help");
+
+        sw.toggle_help();
+        assert!(sw.feed_help_key(b"\x1b"), "lone Esc → consumed");
+        assert!(!sw.show_help, "Esc closes help");
     }
 
     #[tokio::test]
