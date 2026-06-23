@@ -1422,6 +1422,21 @@ impl Switcher {
         tree_width: u16,
     ) {
         let area = frame.area();
+        // tree_width == 0 is the "tree hidden" sentinel (mux focused + hide-tree-on-focus):
+        // the terminal view owns the whole area — no tree, no input/footer, no divider.
+        if tree_width == 0 {
+            self.tree_inner = Rect::default();
+            self.render_terminal_view(frame, area, grid);
+            if let Some(g) = grid {
+                if !g.hide_cursor() {
+                    frame.set_cursor_position(terminal_cursor_pos(area, g.cursor()));
+                }
+            }
+            if self.show_help {
+                self.render_help(frame, area);
+            }
+            return;
+        }
         let cols = Layout::horizontal([
             Constraint::Length(tree_width),
             Constraint::Length(1),
@@ -3185,6 +3200,29 @@ mod tests {
         sw.apply_panes("jup/api".into(), vec![]);
         assert!(matches!(sw.current_ref(), Some(RowRef::Session(s)) if s.name == "api"),
             "topmost removed → parent (session row)");
+    }
+
+    #[test]
+    fn render_tree_width_zero_gives_terminal_full_width() {
+        // A two-source skeleton is enough; grid None renders the "(attaching…)"
+        // placeholder across the whole width when the tree is hidden.
+        let mut sw = Switcher::from_sources(vec!["local".into(), "jupiter06".into()]);
+        let mut term = Terminal::new(TestBackend::new(40, 10)).unwrap();
+
+        // tree_width == 0 → no tree column, no divider: the terminal view starts at x=0.
+        term.draw(|f| sw.render(f, None, true, 0)).unwrap();
+        let buf = term.backend().buffer().clone();
+        // Column 0 row 0 must NOT be the divider rule '│' (the divider is gone).
+        assert_ne!(buf[(0, 0)].symbol(), "│", "divider must be absent when tree hidden");
+        // The attaching placeholder text "(attaching…)" begins near x=0 (after its
+        // two leading spaces), proving the terminal view owns the left edge.
+        let row0: String = (0..40).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert!(row0.contains("(attaching…)"), "terminal view fills row 0: {row0:?}");
+
+        // Sanity: with a normal width the divider rule IS present at the tree edge.
+        term.draw(|f| sw.render(f, None, true, 20)).unwrap();
+        let buf = term.backend().buffer().clone();
+        assert_eq!(buf[(20, 0)].symbol(), "│", "divider present at x=tree_width when shown");
     }
 
     #[test]
