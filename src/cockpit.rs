@@ -1216,18 +1216,21 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                 continue;
                             }
                             // Idle motion (motion bit set, no button held) — reported only
-                            // because any-motion tracking (1003h) is on. Use it to light up the
-                            // divider when hovered, then CONSUME it: idle motion is NEVER
-                            // forwarded to the mux (that is the flood 1003h would otherwise push
-                            // onto the child / a remote link).
+                            // because any-motion tracking (1003h) is on. Over the divider it
+                            // lights the hover cue and is consumed (nothing under it to forward).
+                            // Elsewhere it falls through to the routing below, so a hover over the
+                            // mux pane IS forwarded to the child (the inner app gets hover); over
+                            // the tree it is harmlessly dropped.
                             if ev.pressed && (ev.cb & 0x23) == 0x23 {
-                                let over = tree_width > 0 && col0 == tree_width;
-                                if over != hovered_divider {
-                                    hovered_divider = over;
+                                let over_divider = tree_width > 0 && col0 == tree_width;
+                                if over_divider != hovered_divider {
+                                    hovered_divider = over_divider;
                                     dirty = true;
                                 }
-                                i += len;
-                                continue;
+                                if over_divider {
+                                    i += len;
+                                    continue;
+                                }
                             }
                             if is_wheel && app.is_overlay() {
                                 // Tree focus: wheel scrolls the cursor (↑/↓ siblings); Ctrl+wheel
