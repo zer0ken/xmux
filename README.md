@@ -50,7 +50,7 @@ Pane — with the live preview of the focused node's pane on the right.
 | `x` | kill the focused session (inline `y`/`n` confirm) |
 | `/` | fuzzy filter `<source>/<name>` |
 | `r` | re-scan every host |
-| `?` | toggle the keybinding help overlay |
+| `C-g ?` | toggle the keybinding help overlay |
 | `q` / `Esc` | quit |
 
 The mouse works too: click selects, double-click attaches, the wheel scrolls.
