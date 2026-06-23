@@ -33,8 +33,9 @@ pub struct UiConfig {
     #[serde(default = "default_prefix")]
     pub prefix: String,
     /// When true, focusing the mux hides the tree and gives the mux the full
-    /// terminal width; the tree returns when focus returns to it. Default false
-    /// keeps the tree shown in both focus states.
+    /// terminal width; the tree returns when focus returns to it. While hidden the
+    /// tree has no column to click, so focus returns via the prefix keys
+    /// (`prefix Tab`/`←`/`Esc`). Default false keeps the tree shown in both focus states.
     #[serde(rename = "hide-tree-on-focus", default)]
     pub hide_tree_on_focus: bool,
 }

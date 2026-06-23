@@ -159,7 +159,8 @@ struct Theme {
 - **cockpit.rs**: 별도 Env 필드 없이 `env.cfg.ui_hide_tree_on_focus()`로 읽는다(테스트 Env 리터럴은 `Config::default()` → false, 생성자 변경 불필요).
   - 루프 최상단에서 **유효 트리 너비**를 계산: `let eff_tree_width = if !app.is_overlay() && hide { 0 } else { tree_width };`. 런타임 `tree_width`(prefix h/l 조절값)는 트리의 자연 너비로 그대로 보존 — 숨김은 mux 포커스 동안 effective 값만 0으로 만든다.
   - `eff_tree_width`를 렌더(`switcher.render`)·PTY 사이징(`terminal_view_size`)·마우스 히트테스트 `term_area`·`select_attach`·`handle_host_event`에 전달. h/l 리사이즈·`handle_tree_bytes`·`connect_all_sources`(起動)는 overlay 컨텍스트라 `eff == tree_width`이므로 `tree_width` 유지.
-  - **포커스 전환 리사이즈**: 루프 최상단에서 직전 overlay 상태를 추적, `hide` 활성 시 포커스가 바뀌면 `terminal_view_size(cols, body_rows, eff_tree_width)`로 `registry.resize_all` + `mgr.resize_all` + `dirty = true`. mux는 SIGWINCH/resize로 자연 reflow.
+  - **포커스 전환 리사이즈**: 루프 최상단의 reconcile가 effective 너비의 단일 소유자 — 포커스/설정/natural 너비가 바뀌면 `terminal_view_size`로 `registry.resize_all` + `mgr.resize_all` + `dirty`. prefix h/l은 `tree_width_natural`만 갱신하고 reconcile가 다음 패스에서 적용(중복 resize 경로 제거). mux는 SIGWINCH/resize로 자연 reflow.
+  - **숨김 중 복귀(의도된 동작)**: 트리가 숨겨지면 클릭 대상 열이 없으므로 마우스로 트리에 되돌아갈 수 없다. 복귀는 prefix 포커스 키(`prefix Tab`/`←`/`Esc`) 전용 — opt-in 기능의 내재적 결과로, 키보드 탈출은 항상 동작한다.
 - **switcher.rs**: `render`/`terminal_view_size`가 `tree_width == 0`을 "트리 숨김" sentinel로 처리.
   - `terminal_view_size(cols, rows, 0)` → view_cols = `cols`(구분선 1열 없이 전체 폭). 비-0이면 기존대로 `cols - tw - 1`.
   - `render`: `tree_width == 0`이면 트리/입력/푸터/구분선 생략, 터미널 뷰가 `frame.area()` 전체 차지. 비-0이면 기존 3열 레이아웃.

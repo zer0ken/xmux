@@ -161,7 +161,8 @@ impl Selection {
 /// divider), NOT the whole terminal. Sizing a session to the full terminal makes
 /// the remote wrap at a width wider than the visible pane, so a line overflows the
 /// right edge (and a double-width char straddles the clip boundary). The view width
-/// is `cols - tree_width - 1` (tree + the single divider rule); the view HEIGHT is
+/// is `cols - tree_width - 1` (tree + the single divider rule), except `tree_width == 0`
+/// (the tree-hidden sentinel) gives the full `cols` with no divider; the view HEIGHT is
 /// the full terminal height (`body_rows + 1`) because the footer and input occupy
 /// the tree column, leaving the terminal column the full height. Both clamp to at least 1.
 fn terminal_view_size(cols: u16, body_rows: u16, tree_width: u16) -> (u16, u16) {
@@ -863,9 +864,13 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // fired, then commit the cursor's target into the canonical selection. A
         // changed selection ensures its PTY + (for a window row) switches the window.
         switcher.set_spinner_frame(spinner_frame_at(spinner_start.elapsed()));
-        // Reconcile the effective tree width to the current focus + the hide setting.
-        // On a change (focus toggled, or hide flips the width), resize the PTYs to the
-        // new mux view size so the mux reflows to/from full width, and mark dirty.
+        // The single owner of the effective tree width: reconcile it to the current
+        // focus + the hide setting, and to any natural-width change from prefix h/l.
+        // On a change (focus toggled, hide flips the width, or h/l resized the tree),
+        // resize the PTYs to the new mux view size so the mux reflows, and mark dirty.
+        // ponytail: resize_all touches every live attachment on each change. It is
+        // gated to fire once per actual change (not per loop), matching the existing
+        // h/l and console-resize paths; debounce only if toggle-spam proves costly.
         let want_tree_width = reconciled_tree_width(!app.is_overlay(), hide_tree_on_focus, tree_width_natural);
         if want_tree_width != tree_width {
             tree_width = want_tree_width;
@@ -1140,12 +1145,9 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     focus_terminal = ft;
                     quit = q;
                     if wd != 0 {
+                        // Adjust only the natural width; the loop-top reconcile owns the
+                        // effective tree_width + the PTY resize and applies it next pass.
                         tree_width_natural = adjust_tree_width(tree_width_natural, wd);
-                        tree_width = tree_width_natural; // h/l only fires in tree focus (tree shown)
-                        let (vc, vr) = terminal_view_size(cols, body_rows, tree_width);
-                        registry.resize_all(vc, vr);
-                        mgr.resize_all(vc, vr);
-                        dirty = true;
                     }
                 } else {
                     // TERMINAL focus: forward raw bytes to the selected session's PTY;
@@ -1179,12 +1181,9 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         }
                         quit = quit || q;
                         if wd != 0 {
+                            // Adjust only the natural width; the loop-top reconcile owns the
+                            // effective tree_width + the PTY resize and applies it next pass.
                             tree_width_natural = adjust_tree_width(tree_width_natural, wd);
-                            tree_width = tree_width_natural; // h/l only fires in tree focus (tree shown)
-                            let (vc, vr) = terminal_view_size(cols, body_rows, tree_width);
-                            registry.resize_all(vc, vr);
-                            mgr.resize_all(vc, vr);
-                            dirty = true;
                         }
                     }
                 }
@@ -1630,6 +1629,16 @@ mod tests {
         let area = ratatui::layout::Rect::new(0, 0, 80, 24);
         assert_eq!(to_grid_local(area, 0, 5), None, "col=0 triggers checked_sub None");
         assert_eq!(to_grid_local(area, 5, 0), None, "row=0 triggers checked_sub None");
+    }
+
+    #[test]
+    fn to_grid_local_full_width_area_maps_left_edge() {
+        // Tree hidden (hide-tree-on-focus): the mux owns the whole screen, so the
+        // input handler builds term_area at x=0. The top-left cell SGR (1,1) must map
+        // to grid-local (1,1) rather than being rejected as it would in the tree column.
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        assert_eq!(to_grid_local(area, 1, 1), Some((1, 1)));
+        assert_eq!(to_grid_local(area, 80, 24), Some((80, 24)));
     }
 
     #[tokio::test]
