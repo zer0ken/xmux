@@ -9,6 +9,23 @@ use std::path::Path;
 /// The file under the xmux dir holding the last-selected session address.
 const LAST_SESSION_FILE: &str = "last_session";
 
+/// The file under the xmux dir holding the tree (sidebar) width the user last set
+/// with `prefix h`/`l`, so the next launch restores it instead of the default.
+const TREE_WIDTH_FILE: &str = "tree_width";
+
+/// Reads the persisted tree width. `None` when the file is absent, unreadable, or
+/// not a `u16` — the caller falls back to the default width.
+pub fn load_tree_width(xmux_dir: &Path) -> Option<u16> {
+    let raw = std::fs::read_to_string(xmux_dir.join(TREE_WIDTH_FILE)).ok()?;
+    raw.trim().parse::<u16>().ok()
+}
+
+/// Persists the tree width. Best-effort: a write failure only loses the next
+/// launch's width restore.
+pub fn save_tree_width(xmux_dir: &Path, width: u16) {
+    let _ = std::fs::write(xmux_dir.join(TREE_WIDTH_FILE), width.to_string());
+}
+
 /// Reads the persisted last-selected session address (`source/session`). `None`
 /// when the file is absent, unreadable, or blank.
 pub fn load_last_session(xmux_dir: &Path) -> Option<String> {
@@ -52,6 +69,23 @@ mod tests {
         let dir = temp_dir("blank");
         save_last_session(&dir, "   \n");
         assert_eq!(load_last_session(&dir), None, "a blank value is treated as absent");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tree_width_save_then_load_round_trips() {
+        let dir = temp_dir("tw-roundtrip");
+        save_tree_width(&dir, 62);
+        assert_eq!(load_tree_width(&dir), Some(62));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tree_width_load_missing_or_garbage_is_none() {
+        let dir = temp_dir("tw-garbage");
+        assert_eq!(load_tree_width(&dir), None, "absent file");
+        std::fs::write(dir.join(TREE_WIDTH_FILE), "not-a-number").unwrap();
+        assert_eq!(load_tree_width(&dir), None, "unparsable value");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

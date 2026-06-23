@@ -738,11 +738,16 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
 
     let size = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
     let (mut cols, mut body_rows) = (size.0, size.1.saturating_sub(1)); // status bar = last row
-    let mut tree_width = crate::ui::switcher::TREE_WIDTH;
     // `tree_width` is the EFFECTIVE width (0 = tree hidden, mux full width); every
     // sizing/render site reads it. `tree_width_natural` holds the tree's natural
     // width (what prefix h·l adjusts, restored when the tree is shown again).
-    let mut tree_width_natural = tree_width;
+    // Restore the natural width the user last set (persisted across runs); clamp a
+    // stale out-of-range value, and fall back to the default when none is saved.
+    let mut tree_width_natural = adjust_tree_width(
+        crate::state::load_tree_width(&env.xmux_dir).unwrap_or(crate::ui::switcher::TREE_WIDTH),
+        0,
+    );
+    let mut tree_width = tree_width_natural;
     let hide_tree_on_focus = env.cfg.ui_hide_tree_on_focus();
 
     // The control-mode metadata clients: one per remote host.
@@ -1148,6 +1153,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         // Adjust only the natural width; the loop-top reconcile owns the
                         // effective tree_width + the PTY resize and applies it next pass.
                         tree_width_natural = adjust_tree_width(tree_width_natural, wd);
+                        crate::state::save_tree_width(&env.xmux_dir, tree_width_natural);
                     }
                 } else {
                     // TERMINAL focus: forward raw bytes to the selected session's PTY;
@@ -1184,6 +1190,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             // Adjust only the natural width; the loop-top reconcile owns the
                             // effective tree_width + the PTY resize and applies it next pass.
                             tree_width_natural = adjust_tree_width(tree_width_natural, wd);
+                            crate::state::save_tree_width(&env.xmux_dir, tree_width_natural);
                         }
                     }
                 }
