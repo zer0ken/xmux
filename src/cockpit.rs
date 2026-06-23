@@ -940,10 +940,19 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // h/l and console-resize paths; debounce only if toggle-spam proves costly.
         let want_tree_width = reconciled_tree_width(!app.is_overlay(), auto_hide_tree, tree_width_natural);
         if want_tree_width != tree_width {
+            // Crossing the hidden sentinel (0) flips the column TOPOLOGY: full-width mux
+            // <-> tree+divider+mux. A stale wide-char (CJK) cell at the new tree/divider
+            // boundary can survive ratatui's incremental diff, leaving background residue,
+            // so force a full repaint on that transition. A plain h/l resize keeps the
+            // same topology and needs no clear (the per-frame Clear widget handles it).
+            let crossed_hidden = (want_tree_width == 0) != (tree_width == 0);
             tree_width = want_tree_width;
             let (vc, vr) = terminal_view_size(cols, body_rows, tree_width);
             registry.resize_all(vc, vr);
             mgr.resize_all(vc, vr);
+            if crossed_hidden {
+                let _ = term.clear();
+            }
             dirty = true;
         }
         // DIAG (temp): log the exact iteration where raw mode flips off (terminal goes
