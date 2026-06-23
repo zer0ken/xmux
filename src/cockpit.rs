@@ -73,6 +73,18 @@ fn adjust_tree_width(w: u16, delta: i32) -> u16 {
     (w as i32 + delta).clamp(TREE_WIDTH_MIN as i32, TREE_WIDTH_MAX as i32) as u16
 }
 
+/// The EFFECTIVE tree width to render and size the mux against. Hidden (0, mux
+/// full width) only while the mux is focused AND `hide_tree_on_focus` is set;
+/// otherwise the tree's natural width. Pure so the focus/setting interaction is
+/// unit-testable; the loop owns the natural width and the PTY resize on change.
+fn reconciled_tree_width(terminal_focused: bool, hide_tree_on_focus: bool, natural: u16) -> u16 {
+    if terminal_focused && hide_tree_on_focus {
+        0
+    } else {
+        natural
+    }
+}
+
 /// Appends a diagnostic line to `<xmux_dir>/debug.log` when `XMUX_DEBUG` is set in
 /// the environment. A no-op otherwise, so it costs nothing in normal runs. Used to
 /// trace the live attach/selection/inventory flow that headless tests cannot reach.
@@ -153,9 +165,13 @@ impl Selection {
 /// the full terminal height (`body_rows + 1`) because the footer and input occupy
 /// the tree column, leaving the terminal column the full height. Both clamp to at least 1.
 fn terminal_view_size(cols: u16, body_rows: u16, tree_width: u16) -> (u16, u16) {
-    let view_cols = cols
-        .saturating_sub(tree_width + 1)
-        .max(1);
+    // tree_width == 0 is the "tree hidden" sentinel: the mux takes the full width
+    // with no divider column. Otherwise subtract the tree column + the 1-col divider.
+    let view_cols = if tree_width == 0 {
+        cols.max(1)
+    } else {
+        cols.saturating_sub(tree_width + 1).max(1)
+    };
     (view_cols, (body_rows + 1).max(1))
 }
 
@@ -722,6 +738,11 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     let size = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
     let (mut cols, mut body_rows) = (size.0, size.1.saturating_sub(1)); // status bar = last row
     let mut tree_width = crate::ui::switcher::TREE_WIDTH;
+    // `tree_width` is the EFFECTIVE width (0 = tree hidden, mux full width); every
+    // sizing/render site reads it. `tree_width_natural` holds the tree's natural
+    // width (what prefix h·l adjusts, restored when the tree is shown again).
+    let mut tree_width_natural = tree_width;
+    let hide_tree_on_focus = env.cfg.ui_hide_tree_on_focus();
 
     // The control-mode metadata clients: one per remote host.
     let (host_tx, mut host_rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
@@ -842,6 +863,17 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // fired, then commit the cursor's target into the canonical selection. A
         // changed selection ensures its PTY + (for a window row) switches the window.
         switcher.set_spinner_frame(spinner_frame_at(spinner_start.elapsed()));
+        // Reconcile the effective tree width to the current focus + the hide setting.
+        // On a change (focus toggled, or hide flips the width), resize the PTYs to the
+        // new mux view size so the mux reflows to/from full width, and mark dirty.
+        let want_tree_width = reconciled_tree_width(!app.is_overlay(), hide_tree_on_focus, tree_width_natural);
+        if want_tree_width != tree_width {
+            tree_width = want_tree_width;
+            let (vc, vr) = terminal_view_size(cols, body_rows, tree_width);
+            registry.resize_all(vc, vr);
+            mgr.resize_all(vc, vr);
+            dirty = true;
+        }
         // DIAG (temp): log the exact iteration where raw mode flips off (terminal goes
         // canonical → keys echo on screen, xmux stops receiving input). The line just
         // before this in debug.log shows what activity (attach/reap/draw) preceded it.
@@ -1048,7 +1080,8 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 // Edge case: a sequence split across reads parses as None and falls into
                 // non_mouse — rare in practice; no cross-read buffering in v1.
                 let (vw, vh) = terminal_view_size(cols, body_rows, tree_width);
-                let term_area = ratatui::layout::Rect::new(tree_width + 1, 0, vw, vh);
+                let term_x = if tree_width == 0 { 0 } else { tree_width + 1 };
+                let term_area = ratatui::layout::Rect::new(term_x, 0, vw, vh);
                 let mut non_mouse: Vec<u8> = Vec::with_capacity(bytes.len());
                 let mut mouse_focus_toggle = false;
                 {
@@ -1107,7 +1140,8 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     focus_terminal = ft;
                     quit = q;
                     if wd != 0 {
-                        tree_width = adjust_tree_width(tree_width, wd);
+                        tree_width_natural = adjust_tree_width(tree_width_natural, wd);
+                        tree_width = tree_width_natural; // h/l only fires in tree focus (tree shown)
                         let (vc, vr) = terminal_view_size(cols, body_rows, tree_width);
                         registry.resize_all(vc, vr);
                         mgr.resize_all(vc, vr);
@@ -1145,7 +1179,8 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         }
                         quit = quit || q;
                         if wd != 0 {
-                            tree_width = adjust_tree_width(tree_width, wd);
+                            tree_width_natural = adjust_tree_width(tree_width_natural, wd);
+                            tree_width = tree_width_natural; // h/l only fires in tree focus (tree shown)
                             let (vc, vr) = terminal_view_size(cols, body_rows, tree_width);
                             registry.resize_all(vc, vr);
                             mgr.resize_all(vc, vr);
@@ -1502,6 +1537,27 @@ mod tests {
         connect_all_sources(&mut mgr, &env, 80, 24, crate::ui::switcher::TREE_WIDTH, &enum_tx);
         assert!(mgr.get("jupiter06").is_some(), "remote host got a control client");
         mgr.teardown_all();
+    }
+
+    #[test]
+    fn terminal_view_size_zero_tree_is_full_width() {
+        // Hidden tree (sentinel 0): full cols, no divider subtracted.
+        assert_eq!(terminal_view_size(80, 23, 0), (80, 24));
+        // Shown tree: cols - tree_width - 1 (divider), height = body_rows + 1.
+        assert_eq!(terminal_view_size(80, 23, 48), (31, 24));
+        // Degenerate widths clamp to at least 1.
+        assert_eq!(terminal_view_size(0, 0, 0), (1, 1));
+    }
+
+    #[test]
+    fn reconciled_tree_width_hides_only_when_focused_and_enabled() {
+        // Tree focused (terminal_focused = false): always the natural width.
+        assert_eq!(reconciled_tree_width(false, true, 48), 48);
+        assert_eq!(reconciled_tree_width(false, false, 48), 48);
+        // Mux focused + setting on: hidden (0).
+        assert_eq!(reconciled_tree_width(true, true, 48), 0);
+        // Mux focused + setting off: stays shown at natural width.
+        assert_eq!(reconciled_tree_width(true, false, 48), 48);
     }
 
     #[test]
