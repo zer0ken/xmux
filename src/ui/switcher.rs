@@ -1428,6 +1428,14 @@ impl Switcher {
         tree_width: u16,
     ) {
         let area = frame.area();
+        // Reset the buffer before painting. The widgets below do not all fill every cell
+        // they own — the mux grid only paints its top-left clip (cells past the grid size
+        // are skipped), the divider rule sets fg only, and the tree leaves blank rows — so
+        // when the tree width changes (drag / prefix h·l) cells that switched panes would
+        // otherwise keep stale content (the residue seen while resizing). Clearing first
+        // makes every unpainted cell default; ratatui still diffs against the last frame,
+        // so static content writes nothing (no flicker).
+        frame.render_widget(Clear, area);
         // tree_width == 0 is the "tree hidden" sentinel (mux focused + hide-tree-on-focus):
         // the terminal view owns the whole area — no tree, no input/footer, no divider.
         if tree_width == 0 {
