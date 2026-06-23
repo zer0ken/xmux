@@ -300,6 +300,9 @@ pub struct Switcher {
     /// ║ (double) when on, │ (single) when off — the only on-screen cue, since while
     /// the mode is on but the tree is focused the tree still shows.
     auto_hide: bool,
+    /// True while the mouse is hovering the divider rule — the cockpit sets this from
+    /// idle motion so the divider highlights as a grab cue for drag-resize.
+    divider_hovered: bool,
     /// A slow (network) action queued by the last keypress for the event loop to
     /// run off-loop. `None` unless a create/rename/kill is pending dispatch.
     pending_op: Option<PendingOp>,
@@ -335,6 +338,7 @@ impl Switcher {
             tree_inner: Rect::default(),
             show_help: false,
             auto_hide: false,
+            divider_hovered: false,
             pending_op: None,
             spinner: HashSet::new(),
             spinner_frame: 0,
@@ -866,6 +870,12 @@ impl Switcher {
     /// Sets auto-hide-tree mode (the cockpit owns it; the divider glyph reflects it).
     pub fn set_auto_hide(&mut self, on: bool) {
         self.auto_hide = on;
+    }
+
+    /// Sets whether the mouse is hovering the divider (the cockpit derives it from
+    /// idle motion); when set, the divider highlights as a drag-resize grab cue.
+    pub fn set_divider_hovered(&mut self, on: bool) {
+        self.divider_hovered = on;
     }
 
     // --- key handling -------------------------------------------------------
@@ -1506,6 +1516,20 @@ impl Switcher {
     fn render_divider(&self, frame: &mut Frame, area: Rect, terminal_focused: bool) {
         const ACCENT: Color = Color::Green;
         let glyph = if self.auto_hide { "║" } else { "│" };
+        // Hover (mouse over the rule, no button): box-drawing rules have no bold form
+        // (the BOLD modifier does not thicken them), so swap the glyph itself to the
+        // HEAVY vertical (┃) for a genuinely thicker line and recolour it brighter — same
+        // single rule, just thicker + lit, as the grabbable-resize cue.
+        if self.divider_hovered {
+            let style = Style::default().fg(Color::LightGreen);
+            let bars = Text::from(
+                (0..area.height)
+                    .map(|_| Line::from(Span::styled("┃", style)))
+                    .collect::<Vec<_>>(),
+            );
+            frame.render_widget(Paragraph::new(bars), area);
+            return;
+        }
         let colors: Vec<Color> = if area.height <= 1 {
             // Too short to split: show the active-marker color in the single cell.
             vec![ACCENT; area.height as usize]
@@ -3060,6 +3084,27 @@ mod tests {
         let buf = term.backend().buffer().clone();
         assert_eq!(fg(&buf, top), Color::Green, "tree focus: top half accent");
         assert_eq!(fg(&buf, bottom), Color::DarkGray, "tree focus: bottom half dim");
+    }
+
+    #[tokio::test]
+    async fn divider_highlights_on_hover() {
+        // Hover swaps the rule to the HEAVY vertical (┃) — box-drawing has no bold form,
+        // so the thicker glyph IS the weight cue — and recolours it brighter. No fill.
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut sw = Switcher::new(sample());
+        let x = TREE_WIDTH;
+        sw.set_divider_hovered(true);
+        term.draw(|f| sw.render(f, None, false, TREE_WIDTH)).unwrap();
+        let buf = term.backend().buffer().clone();
+        for y in [2u16, 27u16] {
+            let cell = &buf[(x, y)];
+            assert_eq!(cell.symbol(), "┃", "hover: heavy (thick) rule glyph at row {y}");
+            assert_eq!(cell.fg, Color::LightGreen, "hover: brighter accent fg at row {y}");
+            assert!(
+                !cell.modifier.contains(Modifier::REVERSED),
+                "hover: not reversed/filled (no block) at row {y}",
+            );
+        }
     }
 
     #[tokio::test]

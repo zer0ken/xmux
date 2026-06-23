@@ -4,12 +4,14 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 
-// SGR mouse tracking: button press/release (1000h) + drag (1002h) + SGR encoding
-// (1006h). Deliberately NOT 1003h (any-motion) — idle moves would flood the PTY.
+// SGR mouse tracking: button press/release (1000h) + drag (1002h) + any-motion
+// (1003h) + SGR encoding (1006h). 1003h is on so the cockpit sees idle moves for the
+// divider hover cue; it CONSUMES idle motion (never forwards it to the mux), so the
+// flood 1003h would otherwise push onto the child / a remote link does not happen.
 #[cfg(windows)]
-const SGR_MOUSE_ON: &[u8] = b"\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+const SGR_MOUSE_ON: &[u8] = b"\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
 #[cfg(windows)]
-const SGR_MOUSE_OFF: &[u8] = b"\x1b[?1006l\x1b[?1002l\x1b[?1000l";
+const SGR_MOUSE_OFF: &[u8] = b"\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 
 /// RAII guard owning the terminal for the cockpit's lifetime: enables raw mode,
 /// enters the alternate screen, and enables SGR mouse capture on construction, then
@@ -24,6 +26,16 @@ impl TermGuard {
         execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
         #[cfg(windows)]
         windows_mouse::enable()?;
+        // crossterm's EnableMouseCapture (non-Windows) enables button-event motion
+        // (1002h) but not any-motion (1003h); add it so idle moves arrive for the
+        // divider hover cue. The Windows path already includes 1003h in SGR_MOUSE_ON.
+        #[cfg(not(windows))]
+        {
+            use std::io::Write;
+            let mut out = std::io::stdout();
+            out.write_all(b"\x1b[?1003h")?;
+            out.flush()?;
+        }
         Ok(TermGuard)
     }
 }
@@ -35,6 +47,13 @@ impl Drop for TermGuard {
             use std::io::Write;
             let mut out = std::io::stdout();
             let _ = out.write_all(SGR_MOUSE_OFF);
+            let _ = out.flush();
+        }
+        #[cfg(not(windows))]
+        {
+            use std::io::Write;
+            let mut out = std::io::stdout();
+            let _ = out.write_all(b"\x1b[?1003l");
             let _ = out.flush();
         }
         let _ = execute!(std::io::stdout(), DisableMouseCapture, LeaveAlternateScreen);

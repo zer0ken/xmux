@@ -807,6 +807,9 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     let mut repeat_until: Option<std::time::Instant> = None;
     // True while the left button is dragging the tree/mux divider rule to resize.
     let mut dragging_divider = false;
+    // True while the mouse is hovering the divider rule (no button) — lights it up as
+    // a drag-resize grab cue. Fed to the switcher each draw via set_divider_hovered.
+    let mut hovered_divider = false;
 
     // The control-mode metadata clients: one per remote host.
     let (host_tx, mut host_rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
@@ -927,6 +930,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // fired, then commit the cursor's target into the canonical selection. A
         // changed selection ensures its PTY + (for a window row) switches the window.
         switcher.set_spinner_frame(spinner_frame_at(spinner_start.elapsed()));
+        switcher.set_divider_hovered(hovered_divider);
         // The single owner of the effective tree width: reconcile it to the current
         // focus + the hide setting, and to any natural-width change from prefix h/l.
         // On a change (focus toggled, hide flips the width, or h/l resized the tree),
@@ -1208,6 +1212,20 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             let is_left_press = is_press && (ev.cb & 0x03) == 0;
                             if is_left_press && tree_width > 0 && col0 == tree_width {
                                 dragging_divider = true; // grabbed the divider
+                                i += len;
+                                continue;
+                            }
+                            // Idle motion (motion bit set, no button held) — reported only
+                            // because any-motion tracking (1003h) is on. Use it to light up the
+                            // divider when hovered, then CONSUME it: idle motion is NEVER
+                            // forwarded to the mux (that is the flood 1003h would otherwise push
+                            // onto the child / a remote link).
+                            if ev.pressed && (ev.cb & 0x23) == 0x23 {
+                                let over = tree_width > 0 && col0 == tree_width;
+                                if over != hovered_divider {
+                                    hovered_divider = over;
+                                    dirty = true;
+                                }
                                 i += len;
                                 continue;
                             }
