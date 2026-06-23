@@ -1068,7 +1068,19 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 // A kept attachment's pump fed its grid (Output → redraw on the next
                 // loop top) or its master hit EOF (Exited → reap). Coalesce a burst
                 // into one redraw so a busy session cannot monopolize the thread.
+                // Detach-to-quit: if the session the user is VIEWING (mux focused) exits —
+                // a `detach` inside it, or it being killed — there is nothing left to show,
+                // so quit xmux rather than strand a dead pane the reconnect sweep would keep
+                // trying to revive. Capture its id BEFORE any reap removes it; a background
+                // session dropping (tree focus, or a non-displayed attach) does NOT quit.
+                let displayed_attach_id = (!app.is_overlay() && !selection.is_empty())
+                    .then(|| registry.get(&display_key(&env, &selection)).map(|a| a.id()))
+                    .flatten();
+                let mut detached = false;
                 if let PtyEvent::Exited { id } = ev {
+                    if Some(id) == displayed_attach_id {
+                        detached = true;
+                    }
                     if !registry.reap(id) {
                         reaped_ids.insert(id);
                     }
@@ -1077,6 +1089,9 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 while budget > 0 {
                     match pty_rx.try_recv() {
                         Ok(PtyEvent::Exited { id }) => {
+                            if Some(id) == displayed_attach_id {
+                                detached = true;
+                            }
                             if !registry.reap(id) {
                                 reaped_ids.insert(id);
                             }
@@ -1085,6 +1100,9 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         Ok(PtyEvent::Output { .. }) => { budget -= 1; }
                         Err(_) => break,
                     }
+                }
+                if detached {
+                    break; // the viewed session detached/exited → quit the cockpit
                 }
             }
             Some(ev) = worker.recv() => {
