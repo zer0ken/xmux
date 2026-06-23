@@ -89,6 +89,14 @@ fn apply_width_delta(wd: i32, natural: &mut u16, xmux_dir: &std::path::Path) {
     crate::state::save_tree_width(xmux_dir, *natural);
 }
 
+/// Flips the auto-hide-tree mode and persists it, so the next launch restores it.
+/// Shared by the tree- and mux-focus `prefix t` paths. The effective tree width is
+/// reconciled at the next loop top (`reconciled_tree_width`); the caller marks dirty.
+fn toggle_auto_hide(mode: &mut bool, xmux_dir: &std::path::Path) {
+    *mode = !*mode;
+    crate::state::save_auto_hide_tree(xmux_dir, *mode);
+}
+
 /// The tree width a divider drag to 1-based screen column `col` sets: the dragged
 /// column becomes the divider position (= the tree width), clamped to the allowed range.
 fn divider_drag_width(col: u16) -> u16 {
@@ -113,11 +121,11 @@ fn leading_ctrl_arrow(bytes: &[u8]) -> Option<(i32, usize)> {
 }
 
 /// The EFFECTIVE tree width to render and size the mux against. Hidden (0, mux
-/// full width) only while the mux is focused AND `hide_tree_on_focus` is set;
-/// otherwise the tree's natural width. Pure so the focus/setting interaction is
+/// full width) only while the mux is focused AND auto-hide-tree mode is on;
+/// otherwise the tree's natural width. Pure so the focus/mode interaction is
 /// unit-testable; the loop owns the natural width and the PTY resize on change.
-fn reconciled_tree_width(terminal_focused: bool, hide_tree_on_focus: bool, natural: u16) -> u16 {
-    if terminal_focused && hide_tree_on_focus {
+fn reconciled_tree_width(terminal_focused: bool, auto_hide_tree: bool, natural: u16) -> u16 {
+    if terminal_focused && auto_hide_tree {
         0
     } else {
         natural
@@ -518,10 +526,11 @@ fn handle_tree_bytes(
     cols: u16,
     rows: u16,
     tree_width: u16,
-) -> (bool, bool, i32) {
+) -> (bool, bool, i32, bool) {
     let mut focus_terminal = false;
     let mut quit = false;
     let mut width_delta = 0i32;
+    let mut toggle_auto_hide = false;
     for key in tree_decoder.feed(bytes) {
         if *tree_armed {
             *tree_armed = false;
@@ -532,6 +541,7 @@ fn handle_tree_bytes(
                 KeyCode::Right if ctrl => width_delta = 1,
                 KeyCode::Char('h') => width_delta = -1,
                 KeyCode::Char('l') => width_delta = 1,
+                KeyCode::Char('t') => toggle_auto_hide = true,
                 KeyCode::Char('?') => switcher.toggle_help(),
                 // prefix →/Tab: focus the mux pane (prefix ←/Esc: focus the tree, where
                 // we already are — a no-op that falls through).
@@ -566,7 +576,7 @@ fn handle_tree_bytes(
             }
         }
     }
-    (focus_terminal, quit, width_delta)
+    (focus_terminal, quit, width_delta, toggle_auto_hide)
 }
 
 /// A plain-enumeration result for a local psmux source: its tree is filled from a
@@ -787,7 +797,11 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         0,
     );
     let mut tree_width = tree_width_natural;
-    let hide_tree_on_focus = env.cfg.ui_hide_tree_on_focus();
+    // Auto-hide-tree mode: the live `prefix t` toggle, restored from its persisted
+    // state if set, else the `auto-hide-tree` config default. The loop-top reconcile
+    // reads it to size the tree (0 = hidden, mux full width) on focus changes.
+    let mut auto_hide_tree = crate::state::load_auto_hide_tree(&env.xmux_dir)
+        .unwrap_or_else(|| env.cfg.ui_auto_hide_tree());
     // The resize-repeat window: set when a prefix-driven resize fires, it lets a bare
     // Ctrl+←/→ keep resizing (no re-prefix) until it lapses (see RESIZE_REPEAT_MS).
     let mut repeat_until: Option<std::time::Instant> = None;
@@ -920,7 +934,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // ponytail: resize_all touches every live attachment on each change. It is
         // gated to fire once per actual change (not per loop), matching the existing
         // h/l and console-resize paths; debounce only if toggle-spam proves costly.
-        let want_tree_width = reconciled_tree_width(!app.is_overlay(), hide_tree_on_focus, tree_width_natural);
+        let want_tree_width = reconciled_tree_width(!app.is_overlay(), auto_hide_tree, tree_width_natural);
         if want_tree_width != tree_width {
             tree_width = want_tree_width;
             let (vc, vr) = terminal_view_size(cols, body_rows, tree_width);
@@ -1007,6 +1021,8 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 .then(|| registry.grid(&display_key(&env, &selection)))
                 .flatten();
             let terminal_focused = !app.is_overlay();
+            // The divider glyph reflects auto-hide-tree mode (║ on, │ off).
+            switcher.set_auto_hide(auto_hide_tree);
             let t_draw = std::time::Instant::now();
             // Split the draw cost: `render` is the in-memory buffer build (tree +
             // grid → cells); the remainder of `draw` is crossterm's diff + console
@@ -1277,7 +1293,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     }
                 }
                 if !consumed_by_repeat && app.is_overlay() {
-                    let (ft, q, wd) = handle_tree_bytes(
+                    let (ft, q, wd, th) = handle_tree_bytes(
                         &non_mouse, &mut tree_decoder, &mut tree_armed, prefix, &mut switcher,
                         &mut mgr, &env, &ops, &op_tx, &enum_tx, cols, body_rows, tree_width,
                     );
@@ -1289,6 +1305,10 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         apply_width_delta(wd, &mut tree_width_natural, &env.xmux_dir);
                         repeat_until =
                             Some(std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS));
+                    }
+                    if th {
+                        toggle_auto_hide(&mut auto_hide_tree, &env.xmux_dir);
+                        dirty = true;
                     }
                 } else if !consumed_by_repeat {
                     // TERMINAL focus: forward raw bytes to the selected session's PTY;
@@ -1313,6 +1333,10 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                     std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS),
                                 );
                             }
+                            TermAction::ToggleAutoHide => {
+                                toggle_auto_hide(&mut auto_hide_tree, &env.xmux_dir);
+                                dirty = true;
+                            }
                         }
                     }
                 }
@@ -1325,7 +1349,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 if focus_tree && !app.is_overlay() {
                     app.toggle();
                     if !tree_replay.is_empty() {
-                        let (ft, q, wd) = handle_tree_bytes(
+                        let (ft, q, wd, th) = handle_tree_bytes(
                             &tree_replay, &mut tree_decoder, &mut tree_armed, prefix,
                             &mut switcher, &mut mgr, &env, &ops, &op_tx, &enum_tx, cols, body_rows, tree_width,
                         );
@@ -1340,7 +1364,12 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             repeat_until =
                                 Some(std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS));
                         }
+                        if th {
+                            toggle_auto_hide(&mut auto_hide_tree, &env.xmux_dir);
+                            dirty = true;
+                        }
                     }
+
                 }
                 if quit {
                     break;
@@ -1825,7 +1854,7 @@ mod tests {
 
     #[test]
     fn to_grid_local_full_width_area_maps_left_edge() {
-        // Tree hidden (hide-tree-on-focus): the mux owns the whole screen, so the
+        // Tree hidden (auto-hide-tree): the mux owns the whole screen, so the
         // input handler builds term_area at x=0. The top-left cell SGR (1,1) must map
         // to grid-local (1,1) rather than being rejected as it would in the tree column.
         let area = ratatui::layout::Rect::new(0, 0, 80, 24);

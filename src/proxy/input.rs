@@ -3,7 +3,8 @@
 //! sees exact input), EXCEPT a prefix (default `C-g`) followed by a command key,
 //! which is intercepted: `prefix Left|Tab|Esc` returns focus to the tree, `prefix Right`
 //! keeps focus on the (already-focused) mux pane, `prefix q` quits, `prefix ?` toggles
-//! the keys help, `prefix h`/`l` and `prefix Ctrl+←/→` resize the tree, and a doubled
+//! the keys help, `prefix h`/`l` and `prefix Ctrl+←/→` resize the tree, `prefix t`
+//! toggles auto-hide-tree mode, and a doubled
 //! prefix sends one literal prefix byte. The same command set works in tree focus, so a
 //! command behaves identically regardless of which pane holds focus. The prefix is a C0
 //! control byte, so it cannot collide with a UTF-8 continuation byte or appear mid-CSI;
@@ -23,6 +24,9 @@ pub enum TermAction {
     /// `prefix h`/`l` or `prefix Ctrl+←/→` — adjust the tree width by this signed
     /// delta. Focus stays on the mux pane (the resize is a layout change).
     Width(i32),
+    /// `prefix t` — toggle auto-hide-tree mode. Focus stays on the mux pane (the
+    /// tree is already hidden here when the mode is on; the toggle just (un)pins it).
+    ToggleAutoHide,
 }
 
 pub struct TermInput {
@@ -98,6 +102,16 @@ impl TermInput {
                         out.push(TermAction::Forward(std::mem::take(&mut fwd)));
                     }
                     out.push(TermAction::Width(if b0 == b'l' { 1 } else { -1 }));
+                    i += 1;
+                    continue;
+                }
+                // prefix t → toggle auto-hide-tree; keeps mux focus, so the rest of
+                // the read still forwards to the pane.
+                if b0 == b't' {
+                    if !fwd.is_empty() {
+                        out.push(TermAction::Forward(std::mem::take(&mut fwd)));
+                    }
+                    out.push(TermAction::ToggleAutoHide);
                     i += 1;
                     continue;
                 }
@@ -260,6 +274,16 @@ mod tests {
         let mut t = m();
         t.feed(&[0x07]);
         assert_eq!(t.feed(b"?"), vec![TermAction::ShowHelp]);
+    }
+
+    #[test]
+    fn prefix_then_t_toggles_auto_hide() {
+        // Keeps mux focus, so trailing bytes in the same read still forward.
+        let mut t = m();
+        assert_eq!(
+            t.feed(b"\x07tabc"),
+            vec![TermAction::ToggleAutoHide, TermAction::Forward(b"abc".to_vec())]
+        );
     }
 
     #[test]

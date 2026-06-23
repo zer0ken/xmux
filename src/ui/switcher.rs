@@ -296,6 +296,10 @@ pub struct Switcher {
     tree_inner: Rect,
 
     show_help: bool,
+    /// Auto-hide-tree mode (set by the cockpit each frame). Drives the divider glyph:
+    /// ║ (double) when on, │ (single) when off — the only on-screen cue, since while
+    /// the mode is on but the tree is focused the tree still shows.
+    auto_hide: bool,
     /// A slow (network) action queued by the last keypress for the event loop to
     /// run off-loop. `None` unless a create/rename/kill is pending dispatch.
     pending_op: Option<PendingOp>,
@@ -330,6 +334,7 @@ impl Switcher {
             list_state: ListState::default(),
             tree_inner: Rect::default(),
             show_help: false,
+            auto_hide: false,
             pending_op: None,
             spinner: HashSet::new(),
             spinner_frame: 0,
@@ -856,6 +861,11 @@ impl Switcher {
     /// per animation tick (which can starve under a `%output` flood).
     pub fn set_spinner_frame(&mut self, frame: usize) {
         self.spinner_frame = frame;
+    }
+
+    /// Sets auto-hide-tree mode (the cockpit owns it; the divider glyph reflects it).
+    pub fn set_auto_hide(&mut self, on: bool) {
+        self.auto_hide = on;
     }
 
     // --- key handling -------------------------------------------------------
@@ -1436,7 +1446,7 @@ impl Switcher {
         // makes every unpainted cell default; ratatui still diffs against the last frame,
         // so static content writes nothing (no flicker).
         frame.render_widget(Clear, area);
-        // tree_width == 0 is the "tree hidden" sentinel (mux focused + hide-tree-on-focus):
+        // tree_width == 0 is the "tree hidden" sentinel (mux focused + auto-hide-tree):
         // the terminal view owns the whole area — no tree, no input/footer, no divider.
         if tree_width == 0 {
             self.tree_inner = Rect::default();
@@ -1491,8 +1501,11 @@ impl Switcher {
     /// top = tree (left), bottom = mux (right) — and the other half stays dim. A single
     /// vertical rule cannot lean left/right, so the accent half's position carries the
     /// signal (adapting tmux's active-pane border). Replaces the per-pane box borders.
+    /// The glyph also encodes auto-hide-tree mode: ║ (double) when on, │ when off — so
+    /// a visible tree that will vanish on blur is distinguishable from a pinned one.
     fn render_divider(&self, frame: &mut Frame, area: Rect, terminal_focused: bool) {
         const ACCENT: Color = Color::Green;
+        let glyph = if self.auto_hide { "║" } else { "│" };
         let colors: Vec<Color> = if area.height <= 1 {
             // Too short to split: show the active-marker color in the single cell.
             vec![ACCENT; area.height as usize]
@@ -1510,7 +1523,7 @@ impl Switcher {
         let bars = Text::from(
             colors
                 .into_iter()
-                .map(|c| Line::from(Span::styled("│", Style::default().fg(c))))
+                .map(|c| Line::from(Span::styled(glyph, Style::default().fg(c))))
                 .collect::<Vec<_>>(),
         );
         frame.render_widget(Paragraph::new(bars), area);
@@ -1670,6 +1683,7 @@ impl Switcher {
             Key("C-g Tab", "toggle focus between tree and mux"),
             Key("C-g ← · C-g Esc", "focus the tree"),
             Key("C-g C-←/→ · h/l", "resize the tree (C-←/→ then repeats briefly)"),
+            Key("C-g t", "toggle auto-hide-tree (║ divider = on)"),
             Key("C-g ?", "toggle this help"),
             Key("click a pane", "focus that pane"),
             Key("drag the divider", "resize the tree"),
@@ -3046,6 +3060,24 @@ mod tests {
         let buf = term.backend().buffer().clone();
         assert_eq!(fg(&buf, top), Color::Green, "tree focus: top half accent");
         assert_eq!(fg(&buf, bottom), Color::DarkGray, "tree focus: bottom half dim");
+    }
+
+    #[tokio::test]
+    async fn divider_glyph_reflects_auto_hide_mode() {
+        // ║ (double) when auto-hide-tree mode is on, │ (single) when off — so a visible
+        // tree that will vanish on blur is distinguishable from a pinned one.
+        let backend = TestBackend::new(100, 30);
+        let mut term = Terminal::new(backend).unwrap();
+        let mut sw = Switcher::new(sample());
+        let (x, y) = (TREE_WIDTH, 2u16);
+
+        sw.set_auto_hide(false);
+        term.draw(|f| sw.render(f, None, false, TREE_WIDTH)).unwrap();
+        assert_eq!(term.backend().buffer()[(x, y)].symbol(), "│", "mode off → single line");
+
+        sw.set_auto_hide(true);
+        term.draw(|f| sw.render(f, None, false, TREE_WIDTH)).unwrap();
+        assert_eq!(term.backend().buffer()[(x, y)].symbol(), "║", "mode on → double line");
     }
 
     #[test]

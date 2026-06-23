@@ -13,6 +13,27 @@ const LAST_SESSION_FILE: &str = "last_session";
 /// with `prefix h`/`l`, so the next launch restores it instead of the default.
 const TREE_WIDTH_FILE: &str = "tree_width";
 
+/// The file under the xmux dir holding the auto-hide-tree mode the user last set
+/// with `prefix t` ("1"/"0"), so the next launch restores it (overriding the
+/// `auto-hide-tree` config default).
+const AUTO_HIDE_TREE_FILE: &str = "auto_hide_tree";
+
+/// Reads the persisted auto-hide-tree mode. `None` when the file is absent or
+/// unrecognised — the caller falls back to the config default.
+pub fn load_auto_hide_tree(xmux_dir: &Path) -> Option<bool> {
+    match std::fs::read_to_string(xmux_dir.join(AUTO_HIDE_TREE_FILE)).ok()?.trim() {
+        "1" => Some(true),
+        "0" => Some(false),
+        _ => None,
+    }
+}
+
+/// Persists the auto-hide-tree mode. Best-effort: a write failure only loses the
+/// next launch's restore.
+pub fn save_auto_hide_tree(xmux_dir: &Path, on: bool) {
+    let _ = std::fs::write(xmux_dir.join(AUTO_HIDE_TREE_FILE), if on { "1" } else { "0" });
+}
+
 /// Reads the persisted tree width. `None` when the file is absent, unreadable, or
 /// not a `u16` — the caller falls back to the default width.
 pub fn load_tree_width(xmux_dir: &Path) -> Option<u16> {
@@ -86,6 +107,25 @@ mod tests {
         assert_eq!(load_tree_width(&dir), None, "absent file");
         std::fs::write(dir.join(TREE_WIDTH_FILE), "not-a-number").unwrap();
         assert_eq!(load_tree_width(&dir), None, "unparsable value");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn auto_hide_tree_save_then_load_round_trips() {
+        let dir = temp_dir("ah-roundtrip");
+        save_auto_hide_tree(&dir, true);
+        assert_eq!(load_auto_hide_tree(&dir), Some(true));
+        save_auto_hide_tree(&dir, false);
+        assert_eq!(load_auto_hide_tree(&dir), Some(false));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn auto_hide_tree_load_missing_or_garbage_is_none() {
+        let dir = temp_dir("ah-garbage");
+        assert_eq!(load_auto_hide_tree(&dir), None, "absent file");
+        std::fs::write(dir.join(AUTO_HIDE_TREE_FILE), "yes").unwrap();
+        assert_eq!(load_auto_hide_tree(&dir), None, "unrecognised value");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

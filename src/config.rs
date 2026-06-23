@@ -32,12 +32,14 @@ pub struct UiConfig {
     /// `set -g prefix`. Parsed by `proxy::term::parse_prefix`.
     #[serde(default = "default_prefix")]
     pub prefix: String,
-    /// When true, focusing the mux hides the tree and gives the mux the full
-    /// terminal width; the tree returns when focus returns to it. While hidden the
-    /// tree has no column to click, so focus returns via the prefix keys
+    /// The INITIAL state of the auto-hide-tree mode (toggled live with `prefix t`,
+    /// then persisted to `~/.xmux/auto_hide_tree`, which wins over this on later
+    /// runs). When the mode is on, focusing the mux hides the tree and gives the mux
+    /// the full terminal width; the tree returns when focus returns to it. While
+    /// hidden the tree has no column to click, so focus returns via the prefix keys
     /// (`prefix Tab`/`←`/`Esc`). Default false keeps the tree shown in both focus states.
-    #[serde(rename = "hide-tree-on-focus", default)]
-    pub hide_tree_on_focus: bool,
+    #[serde(rename = "auto-hide-tree", default)]
+    pub auto_hide_tree: bool,
 }
 
 fn default_prefix() -> String {
@@ -48,7 +50,7 @@ impl Default for UiConfig {
     fn default() -> Self {
         UiConfig {
             prefix: default_prefix(),
-            hide_tree_on_focus: false,
+            auto_hide_tree: false,
         }
     }
 }
@@ -119,9 +121,10 @@ impl Config {
         &self.ui.prefix
     }
 
-    /// Whether focusing the mux hides the tree (full-width mux). Default false.
-    pub fn ui_hide_tree_on_focus(&self) -> bool {
-        self.ui.hide_tree_on_focus
+    /// The initial auto-hide-tree mode from config (default false). The live toggle's
+    /// persisted state, when present, overrides this — see `state::load_auto_hide_tree`.
+    pub fn ui_auto_hide_tree(&self) -> bool {
+        self.ui.auto_hide_tree
     }
 
     /// Merges ssh-config discovery with the config file. Discovered aliases come
@@ -500,26 +503,26 @@ bogus = "nope"
     }
 
     #[test]
-    fn ui_hide_tree_on_focus_round_trip() {
+    fn ui_auto_hide_tree_round_trip() {
         // Missing file → false.
-        let missing = std::env::temp_dir().join("xmux-hide-absent-xyz.toml");
-        assert!(!load(&missing).unwrap().ui_hide_tree_on_focus());
+        let missing = std::env::temp_dir().join("xmux-autohide-absent-xyz.toml");
+        assert!(!load(&missing).unwrap().ui_auto_hide_tree());
 
         // [ui] present but key missing → false; prefix still loads.
-        let path = write_temp("[ui]\nprefix = \"C-g\"\n", "hide-missing.toml");
+        let path = write_temp("[ui]\nprefix = \"C-g\"\n", "autohide-missing.toml");
         let cfg = load(&path).unwrap();
-        assert!(!cfg.ui_hide_tree_on_focus());
+        assert!(!cfg.ui_auto_hide_tree());
         assert_eq!(cfg.ui_prefix(), "C-g");
 
         // Explicit true.
-        let path = write_temp("[ui]\nhide-tree-on-focus = true\n", "hide-true.toml");
+        let path = write_temp("[ui]\nauto-hide-tree = true\n", "autohide-true.toml");
         let cfg = load(&path).unwrap();
-        assert!(cfg.ui_hide_tree_on_focus());
+        assert!(cfg.ui_auto_hide_tree());
         assert_eq!(cfg.ui_prefix(), "C-g"); // prefix unaffected, still defaults
 
         // Explicit false.
-        let path = write_temp("[ui]\nhide-tree-on-focus = false\n", "hide-false.toml");
-        assert!(!load(&path).unwrap().ui_hide_tree_on_focus());
+        let path = write_temp("[ui]\nauto-hide-tree = false\n", "autohide-false.toml");
+        assert!(!load(&path).unwrap().ui_auto_hide_tree());
     }
 
     #[test]
