@@ -1531,10 +1531,11 @@ impl Switcher {
         let glyph = if self.auto_hide { "║" } else { "│" };
         // Hover (mouse over the rule, no button): box-drawing rules have no bold form
         // (the BOLD modifier does not thicken them), so swap the glyph itself to the
-        // HEAVY vertical (┃) for a genuinely thicker line and recolour it brighter — same
-        // single rule, just thicker + lit, as the grabbable-resize cue.
+        // HEAVY vertical (┃) for a genuinely thicker line and recolour it yellow to match
+        // psmux's `pane_border_hover_fg` (this divider's enabled=green/disabled=darkgray
+        // already match psmux) — same single rule, just thicker + lit, as the grab cue.
         if self.divider_hovered {
-            let style = Style::default().fg(Color::LightGreen);
+            let style = Style::default().fg(Color::Yellow);
             let bars = Text::from(
                 (0..area.height)
                     .map(|_| Line::from(Span::styled("┃", style)))
@@ -3114,7 +3115,7 @@ mod tests {
         for y in [2u16, 27u16] {
             let cell = &buf[(x, y)];
             assert_eq!(cell.symbol(), "┃", "hover: heavy (thick) rule glyph at row {y}");
-            assert_eq!(cell.fg, Color::LightGreen, "hover: brighter accent fg at row {y}");
+            assert_eq!(cell.fg, Color::Yellow, "hover: yellow (psmux hover) at row {y}");
             assert!(
                 !cell.modifier.contains(Modifier::REVERSED),
                 "hover: not reversed/filled (no block) at row {y}",
