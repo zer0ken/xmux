@@ -619,9 +619,11 @@ fn resolve_tree_key(
             KeyCode::Char('l') => Some(Action::Width(1)),
             KeyCode::Char('t') => Some(Action::ToggleAutoHide),
             KeyCode::Char('?') => Some(Action::ShowHelp),
-            // prefix →/Tab: focus the mux pane (prefix ←/Esc: focus the tree, where
-            // we already are — a no-op that resolves to nothing).
-            KeyCode::Right | KeyCode::Tab => Some(Action::FocusMux),
+            // prefix Tab cycles focus to the mux (toggle, mirroring the mux side's
+            // prefix Tab → tree); prefix → also focuses the mux. The byte decoder yields
+            // Char('\t') for Tab, never KeyCode::Tab, so match both. (prefix ←/Esc focus
+            // the tree, where we already are — a no-op that resolves to nothing.)
+            KeyCode::Right | KeyCode::Tab | KeyCode::Char('\t') => Some(Action::FocusMux),
             _ => None,
         };
     }
@@ -1867,9 +1869,10 @@ mod tests {
         assert_eq!(rt(b"\x07h", false), vec![Action::Width(-1)], "prefix h narrows");
         assert_eq!(rt(b"\x07t", false), vec![Action::ToggleAutoHide], "prefix t toggles hide");
         assert_eq!(rt(b"\x07?", false), vec![Action::ShowHelp], "prefix ? toggles help");
-        // prefix Right focuses the mux pane. (prefix Tab does NOT, from the tree: the
-        // decoder yields Char('\t') for byte 0x09, never KeyCode::Tab — a pre-existing
-        // quirk; only prefix Right and Enter focus the mux from tree focus.)
+        // prefix Tab cycles focus to the mux pane, and prefix Right does too. (Tab
+        // arrives as Char('\t') from the byte decoder, not KeyCode::Tab — both map to
+        // FocusMux so prefix Tab toggles tree⇄mux like it does from the mux side.)
+        assert_eq!(rt(b"\x07\t", false), vec![Action::FocusMux], "prefix Tab cycles focus to mux");
         assert_eq!(rt(b"\x07\x1b[C", false), vec![Action::FocusMux], "prefix Right focuses mux");
         assert_eq!(rt(b"\x07\x1b[1;5C", false), vec![Action::Width(1)], "prefix Ctrl-Right widens");
         assert_eq!(rt(b"\x07\x1b[1;5D", false), vec![Action::Width(-1)], "prefix Ctrl-Left narrows");
