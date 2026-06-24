@@ -5,5 +5,7 @@
 //! lowers it to a runnable command.
 
 pub mod plan;
+pub mod server_model;
 
 pub use plan::{DeathSignal, DisplayTty, EventSource, SwitchPlan};
+pub use server_model::ServerModel;
