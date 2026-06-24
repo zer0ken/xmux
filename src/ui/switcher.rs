@@ -1148,6 +1148,10 @@ impl Switcher {
             self.resolve_kill(ev);
             return;
         }
+        // A flash (error/notice) is transient — it lives only until the next key, like a
+        // status toast. Clear it here so navigation (or any key) restores the normal help
+        // footer; actions below may set a fresh one, which survives because this runs first.
+        self.flash.clear();
         match ev.code {
             KeyCode::Enter => {}
             // ↑/↓ (and k/j) move between SIBLINGS at the current tree level (next/prev
@@ -1854,10 +1858,13 @@ impl Switcher {
         ])
         .split(main_area);
         // Tree column: the tree plus its footer/help line (the help stays here even while
-        // an input pane is open at the bottom).
+        // an input pane is open at the bottom). The footer is normally one line, but a
+        // long flash wraps across several — size the footer to the wrapped line count so
+        // it is never clipped.
+        let footer_h = self.footer_lines(tree_width).len().max(1) as u16;
         let left = Layout::vertical([
-            Constraint::Min(0),    // tree
-            Constraint::Length(1), // footer (help / status)
+            Constraint::Min(0),           // tree
+            Constraint::Length(footer_h), // footer (help / status / wrapped flash)
         ])
         .split(cols[0]);
         self.render_tree(frame, left[0]);
@@ -2104,9 +2111,11 @@ impl Switcher {
             .collect()
     }
 
-    fn render_footer(&self, frame: &mut Frame, area: Rect) {
-        let is_kill = self.pending_kill.is_some();
-        let text = if let Some(PendingKill::Session(sess)) = &self.pending_kill {
+    /// The footer's logical text (confirm / flash / scanning / filter / help), fit to
+    /// `width`. A flash is returned raw — it may exceed `width`; [`Self::footer_lines`]
+    /// wraps it so it never clips.
+    fn footer_text(&self, width: u16) -> String {
+        if let Some(PendingKill::Session(sess)) = &self.pending_kill {
             format!(" kill {}? [y]es / [n]o · Esc cancel", sess.address())
         } else if let Some(PendingKill::Window { source, target, .. }) = &self.pending_kill {
             format!(" kill {}/{}? [y]es / [n]o · Esc cancel", source, target)
@@ -2122,7 +2131,7 @@ impl Switcher {
                     format!(" ⟳ scanning hosts {done}/{total}… · C-g q quit · C-g ? help"),
                     format!(" ⟳ scanning {done}/{total}…"),
                 ],
-                area.width,
+                width,
             )
         } else if !self.filter.is_empty() {
             // The active filter has no border title to live in any more, so it
@@ -2132,7 +2141,7 @@ impl Switcher {
                     format!(" filter: {} · / edit · Esc clear · C-g ? help · C-g q quit", self.filter),
                     format!(" filter: {}", self.filter),
                 ],
-                area.width,
+                width,
             )
         } else {
             fit(
@@ -2143,11 +2152,32 @@ impl Switcher {
                     " Enter focus mux · C-g ? help · C-g q quit".to_string(),
                     " C-g ? help · C-g q quit".to_string(),
                 ],
-                area.width,
+                width,
             )
-        };
+        }
+    }
+
+    /// The footer text split into the lines to render. The fit-based text is always one
+    /// line; only a flash (an arbitrary error/notice) may exceed `width`, so it wraps
+    /// across the narrow tree-column footer rather than clipping.
+    fn footer_lines(&self, width: u16) -> Vec<String> {
+        let text = self.footer_text(width);
+        // Only a flash can exceed `width` (the fit-based text is already constrained, and
+        // a confirm is short); wrap it on word boundaries with a consistent left margin.
+        if self.flash.is_empty() || self.pending_kill.is_some() {
+            return vec![text];
+        }
+        wrap_text(text.trim_start(), width.saturating_sub(1))
+            .into_iter()
+            .map(|l| format!(" {l}"))
+            .collect()
+    }
+
+    fn render_footer(&self, frame: &mut Frame, area: Rect) {
+        let lines = self.footer_lines(area.width);
+        let text = Text::from(lines.into_iter().map(Line::from).collect::<Vec<_>>());
         let mut para = Paragraph::new(text);
-        if is_kill {
+        if self.pending_kill.is_some() {
             para = para.style(Style::default().fg(Color::Red));
         }
         frame.render_widget(para, area);
@@ -3948,6 +3978,33 @@ mod tests {
         let line = tree.lines().find(|l| l.contains("inference")).unwrap_or("");
         assert!(line.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)),
             "a braille spinner sits right of a connecting session name:\n{tree}");
+    }
+
+    #[test]
+    fn long_flash_wraps_in_narrow_footer_instead_of_clipping() {
+        // The footer lives in the tree column; a long flash must wrap across lines rather
+        // than clip at the column edge (a narrow tree would otherwise hide most of it).
+        let mut sw = Switcher::new(sample());
+        sw.flash = "host unreachable — cannot create here".into();
+        let lines = sw.footer_lines(20);
+        assert!(lines.len() > 1, "long flash wraps across lines, got {lines:?}");
+        assert!(
+            lines.iter().all(|l| l.chars().count() <= 20),
+            "every wrapped line fits the width, got {lines:?}"
+        );
+        let joined = lines.join("").replace("  ", " ");
+        assert!(joined.contains("cannot create here"), "no text is lost: {joined:?}");
+    }
+
+    #[tokio::test]
+    async fn flash_clears_on_next_key_restoring_the_footer() {
+        // A flash (e.g. "host unreachable — cannot create here") is transient: any key
+        // dismisses it so the normal help/status footer returns. Regression: it persisted
+        // because only the input-opening actions cleared it, so navigation never did.
+        let mut h = Harness::new(sample());
+        h.sw.flash = "host unreachable — cannot create here".into();
+        h.key(KeyCode::Down).await;
+        assert!(h.sw.flash.is_empty(), "navigation clears the flash, got {:?}", h.sw.flash);
     }
 
     #[tokio::test]
