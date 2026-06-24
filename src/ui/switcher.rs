@@ -1519,6 +1519,100 @@ impl Switcher {
         self.move_selection(if down { 1 } else { -1 });
     }
 
+    // --- context menu -------------------------------------------------------
+
+    /// True while a context menu is open. The cockpit routes every mouse event to
+    /// the menu (press-hold-release) while this holds, like a divider drag.
+    pub fn menu_active(&self) -> bool {
+        self.menu.is_some()
+    }
+
+    /// Right-button press at 0-based screen (col,row): opens that tree row's menu if
+    /// it lands on a selectable row that has items. Does NOT move the tree cursor —
+    /// the gesture only remembers the target, so no background attach fires mid-hold.
+    /// Returns true iff a menu opened (so the cockpit knows to consume the event).
+    pub fn menu_open(&mut self, col: u16, row: u16) -> bool {
+        if !self.in_tree(col, row) {
+            return false;
+        }
+        let offset = self.list_state.offset();
+        let idx = offset + (row.saturating_sub(self.tree_inner.y)) as usize;
+        let Some(target) = self
+            .rows
+            .get(idx)
+            .filter(|r| r.selectable())
+            .map(|r| r.reference.clone())
+        else {
+            return false;
+        };
+        let items = menu_items(&target);
+        if items.is_empty() {
+            return false;
+        }
+        let rect = menu_rect(col, row, &items, self.screen_area);
+        self.menu = Some(Menu { target, rect, items, hovered: None });
+        true
+    }
+
+    /// Mouse moved while the menu is held: set the item under the cursor (or None).
+    pub fn menu_hover(&mut self, col: u16, row: u16) {
+        if let Some(menu) = self.menu.as_mut() {
+            menu.hovered = menu.item_at(col, row);
+        }
+    }
+
+    /// Right-button up: act on the hovered item against the (re-located) target row,
+    /// then close the menu. Released off-menu (no hovered item) cancels. The target is
+    /// re-found by identity so a rebuild during the hold can't act on a stale node.
+    pub fn menu_release(&mut self) -> MenuOutcome {
+        let Some(menu) = self.menu.take() else {
+            return MenuOutcome::None;
+        };
+        let Some(i) = menu.hovered else {
+            return MenuOutcome::None;
+        };
+        let item = menu.items[i];
+        let Some(idx) = self.rows.iter().position(|r| same_node(&r.reference, &menu.target)) else {
+            return MenuOutcome::None;
+        };
+        // The delegated action methods act on the current cursor, so land it on the
+        // target first (consistent with having right-clicked that row).
+        self.user_moved = true;
+        self.set_selected(idx);
+        match item {
+            MenuItem::Open => MenuOutcome::FocusTerminal,
+            MenuItem::NewSession | MenuItem::NewWindow => {
+                self.open_new();
+                MenuOutcome::Handled
+            }
+            MenuItem::Rename => {
+                self.open_input(InputMode::Rename);
+                MenuOutcome::Handled
+            }
+            MenuItem::Kill => {
+                self.arm_kill();
+                MenuOutcome::Handled
+            }
+            MenuItem::Reconnect => {
+                self.request_rescan();
+                MenuOutcome::Handled
+            }
+            MenuItem::SplitVertical | MenuItem::SplitHorizontal => {
+                if let RowRef::Window { sess, window } = &menu.target {
+                    let target = format!("{}:{}", sess.name, window);
+                    let dir = if matches!(item, MenuItem::SplitVertical) { "v" } else { "h" };
+                    self.queue_split(Some(sess.source.clone()), Some(sess.clone()), Some(target), dir);
+                }
+                MenuOutcome::Handled
+            }
+        }
+    }
+
+    /// Close the menu without acting (cockpit watchdog: a keystroke ends the gesture).
+    pub fn menu_cancel(&mut self) {
+        self.menu = None;
+    }
+
     // --- render -------------------------------------------------------------
 
     pub fn render(
@@ -1902,6 +1996,36 @@ fn terminal_cursor_pos(area: Rect, cursor: (u16, u16)) -> ratatui::layout::Posit
     ratatui::layout::Position {
         x: (area.x + col).min(area.x + area.width.saturating_sub(1)),
         y: (area.y + row).min(area.y + area.height.saturating_sub(1)),
+    }
+}
+
+impl Menu {
+    /// The item index at 0-based screen (col,row), or None if outside the item area
+    /// (the box's bordered interior, one row per item below the top border).
+    fn item_at(&self, col: u16, row: u16) -> Option<usize> {
+        let inside_x = col > self.rect.x && col + 1 < self.rect.x + self.rect.width;
+        if !inside_x || row <= self.rect.y {
+            return None;
+        }
+        let i = (row - self.rect.y - 1) as usize;
+        (i < self.items.len()).then_some(i)
+    }
+}
+
+/// The bordered menu box for an anchor at 0-based screen (col,row): sized to the
+/// widest label (+ borders + a pad cell each side) and item count, clamped so it
+/// stays fully inside `area` (shifts up/left near the bottom/right edge).
+fn menu_rect(col: u16, row: u16, items: &[MenuItem], area: Rect) -> Rect {
+    let inner_w = items.iter().map(|it| it.label().chars().count()).max().unwrap_or(0) as u16;
+    let w = (inner_w + 4).min(area.width.max(1));
+    let h = (items.len() as u16 + 2).min(area.height.max(1));
+    let max_x = (area.x + area.width).saturating_sub(w).max(area.x);
+    let max_y = (area.y + area.height).saturating_sub(h).max(area.y);
+    Rect {
+        x: col.clamp(area.x, max_x),
+        y: row.clamp(area.y, max_y),
+        width: w,
+        height: h,
     }
 }
 
@@ -3020,6 +3144,121 @@ mod tests {
         );
         assert!(menu_items(&RowRef::Pane).is_empty());
         assert!(menu_items(&RowRef::Loading).is_empty());
+    }
+
+    /// The screen (col,row) of the tree row at `idx`, given the current layout.
+    fn row_screen_pos(h: &Harness, idx: usize) -> (u16, u16) {
+        let y = h.sw.tree_inner.y + (idx - h.sw.list_state.offset()) as u16;
+        (h.sw.tree_inner.x, y)
+    }
+
+    fn row_index<F: Fn(&RowRef) -> bool>(h: &Harness, pred: F) -> usize {
+        h.sw.rows.iter().position(|r| pred(&r.reference)).expect("row exists")
+    }
+
+    #[tokio::test]
+    async fn menu_open_on_session_does_not_move_cursor() {
+        let mut h = Harness::new(sample());
+        let before = h.sw.selected;
+        let idx = row_index(&h, |r| matches!(r, RowRef::Session(s) if s.name == "build"));
+        let (x, y) = row_screen_pos(&h, idx);
+        assert!(h.sw.menu_open(x, y), "menu opens over a session row");
+        assert!(h.sw.menu_active());
+        assert_eq!(h.sw.selected, before, "opening the menu must not move the tree cursor");
+    }
+
+    #[tokio::test]
+    async fn menu_does_not_open_on_pane_row() {
+        let mut h = Harness::new(sample());
+        let idx = row_index(&h, |r| matches!(r, RowRef::Pane));
+        let (x, y) = row_screen_pos(&h, idx);
+        assert!(!h.sw.menu_open(x, y), "no menu over a pane row");
+        assert!(!h.sw.menu_active());
+    }
+
+    #[tokio::test]
+    async fn menu_release_off_menu_cancels() {
+        let mut h = Harness::new(sample());
+        let idx = row_index(&h, |r| matches!(r, RowRef::Session(_)));
+        let (x, y) = row_screen_pos(&h, idx);
+        h.sw.menu_open(x, y);
+        // No hover set → released off-menu → cancel.
+        assert!(matches!(h.sw.menu_release(), MenuOutcome::None));
+        assert!(!h.sw.menu_active(), "menu closes on release");
+        assert!(h.sw.input.is_none() && h.sw.pending_kill.is_none(), "nothing happened");
+    }
+
+    #[tokio::test]
+    async fn menu_release_open_focuses_terminal_and_selects_target() {
+        let mut h = Harness::new(sample());
+        let s = sess("local", "build", 1, false, 100);
+        let target = RowRef::Session(s);
+        let items = menu_items(&target);
+        let open_at = items.iter().position(|i| *i == MenuItem::Open).unwrap();
+        h.sw.menu = Some(Menu { target, rect: Rect::new(0, 0, 20, 7), items, hovered: Some(open_at) });
+        assert!(matches!(h.sw.menu_release(), MenuOutcome::FocusTerminal));
+        assert_eq!(cur_session_name(&h).as_deref(), Some("build"), "cursor moved to target");
+    }
+
+    #[tokio::test]
+    async fn menu_release_rename_opens_input() {
+        let mut h = Harness::new(sample());
+        let target = RowRef::Session(sess("local", "build", 1, false, 100));
+        let items = menu_items(&target);
+        let at = items.iter().position(|i| *i == MenuItem::Rename).unwrap();
+        h.sw.menu = Some(Menu { target, rect: Rect::new(0, 0, 20, 7), items, hovered: Some(at) });
+        assert!(matches!(h.sw.menu_release(), MenuOutcome::Handled));
+        assert!(h.sw.is_inputting(), "rename opens the inline input");
+    }
+
+    #[tokio::test]
+    async fn menu_release_kill_arms_confirm() {
+        let mut h = Harness::new(sample());
+        let target = RowRef::Session(sess("local", "build", 1, false, 100));
+        let items = menu_items(&target);
+        let at = items.iter().position(|i| *i == MenuItem::Kill).unwrap();
+        h.sw.menu = Some(Menu { target, rect: Rect::new(0, 0, 20, 7), items, hovered: Some(at) });
+        assert!(matches!(h.sw.menu_release(), MenuOutcome::Handled));
+        assert!(h.sw.pending_kill.is_some(), "kill arms the y/n confirm");
+    }
+
+    #[tokio::test]
+    async fn menu_release_split_vertical_queues_op() {
+        let mut h = Harness::new(sample());
+        let s = sess("local", "editor", 2, true, 200);
+        let target = RowRef::Window { sess: s, window: 2 };
+        let items = menu_items(&target);
+        let at = items.iter().position(|i| *i == MenuItem::SplitVertical).unwrap();
+        h.sw.menu = Some(Menu { target, rect: Rect::new(0, 0, 20, 7), items, hovered: Some(at) });
+        assert!(matches!(h.sw.menu_release(), MenuOutcome::Handled));
+        match h.sw.take_pending_op() {
+            Some(PendingOp::SplitWindow { target, vertical, .. }) => {
+                assert_eq!(target, "editor:2");
+                assert!(vertical, "split vertical");
+            }
+            other => panic!("expected a vertical SplitWindow op, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn menu_release_stale_target_cancels() {
+        let mut h = Harness::new(sample());
+        // A target that does not exist in the tree (rebuilt away during the hold).
+        let target = RowRef::Session(sess("local", "ghost", 1, false, 0));
+        let items = menu_items(&target);
+        h.sw.menu = Some(Menu { target, rect: Rect::new(0, 0, 20, 7), items, hovered: Some(0) });
+        assert!(matches!(h.sw.menu_release(), MenuOutcome::None), "gone target → no-op");
+    }
+
+    #[test]
+    fn menu_rect_clamps_into_screen() {
+        use super::MenuItem::*;
+        let area = Rect::new(0, 0, 80, 24);
+        let items = [Open, Rename, Kill];
+        // Anchored near the bottom-right corner → shifted up/left to stay on-screen.
+        let r = menu_rect(78, 23, &items, area);
+        assert!(r.x + r.width <= area.width, "box stays within the right edge");
+        assert!(r.y + r.height <= area.height, "box stays within the bottom edge");
     }
 
     #[tokio::test]
