@@ -16,6 +16,7 @@ pub mod display;
 pub mod env;
 pub mod host;
 pub mod manage;
+pub mod model;
 pub mod mux;
 pub mod proxy;
 pub mod session;
