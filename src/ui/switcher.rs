@@ -1623,6 +1623,7 @@ impl Switcher {
         tree_width: u16,
     ) {
         let area = frame.area();
+        self.screen_area = area;
         // Reset the buffer before painting. The widgets below do not all fill every cell
         // they own — the mux grid only paints its top-left clip (cells past the grid size
         // are skipped), the divider rule sets fg only, and the tree leaves blank rows — so
@@ -1644,6 +1645,7 @@ impl Switcher {
             if self.show_help {
                 self.render_help(frame, area);
             }
+            self.render_menu(frame);
             return;
         }
         let cols = Layout::horizontal([
@@ -1679,6 +1681,7 @@ impl Switcher {
         if self.show_help {
             self.render_help(frame, area);
         }
+        self.render_menu(frame);
     }
 
     /// The vertical rule between the tree (left) and terminal (right). It splits into
@@ -1887,6 +1890,7 @@ impl Switcher {
             Key("C-g ?", "show this help (q / Esc closes)"),
             Key("click a pane", "focus that pane"),
             Key("drag the divider", "resize the tree"),
+            Key("right-click a row", "hold for its menu, release on an item"),
             Key("C-g q", "quit"),
             Key("C-g C-g", "send a literal C-g to the mux"),
             Gap,
@@ -1932,6 +1936,34 @@ impl Switcher {
         frame.render_widget(Clear, popup_clear_rect(rect, area));
         frame.render_widget(
             Paragraph::new(Text::from(lines)).block(Block::bordered().title(" keys ")),
+            rect,
+        );
+    }
+
+    /// Draws the open context menu as a bordered popup at its anchored rect, the
+    /// hovered item reversed. Mirrors `render_help`'s popup (Clear behind + a bordered
+    /// Paragraph) but anchored at the click instead of centered.
+    fn render_menu(&self, frame: &mut Frame) {
+        let Some(menu) = self.menu.as_ref() else {
+            return;
+        };
+        let rect = menu.rect;
+        let pad = rect.width.saturating_sub(4) as usize;
+        let lines: Vec<Line> = menu
+            .items
+            .iter()
+            .enumerate()
+            .map(|(i, it)| {
+                let mut style = Style::default();
+                if menu.hovered == Some(i) {
+                    style = style.add_modifier(Modifier::REVERSED);
+                }
+                Line::from(Span::styled(format!(" {:<pad$} ", it.label()), style))
+            })
+            .collect();
+        frame.render_widget(Clear, popup_clear_rect(rect, self.screen_area));
+        frame.render_widget(
+            Paragraph::new(Text::from(lines)).block(Block::bordered()),
             rect,
         );
     }
@@ -3259,6 +3291,33 @@ mod tests {
         let r = menu_rect(78, 23, &items, area);
         assert!(r.x + r.width <= area.width, "box stays within the right edge");
         assert!(r.y + r.height <= area.height, "box stays within the bottom edge");
+    }
+
+    #[tokio::test]
+    async fn menu_renders_with_hovered_item_reversed() {
+        use super::MenuItem::*;
+        let mut h = Harness::new(sample());
+        let target = RowRef::Session(sess("local", "build", 1, false, 100));
+        let items = vec![Open, Rename, Kill, NewWindow];
+        // Box at a known spot; hover the second item (rename).
+        h.sw.menu = Some(Menu { target, rect: Rect::new(2, 2, 18, 6), items, hovered: Some(1) });
+        h.draw();
+        let out = h.text();
+        assert!(out.contains("open") && out.contains("rename") && out.contains("kill"),
+            "menu items render:\n{out}");
+
+        // The hovered row (rename, at box y+1+1 = 4) is reversed across the box interior.
+        let buf = h.buf();
+        let reversed = (3..19).any(|x| buf[(x, 4u16)].modifier.contains(Modifier::REVERSED));
+        assert!(reversed, "the hovered item renders reversed");
+    }
+
+    #[tokio::test]
+    async fn help_lists_the_right_click_menu() {
+        let mut h = Harness::new(sample());
+        h.sw.show_help();
+        h.draw();
+        assert!(h.text().contains("right-click"), "help mentions the right-click menu");
     }
 
     #[tokio::test]
