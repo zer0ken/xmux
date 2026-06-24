@@ -10,4 +10,4 @@ pub mod transport;
 
 pub use plan::{DeathSignal, DisplayTty, EventSource, SwitchPlan};
 pub use server_model::ServerModel;
-pub use transport::Transport;
+pub use transport::{LoweredSwitch, Transport};
