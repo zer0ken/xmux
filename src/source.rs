@@ -363,7 +363,7 @@ pub fn reason_is_no_sessions(text: &str) -> bool {
 /// has a `<name>.port` file there (psmux is one-server-per-session over localhost
 /// TCP, with this directory as its discovery substrate — there is no aggregate
 /// server to list).
-fn psmux_registry_dir() -> PathBuf {
+pub(crate) fn psmux_registry_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".psmux")
@@ -388,7 +388,7 @@ fn psmux_session_names(filenames: &[String]) -> Vec<String> {
 
 /// Reads psmux's registry `dir` and returns its live default-socket session names.
 /// A missing/unreadable directory yields an empty list (no local sessions).
-fn read_psmux_registry_dir(dir: &Path) -> Vec<String> {
+pub(crate) fn read_psmux_registry_dir(dir: &Path) -> Vec<String> {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -404,7 +404,7 @@ fn read_psmux_registry_dir(dir: &Path) -> Vec<String> {
 /// (full windows/attached/recency); a registry name it omits is still surfaced with
 /// a minimal placeholder, so a failed/partial `list-sessions` never blanks the
 /// sidebar. Deduped on name (a session in both sources appears once).
-fn merge_psmux_sessions(source: &str, names: Vec<String>, detail: Vec<Session>) -> Vec<Session> {
+pub(crate) fn merge_psmux_sessions(source: &str, names: Vec<String>, detail: Vec<Session>) -> Vec<Session> {
     let covered: std::collections::HashSet<String> =
         detail.iter().map(|s| s.name.clone()).collect();
     let mut out = detail;

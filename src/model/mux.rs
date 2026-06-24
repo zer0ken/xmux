@@ -130,6 +130,69 @@ impl Mux for Tmux {
     fn rename_window_plan(&self, target: &str, new: &str) -> Vec<String> { mux::rename_window("tmux", target, new) }
 }
 
+/// The local-psmux poll cadence (psmux is one-server-per-session with no event
+/// push, so changes are discovered by re-enumeration). Mirrors the supervisor's
+/// loop constant; held here so the supervisor reads it off the mux, not a literal.
+const PSMUX_POLL_MS: u64 = 1500;
+
+/// psmux: one server per session (`ServerModel::PerSession`), enumerated from the
+/// filesystem registry, polled for change, each session keeping its own attachment.
+pub struct Psmux;
+
+#[async_trait]
+impl Mux for Psmux {
+    fn kind(&self) -> &str { "psmux" }
+
+    fn server_model(&self) -> ServerModel { ServerModel::PerSession }
+
+    async fn enumerate(&self, transport: &Transport) -> Result<Vec<Session>, RunError> {
+        // The registry (`~/.psmux/<name>.port`) is the authoritative existence set;
+        // one list-sessions supplies display detail (empty on a default-route miss).
+        let names = crate::source::read_psmux_registry_dir(&crate::source::psmux_registry_dir());
+        let (name, args) = transport.exec_argv(false, &mux::list_sessions("psmux"));
+        let detail = match ExecRunner.run(&name, &args).await {
+            Ok(out) => mux::parse_sessions(transport.host_id(), &String::from_utf8_lossy(&out)),
+            Err(_) => Vec::new(),
+        };
+        Ok(crate::source::merge_psmux_sessions(transport.host_id(), names, detail))
+    }
+
+    fn attach_plan(&self, session: &str, _window: Option<i64>) -> Vec<String> {
+        mux::attach("psmux", session)
+    }
+
+    fn switch_plan(&self, _session: &str) -> SwitchPlan {
+        SwitchPlan::PerSessionNoOp
+    }
+
+    fn switch_client_argv(&self, display_tty: &str, session: &str) -> Vec<String> {
+        // PerSession never lowers a switch (switch_plan is PerSessionNoOp, so
+        // lower_switch returns None before this is reached). The trait is total, so
+        // the argv is defined for completeness and uses the psmux binary.
+        vec![
+            "psmux".to_string(),
+            "switch-client".to_string(),
+            "-c".to_string(),
+            display_tty.to_string(),
+            "-t".to_string(),
+            mux::quote_target(session),
+        ]
+    }
+
+    fn control_argv(&self) -> Option<Vec<String>> { None }
+
+    fn death_signal(&self) -> DeathSignal { DeathSignal::PathStat { dir_is_psmux_registry: true } }
+
+    fn event_source(&self) -> EventSource { EventSource::Poll { interval_ms: PSMUX_POLL_MS } }
+
+    fn list_panes_plan(&self, session: &str) -> Vec<String> { mux::list_panes("psmux", session) }
+    fn new_window_plan(&self, session: &str, name: &str) -> Vec<String> { mux::new_window("psmux", session, name) }
+    fn split_window_plan(&self, target: &str, vertical: bool) -> Vec<String> { mux::split_window("psmux", target, vertical) }
+    fn select_window_plan(&self, target: &str) -> Vec<String> { mux::select_window("psmux", target) }
+    fn kill_window_plan(&self, target: &str) -> Vec<String> { mux::kill_window("psmux", target) }
+    fn rename_window_plan(&self, target: &str, new: &str) -> Vec<String> { mux::rename_window("psmux", target, new) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,5 +270,45 @@ mod tests {
         let t = Transport::Local { socket: None };
         let sessions = Tmux.enumerate(&t).await.expect("reachable tmux (empty is Ok)");
         eprintln!("local tmux sessions: {:?}", sessions.iter().map(|s| &s.name).collect::<Vec<_>>());
+    }
+
+    use crate::model::plan::SwitchPlan;
+
+    #[test]
+    fn psmux_is_per_session_and_named() {
+        assert_eq!(Psmux.kind(), "psmux");
+        assert_eq!(Psmux.server_model(), ServerModel::PerSession);
+    }
+
+    #[test]
+    fn psmux_is_object_safe() {
+        let _m: Box<dyn Mux> = Box::new(Psmux);
+    }
+
+    #[test]
+    fn psmux_has_no_shared_attachment_to_switch() {
+        // PerSession keeps one attachment PER SESSION — there is nothing to switch.
+        assert_eq!(Psmux.switch_plan("work"), SwitchPlan::PerSessionNoOp);
+    }
+
+    #[test]
+    fn psmux_polls_and_dies_on_registry_stat() {
+        // No host-level control stream: it is polled at the LOCAL_POLL_MS cadence
+        // (cockpit.rs:48 = 1500). Death is the per-session registry stat.
+        assert_eq!(Psmux.control_argv(), None);
+        assert_eq!(Psmux.event_source(), EventSource::Poll { interval_ms: 1500 });
+        assert_eq!(Psmux.death_signal(), DeathSignal::PathStat { dir_is_psmux_registry: true });
+    }
+
+    #[test]
+    fn psmux_attach_plan_is_plain_attach() {
+        assert_eq!(Psmux.attach_plan("work", None), argv(&["psmux", "attach", "-t", "work"]));
+    }
+
+    #[test]
+    fn psmux_window_plans_use_the_psmux_binary() {
+        assert_eq!(Psmux.list_panes_plan("work"), mux::list_panes("psmux", "work"));
+        assert_eq!(Psmux.select_window_plan("work:1"), mux::select_window("psmux", "work:1"));
+        assert_eq!(Psmux.new_window_plan("work", "logs"), mux::new_window("psmux", "work", "logs"));
     }
 }
