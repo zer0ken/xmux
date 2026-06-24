@@ -1442,6 +1442,8 @@ impl Switcher {
     }
 
     fn resolve_kill(&mut self, ev: KeyEvent) {
+        // tmux confirm-before semantics: only y/Y confirms; any other key — n, Esc, or
+        // anything else — cancels (the pending confirm is taken either way).
         let confirmed = matches!(ev.code, KeyCode::Char('y') | KeyCode::Char('Y'));
         if let Some(armed) = self.pending_kill.take() {
             if confirmed {
@@ -1997,9 +1999,9 @@ impl Switcher {
     fn render_footer(&self, frame: &mut Frame, area: Rect) {
         let is_kill = self.pending_kill.is_some();
         let text = if let Some(PendingKill::Session(sess)) = &self.pending_kill {
-            format!(" kill {}? [y]es / [n]o", sess.address())
+            format!(" kill {}? [y]es / [n]o · Esc cancel", sess.address())
         } else if let Some(PendingKill::Window { source, target, .. }) = &self.pending_kill {
-            format!(" kill {}/{}? [y]es / [n]o", source, target)
+            format!(" kill {}/{}? [y]es / [n]o · Esc cancel", source, target)
         } else if !self.flash.is_empty() {
             format!(" {}", self.flash)
         } else if !self.scanning.is_empty() {
@@ -3132,6 +3134,16 @@ mod tests {
             out.contains("filter: infer"),
             "active filter shows in title:\n{out}"
         );
+    }
+
+    #[tokio::test]
+    async fn kill_confirm_esc_cancels() {
+        let mut h = Harness::new(sample()); // a local session ("editor") is preselected
+        h.ch('x').await; // arm the kill y/n confirm
+        assert!(h.sw.pending_kill.is_some(), "x arms the y/n confirm");
+        h.key(KeyCode::Esc).await; // Esc cancels it, like the input prompts
+        assert!(h.sw.pending_kill.is_none(), "Esc clears the confirm");
+        assert!(h.ops.killed.lock().unwrap().is_empty(), "Esc must not kill anything");
     }
 
     #[tokio::test]
