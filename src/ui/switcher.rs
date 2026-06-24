@@ -2045,11 +2045,7 @@ impl Switcher {
     /// `width`. A flash is returned raw — it may exceed `width`; [`Self::footer_lines`]
     /// wraps it so it never clips.
     fn footer_text(&self, width: u16) -> String {
-        if let Some(PendingKill::Session(sess)) = &self.pending_kill {
-            format!(" kill {}? [y]es / [n]o · Esc cancel", sess.address())
-        } else if let Some(PendingKill::Window { source, target, .. }) = &self.pending_kill {
-            format!(" kill {}/{}? [y]es / [n]o · Esc cancel", source, target)
-        } else if !self.flash.is_empty() {
+        if !self.flash.is_empty() {
             format!(" {}", self.flash)
         } else if !self.scanning.is_empty() {
             // A subtle global indicator while host probes are in flight; clears
@@ -2092,9 +2088,9 @@ impl Switcher {
     /// across the narrow tree-column footer rather than clipping.
     fn footer_lines(&self, width: u16) -> Vec<String> {
         let text = self.footer_text(width);
-        // Only a flash can exceed `width` (the fit-based text is already constrained, and
-        // a confirm is short); wrap it on word boundaries with a consistent left margin.
-        if self.flash.is_empty() || self.pending_kill.is_some() {
+        // Only a flash can exceed `width` (the fit-based text is already constrained);
+        // wrap it on word boundaries with a consistent left margin.
+        if self.flash.is_empty() {
             return vec![text];
         }
         wrap_text(text.trim_start(), width.saturating_sub(1))
@@ -2106,11 +2102,7 @@ impl Switcher {
     fn render_footer(&self, frame: &mut Frame, area: Rect) {
         let lines = self.footer_lines(area.width);
         let text = Text::from(lines.into_iter().map(Line::from).collect::<Vec<_>>());
-        let mut para = Paragraph::new(text);
-        if self.pending_kill.is_some() {
-            para = para.style(Style::default().fg(Color::Red));
-        }
-        frame.render_widget(para, area);
+        frame.render_widget(Paragraph::new(text), area);
     }
 
     /// The help overlay's `(title, lines)`, built once and rendered through the
@@ -2200,6 +2192,20 @@ impl Switcher {
         (input_title(input.mode).to_string(), lines)
     }
 
+    /// The armed kill confirm rendered as popup `(title, lines)`, in red.
+    fn confirm_lines(&self) -> (String, Vec<Line<'static>>) {
+        let red = Style::default().fg(Color::Red);
+        let q = match self.pending_kill.as_ref().expect("kill armed") {
+            PendingKill::Session(sess) => format!(" kill {}?", sess.address()),
+            PendingKill::Window { source, target, .. } => format!(" kill {source}/{target}?"),
+        };
+        let lines = vec![
+            Line::from(Span::styled(q, red)),
+            Line::from(Span::styled(" [y]es / [n]o · Esc cancel", red)),
+        ];
+        ("kill?".to_string(), lines)
+    }
+
     /// Draws the active modal popup (help / confirm / input) centered, shifted
     /// by `popup_offset`, through the shared opaque `render_popup`, and caches
     /// its rect for drag hit-testing. These modals are mutually exclusive in
@@ -2207,6 +2213,8 @@ impl Switcher {
     fn render_modal_popup(&mut self, frame: &mut Frame, area: Rect) {
         let (title, lines) = if self.show_help {
             self.help_lines()
+        } else if self.pending_kill.is_some() {
+            self.confirm_lines()
         } else if self.input.is_some() {
             self.input_lines()
         } else {
@@ -4201,35 +4209,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn kill_confirm_footer_is_red() {
+    async fn kill_confirm_is_a_centered_red_popup_not_the_footer() {
         let mut h = Harness::new(sample());
-        h.ch('x').await; // arm kill on the selected session
-        // The footer is the LAST row; find a cell of the confirm text and assert red fg.
+        let build = row_index(&h, |r| matches!(r, RowRef::Session(s) if s.name == "build"));
+        h.sw.set_selected(build);
+        h.sw.user_moved = true;
+        h.key(KeyCode::Char('x')).await; // arm the confirm
         let buf = h.buf();
-        let y = buf.area.height - 1;
-        let cell = (0..buf.area.width)
-            .map(|x| &buf[(x, y)])
-            .find(|c| c.symbol() == "k") // "kill ...": first 'k'
-            .expect("kill confirm text present");
-        assert_eq!(cell.fg, ratatui::style::Color::Red, "kill confirm must be red");
-    }
-
-    #[tokio::test]
-    async fn kill_window_confirm_footer_is_red() {
-        let mut h = Harness::new(sample());
-        h.key(KeyCode::Home).await;   // local host
-        h.key(KeyCode::Right).await;  // → editor (session)
-        h.key(KeyCode::Right).await;  // → editor's first window (window 1)
-        h.ch('x').await;              // arm window kill (pumps + draws)
-        assert!(matches!(h.sw.pending_kill, Some(PendingKill::Window { .. })), "kill on window row must set a window PendingKill");
-        // The footer is the LAST row; find a cell of the confirm text and assert red fg.
-        let buf = h.buf();
-        let y = buf.area.height - 1;
-        let cell = (0..buf.area.width)
-            .map(|x| &buf[(x, y)])
-            .find(|c| c.symbol() == "k") // "kill ...": first 'k'
-            .expect("kill confirm text present");
-        assert_eq!(cell.fg, ratatui::style::Color::Red, "window kill confirm must be red");
+        let last = buf.area.height - 1;
+        let footer: String = (0..buf.area.width).map(|x| buf[(x, last)].symbol()).collect();
+        assert!(!footer.contains("[y]es"), "confirm must not be in the footer:\n{footer}");
+        // A red "kill" cell exists in a centered box (not the footer row).
+        let red_kill = (0..last)
+            .flat_map(|y| (0..buf.area.width).map(move |x| (x, y)))
+            .any(|(x, y)| buf[(x, y)].symbol() == "k" && buf[(x, y)].fg == Color::Red);
+        assert!(red_kill, "the confirm popup shows red 'kill' text above the footer");
     }
 
     #[tokio::test]
