@@ -39,17 +39,23 @@ Four changes, all within `src/ui/switcher.rs` plus mouse routing in
 
 ## Design
 
-### 1. Opaque popup (root-cause fix in `render_popup`)
+### 1. Opaque popup (already correct in `render_popup`; lock it in)
 
-Reproduce headlessly first (systematic-debugging): paint a grid cell with a
-non-default background, draw a popup over it, assert every interior cell has
-`bg == Color::Reset` and `symbol == " "`. If the assertion fails, fix
-`render_popup` so it paints a fully opaque fill across the whole `rect` before
-the bordered block (e.g. an explicit space-fill with `Style::reset()`), not
-relying on `Block::style` alone.
+Investigated first (systematic-debugging, headless probe): a full-screen grid
+painted with a blue background, reverse-video rows, and an RGB-background row,
+with the help popup open over it. Result: **0 of 1782 interior cells** showed
+any residual background — `render_popup`'s `Clear` + `Style::reset()` block is
+already fully opaque at the buffer level. The help-popup residue described in
+the request does not reproduce in the current code (the opacity was a prior
+fix — see `render_popup`'s doc comment and the
+`popup_blanks_only_a_wide_glyph…` test).
 
-The fix lives in the one shared primitive, so help, menu, and the new
-input/confirm popups are all cured at once and cannot regress independently.
+So #1 is not a code fix but a guarantee: route the new input and confirm
+popups through the same opaque primitive (#3 does this) and add a regression
+test asserting every popup type (help / input / confirm) is opaque over a
+colored grid. If residue still appears on a real terminal, it is a
+terminal/diff-level artifact that needs a live repro (a human gate), not a
+buffer-level bug — flag it rather than guessing.
 
 ### 2. Reusable primitive
 
@@ -108,7 +114,8 @@ The menu is not draggable.
 ## Testing
 
 Headless (`TestBackend`), in `src/ui/switcher.rs`:
-- popup interior is opaque over a colored grid (regression for #1),
+- every popup type (help / input / confirm) is opaque over a colored grid
+  (regression for #1 — locks in the already-correct opacity),
 - input popup renders centered with the prompt and Esc hint,
 - confirm popup renders centered, red, with y/n,
 - a border-press + move shifts the popup rect; a release ends the drag,
