@@ -263,9 +263,13 @@ fn dispatch_notif<E: FnMut(HostEvent)>(
                 reason: reason.map(str::to_string).or_else(|| last_error.clone()),
             });
         }
-        Notif::ClientDetached => {
-            emit(HostEvent::Exited { host: host.to_string(), reason: last_error.clone() });
-        }
+        // `%client-detached <name>` is a GLOBAL control-mode notification: tmux sends
+        // it to EVERY control client whenever ANY client detaches — often a different
+        // one (our own per-session display attachment, or the user's other terminal),
+        // not us. It does NOT mean our control connection died; our own death arrives
+        // as `%exit` / EOF. Treating it as our exit reaped the whole host's tree on any
+        // unrelated detach. The tree shows no per-session attach state, so it is inert.
+        Notif::ClientDetached => {}
         // %pause/%continue are output flow-control; with `no-output` set there is no
         // output to pause, so they are inert for this metadata-only client.
         Notif::Pause { .. } | Notif::Continue { .. } => {}
@@ -840,6 +844,19 @@ mod tests {
                 "{line:?} must not trigger a refetch"
             );
         }
+    }
+
+    #[test]
+    fn client_detached_does_not_kill_our_control_connection() {
+        // `%client-detached <name>` fires on EVERY control client when ANY client
+        // detaches (commonly a different one — our own display PTY attach, or the
+        // user's other terminal). It must be inert: our own exit arrives as %exit/EOF.
+        // Before this, an unrelated detach emitted Exited and reaped the host's tree.
+        let mut events = Vec::new();
+        dispatch_notif("jupiter06", Notif::ClientDetached, &Some("ignored".into()), &mut |e| {
+            events.push(e)
+        });
+        assert!(events.is_empty(), "%client-detached must be inert (emitted no events)");
     }
 
     /// The `-CC` entry DCS `\x1bP1000p` introduces control mode, and tmux 3.3.6/3.4
