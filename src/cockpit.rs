@@ -1439,6 +1439,14 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                 i += len;
                                 continue;
                             }
+                            // A modal popup is mouse-modal: while one is open, every mouse
+                            // event that is not its border-drag (handled above) is swallowed,
+                            // so clicks, wheels, divider grabs, and hovers never reach the
+                            // tree/mux/divider behind it.
+                            if switcher.is_modal_popup_open() {
+                                i += len;
+                                continue;
+                            }
                             if is_left_press && tree_width > 0 && col0 == tree_width {
                                 dragging_divider = true; // grabbed the divider
                                 i += len;
@@ -1470,7 +1478,6 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             // can't quit the cockpit out from under the mux.
                             let is_right_press = is_press && (ev.cb & 0x03) == 2;
                             if tree_menu_may_open(is_right_press, app.is_overlay(), in_mux.is_some())
-                                && !switcher.is_modal_popup_open()
                                 && switcher.menu_open(col0, ev.row.saturating_sub(1))
                             {
                                 dirty = true;
