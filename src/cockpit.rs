@@ -1126,6 +1126,17 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // A portable-pty child spawn clears ENABLE_MOUSE_INPUT on the parent CONIN,
         // killing mouse capture; re-assert it whenever it drifts off.
         crate::proxy::term::ensure_mouse_capture();
+        // An `r` re-scan also re-attaches the CURRENT display: tear the (possibly
+        // detached / dead) attachment down and clear its switch latch so the attach
+        // below re-creates a fresh client for the viewed session. Keeps the per-host
+        // model — recovery from a lost display client is explicit, on demand.
+        if switcher.take_reattach_kick() && !selection.is_empty() {
+            let key = display_key(&env, &selection);
+            registry.remove(&key);
+            host_session.remove(&selection.source);
+            last_attached_sel = Selection::default();
+            attach_deadline = Some(std::time::Instant::now());
+        }
         // In passthrough the user no longer drives the tree cursor (stdin goes to the
         // PTY), so the tree selection tracks the displayed session's active window — always.
         // select_active_window is idempotent (no move when already on the active window or

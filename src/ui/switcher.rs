@@ -471,6 +471,10 @@ pub struct Switcher {
     /// Signals the event loop to (re)kick the streaming probes — set on the
     /// initial seed and on an `r` re-scan; the loop reads + clears it.
     rescan_kick: bool,
+    /// Signals the event loop to re-attach the CURRENT display: tear the (possibly
+    /// detached / dead) attachment down so the next attach re-creates a fresh client.
+    /// Set on an `r` re-scan — explicit, on-demand recovery for the viewed session.
+    reattach_kick: bool,
 
     rows: Vec<Row>,
     selected: usize,
@@ -538,6 +542,7 @@ impl Switcher {
             panes_loaded: HashSet::new(),
             user_moved: false,
             rescan_kick: false,
+            reattach_kick: false,
             rows: Vec::new(),
             selected: 0,
             name_col_width: 0,
@@ -614,6 +619,12 @@ impl Switcher {
     /// re-scan) — the event loop spawns the streaming probes when it is set.
     pub fn take_rescan_kick(&mut self) -> bool {
         std::mem::take(&mut self.rescan_kick)
+    }
+
+    /// Consumes the re-attach kick (set by an `r` re-scan): the loop tears down the
+    /// current display attachment so the next attach re-creates a fresh client.
+    pub fn take_reattach_kick(&mut self) -> bool {
+        std::mem::take(&mut self.reattach_kick)
     }
 
     /// Sets the persisted last-selected session address (`source/session`) to
@@ -1667,6 +1678,7 @@ impl Switcher {
         self.panes.clear();
         self.panes_loaded.clear();
         self.rescan_kick = true;
+        self.reattach_kick = true;
         self.rebuild();
         self.restore_focus(prior);
     }
@@ -3275,6 +3287,17 @@ mod tests {
             Some("infer"),
             "the persisted last-selected session is restored once it streams in"
         );
+    }
+
+    #[tokio::test]
+    async fn request_rescan_arms_a_display_reattach() {
+        // The `r` re-scan also arms an explicit re-attach of the current display, so a
+        // detached / dead display client is re-created on demand (the loop consumes it).
+        let mut sw = Switcher::from_sources(vec!["h".into()]);
+        assert!(!sw.take_reattach_kick(), "no re-attach armed before a re-scan");
+        sw.request_rescan();
+        assert!(sw.take_reattach_kick(), "an r re-scan arms a display re-attach");
+        assert!(!sw.take_reattach_kick(), "the kick is consumed once");
     }
 
     #[tokio::test]
