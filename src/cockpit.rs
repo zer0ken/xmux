@@ -1130,19 +1130,11 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // PTY), so the tree selection tracks the displayed session's active window — always.
         // select_active_window is idempotent (no move when already on the active window or
         // when the session's panes are unknown), so calling it each iteration is cheap.
-        let was_overlay = app.is_overlay();
-        let moved_by_follow = if !was_overlay { switcher.select_active_window() } else { false };
+        if !app.is_overlay() {
+            switcher.select_active_window();
+        }
         let new_sel = Selection::from_target(&switcher.terminal_view_target());
         if new_sel != selection {
-            // DIAG (temp): what moves the selection — focus state + whether the
-            // passthrough active-window auto-follow caused it.
-            dbg_log(
-                &env.xmux_dir,
-                &format!(
-                    "sel-change {} -> {} overlay={was_overlay} by_follow={moved_by_follow}",
-                    selection.session, new_sel.session
-                ),
-            );
             selection = new_sel;
             // Arm the debounce — do NOT attach yet. Rapid navigation keeps pushing the
             // deadline, so only the settled selection attaches (one switch, not a storm).
