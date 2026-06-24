@@ -30,6 +30,74 @@ const COLOR_PANE: Color = Color::Cyan;
 /// render dim so pending state reads apart from settled content.
 const COLOR_HINT: Color = Color::DarkGray;
 
+/// Parses a tmux-style colour token into a ratatui [`Color`], matching tmux/psmux's
+/// colour vocabulary so the divider colours can be configured exactly like
+/// `pane-border-style`: the 16 named ANSI colours, their `bright*` variants,
+/// `colourN`/`colorN` (a 0-255 palette index), `#RRGGBB`, and `default` (terminal
+/// default). A leading `fg=` is tolerated so a tmux style string drops in verbatim.
+/// Unknown or empty tokens fall back to [`Color::Reset`] (terminal default).
+pub fn map_color(s: &str) -> Color {
+    let s = s.trim();
+    let s = s.strip_prefix("fg=").unwrap_or(s).trim();
+    if let Some(hex) = s.strip_prefix('#') {
+        if hex.len() == 6 {
+            if let (Ok(r), Ok(g), Ok(b)) = (
+                u8::from_str_radix(&hex[0..2], 16),
+                u8::from_str_radix(&hex[2..4], 16),
+                u8::from_str_radix(&hex[4..6], 16),
+            ) {
+                return Color::Rgb(r, g, b);
+            }
+        }
+    }
+    let lower = s.to_lowercase();
+    if let Some(idx) = lower.strip_prefix("colour").or_else(|| lower.strip_prefix("color")) {
+        if let Ok(n) = idx.parse::<u8>() {
+            return Color::Indexed(n);
+        }
+    }
+    match lower.as_str() {
+        "black" => Color::Black,
+        "red" => Color::Red,
+        "green" => Color::Green,
+        "yellow" => Color::Yellow,
+        "blue" => Color::Blue,
+        "magenta" => Color::Magenta,
+        "cyan" => Color::Cyan,
+        "white" => Color::White,
+        "brightblack" | "bright-black" => Color::DarkGray,
+        "brightred" | "bright-red" => Color::LightRed,
+        "brightgreen" | "bright-green" => Color::LightGreen,
+        "brightyellow" | "bright-yellow" => Color::LightYellow,
+        "brightblue" | "bright-blue" => Color::LightBlue,
+        "brightmagenta" | "bright-magenta" => Color::LightMagenta,
+        "brightcyan" | "bright-cyan" => Color::LightCyan,
+        "brightwhite" | "bright-white" => Color::White,
+        _ => Color::Reset,
+    }
+}
+
+/// The tree|mux divider's three colours, resolved from config (tmux's pane-border
+/// options): `active` marks the focused side, `inactive` the unfocused side, and
+/// `hover` the drag-resize grab cue. Defaults mirror tmux's own code defaults —
+/// `green` / terminal-default / `yellow`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DividerColors {
+    pub active: Color,
+    pub inactive: Color,
+    pub hover: Color,
+}
+
+impl Default for DividerColors {
+    fn default() -> Self {
+        DividerColors {
+            active: Color::Green,
+            inactive: Color::Reset,
+            hover: Color::Yellow,
+        }
+    }
+}
+
 /// A fully-populated snapshot of the reachable environment.
 #[derive(Clone, Default)]
 pub struct Scan {
@@ -439,6 +507,9 @@ pub struct Switcher {
     /// Raw `~/.ssh/config` text (set once by the cockpit). The right-pane info panel
     /// shows the matching Host/Match stanza for a selected unreachable host. Empty in tests.
     ssh_config_text: String,
+    /// The tree|mux divider colours (set once by the cockpit from config; tmux defaults
+    /// otherwise). See [`DividerColors`].
+    colors: DividerColors,
 }
 
 impl Switcher {
@@ -470,6 +541,7 @@ impl Switcher {
             menu: None,
             screen_area: Rect::default(),
             ssh_config_text: String::new(),
+            colors: DividerColors::default(),
         }
     }
 
@@ -1026,6 +1098,13 @@ impl Switcher {
     /// idle motion); when set, the divider highlights as a drag-resize grab cue.
     pub fn set_divider_hovered(&mut self, on: bool) {
         self.divider_hovered = on;
+    }
+
+    /// Sets the tree|mux divider colours. The cockpit calls this once at startup with
+    /// the colours parsed from config's `pane-*-border-style` options; tmux defaults
+    /// apply otherwise.
+    pub fn set_divider_colors(&mut self, colors: DividerColors) {
+        self.colors = colors;
     }
 
     // --- key handling -------------------------------------------------------
@@ -1827,15 +1906,16 @@ impl Switcher {
     /// The glyph also encodes auto-hide-tree mode: ║ (double) when on, │ when off — so
     /// a visible tree that will vanish on blur is distinguishable from a pinned one.
     fn render_divider(&self, frame: &mut Frame, area: Rect, terminal_focused: bool, input_focused: bool) {
-        const ACCENT: Color = Color::Green;
+        let active = self.colors.active;
+        let inactive = self.colors.inactive;
         let glyph = if self.auto_hide { "║" } else { "│" };
         // Hover (mouse over the rule, no button): box-drawing rules have no bold form
         // (the BOLD modifier does not thicken them), so swap the glyph itself to the
-        // HEAVY vertical (┃) for a genuinely thicker line and recolour it yellow to match
-        // psmux's `pane_border_hover_fg` (this divider's enabled=green/disabled=darkgray
-        // already match psmux) — same single rule, just thicker + lit, as the grab cue.
+        // HEAVY vertical (┃) for a genuinely thicker line and recolour it with the
+        // configured hover colour (tmux's `pane-border-hover-style`) — same single rule,
+        // just thicker + lit, as the grab cue.
         if self.divider_hovered {
-            let style = Style::default().fg(Color::Yellow);
+            let style = Style::default().fg(self.colors.hover);
             let bars = Text::from(
                 (0..area.height)
                     .map(|_| Line::from(Span::styled("┃", style)))
@@ -1846,16 +1926,16 @@ impl Switcher {
         }
         let colors: Vec<Color> = if input_focused {
             // Focus is on the bottom input pane — neither tree nor mux is focused.
-            vec![COLOR_HINT; area.height as usize]
+            vec![inactive; area.height as usize]
         } else if area.height <= 1 {
             // Too short to split: show the active-marker color in the single cell.
-            vec![ACCENT; area.height as usize]
+            vec![active; area.height as usize]
         } else {
             let top_rows = area.height.div_ceil(2); // top takes the extra row on odd heights
             let (top, bottom) = if terminal_focused {
-                (COLOR_HINT, ACCENT) // mux focused → accent on the bottom (mux side)
+                (inactive, active) // mux focused → accent on the bottom (mux side)
             } else {
-                (ACCENT, COLOR_HINT) // tree focused → accent on the top (tree side)
+                (active, inactive) // tree focused → accent on the top (tree side)
             };
             (0..area.height)
                 .map(|y| if y < top_rows { top } else { bottom })
@@ -1870,12 +1950,13 @@ impl Switcher {
         frame.render_widget(Paragraph::new(bars), area);
     }
 
-    /// The horizontal rule above the bottom input pane. Drawn in the focus accent (green)
-    /// because the input pane holds focus while open — mirroring the tree|mux divider.
+    /// The horizontal rule above the bottom input pane. Drawn in the focus accent
+    /// (the active-border colour) because the input pane holds focus while open —
+    /// mirroring the tree|mux divider.
     fn render_input_divider(&self, frame: &mut Frame, area: Rect) {
         let rule = "─".repeat(area.width as usize);
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(rule, Style::default().fg(Color::Green)))),
+            Paragraph::new(Line::from(Span::styled(rule, Style::default().fg(self.colors.active)))),
             area,
         );
     }
@@ -2332,6 +2413,31 @@ fn centered_rect(w: u16, h: u16, area: Rect) -> Rect {
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
+
+    #[test]
+    fn map_color_named_and_default() {
+        assert_eq!(map_color("green"), Color::Green);
+        assert_eq!(map_color("blue"), Color::Blue);
+        assert_eq!(map_color("yellow"), Color::Yellow);
+        assert_eq!(map_color("white"), Color::White);
+        assert_eq!(map_color("default"), Color::Reset);
+        assert_eq!(map_color(""), Color::Reset, "empty = inherit/terminal default");
+        assert_eq!(map_color("brightblack"), Color::DarkGray);
+    }
+
+    #[test]
+    fn map_color_indexed_and_hex() {
+        assert_eq!(map_color("colour4"), Color::Indexed(4));
+        assert_eq!(map_color("color12"), Color::Indexed(12));
+        assert_eq!(map_color("#268bd2"), Color::Rgb(0x26, 0x8b, 0xd2));
+    }
+
+    #[test]
+    fn map_color_tolerates_fg_prefix_and_case() {
+        assert_eq!(map_color("fg=blue"), Color::Blue, "tmux style string drops in verbatim");
+        assert_eq!(map_color("  Blue "), Color::Blue, "trimmed and case-insensitive");
+        assert_eq!(map_color("fg=#EEE8D5"), Color::Rgb(0xee, 0xe8, 0xd5));
+    }
     use ratatui::buffer::Buffer;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
@@ -3863,6 +3969,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn divider_uses_configured_colors() {
+        // Colours set from config (pane-*-border-style) drive the divider: active on the
+        // focused half, inactive on the other, hover overrides both while hovered.
+        let backend = TestBackend::new(100, 30);
+        let mut term = Terminal::new(backend).unwrap();
+        let mut sw = Switcher::new(sample());
+        sw.set_divider_colors(DividerColors {
+            active: Color::Blue,
+            inactive: Color::Gray,
+            hover: Color::Red,
+        });
+        let x = TREE_WIDTH;
+        let (top, bottom) = (2u16, 27u16);
+        let fg = |buf: &Buffer, y: u16| buf[(x, y)].fg;
+
+        // Tree focused: top = active(Blue), bottom = inactive(Gray).
+        term.draw(|f| sw.render(f, None, false, TREE_WIDTH)).unwrap();
+        let buf = term.backend().buffer().clone();
+        assert_eq!(fg(&buf, top), Color::Blue, "configured active on the focused half");
+        assert_eq!(fg(&buf, bottom), Color::Gray, "configured inactive on the unfocused half");
+
+        // Hovering the rule overrides with the configured hover colour.
+        sw.set_divider_hovered(true);
+        term.draw(|f| sw.render(f, None, false, TREE_WIDTH)).unwrap();
+        let buf = term.backend().buffer().clone();
+        assert_eq!(fg(&buf, top), Color::Red, "configured hover colour while hovered");
+    }
+
+    #[tokio::test]
     async fn divider_splits_top_bottom_to_mark_focused_side() {
         // The rule splits into halves: the accent (green) half marks WHICH pane has
         // focus — top = tree (left), bottom = mux (right) — and the other half is dim.
@@ -3873,18 +4008,19 @@ mod tests {
         let (top, bottom) = (2u16, 27u16); // within the top / bottom halves of height 30
         let fg = |buf: &Buffer, y: u16| buf[(x, y)].fg;
 
-        // Mux focused: accent on the bottom (mux side), dim on top.
+        // Mux focused: accent on the bottom (mux side), inactive on top. The inactive
+        // half is the tmux default (terminal default = Color::Reset), not a dim grey.
         term.draw(|f| sw.render(f, None, true, TREE_WIDTH)).unwrap();
         let buf = term.backend().buffer().clone();
         assert_eq!(buf[(x, top)].symbol(), "│", "divider still drawn");
         assert_eq!(fg(&buf, bottom), Color::Green, "mux focus: bottom half accent");
-        assert_eq!(fg(&buf, top), Color::DarkGray, "mux focus: top half dim");
+        assert_eq!(fg(&buf, top), Color::Reset, "mux focus: top half inactive (tmux default)");
 
-        // Tree focused: accent on the top (tree side), dim on bottom.
+        // Tree focused: accent on the top (tree side), inactive on bottom.
         term.draw(|f| sw.render(f, None, false, TREE_WIDTH)).unwrap();
         let buf = term.backend().buffer().clone();
         assert_eq!(fg(&buf, top), Color::Green, "tree focus: top half accent");
-        assert_eq!(fg(&buf, bottom), Color::DarkGray, "tree focus: bottom half dim");
+        assert_eq!(fg(&buf, bottom), Color::Reset, "tree focus: bottom half inactive");
     }
 
     #[tokio::test]

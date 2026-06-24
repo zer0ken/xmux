@@ -863,6 +863,13 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     switcher.set_ssh_config_text(
         std::fs::read_to_string(crate::env::ssh_config_path()).unwrap_or_default(),
     );
+    // Divider colours from config's tmux-style pane-border options (tmux defaults
+    // otherwise), so the tree|mux rule matches the user's tmux pane-border experience.
+    switcher.set_divider_colors(crate::ui::switcher::DividerColors {
+        active: crate::ui::switcher::map_color(&env.cfg.ui.pane_active_border_style),
+        inactive: crate::ui::switcher::map_color(&env.cfg.ui.pane_border_style),
+        hover: crate::ui::switcher::map_color(&env.cfg.ui.pane_border_hover_style),
+    });
     // Restore the session the user last had selected (persisted across runs), so the
     // preselect lands there once its host streams in instead of guessing from the
     // unreliable cross-host `session_last_attached` (#1).
