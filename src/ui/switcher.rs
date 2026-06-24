@@ -323,6 +323,14 @@ struct Menu {
     hovered: Option<usize>,
 }
 
+/// An active border-drag of a modal popup: the grabbed screen cell and the
+/// `popup_offset` at grab time, so motion can compute the new offset.
+#[derive(Clone, Copy)]
+struct PopupDrag {
+    grab: (u16, u16),
+    origin: (i16, i16),
+}
+
 /// The menu entries for a node, by type. Non-selectable rows (pane/loading) get none.
 /// `focus` is first so a press-release with no drag falls on the safe default.
 fn menu_items(target: &RowRef) -> Vec<MenuItem> {
@@ -517,6 +525,8 @@ pub struct Switcher {
     /// each render so a mouse press can hit-test its border. `Rect::default()`
     /// ⇒ no modal popup open.
     popup_rect: Rect,
+    /// Active border-drag of a modal popup. `None` ⇒ not dragging.
+    popup_drag: Option<PopupDrag>,
 }
 
 impl Switcher {
@@ -551,6 +561,7 @@ impl Switcher {
             colors: DividerColors::default(),
             popup_offset: (0, 0),
             popup_rect: Rect::default(),
+            popup_drag: None,
         }
     }
 
@@ -1121,6 +1132,7 @@ impl Switcher {
     /// Open the modal keys overlay. In tree focus any key then dismisses it (see
     /// `handle_key`); [`toggle_help`] is the focus-independent open/close entry point.
     pub fn show_help(&mut self) {
+        self.reset_popup_pos();
         self.show_help = true;
     }
 
@@ -1128,6 +1140,52 @@ impl Switcher {
     /// and closes the same way regardless of which pane holds focus.
     pub fn toggle_help(&mut self) {
         self.show_help = !self.show_help;
+        if self.show_help {
+            self.reset_popup_pos();
+        }
+    }
+
+    /// True while a modal popup is being border-dragged; the cockpit routes every
+    /// mouse event here until release, like the divider drag / menu hold.
+    pub fn popup_drag_active(&self) -> bool {
+        self.popup_drag.is_some()
+    }
+
+    /// A left press on the active modal popup's border begins a move-drag. Returns
+    /// true iff it grabbed (so the cockpit consumes the event).
+    pub fn begin_popup_drag(&mut self, col: u16, row: u16) -> bool {
+        let r = self.popup_rect;
+        if r.width < 2 || r.height < 2 {
+            return false; // no modal popup open
+        }
+        let inside = col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height;
+        let on_border = inside
+            && (col == r.x || col == r.x + r.width - 1 || row == r.y || row == r.y + r.height - 1);
+        if !on_border {
+            return false;
+        }
+        self.popup_drag = Some(PopupDrag { grab: (col, row), origin: self.popup_offset });
+        true
+    }
+
+    /// Updates `popup_offset` from the cursor while a border-drag is active.
+    pub fn drag_popup(&mut self, col: u16, row: u16) {
+        if let Some(d) = self.popup_drag {
+            let dx = col as i32 - d.grab.0 as i32;
+            let dy = row as i32 - d.grab.1 as i32;
+            self.popup_offset = ((d.origin.0 as i32 + dx) as i16, (d.origin.1 as i32 + dy) as i16);
+        }
+    }
+
+    /// Ends a border-drag.
+    pub fn end_popup_drag(&mut self) {
+        self.popup_drag = None;
+    }
+
+    /// Resets a modal popup to its centered position (called when one opens).
+    fn reset_popup_pos(&mut self) {
+        self.popup_offset = (0, 0);
+        self.popup_drag = None;
     }
 
     /// Modal help input, tmux view-mode style. While the overlay is open it captures
@@ -1190,6 +1248,7 @@ impl Switcher {
 
     fn open_input(&mut self, mode: InputMode) {
         self.flash.clear();
+        self.reset_popup_pos();
         match mode {
             InputMode::Filter => {
                 self.input = Some(Input {
@@ -1242,6 +1301,7 @@ impl Switcher {
     /// move cannot retarget it.
     fn open_new(&mut self) {
         self.flash.clear();
+        self.reset_popup_pos();
         if self.current_host_unreachable() {
             self.flash = "host unreachable — cannot create here".into();
             return;
@@ -1511,9 +1571,10 @@ impl Switcher {
             .position(|r| matches!(&r.reference, RowRef::Session(s) if s.address() == address))
     }
 
-    // --- kill (inline confirm) ----------------------------------------------
+    // --- kill (confirm popup) -----------------------------------------------
 
     fn arm_kill(&mut self) {
+        self.reset_popup_pos();
         match self.current_ref().cloned() {
             Some(RowRef::Host { .. }) => {
                 self.flash = "cannot kill a host".into();
@@ -4142,7 +4203,7 @@ mod tests {
             let mut fill = Vec::from(&b"\x1b[44m"[..]);
             for r in 0..30u16 {
                 fill.extend(format!("\x1b[{};1H", r + 1).bytes());
-                fill.extend(std::iter::repeat(b'X').take(100));
+                fill.extend(std::iter::repeat_n(b'X', 100));
             }
             g.feed(&fill);
             g
@@ -4197,6 +4258,46 @@ mod tests {
         let g = blue_grid();
         h.term.draw(|f| h.sw.render(f, Some(&g), false, TREE_WIDTH)).unwrap();
         assert_eq!(interior_blue(h.buf()), 0, "confirm popup interior must be opaque");
+    }
+
+    #[test]
+    fn popup_border_press_then_drag_moves_the_rect() {
+        let mut sw = Switcher::new(sample());
+        sw.open_input(InputMode::Filter); // a small popup with room to move both ways
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| sw.render(f, None, false, 0)).unwrap();
+        let before = sw.popup_rect;
+        let (bx, by) = (before.x, before.y); // top-left corner is on the border
+        assert!(sw.begin_popup_drag(bx, by), "press on the border grabs");
+        sw.drag_popup(bx + 5, by + 3);
+        term.draw(|f| sw.render(f, None, false, 0)).unwrap();
+        assert_eq!(sw.popup_rect.x, before.x + 5, "moved right by 5");
+        assert_eq!(sw.popup_rect.y, before.y + 3, "moved down by 3");
+        sw.end_popup_drag();
+        assert!(!sw.popup_drag_active());
+    }
+
+    #[test]
+    fn popup_interior_press_does_not_grab() {
+        let mut sw = Switcher::new(sample());
+        sw.show_help();
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| sw.render(f, None, false, 0)).unwrap();
+        let r = sw.popup_rect;
+        assert!(!sw.begin_popup_drag(r.x + 2, r.y + 2), "interior press does not start a drag");
+    }
+
+    #[test]
+    fn popup_drag_clamps_within_screen() {
+        let mut sw = Switcher::new(sample());
+        sw.show_help();
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| sw.render(f, None, false, 0)).unwrap();
+        let r = sw.popup_rect;
+        assert!(sw.begin_popup_drag(r.x, r.y));
+        sw.drag_popup(r.x.saturating_sub(50), r.y); // yank far left, past the edge
+        term.draw(|f| sw.render(f, None, false, 0)).unwrap();
+        assert_eq!(sw.popup_rect.x, 0, "clamped to the left screen edge");
     }
 
     #[test]

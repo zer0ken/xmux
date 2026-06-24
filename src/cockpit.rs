@@ -1419,6 +1419,26 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                 continue;
                             }
                             let is_left_press = is_press && (ev.cb & 0x03) == 0;
+                            // A modal popup (help/input/confirm) moves when its border is
+                            // dragged. Once grabbed it owns every mouse event until release,
+                            // like the divider drag / menu hold above.
+                            if switcher.popup_drag_active() {
+                                if !ev.pressed {
+                                    switcher.end_popup_drag();
+                                } else if !is_wheel {
+                                    switcher.drag_popup(col0, ev.row.saturating_sub(1));
+                                }
+                                dirty = true;
+                                i += len;
+                                continue;
+                            }
+                            if is_left_press
+                                && switcher.begin_popup_drag(col0, ev.row.saturating_sub(1))
+                            {
+                                dirty = true;
+                                i += len;
+                                continue;
+                            }
                             if is_left_press && tree_width > 0 && col0 == tree_width {
                                 dragging_divider = true; // grabbed the divider
                                 i += len;
