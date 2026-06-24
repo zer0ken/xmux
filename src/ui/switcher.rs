@@ -278,6 +278,51 @@ fn menu_title(target: &RowRef) -> String {
     }
 }
 
+/// Greedily word-wraps `text` to lines no wider than `width` display columns
+/// (Unicode-aware), breaking on spaces; a word longer than `width` is hard-split so
+/// nothing is ever clipped. Always returns at least one line. Used so the input
+/// prompt's description wraps across a narrow tree column instead of being truncated.
+fn wrap_text(text: &str, width: u16) -> Vec<String> {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    let width = (width as usize).max(1);
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut cur_w = 0usize;
+    for word in text.split(' ') {
+        let ww = UnicodeWidthStr::width(word);
+        let sep = usize::from(!cur.is_empty());
+        if !cur.is_empty() && cur_w + sep + ww > width {
+            lines.push(std::mem::take(&mut cur));
+            cur_w = 0;
+        }
+        if ww > width {
+            // Longer than a whole line: hard-split across as many lines as needed.
+            if !cur.is_empty() {
+                lines.push(std::mem::take(&mut cur));
+                cur_w = 0;
+            }
+            for ch in word.chars() {
+                let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+                if cur_w + cw > width && !cur.is_empty() {
+                    lines.push(std::mem::take(&mut cur));
+                    cur_w = 0;
+                }
+                cur.push(ch);
+                cur_w += cw;
+            }
+        } else {
+            if !cur.is_empty() {
+                cur.push(' ');
+                cur_w += 1;
+            }
+            cur.push_str(word);
+            cur_w += ww;
+        }
+    }
+    lines.push(cur);
+    lines
+}
+
 struct Row {
     label: String,
     /// A trailing dim annotation (scanning…, (empty), ⚠ unreachable: …) — kept
@@ -1713,14 +1758,18 @@ impl Switcher {
         // the upper line, the entry field on the very bottom line (replacing the help
         // line); Esc cancels it. See `render_input`.
         if self.input.is_some() {
+            // The description wraps to as many lines as the tree width needs, so a long
+            // hint is never clipped; the entry field stays pinned to the bottom line.
+            let desc_lines = self.input_desc_lines(cols[0].width);
+            let desc_h = (desc_lines.len() as u16).max(1);
             let left = Layout::vertical([
-                Constraint::Min(0),    // tree
-                Constraint::Length(1), // input description
-                Constraint::Length(1), // input prompt (bottom line)
+                Constraint::Min(0),         // tree
+                Constraint::Length(desc_h), // input description (wrapped)
+                Constraint::Length(1),      // input prompt (bottom line)
             ])
             .split(cols[0]);
             self.render_tree(frame, left[0]);
-            self.render_input(frame, left[1], left[2]);
+            self.render_input(frame, &desc_lines, left[1], left[2]);
         } else {
             let left = Layout::vertical([
                 Constraint::Min(0),    // tree
@@ -1915,17 +1964,34 @@ impl Switcher {
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
     }
 
-    /// The shared two-line input prompt every input-requiring action uses: `desc_area`
-    /// (upper) explains the action and that Esc cancels; `prompt_area` (the bottom line)
-    /// is the entry field. One function keeps every prompt uniform.
-    fn render_input(&self, frame: &mut Frame, desc_area: Rect, prompt_area: Rect) {
+    /// The shared input prompt every input-requiring action uses: `desc_area` (upper)
+    /// holds the pre-wrapped description lines (the action + "Esc to cancel"); the
+    /// bottom `prompt_area` is the entry field. One function keeps every prompt uniform.
+    fn render_input(&self, frame: &mut Frame, desc_lines: &[String], desc_area: Rect, prompt_area: Rect) {
+        let desc = Text::from(
+            desc_lines
+                .iter()
+                .map(|l| Line::from(l.clone()))
+                .collect::<Vec<_>>(),
+        );
+        frame.render_widget(Paragraph::new(desc).dim(), desc_area);
         if let Some(input) = &self.input {
-            frame.render_widget(
-                Paragraph::new(format!("{} · Esc to cancel", input.label)).dim(),
-                desc_area,
-            );
             frame.render_widget(Paragraph::new(format!(" ❯ {}", input.buffer)), prompt_area);
         }
+    }
+
+    /// The active input's description, wrapped to `width` columns (Unicode-aware) so a
+    /// long hint splits across lines instead of being clipped by a narrow tree. Each
+    /// returned line carries a 1-column left margin. Empty when no input is open.
+    fn input_desc_lines(&self, width: u16) -> Vec<String> {
+        let Some(input) = &self.input else {
+            return Vec::new();
+        };
+        let desc = format!("{} · Esc to cancel", input.label.trim_start());
+        wrap_text(&desc, width.saturating_sub(1))
+            .into_iter()
+            .map(|l| format!(" {l}"))
+            .collect()
     }
 
     fn render_footer(&self, frame: &mut Frame, area: Rect) {
@@ -3904,10 +3970,17 @@ mod tests {
         // Bottom line = the entry field (the ❯ prompt marker), in the tree column.
         let prompt: String = (0..TREE_WIDTH).map(|x| buf[(x, last)].symbol()).collect();
         assert!(prompt.contains('❯'), "bottom line is the entry prompt:\n{prompt}");
-        // The line directly above = the description + the Esc-cancel hint.
-        let desc: String = (0..TREE_WIDTH).map(|x| buf[(x, last - 1)].symbol()).collect();
-        assert!(desc.contains("new session"), "description explains the input:\n{desc}");
-        assert!(desc.contains("Esc to cancel"), "description shows Esc cancels:\n{desc}");
+        // The description (with the Esc hint) sits on the line(s) directly ABOVE the
+        // prompt — scan every row above it so the check holds whether it wraps or not.
+        let mut above = String::new();
+        for y in 0..last {
+            for x in 0..TREE_WIDTH {
+                above.push_str(buf[(x, y)].symbol());
+            }
+            above.push('\n');
+        }
+        assert!(above.contains("new session"), "description explains the input:\n{above}");
+        assert!(above.contains("Esc to cancel"), "description shows Esc cancels:\n{above}");
     }
 
     #[tokio::test]
@@ -3919,6 +3992,43 @@ mod tests {
         h.key(KeyCode::Esc).await;
         assert!(!h.sw.is_inputting(), "Esc closes the input");
         assert!(h.ops.created.lock().unwrap().is_empty(), "Esc must not create anything");
+    }
+
+    #[test]
+    fn wrap_text_wraps_on_words_and_hard_splits_long_words() {
+        use unicode_width::UnicodeWidthStr;
+        let s = "filter sessions · Esc to cancel";
+        let lines = wrap_text(s, 19);
+        assert!(lines.len() >= 2, "wraps when narrower than the text: {lines:?}");
+        assert!(lines.iter().all(|l| l.as_str().width() <= 19), "no line exceeds width: {lines:?}");
+        assert!(lines.join(" ").contains("cancel"), "tail survives (not clipped): {lines:?}");
+        // A single word longer than the width is hard-split, each piece within width.
+        let long = wrap_text("supercalifragilistic", 5);
+        assert!(long.len() >= 4 && long.iter().all(|l| l.as_str().width() <= 5), "{long:?}");
+        // A wide enough width keeps it on one line.
+        assert_eq!(wrap_text(s, 100).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn input_description_wraps_to_multiple_lines_when_narrow() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut sw = Switcher::new(sample());
+        sw.open_input(InputMode::Filter);
+        let mut term = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        term.draw(|f| sw.render(f, None, false, 20)).unwrap();
+        let buf = term.backend().buffer();
+        // At a 20-col tree a single line would clip the tail; wrapping must keep both the
+        // start and the tail of the description visible across rows.
+        let mut col = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..20 {
+                col.push_str(buf[(x, y)].symbol());
+            }
+            col.push('\n');
+        }
+        assert!(col.contains("filter"), "description start present:\n{col}");
+        assert!(col.contains("cancel"), "description tail wrapped, not clipped:\n{col}");
+        assert!(col.contains('❯'), "entry prompt present:\n{col}");
     }
 
     #[tokio::test]
