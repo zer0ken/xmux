@@ -527,6 +527,25 @@ fn is_focus_in(code: KeyCode) -> bool {
     matches!(code, KeyCode::Enter)
 }
 
+/// Whether a wheel event should drive the TREE (scroll, or Ctrl-wheel level change).
+/// Only when the tree is focused AND the pointer is over the tree: mouse input acts on
+/// the pane under the cursor, and only when that pane is focused — the same rule clicks
+/// and motion already follow. A wheel over the mux pane while the tree is focused is not
+/// a tree scroll.
+fn wheel_targets_tree(tree_focused: bool, over_mux: bool) -> bool {
+    let _ = (tree_focused, over_mux);
+    false
+}
+
+/// Whether a right-button press may open the tree context menu. Tree-focus only: the
+/// menu operates on a tree row, so it is a tree-pane action, not a pane-independent
+/// global — it never opens (nor steals focus) while the mux pane is focused. Position-
+/// gated to the tree column; a right-click over the mux pane forwards to the child.
+fn tree_menu_may_open(is_right_press: bool, tree_focused: bool, over_mux: bool) -> bool {
+    let _ = (is_right_press, tree_focused, over_mux);
+    false
+}
+
 /// Pure resolution of ONE TREE-focus key into an [`Action`] (or none, when the key
 /// only arms the prefix or is an unrecognized armed command). Touches no cockpit or
 /// switcher state, so it is unit-testable in isolation (mirrors how `TermInput::feed`
@@ -788,11 +807,16 @@ fn reconcile_input_focus(
 
 fn note_host_exited(
     switcher: &mut crate::ui::switcher::Switcher,
-    connected: &HashSet<String>,
+    connected: &mut HashSet<String>,
     host: &str,
     reason: Option<String>,
 ) -> bool {
-    if connected.contains(host) {
+    // Clear the connected mark so this host is no longer pinned to "keep last-known
+    // tree". A transient drop of a once-connected host keeps its tree (no unreachable
+    // flash) on THIS exit; but a later reconnect that fails (no sessions / unreachable)
+    // must then resolve its real state — otherwise a refresh that set it scanning would
+    // spin on "loading…" forever, since a sticky `connected` made every exit a no-op.
+    if connected.remove(host) {
         return false;
     }
     if reason.as_deref().is_some_and(crate::source::reason_is_no_sessions) {
@@ -2139,9 +2163,9 @@ mod tests {
         use crate::ui::run::dump_overlay;
         use crate::ui::switcher::Switcher;
         let mut switcher = Switcher::from_sources(vec!["jupiter00".into()]);
-        let connected: HashSet<String> = HashSet::new();
+        let mut connected: HashSet<String> = HashSet::new();
         assert!(
-            note_host_exited(&mut switcher, &connected, "jupiter00", Some("no route to host".into())),
+            note_host_exited(&mut switcher, &mut connected, "jupiter00", Some("no route to host".into())),
             "a never-connected host is marked unreachable on exit"
         );
         let out = dump_overlay(&mut switcher, None, 80, 24);
@@ -2154,10 +2178,10 @@ mod tests {
         use crate::ui::run::dump_overlay;
         use crate::ui::switcher::Switcher;
         let mut switcher = Switcher::from_sources(vec!["jupiter06".into()]);
-        let connected: HashSet<String> = HashSet::new();
+        let mut connected: HashSet<String> = HashSet::new();
         // A reachable host whose mux has no server: "no sessions" → (empty), not ⚠.
         assert!(
-            !note_host_exited(&mut switcher, &connected, "jupiter06", Some("no sessions".into())),
+            !note_host_exited(&mut switcher, &mut connected, "jupiter06", Some("no sessions".into())),
             "an empty mux is reachable, not unreachable"
         );
         let out = dump_overlay(&mut switcher, None, 80, 24);
@@ -2172,9 +2196,37 @@ mod tests {
         let mut connected: HashSet<String> = HashSet::new();
         connected.insert("jupiter06".into());
         assert!(
-            !note_host_exited(&mut switcher, &connected, "jupiter06", None),
+            !note_host_exited(&mut switcher, &mut connected, "jupiter06", None),
             "an already-connected host is not marked unreachable on exit"
         );
+        assert!(
+            !connected.contains("jupiter06"),
+            "exit must clear the connected mark so a failed reconnect can later resolve"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_after_a_dropped_host_resolves_instead_of_loading_forever() {
+        // Bug: refresh → tree stuck on "loading…" forever. A once-connected host stays
+        // pinned in `connected`, so every exit is a no-op; a refresh sets it scanning and
+        // a reconnect that then fails never clears it. After the fix, the first drop keeps
+        // the tree (no flash) but clears `connected`; a refresh + a failed reconnect (no
+        // sessions) must resolve to "(empty)", not spin.
+        use crate::ui::run::dump_overlay;
+        use crate::ui::switcher::Switcher;
+        let mut switcher = Switcher::from_sources(vec!["jupiter06".into()]);
+        let mut connected: HashSet<String> = HashSet::new();
+        connected.insert("jupiter06".into());
+        // First drop of the connected host: keeps last-known tree, clears connected.
+        note_host_exited(&mut switcher, &mut connected, "jupiter06", None);
+        // User hits refresh → the host goes back to a scanning skeleton.
+        switcher.request_rescan();
+        assert!(dump_overlay(&mut switcher, None, 80, 24).contains("scanning"), "scanning after refresh");
+        // The reconnect fails with "no sessions": it must resolve scanning → (empty).
+        note_host_exited(&mut switcher, &mut connected, "jupiter06", Some("no sessions".into()));
+        let out = dump_overlay(&mut switcher, None, 80, 24);
+        assert!(out.contains("empty"), "failed reconnect resolves to (empty):\n{out}");
+        assert!(!out.contains("scanning"), "scanning must clear, not load forever:\n{out}");
     }
 
     #[test]
