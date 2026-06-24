@@ -669,6 +669,16 @@ impl Switcher {
     }
 
     fn rebuild(&mut self) {
+        // Once the user has moved the cursor, hold their current session/window selection
+        // across this rebuild when it survives (matched by identity) — a routine rebuild
+        // (local poll, remote %-event refetch) must NOT snap the cursor back to the recency
+        // preselect, which would yank the displayed session out from under the user on every
+        // poll (the selection thrash). The user_moved gate at the target below preserves the
+        // launch behavior: an untouched cursor still follows the preferred/recency preselect.
+        let keep = self.rows.get(self.selected).and_then(|r| match &r.reference {
+            RowRef::Session(_) | RowRef::Window { .. } => Some(r.reference.clone()),
+            _ => None,
+        });
         let groups = self.visible_groups();
 
         self.name_col_width = 0;
@@ -775,7 +785,11 @@ impl Switcher {
         if self.pending_kill.as_ref().is_some_and(|k| !self.kill_target_present(k)) {
             self.pending_kill = None;
         }
-        let target = preferred_row
+        let target = self
+            .user_moved
+            .then(|| keep.as_ref().and_then(|k| self.rows.iter().position(|r| same_node(&r.reference, k))))
+            .flatten()
+            .or(preferred_row)
             .or(first_session_row)
             .or_else(|| self.rows.iter().position(Row::selectable))
             .unwrap_or(0);
@@ -3260,6 +3274,46 @@ mod tests {
             cur_session_name(&h).as_deref(),
             Some("infer"),
             "the persisted last-selected session is restored once it streams in"
+        );
+    }
+
+    #[tokio::test]
+    async fn rebuild_holds_a_user_moved_session_against_the_preselect() {
+        // The selection thrash: once the user has moved the cursor onto a session, a bare
+        // rebuild (a frequent poll / %-event that does not route through restore_focus)
+        // must keep it there, not snap it back to the recency/preferred preselect.
+        let mut sw = Switcher::from_sources(vec!["h".into()]);
+        sw.apply_source_result(
+            "h".into(),
+            vec![sess("h", "a", 1, false, 200), sess("h", "b", 1, false, 100)],
+            None,
+        );
+        let names: Vec<String> = sw
+            .rows
+            .iter()
+            .filter_map(|r| match &r.reference {
+                RowRef::Session(s) => Some(s.name.clone()),
+                _ => None,
+            })
+            .collect();
+        // Pick the session that is NOT the preselect target (the recency-first one), so a
+        // bare rebuild's preselect would move the cursor here if the fix were absent.
+        let other = names[1].clone();
+        let idx = sw
+            .rows
+            .iter()
+            .position(|r| matches!(&r.reference, RowRef::Session(s) if s.name == other))
+            .expect("other session row");
+        sw.set_selected(idx);
+        sw.user_moved = true;
+        sw.rebuild();
+        let got = match sw.current_ref() {
+            Some(RowRef::Session(s)) => s.name.clone(),
+            _ => "<not a session>".to_string(),
+        };
+        assert_eq!(
+            got, other,
+            "a user-selected session must survive a bare rebuild (no snap to preselect)"
         );
     }
 
