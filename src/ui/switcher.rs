@@ -4132,6 +4132,73 @@ mod tests {
         assert_eq!(buf[(15u16, 4u16)].bg, Color::Reset, "the popup covers the background colour opaquely");
     }
 
+    #[tokio::test]
+    async fn every_popup_type_is_opaque_over_a_colored_grid() {
+        // A grid filled with a blue background; each popup type drawn over it must leave
+        // zero interior cells showing the grid's background (the shared render_popup is
+        // opaque — this locks it in across help / input / confirm).
+        fn blue_grid() -> crate::proxy::screen::Grid {
+            let mut g = crate::proxy::screen::Grid::new(30, 100);
+            let mut fill = Vec::from(&b"\x1b[44m"[..]);
+            for r in 0..30u16 {
+                fill.extend(format!("\x1b[{};1H", r + 1).bytes());
+                fill.extend(std::iter::repeat(b'X').take(100));
+            }
+            g.feed(&fill);
+            g
+        }
+        fn interior_blue(buf: &Buffer) -> usize {
+            let mut tl = None;
+            'o: for y in 0..buf.area.height {
+                for x in 0..buf.area.width {
+                    if buf[(x, y)].symbol() == "┌" {
+                        tl = Some((x, y));
+                        break 'o;
+                    }
+                }
+            }
+            let Some((x0, y0)) = tl else { return usize::MAX };
+            let mut w = 0;
+            while x0 + w < buf.area.width - 1 && buf[(x0 + w, y0)].symbol() != "┐" {
+                w += 1;
+            }
+            let mut hgt = 0;
+            while y0 + hgt < buf.area.height - 1 && buf[(x0, y0 + hgt)].symbol() != "└" {
+                hgt += 1;
+            }
+            let mut n = 0;
+            for y in (y0 + 1)..(y0 + hgt) {
+                for x in (x0 + 1)..(x0 + w) {
+                    if buf[(x, y)].bg == Color::Indexed(4) {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        }
+
+        let mut h = Harness::new(sample());
+        h.sw.show_help();
+        let g = blue_grid();
+        h.term.draw(|f| h.sw.render(f, Some(&g), true, 0)).unwrap();
+        assert_eq!(interior_blue(h.buf()), 0, "help popup interior must be opaque");
+
+        let mut h = Harness::new(sample());
+        h.ch('/').await;
+        let g = blue_grid();
+        h.term.draw(|f| h.sw.render(f, Some(&g), false, TREE_WIDTH)).unwrap();
+        assert_eq!(interior_blue(h.buf()), 0, "input popup interior must be opaque");
+
+        let mut h = Harness::new(sample());
+        let build = row_index(&h, |r| matches!(r, RowRef::Session(s) if s.name == "build"));
+        h.sw.set_selected(build);
+        h.sw.user_moved = true;
+        h.sw.arm_kill();
+        let g = blue_grid();
+        h.term.draw(|f| h.sw.render(f, Some(&g), false, TREE_WIDTH)).unwrap();
+        assert_eq!(interior_blue(h.buf()), 0, "confirm popup interior must be opaque");
+    }
+
     #[test]
     fn toggle_help_flips_visibility() {
         let mut sw = Switcher::new(sample());
