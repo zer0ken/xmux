@@ -510,6 +510,13 @@ pub struct Switcher {
     /// The tree|mux divider colours (set once by the cockpit from config; tmux defaults
     /// otherwise). See [`DividerColors`].
     colors: DividerColors,
+    /// Drag offset (cells) applied to a modal popup's centered position. Reset
+    /// to (0,0) when a popup opens; updated while its border is dragged.
+    popup_offset: (i16, i16),
+    /// The drawn rect of the active modal popup (help/input/confirm), cached
+    /// each render so a mouse press can hit-test its border. `Rect::default()`
+    /// ⇒ no modal popup open.
+    popup_rect: Rect,
 }
 
 impl Switcher {
@@ -542,6 +549,8 @@ impl Switcher {
             screen_area: Rect::default(),
             ssh_config_text: String::new(),
             colors: DividerColors::default(),
+            popup_offset: (0, 0),
+            popup_rect: Rect::default(),
         }
     }
 
@@ -1826,41 +1835,19 @@ impl Switcher {
                     frame.set_cursor_position(terminal_cursor_pos(area, g.cursor()));
                 }
             }
-            if self.show_help {
-                self.render_help(frame, area);
-            }
+            self.render_modal_popup(frame, area);
             self.render_menu(frame);
             return;
         }
-        // When an input is active it lives in its OWN full-width pane pinned to the very
-        // bottom of the screen (a divider line above it), SEPARATE from the tree and mux
-        // panes — and focus is treated as on that pane (the tree|mux divider dims, the
-        // input pane's divider lights). Reserve the bottom rows for it before the
-        // tree|mux split; the tree keeps its footer/help line regardless.
-        let (main_area, input_layout) = if self.input.is_some() {
-            let desc_lines = self.input_desc_lines(area.width);
-            let pane_h = desc_lines.len() as u16 + 1; // description line(s) + the entry line
-            let rows = Layout::vertical([
-                Constraint::Min(0),         // tree | mux
-                Constraint::Length(1),      // divider above the input pane
-                Constraint::Length(pane_h), // the input pane
-            ])
-            .split(area);
-            (rows[0], Some((rows[1], rows[2], desc_lines)))
-        } else {
-            (area, None)
-        };
-
         let cols = Layout::horizontal([
             Constraint::Length(tree_width),
             Constraint::Length(1),
             Constraint::Min(0),
         ])
-        .split(main_area);
-        // Tree column: the tree plus its footer/help line (the help stays here even while
-        // an input pane is open at the bottom). The footer is normally one line, but a
-        // long flash wraps across several — size the footer to the wrapped line count so
-        // it is never clipped.
+        .split(area);
+        // Tree column: the tree plus its footer/help line. The footer is normally one
+        // line, but a long flash wraps across several — size the footer to the wrapped
+        // line count so it is never clipped.
         let footer_h = self.footer_lines(tree_width).len().max(1) as u16;
         let left = Layout::vertical([
             Constraint::Min(0),           // tree
@@ -1869,9 +1856,8 @@ impl Switcher {
         .split(cols[0]);
         self.render_tree(frame, left[0]);
         self.render_footer(frame, left[1]);
-        // The tree|mux divider marks focus between those two; while the input pane is up it
-        // holds focus, so this divider dims and the input pane's divider lights instead.
-        self.render_divider(frame, cols[1], terminal_focused, self.input.is_some());
+        // The tree|mux divider marks focus between those two panes.
+        self.render_divider(frame, cols[1], terminal_focused);
         let term_area = cols[2];
         // An unreachable host has no live grid; show an info panel (ssh config stanza
         // + failure reason) in its right pane instead of the blank (attaching…) grid.
@@ -1889,19 +1875,7 @@ impl Switcher {
                 }
             }
         }
-        // The bottom input pane (full width) and its focused divider, drawn last.
-        if let Some((divider_area, pane_area, desc_lines)) = input_layout {
-            self.render_input_divider(frame, divider_area);
-            let pane = Layout::vertical([
-                Constraint::Length(desc_lines.len() as u16), // description
-                Constraint::Length(1),                       // entry field
-            ])
-            .split(pane_area);
-            self.render_input(frame, &desc_lines, pane[0], pane[1]);
-        }
-        if self.show_help {
-            self.render_help(frame, area);
-        }
+        self.render_modal_popup(frame, area);
         self.render_menu(frame);
     }
 
@@ -1912,7 +1886,7 @@ impl Switcher {
     /// signal (adapting tmux's active-pane border). Replaces the per-pane box borders.
     /// The glyph also encodes auto-hide-tree mode: ║ (double) when on, │ when off — so
     /// a visible tree that will vanish on blur is distinguishable from a pinned one.
-    fn render_divider(&self, frame: &mut Frame, area: Rect, terminal_focused: bool, input_focused: bool) {
+    fn render_divider(&self, frame: &mut Frame, area: Rect, terminal_focused: bool) {
         let active = self.colors.active;
         let inactive = self.colors.inactive;
         let glyph = if self.auto_hide { "║" } else { "│" };
@@ -1931,10 +1905,7 @@ impl Switcher {
             frame.render_widget(Paragraph::new(bars), area);
             return;
         }
-        let colors: Vec<Color> = if input_focused {
-            // Focus is on the bottom input pane — neither tree nor mux is focused.
-            vec![inactive; area.height as usize]
-        } else if area.height <= 1 {
+        let colors: Vec<Color> = if area.height <= 1 {
             // Too short to split: show the active-marker color in the single cell.
             vec![active; area.height as usize]
         } else {
@@ -1955,17 +1926,6 @@ impl Switcher {
                 .collect::<Vec<_>>(),
         );
         frame.render_widget(Paragraph::new(bars), area);
-    }
-
-    /// The horizontal rule above the bottom input pane. Drawn in the focus accent
-    /// (the active-border colour) because the input pane holds focus while open —
-    /// mirroring the tree|mux divider.
-    fn render_input_divider(&self, frame: &mut Frame, area: Rect) {
-        let rule = "─".repeat(area.width as usize);
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(rule, Style::default().fg(self.colors.active)))),
-            area,
-        );
     }
 
     fn render_tree(&mut self, frame: &mut Frame, area: Rect) {
@@ -2081,36 +2041,6 @@ impl Switcher {
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
     }
 
-    /// The shared input prompt every input-requiring action uses: `desc_area` (upper)
-    /// holds the pre-wrapped description lines (the action + "Esc to cancel"); the
-    /// bottom `prompt_area` is the entry field. One function keeps every prompt uniform.
-    fn render_input(&self, frame: &mut Frame, desc_lines: &[String], desc_area: Rect, prompt_area: Rect) {
-        let desc = Text::from(
-            desc_lines
-                .iter()
-                .map(|l| Line::from(l.clone()))
-                .collect::<Vec<_>>(),
-        );
-        frame.render_widget(Paragraph::new(desc).dim(), desc_area);
-        if let Some(input) = &self.input {
-            frame.render_widget(Paragraph::new(format!(" ❯ {}", input.buffer)), prompt_area);
-        }
-    }
-
-    /// The active input's description, wrapped to `width` columns (Unicode-aware) so a
-    /// long hint splits across lines instead of being clipped by a narrow tree. Each
-    /// returned line carries a 1-column left margin. Empty when no input is open.
-    fn input_desc_lines(&self, width: u16) -> Vec<String> {
-        let Some(input) = &self.input else {
-            return Vec::new();
-        };
-        let desc = format!("{} · Esc to cancel", input.label.trim_start());
-        wrap_text(&desc, width.saturating_sub(1))
-            .into_iter()
-            .map(|l| format!(" {l}"))
-            .collect()
-    }
-
     /// The footer's logical text (confirm / flash / scanning / filter / help), fit to
     /// `width`. A flash is returned raw — it may exceed `width`; [`Self::footer_lines`]
     /// wraps it so it never clips.
@@ -2183,7 +2113,9 @@ impl Switcher {
         frame.render_widget(para, area);
     }
 
-    fn render_help(&self, frame: &mut Frame, area: Rect) {
+    /// The help overlay's `(title, lines)`, built once and rendered through the
+    /// shared modal-popup path.
+    fn help_lines(&self) -> (String, Vec<Line<'static>>) {
         // tmux mode-tree style: a right-aligned, bold key column, a `│` rule, then
         // the description. `Head` breaks the flat list into tree/focus/mux sections;
         // `Note` is a description-only row (the mux state has no keys of its own).
@@ -2252,11 +2184,41 @@ impl Switcher {
                 ]),
             })
             .collect();
+        ("keys".to_string(), lines)
+    }
+
+    /// The active input rendered as popup `(title, lines)`: the instructional
+    /// label, the `❯ buffer` entry line, and a dim Esc hint.
+    fn input_lines(&self) -> (String, Vec<Line<'static>>) {
+        let input = self.input.as_ref().expect("input active");
+        let dim = Style::default().add_modifier(Modifier::DIM);
+        let lines = vec![
+            Line::from(Span::styled(format!(" {}", input.label.trim()), dim)),
+            Line::from(format!(" ❯ {}", input.buffer)),
+            Line::from(Span::styled(" Esc to cancel", dim)),
+        ];
+        (input_title(input.mode).to_string(), lines)
+    }
+
+    /// Draws the active modal popup (help / confirm / input) centered, shifted
+    /// by `popup_offset`, through the shared opaque `render_popup`, and caches
+    /// its rect for drag hit-testing. These modals are mutually exclusive in
+    /// normal use; if more than one is set, help wins, then confirm, then input.
+    fn render_modal_popup(&mut self, frame: &mut Frame, area: Rect) {
+        let (title, lines) = if self.show_help {
+            self.help_lines()
+        } else if self.input.is_some() {
+            self.input_lines()
+        } else {
+            self.popup_rect = Rect::default();
+            return;
+        };
         let inner_w = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
-        let w = (inner_w + 3).min(area.width); // borders + a cell of right padding
-        let h = (lines.len() as u16 + 2).min(area.height);
-        let rect = centered_rect(w, h, area);
-        render_popup(frame, area, rect, "keys", lines);
+        let w = (inner_w + 3).clamp(24, area.width.max(1)); // borders + a cell of right padding
+        let h = (lines.len() as u16 + 2).min(area.height.max(1));
+        let rect = offset_centered(w, h, area, self.popup_offset);
+        self.popup_rect = rect;
+        render_popup(frame, area, rect, &title, lines);
     }
 
     /// Draws the open context menu as a bordered popup at its anchored rect: the target's
@@ -2436,6 +2398,27 @@ fn centered_rect(w: u16, h: u16, area: Rect) -> Rect {
         y,
         width: w,
         height: h,
+    }
+}
+
+/// `centered_rect` shifted by `offset` (cells) and clamped fully inside `area`.
+fn offset_centered(w: u16, h: u16, area: Rect, offset: (i16, i16)) -> Rect {
+    let base = centered_rect(w, h, area);
+    let max_x = area.x + area.width.saturating_sub(base.width);
+    let max_y = area.y + area.height.saturating_sub(base.height);
+    let x = (base.x as i32 + offset.0 as i32).clamp(area.x as i32, max_x as i32) as u16;
+    let y = (base.y as i32 + offset.1 as i32).clamp(area.y as i32, max_y as i32) as u16;
+    Rect { x, y, width: base.width, height: base.height }
+}
+
+/// A short popup title for an input mode (shown on the box's top border).
+fn input_title(mode: InputMode) -> &'static str {
+    match mode {
+        InputMode::Filter => "filter",
+        InputMode::New => "new session",
+        InputMode::NewWindow => "new window",
+        InputMode::SplitWindow => "split",
+        InputMode::Rename => "rename",
     }
 }
 
@@ -4173,57 +4156,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn input_pane_is_full_width_at_the_screen_bottom() {
+    async fn input_renders_as_a_centered_popup_not_the_bottom_pane() {
         let mut h = Harness::new(sample());
         h.ch('/').await; // open the filter input
         let buf = h.buf();
         let w = buf.area.width;
         let last = buf.area.height - 1;
-        // The entry field is the very bottom row and spans the FULL width — it runs UNDER
-        // the tree|mux divider column (not confined to the tree column like the footer).
+        // The entry field is NO LONGER on the bottom row.
         let bottom: String = (0..w).map(|x| buf[(x, last)].symbol()).collect();
-        assert!(bottom.contains('❯'), "entry field on the bottom row:\n{bottom}");
-        assert_ne!(
-            buf[(TREE_WIDTH, last)].symbol(),
-            "│",
-            "the full-width input pane runs under the divider; the divider stops above it"
-        );
-        // A full-width horizontal rule separates the input pane from the panes above it.
-        let has_rule = (0..last)
-            .any(|y| (0..w).filter(|&x| buf[(x, y)].symbol() == "─").count() > w as usize / 2);
-        assert!(has_rule, "a full-width divider sits above the input pane");
-        // The help footer still lives in the tree column (not on the bottom row).
-        let footer_in_tree = (0..last).any(|y| {
-            (0..TREE_WIDTH)
-                .map(|x| buf[(x, y)].symbol())
-                .collect::<String>()
-                .contains("quit")
-        });
-        assert!(footer_in_tree, "the help footer stays in the tree column");
-    }
-
-    #[tokio::test]
-    async fn input_prompt_is_two_lines_at_the_bottom_with_esc_hint() {
-        let mut h = Harness::new(sample());
-        h.key(KeyCode::Home).await; // a reachable host row
-        h.ch('n').await; // open the "new session name" input
-        assert!(h.sw.is_inputting(), "n on a host opens the name input");
-        let buf = h.buf();
-        let last = buf.area.height - 1;
-        // Bottom line = the entry field (the ❯ prompt marker), in the tree column.
-        let prompt: String = (0..TREE_WIDTH).map(|x| buf[(x, last)].symbol()).collect();
-        assert!(prompt.contains('❯'), "bottom line is the entry prompt:\n{prompt}");
-        // The description (with the Esc hint) sits on the line(s) directly ABOVE the
-        // prompt — scan every row above it so the check holds whether it wraps or not.
-        let mut above = String::new();
-        for y in 0..last {
-            for x in 0..TREE_WIDTH {
-                above.push_str(buf[(x, y)].symbol());
-            }
-            above.push('\n');
-        }
-        assert!(above.contains("new session"), "description explains the input:\n{above}");
-        assert!(above.contains("Esc to cancel"), "description shows Esc cancels:\n{above}");
+        assert!(!bottom.contains('❯'), "entry must not be on the bottom row anymore:\n{bottom}");
+        // It is in a centered bordered box somewhere in the middle rows.
+        let whole: String = (0..buf.area.height)
+            .flat_map(|y| (0..w).map(move |x| (x, y)))
+            .map(|(x, y)| buf[(x, y)].symbol().to_string())
+            .collect();
+        assert!(whole.contains('❯'), "entry field present in a popup");
+        assert!(whole.contains("Esc to cancel"), "popup shows the Esc hint");
     }
 
     #[tokio::test]
@@ -4250,29 +4198,6 @@ mod tests {
         assert!(long.len() >= 4 && long.iter().all(|l| l.as_str().width() <= 5), "{long:?}");
         // A wide enough width keeps it on one line.
         assert_eq!(wrap_text(s, 100).len(), 1);
-    }
-
-    #[tokio::test]
-    async fn input_description_wraps_to_multiple_lines_when_narrow() {
-        use ratatui::{backend::TestBackend, Terminal};
-        let mut sw = Switcher::new(sample());
-        sw.open_input(InputMode::Filter);
-        // The input pane spans the FULL width, so narrow the whole terminal to force a wrap.
-        let mut term = Terminal::new(TestBackend::new(24, 12)).unwrap();
-        term.draw(|f| sw.render(f, None, false, 10)).unwrap();
-        let buf = term.backend().buffer();
-        let w = buf.area.width;
-        let mut all = String::new();
-        for y in 0..buf.area.height {
-            for x in 0..w {
-                all.push_str(buf[(x, y)].symbol());
-            }
-            all.push('\n');
-        }
-        // At 24 cols a single line would clip the tail; wrapping keeps both ends visible.
-        assert!(all.contains("filter"), "description start present:\n{all}");
-        assert!(all.contains("cancel"), "description tail wrapped, not clipped:\n{all}");
-        assert!(all.contains('❯'), "entry prompt present:\n{all}");
     }
 
     #[tokio::test]
