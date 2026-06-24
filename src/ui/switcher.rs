@@ -512,12 +512,26 @@ impl Switcher {
         tree::order_groups(&groups)
     }
 
-    fn rebuild(&mut self) {
-        // A tree change (streamed update, refetch, rescan) can move or replace the
-        // node a kill was armed on — including reusing a window index — so any
-        // in-flight kill confirm is invalidated; the user re-arms against the new tree.
-        self.pending_kill = None;
+    /// Whether the node an armed kill targets still exists in the current rows,
+    /// matched by identity (session address / window source+target) rather than row
+    /// position. Lets [`Switcher::rebuild`] keep the confirm alive across routine tree
+    /// updates and drop it only when the target genuinely vanished.
+    fn kill_target_present(&self, kill: &PendingKill) -> bool {
+        match kill {
+            PendingKill::Session(sess) => {
+                let addr = sess.address();
+                self.rows
+                    .iter()
+                    .any(|r| matches!(&r.reference, RowRef::Session(s) if s.address() == addr))
+            }
+            PendingKill::Window { source, target, .. } => self.rows.iter().any(|r| {
+                matches!(&r.reference, RowRef::Window { sess, window }
+                    if sess.source == *source && crate::mux::window_target(&sess.name, *window) == *target)
+            }),
+        }
+    }
 
+    fn rebuild(&mut self) {
         let groups = self.visible_groups();
 
         self.name_col_width = 0;
@@ -616,6 +630,14 @@ impl Switcher {
         }
 
         self.rows = rows;
+        // Keep an armed kill confirm across this rebuild as long as its target still
+        // EXISTS (matched by identity, not row position). Only a tree change that
+        // actually removed the target invalidates it — routine rebuilds (the local
+        // poll, a remote %-event) must NOT silently cancel it, or answering y/n has a
+        // surprise time limit. resolve_kill consumes it; set_selected does not touch it.
+        if self.pending_kill.as_ref().is_some_and(|k| !self.kill_target_present(k)) {
+            self.pending_kill = None;
+        }
         let target = preferred_row
             .or(first_session_row)
             .or_else(|| self.rows.iter().position(Row::selectable))
@@ -3408,6 +3430,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn kill_confirm_survives_a_rebuild_until_the_target_vanishes() {
+        // The confirm must NOT have a time limit: a routine rebuild (the 1.5s local
+        // poll, a remote %-event) used to clear pending_kill out from under the user.
+        let mut h = Harness::new(sample());
+        let build = row_index(&h, |r| matches!(r, RowRef::Session(s) if s.name == "build"));
+        h.sw.set_selected(build);
+        h.sw.arm_kill();
+        assert!(h.sw.pending_kill.is_some(), "kill armed");
+        h.sw.rebuild(); // a poll/event rebuild
+        assert!(h.sw.pending_kill.is_some(), "confirm survives a routine rebuild — no time limit");
+        // But once the target is actually gone, the stale confirm is dropped.
+        h.sw.groups = crate::ui::tree::remove_session(&h.sw.groups, "local/build");
+        h.sw.rebuild();
+        assert!(h.sw.pending_kill.is_none(), "a vanished target invalidates the confirm");
+    }
+
+    #[tokio::test]
     async fn menu_focus_window_marks_it_active_so_passthrough_follow_keeps_it() {
         // Regression: focusing a different window of the already-displayed session must
         // move there. Without optimistically marking it active, select_active_window
@@ -3868,11 +3907,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rebuild_cancels_armed_kill_confirm() {
-        // Arm a window kill (raw, no pump so no auto-confirm), then trigger a
-        // rebuild via apply_panes — simulating a streamed tree update that can
-        // move or index-reuse the armed node.  The in-flight confirm must be
-        // cleared so a subsequent 'y' does not queue a stale kill.
+    async fn armed_window_kill_survives_a_same_tree_rebuild() {
+        // A routine rebuild (streamed panes with the SAME windows) must NOT cancel an
+        // armed window kill — there is no time limit. A later 'y' still kills the right
+        // window. (Only a rebuild that actually removes the target invalidates it; the
+        // session case is covered by kill_confirm_survives_a_rebuild_until_the_target_vanishes.)
         let mut h = Harness::new(sample());
         h.key(KeyCode::Home).await;   // local host
         h.key(KeyCode::Right).await;  // → editor (session)
@@ -3882,21 +3921,18 @@ mod tests {
             matches!(h.sw.pending_kill, Some(PendingKill::Window { .. })),
             "arm_kill must set a window PendingKill"
         );
-        // Force a rebuild by streaming in panes for editor — the same windows,
-        // but any rebuild must invalidate the armed confirm.
+        // Stream the same panes (a rebuild) — the target window still exists.
         let s = sample();
         let editor_panes = s.panes["local/editor"].clone();
         h.sw.apply_panes("local/editor".to_string(), editor_panes);
         assert!(
-            h.sw.pending_kill.is_none(),
-            "a rebuild must cancel an armed kill confirm"
+            h.sw.pending_kill.is_some(),
+            "the confirm survives a same-tree rebuild — no time limit"
         );
-        // A 'y' after the rebuild must not queue any op (stale kill guard).
+        // 'y' now confirms and queues the kill of the armed window.
         h.sw.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
-        assert!(
-            h.sw.take_pending_op().is_none(),
-            "no stale kill queued after rebuild"
-        );
+        let op = h.sw.take_pending_op().expect("kill queued after surviving rebuild");
+        assert!(matches!(op, PendingOp::KillWindow { ref target, .. } if target == "editor:1"));
     }
 
     #[tokio::test]
