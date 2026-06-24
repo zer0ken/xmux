@@ -544,6 +544,56 @@ fn tree_menu_may_open(is_right_press: bool, tree_focused: bool, over_mux: bool) 
     is_right_press && tree_focused && !over_mux
 }
 
+/// What a mouse event resolves to once the modal/gesture gates (menu, divider drag,
+/// idle-divider-hover, menu-open) have declined it — the focus×position routing core.
+#[derive(Debug, PartialEq, Eq)]
+enum ChainAction {
+    /// Scroll the tree by one row (wheel, tree focus, over tree). `down` = scroll down.
+    ScrollTree(bool),
+    /// Change the tree level (Ctrl+wheel, tree focus, over tree). `down` = descend.
+    LevelChange(bool),
+    /// Toggle focus to the mux pane (left-click the mux while the tree is focused).
+    FocusMux,
+    /// Select the clicked tree row (left-click a tree row while the tree is focused).
+    SelectRow,
+    /// Toggle focus to the tree (left-click the tree while the mux is focused).
+    FocusTree,
+    /// Forward the event to the focused mux child (mux focus, over the mux pane).
+    ForwardToMux,
+    /// Nothing — the event is dropped.
+    Nothing,
+}
+
+/// Pure focus×position routing for a mouse event that fell through every gate. The one
+/// rule: input acts on the pane under the cursor, and only when that pane is focused.
+/// A wheel over the mux while the tree is focused, or over the tree while the mux is
+/// focused, resolves to Nothing — it never crosses to the unfocused pane.
+fn resolve_mouse_chain(
+    is_wheel: bool,
+    ctrl: bool,
+    down: bool,
+    is_left_press: bool,
+    tree_focused: bool,
+    over_mux: bool,
+) -> ChainAction {
+    if is_wheel && wheel_targets_tree(tree_focused, over_mux) {
+        return if ctrl { ChainAction::LevelChange(down) } else { ChainAction::ScrollTree(down) };
+    }
+    if is_left_press && tree_focused && over_mux {
+        return ChainAction::FocusMux;
+    }
+    if is_left_press && tree_focused && !over_mux {
+        return ChainAction::SelectRow;
+    }
+    if is_left_press && !tree_focused && !over_mux {
+        return ChainAction::FocusTree;
+    }
+    if !tree_focused && over_mux {
+        return ChainAction::ForwardToMux;
+    }
+    ChainAction::Nothing
+}
+
 /// Pure resolution of ONE TREE-focus key into an [`Action`] (or none, when the key
 /// only arms the prefix or is an unrecognized armed command). Touches no cockpit or
 /// switcher state, so it is unit-testable in isolation (mirrors how `TermInput::feed`
@@ -1396,13 +1446,12 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                 i += len;
                                 continue;
                             }
-                            if is_wheel && wheel_targets_tree(app.is_overlay(), in_mux.is_some()) {
-                                let down = (ev.cb & 0x01) != 0;
-                                if (ev.cb & 0x10) != 0 {
-                                    // Ctrl+wheel → change level (← ascend / → descend); inject the
-                                    // arrow so the tree path (decode → handle_key → ensure) drives it.
-                                    non_mouse.extend_from_slice(if down { b"\x1b[C" } else { b"\x1b[D" });
-                                } else {
+                            let down = (ev.cb & 0x01) != 0;
+                            let ctrl = (ev.cb & 0x10) != 0;
+                            match resolve_mouse_chain(
+                                is_wheel, ctrl, down, is_left_press, app.is_overlay(), in_mux.is_some(),
+                            ) {
+                                ChainAction::ScrollTree(down) => {
                                     // Plain wheel → scroll the cursor LINEARLY through every row
                                     // (move_selection), like any list. NOT sibling-cycle: arrows do
                                     // that (move_sibling), but it wraps within a level, so a 2-sibling
@@ -1411,28 +1460,35 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                     wheel_scrolled = true;
                                     dirty = true;
                                 }
-                            } else if is_left_press && app.is_overlay() && in_mux.is_some() {
-                                app.toggle(); // tree → mux focus
-                                mouse_focus_toggle = true;
-                            } else if is_left_press && app.is_overlay() && in_mux.is_none() {
-                                // Left-click a tree row → move the cursor to it (select). The
-                                // loop top commits the new selection (attach); ensure the
-                                // clicked row's host connects so its subtree streams in.
-                                switcher.mouse_select(col0, ev.row.saturating_sub(1));
-                                ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows, tree_width);
-                                dirty = true;
-                            } else if is_left_press && !app.is_overlay() && in_mux.is_none() {
-                                app.toggle(); // mux → tree focus
-                                mouse_focus_toggle = true;
-                            } else if !app.is_overlay() {
-                                if let Some((gc, gr)) = in_mux {
-                                    registry.input(
-                                        &display_key(&env, &selection),
-                                        crate::proxy::mouse::encode_sgr_mouse(&ev, gc, gr),
-                                    );
+                                ChainAction::LevelChange(down) => {
+                                    // Ctrl+wheel → change level (↑ ascend / ↓ descend); inject the
+                                    // arrow so the tree path (decode → handle_key → ensure) drives it.
+                                    non_mouse.extend_from_slice(if down { b"\x1b[C" } else { b"\x1b[D" });
                                 }
+                                // The unfocused pane was clicked → switch focus to it (no content
+                                // delivered); toggle flips Overlay⇄Passthrough either direction.
+                                ChainAction::FocusMux | ChainAction::FocusTree => {
+                                    app.toggle();
+                                    mouse_focus_toggle = true;
+                                }
+                                ChainAction::SelectRow => {
+                                    // Left-click a tree row → move the cursor to it (select). The
+                                    // loop top commits the new selection (attach); ensure the
+                                    // clicked row's host connects so its subtree streams in.
+                                    switcher.mouse_select(col0, ev.row.saturating_sub(1));
+                                    ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows, tree_width);
+                                    dirty = true;
+                                }
+                                ChainAction::ForwardToMux => {
+                                    if let Some((gc, gr)) = in_mux {
+                                        registry.input(
+                                            &display_key(&env, &selection),
+                                            crate::proxy::mouse::encode_sgr_mouse(&ev, gc, gr),
+                                        );
+                                    }
+                                }
+                                ChainAction::Nothing => {}
                             }
-                            // Overlay + a tree-column click → focus only (no select) → dropped.
                             i += len;
                         } else {
                             non_mouse.push(bytes[i]);
@@ -1854,6 +1910,26 @@ mod tests {
         assert!(!wheel_targets_tree(true, true), "tree focus + over the MUX pane → NOT the tree");
         assert!(!wheel_targets_tree(false, false), "mux focus + over tree → not the tree");
         assert!(!wheel_targets_tree(false, true), "mux focus + over mux → the mux child, not the tree");
+    }
+
+    #[test]
+    fn resolve_mouse_chain_routes_by_focus_and_position() {
+        use ChainAction::*;
+        // wheel: only drives the tree when tree-focused AND over the tree.
+        assert_eq!(resolve_mouse_chain(true, false, true, false, true, false), ScrollTree(true), "wheel, tree focus, over tree → scroll");
+        assert_eq!(resolve_mouse_chain(true, true, false, false, true, false), LevelChange(false), "Ctrl+wheel, tree focus, over tree → level");
+        assert_eq!(resolve_mouse_chain(true, false, true, false, true, true), Nothing, "wheel, tree focus, over MUX → nothing (never crosses panes)");
+        assert_eq!(resolve_mouse_chain(true, false, true, false, false, true), ForwardToMux, "wheel, mux focus, over mux → forward to child");
+        assert_eq!(resolve_mouse_chain(true, false, true, false, false, false), Nothing, "wheel, mux focus, over tree → nothing");
+        // left press: focus-switch on the unfocused pane, act on the focused one.
+        assert_eq!(resolve_mouse_chain(false, false, false, true, true, true), FocusMux, "left, tree focus, over mux → focus mux");
+        assert_eq!(resolve_mouse_chain(false, false, false, true, true, false), SelectRow, "left, tree focus, over tree → select row");
+        assert_eq!(resolve_mouse_chain(false, false, false, true, false, false), FocusTree, "left, mux focus, over tree → focus tree");
+        assert_eq!(resolve_mouse_chain(false, false, false, true, false, true), ForwardToMux, "left, mux focus, over mux → forward to child");
+        // a non-left, non-wheel press (e.g. right-press that the menu gate declined):
+        // forwards to the child only when the mux is focused and the pointer is over it.
+        assert_eq!(resolve_mouse_chain(false, false, false, false, false, true), ForwardToMux, "right-press, mux focus, over mux → forward");
+        assert_eq!(resolve_mouse_chain(false, false, false, false, true, false), Nothing, "right-press, tree focus, over tree → nothing");
     }
 
     #[test]
