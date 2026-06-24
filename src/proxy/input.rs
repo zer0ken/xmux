@@ -9,25 +9,7 @@
 //! command behaves identically regardless of which pane holds focus. The prefix is a C0
 //! control byte, so it cannot collide with a UTF-8 continuation byte or appear mid-CSI;
 //! bracketed paste is respected so a prefix pasted as data is never intercepted.
-#[derive(Debug, PartialEq)]
-pub enum TermAction {
-    /// Raw bytes to forward to the focused session's active pane.
-    Forward(Vec<u8>),
-    /// `prefix` then Left/Tab/Esc — move focus back to the tree. Carries any
-    /// bytes that followed the switch command in the same read: focus has changed,
-    /// so the caller must hand them to the tree, not the pane.
-    FocusTree(Vec<u8>),
-    /// `prefix` then `q` — quit the cockpit.
-    Quit,
-    /// `prefix ?` — toggle the keys help overlay. Focus stays on the mux pane.
-    ShowHelp,
-    /// `prefix h`/`l` or `prefix Ctrl+←/→` — adjust the tree width by this signed
-    /// delta. Focus stays on the mux pane (the resize is a layout change).
-    Width(i32),
-    /// `prefix t` — toggle auto-hide-tree mode. Focus stays on the mux pane (the
-    /// tree is already hidden here when the mode is on; the toggle just (un)pins it).
-    ToggleAutoHide,
-}
+use crate::proxy::dispatch::Action;
 
 pub struct TermInput {
     prefix: u8,
@@ -73,7 +55,7 @@ impl TermInput {
     /// command key after a prefix is resolved at the byte level and consumes ONLY
     /// its own byte(s), so any trailing bytes in the same read resume as normal
     /// input (e.g. `C-g C-g abc` forwards a literal prefix then `abc`).
-    pub fn feed(&mut self, bytes: &[u8]) -> Vec<TermAction> {
+    pub fn feed(&mut self, bytes: &[u8]) -> Vec<Action> {
         let mut out = Vec::new();
         let mut fwd: Vec<u8> = Vec::new();
         let mut i = 0;
@@ -91,17 +73,17 @@ impl TermInput {
                 // rest of the read still forwards to the pane — flush, emit, continue.
                 if b0 == b'?' {
                     if !fwd.is_empty() {
-                        out.push(TermAction::Forward(std::mem::take(&mut fwd)));
+                        out.push(Action::Forward(std::mem::take(&mut fwd)));
                     }
-                    out.push(TermAction::ShowHelp);
+                    out.push(Action::ShowHelp);
                     i += 1;
                     continue;
                 }
                 if b0 == b'h' || b0 == b'l' {
                     if !fwd.is_empty() {
-                        out.push(TermAction::Forward(std::mem::take(&mut fwd)));
+                        out.push(Action::Forward(std::mem::take(&mut fwd)));
                     }
-                    out.push(TermAction::Width(if b0 == b'l' { 1 } else { -1 }));
+                    out.push(Action::Width(if b0 == b'l' { 1 } else { -1 }));
                     i += 1;
                     continue;
                 }
@@ -109,9 +91,9 @@ impl TermInput {
                 // the read still forwards to the pane.
                 if b0 == b't' {
                     if !fwd.is_empty() {
-                        out.push(TermAction::Forward(std::mem::take(&mut fwd)));
+                        out.push(Action::Forward(std::mem::take(&mut fwd)));
                     }
-                    out.push(TermAction::ToggleAutoHide);
+                    out.push(Action::ToggleAutoHide);
                     i += 1;
                     continue;
                 }
@@ -124,9 +106,9 @@ impl TermInput {
                     && matches!(bytes[i + 5], b'C' | b'D')
                 {
                     if !fwd.is_empty() {
-                        out.push(TermAction::Forward(std::mem::take(&mut fwd)));
+                        out.push(Action::Forward(std::mem::take(&mut fwd)));
                     }
-                    out.push(TermAction::Width(if bytes[i + 5] == b'C' { 1 } else { -1 }));
+                    out.push(Action::Width(if bytes[i + 5] == b'C' { 1 } else { -1 }));
                     i += 6;
                     continue;
                 }
@@ -153,17 +135,17 @@ impl TermInput {
                         continue;
                     }
                     if !fwd.is_empty() {
-                        out.push(TermAction::Forward(std::mem::take(&mut fwd)));
+                        out.push(Action::Forward(std::mem::take(&mut fwd)));
                     }
                     // Hand any bytes AFTER the command to the tree (focus switching).
-                    out.push(TermAction::FocusTree(bytes[i + cmd_len..].to_vec()));
+                    out.push(Action::FocusTree(bytes[i + cmd_len..].to_vec()));
                     break;
                 }
                 if b0 == b'q' {
                     if !fwd.is_empty() {
-                        out.push(TermAction::Forward(std::mem::take(&mut fwd)));
+                        out.push(Action::Forward(std::mem::take(&mut fwd)));
                     }
-                    out.push(TermAction::Quit);
+                    out.push(Action::Quit);
                     break;
                 }
                 // Unrecognized single-byte follow-up: command mode swallows just this
@@ -176,7 +158,7 @@ impl TermInput {
             self.track_paste(b);
             if !self.in_paste && b == self.prefix {
                 if !fwd.is_empty() {
-                    out.push(TermAction::Forward(std::mem::take(&mut fwd)));
+                    out.push(Action::Forward(std::mem::take(&mut fwd)));
                 }
                 self.armed = true;
             } else {
@@ -185,7 +167,7 @@ impl TermInput {
             i += 1;
         }
         if !fwd.is_empty() {
-            out.push(TermAction::Forward(fwd));
+            out.push(Action::Forward(fwd));
         }
         out
     }
@@ -198,10 +180,10 @@ mod tests {
     fn m() -> TermInput {
         TermInput::new(0x07)
     }
-    fn fwd(a: &[TermAction]) -> Vec<u8> {
+    fn fwd(a: &[Action]) -> Vec<u8> {
         a.iter()
             .flat_map(|x| match x {
-                TermAction::Forward(b) => b.clone(),
+                Action::Forward(b) => b.clone(),
                 _ => vec![],
             })
             .collect()
@@ -217,7 +199,7 @@ mod tests {
     fn prefix_then_tab_focuses_tree() {
         let mut t = m();
         assert!(t.feed(&[0x07]).is_empty(), "prefix alone is held");
-        assert_eq!(t.feed(b"\t"), vec![TermAction::FocusTree(vec![])]);
+        assert_eq!(t.feed(b"\t"), vec![Action::FocusTree(vec![])]);
     }
 
     #[test]
@@ -227,7 +209,7 @@ mod tests {
         for seq in [&b"\x1b[D"[..], &b"\x1b"[..]] {
             let mut t = m();
             t.feed(&[0x07]);
-            assert_eq!(t.feed(seq), vec![TermAction::FocusTree(vec![])], "seq {seq:?} → tree");
+            assert_eq!(t.feed(seq), vec![Action::FocusTree(vec![])], "seq {seq:?} → tree");
         }
     }
 
@@ -248,10 +230,10 @@ mod tests {
         // `C-g Left` in one read leaves to tree with NO replay tail (the `[D` of the
         // arrow must not leak as stray tree input).
         let mut t = m();
-        assert_eq!(t.feed(b"\x07\x1b[D"), vec![TermAction::FocusTree(vec![])]);
+        assert_eq!(t.feed(b"\x07\x1b[D"), vec![Action::FocusTree(vec![])]);
         // With trailing input after the arrow, only that trailing input is replayed.
         let mut t2 = m();
-        assert_eq!(t2.feed(b"\x07\x1b[Dabc"), vec![TermAction::FocusTree(b"abc".to_vec())]);
+        assert_eq!(t2.feed(b"\x07\x1b[Dabc"), vec![Action::FocusTree(b"abc".to_vec())]);
     }
 
     #[test]
@@ -259,21 +241,21 @@ mod tests {
         // `C-g Tab abc` in one read: focus leaves to the tree carrying `abc` (no
         // byte loss — the trailing input belongs to the new focus).
         let mut t = m();
-        assert_eq!(t.feed(b"\x07\tabc"), vec![TermAction::FocusTree(b"abc".to_vec())]);
+        assert_eq!(t.feed(b"\x07\tabc"), vec![Action::FocusTree(b"abc".to_vec())]);
     }
 
     #[test]
     fn prefix_then_q_quits() {
         let mut t = m();
         t.feed(&[0x07]);
-        assert_eq!(t.feed(b"q"), vec![TermAction::Quit]);
+        assert_eq!(t.feed(b"q"), vec![Action::Quit]);
     }
 
     #[test]
     fn prefix_then_question_toggles_help() {
         let mut t = m();
         t.feed(&[0x07]);
-        assert_eq!(t.feed(b"?"), vec![TermAction::ShowHelp]);
+        assert_eq!(t.feed(b"?"), vec![Action::ShowHelp]);
     }
 
     #[test]
@@ -282,7 +264,7 @@ mod tests {
         let mut t = m();
         assert_eq!(
             t.feed(b"\x07tabc"),
-            vec![TermAction::ToggleAutoHide, TermAction::Forward(b"abc".to_vec())]
+            vec![Action::ToggleAutoHide, Action::Forward(b"abc".to_vec())]
         );
     }
 
@@ -290,20 +272,20 @@ mod tests {
     fn prefix_then_h_or_l_resizes() {
         let mut t = m();
         t.feed(&[0x07]);
-        assert_eq!(t.feed(b"h"), vec![TermAction::Width(-1)], "h narrows");
+        assert_eq!(t.feed(b"h"), vec![Action::Width(-1)], "h narrows");
         let mut t2 = m();
         t2.feed(&[0x07]);
-        assert_eq!(t2.feed(b"l"), vec![TermAction::Width(1)], "l widens");
+        assert_eq!(t2.feed(b"l"), vec![Action::Width(1)], "l widens");
     }
 
     #[test]
     fn prefix_then_ctrl_arrow_resizes() {
         let mut t = m();
         t.feed(&[0x07]);
-        assert_eq!(t.feed(b"\x1b[1;5C"), vec![TermAction::Width(1)], "Ctrl-Right widens");
+        assert_eq!(t.feed(b"\x1b[1;5C"), vec![Action::Width(1)], "Ctrl-Right widens");
         let mut t2 = m();
         t2.feed(&[0x07]);
-        assert_eq!(t2.feed(b"\x1b[1;5D"), vec![TermAction::Width(-1)], "Ctrl-Left narrows");
+        assert_eq!(t2.feed(b"\x1b[1;5D"), vec![Action::Width(-1)], "Ctrl-Left narrows");
     }
 
     #[test]
@@ -312,16 +294,16 @@ mod tests {
         let mut t = m();
         assert_eq!(
             t.feed(b"\x07?abc"),
-            vec![TermAction::ShowHelp, TermAction::Forward(b"abc".to_vec())]
+            vec![Action::ShowHelp, Action::Forward(b"abc".to_vec())]
         );
         // Bytes before the prefix flush first, preserving order around the command.
         let mut t2 = m();
         assert_eq!(
             t2.feed(b"ab\x07lcd"),
             vec![
-                TermAction::Forward(b"ab".to_vec()),
-                TermAction::Width(1),
-                TermAction::Forward(b"cd".to_vec()),
+                Action::Forward(b"ab".to_vec()),
+                Action::Width(1),
+                Action::Forward(b"cd".to_vec()),
             ]
         );
     }
@@ -360,7 +342,7 @@ mod tests {
     fn bytes_before_prefix_forward_then_intercept() {
         let mut t = m();
         let out = t.feed(b"hi\x07\t");
-        assert_eq!(out, vec![TermAction::Forward(b"hi".to_vec()), TermAction::FocusTree(vec![])]);
+        assert_eq!(out, vec![Action::Forward(b"hi".to_vec()), Action::FocusTree(vec![])]);
     }
 
     #[test]
@@ -376,6 +358,6 @@ mod tests {
         }
         // after the paste the prefix arms again
         assert!(t.feed(&[0x07]).is_empty());
-        assert_eq!(t.feed(b"\t"), vec![TermAction::FocusTree(vec![])]);
+        assert_eq!(t.feed(b"\t"), vec![Action::FocusTree(vec![])]);
     }
 }

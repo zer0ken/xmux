@@ -784,7 +784,8 @@ fn note_host_exited(
 pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     use crate::proxy::app::App;
     use crate::proxy::decode::KeyDecoder;
-    use crate::proxy::input::{TermAction, TermInput};
+    use crate::proxy::dispatch::Action;
+    use crate::proxy::input::TermInput;
     use crate::proxy::term::{parse_prefix, TermGuard};
     use crate::ui::run::{dump_overlay, serve_control, AppStateKind, Cmd};
     use crate::ui::switcher::Switcher;
@@ -1482,17 +1483,17 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     // TermInput intercepts the prefix (→ tree / quit / help / resize / literal).
                     for action in term_input.feed(&non_mouse) {
                         match action {
-                            TermAction::Forward(f) => registry.input(&display_key(&env, &selection), f),
-                            TermAction::FocusTree(rest) => {
+                            Action::Forward(f) => registry.input(&display_key(&env, &selection), f),
+                            Action::FocusTree(rest) => {
                                 focus_tree = true;
                                 tree_replay = rest;
                             }
-                            TermAction::Quit => quit = true,
-                            TermAction::ShowHelp => {
+                            Action::Quit => quit = true,
+                            Action::ShowHelp => {
                                 switcher.toggle_help();
                                 dirty = true;
                             }
-                            TermAction::Width(d) => {
+                            Action::Width(d) => {
                                 // Same resize + repeat-window as the tree path, so a resize
                                 // started from the mux pane chains with bare Ctrl+←/→ too.
                                 apply_width_delta(d, &mut tree_width_natural, &env.xmux_dir);
@@ -1500,7 +1501,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                     std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS),
                                 );
                             }
-                            TermAction::ToggleAutoHide => {
+                            Action::ToggleAutoHide => {
                                 toggle_auto_hide(&mut auto_hide_tree, &env.xmux_dir);
                                 dirty = true;
                             }
