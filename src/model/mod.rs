@@ -4,10 +4,12 @@
 //! is transport-blind: `Mux::switch_plan` returns intent; `Transport::lower_switch`
 //! lowers it to a runnable command.
 
+pub mod mux;
 pub mod plan;
 pub mod server_model;
 pub mod transport;
 
+pub use mux::Mux;
 pub use plan::{DeathSignal, DisplayTty, EventSource, SwitchPlan};
 pub use server_model::ServerModel;
 pub use transport::{LoweredSwitch, Transport};
