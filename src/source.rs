@@ -178,16 +178,20 @@ impl Source {
             v.extend(a);
             return v;
         }
+        // Record THIS attach's own client tty to a per-host file before exec'ing the
+        // attach, so a later switch-client (see `switch_client_remote_cmd`) targets this
+        // exact display client — never the user's own attached client or the -CC client.
+        let tty_cap = format!("tty >{} 2>/dev/null; ", quote(&self.client_tty_path()));
         let remote_cmd = match window {
             Some(w) => format!(
-                "{} ; exec {}",
+                "{tty_cap}{} ; exec {}",
                 remote_command(&mux::select_window(
                     &self.binary,
                     &mux::window_target(name, w),
                 )),
                 remote_command(&mux::attach(&self.binary, name)),
             ),
-            None => remote_command(&mux::attach(&self.binary, name)),
+            None => format!("{tty_cap}exec {}", remote_command(&mux::attach(&self.binary, name))),
         };
         let mut args = self.ssh_args(true);
         args.push(remote_cmd);
@@ -264,9 +268,19 @@ impl Source {
     pub fn switch_client_remote_cmd(&self, session: &str) -> String {
         let b = &self.binary;
         let s = quote(session);
-        format!(
-            "{b} switch-client -c \"$({b} list-clients -F '#{{client_tty}} #{{client_flags}}' | grep -v control-mode | head -n1 | cut -d' ' -f1)\" -t {s}"
-        )
+        let path = quote(&self.client_tty_path());
+        // Read the tty xmux's display attach recorded for THIS host and switch only that
+        // client. Guard on a non-empty value so a missing file never runs
+        // `switch-client -c ""` (which would move the calling client instead).
+        format!("c=$(cat {path} 2>/dev/null); [ -n \"$c\" ] && {b} switch-client -c \"$c\" -t {s}")
+    }
+
+    /// Per-host path on the REMOTE where xmux's display attach records its own client
+    /// tty (`tty`), so `switch_client_remote_cmd` can target THAT client and no other.
+    /// ponytail: one path per host alias — two xmux instances against the same remote
+    /// account would share it; suffix with a per-instance id if that ever collides.
+    fn client_tty_path(&self) -> String {
+        format!("/tmp/.xmux-cli-{}", self.alias)
     }
 
     /// True for a LOCAL psmux source. psmux is one-server-per-session (no aggregate
@@ -641,7 +655,12 @@ mod tests {
         let got = rem.attach_command("api", None);
         assert_eq!(got[0], "ssh");
         assert!(got.iter().any(|s| s == "-t"), "{got:?}");
-        assert_eq!(got.last().unwrap(), "tmux attach -t api");
+        // Records this client's own tty to a per-host file (so switch-client can later
+        // target THIS client and no other), then attaches.
+        assert_eq!(
+            got.last().unwrap(),
+            "tty >/tmp/.xmux-cli-prod 2>/dev/null; exec tmux attach -t api"
+        );
     }
 
     #[test]
@@ -655,7 +674,7 @@ mod tests {
         assert!(got.iter().any(|s| s == "-t"), "{got:?}");
         assert_eq!(
             got.last().unwrap(),
-            "tmux select-window -t 'api:2' ; exec tmux attach -t api"
+            "tty >/tmp/.xmux-cli-prod 2>/dev/null; tmux select-window -t 'api:2' ; exec tmux attach -t api"
         );
     }
 
@@ -917,14 +936,15 @@ mod tests {
     }
 
     #[test]
-    fn switch_client_remote_cmd_targets_the_non_control_client() {
+    fn switch_client_remote_cmd_targets_xmux_own_captured_client() {
         let rem = src("prod", "tmux", true, "linux", "");
         let cmd = rem.switch_client_remote_cmd("api");
-        // Finds the non-control client's tty (the -CC metadata client is excluded by
-        // `grep -v control-mode`) and switch-clients IT to the session.
-        assert!(cmd.contains("list-clients -F '#{client_tty} #{client_flags}'"), "{cmd}");
-        assert!(cmd.contains("grep -v control-mode"), "{cmd}");
-        assert!(cmd.contains("switch-client -c "), "{cmd}");
+        // Switches ONLY xmux's own display client — identified by the tty it recorded to
+        // its per-host file at attach — so the user's own attached client (or the -CC
+        // metadata client) is never moved. Guarded on a non-empty tty.
+        assert!(cmd.contains("cat /tmp/.xmux-cli-prod"), "{cmd}");
+        assert!(cmd.contains("[ -n \"$c\" ]"), "{cmd}");
+        assert!(cmd.contains("switch-client -c \"$c\""), "{cmd}");
         assert!(cmd.trim_end().ends_with("-t api"), "{cmd}");
         // A session name with shell metacharacters is quoted (injection-safe).
         let evil = rem.switch_client_remote_cmd("a;rm -rf /");
