@@ -474,6 +474,28 @@ fn ensure_current_host(
     }
 }
 
+/// Consumes a pending re-scan kick (set by `r` or a menu "reconnect"): re-lists every
+/// remote host and re-enumerates every local source — the same probes as first launch.
+/// A no-op when no kick is pending. Shared by the key and context-menu paths.
+fn kick_rescan(
+    switcher: &mut crate::ui::switcher::Switcher,
+    env: &Env,
+    mgr: &HostManager,
+    enum_tx: &tokio::sync::mpsc::UnboundedSender<LocalEnum>,
+) {
+    if switcher.take_rescan_kick() {
+        for src in &env.srcs {
+            if src.remote {
+                if let Some(c) = mgr.get(&src.alias) {
+                    c.list_sessions();
+                }
+            } else {
+                spawn_local_enumeration(src.clone(), enum_tx.clone());
+            }
+        }
+    }
+}
+
 /// Connects EVERY remote source's control client and kicks off EVERY local source's
 /// enumeration at startup, so each host's tree streams in without waiting for a
 /// cursor move. Remote control clients connect on their own reader/writer threads
@@ -564,18 +586,7 @@ fn handle_tree_bytes(
     }
     dispatch_pending_op(switcher, ops, op_tx);
     ensure_current_host(mgr, env, switcher, cols, rows, tree_width);
-    if switcher.take_rescan_kick() {
-        // 'r' re-scan: re-enumerate local sources and re-list remote ones.
-        for src in &env.srcs {
-            if src.remote {
-                if let Some(c) = mgr.get(&src.alias) {
-                    c.list_sessions();
-                }
-            } else {
-                spawn_local_enumeration(src.clone(), enum_tx.clone());
-            }
-        }
-    }
+    kick_rescan(switcher, env, mgr, enum_tx);
     (focus_terminal, quit, width_delta, toggle_auto_hide)
 }
 
@@ -1203,6 +1214,36 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             // button is released. Sets the NATURAL width; the loop-top reconcile
                             // applies it and resizes the PTYs (same path as prefix h/l).
                             let col0 = ev.col.saturating_sub(1); // 1-based SGR → 0-based screen col
+                            // A context menu owns every mouse event until the right
+                            // button is released (press-hold-release), exactly like the
+                            // divider drag below. Motion sets the hovered item; button-up
+                            // acts on it (or cancels if released off-menu).
+                            if switcher.menu_active() {
+                                if !ev.pressed {
+                                    match switcher.menu_release() {
+                                        crate::ui::switcher::MenuOutcome::FocusTerminal => {
+                                            if app.is_overlay() {
+                                                app.toggle();
+                                            }
+                                        }
+                                        crate::ui::switcher::MenuOutcome::Handled => {
+                                            // A menu item may queue an op (split) or a
+                                            // re-scan (reconnect); dispatch them here so it
+                                            // works in either focus state, not only overlay.
+                                            dispatch_pending_op(&mut switcher, &ops, &op_tx);
+                                            kick_rescan(&mut switcher, &env, &mgr, &enum_tx);
+                                            ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows, tree_width);
+                                        }
+                                        crate::ui::switcher::MenuOutcome::None => {}
+                                    }
+                                    dirty = true;
+                                } else if !is_wheel {
+                                    switcher.menu_hover(col0, ev.row.saturating_sub(1));
+                                    dirty = true;
+                                }
+                                i += len;
+                                continue;
+                            }
                             if dragging_divider {
                                 if !ev.pressed {
                                     // Button up ends the drag; persist the final width once
@@ -1241,6 +1282,15 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                     i += len;
                                     continue;
                                 }
+                            }
+                            // Right-button press over the tree opens that row's context
+                            // menu (press-hold-release). Tree-only: a press over the mux
+                            // pane falls through and forwards to the child as before.
+                            let is_right_press = is_press && (ev.cb & 0x03) == 2;
+                            if is_right_press && in_mux.is_none() && switcher.menu_open(col0, ev.row.saturating_sub(1)) {
+                                dirty = true;
+                                i += len;
+                                continue;
                             }
                             if is_wheel && app.is_overlay() {
                                 let down = (ev.cb & 0x01) != 0;
@@ -1295,6 +1345,13 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 if dragging_divider && !non_mouse.is_empty() {
                     dragging_divider = false;
                     crate::state::save_tree_width(&env.xmux_dir, tree_width_natural);
+                }
+                // Watchdog: a keystroke (or any non-mouse byte) during a held menu ends
+                // the gesture without acting — mirrors the divider-drag watchdog, so a
+                // missed button-up can't strand the menu and eat later input.
+                if switcher.menu_active() && !non_mouse.is_empty() {
+                    switcher.menu_cancel();
+                    dirty = true;
                 }
                 if mouse_focus_toggle {
                     dirty = true;
