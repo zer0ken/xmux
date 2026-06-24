@@ -381,6 +381,9 @@ pub struct Switcher {
     /// The whole frame area, captured each render so the menu box can be clamped to
     /// the screen at open time (mouse events arrive between renders).
     screen_area: Rect,
+    /// Raw `~/.ssh/config` text (set once by the cockpit). The right-pane info panel
+    /// shows the matching Host/Match stanza for a selected unreachable host. Empty in tests.
+    ssh_config_text: String,
 }
 
 impl Switcher {
@@ -411,6 +414,7 @@ impl Switcher {
             preferred: None,
             menu: None,
             screen_area: Rect::default(),
+            ssh_config_text: String::new(),
         }
     }
 
@@ -610,12 +614,13 @@ impl Switcher {
     }
 
     /// The dim trailing annotation for a host row: its scan state when it has no
-    /// sessions to show — scanning…, ⚠ unreachable: <reason>, or (empty).
+    /// sessions to show — scanning…, ⚠ (unreachable; the reason is shown in the
+    /// right-pane info panel when the host row is selected), or (empty).
     fn host_hint(&self, g: &Group, scanning: bool) -> Option<String> {
         if scanning {
             Some("scanning…".into())
-        } else if let Some(err) = &g.err {
-            Some(format!("⚠ unreachable: {err}"))
+        } else if g.err.is_some() {
+            Some("⚠".into())
         } else if g.sessions.is_empty() {
             Some("(empty)".into())
         } else {
@@ -1668,7 +1673,13 @@ impl Switcher {
         self.render_footer(frame, left[2]);
         self.render_divider(frame, cols[1], terminal_focused);
         let term_area = cols[2];
-        self.render_terminal_view(frame, term_area, grid);
+        // An unreachable host has no live grid; show an info panel (ssh config stanza
+        // + failure reason) in its right pane instead of the blank (attaching…) grid.
+        if self.current_host_unreachable() {
+            self.render_host_info(frame, term_area);
+        } else {
+            self.render_terminal_view(frame, term_area, grid);
+        }
         // In passthrough, place the real cursor at the grid's cursor so typing in the
         // mux is visible and tracks. Skipped when the child hid its cursor.
         if terminal_focused {
@@ -1800,6 +1811,49 @@ impl Switcher {
                 frame.render_widget(Paragraph::new("  (attaching…)").dim(), area);
             }
         }
+    }
+
+    /// Sets the raw `~/.ssh/config` text the unreachable-host info panel reads.
+    pub fn set_ssh_config_text(&mut self, text: String) {
+        self.ssh_config_text = text;
+    }
+
+    /// The right-pane info panel for a selected unreachable host: the failure reason
+    /// and the host's `~/.ssh/config` stanza, so the user can see WHY the control
+    /// connection failed without leaving the cockpit.
+    fn render_host_info(&self, frame: &mut Frame, area: Rect) {
+        let alias = self.current_source().unwrap_or_default();
+        let reason = self
+            .groups
+            .iter()
+            .find(|g| g.source == alias)
+            .and_then(|g| g.err.clone())
+            .unwrap_or_else(|| "connection closed".into());
+        let mut lines = vec![
+            Line::from(Span::styled(
+                format!(" ⚠ {alias} unreachable"),
+                Style::default().fg(Color::Yellow),
+            )),
+            Line::from(""),
+            Line::from(format!(" reason: {reason}")),
+            Line::from(""),
+            Line::from(Span::styled(
+                " ~/.ssh/config:",
+                Style::default().add_modifier(Modifier::DIM),
+            )),
+        ];
+        let stanza = crate::config::host_stanza(&self.ssh_config_text, &alias);
+        if stanza.is_empty() {
+            lines.push(Line::from(Span::styled(
+                " (no matching ssh config entry)",
+                Style::default().add_modifier(Modifier::DIM),
+            )));
+        } else {
+            for l in stanza.lines() {
+                lines.push(Line::from(format!(" {l}")));
+            }
+        }
+        frame.render_widget(Paragraph::new(Text::from(lines)), area);
     }
 
     fn render_input(&self, frame: &mut Frame, area: Rect) {
@@ -2570,7 +2624,7 @@ mod tests {
             "window 1: train",
             "pane 1  python",
             "db-2",
-            "unreachable",
+            "⚠", // unreachable host marker (the reason now lives in the info pane)
         ] {
             assert!(out.contains(want), "tree missing {want:?}\n{out}");
         }
@@ -2690,19 +2744,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_source_result_unreachable_shows_reason() {
+    async fn apply_source_result_unreachable_marks_tree_and_reason_in_info_pane() {
         let mut h = Harness::from_sources(&["prod"]);
         h.sw.apply_source_result("prod".into(), vec![], Some("connection refused".into()));
         h.draw();
-        let out = h.text();
+        // Tree: only the ⚠ marker beside the name — not the verbose reason.
+        let tree = h.tree_text();
+        assert!(tree.contains('⚠'), "the host row is marked with ⚠:\n{tree}");
         assert!(
-            out.contains("unreachable"),
-            "shows unreachable state:\n{out}"
+            !tree.contains("connection refused"),
+            "the reason does NOT clutter the tree:\n{tree}"
         );
+        // The lone unreachable host is auto-selected → its right-pane info panel
+        // states it is unreachable and shows why.
+        let out = h.text();
+        assert!(out.contains("unreachable"), "info pane states unreachable:\n{out}");
         assert!(
             out.contains("connection refused"),
-            "shows the failure reason:\n{out}"
+            "info pane shows the failure reason:\n{out}"
         );
+    }
+
+    #[tokio::test]
+    async fn unreachable_info_pane_shows_ssh_config_stanza() {
+        let mut h = Harness::from_sources(&["jupiter00"]);
+        h.sw.set_ssh_config_text(
+            "Host jupiter00\n    HostName 143.248.140.120\n    User hrlee\n\nHost other\n    HostName 1.2.3.4\n".into(),
+        );
+        h.sw.apply_source_result("jupiter00".into(), vec![], Some("no route".into()));
+        h.draw();
+        let out = h.text();
+        assert!(out.contains("HostName 143.248.140.120"), "shows the host's ssh config:\n{out}");
+        assert!(out.contains("hrlee"), "shows the configured user:\n{out}");
+        assert!(!out.contains("1.2.3.4"), "does NOT leak an unrelated host's config:\n{out}");
     }
 
     #[tokio::test]
@@ -3270,6 +3344,38 @@ mod tests {
             }
             other => panic!("expected a vertical SplitWindow op, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn menu_release_split_horizontal_queues_op() {
+        let mut h = Harness::new(sample());
+        let s = sess("local", "editor", 2, true, 200);
+        let target = RowRef::Window { sess: s, window: 1 };
+        let items = menu_items(&target);
+        let at = items.iter().position(|i| *i == MenuItem::SplitHorizontal).unwrap();
+        h.sw.menu = Some(Menu { target, rect: Rect::new(0, 0, 20, 7), items, hovered: Some(at) });
+        assert!(matches!(h.sw.menu_release(), MenuOutcome::Handled));
+        match h.sw.take_pending_op() {
+            Some(PendingOp::SplitWindow { target, vertical, .. }) => {
+                assert_eq!(target, "editor:1");
+                assert!(!vertical, "split horizontal");
+            }
+            other => panic!("expected a horizontal SplitWindow op, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn menu_open_on_host_row() {
+        let mut h = Harness::new(sample());
+        let idx = row_index(&h, |r| matches!(r, RowRef::Host { source, .. } if source == "local"));
+        let (x, y) = row_screen_pos(&h, idx);
+        assert!(h.sw.menu_open(x, y), "menu opens over a host row");
+        // A host menu's first item (new session) opens an input.
+        let target = RowRef::Host { source: "local".into(), unreachable: false };
+        let items = menu_items(&target);
+        h.sw.menu = Some(Menu { target, rect: Rect::new(0, 0, 20, 4), items, hovered: Some(0) });
+        assert!(matches!(h.sw.menu_release(), MenuOutcome::Handled), "new session opens an input");
+        assert!(h.sw.is_inputting());
     }
 
     #[tokio::test]

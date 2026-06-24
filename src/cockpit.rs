@@ -833,6 +833,11 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
 
     // The switcher, seeded from the source skeletons; events stream the tree in.
     let mut switcher = Switcher::from_sources(env.srcs.iter().map(|s| s.alias.clone()).collect());
+    // Feed the switcher the ssh config so an unreachable host's info pane can show its
+    // Host/Match stanza. Read once; a missing file just yields no stanza.
+    switcher.set_ssh_config_text(
+        std::fs::read_to_string(crate::env::ssh_config_path()).unwrap_or_default(),
+    );
     // Restore the session the user last had selected (persisted across runs), so the
     // preselect lands there once its host streams in instead of guessing from the
     // unreliable cross-host `session_last_attached` (#1).
@@ -1222,6 +1227,10 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                 if !ev.pressed {
                                     match switcher.menu_release() {
                                         crate::ui::switcher::MenuOutcome::FocusTerminal => {
+                                            // Connect the target's host (mirrors the left-click
+                                            // select path) so its control client streams, then
+                                            // focus the mux on the now-selected session.
+                                            ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows, tree_width);
                                             if app.is_overlay() {
                                                 app.toggle();
                                             }
@@ -1288,6 +1297,15 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             // pane falls through and forwards to the child as before.
                             let is_right_press = is_press && (ev.cb & 0x03) == 2;
                             if is_right_press && in_mux.is_none() && switcher.menu_open(col0, ev.row.saturating_sub(1)) {
+                                // The menu's actions (rename input, kill confirm) are driven by
+                                // the tree's keyboard path, and a kill confirmed in the mux-focus
+                                // state would quit the cockpit when the killed PTY exits. So a
+                                // menu always operates in tree focus: take it now if the mux had
+                                // it (the tree is necessarily visible here — a hidden tree has no
+                                // column to right-click, so menu_open would have returned false).
+                                if !app.is_overlay() {
+                                    app.toggle();
+                                }
                                 dirty = true;
                                 i += len;
                                 continue;
