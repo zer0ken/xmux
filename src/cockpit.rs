@@ -1261,11 +1261,11 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 // A kept attachment's pump fed its grid (Output → redraw on the next
                 // loop top) or its master hit EOF (Exited → reap). Coalesce a burst
                 // into one redraw so a busy session cannot monopolize the thread.
-                // Detach-to-quit: if the session the user is VIEWING (mux focused) exits —
-                // a `detach` inside it, or it being killed — there is nothing left to show,
-                // so quit xmux rather than strand a dead pane the reconnect sweep would keep
-                // trying to revive. Capture its id BEFORE any reap removes it; a background
-                // session dropping (tree focus, or a non-displayed attach) does NOT quit.
+                // Detach-to-recover: if the session the user is VIEWING (mux focused) exits —
+                // a `detach`, the user's own client detaching, or a transient drop — re-attach
+                // it instead of quitting (quit is `prefix q` only). Capture its id BEFORE any
+                // reap removes it; a background session dropping (tree focus, or a non-displayed
+                // attach) is just reaped.
                 let displayed_attach_id = (!app.is_overlay() && !selection.is_empty())
                     .then(|| registry.get(&display_key(&env, &selection)).map(|a| a.id()))
                     .flatten();
@@ -1295,7 +1295,13 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     }
                 }
                 if detached {
-                    break; // the viewed session detached/exited → quit the cockpit
+                    // The viewed session's client detached/exited — recover by re-attaching
+                    // it (reaped above, so the loop-top attach re-fires once its PTY is gone).
+                    // Debounced so a session that is genuinely gone makes only a few attempts
+                    // before the inventory refetch drops its row and the cursor moves on.
+                    attach_deadline =
+                        Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
+                    dirty = true;
                 }
             }
             Some(ev) = worker.recv() => {
