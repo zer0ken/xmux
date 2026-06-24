@@ -1588,10 +1588,10 @@ impl Switcher {
         }
         let title = menu_title(&target);
         let rect = menu_rect(col, row, &items, &title, self.screen_area);
-        // Pre-highlight the first item so a press-release with no drag picks the safe
-        // default (`focus` / `new`) instead of doing nothing — the press lands on the
-        // title border, one row above the first item, so without this it would cancel.
-        self.menu = Some(Menu { target, title, rect, items, hovered: Some(0) });
+        // No item is pre-highlighted, and the box opens just below the pointer (see
+        // menu_rect) — so an accidental right-click that releases without dragging onto
+        // an item does nothing. Selecting is a deliberate move down onto an item.
+        self.menu = Some(Menu { target, title, rect, items, hovered: None });
         true
     }
 
@@ -2187,11 +2187,17 @@ fn menu_rect(col: u16, row: u16, items: &[MenuItem], title: &str, area: Rect) ->
     let content_w = (item_w + 2).max(title.chars().count()) as u16;
     let w = (content_w + 2).min(area.width.max(1));
     let h = (items.len() as u16 + 2).min(area.height.max(1));
+    // Open BELOW the pointer (and a column left, so the pointer's column lands just
+    // inside the box rather than on the left border) — the pointer ends up above the
+    // box on an empty cell. An accidental right-click then releases off every item
+    // (cancel), and a deliberate pick is a short drag straight down onto an item.
+    let ax = col.saturating_sub(1);
+    let ay = row.saturating_add(1);
     let max_x = (area.x + area.width).saturating_sub(w).max(area.x);
     let max_y = (area.y + area.height).saturating_sub(h).max(area.y);
     Rect {
-        x: col.clamp(area.x, max_x),
-        y: row.clamp(area.y, max_y),
+        x: ax.clamp(area.x, max_x),
+        y: ay.clamp(area.y, max_y),
         width: w,
         height: h,
     }
@@ -3363,14 +3369,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn menu_release_in_place_picks_the_first_item() {
-        // Press-release with no drag falls on the pre-highlighted first item (focus),
-        // not a no-op — the fix for "new session / focus did nothing".
+    async fn menu_release_in_place_cancels() {
+        // Accidental-click safety: open then release WITHOUT dragging onto an item does
+        // nothing. The box opens below the pointer with no item pre-selected, so the
+        // release lands off every item.
         let mut h = Harness::new(sample());
         let idx = row_index(&h, |r| matches!(r, RowRef::Session(s) if s.name == "build"));
         let (x, y) = row_screen_pos(&h, idx);
         assert!(h.sw.menu_open(x, y));
-        assert!(matches!(h.sw.menu_release(), MenuOutcome::FocusTerminal), "first item = focus");
+        assert!(matches!(h.sw.menu_release(), MenuOutcome::None), "no drag → no action");
+        assert!(!h.sw.menu_active());
+        assert!(h.sw.input.is_none() && h.sw.pending_kill.is_none(), "nothing happened");
+    }
+
+    #[tokio::test]
+    async fn menu_opens_below_the_pointer_not_under_it() {
+        // The box must not sit under the pointer: an accidental right-click should land
+        // on empty space above the menu.
+        let mut h = Harness::new(sample());
+        let idx = row_index(&h, |r| matches!(r, RowRef::Session(s) if s.name == "build"));
+        let (x, y) = row_screen_pos(&h, idx);
+        assert!(h.sw.menu_open(x, y));
+        let rect = h.sw.menu.as_ref().unwrap().rect;
+        assert!(rect.y > y, "the box opens below the click row");
+        assert!(!h.sw.menu.as_ref().unwrap().contains(x, y), "the pointer is not inside the box");
     }
 
     #[tokio::test]
@@ -3473,6 +3495,9 @@ mod tests {
         let idx = row_index(&h, |r| matches!(r, RowRef::Host { source, .. } if source == "local"));
         let (x, y) = row_screen_pos(&h, idx);
         assert!(h.sw.menu_open(x, y), "menu opens on the host row");
+        // Deliberately move onto the first item (no pre-hover), then release.
+        let rect = h.sw.menu.as_ref().unwrap().rect;
+        h.sw.menu_hover(rect.x + 1, rect.y + 1);
         assert!(matches!(h.sw.menu_release(), MenuOutcome::Handled));
         assert!(h.sw.is_inputting(), "new session opens the name input");
         h.sw.set_input_text("fresh");
