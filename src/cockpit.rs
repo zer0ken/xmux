@@ -533,8 +533,7 @@ fn is_focus_in(code: KeyCode) -> bool {
 /// and motion already follow. A wheel over the mux pane while the tree is focused is not
 /// a tree scroll.
 fn wheel_targets_tree(tree_focused: bool, over_mux: bool) -> bool {
-    let _ = (tree_focused, over_mux);
-    false
+    tree_focused && !over_mux
 }
 
 /// Whether a right-button press may open the tree context menu. Tree-focus only: the
@@ -542,8 +541,7 @@ fn wheel_targets_tree(tree_focused: bool, over_mux: bool) -> bool {
 /// global — it never opens (nor steals focus) while the mux pane is focused. Position-
 /// gated to the tree column; a right-click over the mux pane forwards to the child.
 fn tree_menu_may_open(is_right_press: bool, tree_focused: bool, over_mux: bool) -> bool {
-    let _ = (is_right_press, tree_focused, over_mux);
-    false
+    is_right_press && tree_focused && !over_mux
 }
 
 /// Pure resolution of ONE TREE-focus key into an [`Action`] (or none, when the key
@@ -1383,25 +1381,22 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                     continue;
                                 }
                             }
-                            // Right-button press over the tree opens that row's context
-                            // menu (press-hold-release). Tree-only: a press over the mux
-                            // pane falls through and forwards to the child as before.
+                            // Right-button press over a selectable tree row opens its context
+                            // menu (press-hold-release). Tree-focus only: the menu acts on a
+                            // tree row, so it is tree-pane input, not a global — a right-click
+                            // while the mux is focused (or over the mux pane) does not open it
+                            // and does not move focus. The menu's keyboard actions (rename input,
+                            // kill confirm) thus always run in tree focus, so a confirmed kill
+                            // can't quit the cockpit out from under the mux.
                             let is_right_press = is_press && (ev.cb & 0x03) == 2;
-                            if is_right_press && in_mux.is_none() && switcher.menu_open(col0, ev.row.saturating_sub(1)) {
-                                // The menu's actions (rename input, kill confirm) are driven by
-                                // the tree's keyboard path, and a kill confirmed in the mux-focus
-                                // state would quit the cockpit when the killed PTY exits. So a
-                                // menu always operates in tree focus: take it now if the mux had
-                                // it (the tree is necessarily visible here — a hidden tree has no
-                                // column to right-click, so menu_open would have returned false).
-                                if !app.is_overlay() {
-                                    app.toggle();
-                                }
+                            if tree_menu_may_open(is_right_press, app.is_overlay(), in_mux.is_some())
+                                && switcher.menu_open(col0, ev.row.saturating_sub(1))
+                            {
                                 dirty = true;
                                 i += len;
                                 continue;
                             }
-                            if is_wheel && app.is_overlay() {
+                            if is_wheel && wheel_targets_tree(app.is_overlay(), in_mux.is_some()) {
                                 let down = (ev.cb & 0x01) != 0;
                                 if (ev.cb & 0x10) != 0 {
                                     // Ctrl+wheel → change level (← ascend / → descend); inject the
@@ -1850,6 +1845,23 @@ mod tests {
             vec![Action::TreeKey(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))],
             "Enter while inputting goes to the tree, not focus-switch"
         );
+    }
+
+    // --- mouse focus/position rules ----------------------------------------
+    #[test]
+    fn wheel_targets_tree_only_when_tree_focused_and_over_tree() {
+        assert!(wheel_targets_tree(true, false), "tree focus + over tree → drive the tree");
+        assert!(!wheel_targets_tree(true, true), "tree focus + over the MUX pane → NOT the tree");
+        assert!(!wheel_targets_tree(false, false), "mux focus + over tree → not the tree");
+        assert!(!wheel_targets_tree(false, true), "mux focus + over mux → the mux child, not the tree");
+    }
+
+    #[test]
+    fn tree_menu_opens_only_in_tree_focus_over_the_tree() {
+        assert!(tree_menu_may_open(true, true, false), "right-press, tree focus, over tree → may open");
+        assert!(!tree_menu_may_open(true, false, false), "right-press while the MUX is focused → never");
+        assert!(!tree_menu_may_open(true, true, true), "right-press over the mux pane → forwards, no tree menu");
+        assert!(!tree_menu_may_open(false, true, false), "a non-right press never opens the menu");
     }
 
     #[test]
