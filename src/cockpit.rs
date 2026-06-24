@@ -740,6 +740,25 @@ fn handle_host_event(
 /// can be created there), NOT "⚠". Any other never-connected death is a real
 /// transport failure and renders "⚠". Returns `true` only when it marked the host
 /// unreachable.
+/// Locks focus to the bottom input pane while one is open, restoring the prior focus when
+/// it closes. While `inputting`: capture the focus once (so it can be returned to) and force
+/// `Overlay` so keystrokes route to the input; forcing it every tick also overrides any focus
+/// toggle that slipped through mid-iteration. On the close edge: restore the captured focus.
+fn reconcile_input_focus(
+    inputting: bool,
+    state: &mut crate::proxy::app::AppState,
+    saved: &mut Option<crate::proxy::app::AppState>,
+) {
+    if inputting {
+        if saved.is_none() {
+            *saved = Some(*state);
+        }
+        *state = crate::proxy::app::AppState::Overlay;
+    } else if let Some(prev) = saved.take() {
+        *state = prev;
+    }
+}
+
 fn note_host_exited(
     switcher: &mut crate::ui::switcher::Switcher,
     connected: &HashSet<String>,
@@ -849,6 +868,11 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     // unreliable cross-host `session_last_attached` (#1).
     switcher.set_preferred(crate::state::load_last_session(&env.xmux_dir));
     let mut app = App::new();
+    // Focus belongs to the bottom input pane while one is open: capture the focus it was
+    // opened from, force tree focus so keystrokes reach the input, and restore the captured
+    // focus when the input closes (Esc cancel or Enter confirm). Reconciled at the loop top
+    // so a mid-iteration focus toggle (e.g. a mouse click) cannot stick.
+    let mut focus_before_input: Option<crate::proxy::app::AppState> = None;
 
     // The canonical selection; committed from the switcher's cursor at the loop top.
     let mut selection = Selection::default();
@@ -953,6 +977,8 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // changed selection ensures its PTY + (for a window row) switches the window.
         switcher.set_spinner_frame(spinner_frame_at(spinner_start.elapsed()));
         switcher.set_divider_hovered(hovered_divider);
+        // Lock focus to the input pane while it is shown; restore the prior focus on close.
+        reconcile_input_focus(switcher.is_inputting(), &mut app.state, &mut focus_before_input);
         // The single owner of the effective tree width: reconcile it to the current
         // focus + the hide setting, and to any natural-width change from prefix h/l.
         // On a change (focus toggled, hide flips the width, or h/l resized the tree),
@@ -2155,6 +2181,29 @@ mod tests {
         assert_eq!(app.state, AppState::Passthrough);
         app.toggle();
         assert!(app.is_overlay());
+    }
+
+    #[test]
+    fn input_focus_locks_to_overlay_and_restores_prior_focus() {
+        use crate::proxy::app::AppState;
+        // Opened from mux focus: capture Passthrough once, force Overlay so keys reach the input.
+        let mut state = AppState::Passthrough;
+        let mut saved = None;
+        reconcile_input_focus(true, &mut state, &mut saved);
+        assert_eq!(state, AppState::Overlay, "input forces tree focus");
+        assert_eq!(saved, Some(AppState::Passthrough), "prior focus captured once");
+        // A stray toggle mid-input is overridden back to Overlay; the capture is not clobbered.
+        state = AppState::Passthrough;
+        reconcile_input_focus(true, &mut state, &mut saved);
+        assert_eq!(state, AppState::Overlay, "focus stays locked while the input is open");
+        assert_eq!(saved, Some(AppState::Passthrough), "capture survives re-locks");
+        // On close, restore the captured focus and clear it.
+        reconcile_input_focus(false, &mut state, &mut saved);
+        assert_eq!(state, AppState::Passthrough, "prior focus restored when the input closes");
+        assert_eq!(saved, None, "capture cleared after restore");
+        // With nothing captured, a no-input tick leaves focus untouched.
+        reconcile_input_focus(false, &mut state, &mut saved);
+        assert_eq!(state, AppState::Passthrough);
     }
 
     // Suppress unused warnings for the test-only env builder kept for future loop tests.

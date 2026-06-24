@@ -1749,39 +1749,43 @@ impl Switcher {
             self.render_menu(frame);
             return;
         }
+        // When an input is active it lives in its OWN full-width pane pinned to the very
+        // bottom of the screen (a divider line above it), SEPARATE from the tree and mux
+        // panes — and focus is treated as on that pane (the tree|mux divider dims, the
+        // input pane's divider lights). Reserve the bottom rows for it before the
+        // tree|mux split; the tree keeps its footer/help line regardless.
+        let (main_area, input_layout) = if self.input.is_some() {
+            let desc_lines = self.input_desc_lines(area.width);
+            let pane_h = desc_lines.len() as u16 + 1; // description line(s) + the entry line
+            let rows = Layout::vertical([
+                Constraint::Min(0),         // tree | mux
+                Constraint::Length(1),      // divider above the input pane
+                Constraint::Length(pane_h), // the input pane
+            ])
+            .split(area);
+            (rows[0], Some((rows[1], rows[2], desc_lines)))
+        } else {
+            (area, None)
+        };
+
         let cols = Layout::horizontal([
             Constraint::Length(tree_width),
             Constraint::Length(1),
             Constraint::Min(0),
         ])
-        .split(area);
-        // The bottom of the tree column is EITHER the active input prompt OR the
-        // footer/help line. An active input is a two-line element: its description on
-        // the upper line, the entry field on the very bottom line (replacing the help
-        // line); Esc cancels it. See `render_input`.
-        if self.input.is_some() {
-            // The description wraps to as many lines as the tree width needs, so a long
-            // hint is never clipped; the entry field stays pinned to the bottom line.
-            let desc_lines = self.input_desc_lines(cols[0].width);
-            let desc_h = (desc_lines.len() as u16).max(1);
-            let left = Layout::vertical([
-                Constraint::Min(0),         // tree
-                Constraint::Length(desc_h), // input description (wrapped)
-                Constraint::Length(1),      // input prompt (bottom line)
-            ])
-            .split(cols[0]);
-            self.render_tree(frame, left[0]);
-            self.render_input(frame, &desc_lines, left[1], left[2]);
-        } else {
-            let left = Layout::vertical([
-                Constraint::Min(0),    // tree
-                Constraint::Length(1), // footer (help / status)
-            ])
-            .split(cols[0]);
-            self.render_tree(frame, left[0]);
-            self.render_footer(frame, left[1]);
-        }
-        self.render_divider(frame, cols[1], terminal_focused);
+        .split(main_area);
+        // Tree column: the tree plus its footer/help line (the help stays here even while
+        // an input pane is open at the bottom).
+        let left = Layout::vertical([
+            Constraint::Min(0),    // tree
+            Constraint::Length(1), // footer (help / status)
+        ])
+        .split(cols[0]);
+        self.render_tree(frame, left[0]);
+        self.render_footer(frame, left[1]);
+        // The tree|mux divider marks focus between those two; while the input pane is up it
+        // holds focus, so this divider dims and the input pane's divider lights instead.
+        self.render_divider(frame, cols[1], terminal_focused, self.input.is_some());
         let term_area = cols[2];
         // An unreachable host has no live grid; show an info panel (ssh config stanza
         // + failure reason) in its right pane instead of the blank (attaching…) grid.
@@ -1799,6 +1803,16 @@ impl Switcher {
                 }
             }
         }
+        // The bottom input pane (full width) and its focused divider, drawn last.
+        if let Some((divider_area, pane_area, desc_lines)) = input_layout {
+            self.render_input_divider(frame, divider_area);
+            let pane = Layout::vertical([
+                Constraint::Length(desc_lines.len() as u16), // description
+                Constraint::Length(1),                       // entry field
+            ])
+            .split(pane_area);
+            self.render_input(frame, &desc_lines, pane[0], pane[1]);
+        }
         if self.show_help {
             self.render_help(frame, area);
         }
@@ -1812,7 +1826,7 @@ impl Switcher {
     /// signal (adapting tmux's active-pane border). Replaces the per-pane box borders.
     /// The glyph also encodes auto-hide-tree mode: ║ (double) when on, │ when off — so
     /// a visible tree that will vanish on blur is distinguishable from a pinned one.
-    fn render_divider(&self, frame: &mut Frame, area: Rect, terminal_focused: bool) {
+    fn render_divider(&self, frame: &mut Frame, area: Rect, terminal_focused: bool, input_focused: bool) {
         const ACCENT: Color = Color::Green;
         let glyph = if self.auto_hide { "║" } else { "│" };
         // Hover (mouse over the rule, no button): box-drawing rules have no bold form
@@ -1830,7 +1844,10 @@ impl Switcher {
             frame.render_widget(Paragraph::new(bars), area);
             return;
         }
-        let colors: Vec<Color> = if area.height <= 1 {
+        let colors: Vec<Color> = if input_focused {
+            // Focus is on the bottom input pane — neither tree nor mux is focused.
+            vec![COLOR_HINT; area.height as usize]
+        } else if area.height <= 1 {
             // Too short to split: show the active-marker color in the single cell.
             vec![ACCENT; area.height as usize]
         } else {
@@ -1851,6 +1868,16 @@ impl Switcher {
                 .collect::<Vec<_>>(),
         );
         frame.render_widget(Paragraph::new(bars), area);
+    }
+
+    /// The horizontal rule above the bottom input pane. Drawn in the focus accent (green)
+    /// because the input pane holds focus while open — mirroring the tree|mux divider.
+    fn render_input_divider(&self, frame: &mut Frame, area: Rect) {
+        let rule = "─".repeat(area.width as usize);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(rule, Style::default().fg(Color::Green)))),
+            area,
+        );
     }
 
     fn render_tree(&mut self, frame: &mut Frame, area: Rect) {
@@ -2271,12 +2298,13 @@ fn menu_rect(col: u16, row: u16, items: &[MenuItem], title: &str, area: Rect) ->
     let content_w = (item_w + 2).max(title.chars().count()) as u16;
     let w = (content_w + 2).min(area.width.max(1));
     let h = (items.len() as u16 + 2).min(area.height.max(1));
-    // Open BELOW the pointer (and a column left, so the pointer's column lands just
-    // inside the box rather than on the left border) — the pointer ends up above the
-    // box on an empty cell. An accidental right-click then releases off every item
-    // (cancel), and a deliberate pick is a short drag straight down onto an item.
+    // Anchor the title row (top border) on the pointer, tmux-style: the pointer lands on
+    // the title line, a column left so it sits just inside the box rather than on the left
+    // border. item_at() is None on the title row, so no item is pre-selected — an
+    // accidental right-click releases off every item (cancel), and a deliberate pick is a
+    // short drag straight down onto an item.
     let ax = col.saturating_sub(1);
-    let ay = row.saturating_add(1);
+    let ay = row;
     let max_x = (area.x + area.width).saturating_sub(w).max(area.x);
     let max_y = (area.y + area.height).saturating_sub(h).max(area.y);
     Rect {
@@ -3465,7 +3493,7 @@ mod tests {
     #[tokio::test]
     async fn menu_release_in_place_cancels() {
         // Accidental-click safety: open then release WITHOUT dragging onto an item does
-        // nothing. The box opens below the pointer with no item pre-selected, so the
+        // nothing. The pointer lands on the title row with no item pre-selected, so the
         // release lands off every item.
         let mut h = Harness::new(sample());
         let idx = row_index(&h, |r| matches!(r, RowRef::Session(s) if s.name == "build"));
@@ -3477,16 +3505,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn menu_opens_below_the_pointer_not_under_it() {
-        // The box must not sit under the pointer: an accidental right-click should land
-        // on empty space above the menu.
+    async fn menu_title_row_sits_on_the_pointer() {
+        // tmux-style: the title row (top border) lands on the click row, and no item is
+        // pre-selected under the pointer — an accidental right-click releases off every item.
         let mut h = Harness::new(sample());
         let idx = row_index(&h, |r| matches!(r, RowRef::Session(s) if s.name == "build"));
         let (x, y) = row_screen_pos(&h, idx);
         assert!(h.sw.menu_open(x, y));
-        let rect = h.sw.menu.as_ref().unwrap().rect;
-        assert!(rect.y > y, "the box opens below the click row");
-        assert!(!h.sw.menu.as_ref().unwrap().contains(x, y), "the pointer is not inside the box");
+        let menu = h.sw.menu.as_ref().unwrap();
+        assert_eq!(menu.rect.y, y, "the title row sits on the click row");
+        assert_eq!(menu.item_at(x, y), None, "no item under the pointer");
     }
 
     #[tokio::test]
@@ -3952,23 +3980,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn footer_and_input_live_under_the_tree_only() {
+    async fn input_pane_is_full_width_at_the_screen_bottom() {
         let mut h = Harness::new(sample());
         h.ch('/').await; // open the filter input
         let buf = h.buf();
+        let w = buf.area.width;
         let last = buf.area.height - 1;
-        // The footer renders in the LEFT (tree) column only:
-        assert!(
-            (0..TREE_WIDTH).any(|x| buf[(x, last)].symbol() != " "),
-            "footer renders in the tree column"
-        );
-        // The divider spans the FULL height — the divider and terminal column
-        // span all rows; the footer is confined to the tree column.
-        assert_eq!(
+        // The entry field is the very bottom row and spans the FULL width — it runs UNDER
+        // the tree|mux divider column (not confined to the tree column like the footer).
+        let bottom: String = (0..w).map(|x| buf[(x, last)].symbol()).collect();
+        assert!(bottom.contains('❯'), "entry field on the bottom row:\n{bottom}");
+        assert_ne!(
             buf[(TREE_WIDTH, last)].symbol(),
             "│",
-            "divider spans the full height; footer is confined to the tree column"
+            "the full-width input pane runs under the divider; the divider stops above it"
         );
+        // A full-width horizontal rule separates the input pane from the panes above it.
+        let has_rule = (0..last)
+            .any(|y| (0..w).filter(|&x| buf[(x, y)].symbol() == "─").count() > w as usize / 2);
+        assert!(has_rule, "a full-width divider sits above the input pane");
+        // The help footer still lives in the tree column (not on the bottom row).
+        let footer_in_tree = (0..last).any(|y| {
+            (0..TREE_WIDTH)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                .contains("quit")
+        });
+        assert!(footer_in_tree, "the help footer stays in the tree column");
     }
 
     #[tokio::test]
@@ -4026,21 +4064,22 @@ mod tests {
         use ratatui::{backend::TestBackend, Terminal};
         let mut sw = Switcher::new(sample());
         sw.open_input(InputMode::Filter);
-        let mut term = Terminal::new(TestBackend::new(40, 12)).unwrap();
-        term.draw(|f| sw.render(f, None, false, 20)).unwrap();
+        // The input pane spans the FULL width, so narrow the whole terminal to force a wrap.
+        let mut term = Terminal::new(TestBackend::new(24, 12)).unwrap();
+        term.draw(|f| sw.render(f, None, false, 10)).unwrap();
         let buf = term.backend().buffer();
-        // At a 20-col tree a single line would clip the tail; wrapping must keep both the
-        // start and the tail of the description visible across rows.
-        let mut col = String::new();
+        let w = buf.area.width;
+        let mut all = String::new();
         for y in 0..buf.area.height {
-            for x in 0..20 {
-                col.push_str(buf[(x, y)].symbol());
+            for x in 0..w {
+                all.push_str(buf[(x, y)].symbol());
             }
-            col.push('\n');
+            all.push('\n');
         }
-        assert!(col.contains("filter"), "description start present:\n{col}");
-        assert!(col.contains("cancel"), "description tail wrapped, not clipped:\n{col}");
-        assert!(col.contains('❯'), "entry prompt present:\n{col}");
+        // At 24 cols a single line would clip the tail; wrapping keeps both ends visible.
+        assert!(all.contains("filter"), "description start present:\n{all}");
+        assert!(all.contains("cancel"), "description tail wrapped, not clipped:\n{all}");
+        assert!(all.contains('❯'), "entry prompt present:\n{all}");
     }
 
     #[tokio::test]
