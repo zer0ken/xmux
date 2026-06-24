@@ -1057,7 +1057,7 @@ impl Switcher {
             InputMode::Filter => {
                 self.input = Some(Input {
                     mode,
-                    label: " filter: ".into(),
+                    label: " filter sessions".into(),
                     buffer: self.filter.clone(),
                     source: None,
                     sess: None,
@@ -1072,7 +1072,7 @@ impl Switcher {
                     Some(RowRef::Session(sess)) => {
                         self.input = Some(Input {
                             mode,
-                            label: " rename to: ".into(),
+                            label: " rename session".into(),
                             buffer: sess.name.clone(),
                             source: None,
                             sess: Some(sess),
@@ -1084,7 +1084,7 @@ impl Switcher {
                         let target = crate::mux::window_target(&sess.name, window);
                         self.input = Some(Input {
                             mode,
-                            label: " rename window to: ".into(),
+                            label: " rename window".into(),
                             buffer: win_name,
                             source: Some(sess.source.clone()),
                             sess: Some(sess),
@@ -1115,7 +1115,7 @@ impl Switcher {
         self.input = match reference {
             RowRef::Host { source, .. } => Some(Input {
                 mode: InputMode::New,
-                label: " new session name (empty = auto): ".into(),
+                label: " new session name (empty = auto)".into(),
                 buffer: String::new(),
                 source: Some(source),
                 sess: None,
@@ -1123,7 +1123,7 @@ impl Switcher {
             }),
             RowRef::Session(sess) => Some(Input {
                 mode: InputMode::NewWindow,
-                label: format!(" new window in {} (name optional): ", sess.name),
+                label: format!(" new window in {} (name optional)", sess.name),
                 buffer: String::new(),
                 source: Some(sess.source.clone()),
                 sess: Some(sess),
@@ -1133,7 +1133,7 @@ impl Switcher {
                 let target = format!("{}:{}", sess.name, window);
                 Some(Input {
                     mode: InputMode::SplitWindow,
-                    label: " split [v]ertical / [h]orizontal (default v): ".into(),
+                    label: " split [v]ertical / [h]orizontal (default v)".into(),
                     buffer: String::new(),
                     source: Some(sess.source.clone()),
                     sess: Some(sess),
@@ -1708,18 +1708,28 @@ impl Switcher {
             Constraint::Min(0),
         ])
         .split(area);
-        let input_h = if self.input.is_some() { 1 } else { 0 };
-        let left = Layout::vertical([
-            Constraint::Min(0),
-            Constraint::Length(input_h),
-            Constraint::Length(1),
-        ])
-        .split(cols[0]);
-        self.render_tree(frame, left[0]);
-        if input_h == 1 {
-            self.render_input(frame, left[1]);
+        // The bottom of the tree column is EITHER the active input prompt OR the
+        // footer/help line. An active input is a two-line element: its description on
+        // the upper line, the entry field on the very bottom line (replacing the help
+        // line); Esc cancels it. See `render_input`.
+        if self.input.is_some() {
+            let left = Layout::vertical([
+                Constraint::Min(0),    // tree
+                Constraint::Length(1), // input description
+                Constraint::Length(1), // input prompt (bottom line)
+            ])
+            .split(cols[0]);
+            self.render_tree(frame, left[0]);
+            self.render_input(frame, left[1], left[2]);
+        } else {
+            let left = Layout::vertical([
+                Constraint::Min(0),    // tree
+                Constraint::Length(1), // footer (help / status)
+            ])
+            .split(cols[0]);
+            self.render_tree(frame, left[0]);
+            self.render_footer(frame, left[1]);
         }
-        self.render_footer(frame, left[2]);
         self.render_divider(frame, cols[1], terminal_focused);
         let term_area = cols[2];
         // An unreachable host has no live grid; show an info panel (ssh config stanza
@@ -1905,10 +1915,16 @@ impl Switcher {
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
     }
 
-    fn render_input(&self, frame: &mut Frame, area: Rect) {
+    /// The shared two-line input prompt every input-requiring action uses: `desc_area`
+    /// (upper) explains the action and that Esc cancels; `prompt_area` (the bottom line)
+    /// is the entry field. One function keeps every prompt uniform.
+    fn render_input(&self, frame: &mut Frame, desc_area: Rect, prompt_area: Rect) {
         if let Some(input) = &self.input {
-            let line = format!("{}{}", input.label, input.buffer);
-            frame.render_widget(Paragraph::new(line), area);
+            frame.render_widget(
+                Paragraph::new(format!("{} · Esc to cancel", input.label)).dim(),
+                desc_area,
+            );
+            frame.render_widget(Paragraph::new(format!(" ❯ {}", input.buffer)), prompt_area);
         }
     }
 
@@ -3875,6 +3891,34 @@ mod tests {
             "│",
             "divider spans the full height; footer is confined to the tree column"
         );
+    }
+
+    #[tokio::test]
+    async fn input_prompt_is_two_lines_at_the_bottom_with_esc_hint() {
+        let mut h = Harness::new(sample());
+        h.key(KeyCode::Home).await; // a reachable host row
+        h.ch('n').await; // open the "new session name" input
+        assert!(h.sw.is_inputting(), "n on a host opens the name input");
+        let buf = h.buf();
+        let last = buf.area.height - 1;
+        // Bottom line = the entry field (the ❯ prompt marker), in the tree column.
+        let prompt: String = (0..TREE_WIDTH).map(|x| buf[(x, last)].symbol()).collect();
+        assert!(prompt.contains('❯'), "bottom line is the entry prompt:\n{prompt}");
+        // The line directly above = the description + the Esc-cancel hint.
+        let desc: String = (0..TREE_WIDTH).map(|x| buf[(x, last - 1)].symbol()).collect();
+        assert!(desc.contains("new session"), "description explains the input:\n{desc}");
+        assert!(desc.contains("Esc to cancel"), "description shows Esc cancels:\n{desc}");
+    }
+
+    #[tokio::test]
+    async fn input_esc_cancels_without_acting() {
+        let mut h = Harness::new(sample());
+        h.key(KeyCode::Home).await;
+        h.ch('n').await;
+        assert!(h.sw.is_inputting(), "input open");
+        h.key(KeyCode::Esc).await;
+        assert!(!h.sw.is_inputting(), "Esc closes the input");
+        assert!(h.ops.created.lock().unwrap().is_empty(), "Esc must not create anything");
     }
 
     #[tokio::test]
