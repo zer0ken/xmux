@@ -9,7 +9,7 @@ pub mod plan;
 pub mod server_model;
 pub mod transport;
 
-pub use mux::Mux;
+pub use mux::{for_binary, Mux, Psmux, Tmux};
 pub use plan::{DeathSignal, DisplayTty, EventSource, SwitchPlan};
 pub use server_model::ServerModel;
 pub use transport::{LoweredSwitch, Transport};

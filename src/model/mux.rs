@@ -193,6 +193,17 @@ impl Mux for Psmux {
     fn rename_window_plan(&self, target: &str, new: &str) -> Vec<String> { mux::rename_window("psmux", target, new) }
 }
 
+/// Picks a mux backend by binary name. Exactly two backends — no config/dynamic
+/// plugin runtime. `"psmux"` ⇒ per-session psmux; anything else ⇒ shared tmux
+/// (matching the tmux default in `Config::local_bin` / `host_specs`).
+pub fn for_binary(bin: &str) -> Box<dyn Mux> {
+    if bin == "psmux" {
+        Box::new(Psmux)
+    } else {
+        Box::new(Tmux)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,5 +321,16 @@ mod tests {
         assert_eq!(Psmux.list_panes_plan("work"), mux::list_panes("psmux", "work"));
         assert_eq!(Psmux.select_window_plan("work:1"), mux::select_window("psmux", "work:1"));
         assert_eq!(Psmux.new_window_plan("work", "logs"), mux::new_window("psmux", "work", "logs"));
+    }
+
+    #[test]
+    fn for_binary_picks_psmux_else_tmux() {
+        assert_eq!(for_binary("psmux").kind(), "psmux");
+        assert_eq!(for_binary("psmux").server_model(), ServerModel::PerSession);
+        assert_eq!(for_binary("tmux").kind(), "tmux");
+        assert_eq!(for_binary("tmux").server_model(), ServerModel::Shared);
+        // Any non-psmux binary defaults to tmux (matches Config::local_bin's default).
+        assert_eq!(for_binary("").kind(), "tmux");
+        assert_eq!(for_binary("some-fork-of-tmux").kind(), "tmux");
     }
 }
