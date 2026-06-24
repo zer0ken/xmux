@@ -66,6 +66,10 @@ pub enum HostEvent {
     /// unless the cursor is on a window row of that session — see
     /// [`crate::ui::switcher::Switcher::select_window`]).
     Focus { host: String, session: String, window: i64 },
+    /// A `list-clients` probe resolved: this host's display-client tty (or `None`
+    /// when no display client is attached yet). The supervisor stores it on
+    /// `Host.display_tty`.
+    DisplayTty { host: String, tty: Option<String> },
     /// `%exit` / EOF — reap.
     Exited { host: String, reason: Option<String> },
 }
@@ -86,6 +90,11 @@ pub enum PendingReply {
     /// An active-window probe for `session`: its block body is the active window
     /// index, resolved into a [`HostEvent::Focus`].
     ActiveWindow { session: String },
+    /// A `list-clients -F '#{client_tty} #{client_flags}'` probe: the block body's
+    /// non-control client tty is xmux's own display attach, resolved into a
+    /// [`HostEvent::DisplayTty`]. Captures the tty IN MEMORY (no `/tmp` file) so a
+    /// later `switch-client -c <tty>` targets xmux's own display client only.
+    DisplayClientTty,
     Ignore,
 }
 
@@ -97,6 +106,36 @@ pub fn active_window_query_line(session: &str) -> String {
         "display-message -p -t {} '#{{window_index}}'\n",
         crate::mux::quote_target(session)
     )
+}
+
+/// The control-mode command line that lists each client's tty and flags
+/// (`list-clients -F '#{client_tty} #{client_flags}'`). Pure so the wire format is
+/// unit-tested. The reply lets the reader pick xmux's OWN display client by the
+/// absence of the `control-mode` flag.
+pub fn display_tty_query_line() -> String {
+    "list-clients -F '#{client_tty} #{client_flags}'\n".to_string()
+}
+
+/// Picks xmux's display-client tty from a `list-clients` block body. Each line is
+/// `<client_tty> <client_flags>`; the display attach is the client whose flags do
+/// NOT contain `control-mode` (that flag marks the `-CC` metadata connection). This
+/// is the identity rule frozen `switch_client_remote_cmd` (source.rs:265) states,
+/// applied at capture so a multi-client reply resolves deterministically — never
+/// "the first line."
+fn display_client_tty(body: &[String]) -> Option<String> {
+    body.iter().find_map(|line| {
+        let line = line.trim();
+        if line.is_empty() {
+            return None;
+        }
+        let mut parts = line.splitn(2, ' ');
+        let tty = parts.next()?;
+        let flags = parts.next().unwrap_or("");
+        if flags.split(',').any(|f| f == "control-mode") {
+            return None;
+        }
+        Some(tty.to_string())
+    })
 }
 
 /// Runs the line state machine over `lines` (an `Iterator<Item=String>` of stdout
@@ -218,6 +257,12 @@ fn resolve_block<E: FnMut(HostEvent)>(
                     window,
                 });
             }
+        }
+        PendingReply::DisplayClientTty => {
+            emit(HostEvent::DisplayTty {
+                host: host.to_string(),
+                tty: display_client_tty(body),
+            });
         }
         PendingReply::Ignore => {}
     }
@@ -499,6 +544,17 @@ impl HostClient {
             reply: PendingReply::ActiveWindow {
                 session: session.to_string(),
             },
+        });
+    }
+
+    /// Probes this control client's display tty (`list-clients -F '#{client_tty}
+    /// #{client_flags}'`). The reply resolves to a [`HostEvent::DisplayTty`] the
+    /// supervisor stores on the host, so a `switch-client -c <tty>` targets xmux's
+    /// own display client only — captured in memory, never via a `/tmp` file.
+    pub fn capture_display_tty(&self) {
+        let _ = self.cmd_tx.send(HostCmd::Query {
+            line: display_tty_query_line(),
+            reply: PendingReply::DisplayClientTty,
         });
     }
 
@@ -1112,5 +1168,73 @@ mod tests {
         mgr.insert_fake("jupiter06");
         mgr.reap("jupiter06");
         assert!(mgr.get("jupiter06").is_none(), "reaped client is dropped");
+    }
+
+    #[test]
+    fn display_tty_query_line_lists_client_tty_and_flags() {
+        assert_eq!(
+            display_tty_query_line(),
+            "list-clients -F '#{client_tty} #{client_flags}'\n"
+        );
+    }
+
+    #[test]
+    fn display_client_tty_picks_the_non_control_client_with_many_clients() {
+        // list-clients prints one "<tty> <flags>" line per client. The -CC metadata
+        // connection carries the `control-mode` flag; xmux's display attach does not.
+        // The capture MUST select the display attach's tty regardless of line order,
+        // and MUST ignore an unrelated control client even if it lists first.
+        let body = vec![
+            "/dev/pts/7 control-mode".to_string(), // the -CC metadata client — excluded
+            "/dev/pts/3 active-pane,focused".to_string(), // xmux's display attach — chosen
+        ];
+        assert_eq!(display_client_tty(&body).as_deref(), Some("/dev/pts/3"));
+    }
+
+    #[test]
+    fn display_client_tty_is_none_when_only_a_control_client_is_attached() {
+        // Only the -CC connection is attached (the display attach has not landed yet):
+        // there is no display client, so the capture is None — the Host clears any prior
+        // tty rather than mis-targeting the control client.
+        let body = vec!["/dev/pts/7 control-mode".to_string()];
+        assert_eq!(display_client_tty(&body), None);
+    }
+
+    #[test]
+    fn reader_resolves_display_tty_block_into_event() {
+        let state = test_state(80, 24);
+        let in_flight: InFlight = Default::default();
+        in_flight.lock().unwrap().push_back(PendingReply::DisplayClientTty);
+        let mut events = Vec::new();
+        let lines = vec![
+            "%begin 1 5 1".to_string(),
+            "/dev/pts/7 control-mode".to_string(),
+            "/dev/pts/3 active-pane".to_string(),
+            "%end 1 5 1".to_string(),
+        ]
+        .into_iter();
+        run_reader("jupiter06", lines, &state, &in_flight, |e| events.push(e));
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                HostEvent::DisplayTty { host, tty: Some(t) } if host == "jupiter06" && t == "/dev/pts/3"
+            )),
+            "a list-clients block resolves to the non-control client's tty"
+        );
+    }
+
+    #[test]
+    fn reader_empty_display_tty_block_emits_none() {
+        // No clients at all: the block is empty, so the event carries None.
+        let state = test_state(80, 24);
+        let in_flight: InFlight = Default::default();
+        in_flight.lock().unwrap().push_back(PendingReply::DisplayClientTty);
+        let mut events = Vec::new();
+        let lines = vec!["%begin 1 5 1".to_string(), "%end 1 5 1".to_string()].into_iter();
+        run_reader("jupiter06", lines, &state, &in_flight, |e| events.push(e));
+        assert!(
+            events.iter().any(|e| matches!(e, HostEvent::DisplayTty { tty: None, .. })),
+            "an empty list-clients block resolves to DisplayTty(None)"
+        );
     }
 }
