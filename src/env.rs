@@ -40,7 +40,7 @@ fn config_path() -> PathBuf {
     home_dir().join(".config").join("xmux").join("config.toml")
 }
 
-fn ssh_config_path() -> PathBuf {
+pub(crate) fn ssh_config_path() -> PathBuf {
     home_dir().join(".ssh").join("config")
 }
 

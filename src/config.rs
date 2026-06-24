@@ -238,6 +238,41 @@ pub fn ssh_host_aliases(path: &Path) -> Vec<String> {
     aliases
 }
 
+/// Returns the raw ssh-config stanza(s) that name `alias`: every `Host`/`Match`
+/// block whose header line lists `alias` as a whitespace token, joined with a blank
+/// line between blocks. A stanza runs from its `Host`/`Match` header to the next
+/// header (or EOF). Display text only — Match-resolved values (e.g. an exec-chosen
+/// HostName) are NOT computed; the literal config lines are shown. Empty when no
+/// block names the alias.
+pub fn host_stanza(config_text: &str, alias: &str) -> String {
+    let is_header = |l: &str| {
+        l.split_whitespace()
+            .next()
+            .is_some_and(|w| w.eq_ignore_ascii_case("Host") || w.eq_ignore_ascii_case("Match"))
+    };
+    let names_alias = |l: &str| l.split_whitespace().skip(1).any(|tok| tok == alias);
+
+    let lines: Vec<&str> = config_text.lines().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if is_header(lines[i]) && names_alias(lines[i]) {
+            if !out.is_empty() {
+                out.push(String::new());
+            }
+            out.push(lines[i].trim_end().to_string());
+            i += 1;
+            while i < lines.len() && !is_header(lines[i]) {
+                out.push(lines[i].trim_end().to_string());
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -523,6 +558,19 @@ bogus = "nope"
         // Explicit false.
         let path = write_temp("[ui]\nauto-hide-tree = false\n", "autohide-false.toml");
         assert!(!load(&path).unwrap().ui_auto_hide_tree());
+    }
+
+    #[test]
+    fn host_stanza_extracts_matching_blocks() {
+        let cfg = "Match originalhost jupiter00 exec \"probe 1.2.3.4\"\n    HostName 1.2.3.4\n\nHost jupiter00\n    HostName 143.248.140.120\n    User hrlee\n\nHost other\n    HostName 9.9.9.9\n";
+        let s = host_stanza(cfg, "jupiter00");
+        assert!(s.contains("HostName 143.248.140.120"), "Host block included: {s}");
+        assert!(s.contains("HostName 1.2.3.4"), "Match block also included: {s}");
+        assert!(s.contains("User hrlee"));
+        assert!(!s.contains("9.9.9.9"), "unrelated host excluded: {s}");
+        // Empty config / unknown alias → empty.
+        assert!(host_stanza("", "jupiter00").is_empty());
+        assert!(host_stanza(cfg, "nope").is_empty());
     }
 
     #[test]
