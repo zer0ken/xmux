@@ -1213,9 +1213,10 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     while i < bytes.len() {
                         if let Some((ev, len)) = crate::proxy::mouse::parse_sgr_mouse(&bytes[i..]) {
                             let in_mux = to_grid_local(term_area, ev.col, ev.row);
-                            // A button press (not motion/wheel/release) in the UNFOCUSED pane
-                            // switches focus to that pane — focus only; the click is not
-                            // delivered. Within the focused mux pane, the click forwards.
+                            // A LEFT-button press in the UNFOCUSED pane switches focus to that
+                            // pane — focus only; the click is not delivered. Right-click is
+                            // reserved for the tree context menu, so it never moves focus.
+                            // Within the focused mux pane, the click forwards.
                             let is_press = ev.pressed && (ev.cb & 0x60) == 0;
                             // Wheel events carry the 0x40 bit (cb 64=up, 65=down; +16=Ctrl).
                             let is_wheel = ev.pressed && (ev.cb & 0x40) != 0;
@@ -1331,7 +1332,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                     wheel_scrolled = true;
                                     dirty = true;
                                 }
-                            } else if is_press && app.is_overlay() && in_mux.is_some() {
+                            } else if is_left_press && app.is_overlay() && in_mux.is_some() {
                                 app.toggle(); // tree → mux focus
                                 mouse_focus_toggle = true;
                             } else if is_left_press && app.is_overlay() && in_mux.is_none() {
@@ -1341,7 +1342,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                 switcher.mouse_select(col0, ev.row.saturating_sub(1));
                                 ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows, tree_width);
                                 dirty = true;
-                            } else if is_press && !app.is_overlay() && in_mux.is_none() {
+                            } else if is_left_press && !app.is_overlay() && in_mux.is_none() {
                                 app.toggle(); // mux → tree focus
                                 mouse_focus_toggle = true;
                             } else if !app.is_overlay() {
@@ -2235,8 +2236,9 @@ mod tests {
     // 7. NEVER attach the session that owns xmux (xmux refuses to run inside a mux,
     //    so in normal use no session mirrors the UI).
     // 8. Mouse: dragging never selects native terminal text (the cockpit captures the
-    //    mouse). A button press in the UNFOCUSED pane switches focus to it (focus only —
-    //    the click is not delivered). Once the mux pane is focused, clicks/scroll/
+    //    mouse). A LEFT-button press in the UNFOCUSED pane switches focus to it (focus
+    //    only — the click is not delivered); right-click never moves focus (it opens the
+    //    tree context menu). Once the mux pane is focused, clicks/scroll/
     //    right-click reach the mux (status-bar click, pane select, scroll, context menu).
     //    Mux mouse forwarding requires the mux to have `mouse on` (`set -g mouse on`);
     //    xmux only forwards. (Windows: capture needs ENABLE_VIRTUAL_TERMINAL_INPUT +
