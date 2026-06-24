@@ -13,6 +13,7 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
+use unicode_width::UnicodeWidthStr;
 
 use crate::session::{Pane, Session, WindowPanes};
 use crate::ui::tree::{self, Group};
@@ -209,37 +210,32 @@ enum RowRef {
 }
 
 /// One context-menu entry. The variant drives the action taken on release; the
-/// label is the row text. English to match the rest of the tree UI.
+/// label is the row text. Words match the rest of the tree UI ("focus the mux pane",
+/// "new", "rename", "kill" — never "open"/"split", which are not used elsewhere).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum MenuItem {
-    Open,
+    Focus,
     NewSession,
-    Reconnect,
     NewWindow,
     Rename,
     Kill,
-    SplitVertical,
-    SplitHorizontal,
 }
 
 impl MenuItem {
     fn label(self) -> &'static str {
         match self {
-            MenuItem::Open => "open",
+            MenuItem::Focus => "focus",
             MenuItem::NewSession => "new session",
-            MenuItem::Reconnect => "reconnect",
             MenuItem::NewWindow => "new window",
             MenuItem::Rename => "rename",
             MenuItem::Kill => "kill",
-            MenuItem::SplitVertical => "split vertical",
-            MenuItem::SplitHorizontal => "split horizontal",
         }
     }
 }
 
 /// What the cockpit must do after a menu release. Most items are handled inside the
-/// switcher (they open an input, arm a kill, or queue an op); `FocusTerminal` is the
-/// one outcome the cockpit owns (the "open" item moves focus to the mux pane).
+/// switcher (they open an input or arm a kill); `FocusTerminal` is the one outcome the
+/// cockpit owns (the "focus" item moves focus to the mux pane).
 pub enum MenuOutcome {
     None,
     Handled,
@@ -248,23 +244,37 @@ pub enum MenuOutcome {
 
 /// An open right-click context menu. `target` is the node it acts on, re-located by
 /// identity at release so a tree rebuild during the brief hold cannot misfire on a
-/// stale row. `rect` is the bordered box in 0-based screen coords; `hovered` is the
-/// item under the mouse, or None (released there = cancel).
+/// stale row. `title` names that node (shown in the box's top border, like tmux's
+/// menu title — so the menu reads as "actions for <this node>"). `rect` is the
+/// bordered box in 0-based screen coords; `hovered` is the highlighted item.
 struct Menu {
     target: RowRef,
+    title: String,
     rect: Rect,
     items: Vec<MenuItem>,
     hovered: Option<usize>,
 }
 
 /// The menu entries for a node, by type. Non-selectable rows (pane/loading) get none.
+/// `focus` is first so a press-release with no drag falls on the safe default.
 fn menu_items(target: &RowRef) -> Vec<MenuItem> {
     use MenuItem::*;
     match target {
-        RowRef::Host { .. } => vec![NewSession, Reconnect],
-        RowRef::Session(_) => vec![Open, Rename, Kill, NewWindow],
-        RowRef::Window { .. } => vec![Open, SplitVertical, SplitHorizontal, Rename, Kill],
+        RowRef::Host { .. } => vec![NewSession],
+        RowRef::Session(_) => vec![Focus, NewWindow, Rename, Kill],
+        RowRef::Window { .. } => vec![Focus, Rename, Kill],
         RowRef::Pane | RowRef::Loading => Vec::new(),
+    }
+}
+
+/// The menu's title — the human name of the node it acts on (host alias, session
+/// name, or `session:window`), shown in the box's top border.
+fn menu_title(target: &RowRef) -> String {
+    match target {
+        RowRef::Host { source, .. } => source.clone(),
+        RowRef::Session(s) => s.name.clone(),
+        RowRef::Window { sess, window } => format!("{}:{}", sess.name, window),
+        RowRef::Pane | RowRef::Loading => String::new(),
     }
 }
 
@@ -1554,15 +1564,25 @@ impl Switcher {
         if items.is_empty() {
             return false;
         }
-        let rect = menu_rect(col, row, &items, self.screen_area);
-        self.menu = Some(Menu { target, rect, items, hovered: None });
+        let title = menu_title(&target);
+        let rect = menu_rect(col, row, &items, &title, self.screen_area);
+        // Pre-highlight the first item so a press-release with no drag picks the safe
+        // default (`focus` / `new`) instead of doing nothing — the press lands on the
+        // title border, one row above the first item, so without this it would cancel.
+        self.menu = Some(Menu { target, title, rect, items, hovered: Some(0) });
         true
     }
 
-    /// Mouse moved while the menu is held: set the item under the cursor (or None).
+    /// Mouse moved while the menu is held: highlight the item under the cursor. Over the
+    /// box but off an item (the title border) keeps the current highlight; only dragging
+    /// fully OUTSIDE the box clears it, so releasing there cancels.
     pub fn menu_hover(&mut self, col: u16, row: u16) {
         if let Some(menu) = self.menu.as_mut() {
-            menu.hovered = menu.item_at(col, row);
+            if let Some(i) = menu.item_at(col, row) {
+                menu.hovered = Some(i);
+            } else if !menu.contains(col, row) {
+                menu.hovered = None;
+            }
         }
     }
 
@@ -1585,7 +1605,7 @@ impl Switcher {
         self.user_moved = true;
         self.set_selected(idx);
         match item {
-            MenuItem::Open => MenuOutcome::FocusTerminal,
+            MenuItem::Focus => MenuOutcome::FocusTerminal,
             MenuItem::NewSession | MenuItem::NewWindow => {
                 self.open_new();
                 MenuOutcome::Handled
@@ -1596,18 +1616,6 @@ impl Switcher {
             }
             MenuItem::Kill => {
                 self.arm_kill();
-                MenuOutcome::Handled
-            }
-            MenuItem::Reconnect => {
-                self.request_rescan();
-                MenuOutcome::Handled
-            }
-            MenuItem::SplitVertical | MenuItem::SplitHorizontal => {
-                if let RowRef::Window { sess, window } = &menu.target {
-                    let target = format!("{}:{}", sess.name, window);
-                    let dir = if matches!(item, MenuItem::SplitVertical) { "v" } else { "h" };
-                    self.queue_split(Some(sess.source.clone()), Some(sess.clone()), Some(target), dir);
-                }
                 MenuOutcome::Handled
             }
         }
@@ -1985,18 +1993,12 @@ impl Switcher {
         let w = (inner_w + 3).min(area.width); // borders + a cell of right padding
         let h = (lines.len() as u16 + 2).min(area.height);
         let rect = centered_rect(w, h, area);
-        // Clear one extra cell on each horizontal side so a double-width (CJK) glyph
-        // straddling the box's left/right border edge has its orphaned half wiped too.
-        frame.render_widget(Clear, popup_clear_rect(rect, area));
-        frame.render_widget(
-            Paragraph::new(Text::from(lines)).block(Block::bordered().title(" keys ")),
-            rect,
-        );
+        render_popup(frame, area, rect, "keys", lines);
     }
 
-    /// Draws the open context menu as a bordered popup at its anchored rect, the
-    /// hovered item reversed. Mirrors `render_help`'s popup (Clear behind + a bordered
-    /// Paragraph) but anchored at the click instead of centered.
+    /// Draws the open context menu as a bordered popup at its anchored rect: the target's
+    /// name in the title (like tmux's menu title), the hovered item reversed. Shares the
+    /// opaque, tmux-edge popup renderer with the help overlay.
     fn render_menu(&self, frame: &mut Frame) {
         let Some(menu) = self.menu.as_ref() else {
             return;
@@ -2008,18 +2010,46 @@ impl Switcher {
             .iter()
             .enumerate()
             .map(|(i, it)| {
-                let mut style = Style::default();
-                if menu.hovered == Some(i) {
-                    style = style.add_modifier(Modifier::REVERSED);
-                }
+                let style = if menu.hovered == Some(i) {
+                    Style::default().add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default()
+                };
                 Line::from(Span::styled(format!(" {:<pad$} ", it.label()), style))
             })
             .collect();
-        frame.render_widget(Clear, popup_clear_rect(rect, self.screen_area));
-        frame.render_widget(
-            Paragraph::new(Text::from(lines)).block(Block::bordered()),
-            rect,
-        );
+        render_popup(frame, self.screen_area, rect, &menu.title, lines);
+    }
+}
+
+/// Renders an opaque bordered popup at `rect` (titled, content `lines`), in tmux's
+/// edge style. Two things make it tmux-consistent:
+///
+/// 1. **Opaque, no margin.** The box is filled with the reset (default) style so the
+///    mux grid's background colours behind it cannot bleed through, and ONLY `rect`
+///    itself is cleared — there is no blanket one-cell margin around the box, so
+///    half-width neighbours sit flush against the border.
+/// 2. **Wide-glyph edge handling.** A double-width (CJK) glyph whose right half the
+///    LEFT border now covers would otherwise leave its orphaned left half rendering
+///    as a broken glyph just outside the box. That single cell is blanked — and only
+///    that cell, only when it is actually a wide glyph. The right edge needs no fixup:
+///    ratatui stores a wide char as `[glyph][space]`, so a glyph whose lead the box
+///    covers leaves only its already-blank continuation outside.
+fn render_popup(frame: &mut Frame, area: Rect, rect: Rect, title: &str, lines: Vec<Line>) {
+    frame.render_widget(Clear, rect);
+    let block = Block::bordered()
+        .title(format!(" {title} "))
+        .style(Style::reset());
+    frame.render_widget(Paragraph::new(Text::from(lines)).block(block), rect);
+    if rect.x > area.x {
+        let x = rect.x - 1;
+        let y_end = (rect.y + rect.height).min(area.y + area.height);
+        let buf = frame.buffer_mut();
+        for y in rect.y..y_end {
+            if buf[(x, y)].symbol().width() > 1 {
+                buf[(x, y)].set_symbol(" ");
+            }
+        }
     }
 }
 
@@ -2096,14 +2126,25 @@ impl Menu {
         let i = (row - self.rect.y - 1) as usize;
         (i < self.items.len()).then_some(i)
     }
+
+    /// Whether 0-based screen (col,row) is anywhere inside the box (border included).
+    /// Used to keep the highlight while the cursor is over the title border but off an
+    /// item — only dragging fully outside the box clears it.
+    fn contains(&self, col: u16, row: u16) -> bool {
+        col >= self.rect.x
+            && col < self.rect.x + self.rect.width
+            && row >= self.rect.y
+            && row < self.rect.y + self.rect.height
+    }
 }
 
-/// The bordered menu box for an anchor at 0-based screen (col,row): sized to the
-/// widest label (+ borders + a pad cell each side) and item count, clamped so it
-/// stays fully inside `area` (shifts up/left near the bottom/right edge).
-fn menu_rect(col: u16, row: u16, items: &[MenuItem], area: Rect) -> Rect {
-    let inner_w = items.iter().map(|it| it.label().chars().count()).max().unwrap_or(0) as u16;
-    let w = (inner_w + 4).min(area.width.max(1));
+/// The bordered menu box for an anchor at 0-based screen (col,row): sized to the wider
+/// of the widest item label (+ a pad cell each side) and the title, plus borders, and
+/// the item count; clamped so it stays fully inside `area` (shifts up/left near an edge).
+fn menu_rect(col: u16, row: u16, items: &[MenuItem], title: &str, area: Rect) -> Rect {
+    let item_w = items.iter().map(|it| it.label().chars().count()).max().unwrap_or(0);
+    let content_w = (item_w + 2).max(title.chars().count()) as u16;
+    let w = (content_w + 2).min(area.width.max(1));
     let h = (items.len() as u16 + 2).min(area.height.max(1));
     let max_x = (area.x + area.width).saturating_sub(w).max(area.x);
     let max_y = (area.y + area.height).saturating_sub(h).max(area.y);
@@ -2125,21 +2166,6 @@ fn centered_rect(w: u16, h: u16, area: Rect) -> Rect {
         y,
         width: w,
         height: h,
-    }
-}
-
-/// The region to `Clear` behind a popup: the box plus one half-width cell of margin
-/// on each horizontal side, clamped to `area`. The margin wipes a double-width (CJK)
-/// glyph straddling the box's left/right border edge, whose orphaned half would
-/// otherwise render as garbage beside the box.
-fn popup_clear_rect(box_rect: Rect, area: Rect) -> Rect {
-    let x = box_rect.x.saturating_sub(1).max(area.x);
-    let right = (box_rect.x + box_rect.width + 1).min(area.x + area.width);
-    Rect {
-        x,
-        y: box_rect.y,
-        width: right.saturating_sub(x),
-        height: box_rect.height,
     }
 }
 
@@ -3237,16 +3263,16 @@ mod tests {
     fn menu_items_by_row_type() {
         use super::MenuItem::*;
         let host = RowRef::Host { source: "h".into(), unreachable: false };
-        assert_eq!(menu_items(&host), vec![NewSession, Reconnect]);
+        assert_eq!(menu_items(&host), vec![NewSession]);
 
         let s = sess("h", "api", 1, false, 0);
         assert_eq!(
             menu_items(&RowRef::Session(s.clone())),
-            vec![Open, Rename, Kill, NewWindow]
+            vec![Focus, NewWindow, Rename, Kill]
         );
         assert_eq!(
             menu_items(&RowRef::Window { sess: s, window: 1 }),
-            vec![Open, SplitVertical, SplitHorizontal, Rename, Kill]
+            vec![Focus, Rename, Kill]
         );
         assert!(menu_items(&RowRef::Pane).is_empty());
         assert!(menu_items(&RowRef::Loading).is_empty());
@@ -3288,20 +3314,32 @@ mod tests {
         let idx = row_index(&h, |r| matches!(r, RowRef::Session(_)));
         let (x, y) = row_screen_pos(&h, idx);
         h.sw.menu_open(x, y);
-        // No hover set → released off-menu → cancel.
+        // Drag fully outside the box → highlight clears → release cancels.
+        h.sw.menu_hover(99, 29);
         assert!(matches!(h.sw.menu_release(), MenuOutcome::None));
         assert!(!h.sw.menu_active(), "menu closes on release");
         assert!(h.sw.input.is_none() && h.sw.pending_kill.is_none(), "nothing happened");
     }
 
     #[tokio::test]
-    async fn menu_release_open_focuses_terminal_and_selects_target() {
+    async fn menu_release_in_place_picks_the_first_item() {
+        // Press-release with no drag falls on the pre-highlighted first item (focus),
+        // not a no-op — the fix for "new session / focus did nothing".
+        let mut h = Harness::new(sample());
+        let idx = row_index(&h, |r| matches!(r, RowRef::Session(s) if s.name == "build"));
+        let (x, y) = row_screen_pos(&h, idx);
+        assert!(h.sw.menu_open(x, y));
+        assert!(matches!(h.sw.menu_release(), MenuOutcome::FocusTerminal), "first item = focus");
+    }
+
+    #[tokio::test]
+    async fn menu_release_focus_focuses_terminal_and_selects_target() {
         let mut h = Harness::new(sample());
         let s = sess("local", "build", 1, false, 100);
         let target = RowRef::Session(s);
         let items = menu_items(&target);
-        let open_at = items.iter().position(|i| *i == MenuItem::Open).unwrap();
-        h.sw.menu = Some(Menu { target, rect: Rect::new(0, 0, 20, 7), items, hovered: Some(open_at) });
+        let focus_at = items.iter().position(|i| *i == MenuItem::Focus).unwrap();
+        h.sw.menu = Some(Menu { target, title: String::new(), rect: Rect::new(0, 0, 20, 7), items, hovered: Some(focus_at) });
         assert!(matches!(h.sw.menu_release(), MenuOutcome::FocusTerminal));
         assert_eq!(cur_session_name(&h).as_deref(), Some("build"), "cursor moved to target");
     }
@@ -3312,7 +3350,7 @@ mod tests {
         let target = RowRef::Session(sess("local", "build", 1, false, 100));
         let items = menu_items(&target);
         let at = items.iter().position(|i| *i == MenuItem::Rename).unwrap();
-        h.sw.menu = Some(Menu { target, rect: Rect::new(0, 0, 20, 7), items, hovered: Some(at) });
+        h.sw.menu = Some(Menu { target, title: String::new(), rect: Rect::new(0, 0, 20, 7), items, hovered: Some(at) });
         assert!(matches!(h.sw.menu_release(), MenuOutcome::Handled));
         assert!(h.sw.is_inputting(), "rename opens the inline input");
     }
@@ -3323,45 +3361,27 @@ mod tests {
         let target = RowRef::Session(sess("local", "build", 1, false, 100));
         let items = menu_items(&target);
         let at = items.iter().position(|i| *i == MenuItem::Kill).unwrap();
-        h.sw.menu = Some(Menu { target, rect: Rect::new(0, 0, 20, 7), items, hovered: Some(at) });
+        h.sw.menu = Some(Menu { target, title: String::new(), rect: Rect::new(0, 0, 20, 7), items, hovered: Some(at) });
         assert!(matches!(h.sw.menu_release(), MenuOutcome::Handled));
         assert!(h.sw.pending_kill.is_some(), "kill arms the y/n confirm");
     }
 
     #[tokio::test]
-    async fn menu_release_split_vertical_queues_op() {
+    async fn menu_release_window_focus_selects_window() {
         let mut h = Harness::new(sample());
         let s = sess("local", "editor", 2, true, 200);
         let target = RowRef::Window { sess: s, window: 2 };
         let items = menu_items(&target);
-        let at = items.iter().position(|i| *i == MenuItem::SplitVertical).unwrap();
-        h.sw.menu = Some(Menu { target, rect: Rect::new(0, 0, 20, 7), items, hovered: Some(at) });
-        assert!(matches!(h.sw.menu_release(), MenuOutcome::Handled));
-        match h.sw.take_pending_op() {
-            Some(PendingOp::SplitWindow { target, vertical, .. }) => {
-                assert_eq!(target, "editor:2");
-                assert!(vertical, "split vertical");
-            }
-            other => panic!("expected a vertical SplitWindow op, got {other:?}"),
-        }
+        let at = items.iter().position(|i| *i == MenuItem::Focus).unwrap();
+        h.sw.menu = Some(Menu { target, title: String::new(), rect: Rect::new(0, 0, 20, 7), items, hovered: Some(at) });
+        // A window row offers focus / rename / kill — no split.
+        assert!(!items_have_split(&menu_items(&RowRef::Window { sess: sess("local", "editor", 2, true, 200), window: 2 })));
+        assert!(matches!(h.sw.menu_release(), MenuOutcome::FocusTerminal));
     }
 
-    #[tokio::test]
-    async fn menu_release_split_horizontal_queues_op() {
-        let mut h = Harness::new(sample());
-        let s = sess("local", "editor", 2, true, 200);
-        let target = RowRef::Window { sess: s, window: 1 };
-        let items = menu_items(&target);
-        let at = items.iter().position(|i| *i == MenuItem::SplitHorizontal).unwrap();
-        h.sw.menu = Some(Menu { target, rect: Rect::new(0, 0, 20, 7), items, hovered: Some(at) });
-        assert!(matches!(h.sw.menu_release(), MenuOutcome::Handled));
-        match h.sw.take_pending_op() {
-            Some(PendingOp::SplitWindow { target, vertical, .. }) => {
-                assert_eq!(target, "editor:1");
-                assert!(!vertical, "split horizontal");
-            }
-            other => panic!("expected a horizontal SplitWindow op, got {other:?}"),
-        }
+    fn items_have_split(items: &[MenuItem]) -> bool {
+        // Split was deliberately removed from the menu; this guards the regression.
+        items.iter().any(|i| i.label().contains("split"))
     }
 
     #[tokio::test]
@@ -3373,7 +3393,7 @@ mod tests {
         // A host menu's first item (new session) opens an input.
         let target = RowRef::Host { source: "local".into(), unreachable: false };
         let items = menu_items(&target);
-        h.sw.menu = Some(Menu { target, rect: Rect::new(0, 0, 20, 4), items, hovered: Some(0) });
+        h.sw.menu = Some(Menu { target, title: String::new(), rect: Rect::new(0, 0, 20, 4), items, hovered: Some(0) });
         assert!(matches!(h.sw.menu_release(), MenuOutcome::Handled), "new session opens an input");
         assert!(h.sw.is_inputting());
     }
@@ -3384,7 +3404,7 @@ mod tests {
         // A target that does not exist in the tree (rebuilt away during the hold).
         let target = RowRef::Session(sess("local", "ghost", 1, false, 0));
         let items = menu_items(&target);
-        h.sw.menu = Some(Menu { target, rect: Rect::new(0, 0, 20, 7), items, hovered: Some(0) });
+        h.sw.menu = Some(Menu { target, title: String::new(), rect: Rect::new(0, 0, 20, 7), items, hovered: Some(0) });
         assert!(matches!(h.sw.menu_release(), MenuOutcome::None), "gone target → no-op");
     }
 
@@ -3392,25 +3412,34 @@ mod tests {
     fn menu_rect_clamps_into_screen() {
         use super::MenuItem::*;
         let area = Rect::new(0, 0, 80, 24);
-        let items = [Open, Rename, Kill];
+        let items = [Focus, Rename, Kill];
         // Anchored near the bottom-right corner → shifted up/left to stay on-screen.
-        let r = menu_rect(78, 23, &items, area);
+        let r = menu_rect(78, 23, &items, "editor", area);
         assert!(r.x + r.width <= area.width, "box stays within the right edge");
         assert!(r.y + r.height <= area.height, "box stays within the bottom edge");
     }
 
+    #[test]
+    fn menu_rect_fits_a_title_wider_than_the_items() {
+        use super::MenuItem::*;
+        let area = Rect::new(0, 0, 80, 24);
+        let r = menu_rect(0, 0, &[Focus], "a-very-long-session-name", area);
+        assert!(r.width as usize >= "a-very-long-session-name".len() + 2, "title fits in the box");
+    }
+
     #[tokio::test]
-    async fn menu_renders_with_hovered_item_reversed() {
+    async fn menu_renders_title_and_hovered_item_reversed() {
         use super::MenuItem::*;
         let mut h = Harness::new(sample());
         let target = RowRef::Session(sess("local", "build", 1, false, 100));
-        let items = vec![Open, Rename, Kill, NewWindow];
+        let items = vec![Focus, Rename, Kill, NewWindow];
         // Box at a known spot; hover the second item (rename).
-        h.sw.menu = Some(Menu { target, rect: Rect::new(2, 2, 18, 6), items, hovered: Some(1) });
+        h.sw.menu = Some(Menu { target, title: "build".into(), rect: Rect::new(2, 2, 18, 6), items, hovered: Some(1) });
         h.draw();
         let out = h.text();
-        assert!(out.contains("open") && out.contains("rename") && out.contains("kill"),
+        assert!(out.contains("focus") && out.contains("rename") && out.contains("kill"),
             "menu items render:\n{out}");
+        assert!(out.contains("build"), "the menu shows its target's name as the title:\n{out}");
 
         // The hovered row (rename, at box y+1+1 = 4) is reversed across the box interior.
         let buf = h.buf();
@@ -3633,19 +3662,25 @@ mod tests {
     }
 
     #[test]
-    fn popup_clear_rect_adds_one_cell_margin_each_side() {
-        let area = Rect::new(0, 0, 100, 30);
-        let clear = popup_clear_rect(Rect::new(40, 10, 20, 8), area);
-        assert_eq!((clear.x, clear.width), (39, 22), "1-cell margin left and right");
-        assert_eq!((clear.y, clear.height), (10, 8), "vertical extent unchanged");
-    }
-
-    #[test]
-    fn popup_clear_rect_clamps_at_area_edges() {
-        let area = Rect::new(0, 0, 20, 10);
-        // Box flush against both edges: no room for margin → clamps to the area.
-        let clear = popup_clear_rect(Rect::new(0, 0, 20, 10), area);
-        assert_eq!((clear.x, clear.width), (0, 20));
+    fn popup_blanks_only_a_wide_glyph_bisected_by_the_left_border() {
+        // tmux edge behaviour: no blanket margin. A double-width glyph whose right half
+        // the left border covers is blanked (its orphaned half would render broken); a
+        // half-width char at the same edge column stays flush; the box covers opaquely.
+        let backend = TestBackend::new(40, 10);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| {
+            let area = f.area();
+            f.buffer_mut()[(9u16, 3u16)].set_symbol("한"); // wide; right half under the border at x=10
+            f.buffer_mut()[(9u16, 4u16)].set_symbol("Y"); // half-width at the same edge column
+            f.buffer_mut()[(15u16, 4u16)].set_style(Style::default().bg(Color::Red)); // behind the popup
+            let rect = Rect::new(10, 2, 12, 5);
+            render_popup(f, area, rect, "t", vec![Line::from("focus"), Line::from("kill"), Line::from("x")]);
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        assert_eq!(buf[(9u16, 3u16)].symbol(), " ", "wide glyph bisected by the left border is blanked");
+        assert_eq!(buf[(9u16, 4u16)].symbol(), "Y", "a half-width char at the edge stays flush — no margin");
+        assert_eq!(buf[(15u16, 4u16)].bg, Color::Reset, "the popup covers the background colour opaquely");
     }
 
     #[test]
