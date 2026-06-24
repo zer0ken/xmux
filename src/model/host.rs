@@ -7,6 +7,9 @@
 
 use std::collections::HashMap;
 
+use crate::host::HostInventory;
+use crate::model::{DisplayTty, Mux, Transport};
+
 /// Connecting / live / unreachable — replaces the loose `connecting` AtomicBool
 /// (host.rs:334) and the supervisor's `connected: HashSet` tracking (cockpit.rs:1048).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,9 +53,117 @@ impl HostDisplay {
     }
 }
 
+/// A first-class host: one machine reachable by one transport, running one mux,
+/// owning its inventory, its display BOOKKEEPING, its captured display tty, and its
+/// liveness. The single owner of the state previously tied together by the alias
+/// string across `Source` + `HostInventory` + `HostClient` + the supervisor's
+/// host_session/in_flight/reaped_ids maps. The PTYs are NOT here — they live in
+/// `AttachRegistry`/`DisplayWorker`; `Host` owns only the bookkeeping.
+pub struct Host {
+    pub transport: Transport,
+    pub mux: Box<dyn Mux>,
+    /// Live session/window inventory (was `HostInventory`, host.rs:17).
+    pub inventory: HostInventory,
+    /// Which session each display_key shows + what spawn is in flight (Task 2.2).
+    pub display: HostDisplay,
+    /// xmux's own display-client tty, captured in memory (replaces the
+    /// `/tmp/.xmux-cli-<alias>` file). Read by the supervisor to build
+    /// `mux.switch_client_argv(tty, session)`.
+    pub display_tty: DisplayTty,
+    pub liveness: Liveness,
+}
+
+impl Host {
+    /// Builds a host from a transport + mux. Replaces `source::build`'s per-source
+    /// construction (source.rs:460), one host at a time.
+    pub fn new(transport: Transport, mux: Box<dyn Mux>) -> Self {
+        Host {
+            transport,
+            mux,
+            inventory: HostInventory::new(),
+            display: HostDisplay::default(),
+            display_tty: DisplayTty::default(),
+            liveness: Liveness::Connecting,
+        }
+    }
+
+    /// The stable host id (`transport.host_id()`) — was `Source::alias`.
+    pub fn id(&self) -> &str {
+        self.transport.host_id()
+    }
+
+    /// The `AttachRegistry` key for `address` under this host's model — the SINGLE
+    /// definition, replacing the free `display_key` fn (cockpit.rs:245).
+    pub fn display_key(&self, address: &str) -> String {
+        self.mux.server_model().display_key(self.id(), address)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{DeathSignal, EventSource, Mux, ServerModel, SwitchPlan, Transport};
+    use crate::session::Session;
+    use crate::source::RunError;
+
+    /// A minimal in-test mux: only `server_model` is exercised in the early tasks. The
+    /// other methods return trivially since these tasks wire no I/O. Shaped to the
+    /// REVISED `Mux` trait (switch_plan/switch_client_argv, ControlNotice, no lifecycle).
+    struct StubMux(ServerModel);
+
+    #[async_trait::async_trait]
+    impl Mux for StubMux {
+        fn kind(&self) -> &str { "stub" }
+        fn server_model(&self) -> ServerModel { self.0 }
+        async fn enumerate(&self, _t: &Transport) -> Result<Vec<Session>, RunError> { Ok(vec![]) }
+        fn attach_plan(&self, _s: &str, _w: Option<i64>) -> Vec<String> { vec![] }
+        fn switch_plan(&self, _s: &str) -> SwitchPlan { SwitchPlan::PerSessionNoOp }
+        fn switch_client_argv(&self, _tty: &str, _s: &str) -> Vec<String> { vec![] }
+        fn control_argv(&self) -> Option<Vec<String>> { None }
+        fn death_signal(&self) -> DeathSignal { DeathSignal::Eof }
+        fn event_source(&self) -> EventSource { EventSource::Poll { interval_ms: 1500 } }
+        fn list_panes_plan(&self, _s: &str) -> Vec<String> { vec![] }
+        fn new_window_plan(&self, _s: &str, _n: &str) -> Vec<String> { vec![] }
+        fn split_window_plan(&self, _t: &str, _v: bool) -> Vec<String> { vec![] }
+        fn select_window_plan(&self, _t: &str) -> Vec<String> { vec![] }
+        fn kill_window_plan(&self, _t: &str) -> Vec<String> { vec![] }
+        fn rename_window_plan(&self, _t: &str, _n: &str) -> Vec<String> { vec![] }
+    }
+
+    #[test]
+    fn host_id_is_the_transport_host_id() {
+        let h = Host::new(Transport::Local { socket: None }, Box::new(StubMux(ServerModel::Shared)));
+        assert_eq!(h.id(), "local");
+        let r = Host::new(
+            Transport::Ssh { alias: "jup".into(), control_path: String::new(), os: "linux".into() },
+            Box::new(StubMux(ServerModel::Shared)),
+        );
+        assert_eq!(r.id(), "jup");
+    }
+
+    #[test]
+    fn display_key_shape_comes_from_the_mux_model_not_a_remote_bool() {
+        // Shared (tmux) -> one PTY per HOST: key = host id, ignoring the address.
+        let shared = Host::new(
+            Transport::Ssh { alias: "jup".into(), control_path: String::new(), os: "linux".into() },
+            Box::new(StubMux(ServerModel::Shared)),
+        );
+        assert_eq!(shared.display_key("jup/api"), "jup", "shared -> per-host key");
+        // PerSession (psmux) -> one PTY per SESSION: key = the address.
+        let per = Host::new(
+            Transport::Local { socket: None },
+            Box::new(StubMux(ServerModel::PerSession)),
+        );
+        assert_eq!(per.display_key("local/work"), "local/work", "per-session -> per-session key");
+    }
+
+    #[test]
+    fn new_host_starts_connecting_with_empty_inventory_and_tty() {
+        let h = Host::new(Transport::Local { socket: None }, Box::new(StubMux(ServerModel::PerSession)));
+        assert_eq!(h.liveness, Liveness::Connecting);
+        assert!(h.inventory.sessions.is_empty());
+        assert!(h.display_tty.0.is_none());
+    }
 
     #[test]
     fn host_display_tracks_current_session_per_key() {
