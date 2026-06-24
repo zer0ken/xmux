@@ -734,10 +734,12 @@ fn handle_host_event(
     }
 }
 
-/// Handles a remote host's control client dying. If the host never reached a
-/// connected state, marks it unreachable in the switcher so it renders
-/// "⚠ unreachable" instead of spinning on "scanning…"; a host that had connected
-/// keeps its last-known tree. Returns `true` when it marked the host unreachable.
+/// Handles a remote host's control client dying. A host that had connected keeps its
+/// last-known tree. A never-connected host that died with "no sessions" / "no server
+/// running" is REACHABLE but has no mux server — it renders "(empty)" (and a session
+/// can be created there), NOT "⚠". Any other never-connected death is a real
+/// transport failure and renders "⚠". Returns `true` only when it marked the host
+/// unreachable.
 fn note_host_exited(
     switcher: &mut crate::ui::switcher::Switcher,
     connected: &HashSet<String>,
@@ -745,6 +747,10 @@ fn note_host_exited(
     reason: Option<String>,
 ) -> bool {
     if connected.contains(host) {
+        return false;
+    }
+    if reason.as_deref().is_some_and(crate::source::reason_is_no_sessions) {
+        switcher.apply_source_result(host.to_string(), Vec::new(), None);
         return false;
     }
     let msg = reason.unwrap_or_else(|| "connection closed".into());
@@ -2002,6 +2008,22 @@ mod tests {
         let out = dump_overlay(&mut switcher, None, 80, 24);
         assert!(out.contains("unreachable"), "host reads unreachable:\n{out}");
         assert!(out.contains("no route to host"), "shows the exit reason:\n{out}");
+    }
+
+    #[tokio::test]
+    async fn host_exited_with_no_sessions_marks_empty_not_unreachable() {
+        use crate::ui::run::dump_overlay;
+        use crate::ui::switcher::Switcher;
+        let mut switcher = Switcher::from_sources(vec!["jupiter06".into()]);
+        let connected: HashSet<String> = HashSet::new();
+        // A reachable host whose mux has no server: "no sessions" → (empty), not ⚠.
+        assert!(
+            !note_host_exited(&mut switcher, &connected, "jupiter06", Some("no sessions".into())),
+            "an empty mux is reachable, not unreachable"
+        );
+        let out = dump_overlay(&mut switcher, None, 80, 24);
+        assert!(out.contains("empty"), "an empty host reads (empty):\n{out}");
+        assert!(!out.contains("unreachable"), "must NOT read unreachable:\n{out}");
     }
 
     #[tokio::test]

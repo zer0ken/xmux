@@ -112,6 +112,9 @@ pub fn run_reader<E: FnMut(HostEvent)>(
 ) {
     // num, kind, body — the open `%begin` block, if any.
     let mut block: Option<(u64, PendingReply, Vec<String>)> = None;
+    // The last %error block's text, so a never-connected exit carries a meaningful
+    // reason (notably "no sessions" / "no server running" → reachable-but-empty).
+    let mut last_error: Option<String> = None;
     for line in lines {
         // The entry DCS `\x1bP1000p` ([research §1]) introduces control mode. It may
         // arrive on its own line or glued to the first `%begin`. Strip it; a lone DCS
@@ -123,9 +126,22 @@ pub fn run_reader<E: FnMut(HostEvent)>(
         // else is body (notifications never appear inside a block).
         if let Some((num, _, _)) = block.as_ref() {
             let num = *num;
-            let close = matches!(classify(&line), Line::End { num: n } | Line::Error { num: n } if n == num);
+            let (close, is_err) = match classify(&line) {
+                Line::End { num: n } if n == num => (true, false),
+                Line::Error { num: n } if n == num => (true, true),
+                _ => (false, false),
+            };
             if close {
                 let (_, kind, body) = block.take().unwrap();
+                // Remember an error block's text ("no sessions" / "no server running"
+                // / …) so a control client that dies before connecting carries it —
+                // the cockpit then tells a reachable-but-empty mux from a dead host.
+                if is_err {
+                    let t = body.join(" ").trim().to_string();
+                    if !t.is_empty() {
+                        last_error = Some(t);
+                    }
+                }
                 resolve_block(host, kind, &body, state, &mut emit);
             } else {
                 // Re-borrow only to push; the `as_ref` borrow above has ended.
@@ -158,13 +174,13 @@ pub fn run_reader<E: FnMut(HostEvent)>(
             // flag sends it anyway, discard it (just note the channel is live) — the
             // control client is metadata-only.
             Line::Output { .. } | Line::ExtendedOutput { .. } => clear_connecting(state),
-            Line::Notification(n) => dispatch_notif(host, n, &mut emit),
+            Line::Notification(n) => dispatch_notif(host, n, &last_error, &mut emit),
             // Stray frame/body outside a block.
             Line::End { .. } | Line::Error { .. } | Line::Body(_) => {}
         }
     }
     // Iterator ended = child stdout EOF.
-    emit(HostEvent::Exited { host: host.to_string(), reason: None });
+    emit(HostEvent::Exited { host: host.to_string(), reason: last_error });
 }
 
 /// Resolves a closed `%begin…%end` block by applying its body to the inventory
@@ -209,7 +225,12 @@ fn resolve_block<E: FnMut(HostEvent)>(
 
 /// Maps one notification to the cockpit event it triggers (the metadata client
 /// holds no per-session display state, so notifications emit events, not mutate it).
-fn dispatch_notif<E: FnMut(HostEvent)>(host: &str, notif: Notif<'_>, emit: &mut E) {
+fn dispatch_notif<E: FnMut(HostEvent)>(
+    host: &str,
+    notif: Notif<'_>,
+    last_error: &Option<String>,
+    emit: &mut E,
+) {
     match notif {
         Notif::SessionsChanged
         | Notif::WindowAdd { .. }
@@ -234,13 +255,16 @@ fn dispatch_notif<E: FnMut(HostEvent)>(host: &str, notif: Notif<'_>, emit: &mut 
         // tree — the per-session PTY attachments own the live pane — so they are inert.
         Notif::SessionChanged { .. } | Notif::WindowPaneChanged { .. } => {}
         Notif::Exit { reason } => {
+            // `%exit` may carry its own reason; otherwise fall back to the last error
+            // block ("no sessions" / "no server running") so an empty mux is not
+            // mistaken for a dead host.
             emit(HostEvent::Exited {
                 host: host.to_string(),
-                reason: reason.map(str::to_string),
+                reason: reason.map(str::to_string).or_else(|| last_error.clone()),
             });
         }
         Notif::ClientDetached => {
-            emit(HostEvent::Exited { host: host.to_string(), reason: None });
+            emit(HostEvent::Exited { host: host.to_string(), reason: last_error.clone() });
         }
         // %pause/%continue are output flow-control; with `no-output` set there is no
         // output to pause, so they are inert for this metadata-only client.
@@ -927,6 +951,31 @@ mod tests {
             e,
             HostEvent::Exited { reason: Some(r), .. } if r == "too far behind"
         )));
+    }
+
+    #[test]
+    fn reader_no_sessions_error_makes_exit_carry_the_reason() {
+        // An empty / no-server mux: `tmux -CC attach` emits a "no sessions" %error
+        // block then a bare %exit. The reader must fold the error body into the Exited
+        // reason so the cockpit can tell "reachable but empty" from "dead host".
+        let state = test_state(80, 24);
+        let in_flight: InFlight = Default::default();
+        let mut events = Vec::new();
+        let lines = vec![
+            "%begin 1 1 0".to_string(),
+            "no sessions".to_string(),
+            "%error 1 1 0".to_string(),
+            "%exit".to_string(),
+        ]
+        .into_iter();
+        run_reader("jupiter06", lines, &state, &in_flight, |e| events.push(e));
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                HostEvent::Exited { reason: Some(r), .. } if r.contains("no sessions")
+            )),
+            "the exit reason carries the no-sessions error"
+        );
     }
 
     #[test]

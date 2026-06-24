@@ -330,16 +330,19 @@ pub fn is_no_sessions(err: &RunError) -> bool {
     if matches!(code, 126 | 127 | 255) {
         return false;
     }
-    // Match the marker as a line PREFIX, not anywhere — so a login banner or MOTD
-    // line like "you have no sessions pending" cannot masquerade as the idle mux.
-    let lower = stderr.to_lowercase();
-    for line in lower.split('\n') {
+    reason_is_no_sessions(stderr)
+}
+
+/// True when `text` (a mux error / exit reason) means "reachable but no server /
+/// no sessions" rather than a real transport failure. The control-mode path gets a
+/// plain string (the `%exit` / `%error` reason), not a [`RunError`], so it calls
+/// this directly. Matches the marker as a line PREFIX so a login banner / MOTD line
+/// like "you have no sessions pending" cannot masquerade as the idle mux.
+pub fn reason_is_no_sessions(text: &str) -> bool {
+    text.to_lowercase().split('\n').any(|line| {
         let line = line.trim();
-        if line.starts_with("no server running") || line.starts_with("no sessions") {
-            return true;
-        }
-    }
-    false
+        line.starts_with("no server running") || line.starts_with("no sessions")
+    })
 }
 
 /// psmux's per-machine session registry directory (`~/.psmux`). Each live session
@@ -781,6 +784,15 @@ mod tests {
         }));
         let got = s.list_sessions().await.unwrap();
         assert!(got.is_empty());
+    }
+
+    #[test]
+    fn reason_is_no_sessions_matches_line_prefix_markers() {
+        assert!(reason_is_no_sessions("no sessions"));
+        assert!(reason_is_no_sessions("no server running on /tmp/tmux-1000/default"));
+        assert!(!reason_is_no_sessions("connection timed out"));
+        // Not a line prefix → not the idle mux (a MOTD must not masquerade).
+        assert!(!reason_is_no_sessions("you have no sessions pending"));
     }
 
     #[tokio::test]
