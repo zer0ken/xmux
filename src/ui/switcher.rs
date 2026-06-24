@@ -1605,7 +1605,17 @@ impl Switcher {
         self.user_moved = true;
         self.set_selected(idx);
         match item {
-            MenuItem::Focus => MenuOutcome::FocusTerminal,
+            MenuItem::Focus => {
+                // For a window, optimistically mark it active in the cache. Otherwise the
+                // passthrough cursor-follow (`select_active_window`, run before the attach's
+                // select-window lands) would yank the cursor back to the session's previous
+                // active window — so focusing a different window of the already-displayed
+                // session did nothing. The real select-window follows from the selection.
+                if let RowRef::Window { sess, window } = &menu.target {
+                    self.set_active_window(&sess.source, &sess.name, *window);
+                }
+                MenuOutcome::FocusTerminal
+            }
             MenuItem::NewSession | MenuItem::NewWindow => {
                 self.open_new();
                 MenuOutcome::Handled
@@ -3364,6 +3374,44 @@ mod tests {
         h.sw.menu = Some(Menu { target, title: String::new(), rect: Rect::new(0, 0, 20, 7), items, hovered: Some(at) });
         assert!(matches!(h.sw.menu_release(), MenuOutcome::Handled));
         assert!(h.sw.pending_kill.is_some(), "kill arms the y/n confirm");
+    }
+
+    #[tokio::test]
+    async fn menu_focus_window_marks_it_active_so_passthrough_follow_keeps_it() {
+        // Regression: focusing a different window of the already-displayed session must
+        // move there. Without optimistically marking it active, select_active_window
+        // (the passthrough follow) yanks the cursor back to the old active window.
+        let mut h = Harness::new(sample());
+        let s = sess("local", "editor", 2, true, 200); // editor: win 1 active, win 2 not
+        let target = RowRef::Window { sess: s, window: 2 };
+        let items = menu_items(&target);
+        let at = items.iter().position(|i| *i == MenuItem::Focus).unwrap();
+        h.sw.menu = Some(Menu { target, title: String::new(), rect: Rect::new(0, 0, 20, 5), items, hovered: Some(at) });
+        assert!(matches!(h.sw.menu_release(), MenuOutcome::FocusTerminal));
+        assert!(
+            matches!(h.sw.current_ref(), Some(RowRef::Window { window, .. }) if *window == 2),
+            "cursor is on the focused window"
+        );
+        assert!(!h.sw.select_active_window(), "window 2 is now active → no yank back to window 1");
+    }
+
+    #[tokio::test]
+    async fn menu_new_session_opens_input_and_creates() {
+        // Regression: 'new session' via the host menu must open the name input and,
+        // on confirm, create the session — the full gesture-to-op path.
+        let mut h = Harness::new(sample());
+        let idx = row_index(&h, |r| matches!(r, RowRef::Host { source, .. } if source == "local"));
+        let (x, y) = row_screen_pos(&h, idx);
+        assert!(h.sw.menu_open(x, y), "menu opens on the host row");
+        assert!(matches!(h.sw.menu_release(), MenuOutcome::Handled));
+        assert!(h.sw.is_inputting(), "new session opens the name input");
+        h.sw.set_input_text("fresh");
+        h.key(KeyCode::Enter).await; // queues + pumps the create op (as the loop would)
+        assert!(
+            h.ops.created.lock().unwrap().iter().any(|c| c.contains("fresh")),
+            "the session is created: {:?}",
+            h.ops.created.lock().unwrap()
+        );
     }
 
     #[tokio::test]
