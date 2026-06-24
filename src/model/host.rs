@@ -97,6 +97,24 @@ impl Host {
     pub fn display_key(&self, address: &str) -> String {
         self.mux.server_model().display_key(self.id(), address)
     }
+
+    /// Re-enumerate this host's sessions through the mux, updating `inventory` and
+    /// `liveness`. `Ok` (possibly empty) ⇒ `Live`; `Err` ⇒ `Unreachable` (and the
+    /// error propagates). Replaces `Source::list_sessions` + `HostClient::list_sessions`
+    /// + the supervisor `connected` bookkeeping.
+    pub async fn enumerate(&mut self) -> Result<(), crate::source::RunError> {
+        match self.mux.enumerate(&self.transport).await {
+            Ok(sessions) => {
+                self.inventory.sessions = sessions;
+                self.liveness = Liveness::Live;
+                Ok(())
+            }
+            Err(e) => {
+                self.liveness = Liveness::Unreachable;
+                Err(e)
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -191,5 +209,66 @@ mod tests {
         let l = Liveness::Connecting;
         assert_eq!(l, Liveness::Connecting);
         assert_ne!(Liveness::Live, Liveness::Unreachable);
+    }
+
+    struct EnumMux {
+        model: ServerModel,
+        result: std::sync::Mutex<Option<Result<Vec<Session>, RunError>>>,
+    }
+    impl EnumMux {
+        fn ok(model: ServerModel, names: &[&str]) -> Self {
+            let sessions = names.iter().map(|n| Session {
+                source: "h".into(), name: (*n).into(), windows: 1, attached: false, last_attached: 0,
+            }).collect();
+            EnumMux { model, result: std::sync::Mutex::new(Some(Ok(sessions))) }
+        }
+        fn err(model: ServerModel) -> Self {
+            EnumMux { model, result: std::sync::Mutex::new(Some(Err(RunError::Other("down".into())))) }
+        }
+    }
+    #[async_trait::async_trait]
+    impl Mux for EnumMux {
+        fn kind(&self) -> &str { "enum" }
+        fn server_model(&self) -> ServerModel { self.model }
+        async fn enumerate(&self, _t: &Transport) -> Result<Vec<Session>, RunError> {
+            self.result.lock().unwrap().take().unwrap_or(Ok(vec![]))
+        }
+        fn attach_plan(&self, _s: &str, _w: Option<i64>) -> Vec<String> { vec![] }
+        fn switch_plan(&self, _s: &str) -> SwitchPlan { SwitchPlan::PerSessionNoOp }
+        fn switch_client_argv(&self, _tty: &str, _s: &str) -> Vec<String> { vec![] }
+        fn control_argv(&self) -> Option<Vec<String>> { None }
+        fn death_signal(&self) -> DeathSignal { DeathSignal::Eof }
+        fn event_source(&self) -> EventSource { EventSource::Poll { interval_ms: 1500 } }
+        fn list_panes_plan(&self, _s: &str) -> Vec<String> { vec![] }
+        fn new_window_plan(&self, _s: &str, _n: &str) -> Vec<String> { vec![] }
+        fn split_window_plan(&self, _t: &str, _v: bool) -> Vec<String> { vec![] }
+        fn select_window_plan(&self, _t: &str) -> Vec<String> { vec![] }
+        fn kill_window_plan(&self, _t: &str) -> Vec<String> { vec![] }
+        fn rename_window_plan(&self, _t: &str, _n: &str) -> Vec<String> { vec![] }
+    }
+
+    #[tokio::test]
+    async fn enumerate_ok_fills_inventory_and_goes_live() {
+        let mut h = Host::new(Transport::Local { socket: None }, Box::new(EnumMux::ok(ServerModel::PerSession, &["work", "build"])));
+        h.enumerate().await.unwrap();
+        assert_eq!(h.liveness, Liveness::Live);
+        let names: Vec<&str> = h.inventory.sessions.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["work", "build"]);
+    }
+
+    #[tokio::test]
+    async fn enumerate_empty_is_live_not_unreachable() {
+        // A reachable mux with zero sessions is Live (the "(empty)" case), not Unreachable.
+        let mut h = Host::new(Transport::Local { socket: None }, Box::new(EnumMux::ok(ServerModel::Shared, &[])));
+        h.enumerate().await.unwrap();
+        assert_eq!(h.liveness, Liveness::Live);
+        assert!(h.inventory.sessions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn enumerate_err_marks_unreachable_and_propagates() {
+        let mut h = Host::new(Transport::Local { socket: None }, Box::new(EnumMux::err(ServerModel::Shared)));
+        assert!(h.enumerate().await.is_err());
+        assert_eq!(h.liveness, Liveness::Unreachable);
     }
 }
