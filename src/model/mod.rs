@@ -6,6 +6,8 @@
 
 pub mod plan;
 pub mod server_model;
+pub mod transport;
 
 pub use plan::{DeathSignal, DisplayTty, EventSource, SwitchPlan};
 pub use server_model::ServerModel;
+pub use transport::Transport;
