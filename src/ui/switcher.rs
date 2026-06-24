@@ -208,6 +208,66 @@ enum RowRef {
     Loading,
 }
 
+/// One context-menu entry. The variant drives the action taken on release; the
+/// label is the row text. English to match the rest of the tree UI.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum MenuItem {
+    Open,
+    NewSession,
+    Reconnect,
+    NewWindow,
+    Rename,
+    Kill,
+    SplitVertical,
+    SplitHorizontal,
+}
+
+impl MenuItem {
+    fn label(self) -> &'static str {
+        match self {
+            MenuItem::Open => "open",
+            MenuItem::NewSession => "new session",
+            MenuItem::Reconnect => "reconnect",
+            MenuItem::NewWindow => "new window",
+            MenuItem::Rename => "rename",
+            MenuItem::Kill => "kill",
+            MenuItem::SplitVertical => "split vertical",
+            MenuItem::SplitHorizontal => "split horizontal",
+        }
+    }
+}
+
+/// What the cockpit must do after a menu release. Most items are handled inside the
+/// switcher (they open an input, arm a kill, or queue an op); `FocusTerminal` is the
+/// one outcome the cockpit owns (the "open" item moves focus to the mux pane).
+pub enum MenuOutcome {
+    None,
+    Handled,
+    FocusTerminal,
+}
+
+/// An open right-click context menu. `target` is the node it acts on, re-located by
+/// identity at release so a tree rebuild during the brief hold cannot misfire on a
+/// stale row. `rect` is the bordered box in 0-based screen coords; `hovered` is the
+/// item under the mouse, or None (released there = cancel).
+struct Menu {
+    target: RowRef,
+    rect: Rect,
+    items: Vec<MenuItem>,
+    hovered: Option<usize>,
+}
+
+/// The menu entries for a node, by type. Non-selectable rows (pane/loading) get none.
+fn menu_items(target: &RowRef) -> Vec<MenuItem> {
+    use MenuItem::*;
+    match target {
+        RowRef::Host { .. } => vec![NewSession, Reconnect],
+        RowRef::Session(_) => vec![Open, Rename, Kill, NewWindow],
+        RowRef::Window { .. } => vec![Open, SplitVertical, SplitHorizontal, Rename, Kill],
+        RowRef::Pane | RowRef::Loading => Vec::new(),
+    }
+}
+
 struct Row {
     label: String,
     /// A trailing dim annotation (scanning…, (empty), ⚠ unreachable: …) — kept
@@ -315,6 +375,12 @@ pub struct Switcher {
     /// initial preselect (while the user has not moved); once `user_moved` is set,
     /// `restore_focus` keeps the cursor and this is ignored.
     preferred: Option<String>,
+    /// The open right-click context menu (the fourth modal, like `input` /
+    /// `pending_kill` / `show_help`). `None` ⇒ no menu.
+    menu: Option<Menu>,
+    /// The whole frame area, captured each render so the menu box can be clamped to
+    /// the screen at open time (mouse events arrive between renders).
+    screen_area: Rect,
 }
 
 impl Switcher {
@@ -343,6 +409,8 @@ impl Switcher {
             spinner: HashSet::new(),
             spinner_frame: 0,
             preferred: None,
+            menu: None,
+            screen_area: Rect::default(),
         }
     }
 
@@ -2933,6 +3001,25 @@ mod tests {
         // After a single click the cursor is on a selectable row (not pane/loading).
         let selectable = h.sw.rows.get(h.sw.selected).is_some_and(Row::selectable);
         assert!(selectable, "single click must land on a selectable row");
+    }
+
+    #[test]
+    fn menu_items_by_row_type() {
+        use super::MenuItem::*;
+        let host = RowRef::Host { source: "h".into(), unreachable: false };
+        assert_eq!(menu_items(&host), vec![NewSession, Reconnect]);
+
+        let s = sess("h", "api", 1, false, 0);
+        assert_eq!(
+            menu_items(&RowRef::Session(s.clone())),
+            vec![Open, Rename, Kill, NewWindow]
+        );
+        assert_eq!(
+            menu_items(&RowRef::Window { sess: s, window: 1 }),
+            vec![Open, SplitVertical, SplitHorizontal, Rename, Kill]
+        );
+        assert!(menu_items(&RowRef::Pane).is_empty());
+        assert!(menu_items(&RowRef::Loading).is_empty());
     }
 
     #[tokio::test]
