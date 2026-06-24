@@ -1600,8 +1600,14 @@ impl Switcher {
         let Some(idx) = self.rows.iter().position(|r| same_node(&r.reference, &menu.target)) else {
             return MenuOutcome::None;
         };
-        // The delegated action methods act on the current cursor, so land it on the
-        // target first (consistent with having right-clicked that row).
+        // The delegated methods act on the current cursor, so land it on the target,
+        // run the action (which CAPTURES the target by value), then for everything
+        // EXCEPT focus restore the cursor. A lingering cursor move would change the
+        // selection → trigger an attach and the events it spawns → rebuild the tree,
+        // which clears an armed kill confirm (pending_kill) before the user can answer
+        // y/n, and needlessly switches the displayed session. focus is the one item
+        // that intends to move there.
+        let prior = self.capture_focus();
         self.user_moved = true;
         self.set_selected(idx);
         match item {
@@ -1618,14 +1624,17 @@ impl Switcher {
             }
             MenuItem::NewSession | MenuItem::NewWindow => {
                 self.open_new();
+                self.restore_focus(prior);
                 MenuOutcome::Handled
             }
             MenuItem::Rename => {
                 self.open_input(InputMode::Rename);
+                self.restore_focus(prior);
                 MenuOutcome::Handled
             }
             MenuItem::Kill => {
                 self.arm_kill();
+                self.restore_focus(prior);
                 MenuOutcome::Handled
             }
         }
@@ -3374,6 +3383,28 @@ mod tests {
         h.sw.menu = Some(Menu { target, title: String::new(), rect: Rect::new(0, 0, 20, 7), items, hovered: Some(at) });
         assert!(matches!(h.sw.menu_release(), MenuOutcome::Handled));
         assert!(h.sw.pending_kill.is_some(), "kill arms the y/n confirm");
+    }
+
+    #[tokio::test]
+    async fn menu_kill_keeps_the_cursor_so_the_confirm_survives() {
+        // Regression: the y/n confirm flashed and vanished because moving the cursor to
+        // the target changed the selection → attach → events → rebuild, which clears
+        // pending_kill. Acting on a row must NOT move the cursor.
+        let mut h = Harness::new(sample());
+        let editor = row_index(&h, |r| matches!(r, RowRef::Session(s) if s.name == "editor"));
+        h.sw.set_selected(editor);
+        h.sw.user_moved = true;
+        // Kill a DIFFERENT session ('build') via the menu.
+        let target = RowRef::Session(sess("local", "build", 1, false, 100));
+        let items = menu_items(&target);
+        let at = items.iter().position(|i| *i == MenuItem::Kill).unwrap();
+        h.sw.menu = Some(Menu { target, title: String::new(), rect: Rect::new(0, 0, 20, 7), items, hovered: Some(at) });
+        assert!(matches!(h.sw.menu_release(), MenuOutcome::Handled));
+        assert!(h.sw.pending_kill.is_some(), "kill is armed against the clicked row");
+        assert!(
+            matches!(h.sw.current_ref(), Some(RowRef::Session(s)) if s.name == "editor"),
+            "the cursor stayed put → no selection change to rebuild away the confirm"
+        );
     }
 
     #[tokio::test]
