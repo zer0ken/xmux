@@ -25,6 +25,7 @@ use crate::attach;
 use crate::display::{DisplayEnsure, DisplayEvent, DisplayWorker};
 use crate::env::Env;
 use crate::host::{HostEvent, HostManager};
+use crate::proxy::dispatch::Action;
 use crate::proxy::registry::AttachRegistry;
 use crate::proxy::run::PtyEvent;
 use crate::ui::switcher::TerminalViewTarget;
@@ -526,6 +527,48 @@ fn is_focus_in(code: KeyCode) -> bool {
     matches!(code, KeyCode::Enter)
 }
 
+/// Pure resolution of ONE TREE-focus key into an [`Action`] (or none, when the key
+/// only arms the prefix or is an unrecognized armed command). Touches no cockpit or
+/// switcher state, so it is unit-testable in isolation (mirrors how `TermInput::feed`
+/// resolves the mux-focus path). `is_inputting` suppresses prefix arming and the Enter
+/// focus-switch so the input row receives those keys verbatim. Resolved per key — not
+/// per read — because `is_inputting` can flip mid-read (a key that opens the input row
+/// changes how the next key in the same read is treated), so the caller re-queries it
+/// and applies each action before resolving the next key.
+fn resolve_tree_key(
+    key: ratatui::crossterm::event::KeyEvent,
+    armed: &mut bool,
+    prefix: u8,
+    is_inputting: bool,
+) -> Option<Action> {
+    if *armed {
+        *armed = false;
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        return match key.code {
+            KeyCode::Char('q') => Some(Action::Quit),
+            KeyCode::Left if ctrl => Some(Action::Width(-1)),
+            KeyCode::Right if ctrl => Some(Action::Width(1)),
+            KeyCode::Char('h') => Some(Action::Width(-1)),
+            KeyCode::Char('l') => Some(Action::Width(1)),
+            KeyCode::Char('t') => Some(Action::ToggleAutoHide),
+            KeyCode::Char('?') => Some(Action::ShowHelp),
+            // prefix →/Tab: focus the mux pane (prefix ←/Esc: focus the tree, where
+            // we already are — a no-op that resolves to nothing).
+            KeyCode::Right | KeyCode::Tab => Some(Action::FocusMux),
+            _ => None,
+        };
+    }
+    if !is_inputting && key.code == KeyCode::Char(prefix as char) {
+        *armed = true;
+        return None;
+    }
+    // Enter focuses the terminal pane. ←/→ navigate the tree inside `handle_key`.
+    if !is_inputting && is_focus_in(key.code) {
+        return Some(Action::FocusMux);
+    }
+    Some(Action::TreeKey(key))
+}
+
 /// Processes a batch of TREE-focus input bytes through ONE path — used for both real
 /// stdin and bytes replayed after a terminal→tree switch. Handles prefix arming
 /// (`C-g` then `q` → quit, `h`/`Ctrl+←` → shrink tree, `l`/`Ctrl+→` → grow tree),
@@ -554,35 +597,19 @@ fn handle_tree_bytes(
     let mut width_delta = 0i32;
     let mut toggle_auto_hide = false;
     for key in tree_decoder.feed(bytes) {
-        if *tree_armed {
-            *tree_armed = false;
-            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-            match key.code {
-                KeyCode::Char('q') => quit = true,
-                KeyCode::Left if ctrl => width_delta = -1,
-                KeyCode::Right if ctrl => width_delta = 1,
-                KeyCode::Char('h') => width_delta = -1,
-                KeyCode::Char('l') => width_delta = 1,
-                KeyCode::Char('t') => toggle_auto_hide = true,
-                KeyCode::Char('?') => switcher.toggle_help(),
-                // prefix →/Tab: focus the mux pane (prefix ←/Esc: focus the tree, where
-                // we already are — a no-op that falls through).
-                KeyCode::Right | KeyCode::Tab => focus_terminal = true,
-                _ => {}
-            }
-            continue;
+        // Re-query per key: opening the input row (via a TreeKey applied below) flips
+        // is_inputting, which changes how the next key in this same read resolves.
+        let is_inputting = switcher.is_inputting();
+        match resolve_tree_key(key, tree_armed, prefix, is_inputting) {
+            Some(Action::TreeKey(k)) => switcher.handle_key(k),
+            Some(Action::FocusMux) => focus_terminal = true,
+            Some(Action::Quit) => quit = true,
+            Some(Action::Width(d)) => width_delta = d,
+            Some(Action::ToggleAutoHide) => toggle_auto_hide = true,
+            Some(Action::ShowHelp) => switcher.toggle_help(),
+            // resolve_tree_key never emits the mux-only variants; None = armed/consumed.
+            Some(Action::Forward(_)) | Some(Action::FocusTree(_)) | None => {}
         }
-        if !switcher.is_inputting() && key.code == KeyCode::Char(prefix as char) {
-            *tree_armed = true;
-            continue;
-        }
-        // Enter focuses the terminal pane. ←/→ navigate the tree (→ descends to a child,
-        // ← ascends to the parent) in `switcher.handle_key`.
-        if !switcher.is_inputting() && is_focus_in(key.code) {
-            focus_terminal = true;
-            continue;
-        }
-        switcher.handle_key(key);
     }
     dispatch_pending_op(switcher, ops, op_tx);
     ensure_current_host(mgr, env, switcher, cols, rows, tree_width);
@@ -784,7 +811,6 @@ fn note_host_exited(
 pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     use crate::proxy::app::App;
     use crate::proxy::decode::KeyDecoder;
-    use crate::proxy::dispatch::Action;
     use crate::proxy::input::TermInput;
     use crate::proxy::term::{parse_prefix, TermGuard};
     use crate::ui::run::{dump_overlay, serve_control, AppStateKind, Cmd};
@@ -1505,6 +1531,9 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                 toggle_auto_hide(&mut auto_hide_tree, &env.xmux_dir);
                                 dirty = true;
                             }
+                            // The mux-focus resolver (TermInput) never emits these — they
+                            // belong to the tree-focus path (resolve_tree).
+                            Action::FocusMux | Action::TreeKey(_) => {}
                         }
                     }
                 }
@@ -1743,6 +1772,81 @@ mod tests {
     use crate::config::Config;
     use crate::source::Source;
     use std::collections::HashMap;
+
+    // --- resolve_tree_key: pure TREE-focus key resolution -------------------
+    /// Resolve one read at the default prefix (C-g = 0x07), fresh decoder/armed,
+    /// folding the per-key resolver over the decoded keys.
+    fn rt(bytes: &[u8], is_inputting: bool) -> Vec<Action> {
+        let mut dec = crate::proxy::decode::KeyDecoder::new();
+        let mut armed = false;
+        dec.feed(bytes)
+            .into_iter()
+            .filter_map(|k| resolve_tree_key(k, &mut armed, 0x07, is_inputting))
+            .collect()
+    }
+
+    #[test]
+    fn resolve_tree_prefix_commands() {
+        assert_eq!(rt(b"\x07q", false), vec![Action::Quit], "prefix q quits");
+        assert_eq!(rt(b"\x07l", false), vec![Action::Width(1)], "prefix l widens");
+        assert_eq!(rt(b"\x07h", false), vec![Action::Width(-1)], "prefix h narrows");
+        assert_eq!(rt(b"\x07t", false), vec![Action::ToggleAutoHide], "prefix t toggles hide");
+        assert_eq!(rt(b"\x07?", false), vec![Action::ShowHelp], "prefix ? toggles help");
+        // prefix Right focuses the mux pane. (prefix Tab does NOT, from the tree: the
+        // decoder yields Char('\t') for byte 0x09, never KeyCode::Tab — a pre-existing
+        // quirk; only prefix Right and Enter focus the mux from tree focus.)
+        assert_eq!(rt(b"\x07\x1b[C", false), vec![Action::FocusMux], "prefix Right focuses mux");
+        assert_eq!(rt(b"\x07\x1b[1;5C", false), vec![Action::Width(1)], "prefix Ctrl-Right widens");
+        assert_eq!(rt(b"\x07\x1b[1;5D", false), vec![Action::Width(-1)], "prefix Ctrl-Left narrows");
+    }
+
+    #[test]
+    fn resolve_tree_enter_focuses_mux_and_nav_is_a_tree_key() {
+        assert_eq!(rt(b"\r", false), vec![Action::FocusMux], "Enter focuses the mux pane");
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        assert_eq!(
+            rt(b"j", false),
+            vec![Action::TreeKey(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE))],
+            "a nav key is delegated to the tree verbatim"
+        );
+    }
+
+    #[test]
+    fn resolve_tree_while_inputting_passes_prefix_and_enter_to_the_tree() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        // While the input row is open, the prefix is NOT special (typed into the buffer)
+        // and Enter does NOT focus the mux (it submits the input) — both go to the tree.
+        assert_eq!(
+            rt(b"\x07", true),
+            vec![Action::TreeKey(KeyEvent::new(KeyCode::Char('\u{7}'), KeyModifiers::NONE))],
+            "prefix while inputting is a literal tree key, not an arm"
+        );
+        assert_eq!(
+            rt(b"\r", true),
+            vec![Action::TreeKey(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))],
+            "Enter while inputting goes to the tree, not focus-switch"
+        );
+    }
+
+    #[test]
+    fn resolve_tree_arming_persists_across_reads() {
+        let mut dec = crate::proxy::decode::KeyDecoder::new();
+        let mut armed = false;
+        let r1: Vec<Action> = dec
+            .feed(b"\x07")
+            .into_iter()
+            .filter_map(|k| resolve_tree_key(k, &mut armed, 0x07, false))
+            .collect();
+        assert_eq!(r1, Vec::<Action>::new());
+        assert!(armed, "the prefix arms even when its command arrives in the next read");
+        let r2: Vec<Action> = dec
+            .feed(b"q")
+            .into_iter()
+            .filter_map(|k| resolve_tree_key(k, &mut armed, 0x07, false))
+            .collect();
+        assert_eq!(r2, vec![Action::Quit]);
+        assert!(!armed, "the command consumes the armed state");
+    }
 
     fn fake_source(alias: &str) -> Source {
         Source {
