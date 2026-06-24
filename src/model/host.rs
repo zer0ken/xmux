@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use crate::host::HostInventory;
-use crate::model::{DisplayTty, Mux, Transport};
+use crate::model::{DisplayTty, Mux, ServerModel, Transport};
 
 /// Connecting / live / unreachable — replaces the loose `connecting` AtomicBool
 /// (host.rs:334) and the supervisor's `connected: HashSet` tracking (cockpit.rs:1048).
@@ -162,6 +162,60 @@ impl Host {
         )?;
         self.control = Some(client);
         Ok(true)
+    }
+}
+
+/// One reconciliation step the supervisor executes through the KEPT DisplayWorker /
+/// AttachRegistry. `Host::sync` returns these instead of the supervisor branching on
+/// `remote` to fan out attaches/reaps (cockpit.rs:401/420).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SyncAction {
+    /// Spawn (or warm) the attachment for `key`, landing on `session`.
+    Attach { key: String, session: String },
+    /// Tear down `key`'s attachment (its session/host closed).
+    Reap { key: String },
+}
+
+impl Host {
+    /// The attach/reap plan that reconciles this host's display set with its
+    /// inventory under its `ServerModel`. Pure over `&self`: `Shared` keeps ONE
+    /// attachment (host key) warmed on the first session and reaps it when empty;
+    /// `PerSession` keeps one per session (address key) and reaps closed ones.
+    /// Folds the per-host half of `sync_source_terminals` (cockpit.rs:384).
+    pub fn sync(&self) -> Vec<SyncAction> {
+        match self.mux.server_model() {
+            ServerModel::Shared => {
+                let key = self.id().to_string();
+                match self.inventory.sessions.first() {
+                    Some(first) if self.display.shows(&key).is_none() => {
+                        vec![SyncAction::Attach { key, session: first.name.clone() }]
+                    }
+                    None if self.display.shows(&key).is_some() => {
+                        vec![SyncAction::Reap { key }]
+                    }
+                    _ => Vec::new(),
+                }
+            }
+            ServerModel::PerSession => {
+                let mut actions = Vec::new();
+                let mut desired = std::collections::HashSet::new();
+                for s in &self.inventory.sessions {
+                    let key = self.display_key(&s.address());
+                    desired.insert(key.clone());
+                    if self.display.shows(&key).is_none() {
+                        actions.push(SyncAction::Attach { key, session: s.name.clone() });
+                    }
+                }
+                for key in self.display.current.keys() {
+                    if !desired.contains(key) {
+                        actions.push(SyncAction::Reap { key: key.clone() });
+                    }
+                }
+                // ponytail: reap order is non-deterministic (HashMap iteration); tests
+                // assert a single reap so this is fine. Sort if multi-reap order matters.
+                actions
+            }
+        }
     }
 }
 
@@ -344,5 +398,64 @@ mod tests {
             Box::new(StubMux(ServerModel::PerSession)), // StubMux::event_source == Poll
         );
         assert!(!h.ensure_control_client(80, 24, &tx).unwrap());
+    }
+
+    fn sess(name: &str) -> Session {
+        Session { source: "h".into(), name: name.into(), windows: 1, attached: false, last_attached: 0 }
+    }
+
+    #[test]
+    fn sync_shared_attaches_the_first_session_once_then_nothing() {
+        // Shared (tmux): ONE attachment per host, keyed by host id, warmed on the first
+        // session. With nothing attached yet, sync asks to attach the first session.
+        let mut h = Host::new(
+            Transport::Ssh { alias: "jup".into(), control_path: String::new(), os: "linux".into() },
+            Box::new(StubMux(ServerModel::Shared)),
+        );
+        h.inventory.sessions = vec![sess("api"), sess("build")];
+        assert_eq!(
+            h.sync(),
+            vec![SyncAction::Attach { key: "jup".into(), session: "api".into() }],
+            "shared: warm one PTY (host key) on the first session"
+        );
+        // Once the host key is shown, sync asks for nothing more (selection-driven
+        // switch-client is the supervisor's job, not sync's keep-alive).
+        h.display.set_shows("jup", "api");
+        assert!(h.sync().is_empty(), "shared: already warmed -> no action");
+    }
+
+    #[test]
+    fn sync_shared_with_no_sessions_reaps_the_host_pty() {
+        let mut h = Host::new(
+            Transport::Ssh { alias: "jup".into(), control_path: String::new(), os: "linux".into() },
+            Box::new(StubMux(ServerModel::Shared)),
+        );
+        h.display.set_shows("jup", "api"); // a PTY is warm
+        h.inventory.sessions = vec![]; // host went empty
+        assert_eq!(h.sync(), vec![SyncAction::Reap { key: "jup".into() }]);
+    }
+
+    #[test]
+    fn sync_per_session_attaches_each_missing_and_reaps_closed() {
+        // PerSession (psmux): one attachment per session, keyed by address. The stub
+        // sessions have source "h", so their addresses are "h/work" etc.; the local host
+        // id is "local" but display_key for PerSession uses the address, so keys are
+        // "h/work"/"h/build".
+        let mut h = Host::new(Transport::Local { socket: None }, Box::new(StubMux(ServerModel::PerSession)));
+        h.inventory.sessions = vec![sess("work"), sess("build")];
+        h.display.set_shows("h/build", "build"); // build already attached
+        let got = h.sync();
+        assert_eq!(
+            got,
+            vec![SyncAction::Attach { key: "h/work".into(), session: "work".into() }],
+            "per-session: attach the missing one only"
+        );
+        // A session that closed (shown but no longer in inventory) is reaped.
+        let mut h2 = Host::new(Transport::Local { socket: None }, Box::new(StubMux(ServerModel::PerSession)));
+        h2.inventory.sessions = vec![sess("work")];
+        h2.display.set_shows("h/build", "build");
+        h2.display.set_shows("h/work", "work");
+        let reaps: Vec<_> = h2.sync().into_iter().filter(|a| matches!(a, SyncAction::Reap { .. })).collect();
+        assert_eq!(reaps, vec![SyncAction::Reap { key: "h/build".into() }], "per-session: reap the closed session");
     }
 }

@@ -10,7 +10,7 @@ pub mod plan;
 pub mod server_model;
 pub mod transport;
 
-pub use host::{Host, HostDisplay, Liveness};
+pub use host::{Host, HostDisplay, Liveness, SyncAction};
 pub use mux::{for_binary, Mux, Psmux, Tmux};
 pub use plan::{DeathSignal, DisplayTty, EventSource, SwitchPlan};
 pub use server_model::ServerModel;
