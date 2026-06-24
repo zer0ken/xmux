@@ -5,12 +5,14 @@
 //! lowers it to a runnable command.
 
 pub mod host;
+pub mod hosts;
 pub mod mux;
 pub mod plan;
 pub mod server_model;
 pub mod transport;
 
 pub use host::{Host, HostDisplay, Liveness, SyncAction};
+pub use hosts::Hosts;
 pub use mux::{for_binary, Mux, Psmux, Tmux};
 pub use plan::{DeathSignal, DisplayTty, EventSource, SwitchPlan};
 pub use server_model::ServerModel;
