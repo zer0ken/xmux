@@ -2283,7 +2283,9 @@ impl Switcher {
             return;
         };
         let inner_w = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
-        let w = (inner_w + 3).clamp(24, area.width.max(1)); // borders + a cell of right padding
+        // borders + a cell of right padding, at least 24 wide, never past the screen.
+        // `.max(24).min(width)` (not `clamp`) so a sub-24-col terminal cannot panic.
+        let w = (inner_w + 3).max(24).min(area.width.max(1));
         let h = (lines.len() as u16 + 2).min(area.height.max(1));
         let rect = offset_centered(w, h, area, self.popup_offset);
         self.popup_rect = rect;
@@ -4275,6 +4277,17 @@ mod tests {
         assert_eq!(sw.popup_rect.y, before.y + 3, "moved down by 3");
         sw.end_popup_drag();
         assert!(!sw.popup_drag_active());
+    }
+
+    #[test]
+    fn popup_renders_without_panicking_on_a_narrow_screen() {
+        // A terminal narrower than the popup's 24-col minimum must not panic
+        // (the width is `.max(24).min(width)`, never `clamp(24, width)`).
+        let mut sw = Switcher::new(sample());
+        sw.show_help();
+        let mut term = Terminal::new(TestBackend::new(10, 10)).unwrap();
+        term.draw(|f| sw.render(f, None, false, 0)).unwrap();
+        assert!(sw.popup_rect.width <= 10, "popup fits the narrow screen");
     }
 
     #[test]
