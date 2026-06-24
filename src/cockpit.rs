@@ -1470,6 +1470,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             // can't quit the cockpit out from under the mux.
                             let is_right_press = is_press && (ev.cb & 0x03) == 2;
                             if tree_menu_may_open(is_right_press, app.is_overlay(), in_mux.is_some())
+                                && !switcher.is_modal_popup_open()
                                 && switcher.menu_open(col0, ev.row.saturating_sub(1))
                             {
                                 dirty = true;
@@ -1541,6 +1542,12 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 // missed button-up can't strand the menu and eat later input.
                 if switcher.menu_active() && !non_mouse.is_empty() {
                     switcher.menu_cancel();
+                    dirty = true;
+                }
+                // Watchdog: same recovery for a popup border-drag — a lost button-up
+                // must not strand `popup_drag` and eat all later mouse input.
+                if switcher.popup_drag_active() && !non_mouse.is_empty() {
+                    switcher.end_popup_drag();
                     dirty = true;
                 }
                 if mouse_focus_toggle {

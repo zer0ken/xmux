@@ -1132,17 +1132,36 @@ impl Switcher {
     /// Open the modal keys overlay. In tree focus any key then dismisses it (see
     /// `handle_key`); [`toggle_help`] is the focus-independent open/close entry point.
     pub fn show_help(&mut self) {
-        self.reset_popup_pos();
+        self.dismiss_modals();
         self.show_help = true;
     }
 
     /// Toggle the keys overlay. Driven by `prefix ?` in EITHER focus so help opens
     /// and closes the same way regardless of which pane holds focus.
     pub fn toggle_help(&mut self) {
-        self.show_help = !self.show_help;
         if self.show_help {
-            self.reset_popup_pos();
+            self.show_help = false;
+        } else {
+            self.dismiss_modals();
+            self.show_help = true;
         }
+    }
+
+    /// Closes any open modal popup and resets its drag position, so the three modals
+    /// (help / input / confirm) stay mutually exclusive — a second one opened (e.g. via
+    /// the context menu, which bypasses `handle_key`'s guards) never coexists with a
+    /// stale first one whose keystrokes would route elsewhere than the drawn popup.
+    fn dismiss_modals(&mut self) {
+        self.show_help = false;
+        self.input = None;
+        self.pending_kill = None;
+        self.reset_popup_pos();
+    }
+
+    /// True while a centered modal popup (help / input / confirm) is open. The three
+    /// are mutually exclusive — each opener clears the others.
+    pub fn is_modal_popup_open(&self) -> bool {
+        self.show_help || self.input.is_some() || self.pending_kill.is_some()
     }
 
     /// True while a modal popup is being border-dragged; the cockpit routes every
@@ -1154,9 +1173,15 @@ impl Switcher {
     /// A left press on the active modal popup's border begins a move-drag. Returns
     /// true iff it grabbed (so the cockpit consumes the event).
     pub fn begin_popup_drag(&mut self, col: u16, row: u16) -> bool {
+        // `popup_rect` is only refreshed on render (frame-gated), so a popup closed by a
+        // keystroke can leave a stale rect; gate on the live modal state so a press can't
+        // grab a popup that no longer exists.
+        if !self.is_modal_popup_open() {
+            return false;
+        }
         let r = self.popup_rect;
         if r.width < 2 || r.height < 2 {
-            return false; // no modal popup open
+            return false; // no modal popup drawn yet
         }
         let inside = col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height;
         let on_border = inside
@@ -1248,7 +1273,7 @@ impl Switcher {
 
     fn open_input(&mut self, mode: InputMode) {
         self.flash.clear();
-        self.reset_popup_pos();
+        self.dismiss_modals();
         match mode {
             InputMode::Filter => {
                 self.input = Some(Input {
@@ -1301,7 +1326,7 @@ impl Switcher {
     /// move cannot retarget it.
     fn open_new(&mut self) {
         self.flash.clear();
-        self.reset_popup_pos();
+        self.dismiss_modals();
         if self.current_host_unreachable() {
             self.flash = "host unreachable — cannot create here".into();
             return;
@@ -1574,7 +1599,7 @@ impl Switcher {
     // --- kill (confirm popup) -----------------------------------------------
 
     fn arm_kill(&mut self) {
-        self.reset_popup_pos();
+        self.dismiss_modals();
         match self.current_ref().cloned() {
             Some(RowRef::Host { .. }) => {
                 self.flash = "cannot kill a host".into();
@@ -4277,6 +4302,35 @@ mod tests {
         assert_eq!(sw.popup_rect.y, before.y + 3, "moved down by 3");
         sw.end_popup_drag();
         assert!(!sw.popup_drag_active());
+    }
+
+    #[test]
+    fn modals_are_mutually_exclusive() {
+        // Opening any modal closes the others, so the drawn popup always matches where
+        // keystrokes route (the context menu can open input/confirm bypassing handle_key).
+        let mut sw = Switcher::new(sample());
+        sw.arm_kill();
+        assert!(sw.pending_kill.is_some());
+        sw.open_input(InputMode::Rename); // as the menu's Rename would
+        assert!(sw.input.is_some(), "input opened");
+        assert!(sw.pending_kill.is_none(), "arming an input cancels a pending kill");
+        sw.show_help();
+        assert!(sw.show_help && sw.input.is_none() && sw.pending_kill.is_none(), "help closes the input");
+        sw.arm_kill();
+        assert!(sw.pending_kill.is_some() && !sw.show_help, "arming a kill closes help");
+    }
+
+    #[test]
+    fn closed_popup_cannot_be_grabbed_even_with_a_stale_rect() {
+        // popup_rect is refreshed only on render; a popup closed by a keystroke leaves a
+        // stale rect. A press must NOT grab a popup that is no longer open.
+        let mut sw = Switcher::new(sample());
+        sw.open_input(InputMode::Filter);
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| sw.render(f, None, false, 0)).unwrap();
+        let r = sw.popup_rect; // border rect is now cached
+        sw.close_input(); // close WITHOUT re-rendering → popup_rect is stale
+        assert!(!sw.begin_popup_drag(r.x, r.y), "a stale rect must not grab a closed popup");
     }
 
     #[test]
