@@ -71,6 +71,7 @@ pub struct Host {
     /// `mux.switch_client_argv(tty, session)`.
     pub display_tty: DisplayTty,
     pub liveness: Liveness,
+    control: Option<crate::host::HostClient>,
 }
 
 impl Host {
@@ -84,6 +85,7 @@ impl Host {
             display: HostDisplay::default(),
             display_tty: DisplayTty::default(),
             liveness: Liveness::Connecting,
+            control: None,
         }
     }
 
@@ -114,6 +116,52 @@ impl Host {
                 Err(e)
             }
         }
+    }
+
+    /// Record xmux's display-client tty for this host, captured in memory from a
+    /// `HostEvent::DisplayTty` (no `/tmp` file). The supervisor reads it to build a
+    /// `switch-client -c <tty>` (via `mux.switch_client_argv`) that targets xmux's
+    /// OWN display client only.
+    pub fn record_display_tty(&mut self, tty: Option<String>) {
+        self.display_tty = DisplayTty(tty);
+    }
+
+    /// Forget the display tty when the attachment dies, so no later `switch-client`
+    /// is aimed at a detached/dead client (the blank-pane class).
+    pub fn clear_display_tty(&mut self) {
+        self.display_tty = DisplayTty(None);
+    }
+
+    /// Ensures this host's `-CC` control client exists, spawning + owning it lazily.
+    /// `Ok(true)` on a fresh spawn; `Ok(false)` if already present or if this host's
+    /// `event_source()` is `Poll` (psmux has no host-level control stream). Moves the
+    /// mechanism `HostManager::ensure` (host.rs:570) held onto the Host.
+    pub fn ensure_control_client(
+        &mut self,
+        cols: u16,
+        rows: u16,
+        events: &tokio::sync::mpsc::UnboundedSender<crate::host::HostEvent>,
+    ) -> anyhow::Result<bool> {
+        if !matches!(self.mux.event_source(), crate::model::EventSource::Control) {
+            return Ok(false);
+        }
+        if self.control.is_some() {
+            return Ok(false);
+        }
+        let Some(mux_control) = self.mux.control_argv() else {
+            return Ok(false);
+        };
+        let argv = self.transport.control_argv(&mux_control);
+        let client = crate::host::HostClient::spawn(
+            self.id(),
+            &argv,
+            cols,
+            rows,
+            events.clone(),
+            &[],
+        )?;
+        self.control = Some(client);
+        Ok(true)
     }
 }
 
@@ -270,5 +318,31 @@ mod tests {
         let mut h = Host::new(Transport::Local { socket: None }, Box::new(EnumMux::err(ServerModel::Shared)));
         assert!(h.enumerate().await.is_err());
         assert_eq!(h.liveness, Liveness::Unreachable);
+    }
+
+    #[test]
+    fn record_and_clear_display_tty_round_trips() {
+        let mut h = Host::new(
+            Transport::Ssh { alias: "jup".into(), control_path: String::new(), os: "linux".into() },
+            Box::new(StubMux(ServerModel::Shared)),
+        );
+        assert!(h.display_tty.0.is_none(), "starts with no tty");
+        h.record_display_tty(Some("/dev/pts/3".into()));
+        assert_eq!(h.display_tty.0.as_deref(), Some("/dev/pts/3"));
+        // The display attachment died: the tty is cleared so no later switch-client targets it.
+        h.clear_display_tty();
+        assert!(h.display_tty.0.is_none(), "clear forgets the dead client's tty");
+    }
+
+    #[tokio::test]
+    async fn ensure_control_client_is_a_noop_for_a_poll_host() {
+        // A PerSession host has event_source() == Poll, so there is no -CC client to
+        // ensure: ensure_control_client returns Ok(false) and spawns nothing.
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::host::HostEvent>();
+        let mut h = Host::new(
+            Transport::Local { socket: None },
+            Box::new(StubMux(ServerModel::PerSession)), // StubMux::event_source == Poll
+        );
+        assert!(!h.ensure_control_client(80, 24, &tx).unwrap());
     }
 }
