@@ -1152,8 +1152,6 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     frame.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut dirty = true;
     let mut last_draw = std::time::Instant::now() - Duration::from_millis(FRAME_MS);
-    // DIAG (temp): detect if the parent console's raw mode gets reset out from under us.
-    let mut prev_raw = ratatui::crossterm::terminal::is_raw_mode_enabled().unwrap_or(true);
 
     loop {
         // Advance the spinner from wall-clock so it animates regardless of which arm
@@ -1186,18 +1184,6 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 let _ = term.clear();
             }
             dirty = true;
-        }
-        // DIAG (temp): log the exact iteration where raw mode flips off (terminal goes
-        // canonical → keys echo on screen, xmux stops receiving input). The line just
-        // before this in debug.log shows what activity (attach/reap/draw) preceded it.
-        {
-            let raw_now = ratatui::crossterm::terminal::is_raw_mode_enabled().unwrap_or(true);
-            if prev_raw && !raw_now {
-                dbg_log(&env.xmux_dir, "DIAG RAW_LOST (raw mode flipped off this iteration)");
-            } else if !prev_raw && raw_now {
-                dbg_log(&env.xmux_dir, "DIAG RAW_REGAINED");
-            }
-            prev_raw = raw_now;
         }
         // A portable-pty child spawn clears ENABLE_MOUSE_INPUT on the parent CONIN,
         // killing mouse capture; re-assert it whenever it drifts off.
@@ -1412,11 +1398,6 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         } else if attach_reply_is_current(&in_flight, &key, seq) {
                             in_flight.remove(&key);
                             registry.insert(&key, attachment);
-                            // DIAG (temp): was raw mode already off right after an attach landed?
-                            // If RAW off here, the ConPTY spawn on the worker thread reset it.
-                            if !ratatui::crossterm::terminal::is_raw_mode_enabled().unwrap_or(true) {
-                                dbg_log(&env.xmux_dir, &format!("DIAG raw OFF right after attach insert key={key}"));
-                            }
                             // The selection may have moved to another session of the same host
                             // while this first-attach was in flight; clearing the latch makes the
                             // next pass re-run select_attach, which (now that the host PTY exists)
