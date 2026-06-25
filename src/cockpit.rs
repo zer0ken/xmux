@@ -1991,6 +1991,9 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                 // issues the deferred switch-client to the current selection.
                                 last_attached_sel = Selection::default();
                             } else {
+                                // Stale Ready (a newer attach superseded this seq): forget its
+                                // pending id before teardown so the id->key map cannot grow.
+                                h.display.pending.remove(&attachment.id());
                                 attachment.teardown();
                             }
                         } else {

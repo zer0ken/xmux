@@ -54,10 +54,14 @@ impl HostDisplay {
     pub fn mark_in_flight(&mut self, key: &str, seq: u64) {
         self.in_flight.insert(key.to_string(), seq);
     }
-    /// Forget everything about `key` (its attachment closed/reaped).
+    /// Forget everything about `key` (its attachment closed/reaped), including any
+    /// in-flight attach id recorded for it — so a spawn whose `key` is cleared while
+    /// still in flight cannot leave a `pending` id that grows the map for the session's
+    /// lifetime (its orphaned `Ready` would otherwise tear down without forgetting it).
     pub fn clear(&mut self, key: &str) {
         self.current.remove(key);
         self.in_flight.remove(key);
+        self.pending.retain(|_, k| k != key);
     }
 }
 
@@ -322,14 +326,19 @@ mod tests {
     }
 
     #[test]
-    fn host_display_clears_both_maps_for_a_key() {
+    fn host_display_clear_forgets_current_in_flight_and_pending() {
         let mut d = HostDisplay::default();
         d.set_shows("local/work", "work");
         d.mark_in_flight("local/work", 7);
+        d.pending.insert(7, "local/work".into());
         assert_eq!(d.in_flight.get("local/work"), Some(&7));
         d.clear("local/work");
         assert_eq!(d.shows("local/work"), None, "clear forgets the shown session");
         assert_eq!(d.in_flight.get("local/work"), None, "clear forgets the in-flight seq");
+        assert!(
+            d.pending.is_empty(),
+            "clear forgets the key's pending id so a dead attach cannot leak it forever"
+        );
     }
 
     #[test]
