@@ -1072,6 +1072,25 @@ impl Switcher {
         }
     }
 
+    /// Moves the sidebar cursor to the session row whose address (`source/session`)
+    /// is `address`. The semantic target of `Operation::Switch` — addresses a row by
+    /// identity, not a screen position or a relative step, so an agent driving ctl
+    /// lands on the right session regardless of how the tree is currently ordered.
+    /// A no-op (returns false) when no such row exists or the cursor is already there.
+    pub fn select_address(&mut self, address: &str) -> bool {
+        let target = self.rows.iter().position(|r| {
+            matches!(&r.reference, RowRef::Session(s) if s.address() == address)
+        });
+        match target {
+            Some(i) if i != self.selected => {
+                self.user_moved = true;
+                self.set_selected(i);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Moves the cursor to the ACTIVE window row of the DISPLAYED session (read from
     /// cached pane data) — from a session row, a window row, OR a host row (which
     /// descends into the host's recent session). Used when focus moves to the terminal
@@ -4721,5 +4740,30 @@ mod tests {
         // clamped to the area:
         let pos = terminal_cursor_pos(Rect::new(49, 0, 4, 2), (100, 100));
         assert_eq!(pos, Position { x: 52, y: 1 });
+    }
+
+    #[test]
+    fn select_address_moves_cursor_to_named_session() {
+        use crate::session::Session;
+        use crate::ui::tree::Group;
+        let scan = Scan {
+            groups: vec![Group {
+                source: "jup".into(),
+                err: None,
+                sessions: vec![
+                    Session { source: "jup".into(), name: "api".into(), windows: 1, attached: false, last_attached: 200 },
+                    Session { source: "jup".into(), name: "db".into(),  windows: 1, attached: false, last_attached: 100 },
+                ],
+            }],
+            panes: Default::default(),
+        };
+        let mut sw = Switcher::new(scan);
+        // Cursor starts on the most-recent session row (api). Jump to db by address.
+        assert!(sw.select_address("jup/db"), "moved to jup/db");
+        assert_eq!(sw.terminal_view_target().target, "db");
+        // Already-there → no move; unknown address → no move, cursor unchanged.
+        assert!(!sw.select_address("jup/db"), "already on jup/db");
+        assert!(!sw.select_address("jup/ghost"), "no such session row");
+        assert_eq!(sw.terminal_view_target().target, "db", "cursor unchanged on a miss");
     }
 }
