@@ -92,20 +92,14 @@ impl Hosts {
         self.map.values_mut()
     }
 
-    /// Routes one `HostEvent` (the KEPT `-CC` reader's output, host.rs:50) to the
-    /// host it names, folding the pieces the Host owns directly: the captured display
-    /// tty, liveness, and death-clears-tty. The inventory sessions for
+    /// Routes one `HostEvent` (the metadata reader's output) to the host it names,
+    /// folding Host-owned liveness state. The inventory sessions for
     /// `Connected`/`Inventory` are applied by the caller from the reader's shared
     /// `HostInventory` (or via `Host::enumerate`); this sets liveness. An unknown host
     /// id is a no-op — there is no second registry to grow a ghost host.
     pub fn apply_host_event(&mut self, ev: &crate::host::HostEvent) {
         use crate::host::HostEvent::*;
         match ev {
-            DisplayTty { host, tty } => {
-                if let Some(h) = self.get_mut(host) {
-                    h.record_display_tty(tty.clone());
-                }
-            }
             Connected { host } | Inventory { host } => {
                 if let Some(h) = self.get_mut(host) {
                     h.liveness = Liveness::Live;
@@ -186,16 +180,9 @@ mod tests {
     }
 
     #[test]
-    fn apply_display_tty_event_records_it_on_the_host() {
-        let mut hosts = Hosts::build(&Config::default(), &["jup".to_string()], "linux", std::path::Path::new("/x"), None);
-        hosts.apply_host_event(&HostEvent::DisplayTty { host: "jup".into(), tty: Some("/dev/pts/9".into()) });
-        assert_eq!(hosts.get("jup").unwrap().display_tty.0.as_deref(), Some("/dev/pts/9"));
-    }
-
-    #[test]
     fn apply_exited_clears_tty_and_marks_unreachable() {
         let mut hosts = Hosts::build(&Config::default(), &["jup".to_string()], "linux", std::path::Path::new("/x"), None);
-        hosts.apply_host_event(&HostEvent::DisplayTty { host: "jup".into(), tty: Some("/dev/pts/9".into()) });
+        hosts.get_mut("jup").unwrap().record_display_tty(Some("/dev/pts/9".into()));
         hosts.apply_host_event(&HostEvent::Exited { host: "jup".into(), reason: None });
         let h = hosts.get("jup").unwrap();
         assert!(h.display_tty.0.is_none(), "death clears the tty so no switch-client targets it");

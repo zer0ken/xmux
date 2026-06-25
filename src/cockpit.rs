@@ -928,9 +928,6 @@ fn handle_host_event(
             // passthrough happens at the loop top (single unified call), not here.
             switcher.set_active_window(&host, &session, window);
         }
-        HostEvent::DisplayTty { .. } => {
-            // No handler: the cockpit does not store display_tty on Host.
-        }
         HostEvent::Exited { host, reason } => {
             note_host_exited(switcher, connected, &host, reason);
             mgr.reap(&host);

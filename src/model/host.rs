@@ -126,10 +126,10 @@ impl Host {
         }
     }
 
-    /// Record xmux's display-client tty for this host, captured in memory from a
-    /// `HostEvent::DisplayTty` (no `/tmp` file). The supervisor reads it to build a
+    /// Record xmux's display-client tty for this host, captured in memory from the
+    /// PTY marker (no `/tmp` file). The supervisor reads it to build a
     /// `switch-client -c <tty>` (via `mux.switch_client_argv`) that targets xmux's
-    /// OWN display client only.
+    /// own display client only.
     pub fn record_display_tty(&mut self, tty: Option<String>) {
         self.display_tty = DisplayTty(tty);
     }
