@@ -10,7 +10,7 @@ use interprocess::local_socket::tokio::{Listener, Stream};
 use interprocess::local_socket::traits::tokio::Listener as _;
 use interprocess::local_socket::ListenerOptions;
 use ratatui::backend::TestBackend;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::KeyEvent;
 use ratatui::Terminal;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
@@ -18,23 +18,18 @@ use tokio::sync::{mpsc, oneshot};
 use crate::control;
 use crate::ui::switcher::Switcher;
 
-/// The cockpit's state kind, as seen from the control channel. Mirrors
-/// [`crate::proxy::app::Focus`] but lives here so `Cmd` stays in this crate
-/// without pulling in the full proxy tree.
-pub enum AppStateKind {
-    Overlay,
-    Passthrough,
-}
-
 /// A unit of work the cockpit loop processes, from the control socket.
 pub enum Cmd {
-    Key(KeyEvent),
+    /// A resolved domain command — applied at the cockpit's single apply site.
+    Op(crate::model::Operation),
+    /// A control-channel `status` request: reply with the focus + selection line.
+    Status(oneshot::Sender<String>),
     /// A control-channel `dump` request: reply with the rendered screen.
     Dump(oneshot::Sender<String>),
-    /// Set the cockpit's overlay/passthrough state.
-    SetState(AppStateKind),
-    /// Forward raw bytes through the Passthrough input path to the active pane.
-    Keys(Vec<u8>),
+    /// Unstable/test-only: inject a raw key event into the switcher.
+    RawKey(KeyEvent),
+    /// Unstable/test-only: forward raw bytes to the focused pane.
+    RawBytes(Vec<u8>),
 }
 
 /// Renders the switcher to an off-screen buffer and flattens it — the payload the
@@ -130,62 +125,23 @@ async fn handle_conn(conn: Stream, cmd_tx: mpsc::Sender<Cmd>) {
     }
 }
 
-/// Parses a hex string (e.g. `"1b5b41"`) into bytes. Returns `Err` with an
-/// `"err: ..."` message on odd length or non-hex characters.
-fn parse_hex(s: &str) -> Result<Vec<u8>, String> {
-    if !s.len().is_multiple_of(2) {
-        return Err("err: odd-length hex string".into());
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| {
-            u8::from_str_radix(&s[i..i + 2], 16)
-                .map_err(|_| format!("err: invalid hex '{}'", &s[i..i + 2]))
-        })
-        .collect()
-}
-
 async fn dispatch(line: &str, cmd_tx: &mpsc::Sender<Cmd>) -> String {
-    let req = control::parse_request(line);
-    match req.verb.as_str() {
-        "ping" => "pong".into(),
-        "dump" => {
+    match crate::control::parse_ctl_op(line) {
+        crate::control::CtlRequest::Ping => "pong".into(),
+        crate::control::CtlRequest::Dump => {
             let (tx, rx) = oneshot::channel();
-            if cmd_tx.send(Cmd::Dump(tx)).await.is_err() {
-                return String::new();
-            }
+            if cmd_tx.send(Cmd::Dump(tx)).await.is_err() { return String::new(); }
             rx.await.unwrap_or_default()
         }
-        "key" => match control::parse_key(&req.arg) {
-            Some(ev) => {
-                let _ = cmd_tx.send(Cmd::Key(ev)).await;
-                "ok".into()
-            }
-            None => "err: unknown key".into(),
-        },
-        "text" => {
-            for c in req.arg.chars() {
-                let ev = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
-                let _ = cmd_tx.send(Cmd::Key(ev)).await;
-            }
-            "ok".into()
+        crate::control::CtlRequest::Status => {
+            let (tx, rx) = oneshot::channel();
+            if cmd_tx.send(Cmd::Status(tx)).await.is_err() { return String::new(); }
+            rx.await.unwrap_or_default()
         }
-        "passthrough" => {
-            let _ = cmd_tx.send(Cmd::SetState(AppStateKind::Passthrough)).await;
-            "ok".into()
-        }
-        "overlay" => {
-            let _ = cmd_tx.send(Cmd::SetState(AppStateKind::Overlay)).await;
-            "ok".into()
-        }
-        "keys" => match parse_hex(req.arg.trim()) {
-            Ok(bytes) => {
-                let _ = cmd_tx.send(Cmd::Keys(bytes)).await;
-                "ok".into()
-            }
-            Err(e) => e,
-        },
-        _ => "err: unknown command".into(),
+        crate::control::CtlRequest::Op(op) => { let _ = cmd_tx.send(Cmd::Op(op)).await; "ok".into() }
+        crate::control::CtlRequest::RawKey(ev) => { let _ = cmd_tx.send(Cmd::RawKey(ev)).await; "ok".into() }
+        crate::control::CtlRequest::RawBytes(b) => { let _ = cmd_tx.send(Cmd::RawBytes(b)).await; "ok".into() }
+        crate::control::CtlRequest::Unknown(_) => "err: unknown command".into(),
     }
 }
 
@@ -216,10 +172,10 @@ mod tests {
     #[tokio::test]
     async fn dispatch_dump_and_key_still_work() {
         let (tx, mut rx) = mpsc::channel::<Cmd>(8);
-        // key down → a Cmd::Key flows
-        let r = dispatch("key down", &tx).await;
+        // raw:key down → a Cmd::RawKey flows
+        let r = dispatch("raw:key down", &tx).await;
         assert_eq!(r, "ok");
-        assert!(matches!(rx.recv().await, Some(Cmd::Key(_))));
+        assert!(matches!(rx.recv().await, Some(Cmd::RawKey(_))));
         // dump → a Cmd::Dump flows (answered by a parallel responder)
         let tx2 = tx.clone();
         tokio::spawn(async move {
@@ -228,6 +184,23 @@ mod tests {
             }
         });
         assert_eq!(dispatch("dump", &tx2).await, "SCREEN");
+    }
+
+    #[tokio::test]
+    async fn dispatch_resolves_semantic_verbs_to_op_cmds() {
+        use crate::model::{FocusTarget, Operation};
+        let (tx, mut rx) = mpsc::channel::<Cmd>(8);
+        assert_eq!(dispatch("switch jup/api", &tx).await, "ok");
+        assert!(matches!(rx.recv().await, Some(Cmd::Op(Operation::Switch { address })) if address == "jup/api"));
+        assert_eq!(dispatch("focus tree", &tx).await, "ok");
+        assert!(matches!(rx.recv().await, Some(Cmd::Op(Operation::Focus(FocusTarget::Tree)))));
+        assert_eq!(dispatch("rescan", &tx).await, "ok");
+        assert!(matches!(rx.recv().await, Some(Cmd::Op(Operation::Rescan))));
+        // raw: keystrokes still flow, but only via the unstable namespace.
+        assert_eq!(dispatch("raw:keys 1b5b41", &tx).await, "ok");
+        assert!(matches!(rx.recv().await, Some(Cmd::RawBytes(b)) if b == vec![0x1b, 0x5b, 0x41]));
+        // the demoted bare verb is rejected
+        assert!(dispatch("key down", &tx).await.starts_with("err:"));
     }
 
     #[tokio::test]
@@ -286,11 +259,10 @@ mod tests {
         let consumer = tokio::spawn(async move {
             while let Some(cmd) = rx.recv().await {
                 match cmd {
-                    Cmd::Key(k) => sw.handle_key(k),
-                    Cmd::Dump(reply) => {
-                        let _ = reply.send(dump_switcher(&mut sw, 100, 30));
-                    }
-                    Cmd::SetState(_) | Cmd::Keys(_) => {}
+                    Cmd::RawKey(k) => sw.handle_key(k),
+                    Cmd::Dump(reply) => { let _ = reply.send(dump_switcher(&mut sw, 100, 30)); }
+                    Cmd::Status(reply) => { let _ = reply.send("focus=tree target=editor".into()); }
+                    Cmd::Op(_) | Cmd::RawBytes(_) => {}
                 }
             }
         });
@@ -303,8 +275,8 @@ mod tests {
             "dump should render the tree:\n{dump}"
         );
         assert_eq!(
-            client.do_cmd("key fnord").await.unwrap(),
-            "err: unknown key"
+            client.do_cmd("raw:key fnord").await.unwrap(),
+            "err: unknown command"
         );
         assert_eq!(
             client.do_cmd("bogus").await.unwrap(),
@@ -319,33 +291,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[tokio::test]
-    async fn dispatch_state_and_keys_verbs() {
-        let (tx, mut rx) = mpsc::channel::<Cmd>(8);
-        assert_eq!(dispatch("passthrough", &tx).await, "ok");
-        assert!(matches!(
-            rx.recv().await,
-            Some(Cmd::SetState(AppStateKind::Passthrough))
-        ));
-        assert_eq!(dispatch("overlay", &tx).await, "ok");
-        assert!(matches!(
-            rx.recv().await,
-            Some(Cmd::SetState(AppStateKind::Overlay))
-        ));
-        assert_eq!(dispatch("keys 1b5b41", &tx).await, "ok"); // ESC [ A
-        assert!(matches!(rx.recv().await, Some(Cmd::Keys(b)) if b == vec![0x1b, 0x5b, 0x41]));
-    }
-
-    #[tokio::test]
-    async fn dispatch_keys_rejects_invalid_hex() {
-        let (tx, mut rx) = mpsc::channel::<Cmd>(8);
-        // Odd-length hex is rejected; no Cmd is sent.
-        let r = dispatch("keys abc", &tx).await;
-        assert!(r.starts_with("err:"), "expected err, got: {r}");
-        // Non-hex characters are rejected.
-        let r = dispatch("keys zz", &tx).await;
-        assert!(r.starts_with("err:"), "expected err, got: {r}");
-        // Channel must be empty (no Cmd was sent for either bad input).
-        assert!(rx.try_recv().is_err(), "no Cmd should be sent on parse error");
-    }
 }

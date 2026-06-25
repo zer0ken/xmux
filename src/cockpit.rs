@@ -98,6 +98,45 @@ fn toggle_auto_hide(mode: &mut bool, xmux_dir: &std::path::Path) {
     crate::state::save_auto_hide_tree(xmux_dir, *mode);
 }
 
+/// Applies ONE resolved [`Operation`] to the cockpit's UI state — the single site
+/// both a keypress (via `Action::as_operation`) and a ctl command resolve through,
+/// so the two surfaces can never take divergent effect. Returns whether the cockpit
+/// should quit. `Switch` only moves the cursor; the loop-top `select_attach` commits
+/// the attach off `switcher` on the next pass. No host state is touched here.
+#[allow(clippy::too_many_arguments)]
+fn apply_operation(
+    op: crate::model::Operation,
+    switcher: &mut crate::ui::switcher::Switcher,
+    app: &mut crate::proxy::app::App,
+    tree_width_natural: &mut u16,
+    auto_hide_tree: &mut bool,
+    xmux_dir: &std::path::Path,
+    _ops: &std::sync::Arc<dyn crate::ui::switcher::Ops>,
+    _op_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
+) -> bool {
+    use crate::model::{FocusTarget, Operation};
+    match op {
+        Operation::Switch { address } => { switcher.select_address(&address); }
+        Operation::Focus(FocusTarget::Terminal) => { if app.is_tree_focused() { app.toggle(); } }
+        Operation::Focus(FocusTarget::Tree) => { if !app.is_tree_focused() { app.toggle(); } }
+        Operation::Rescan => { switcher.request_rescan(); }
+        Operation::TreeWidth(d) => apply_width_delta(d, tree_width_natural, xmux_dir),
+        Operation::ToggleAutoHide => toggle_auto_hide(auto_hide_tree, xmux_dir),
+        Operation::Quit => return true,
+    }
+    false
+}
+
+/// The `status` verb reply: the current focus side + the cursor's session target.
+/// A flat, parseable line an agent reads to confirm a `switch`/`focus` landed.
+fn status_line(switcher: &crate::ui::switcher::Switcher, tree_focused: bool) -> String {
+    format!(
+        "focus={} target={}",
+        if tree_focused { "tree" } else { "terminal" },
+        switcher.terminal_view_target().target,
+    )
+}
+
 /// The tree width a divider drag to 1-based screen column `col` sets: the dragged
 /// column becomes the divider position (= the tree width), clamped to the allowed range.
 fn divider_drag_width(col: u16) -> u16 {
@@ -948,7 +987,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     use crate::proxy::decode::KeyDecoder;
     use crate::proxy::input::TermInput;
     use crate::proxy::term::{parse_prefix, TermGuard};
-    use crate::ui::run::{dump_overlay, serve_control, AppStateKind, Cmd};
+    use crate::ui::run::{dump_overlay, serve_control, Cmd};
     use crate::ui::switcher::Switcher;
     use std::io::Read;
     use std::time::Duration;
@@ -1775,11 +1814,15 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             }
             Some(cmd) = cmd_rx.recv() => {
                 match cmd {
-                    Cmd::Key(k) => {
-                        switcher.handle_key(k);
+                    Cmd::Op(op) => {
+                        if apply_operation(op, &mut switcher, &mut app, &mut tree_width_natural, &mut auto_hide_tree, &env.xmux_dir, &ops, &op_tx) {
+                            break;
+                        }
+                        // A Switch/Focus may need the cursor's host connected + its rescan kick consumed.
                         dispatch_pending_op(&mut switcher, &ops, &op_tx);
                         ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows, tree_width);
                     }
+                    Cmd::Status(reply) => { let _ = reply.send(status_line(&switcher, app.is_tree_focused())); }
                     Cmd::Dump(reply) => {
                         let sz = term
                             .size()
@@ -1796,13 +1839,12 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         };
                         let _ = reply.send(dump);
                     }
-                    Cmd::SetState(kind) => {
-                        app.state = match kind {
-                            AppStateKind::Overlay => crate::proxy::app::Focus::Tree,
-                            AppStateKind::Passthrough => crate::proxy::app::Focus::Terminal,
-                        };
+                    Cmd::RawKey(k) => {
+                        switcher.handle_key(k);
+                        dispatch_pending_op(&mut switcher, &ops, &op_tx);
+                        ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows, tree_width);
                     }
-                    Cmd::Keys(bytes) => {
+                    Cmd::RawBytes(bytes) => {
                         if !bytes.is_empty() {
                             registry.input(&display_key(&env, &selection), bytes);
                         }
@@ -2791,4 +2833,57 @@ mod tests {
     //    xmux only forwards. (Windows: capture needs ENABLE_VIRTUAL_TERMINAL_INPUT +
     //    the SGR DECSET that crossterm's WinAPI path omits — see proxy::term.)
     // =========================================================================
+
+    #[test]
+    fn apply_operation_switch_moves_cursor_focus_toggles_width_and_quit() {
+        use crate::model::{FocusTarget, Operation};
+        use crate::proxy::app::{App, Focus};
+        use crate::session::Session;
+        use crate::ui::tree::Group;
+        use crate::ui::switcher::{Scan, Switcher};
+        let scan = Scan {
+            groups: vec![Group { source: "jup".into(), err: None, sessions: vec![
+                Session { source: "jup".into(), name: "api".into(), windows: 1, attached: false, last_attached: 200 },
+                Session { source: "jup".into(), name: "db".into(),  windows: 1, attached: false, last_attached: 100 },
+            ]}],
+            panes: Default::default(),
+        };
+        let mut sw = Switcher::new(scan);
+        let mut app = App::new();
+        let mut natural = 48u16;
+        let mut hide = false;
+        let dir = std::env::temp_dir().join(format!("xmux-apply-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ops = crate::ui::switcher::tests_support::noop_ops();
+        let (op_tx, _op_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Switch addr → cursor lands on db.
+        assert!(!apply_operation(Operation::Switch { address: "jup/db".into() }, &mut sw, &mut app, &mut natural, &mut hide, &dir, &ops, &op_tx));
+        assert_eq!(sw.terminal_view_target().target, "db");
+        // Focus(Terminal) leaves tree focus → terminal focus.
+        assert!(app.is_tree_focused());
+        apply_operation(Operation::Focus(FocusTarget::Terminal), &mut sw, &mut app, &mut natural, &mut hide, &dir, &ops, &op_tx);
+        assert_eq!(app.state, Focus::Terminal);
+        // Focus(Tree) returns to tree focus.
+        apply_operation(Operation::Focus(FocusTarget::Tree), &mut sw, &mut app, &mut natural, &mut hide, &dir, &ops, &op_tx);
+        assert_eq!(app.state, Focus::Tree);
+        // TreeWidth adjusts the natural width; Quit returns true.
+        apply_operation(Operation::TreeWidth(1), &mut sw, &mut app, &mut natural, &mut hide, &dir, &ops, &op_tx);
+        assert_eq!(natural, 49);
+        assert!(apply_operation(Operation::Quit, &mut sw, &mut app, &mut natural, &mut hide, &dir, &ops, &op_tx), "Quit signals quit");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn status_line_reports_focus_and_address() {
+        use crate::session::Session;
+        use crate::ui::tree::Group;
+        use crate::ui::switcher::{Scan, Switcher};
+        let scan = Scan { groups: vec![Group { source: "jup".into(), err: None, sessions: vec![
+            Session { source: "jup".into(), name: "api".into(), windows: 1, attached: false, last_attached: 1 },
+        ]}], panes: Default::default() };
+        let sw = Switcher::new(scan);
+        assert_eq!(status_line(&sw, true), "focus=tree target=api");
+        assert_eq!(status_line(&sw, false), "focus=terminal target=api");
+    }
 }
