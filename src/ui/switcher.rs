@@ -1208,6 +1208,22 @@ impl Switcher {
         self.show_help || self.input.is_some() || self.pending_kill.is_some()
     }
 
+    /// The single source of truth for which kind of modal is open. The cockpit's
+    /// focus state machine derives its modal dimension from this each loop-top, so
+    /// `Focus` can never mirror-and-desync from the switcher. A popup (help / input /
+    /// confirm) and the context menu are mutually exclusive; a popup wins if both
+    /// somehow held.
+    pub(crate) fn modal_kind(&self) -> Option<crate::proxy::app::ModalKind> {
+        use crate::proxy::app::ModalKind;
+        if self.is_modal_popup_open() {
+            Some(ModalKind::Popup)
+        } else if self.menu.is_some() {
+            Some(ModalKind::Menu)
+        } else {
+            None
+        }
+    }
+
     /// True while a modal popup is being border-dragged; the cockpit routes every
     /// mouse event here until release, like the divider drag / menu hold.
     pub fn popup_drag_active(&self) -> bool {
