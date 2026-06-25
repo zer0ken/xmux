@@ -480,6 +480,7 @@ fn sync_source_terminals(
         return;
     };
     let shares_one = host.mux.server_model().shares_one_attachment();
+    let remote = host.transport.is_remote();
     if shares_one {
         // One PTY per host. Warm it on the first session if not yet attached; reap it
         // (and forget its session) when the host has no sessions.
@@ -487,7 +488,7 @@ fn sync_source_terminals(
             Some(first) if !registry.contains(source) && !host.display.in_flight.contains_key(source) => {
                 request_attach(
                     registry, worker, &mut host.display, attach_seq,
-                    source, src.attach_command(&first.name, None), cols, rows,
+                    source, shared_display_attach_argv(remote, src, &first.name, None), cols, rows,
                 );
                 host.display.set_shows(source, &first.name);
             }
@@ -977,6 +978,26 @@ fn marked_remote_attach_argv(src: &crate::source::Source, session: &str, window:
         *last = format!("{}{}", crate::model::death::display_tty_marker_prefix(), last);
     }
     argv
+}
+
+/// The display-attach argv for a SHARED host's one kept PTY. A REMOTE attach carries
+/// the marker so the attach shell self-reports its tty (which a later `switch-client
+/// -c <tty>` and the `%client-detached` reap both need); a LOCAL attach has no shell
+/// to run the marker snippet, so it stays bare — prepending the snippet would corrupt
+/// the local argv's session-name argument. Every shared warm routes through this so
+/// the marker decision matches `select_attach` (marker iff `transport.is_remote()`)
+/// and cannot drift between spawn sites.
+fn shared_display_attach_argv(
+    remote: bool,
+    src: &crate::source::Source,
+    session: &str,
+    window: Option<i64>,
+) -> Vec<String> {
+    if remote {
+        marked_remote_attach_argv(src, session, window)
+    } else {
+        src.attach_command(session, window)
+    }
 }
 
 /// Clears the display tty of the host owning the EOF'd attach `id`, so a dropped
@@ -2166,9 +2187,10 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     if let Some(s) = first {
                         if let Some(host) = hosts.get_mut(&src.alias) {
                             if !host.display.in_flight.contains_key(&src.alias) {
+                                let remote = host.transport.is_remote();
                                 request_attach(
                                     &mut registry, &worker, &mut host.display, &mut attach_seq,
-                                    &src.alias, marked_remote_attach_argv(src, &s.name, None), vc, vr,
+                                    &src.alias, shared_display_attach_argv(remote, src, &s.name, None), vc, vr,
                                 );
                                 host.display.set_shows(&src.alias, &s.name);
                             }
@@ -3013,6 +3035,32 @@ mod tests {
             marked.len(),
             bare.len(),
             "marked_remote_attach_argv must not change argv length"
+        );
+    }
+
+    #[test]
+    fn shared_display_attach_argv_marks_remote_and_leaves_local_bare() {
+        let prefix = crate::model::death::display_tty_marker_prefix();
+        // Remote shared warm: carries the marker so the attach shell self-reports its
+        // tty — without it the host's display_tty stays empty and switch-client fails.
+        let remote_src = Source { remote: true, ..fake_source("jup") };
+        let marked = shared_display_attach_argv(true, &remote_src, "sess", None);
+        assert!(
+            marked.last().unwrap().starts_with(prefix),
+            "a remote shared attach must carry the display-tty marker: {marked:?}"
+        );
+        // Local shared warm: bare attach_command. Prepending the shell snippet would
+        // corrupt the session-name argument (a local argv has no shell to run it).
+        let local_src = Source { remote: false, ..fake_source("local") };
+        let bare = shared_display_attach_argv(false, &local_src, "sess", None);
+        assert_eq!(
+            bare,
+            local_src.attach_command("sess", None),
+            "a local shared attach must be the bare, uncorrupted attach command"
+        );
+        assert!(
+            !bare.last().unwrap().starts_with(prefix),
+            "a local shared attach must NOT carry the marker: {bare:?}"
         );
     }
 
