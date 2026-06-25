@@ -1346,6 +1346,7 @@ fn handle_stdin_bytes(
     // missed button-up can't strand the menu and eat later input.
     if switcher.menu_active() && !non_mouse.is_empty() {
         switcher.menu_cancel();
+        non_mouse.clear();
         *dirty = true;
     }
     // Watchdog: same recovery for a popup border-drag — a lost button-up
@@ -3228,6 +3229,71 @@ mod tests {
         let out = feed!(b"\r");
         assert!(!out.quit);
         assert_eq!(app.state, Focus::Popup { prior: PaneFocus::Tree }, "Enter did not focus the mux");
+    }
+
+    #[test]
+    fn menu_keyboard_input_is_consumed_without_changing_restore_pane_or_writing_pty() {
+        use crate::proxy::app::{App, Focus, PaneFocus};
+        use crate::session::Session;
+        use crate::ui::switcher::{Scan, Switcher};
+        use crate::ui::tree::Group;
+        use ratatui::{backend::TestBackend, Terminal};
+
+        fn run_case(bytes: &[u8]) -> (StdinOutcome, Focus, Focus, usize) {
+            let scan = Scan { groups: vec![Group { source: "local".into(), err: None, sessions: vec![
+                Session { source: "local".into(), name: "api".into(), windows: 1, attached: false, last_attached: 1 },
+            ]}], panes: Default::default() };
+            let mut switcher = Switcher::new(scan);
+            let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+            term.draw(|f| switcher.render(f, None, false, crate::ui::switcher::TREE_WIDTH)).unwrap();
+            let opened = (0..10).any(|row| switcher.menu_open(1, row));
+            assert!(opened, "menu opens over a rendered tree row");
+
+            let mut app = App::new();
+            app.sync_modal(switcher.modal_kind());
+            assert_eq!(app.state, Focus::Menu { prior: PaneFocus::Tree });
+
+            let mut registry = AttachRegistry::new();
+            let (att, input_log) = crate::proxy::run::fake_attachment_with_input_log(1);
+            registry.insert("local/api", att);
+            let mut mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
+            let mut hosts = crate::model::Hosts::default();
+            hosts.insert(crate::model::Host::new(
+                crate::model::Transport::Local { socket: None },
+                crate::model::for_binary("psmux"),
+            ));
+            let selection = Selection { source: "local".into(), session: "api".into(), window: None };
+            let mut mouse = MouseState::default();
+            let mut term_input = crate::proxy::input::TermInput::new(0x07);
+            let mut tree_decoder = crate::proxy::decode::KeyDecoder::new();
+            let ops = crate::ui::switcher::tests_support::noop_ops();
+            let (op_tx, _r) = tokio::sync::mpsc::unbounded_channel();
+            let (enum_tx, _er) = tokio::sync::mpsc::unbounded_channel();
+            let env = fake_env_with_sources(&["local"]);
+            let mut natural = 48u16;
+            let mut hide = false;
+
+            let out = handle_stdin_bytes(
+                bytes, &mut mouse, &mut switcher, &mut app, &mut registry, &mut mgr, &env,
+                &mut hosts, &selection, &mut term_input, &mut tree_decoder, &ops, &op_tx,
+                &enum_tx, &mut natural, &mut hide, 0x07, 80, 24,
+                crate::ui::switcher::TREE_WIDTH,
+            );
+            let during = app.state;
+            app.sync_modal(switcher.modal_kind());
+            let restored = app.state;
+            let writes = input_log.lock().unwrap().len();
+            (out, during, restored, writes)
+        }
+
+        for (bytes, label) in [(b"\r".as_slice(), "Enter"), (b"\x07\t".as_slice(), "prefix Tab")] {
+            let (out, during, restored, writes) = run_case(bytes);
+            assert!(!out.quit, "{label} over a menu does not quit");
+            assert!(!out.focus_terminal, "{label} over a menu does not request mux focus");
+            assert_eq!(during, Focus::Menu { prior: PaneFocus::Tree }, "{label} preserves the menu restore pane");
+            assert_eq!(restored, Focus::Tree, "{label} closes the menu back to the prior tree pane");
+            assert_eq!(writes, 0, "{label} over a menu is not forwarded to the PTY");
+        }
     }
 
     #[test]

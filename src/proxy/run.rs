@@ -189,6 +189,8 @@ pub struct Attachment {
     pending: Arc<AtomicBool>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     id: u64,
+    #[cfg(test)]
+    input_log: Option<Arc<Mutex<Vec<Vec<u8>>>>>,
 }
 
 impl Attachment {
@@ -197,6 +199,10 @@ impl Attachment {
     }
     /// Queue input bytes to the child (FIFO, off the loop).
     pub fn input(&self, bytes: Vec<u8>) {
+        #[cfg(test)]
+        if let Some(log) = &self.input_log {
+            log.lock().unwrap().push(bytes.clone());
+        }
         let _ = self.control_tx.send(PtyCmd::Input(bytes));
     }
     /// Clear the output-coalescing flag after a redraw, so the pump may signal the
@@ -349,6 +355,8 @@ pub fn spawn_attachment(
         pending,
         child,
         id,
+        #[cfg(test)]
+        input_log: None,
     })
 }
 
@@ -403,7 +411,16 @@ pub fn fake_attachment(id: u64) -> Attachment {
         pending: Arc::new(AtomicBool::new(false)),
         child: Box::new(DummyChild),
         id,
+        input_log: None,
     }
+}
+
+#[cfg(test)]
+pub fn fake_attachment_with_input_log(id: u64) -> (Attachment, Arc<Mutex<Vec<Vec<u8>>>>) {
+    let mut att = fake_attachment(id);
+    let log = Arc::new(Mutex::new(Vec::new()));
+    att.input_log = Some(log.clone());
+    (att, log)
 }
 
 #[cfg(test)]
