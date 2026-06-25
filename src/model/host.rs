@@ -31,6 +31,14 @@ pub struct HostDisplay {
     pub current: HashMap<String, String>,
     /// display_key -> in-flight spawn seq (was `in_flight`, cockpit.rs:996).
     pub in_flight: HashMap<String, u64>,
+    /// Spawned attachment ids whose PTY EOF'd BEFORE their off-loop Ready arrived (the
+    /// Exited-raced-Ready case). The Ready arm tears the attachment down instead of
+    /// inserting a dead pane. Was the free `reaped_ids` set.
+    pub reaped_ids: std::collections::HashSet<u64>,
+    /// In-flight attachment id → its display key, recorded at request time so a
+    /// pre-Ready Exited (registry has no id yet) can be attributed to THIS host's
+    /// reaped_ids. Cleared when the attachment registers (Ready) or fails.
+    pub pending: std::collections::HashMap<u64, String>,
 }
 
 impl HostDisplay {
@@ -322,6 +330,21 @@ mod tests {
         d.clear("local/work");
         assert_eq!(d.shows("local/work"), None, "clear forgets the shown session");
         assert_eq!(d.in_flight.get("local/work"), None, "clear forgets the in-flight seq");
+    }
+
+    #[test]
+    fn host_display_tracks_reaped_and_pending() {
+        let mut d = HostDisplay::default();
+        assert!(d.reaped_ids.is_empty(), "reaped_ids defaults empty");
+        assert!(d.pending.is_empty(), "pending defaults empty");
+        // A pre-Ready Exited records the dead id; its Ready later removes it.
+        d.pending.insert(7, "jup".into());
+        d.reaped_ids.insert(7);
+        assert_eq!(d.pending.get(&7), Some(&"jup".to_string()), "pending maps id -> key");
+        assert!(d.reaped_ids.contains(&7), "reaped_ids holds the dead id");
+        d.reaped_ids.remove(&7);
+        d.pending.remove(&7);
+        assert!(d.reaped_ids.is_empty() && d.pending.is_empty(), "round-trips back to empty");
     }
 
     #[test]
