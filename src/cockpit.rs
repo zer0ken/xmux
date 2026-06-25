@@ -317,10 +317,7 @@ fn select_attach(
             // Ready arm) issues a switch-client to the current selection. Overwriting it here
             // would make the switch-client guard think the PTY is already on the new session.
             if !in_flight.contains_key(&key) {
-                let mut argv = src.attach_command(&sel.session, sel.window);
-                if let Some(last) = argv.last_mut() {
-                    *last = format!("{}{}", crate::model::death::display_tty_marker_prefix(), last);
-                }
+                let argv = marked_remote_attach_argv(src, &sel.session, sel.window);
                 request_attach(registry, worker, in_flight, attach_seq, &key, argv, cols, rows);
                 host_session.insert(sel.source.clone(), sel.session.clone());
             }
@@ -869,6 +866,31 @@ fn record_display_tty(hosts: &mut crate::model::Hosts, registry: &AttachRegistry
     }
 }
 
+/// The remote attach argv with the display-tty marker prepended to its remote
+/// command, so the attach shell self-reports its own tty (xmux's display client)
+/// over the pump before exec. Every remote display-attach spawn routes through
+/// this; a spawn site that built the argv directly would leave the host's
+/// display_tty empty and the %client-detached reap unable to match.
+fn marked_remote_attach_argv(src: &crate::source::Source, session: &str, window: Option<i64>) -> Vec<String> {
+    let mut argv = src.attach_command(session, window);
+    if let Some(last) = argv.last_mut() {
+        *last = format!("{}{}", crate::model::death::display_tty_marker_prefix(), last);
+    }
+    argv
+}
+
+/// Clears the display tty of the host owning the EOF'd attach `id`, so a dropped
+/// display client cannot leave a stale tty that a later %client-detached matches.
+/// Must run BEFORE the reap removes the registry entry (address_of_id needs it).
+fn clear_display_tty_for_attach(hosts: &mut crate::model::Hosts, registry: &AttachRegistry, id: u64) {
+    if let Some(addr) = registry.address_of_id(id) {
+        let host_id = addr.split('/').next().unwrap_or(&addr).to_string();
+        if let Some(h) = hosts.get_mut(&host_id) {
+            h.display_tty = crate::model::DisplayTty(None);
+        }
+    }
+}
+
 /// Handles a remote host's control client dying. A host that had connected keeps its
 /// last-known tree. A never-connected host that died with "no sessions" / "no server
 /// running" is REACHABLE but has no mux server — it renders "(empty)" (and a session
@@ -1338,6 +1360,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         if Some(id) == displayed_attach_id {
                             detached = true;
                         }
+                        clear_display_tty_for_attach(&mut hosts, &registry, id);
                         if !registry.reap(id) {
                             reaped_ids.insert(id);
                         }
@@ -1352,6 +1375,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             if Some(id) == displayed_attach_id {
                                 detached = true;
                             }
+                            clear_display_tty_for_attach(&mut hosts, &registry, id);
                             if !registry.reap(id) {
                                 reaped_ids.insert(id);
                             }
@@ -1905,7 +1929,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         if !in_flight.contains_key(&src.alias) {
                             request_attach(
                                 &mut registry, &worker, &mut in_flight, &mut attach_seq,
-                                &src.alias, src.attach_command(&s.name, None), vc, vr,
+                                &src.alias, marked_remote_attach_argv(src, &s.name, None), vc, vr,
                             );
                             host_session.insert(src.alias.clone(), s.name.clone());
                         }
@@ -2730,6 +2754,32 @@ mod tests {
         assert!(
             hosts.get("jup").unwrap().display_tty.0.is_none(),
             "the dead client's tty is forgotten so no later switch-client targets it"
+        );
+    }
+
+    #[test]
+    fn marked_remote_attach_argv_prepends_marker_to_last_element() {
+        let mut src = fake_source("jup");
+        src.remote = true;
+        let bare = src.attach_command("mysession", None);
+        let bare_last = bare.last().cloned().unwrap_or_default();
+
+        let marked = marked_remote_attach_argv(&src, "mysession", None);
+        let marked_last = marked.last().cloned().unwrap_or_default();
+
+        let prefix = crate::model::death::display_tty_marker_prefix();
+        assert!(
+            marked_last.starts_with(prefix),
+            "last argv element must start with the display-tty marker prefix"
+        );
+        assert!(
+            marked_last.ends_with(&bare_last),
+            "the rest of the last element after the prefix is the original attach command"
+        );
+        assert_eq!(
+            marked.len(),
+            bare.len(),
+            "marked_remote_attach_argv must not change argv length"
         );
     }
 
