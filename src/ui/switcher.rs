@@ -2403,8 +2403,8 @@ impl Menu {
 /// of the widest item label (+ a pad cell each side) and the title, plus borders, and
 /// the item count; clamped so it stays fully inside `area` (shifts up/left near an edge).
 fn menu_rect(col: u16, row: u16, items: &[MenuItem], title: &str, area: Rect) -> Rect {
-    let item_w = items.iter().map(|it| it.label().chars().count()).max().unwrap_or(0);
-    let content_w = (item_w + 2).max(title.chars().count()) as u16;
+    let item_w = items.iter().map(|it| UnicodeWidthStr::width(it.label())).max().unwrap_or(0);
+    let content_w = (item_w + 2).max(UnicodeWidthStr::width(title)) as u16;
     let w = (content_w + 2).min(area.width.max(1));
     let h = (items.len() as u16 + 2).min(area.height.max(1));
     // Anchor the title row (top border) on the pointer, tmux-style: the pointer lands on
@@ -3912,6 +3912,15 @@ mod tests {
         let area = Rect::new(0, 0, 80, 24);
         let r = menu_rect(0, 0, &[Focus], "a-very-long-session-name", area);
         assert!(r.width as usize >= "a-very-long-session-name".len() + 2, "title fits in the box");
+    }
+
+    #[test]
+    fn menu_rect_measures_cjk_title_by_display_width() {
+        use super::MenuItem::*;
+        let area = Rect::new(0, 0, 80, 24);
+        let title = "한국한국한국한국";
+        let r = menu_rect(0, 0, &[Focus], title, area);
+        assert_eq!(r.width as usize, UnicodeWidthStr::width(title) + 2);
     }
 
     #[tokio::test]
