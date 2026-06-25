@@ -226,6 +226,17 @@ pub fn for_binary(bin: &str) -> Box<dyn Mux> {
     Box::new(Tmux { bin: bin.to_string() })
 }
 
+/// Builds a backend by canonical identity while preserving the binary used to
+/// reach it.
+pub fn for_kind(kind: &str, bin: &str) -> Box<dyn Mux> {
+    for k in known_muxes() {
+        if k.name == kind {
+            return (k.make)(bin.to_string());
+        }
+    }
+    Box::new(Tmux { bin: bin.to_string() })
+}
+
 /// Picks the backend for a server from its `<bin> help` output. Open/Closed: a new
 /// mux type is added via a known_muxes() entry, not a branch here. tmux is the
 /// fallback because it has no positive help signal.
@@ -459,5 +470,18 @@ mod tests {
         // Any non-psmux binary defaults to tmux (matches Config::local_bin's default).
         assert_eq!(for_binary("").kind(), "tmux");
         assert_eq!(for_binary("some-fork-of-tmux").kind(), "tmux");
+    }
+
+    #[test]
+    fn for_kind_preserves_identity_and_invoked_binary() {
+        let p = for_kind("psmux", "tmux");
+        assert_eq!(p.kind(), "psmux");
+        assert_eq!(p.bin(), "tmux");
+        assert_eq!(p.event_source(), EventSource::Poll { interval_ms: 1500 });
+
+        let t = for_kind("tmux", "psmux");
+        assert_eq!(t.kind(), "tmux");
+        assert_eq!(t.bin(), "psmux");
+        assert_eq!(t.event_source(), EventSource::Control);
     }
 }
