@@ -40,7 +40,7 @@ pub enum Notif<'a> {
     Pause { pane: &'a str },
     Continue { pane: &'a str },
     Exit { reason: Option<&'a str> },
-    ClientDetached,
+    ClientDetached { client: &'a str },
     Other,
 }
 
@@ -141,7 +141,9 @@ pub fn parse_notif(line: &str) -> Notif<'_> {
         "%layout-change" => it.next().map_or(Notif::Other, |w| Notif::LayoutChange { window: w }),
         "%pause" => it.next().map_or(Notif::Other, |p| Notif::Pause { pane: p }),
         "%continue" => it.next().map_or(Notif::Other, |p| Notif::Continue { pane: p }),
-        "%client-detached" => Notif::ClientDetached,
+        "%client-detached" => it
+            .next()
+            .map_or(Notif::Other, |c| Notif::ClientDetached { client: c }),
         "%exit" => {
             let reason = line.strip_prefix("%exit").map(str::trim).filter(|s| !s.is_empty());
             Notif::Exit { reason }
@@ -203,7 +205,13 @@ mod tests {
             Notif::SessionWindowChanged { session: "$1", window: "@4" }));
         assert!(matches!(parse_notif("%pause %9"), Notif::Pause { pane: "%9" }));
         assert!(matches!(parse_notif("%continue %9"), Notif::Continue { pane: "%9" }));
-        assert!(matches!(parse_notif("%client-detached client0"), Notif::ClientDetached));
+        assert!(matches!(
+            parse_notif("%client-detached /dev/pts/3"),
+            Notif::ClientDetached { client: "/dev/pts/3" }
+        ));
+        // A bare %client-detached with no client argument is malformed → Other (never a
+        // ClientDetached with an empty client that could later mis-match an empty tty).
+        assert!(matches!(parse_notif("%client-detached"), Notif::Other));
         // `%unlinked-window-*` (a structural change in a session that is not the
         // control client's own) maps to the same variants as the linked form so the
         // cockpit refetches the tree for it too.
