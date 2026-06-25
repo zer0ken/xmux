@@ -10,6 +10,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::model::{FocusTarget, Operation};
+
 use interprocess::local_socket::tokio::Stream;
 use interprocess::local_socket::traits::tokio::Stream as _;
 use interprocess::local_socket::Name;
@@ -196,6 +198,75 @@ impl Client {
     }
 }
 
+/// Parses a hex string (`"1b5b41"`) into bytes. Lives here so the wire parser and
+/// the dispatcher share one decoder.
+pub(crate) fn parse_hex(s: &str) -> Result<Vec<u8>, String> {
+    if !s.len().is_multiple_of(2) {
+        return Err("err: odd-length hex string".into());
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&s[i..i + 2], 16)
+                .map_err(|_| format!("err: invalid hex '{}'", &s[i..i + 2]))
+        })
+        .collect()
+}
+
+/// A parsed ctl command resolved to its domain meaning. The semantic verbs map to
+/// `Operation`; the keystroke-injection surface lives behind a `raw:` namespace and
+/// is unstable/test-only.
+#[derive(Debug, PartialEq)]
+pub enum CtlRequest {
+    Op(Operation),
+    Status,
+    Ping,
+    Dump,
+    /// Unstable, test-only: inject a raw key event (`raw:key down`).
+    RawKey(KeyEvent),
+    /// Unstable, test-only: inject raw bytes (`raw:keys 1b5b41`) or text (`raw:text hi`).
+    RawBytes(Vec<u8>),
+    Unknown(String),
+}
+
+/// Resolves a ctl request line to a `CtlRequest`. Semantic verbs (`switch`,
+/// `focus`, `rescan`, `quit`, `width`, `toggle-auto-hide`) become `Operation`; the
+/// raw keystroke surface is `raw:key` / `raw:keys` / `raw:text`. Anything else is
+/// `Unknown` (the dispatcher replies `err: ...`). ctl speaks the DOMAIN here, not
+/// internal key names (C-CTL): the wire never references an Action/KeyCode again.
+pub fn parse_ctl_op(line: &str) -> CtlRequest {
+    let req = parse_request(line);
+    match req.verb.as_str() {
+        "ping" => CtlRequest::Ping,
+        "dump" => CtlRequest::Dump,
+        "status" => CtlRequest::Status,
+        "rescan" => CtlRequest::Op(Operation::Rescan),
+        "quit" => CtlRequest::Op(Operation::Quit),
+        "toggle-auto-hide" => CtlRequest::Op(Operation::ToggleAutoHide),
+        "switch" if !req.arg.trim().is_empty() => {
+            CtlRequest::Op(Operation::Switch { address: req.arg.trim().to_string() })
+        }
+        "focus" => match FocusTarget::from_str(&req.arg) {
+            Some(t) => CtlRequest::Op(Operation::Focus(t)),
+            None => CtlRequest::Unknown(line.trim().to_string()),
+        },
+        "width" => match req.arg.trim().parse::<i32>() {
+            Ok(d) => CtlRequest::Op(Operation::TreeWidth(d)),
+            Err(_) => CtlRequest::Unknown(line.trim().to_string()),
+        },
+        "raw:key" => match parse_key(&req.arg) {
+            Some(ev) => CtlRequest::RawKey(ev),
+            None => CtlRequest::Unknown(line.trim().to_string()),
+        },
+        "raw:keys" => match parse_hex(req.arg.trim()) {
+            Ok(b) => CtlRequest::RawBytes(b),
+            Err(_) => CtlRequest::Unknown(line.trim().to_string()),
+        },
+        "raw:text" => CtlRequest::RawBytes(req.arg.into_bytes()),
+        _ => CtlRequest::Unknown(line.trim().to_string()),
+    }
+}
+
 /// Returns the control socket path for a given pid in `dir`.
 pub fn socket_path(dir: &Path, pid: u32) -> PathBuf {
     dir.join(format!("ctl-{pid}.sock"))
@@ -243,6 +314,45 @@ mod tests {
     use super::*;
     use std::io::Cursor;
     use tokio::io::BufReader as TokioBufReader;
+
+    #[test]
+    fn parse_ctl_op_semantic_verbs() {
+        use crate::model::{FocusTarget, Operation};
+        assert_eq!(parse_ctl_op("switch jup/api"), CtlRequest::Op(Operation::Switch { address: "jup/api".into() }));
+        assert_eq!(parse_ctl_op("focus terminal"), CtlRequest::Op(Operation::Focus(FocusTarget::Terminal)));
+        assert_eq!(parse_ctl_op("focus tree"), CtlRequest::Op(Operation::Focus(FocusTarget::Tree)));
+        assert_eq!(parse_ctl_op("rescan"), CtlRequest::Op(Operation::Rescan), "COR-1: rescan is now reachable over ctl");
+        assert_eq!(parse_ctl_op("quit"), CtlRequest::Op(Operation::Quit));
+        assert_eq!(parse_ctl_op("width -2"), CtlRequest::Op(Operation::TreeWidth(-2)));
+        assert_eq!(parse_ctl_op("toggle-auto-hide"), CtlRequest::Op(Operation::ToggleAutoHide));
+        assert_eq!(parse_ctl_op("status"), CtlRequest::Status);
+        assert_eq!(parse_ctl_op("ping"), CtlRequest::Ping);
+        assert_eq!(parse_ctl_op("dump"), CtlRequest::Dump);
+    }
+    #[test]
+    fn parse_ctl_op_raw_namespace_is_test_only_surface() {
+        assert!(matches!(parse_ctl_op("raw:key down"), CtlRequest::RawKey(_)));
+        assert!(matches!(parse_ctl_op("raw:keys 1b5b41"), CtlRequest::RawBytes(b) if b == vec![0x1b, 0x5b, 0x41]));
+        assert!(matches!(parse_ctl_op("raw:text hi"), CtlRequest::RawBytes(b) if b == b"hi".to_vec()));
+        // A bare `key` (no raw: prefix) is no longer a recognized verb — the keystroke
+        // surface is explicitly behind raw:, so the loose old verb is now Unknown.
+        assert!(matches!(parse_ctl_op("key down"), CtlRequest::Unknown(_)));
+        assert!(matches!(parse_ctl_op("overlay"), CtlRequest::Unknown(_)), "overlay verb retired → focus tree");
+    }
+    #[test]
+    fn parse_ctl_op_rejects_malformed() {
+        assert!(matches!(parse_ctl_op("switch"), CtlRequest::Unknown(_)), "switch needs an address");
+        assert!(matches!(parse_ctl_op("focus sideways"), CtlRequest::Unknown(_)));
+        assert!(matches!(parse_ctl_op("width xx"), CtlRequest::Unknown(_)));
+        assert!(matches!(parse_ctl_op("raw:keys zz"), CtlRequest::Unknown(_)), "bad hex");
+        assert!(matches!(parse_ctl_op("bogus"), CtlRequest::Unknown(_)));
+    }
+    #[test]
+    fn parse_hex_round_trips_and_rejects() {
+        assert_eq!(parse_hex("1b5b41").unwrap(), vec![0x1b, 0x5b, 0x41]);
+        assert!(parse_hex("abc").is_err(), "odd length");
+        assert!(parse_hex("zz").is_err(), "non-hex");
+    }
 
     #[test]
     fn parse_key_named() {
