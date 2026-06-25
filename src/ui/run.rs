@@ -216,7 +216,7 @@ mod tests {
         let out = dump_switcher(&mut sw, 100, 30);
         assert!(out.contains("editor"));
         // The dump renders the full overlay (tree + footer); the footer's nav hint
-        // is always present (the chrome titles were removed).
+        // is always present (the overlay carries no chrome titles).
         assert!(out.contains("quit"), "footer hint present:\n{out}");
     }
 

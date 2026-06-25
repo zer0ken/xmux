@@ -1,9 +1,8 @@
 //! A first-class host (`Host`) — the single owner of one machine's transport, mux,
-//! inventory, display BOOKKEEPING, captured display tty, and liveness. Replaces
-//! everything previously tied together by an alias string across `Source` +
-//! `HostInventory` + `HostClient` + the supervisor's host_session/in_flight/
-//! reaped_ids maps. The live PTYs stay in `AttachRegistry`/`DisplayWorker`; this
-//! owns only the bookkeeping of which session each attachment shows.
+//! inventory, display BOOKKEEPING, captured display tty, and liveness. The rest of
+//! the system addresses a machine through its `Host`, never through a bare alias
+//! string. The live PTYs stay in `AttachRegistry`/`DisplayWorker`; this owns only
+//! the bookkeeping of which session each attachment shows.
 
 use std::collections::HashMap;
 
@@ -19,21 +18,20 @@ pub enum Liveness {
     Unreachable,
 }
 
-/// The per-host display BOOKKEEPING previously split across `AttachRegistry` keys +
-/// `host_session` (cockpit.rs:1052) + `in_flight` (cockpit.rs:996). The
-/// `AttachRegistry`/`Attachment`/`DisplayWorker` PTY MECHANISM is KEPT and OWNS the
-/// PTYs; this is only the record of WHICH session each display_key currently shows
-/// and what spawn is in flight, so it can never disagree with `display_key`.
+/// The per-host display BOOKKEEPING. The
+/// `AttachRegistry`/`Attachment`/`DisplayWorker` PTY MECHANISM OWNS the PTYs; this is
+/// only the record of WHICH session each display_key currently shows and what spawn
+/// is in flight, so it can never disagree with `display_key`.
 #[derive(Default)]
 pub struct HostDisplay {
     /// display_key -> the session it currently shows. `Shared`: one entry keyed by
     /// the host id. `PerSession`: one per `source/session`.
     pub current: HashMap<String, String>,
-    /// display_key -> in-flight spawn seq (was `in_flight`, cockpit.rs:996).
+    /// display_key -> in-flight spawn seq.
     pub in_flight: HashMap<String, u64>,
     /// Spawned attachment ids whose PTY EOF'd BEFORE their off-loop Ready arrived (the
     /// Exited-raced-Ready case). The Ready arm tears the attachment down instead of
-    /// inserting a dead pane. Was the free `reaped_ids` set.
+    /// inserting a dead pane.
     pub reaped_ids: std::collections::HashSet<u64>,
     /// In-flight attachment id → its display key, recorded at request time so a
     /// pre-Ready Exited (registry has no id yet) can be attributed to THIS host's
@@ -67,16 +65,15 @@ impl HostDisplay {
 
 /// A first-class host: one machine reachable by one transport, running one mux,
 /// owning its inventory, its display BOOKKEEPING, its captured display tty, and its
-/// liveness. The single owner of the state previously tied together by the alias
-/// string across `Source` + `HostInventory` + `HostClient` + the supervisor's
-/// host_session/in_flight/reaped_ids maps. The PTYs are NOT here — they live in
+/// liveness — the single owner of all per-machine state, keyed by a stable host id
+/// rather than a bare alias string. The PTYs are NOT here — they live in
 /// `AttachRegistry`/`DisplayWorker`; `Host` owns only the bookkeeping.
 pub struct Host {
     pub transport: Transport,
     pub mux: Box<dyn Mux>,
-    /// Live session/window inventory (was `HostInventory`, host.rs:17).
+    /// Live session/window inventory.
     pub inventory: HostInventory,
-    /// Which session each display_key shows + what spawn is in flight (Task 2.2).
+    /// Which session each display_key shows + what spawn is in flight.
     pub display: HostDisplay,
     /// xmux's own display-client tty, captured in memory. Read by the supervisor to
     /// build `mux.switch_client_argv(tty, session)` for `Transport::lower_switch`.
@@ -100,7 +97,7 @@ impl Host {
         }
     }
 
-    /// The stable host id (`transport.host_id()`) — was `Source::alias`.
+    /// The stable host id (`transport.host_id()`).
     pub fn id(&self) -> &str {
         self.transport.host_id()
     }

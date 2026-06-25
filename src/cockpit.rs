@@ -3179,14 +3179,12 @@ mod tests {
 
     #[test]
     fn kill_confirm_owns_keys_so_prefix_q_and_enter_do_not_quit_or_focus_mux() {
-        // The deliberate routing correction: a kill-confirm is a modal popup, so it OWNS
-        // every key. With the resolver gated on is_modal_popup_open (true for a confirm,
-        // where is_inputting is false), `prefix q` reaches the switcher instead of arming
-        // the prefix, and Enter reaches it instead of resolving to FocusMux — so a confirm
-        // can neither quit the cockpit nor focus the mux out from under itself. (The first
-        // swallowed key cancels the confirm, tmux confirm-before style; the point is the
-        // key does not quit/focus.) Without the gating fix `\x07` armed the prefix → `q`
-        // quit, and Enter emitted FocusMux → the mux was focused mid-confirm.
+        // A kill-confirm is a modal popup, so it OWNS every key. With the resolver gated
+        // on is_modal_popup_open (true for a confirm, where is_inputting is false),
+        // `prefix q` reaches the switcher instead of arming the prefix, and Enter reaches
+        // it instead of resolving to FocusMux — so a confirm can neither quit the cockpit
+        // nor focus the mux out from under itself. (The first swallowed key cancels the
+        // confirm, tmux confirm-before style; the point is the key does not quit/focus.)
         use crate::proxy::app::{App, Focus, PaneFocus};
         use crate::session::Session;
         use crate::ui::tree::Group;

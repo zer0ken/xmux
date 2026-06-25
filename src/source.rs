@@ -150,7 +150,7 @@ impl Source {
             if let Some(sock) = self.socket.as_deref().filter(|s| !s.is_empty()) {
                 // Target the exact mux server the user is on (e.g. `tmux -L work`),
                 // not just the default socket — so listing/select agree with the
-                // teleport's switch-client (which inherits the same `$TMUX`).
+                // switch-client (which inherits the same `$TMUX`).
                 args.push("-S".into());
                 args.push(sock.to_string());
             }

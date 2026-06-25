@@ -7,8 +7,7 @@ of OS or mux kind. Its reason to exist is to deliver tmux's `prefix + s`
 switching to any host's session.
 
 Each requirement has a stable ID and a **Tests** line naming the covering tests
-(module path omitted; all live in that area's `#[cfg(test)]`). `GAP→added` marks a
-requirement whose coverage this round adds.
+(module path omitted; all live in that area's `#[cfg(test)]`).
 
 ---
 
@@ -45,7 +44,7 @@ requirement whose coverage this round adds.
   `move_selection_*`, `request_rescan_*`.
 - **FR-B5** — Deciding **not** to move is first-class: `Esc`/`q` cancels with no
   attach and no mutation. **Tests:** `quit_leaves_no_choice`, `control_end_to_end`
-  (q leaves no choice). `GAP→added`: `event_loop_cancel_leaves_no_choice`.
+  (q leaves no choice), `event_loop_cancel_leaves_no_choice`.
 - **FR-B6** — Under a filter, `Enter` attaches the **visible (filtered)** session —
   never a filtered-out one — even when a host row is selected and even when a
   rescan or pane fetch streams in between the filter and the Enter.
@@ -79,7 +78,7 @@ requirement whose coverage this round adds.
   pointer cleared; a failed attach (e.g. ssh 255) is logged to `~/.xmux/cockpit.log`,
   not swallowed. **Tests:** `popup_decision_table`, `pointer_removed_only_if_ours`;
   attach-failure logging is in `RealAttacher` (live-verified). The switch is
-  direction-agnostic — `GAP→added`: `loop_switches_local_remote_both_directions`.
+  direction-agnostic (`loop_switches_local_remote_both_directions`).
 
 ## D. Cockpit lifecycle
 

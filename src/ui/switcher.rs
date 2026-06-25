@@ -3867,7 +3867,7 @@ mod tests {
     }
 
     fn items_have_split(items: &[MenuItem]) -> bool {
-        // Split was deliberately removed from the menu; this guards the regression.
+        // The menu has no Split action; this test guards against one being added.
         items.iter().any(|i| i.label().contains("split"))
     }
 
@@ -3998,7 +3998,7 @@ mod tests {
         );
     }
 
-    // --- Task 11: j/k nav, select=attach, spinner, footer/help, title --------
+    // --- j/k nav, select=attach, spinner, footer/help, title --------
 
     fn cur_row_label(h: &Harness) -> String {
         h.sw
