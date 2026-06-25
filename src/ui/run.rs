@@ -38,7 +38,7 @@ pub fn dump_switcher(switcher: &mut Switcher, width: u16, height: u16) -> String
     dump_overlay(switcher, None, width, height)
 }
 
-/// Renders the Overlay view — the switcher with the cursor host's live `grid` (if
+/// Renders the tree-focus view — the switcher with the cursor host's live `grid` (if
 /// any) in the terminal-view pane — to an off-screen `TestBackend` and flattens
 /// it. So a headless `dump` reflects the same screen the main draw produces,
 /// including the live terminal Grid. Runs without a real terminal.

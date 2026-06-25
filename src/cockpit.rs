@@ -11,8 +11,8 @@
 //! the single source of truth the display reads — the `Switcher` owns only the tree
 //! and cursor. One `select!` loop interleaves stdin, host events, PTY events, the
 //! control socket, terminal resize, and an animation tick. ratatui owns stdout and
-//! draws the SAME split (tree + selected PTY grid) in both focus states — Overlay
-//! (tree focused) and Passthrough (terminal focused) differ only in the divider
+//! draws the SAME split (tree + selected PTY grid) in both focus states — Focus::Tree
+//! (tree focused) and Focus::Terminal (terminal focused) differ only in the divider
 //! colour and where keys go, so toggling focus needs no screen clear.
 
 use std::collections::HashSet;
@@ -1210,7 +1210,7 @@ fn handle_mouse_event(
             non_mouse.extend_from_slice(if down { b"\x1b[C" } else { b"\x1b[D" });
         }
         // The unfocused pane was clicked → switch focus to it (no content
-        // delivered); toggle flips Overlay⇄Passthrough either direction.
+        // delivered); toggle flips Focus::Tree⇄Focus::Terminal either direction.
         ChainAction::FocusMux | ChainAction::FocusTree => {
             app.toggle();
             *mouse_focus_toggle = true;
@@ -1267,7 +1267,7 @@ fn handle_stdin_bytes(
     use std::time::Duration;
     let mut outcome = StdinOutcome::default();
     let StdinOutcome { quit, focus_terminal, focus_tree, dirty, tree_replay } = &mut outcome;
-    // Scan for SGR mouse sequences BEFORE routing to Overlay/Passthrough branches.
+    // Scan for SGR mouse sequences BEFORE routing to Focus::Tree/Focus::Terminal branches.
     // Mouse capture is global, so mouse bytes arrive in both states; scanning here
     // prevents them from reaching handle_tree_bytes (which would mis-decode them)
     // or TermInput's prefix logic. Split into: mouse events + non-mouse byte stream.
@@ -2160,7 +2160,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     0
 }
 
-/// After a key was handled in Overlay: take any queued create/rename/kill and run it
+/// After a key was handled in Focus::Tree: take any queued create/rename/kill and run it
 /// OFF the loop in a detached task, folding its result back through `op_tx`, so a
 /// slow ssh round-trip never freezes rendering, host streaming, or the control socket.
 fn dispatch_pending_op(
@@ -2967,13 +2967,13 @@ mod tests {
     // =========================================================================
     // HUMAN VISUAL-GATE CHECKLIST (run in a REAL terminal — never headless):
     // 1. Launch `xmux`. Confirm it enters the alternate screen cleanly and starts in
-    //    Overlay: the Host·Session·Window·Pane tree on the left, the live REAL
+    //    Focus::Tree: the Host·Session·Window·Pane tree on the left, the live REAL
     //    terminal of the cursor's session on the right (a true attached mux client).
     // 2. Move the cursor between sessions. Confirm the right pane shows each session's
     //    real attached terminal instantly (it is pre-attached + kept alive), with a
     //    spinner while a session's attach is still establishing.
     // 3. Select a WINDOW row — confirm the attached client switches to that window.
-    // 4. Press Enter (or C-g → / C-g Tab) — focus the terminal (Passthrough); the split
+    // 4. Press Enter (or C-g → / C-g Tab) — focus the terminal (Focus::Terminal); the split
     //    is unchanged (divider turns green) and keystrokes reach the real attached pane.
     //    C-g ← / C-g Esc / C-g Tab return focus to the tree. Confirm no blank/flash.
     // 5. Create / kill a window or session inside a pane — confirm the sidebar tree
