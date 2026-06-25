@@ -21,7 +21,7 @@ use crate::source::{is_no_sessions, ExecRunner, RunError, Runner};
 /// the `Transport` lowers it.
 #[async_trait]
 pub trait Mux: Send + Sync {
-    /// The binary name (`"tmux"` / `"psmux"`), for diagnostics + env-stripping.
+    /// The canonical mux identity, for backend comparison and diagnostics.
     fn kind(&self) -> &str;
 
     /// Per-session vs shared. The supervisor reads this instead of `remote`.
@@ -78,7 +78,9 @@ fn mux_control_argv(bin: &str) -> Vec<String> {
 
 /// tmux: one aggregate server (`ServerModel::Shared`), a `-CC` control stream, and
 /// a `switch-client` move of one host attachment.
-pub struct Tmux;
+pub struct Tmux {
+    pub bin: String,
+}
 
 #[async_trait]
 impl Mux for Tmux {
@@ -87,7 +89,7 @@ impl Mux for Tmux {
     fn server_model(&self) -> ServerModel { ServerModel::Shared }
 
     async fn enumerate(&self, transport: &Transport) -> Result<Vec<Session>, RunError> {
-        let (name, args) = transport.exec_argv(false, &mux::list_sessions("tmux"));
+        let (name, args) = transport.exec_argv(false, &mux::list_sessions(&self.bin));
         match ExecRunner.run(&name, &args).await {
             Ok(out) => Ok(mux::parse_sessions(transport.host_id(), &String::from_utf8_lossy(&out))),
             Err(e) if benign_empty(&e) => Ok(Vec::new()),
@@ -96,7 +98,7 @@ impl Mux for Tmux {
     }
 
     fn attach_plan(&self, session: &str, _window: Option<i64>) -> Vec<String> {
-        mux::attach("tmux", session)
+        mux::attach(&self.bin, session)
     }
 
     fn switch_plan(&self, session: &str) -> SwitchPlan {
@@ -105,7 +107,7 @@ impl Mux for Tmux {
 
     fn switch_client_argv(&self, display_tty: &str, session: &str) -> Vec<String> {
         vec![
-            "tmux".to_string(),
+            self.bin.clone(),
             "switch-client".to_string(),
             "-c".to_string(),
             display_tty.to_string(),
@@ -115,19 +117,19 @@ impl Mux for Tmux {
     }
 
     fn control_argv(&self) -> Option<Vec<String>> {
-        Some(mux_control_argv("tmux"))
+        Some(mux_control_argv(&self.bin))
     }
 
     fn death_signal(&self) -> DeathSignal { DeathSignal::ControlNotice }
 
     fn event_source(&self) -> EventSource { EventSource::Control }
 
-    fn list_panes_plan(&self, session: &str) -> Vec<String> { mux::list_panes("tmux", session) }
-    fn new_window_plan(&self, session: &str, name: &str) -> Vec<String> { mux::new_window("tmux", session, name) }
-    fn split_window_plan(&self, target: &str, vertical: bool) -> Vec<String> { mux::split_window("tmux", target, vertical) }
-    fn select_window_plan(&self, target: &str) -> Vec<String> { mux::select_window("tmux", target) }
-    fn kill_window_plan(&self, target: &str) -> Vec<String> { mux::kill_window("tmux", target) }
-    fn rename_window_plan(&self, target: &str, new: &str) -> Vec<String> { mux::rename_window("tmux", target, new) }
+    fn list_panes_plan(&self, session: &str) -> Vec<String> { mux::list_panes(&self.bin, session) }
+    fn new_window_plan(&self, session: &str, name: &str) -> Vec<String> { mux::new_window(&self.bin, session, name) }
+    fn split_window_plan(&self, target: &str, vertical: bool) -> Vec<String> { mux::split_window(&self.bin, target, vertical) }
+    fn select_window_plan(&self, target: &str) -> Vec<String> { mux::select_window(&self.bin, target) }
+    fn kill_window_plan(&self, target: &str) -> Vec<String> { mux::kill_window(&self.bin, target) }
+    fn rename_window_plan(&self, target: &str, new: &str) -> Vec<String> { mux::rename_window(&self.bin, target, new) }
 }
 
 /// The local-psmux poll cadence (psmux is one-server-per-session with no event
@@ -137,7 +139,9 @@ const PSMUX_POLL_MS: u64 = 1500;
 
 /// psmux: one server per session (`ServerModel::PerSession`), enumerated from the
 /// filesystem registry, polled for change, each session keeping its own attachment.
-pub struct Psmux;
+pub struct Psmux {
+    pub bin: String,
+}
 
 #[async_trait]
 impl Mux for Psmux {
@@ -149,7 +153,7 @@ impl Mux for Psmux {
         // The registry (`~/.psmux/<name>.port`) is the authoritative existence set;
         // one list-sessions supplies display detail (empty on a default-route miss).
         let names = crate::source::read_psmux_registry_dir(&crate::source::psmux_registry_dir());
-        let (name, args) = transport.exec_argv(false, &mux::list_sessions("psmux"));
+        let (name, args) = transport.exec_argv(false, &mux::list_sessions(&self.bin));
         let detail = match ExecRunner.run(&name, &args).await {
             Ok(out) => mux::parse_sessions(transport.host_id(), &String::from_utf8_lossy(&out)),
             Err(_) => Vec::new(),
@@ -158,7 +162,7 @@ impl Mux for Psmux {
     }
 
     fn attach_plan(&self, session: &str, _window: Option<i64>) -> Vec<String> {
-        mux::attach("psmux", session)
+        mux::attach(&self.bin, session)
     }
 
     fn switch_plan(&self, _session: &str) -> SwitchPlan {
@@ -170,7 +174,7 @@ impl Mux for Psmux {
         // lower_switch returns None before this is reached). The trait is total, so
         // the argv is defined for completeness and uses the psmux binary.
         vec![
-            "psmux".to_string(),
+            self.bin.clone(),
             "switch-client".to_string(),
             "-c".to_string(),
             display_tty.to_string(),
@@ -185,23 +189,34 @@ impl Mux for Psmux {
 
     fn event_source(&self) -> EventSource { EventSource::Poll { interval_ms: PSMUX_POLL_MS } }
 
-    fn list_panes_plan(&self, session: &str) -> Vec<String> { mux::list_panes("psmux", session) }
-    fn new_window_plan(&self, session: &str, name: &str) -> Vec<String> { mux::new_window("psmux", session, name) }
-    fn split_window_plan(&self, target: &str, vertical: bool) -> Vec<String> { mux::split_window("psmux", target, vertical) }
-    fn select_window_plan(&self, target: &str) -> Vec<String> { mux::select_window("psmux", target) }
-    fn kill_window_plan(&self, target: &str) -> Vec<String> { mux::kill_window("psmux", target) }
-    fn rename_window_plan(&self, target: &str, new: &str) -> Vec<String> { mux::rename_window("psmux", target, new) }
+    fn list_panes_plan(&self, session: &str) -> Vec<String> { mux::list_panes(&self.bin, session) }
+    fn new_window_plan(&self, session: &str, name: &str) -> Vec<String> { mux::new_window(&self.bin, session, name) }
+    fn split_window_plan(&self, target: &str, vertical: bool) -> Vec<String> { mux::split_window(&self.bin, target, vertical) }
+    fn select_window_plan(&self, target: &str) -> Vec<String> { mux::select_window(&self.bin, target) }
+    fn kill_window_plan(&self, target: &str) -> Vec<String> { mux::kill_window(&self.bin, target) }
+    fn rename_window_plan(&self, target: &str, new: &str) -> Vec<String> { mux::rename_window(&self.bin, target, new) }
 }
 
-/// Picks a mux backend by binary name. Exactly two backends — no config/dynamic
-/// plugin runtime. `"psmux"` ⇒ per-session psmux; anything else ⇒ shared tmux
-/// (matching the tmux default in `Config::local_bin` / `host_specs`).
+struct MuxKind {
+    name: &'static str,
+    make: fn(String) -> Box<dyn Mux>,
+}
+
+// `name` is the canonical identity, help-output marker, and conventional binary
+// name. tmux is the implicit fallback because tmux has no positive help signal.
+fn known_muxes() -> &'static [MuxKind] {
+    &[MuxKind { name: "psmux", make: |bin| Box::new(Psmux { bin }) }]
+}
+
+/// Picks a mux backend by conventional binary name. tmux is the fallback, matching
+/// the default in `Config::local_bin` / `host_specs`.
 pub fn for_binary(bin: &str) -> Box<dyn Mux> {
-    if bin == "psmux" {
-        Box::new(Psmux)
-    } else {
-        Box::new(Tmux)
+    for k in known_muxes() {
+        if k.name == bin {
+            return (k.make)(bin.to_string());
+        }
     }
+    Box::new(Tmux { bin: bin.to_string() })
 }
 
 #[cfg(test)]
@@ -212,9 +227,17 @@ mod tests {
         parts.iter().map(|s| s.to_string()).collect()
     }
 
+    fn tmux() -> Tmux {
+        Tmux { bin: "tmux".into() }
+    }
+
+    fn psmux() -> Psmux {
+        Psmux { bin: "psmux".into() }
+    }
+
     #[test]
     fn tmux_is_shared_and_named() {
-        let m = Tmux;
+        let m = tmux();
         assert_eq!(m.kind(), "tmux");
         assert_eq!(m.server_model(), ServerModel::Shared);
     }
@@ -223,53 +246,57 @@ mod tests {
     fn tmux_is_object_safe() {
         // The whole point: a Box<dyn Mux> must compile. If the trait gains a
         // non-dispatchable method this stops compiling.
-        let _m: Box<dyn Mux> = Box::new(Tmux);
+        let _m: Box<dyn Mux> = Box::new(tmux());
     }
 
     #[test]
     fn tmux_attach_plan_is_plain_attach() {
-        assert_eq!(Tmux.attach_plan("api", None), argv(&["tmux", "attach", "-t", "api"]));
+        let m = tmux();
+        assert_eq!(m.attach_plan("api", None), argv(&["tmux", "attach", "-t", "api"]));
         // The window is selected separately (select_window_plan); attach stays plain.
-        assert_eq!(Tmux.attach_plan("api", Some(2)), argv(&["tmux", "attach", "-t", "api"]));
+        assert_eq!(m.attach_plan("api", Some(2)), argv(&["tmux", "attach", "-t", "api"]));
     }
 
     #[test]
     fn tmux_switch_plan_is_transport_blind_intent() {
         // Shared => Switch{session}. It names NO transport (codex C2): the Transport
         // lowers it. A psmux-style NotShared is impossible to produce here.
-        assert_eq!(Tmux.switch_plan("api"), SwitchPlan::Switch { session: "api".into() });
+        assert_eq!(tmux().switch_plan("api"), SwitchPlan::Switch { session: "api".into() });
     }
 
     #[test]
     fn tmux_switch_client_argv_targets_the_captured_tty() {
         // The argv the supervisor closes over (with the captured DisplayTty) and
         // hands to Transport::lower_switch. It names the tty + session, never ssh.
+        let m = tmux();
         assert_eq!(
-            Tmux.switch_client_argv("/dev/pts/3", "api"),
+            m.switch_client_argv("/dev/pts/3", "api"),
             argv(&["tmux", "switch-client", "-c", "/dev/pts/3", "-t", "api"])
         );
         // A session with control-mode metacharacters is quote_target-safe.
         assert_eq!(
-            Tmux.switch_client_argv("/dev/pts/3", "my proj"),
+            m.switch_client_argv("/dev/pts/3", "my proj"),
             argv(&["tmux", "switch-client", "-c", "/dev/pts/3", "-t", "'my proj'"])
         );
     }
 
     #[test]
     fn tmux_control_attach_and_event_and_death() {
-        assert_eq!(Tmux.control_argv(), Some(argv(&["tmux", "-CC", "attach"])));
-        assert_eq!(Tmux.event_source(), EventSource::Control);
-        assert_eq!(Tmux.death_signal(), DeathSignal::ControlNotice);
+        let m = tmux();
+        assert_eq!(m.control_argv(), Some(argv(&["tmux", "-CC", "attach"])));
+        assert_eq!(m.event_source(), EventSource::Control);
+        assert_eq!(m.death_signal(), DeathSignal::ControlNotice);
     }
 
     #[test]
     fn tmux_window_plans_match_mux_builders() {
-        assert_eq!(Tmux.list_panes_plan("work"), mux::list_panes("tmux", "work"));
-        assert_eq!(Tmux.select_window_plan("api:2"), mux::select_window("tmux", "api:2"));
-        assert_eq!(Tmux.new_window_plan("work", "logs"), mux::new_window("tmux", "work", "logs"));
-        assert_eq!(Tmux.split_window_plan("work:1", true), mux::split_window("tmux", "work:1", true));
-        assert_eq!(Tmux.kill_window_plan("api:2"), mux::kill_window("tmux", "api:2"));
-        assert_eq!(Tmux.rename_window_plan("api:2", "logs"), mux::rename_window("tmux", "api:2", "logs"));
+        let m = tmux();
+        assert_eq!(m.list_panes_plan("work"), mux::list_panes("tmux", "work"));
+        assert_eq!(m.select_window_plan("api:2"), mux::select_window("tmux", "api:2"));
+        assert_eq!(m.new_window_plan("work", "logs"), mux::new_window("tmux", "work", "logs"));
+        assert_eq!(m.split_window_plan("work:1", true), mux::split_window("tmux", "work:1", true));
+        assert_eq!(m.kill_window_plan("api:2"), mux::kill_window("tmux", "api:2"));
+        assert_eq!(m.rename_window_plan("api:2", "logs"), mux::rename_window("tmux", "api:2", "logs"));
     }
 
     // LIVE: enumerate over a real local tmux server. `#[ignore]` (needs tmux + a
@@ -279,7 +306,7 @@ mod tests {
     #[tokio::test]
     async fn tmux_enumerate_live() {
         let t = Transport::Local { socket: None };
-        let sessions = Tmux.enumerate(&t).await.expect("reachable tmux (empty is Ok)");
+        let sessions = tmux().enumerate(&t).await.expect("reachable tmux (empty is Ok)");
         eprintln!("local tmux sessions: {:?}", sessions.iter().map(|s| &s.name).collect::<Vec<_>>());
     }
 
@@ -287,40 +314,59 @@ mod tests {
 
     #[test]
     fn psmux_is_per_session_and_named() {
-        assert_eq!(Psmux.kind(), "psmux");
-        assert_eq!(Psmux.server_model(), ServerModel::PerSession);
+        let m = psmux();
+        assert_eq!(m.kind(), "psmux");
+        assert_eq!(m.server_model(), ServerModel::PerSession);
     }
 
     #[test]
     fn psmux_is_object_safe() {
-        let _m: Box<dyn Mux> = Box::new(Psmux);
+        let _m: Box<dyn Mux> = Box::new(psmux());
     }
 
     #[test]
     fn psmux_has_no_shared_attachment_to_switch() {
         // PerSession keeps one attachment PER SESSION — there is nothing to switch.
-        assert_eq!(Psmux.switch_plan("work"), SwitchPlan::PerSessionNoOp);
+        assert_eq!(psmux().switch_plan("work"), SwitchPlan::PerSessionNoOp);
     }
 
     #[test]
     fn psmux_polls_and_dies_on_registry_stat() {
         // No host-level control stream: it is polled at the LOCAL_POLL_MS cadence
         // (cockpit.rs:48 = 1500). Death is the per-session registry stat.
-        assert_eq!(Psmux.control_argv(), None);
-        assert_eq!(Psmux.event_source(), EventSource::Poll { interval_ms: 1500 });
-        assert_eq!(Psmux.death_signal(), DeathSignal::PathStat { dir_is_psmux_registry: true });
+        let m = psmux();
+        assert_eq!(m.control_argv(), None);
+        assert_eq!(m.event_source(), EventSource::Poll { interval_ms: 1500 });
+        assert_eq!(m.death_signal(), DeathSignal::PathStat { dir_is_psmux_registry: true });
     }
 
     #[test]
     fn psmux_attach_plan_is_plain_attach() {
-        assert_eq!(Psmux.attach_plan("work", None), argv(&["psmux", "attach", "-t", "work"]));
+        assert_eq!(psmux().attach_plan("work", None), argv(&["psmux", "attach", "-t", "work"]));
     }
 
     #[test]
     fn psmux_window_plans_use_the_psmux_binary() {
-        assert_eq!(Psmux.list_panes_plan("work"), mux::list_panes("psmux", "work"));
-        assert_eq!(Psmux.select_window_plan("work:1"), mux::select_window("psmux", "work:1"));
-        assert_eq!(Psmux.new_window_plan("work", "logs"), mux::new_window("psmux", "work", "logs"));
+        let m = psmux();
+        assert_eq!(m.list_panes_plan("work"), mux::list_panes("psmux", "work"));
+        assert_eq!(m.select_window_plan("work:1"), mux::select_window("psmux", "work:1"));
+        assert_eq!(m.new_window_plan("work", "logs"), mux::new_window("psmux", "work", "logs"));
+    }
+
+    #[test]
+    fn psmux_behavior_is_decoupled_from_invoked_binary() {
+        let m = Psmux { bin: "tmux".into() };
+        assert_eq!(m.attach_plan("api", None), argv(&["tmux", "attach", "-t", "api"]));
+        assert_eq!(m.server_model(), ServerModel::PerSession);
+        assert_eq!(m.kind(), "psmux");
+    }
+
+    #[test]
+    fn tmux_behavior_is_decoupled_from_invoked_binary() {
+        let m = Tmux { bin: "psmux".into() };
+        assert_eq!(m.attach_plan("api", None), argv(&["psmux", "attach", "-t", "api"]));
+        assert_eq!(m.server_model(), ServerModel::Shared);
+        assert_eq!(m.kind(), "tmux");
     }
 
     #[test]
