@@ -95,6 +95,13 @@ pub fn serve_control(path: PathBuf, cmd_tx: mpsc::Sender<Cmd>) -> Option<Control
     let _ = std::fs::remove_file(&path); // remove a stale socket so the bind succeeds
     let name = control::endpoint_name(&path).ok()?;
     let listener = ListenerOptions::new().name(name).create_tokio().ok()?;
+    // The ctl socket injects keystrokes into the live cockpit, so it must be
+    // owner-only. On unix the bind created a filesystem socket; tighten it to 0600.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
     // On Windows the endpoint is a named pipe (no filesystem presence); drop a
     // marker file so `discover` can still find this instance by pid. On unix the
     // bind already created the socket file at `path`.
@@ -288,6 +295,21 @@ mod tests {
         drop(handle);
         drop(tx);
         consumer.await.unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn control_socket_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("xmux-ctl-perm-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let sock = control::socket_path(&dir, std::process::id().wrapping_add(11));
+        let (tx, _rx) = mpsc::channel::<Cmd>(8);
+        let handle = serve_control(sock.clone(), tx).expect("bind control socket");
+        let mode = std::fs::metadata(&sock).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "ctl socket must be owner-only (rw-------)");
+        drop(handle);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
