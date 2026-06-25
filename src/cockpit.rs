@@ -1301,6 +1301,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             budget -= 1;
                         }
                         Ok(PtyEvent::Output { .. }) => { budget -= 1; }
+                        Ok(PtyEvent::DisplayTty { .. }) => {} // handled in a later task
                         Err(_) => break,
                     }
                 }

@@ -23,6 +23,12 @@ pub enum PtyEvent {
     /// The child's PTY master hit EOF (the attach exited / the connection dropped) —
     /// the registry reaps the attachment by id.
     Exited { id: u64 },
+    /// The attach shell self-reported its tty (the unique marker) — captured ONCE per
+    /// attachment. The supervisor records it on the owning Host's `display_tty`, so a
+    /// later switch-client targets xmux's OWN display client and a %client-detached is
+    /// filtered against it. Identity-preserving: only this attachment's own shell
+    /// emits the marker.
+    DisplayTty { id: u64, tty: String },
 }
 
 /// A command for a kept attachment's dedicated PTY control thread: bytes to write
@@ -33,6 +39,21 @@ pub enum PtyEvent {
 pub enum PtyCmd {
     Input(Vec<u8>),
     Resize { cols: u16, rows: u16 },
+}
+
+/// Accumulates pump output into `acc` until ONE whole display-tty marker is seen,
+/// then sets `captured` and stops growing `acc` (a bounded one-shot). After
+/// capture, further reads are ignored here — the marker is xmux's attach shell's
+/// single self-report. Pure so the pump's capture is unit-tested without a ConPTY.
+fn scan_marker_once(acc: &mut Vec<u8>, captured: &mut Option<String>, chunk: &[u8]) {
+    if captured.is_some() {
+        return;
+    }
+    acc.extend_from_slice(chunk);
+    if let Some(tty) = crate::model::death::parse_display_tty_marker(acc) {
+        *captured = Some(tty);
+        acc.clear(); // release the buffer; we never scan again
+    }
 }
 
 /// Builds the responses a vt100 host owes the child for the terminal QUERIES in
@@ -270,6 +291,8 @@ pub fn spawn_attachment(
         let mut buf = [0u8; 4096];
         // Carries up to the last 3 bytes so a query split across reads is still seen.
         let mut qtail: Vec<u8> = Vec::new();
+        let mut marker_acc: Vec<u8> = Vec::new();
+        let mut marker_done = false;
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
@@ -294,6 +317,14 @@ pub fn spawn_attachment(
                     let cut = qtail.len() - keep;
                     qtail.drain(0..cut);
                     pump_connecting.store(false, Ordering::Release);
+                    if !marker_done {
+                        let mut captured = None;
+                        scan_marker_once(&mut marker_acc, &mut captured, &buf[..n]);
+                        if let Some(tty) = captured {
+                            marker_done = true;
+                            let _ = events.send(PtyEvent::DisplayTty { id, tty });
+                        }
+                    }
                     // Coalesce: signal a redraw only if no Output is already pending
                     // for this attachment (the cockpit clears it after the next
                     // draw). Bounds the channel to ≤1 pending event per attachment,
@@ -483,6 +514,32 @@ mod tests {
         assert_eq!(att.size, (100, 40));
         assert_eq!(att.id(), 1);
         att.teardown();
+    }
+
+    #[test]
+    fn scan_marker_once_emits_our_tty_then_stops() {
+        // Feed two reads: the first carries unrelated output + a whole marker, the
+        // second carries another marker. The tty is captured exactly once, on the read
+        // that completes the first marker; later reads do not re-capture or re-grow.
+        let mut acc: Vec<u8> = Vec::new();
+        let mut captured: Option<String> = None;
+        scan_marker_once(&mut acc, &mut captured, b"boot \x1b]XMUX-DISPLAY-TTY:/dev/pts/3\x07ok");
+        assert_eq!(captured.as_deref(), Some("/dev/pts/3"), "captured on the completing read");
+        let len_after = acc.len();
+        scan_marker_once(&mut acc, &mut captured, b"\x1b]XMUX-DISPLAY-TTY:/dev/pts/9\x07");
+        assert_eq!(captured.as_deref(), Some("/dev/pts/3"), "a later marker does not override our capture");
+        assert_eq!(acc.len(), len_after, "scanning stops once captured (no unbounded growth)");
+    }
+
+    #[test]
+    fn scan_marker_once_accumulates_across_reads_until_whole() {
+        // A marker split across two reads is captured only when whole.
+        let mut acc: Vec<u8> = Vec::new();
+        let mut captured: Option<String> = None;
+        scan_marker_once(&mut acc, &mut captured, b"x \x1b]XMUX-DISPLAY-TTY:/dev/p");
+        assert!(captured.is_none(), "partial marker is not yet captured");
+        scan_marker_once(&mut acc, &mut captured, b"ts/12\x07 rest");
+        assert_eq!(captured.as_deref(), Some("/dev/pts/12"), "captured once the marker completes");
     }
 
     // End-to-end smoke of the real PTY-attach path: spawn a non-interactive child on
