@@ -132,6 +132,25 @@ impl Host {
         self.display_tty = DisplayTty(None);
     }
 
+    /// True when `client` (a `%client-detached` client tty) is xmux's OWN display
+    /// client under this mux's death signal. Delegates to the free
+    /// `matches_display_tty` so the filter logic has one home.
+    pub fn matches_display_tty(&self, client: &str) -> bool {
+        crate::model::death::matches_display_tty(&self.mux.death_signal(), client, &self.display_tty)
+    }
+
+    /// True when `session` is still live under this mux's death signal. PerSession
+    /// (psmux) ⇒ the `.port` stat; any other model ⇒ always live (death arrives by
+    /// EOF/ControlNotice, not a port file).
+    pub fn psmux_session_live(&self, session: &str) -> bool {
+        match self.mux.death_signal() {
+            crate::model::DeathSignal::PathStat { dir_is_psmux_registry: true } => {
+                crate::model::death::psmux_session_is_live(session)
+            }
+            _ => true,
+        }
+    }
+
     /// Ensures this host's `-CC` control client exists, spawning + owning it lazily.
     /// `Ok(true)` on a fresh spawn; `Ok(false)` if already present or if this host's
     /// `event_source()` is `Poll` (psmux has no host-level control stream). Moves the
@@ -457,5 +476,45 @@ mod tests {
         h2.display.set_shows("h/work", "work");
         let reaps: Vec<_> = h2.sync().into_iter().filter(|a| matches!(a, SyncAction::Reap { .. })).collect();
         assert_eq!(reaps, vec![SyncAction::Reap { key: "h/build".into() }], "per-session: reap the closed session");
+    }
+
+    #[test]
+    fn matches_display_tty_only_for_our_own_client_under_control_notice() {
+        use crate::model::{DisplayTty, Transport};
+        let mut h = Host::new(
+            Transport::Ssh { alias: "jup".into(), control_path: String::new(), os: "linux".into() },
+            crate::model::mux::for_binary("tmux"), // Shared → DeathSignal::ControlNotice
+        );
+        assert!(!h.matches_display_tty("/dev/pts/3"), "no captured tty → inert");
+        h.display_tty = DisplayTty(Some("/dev/pts/3".into()));
+        assert!(h.matches_display_tty("/dev/pts/3"), "our own client's tty matches");
+        assert!(!h.matches_display_tty("/dev/pts/9"), "an unrelated client never matches");
+    }
+
+    #[test]
+    fn psmux_host_session_liveness_uses_the_port_stat() {
+        use crate::model::Transport;
+        let h = Host::new(
+            Transport::Local { socket: None },
+            crate::model::mux::for_binary("psmux"), // PerSession → DeathSignal::PathStat
+        );
+        let name = format!("xmux-hostlive-{}", std::process::id());
+        let path = crate::model::death::psmux_port_path(&name);
+        let _ = std::fs::create_dir_all(path.parent().unwrap());
+        std::fs::write(&path, b"40001").unwrap();
+        assert!(h.psmux_session_live(&name), "a present .port ⇒ live");
+        std::fs::remove_file(&path).unwrap();
+        assert!(!h.psmux_session_live(&name), "a vanished .port ⇒ not live");
+    }
+
+    #[test]
+    fn tmux_host_session_is_always_live_by_port_stat() {
+        use crate::model::Transport;
+        let h = Host::new(
+            Transport::Ssh { alias: "jup".into(), control_path: String::new(), os: "linux".into() },
+            crate::model::mux::for_binary("tmux"), // Shared → not PathStat
+        );
+        // A Shared host never dies by a .port file — liveness here is unconditionally true.
+        assert!(h.psmux_session_live("anything"));
     }
 }
