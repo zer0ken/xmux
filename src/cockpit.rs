@@ -1099,16 +1099,16 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
 
     // Host model: keyed by id (same as Source::alias). Derives its args from the same
     // source data that source::build uses: the local source's socket from env.srcs, the
-    // remote ssh aliases from the remote srcs, and the OS from the first src's .os field
+    // ssh aliases (every non-local source), and the OS from the first src's .os field
     // (all srcs share the same host OS). Ids are "local" + each alias — the same strings
     // that HostEvents carry as `host` and that the registry uses as the display key prefix.
     let ssh_aliases: Vec<String> = env.srcs.iter()
-        .filter(|s| s.remote)
+        .filter(|s| s.alias != crate::session::LOCAL_SOURCE)
         .map(|s| s.alias.clone())
         .collect();
     let host_os = env.srcs.first().map(|s| s.os.as_str()).unwrap_or(std::env::consts::OS);
     let local_socket_opt = env.srcs.iter()
-        .find(|s| !s.remote)
+        .find(|s| s.alias == crate::session::LOCAL_SOURCE)
         .and_then(|s| s.socket.clone());
     let mut hosts = crate::model::Hosts::build(&env.cfg, &ssh_aliases, host_os, &env.xmux_dir, local_socket_opt);
 
@@ -2853,8 +2853,7 @@ mod tests {
 
     #[test]
     fn marked_remote_attach_argv_prepends_marker_to_last_element() {
-        let mut src = fake_source("jup");
-        src.remote = true;
+        let src = Source { remote: true, ..fake_source("jup") };
         let bare = src.attach_command("mysession", None);
         let bare_last = bare.last().cloned().unwrap_or_default();
 
