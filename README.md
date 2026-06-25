@@ -28,7 +28,6 @@ Or install into `~/.cargo/bin`:
 ## Use
 
     xmux                         # full-screen cross-environment tree
-    xmux popup                   # in-mux switcher (bind via display-popup, see below)
     xmux ls                      # list every reachable session (scriptable)
     xmux attach <source>/<name>  # attach one session directly, e.g. xmux attach prod/api
     xmux doctor                  # check config and per-source reachability
@@ -64,14 +63,12 @@ selectable.
 
 ## Keybind
 
-Bind a key in your mux to pop xmux up over your current pane — see
-[docs/keybind.md](docs/keybind.md):
-
-    bind g display-popup -E "xmux popup"
-
-`prefix g` overlays the cross-environment tree. Pick a same-server session to
-teleport instantly; pick another server to detach back to the home tree; press
-Esc to return to your pane untouched.
+Inside the cockpit (run `xmux`), a built-in prefix hotkey opens the
+cross-environment picker as a fast overlay over your current pane — from any
+session, local or remote, with nothing installed on the remote. The default
+prefix is `Ctrl-g`; press `Ctrl-g s` to open the picker, `Ctrl-g g` to send a
+literal `Ctrl-g` through. See [docs/keybind.md](docs/keybind.md). Set
+`XMUX_PREFIX` (e.g. `C-Space`) to change the prefix.
 
 ## Configure
 
