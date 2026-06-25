@@ -66,9 +66,8 @@ pub struct Host {
     pub inventory: HostInventory,
     /// Which session each display_key shows + what spawn is in flight (Task 2.2).
     pub display: HostDisplay,
-    /// xmux's own display-client tty, captured in memory (replaces the
-    /// `/tmp/.xmux-cli-<alias>` file). Read by the supervisor to build
-    /// `mux.switch_client_argv(tty, session)`.
+    /// xmux's own display-client tty, captured in memory. Read by the supervisor to
+    /// build `mux.switch_client_argv(tty, session)` for `Transport::lower_switch`.
     pub display_tty: DisplayTty,
     pub liveness: Liveness,
     control: Option<crate::host::HostClient>,

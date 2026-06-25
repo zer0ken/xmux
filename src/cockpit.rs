@@ -318,20 +318,20 @@ fn request_attach(
 /// Makes the SELECTED session live in its host's display terminal and lands it on
 /// the selected window. Returns `true` when the selection has a session to show.
 ///
-/// REMOTE tmux: one kept PTY per host (`tmux attach`). The first attach lands on the
-/// selected session; selecting a DIFFERENT session of the same host `switch-client`s
-/// that one client over to it (`host_session` tracks where it is, to skip redundant
-/// switches). LOCAL psmux: one kept PTY per session (one-server-per-session). In both
-/// cases a window-row selection moves the session's active window server-side, which
-/// the real attached client follows.
+/// Shared (tmux): one kept PTY per host. The first attach lands on the selected
+/// session; selecting a different session of the same host lowers a `SwitchPlan`
+/// via `Transport::lower_switch`, targeting the in-memory `host.display_tty`.
+/// PerSession (psmux): one PTY per session — off-loop attach, deduped by in-flight.
+/// In both cases a window-row selection moves the session's active window server-side,
+/// which the real attached client follows. The free `host_session`/`in_flight` maps
+/// are kept here; migration to `Host.display` is a later task.
 #[allow(clippy::too_many_arguments)]
 fn select_attach(
     registry: &mut AttachRegistry,
-    mgr: &mut HostManager,
-    env: &Env,
+    hosts: &crate::model::Hosts,
     sel: &Selection,
-    host_session: &mut std::collections::HashMap<String, String>,
     worker: &DisplayWorker,
+    host_session: &mut std::collections::HashMap<String, String>,
     in_flight: &mut std::collections::HashMap<String, u64>,
     attach_seq: &mut u64,
     cols: u16,
@@ -342,13 +342,14 @@ fn select_attach(
         return false;
     }
     let (cols, rows) = terminal_view_size(cols, rows, tree_width);
-    let Some(src) = env.by_alias.get(&sel.source) else {
+    let Some(host) = hosts.get(&sel.source) else {
         return false;
     };
-    let key = display_key(env, sel);
+    let key = host.display_key(&sel.address());
     let already = registry.contains(&key);
+    let shared = host.mux.server_model().shares_one_attachment();
 
-    if src.remote {
+    if shared {
         if !already {
             // Off-loop first-attach: request the spawn ONLY if one is not already in flight.
             // Do NOT overwrite host_session while an attach is in flight — the in-flight attach
@@ -356,61 +357,79 @@ fn select_attach(
             // Ready arm) issues a switch-client to the current selection. Overwriting it here
             // would make the switch-client guard think the PTY is already on the new session.
             if !in_flight.contains_key(&key) {
-                let argv = marked_remote_attach_argv(src, &sel.session, sel.window);
+                let mux_argv = host.mux.attach_plan(&sel.session, sel.window);
+                let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
+                let mut argv = vec![cmd];
+                argv.extend(args);
+                if host.transport.is_remote() {
+                    // Marker is a remote-shell mechanism: prefix the last element so the
+                    // display-tty capture fires before exec'ing the attach command.
+                    if let Some(last) = argv.last_mut() {
+                        *last = format!("{}{}", crate::model::death::display_tty_marker_prefix(), last);
+                    }
+                }
                 request_attach(registry, worker, in_flight, attach_seq, &key, argv, cols, rows);
                 host_session.insert(sel.source.clone(), sel.session.clone());
             }
         } else if host_session.get(&sel.source) != Some(&sel.session) {
-            // The host's PTY is on a different session — switch that one client over.
+            // The host's PTY is on a different session — lower a SwitchPlan to move it.
             // Wipe the grid first so the previous session's cells do not linger as
             // residue: switch-client triggers a FULL client redraw, which refills the
             // cleared grid with the new session's content (a brief blank, not stale
             // colours/glyphs). The per-host PTY reuses ONE grid across sessions, so
             // without this the old session's uncovered cells stay on screen.
-            let t = std::time::Instant::now();
             registry.clear_grid(&key);
-            dbg_ms(&env.xmux_dir, "clear_grid", t);
-            let cmd = src.switch_client_remote_cmd(&sel.session);
-            let src2 = src.clone();
-            tokio::spawn(async move {
-                let _ = src2.run_raw(&cmd).await;
-            });
+            let plan = host.mux.switch_plan(&sel.session);
+            let tty = host.display_tty.0.clone().unwrap_or_default();
+            let lowered = {
+                let builder = |session: &str| host.mux.switch_client_argv(&tty, session);
+                host.transport.lower_switch(&plan, &builder)
+            };
+            if let Some(lowered) = lowered {
+                run_lowered(lowered);
+            }
             host_session.insert(sel.source.clone(), sel.session.clone());
         }
-    } else {
-        // LOCAL psmux: one PTY per session — off-loop attach, deduped by in-flight + contains.
-        if !already && !in_flight.contains_key(&key) {
-            let argv = src.attach_command(&sel.session, None);
-            request_attach(registry, worker, in_flight, attach_seq, &key, argv, cols, rows);
-        }
+    } else if !already && !in_flight.contains_key(&key) {
+        // PerSession (psmux): one PTY per session — off-loop attach, deduped by in-flight.
+        let mux_argv = host.mux.attach_plan(&sel.session, None);
+        let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
+        let mut argv = vec![cmd];
+        argv.extend(args);
+        request_attach(registry, worker, in_flight, attach_seq, &key, argv, cols, rows);
     }
-    dbg_log(
-        &env.xmux_dir,
-        &format!("select_attach key={key} already={already} remote={} sess={}", src.remote, sel.session),
-    );
 
-    // Window-row selection → move the session's active window. The fresh remote
-    // attach above already folded the window in; otherwise switch it server-side.
+    // Window-row selection → move the session's active window. The fresh shared
+    // attach above already folded the window in; otherwise lower a select-window plan.
     if let Some(win) = sel.window {
-        let folded_into_attach = !already && src.remote;
+        let folded_into_attach = !already && shared;
         if !folded_into_attach {
             let target = crate::mux::window_target(&sel.session, win);
-            if src.remote {
-                if mgr.ensure(&sel.source, src, cols, rows).is_ok() {
-                    if let Some(client) = mgr.get(&sel.source) {
-                        client.select_window_on(&target);
-                    }
-                }
-            } else {
-                let src2 = src.clone();
-                let argv = crate::mux::select_window(&src2.binary, &target);
-                tokio::spawn(async move {
-                    let _ = src2.run(&argv).await;
-                });
-            }
+            let mux_argv = host.mux.select_window_plan(&target);
+            let (cmd, args) = host.transport.exec_argv(false, &mux_argv);
+            let mut argv = vec![cmd];
+            argv.extend(args);
+            run_lowered(crate::model::LoweredSwitch::Local(argv));
         }
     }
     true
+}
+
+/// Spawns the lowered switch command off the event loop. Local variants run as a
+/// plain subprocess; RawSsh variants run the full ssh argv non-interactively.
+fn run_lowered(lowered: crate::model::LoweredSwitch) {
+    use crate::model::LoweredSwitch;
+    use crate::source::Runner;
+    let argv = match lowered {
+        LoweredSwitch::Local(v) | LoweredSwitch::RawSsh(v) => v,
+    };
+    if argv.is_empty() {
+        return;
+    }
+    let (name, args) = (argv[0].clone(), argv[1..].to_vec());
+    tokio::spawn(async move {
+        let _ = crate::source::ExecRunner.run(&name, &args).await;
+    });
 }
 
 /// Keeps a source's display terminals in sync with its sessions. REMOTE tmux keeps
@@ -1277,8 +1296,8 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 {
                     let t = std::time::Instant::now();
                     if select_attach(
-                        &mut registry, &mut mgr, &env, &selection, &mut host_session,
-                        &worker, &mut in_flight, &mut attach_seq, cols, body_rows, tree_width,
+                        &mut registry, &hosts, &selection, &worker,
+                        &mut host_session, &mut in_flight, &mut attach_seq, cols, body_rows, tree_width,
                     ) {
                         last_attached_sel = selection.clone();
                     }
@@ -1963,8 +1982,8 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     let key = display_key(&env, &selection);
                     if !registry.contains(&key) && !in_flight.contains_key(&key) {
                         select_attach(
-                            &mut registry, &mut mgr, &env, &selection, &mut host_session,
-                            &worker, &mut in_flight, &mut attach_seq, cols, body_rows, tree_width,
+                            &mut registry, &hosts, &selection, &worker,
+                            &mut host_session, &mut in_flight, &mut attach_seq, cols, body_rows, tree_width,
                         );
                     }
                 }
@@ -2655,27 +2674,21 @@ mod tests {
         assert!(!attach_reply_is_current(&f, "absent", 5), "no in-flight request → stale");
     }
 
-    #[test]
-    fn remote_second_session_in_flight_keeps_original_host_session() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
         use std::collections::HashMap;
-        let mut remote = fake_source("jup");
-        remote.remote = true;
-        let by_alias: HashMap<String, Source> =
-            [("jup".to_string(), remote.clone())].into_iter().collect();
-        let env = Env {
-            cfg: Config::default(),
-            cfg_warnings: Vec::new(),
-            srcs: vec![remote],
-            by_alias,
-            local_bin: "cmd.exe".into(),
-            ui_prefix: "C-g".into(),
-            xmux_dir: std::path::PathBuf::from("."),
-        };
+        let mut hosts = crate::model::Hosts::default();
+        hosts.insert(crate::model::Host::new(
+            crate::model::Transport::Ssh {
+                alias: "jup".into(),
+                control_path: String::new(),
+                os: "linux".into(),
+            },
+            crate::model::for_binary("tmux"),
+        ));
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
         let worker = crate::display::DisplayWorker::new(ptx);
         let mut registry = AttachRegistry::new();
-        let (htx, _hrx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
-        let mut mgr = HostManager::new(htx);
         let mut host_session: HashMap<String, String> = HashMap::new();
         let mut in_flight: HashMap<String, u64> = HashMap::new();
         let mut attach_seq = 0u64;
@@ -2684,19 +2697,37 @@ mod tests {
         let sel_b = Selection { source: "jup".into(), session: "b".into(), window: None };
 
         // First attach (session a): requests off-loop, latches host_session=a, marks in-flight.
-        assert!(select_attach(&mut registry, &mut mgr, &env, &sel_a, &mut host_session,
-            &worker, &mut in_flight, &mut attach_seq, 80, 24, crate::ui::switcher::TREE_WIDTH));
+        assert!(select_attach(&mut registry, &hosts, &sel_a, &worker,
+            &mut host_session, &mut in_flight, &mut attach_seq, 80, 24, crate::ui::switcher::TREE_WIDTH));
         assert_eq!(host_session.get("jup"), Some(&"a".to_string()));
         assert!(in_flight.contains_key("jup"), "first attach is in flight");
 
         // Select session b of the SAME host before a's Ready arrives: must NOT overwrite host_session
         // (else the switch-client to b after a lands would never fire).
-        assert!(select_attach(&mut registry, &mut mgr, &env, &sel_b, &mut host_session,
-            &worker, &mut in_flight, &mut attach_seq, 80, 24, crate::ui::switcher::TREE_WIDTH));
+        assert!(select_attach(&mut registry, &hosts, &sel_b, &worker,
+            &mut host_session, &mut in_flight, &mut attach_seq, 80, 24, crate::ui::switcher::TREE_WIDTH));
         assert_eq!(host_session.get("jup"), Some(&"a".to_string()),
             "an in-flight attach must not latch host_session to the new target");
+    }
 
-        mgr.teardown_all();
+    #[test]
+    fn local_tmux_shared_second_session_lowers_to_a_local_switch_client_argv() {
+        use crate::model::{LoweredSwitch, Transport};
+        let host = crate::model::Host::new(
+            Transport::Local { socket: None },
+            crate::model::for_binary("tmux"),
+        );
+        let plan = host.mux.switch_plan("b");
+        let tty = "/dev/pts/7";
+        let builder = |session: &str| host.mux.switch_client_argv(tty, session);
+        let got = host.transport.lower_switch(&plan, &builder);
+        let LoweredSwitch::Local(argv) = got.expect("local tmux must lower to Local") else {
+            panic!("expected LoweredSwitch::Local");
+        };
+        assert!(argv.iter().any(|a| a == "tmux"), "argv contains tmux binary");
+        assert!(argv.iter().any(|a| a == "switch-client"), "argv contains switch-client");
+        assert!(argv.iter().any(|a| a == tty), "argv contains the display tty");
+        assert!(argv.iter().any(|a| a == "b"), "argv contains the session name");
     }
 
     fn empty_manager() -> HostManager {

@@ -123,8 +123,7 @@ pub fn display_tty_query_line() -> String {
 
 /// Picks xmux's display-client tty from a `list-clients` block body. Each line is
 /// `<client_tty> <client_flags>`; the display attach is the client whose flags do
-/// NOT contain `control-mode` (that flag marks the `-CC` metadata connection). This
-/// is the identity rule frozen `switch_client_remote_cmd` (source.rs:265) states,
+/// NOT contain `control-mode` (that flag marks the `-CC` metadata connection),
 /// applied at capture so a multi-client reply resolves deterministically — never
 /// "the first line."
 fn display_client_tty(body: &[String]) -> Option<String> {
