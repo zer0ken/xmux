@@ -1,9 +1,13 @@
 [package]
 name = "xmux"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 description = "Cross-environment tmux/psmux session switcher"
 license = "MIT"
+repository = "https://github.com/zer0ken/xmux"
+readme = "README.md"
+keywords = ["tmux", "psmux", "ssh", "tui", "terminal"]
+categories = ["command-line-utilities"]
 
 [[bin]]
 name = "xmux"
