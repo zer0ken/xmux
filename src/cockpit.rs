@@ -1023,6 +1023,452 @@ fn note_host_exited(
     true
 }
 
+/// The per-event mouse-gesture/input state the `stdin_rx` arm carries across reads,
+/// bundled so the extracted handlers stay behavior-preserving (the gesture latches
+/// must persist across reads). Field-for-field the loop locals `run_cockpit` held.
+#[derive(Default)]
+struct MouseState {
+    /// True while the left button is dragging the tree/mux divider rule to resize.
+    dragging_divider: bool,
+    /// True while the mouse hovers the divider rule (no button) — the drag-resize cue.
+    hovered_divider: bool,
+    /// The resize-repeat window: a bare Ctrl+←/→ keeps resizing until it lapses.
+    repeat_until: Option<std::time::Instant>,
+    /// True while a prefix has been pressed in tree focus, awaiting the command key.
+    tree_armed: bool,
+}
+
+/// The outcome of one stdin read: what the loop must act on after the handler runs.
+/// Replaces the inline arm's direct mutation of `dirty`/`quit`, so the handler is a
+/// function of (bytes, state) → outcome, unit-testable without the loop. `focus_*` and
+/// `tree_replay` carry the resolved focus path (applied inside the handler) for the
+/// per-handler round-trip test + observability.
+#[derive(Default)]
+struct StdinOutcome {
+    quit: bool,
+    focus_terminal: bool,
+    focus_tree: bool,
+    dirty: bool,
+    tree_replay: Vec<u8>,
+}
+
+/// Applies ONE parsed SGR mouse event to the gesture state + tree/registry — the body
+/// of the inline `while i < bytes.len()` mouse branch, lifted verbatim. Runs the modal/
+/// gesture gates (menu, divider drag, popup drag, modal swallow, divider grab, idle
+/// hover, menu open) in the SAME order, then the focus×position routing. Mutates `st`
+/// (the gesture latches), `app` (mid-loop focus toggles — routing re-reads focus per
+/// event, so deferring would change behavior), and the byte-loop accumulators
+/// (`non_mouse`, `mouse_focus_toggle`, `wheel_scrolled`). Returns whether a redraw is
+/// needed for this event.
+#[allow(clippy::too_many_arguments)]
+fn handle_mouse_event(
+    ev: &crate::proxy::mouse::MouseEvent,
+    st: &mut MouseState,
+    switcher: &mut crate::ui::switcher::Switcher,
+    app: &mut crate::proxy::app::App,
+    registry: &mut AttachRegistry,
+    mgr: &mut HostManager,
+    env: &Env,
+    hosts: &crate::model::Hosts,
+    selection: &Selection,
+    ops: &Arc<dyn crate::ui::switcher::Ops>,
+    op_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
+    enum_tx: &tokio::sync::mpsc::UnboundedSender<LocalEnum>,
+    non_mouse: &mut Vec<u8>,
+    mouse_focus_toggle: &mut bool,
+    wheel_scrolled: &mut bool,
+    term_area: ratatui::layout::Rect,
+    tree_width_natural: &mut u16,
+    cols: u16,
+    body_rows: u16,
+    tree_width: u16,
+) -> bool {
+    let mut dirty = false;
+    let in_mux = to_grid_local(term_area, ev.col, ev.row);
+    // A LEFT-button press in the UNFOCUSED pane switches focus to that
+    // pane — focus only; the click is not delivered. Right-click is
+    // reserved for the tree context menu, so it never moves focus.
+    // Within the focused mux pane, the click forwards.
+    let is_press = ev.pressed && (ev.cb & 0x60) == 0;
+    // Wheel events carry the 0x40 bit (cb 64=up, 65=down; +16=Ctrl).
+    let is_wheel = ev.pressed && (ev.cb & 0x40) != 0;
+    // Divider drag: grab the divider rule (the column at the effective
+    // tree width, only when the tree is shown) with the left button and
+    // drag to resize. Once grabbed it owns every mouse event until the
+    // button is released. Sets the NATURAL width; the loop-top reconcile
+    // applies it and resizes the PTYs (same path as prefix h/l).
+    let col0 = ev.col.saturating_sub(1); // 1-based SGR → 0-based screen col
+    // A context menu owns every mouse event until the right
+    // button is released (press-hold-release), exactly like the
+    // divider drag below. Motion sets the hovered item; button-up
+    // acts on it (or cancels if released off-menu).
+    if switcher.menu_active() {
+        if !ev.pressed {
+            match switcher.menu_release() {
+                crate::ui::switcher::MenuOutcome::FocusTerminal => {
+                    // Connect the target's host (mirrors the left-click
+                    // select path) so its control client streams, then
+                    // focus the mux on the now-selected session.
+                    ensure_current_host(mgr, env, hosts, switcher, cols, body_rows, tree_width);
+                    if app.is_tree_focused() {
+                        app.toggle();
+                    }
+                }
+                crate::ui::switcher::MenuOutcome::Handled => {
+                    // A menu item may queue an op (split) or a
+                    // re-scan (reconnect); dispatch them here so it
+                    // works in either focus state, not only overlay.
+                    dispatch_pending_op(switcher, ops, op_tx);
+                    kick_rescan(switcher, env, hosts, mgr, enum_tx);
+                    ensure_current_host(mgr, env, hosts, switcher, cols, body_rows, tree_width);
+                }
+                crate::ui::switcher::MenuOutcome::None => {}
+            }
+            dirty = true;
+        } else if !is_wheel {
+            switcher.menu_hover(col0, ev.row.saturating_sub(1));
+            dirty = true;
+        }
+        return dirty;
+    }
+    if st.dragging_divider {
+        if !ev.pressed {
+            // Button up ends the drag; persist the final width once
+            // (motion resizes live but does not write per cell).
+            st.dragging_divider = false;
+            crate::state::save_tree_width(&env.xmux_dir, *tree_width_natural);
+        } else if !is_wheel {
+            let target = divider_drag_width(ev.col);
+            if target != *tree_width_natural {
+                *tree_width_natural = target;
+                dirty = true;
+            }
+        }
+        return dirty;
+    }
+    let is_left_press = is_press && (ev.cb & 0x03) == 0;
+    // A modal popup (help/input/confirm) moves when its border is
+    // dragged. Once grabbed it owns every mouse event until release,
+    // like the divider drag / menu hold above.
+    if switcher.popup_drag_active() {
+        if !ev.pressed {
+            switcher.end_popup_drag();
+        } else if !is_wheel {
+            switcher.drag_popup(col0, ev.row.saturating_sub(1));
+        }
+        dirty = true;
+        return dirty;
+    }
+    if is_left_press
+        && switcher.begin_popup_drag(col0, ev.row.saturating_sub(1))
+    {
+        dirty = true;
+        return dirty;
+    }
+    // A modal popup is mouse-modal: while one is open, every mouse
+    // event that is not its border-drag (handled above) is swallowed,
+    // so clicks, wheels, divider grabs, and hovers never reach the
+    // tree/mux/divider behind it.
+    if switcher.is_modal_popup_open() {
+        return dirty;
+    }
+    if is_left_press && tree_width > 0 && col0 == tree_width {
+        st.dragging_divider = true; // grabbed the divider
+        return dirty;
+    }
+    // Idle motion (motion bit set, no button held) — reported only
+    // because any-motion tracking (1003h) is on. Over the divider it
+    // lights the hover cue and is consumed (nothing under it to forward).
+    // Elsewhere it falls through to the routing below, so a hover over the
+    // mux pane IS forwarded to the child (the inner app gets hover); over
+    // the tree it is harmlessly dropped.
+    if ev.pressed && (ev.cb & 0x23) == 0x23 {
+        let over_divider = tree_width > 0 && col0 == tree_width;
+        if over_divider != st.hovered_divider {
+            st.hovered_divider = over_divider;
+            dirty = true;
+        }
+        if over_divider {
+            return dirty;
+        }
+    }
+    // Right-button press over a selectable tree row opens its context
+    // menu (press-hold-release). Tree-focus only: the menu acts on a
+    // tree row, so it is tree-pane input, not a global — a right-click
+    // while the mux is focused (or over the mux pane) does not open it
+    // and does not move focus. The menu's keyboard actions (rename input,
+    // kill confirm) thus always run in tree focus, so a confirmed kill
+    // can't quit the cockpit out from under the mux.
+    let is_right_press = is_press && (ev.cb & 0x03) == 2;
+    if tree_menu_may_open(is_right_press, app.is_tree_focused(), in_mux.is_some())
+        && switcher.menu_open(col0, ev.row.saturating_sub(1))
+    {
+        dirty = true;
+        return dirty;
+    }
+    let down = (ev.cb & 0x01) != 0;
+    let ctrl = (ev.cb & 0x10) != 0;
+    match resolve_mouse_chain(
+        is_wheel, ctrl, down, is_left_press, app.is_tree_focused(), in_mux.is_some(),
+    ) {
+        ChainAction::ScrollTree(down) => {
+            // Plain wheel → scroll the cursor LINEARLY through every row
+            // (move_selection), like any list. NOT sibling-cycle: arrows do
+            // that (move_sibling), but it wraps within a level, so a 2-sibling
+            // level just bounces — the "two notches per move" report.
+            switcher.mouse_scroll(down);
+            *wheel_scrolled = true;
+            dirty = true;
+        }
+        ChainAction::LevelChange(down) => {
+            // Ctrl+wheel → change level (↑ ascend / ↓ descend); inject the
+            // arrow so the tree path (decode → handle_key → ensure) drives it.
+            non_mouse.extend_from_slice(if down { b"\x1b[C" } else { b"\x1b[D" });
+        }
+        // The unfocused pane was clicked → switch focus to it (no content
+        // delivered); toggle flips Overlay⇄Passthrough either direction.
+        ChainAction::FocusMux | ChainAction::FocusTree => {
+            app.toggle();
+            *mouse_focus_toggle = true;
+        }
+        ChainAction::SelectRow => {
+            // Left-click a tree row → move the cursor to it (select). The
+            // loop top commits the new selection (attach); ensure the
+            // clicked row's host connects so its subtree streams in.
+            switcher.mouse_select(col0, ev.row.saturating_sub(1));
+            ensure_current_host(mgr, env, hosts, switcher, cols, body_rows, tree_width);
+            dirty = true;
+        }
+        ChainAction::ForwardToMux => {
+            if let Some((gc, gr)) = in_mux {
+                registry.input(
+                    &display_key(hosts, selection),
+                    crate::proxy::mouse::encode_sgr_mouse(ev, gc, gr),
+                );
+            }
+        }
+        ChainAction::Nothing => {}
+    }
+    dirty
+}
+
+/// The whole `stdin_rx` arm body, lifted. Scans the read for SGR mouse sequences
+/// (routed via [`handle_mouse_event`]) vs a non-mouse byte stream, runs the lost-release
+/// watchdogs, the resize-repeat window, and the help-modal / tree-focus / mux-focus
+/// routing — in the SAME order as the inline arm. The final focus toggles (+ replay)
+/// run inside on `&mut app`, so the loop only acts on `dirty`/`quit`. No behavior change.
+#[allow(clippy::too_many_arguments)]
+fn handle_stdin_bytes(
+    bytes: &[u8],
+    mouse: &mut MouseState,
+    switcher: &mut crate::ui::switcher::Switcher,
+    app: &mut crate::proxy::app::App,
+    registry: &mut AttachRegistry,
+    mgr: &mut HostManager,
+    env: &Env,
+    hosts: &mut crate::model::Hosts,
+    selection: &Selection,
+    term_input: &mut crate::proxy::input::TermInput,
+    tree_decoder: &mut crate::proxy::decode::KeyDecoder,
+    ops: &Arc<dyn crate::ui::switcher::Ops>,
+    op_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
+    enum_tx: &tokio::sync::mpsc::UnboundedSender<LocalEnum>,
+    tree_width_natural: &mut u16,
+    auto_hide_tree: &mut bool,
+    prefix: u8,
+    cols: u16,
+    body_rows: u16,
+    tree_width: u16,
+) -> StdinOutcome {
+    use std::time::Duration;
+    let mut outcome = StdinOutcome::default();
+    let StdinOutcome { quit, focus_terminal, focus_tree, dirty, tree_replay } = &mut outcome;
+    // Scan for SGR mouse sequences BEFORE routing to Overlay/Passthrough branches.
+    // Mouse capture is global, so mouse bytes arrive in both states; scanning here
+    // prevents them from reaching handle_tree_bytes (which would mis-decode them)
+    // or TermInput's prefix logic. Split into: mouse events + non-mouse byte stream.
+    // Edge case: a sequence split across reads parses as None and falls into
+    // non_mouse — rare in practice; no cross-read buffering in v1.
+    let (vw, vh) = terminal_view_size(cols, body_rows, tree_width);
+    let term_x = if tree_width == 0 { 0 } else { tree_width + 1 };
+    let term_area = ratatui::layout::Rect::new(term_x, 0, vw, vh);
+    let mut non_mouse: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut mouse_focus_toggle = false;
+    let mut wheel_scrolled = false;
+    {
+        let mut i = 0;
+        while i < bytes.len() {
+            if let Some((ev, len)) = crate::proxy::mouse::parse_sgr_mouse(&bytes[i..]) {
+                if handle_mouse_event(
+                    &ev, mouse, switcher, app, registry, mgr, env, hosts, selection, ops, op_tx,
+                    enum_tx, &mut non_mouse, &mut mouse_focus_toggle, &mut wheel_scrolled,
+                    term_area, tree_width_natural, cols, body_rows, tree_width,
+                ) {
+                    *dirty = true;
+                }
+                i += len;
+            } else {
+                non_mouse.push(bytes[i]);
+                i += 1;
+            }
+        }
+    }
+    // Watchdog: a divider drag is normally ended by the button-up event, but a
+    // release can be lost (split across reads, released off-window, or a terminal
+    // that omits it) — which would strand `dragging_divider` and eat all later
+    // mouse input. Any non-mouse byte (a keystroke, or the split release's own
+    // leftover bytes) ends the drag and persists the final width, so the user is
+    // never trapped past the next input.
+    if mouse.dragging_divider && !non_mouse.is_empty() {
+        mouse.dragging_divider = false;
+        crate::state::save_tree_width(&env.xmux_dir, *tree_width_natural);
+    }
+    // Watchdog: a keystroke (or any non-mouse byte) during a held menu ends
+    // the gesture without acting — mirrors the divider-drag watchdog, so a
+    // missed button-up can't strand the menu and eat later input.
+    if switcher.menu_active() && !non_mouse.is_empty() {
+        switcher.menu_cancel();
+        *dirty = true;
+    }
+    // Watchdog: same recovery for a popup border-drag — a lost button-up
+    // must not strand `popup_drag` and eat all later mouse input.
+    if switcher.popup_drag_active() && !non_mouse.is_empty() {
+        switcher.end_popup_drag();
+        *dirty = true;
+    }
+    if mouse_focus_toggle {
+        *dirty = true;
+    }
+    if wheel_scrolled {
+        // The plain-wheel scroll moved the cursor; connect the host it landed on
+        // so its subtree streams in (mirrors handle_tree_bytes's ensure step).
+        ensure_current_host(mgr, env, hosts, switcher, cols, body_rows, tree_width);
+    }
+    // Resize-repeat: while the window from a prefix-driven resize is open, a
+    // bare Ctrl+←/→ (no prefix, in either focus) keeps resizing and refreshes
+    // the window. Gated on NOT being mid-prefix (an armed prefix's next key is
+    // a command, not a repeat — else skipping the input path would leave the
+    // prefix armed and mis-read the following key). A pure-mouse read (empty
+    // non_mouse) leaves the window untouched. Leading Ctrl-arrows are peeled off
+    // (handles a coalesced autorepeat burst); any remaining bytes end the window
+    // and fall through to the normal tree/mux routing below.
+    let mut consumed_by_repeat = false;
+    if mouse.repeat_until.is_some_and(|d| std::time::Instant::now() < d)
+        && !mouse.tree_armed
+        && !term_input.is_armed()
+        && !non_mouse.is_empty()
+    {
+        let mut n = 0;
+        while let Some((d, len)) = leading_ctrl_arrow(&non_mouse[n..]) {
+            apply_width_delta(d, tree_width_natural, &env.xmux_dir);
+            n += len;
+        }
+        if n > 0 {
+            non_mouse.drain(0..n);
+            *dirty = true;
+            if non_mouse.is_empty() {
+                mouse.repeat_until = Some(
+                    std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS),
+                );
+                consumed_by_repeat = true;
+            } else {
+                mouse.repeat_until = None; // trailing non-arrow bytes end + route below
+            }
+        } else {
+            mouse.repeat_until = None; // first key isn't a Ctrl-arrow → end the window
+        }
+    }
+    if !consumed_by_repeat && !non_mouse.is_empty() && switcher.feed_help_key(&non_mouse) {
+        // The help overlay is modal (tmux view-mode style): while open it
+        // captures every key in EITHER focus — q/Esc closes it, the rest are
+        // swallowed — so nothing leaks to the tree or the mux pane. Above the
+        // tree/mux split so the behavior is identical regardless of focus.
+        *dirty = true;
+    } else if !consumed_by_repeat && app.is_tree_focused() {
+        let (ft, q, wd, th) = handle_tree_bytes(
+            &non_mouse, tree_decoder, &mut mouse.tree_armed, prefix, switcher,
+            mgr, env, hosts, ops, op_tx, enum_tx, cols, body_rows, tree_width,
+        );
+        *focus_terminal = ft;
+        *quit = q;
+        if wd != 0 {
+            // A prefix-driven resize: apply it and open the repeat window so the
+            // next bare Ctrl+←/→ keeps resizing without re-pressing the prefix.
+            apply_width_delta(wd, tree_width_natural, &env.xmux_dir);
+            mouse.repeat_until =
+                Some(std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS));
+        }
+        if th {
+            toggle_auto_hide(auto_hide_tree, &env.xmux_dir);
+            *dirty = true;
+        }
+    } else if !consumed_by_repeat {
+        // TERMINAL focus: forward raw bytes to the selected session's PTY;
+        // TermInput intercepts the prefix (→ tree / quit / help / resize / literal).
+        for action in term_input.feed(&non_mouse) {
+            match action {
+                Action::Forward(f) => registry.input(&display_key(hosts, selection), f),
+                Action::FocusTree(rest) => {
+                    *focus_tree = true;
+                    *tree_replay = rest;
+                }
+                Action::Quit => *quit = true,
+                Action::ShowHelp => {
+                    switcher.toggle_help();
+                    *dirty = true;
+                }
+                Action::Width(d) => {
+                    // Same resize + repeat-window as the tree path, so a resize
+                    // started from the mux pane chains with bare Ctrl+←/→ too.
+                    apply_width_delta(d, tree_width_natural, &env.xmux_dir);
+                    mouse.repeat_until = Some(
+                        std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS),
+                    );
+                }
+                Action::ToggleAutoHide => {
+                    toggle_auto_hide(auto_hide_tree, &env.xmux_dir);
+                    *dirty = true;
+                }
+                // The mux-focus resolver (TermInput) never emits these — they
+                // belong to the tree-focus path (resolve_tree).
+                Action::FocusMux | Action::TreeKey(_) => {}
+            }
+        }
+    }
+    if *focus_terminal && app.is_tree_focused() {
+        app.toggle();
+        // No term.clear(): both states draw the SAME split layout (only the
+        // divider colour changes), so clearing would blank the screen and
+        // force a full repaint for nothing.
+    }
+    if *focus_tree && !app.is_tree_focused() {
+        app.toggle();
+        if !tree_replay.is_empty() {
+            let (ft, q, wd, th) = handle_tree_bytes(
+                tree_replay, tree_decoder, &mut mouse.tree_armed, prefix,
+                switcher, mgr, env, hosts, ops, op_tx, enum_tx, cols, body_rows, tree_width,
+            );
+            if ft && app.is_tree_focused() {
+                app.toggle();
+            }
+            *quit = *quit || q;
+            if wd != 0 {
+                // A prefix-driven resize on the replayed bytes: apply + open the
+                // repeat window, same as the direct tree-focus path above.
+                apply_width_delta(wd, tree_width_natural, &env.xmux_dir);
+                mouse.repeat_until =
+                    Some(std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS));
+            }
+            if th {
+                toggle_auto_hide(auto_hide_tree, &env.xmux_dir);
+                *dirty = true;
+            }
+        }
+
+    }
+    outcome
+}
+
 /// The `xmux` (no subcommand) entry: the persistent cockpit. Keeps one real attached
 /// mux client per session alive and renders the selected one, with a control-mode
 /// client per remote host for inventory/events/window-switch. It serves a picker
@@ -1084,14 +1530,14 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     // reads it to size the tree (0 = hidden, mux full width) on focus changes.
     let mut auto_hide_tree = crate::state::load_auto_hide_tree(&env.xmux_dir)
         .unwrap_or_else(|| env.cfg.ui_auto_hide_tree());
-    // The resize-repeat window: set when a prefix-driven resize fires, it lets a bare
-    // Ctrl+←/→ keep resizing (no re-prefix) until it lapses (see RESIZE_REPEAT_MS).
-    let mut repeat_until: Option<std::time::Instant> = None;
-    // True while the left button is dragging the tree/mux divider rule to resize.
-    let mut dragging_divider = false;
-    // True while the mouse is hovering the divider rule (no button) — lights it up as
-    // a drag-resize grab cue. Fed to the switcher each draw via set_divider_hovered.
-    let mut hovered_divider = false;
+    // The per-event mouse-gesture/input state the stdin arm carries across reads:
+    //  - repeat_until: the resize-repeat window — set when a prefix-driven resize fires,
+    //    it lets a bare Ctrl+←/→ keep resizing (no re-prefix) until it lapses (RESIZE_REPEAT_MS).
+    //  - dragging_divider: true while the left button is dragging the tree/mux divider rule.
+    //  - hovered_divider: true while the mouse hovers the divider rule (no button) — lights it
+    //    up as a drag-resize grab cue. Fed to the switcher each draw via set_divider_hovered.
+    //  - tree_armed: true while a prefix has been pressed in tree focus, awaiting the command key.
+    let mut mouse_state = MouseState::default();
 
     // The control-mode metadata clients: one per remote host.
     let (host_tx, mut host_rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
@@ -1181,7 +1627,6 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     let prefix = parse_prefix(Some(&env.ui_prefix));
     let mut term_input = TermInput::new(prefix);
     let mut tree_decoder = KeyDecoder::new();
-    let mut tree_armed = false;
 
     let mut term =
         match ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(std::io::stdout())) {
@@ -1235,7 +1680,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // fired, then commit the cursor's target into the canonical selection. A
         // changed selection ensures its PTY + (for a window row) switches the window.
         switcher.set_spinner_frame(spinner_frame_at(spinner_start.elapsed()));
-        switcher.set_divider_hovered(hovered_divider);
+        switcher.set_divider_hovered(mouse_state.hovered_divider);
         // Lock focus to the input pane while it is shown; restore the prior focus on close.
         reconcile_input_focus(switcher.is_inputting(), &mut app.state, &mut focus_before_input);
         // The single owner of the effective tree width: reconcile it to the current
@@ -1518,360 +1963,16 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 }
             }
             Some(bytes) = stdin_rx.recv() => {
-                let mut quit = false;
-                let mut focus_terminal = false;
-                let mut focus_tree = false;
-                let mut tree_replay: Vec<u8> = Vec::new();
-                // Scan for SGR mouse sequences BEFORE routing to Overlay/Passthrough branches.
-                // Mouse capture is global, so mouse bytes arrive in both states; scanning here
-                // prevents them from reaching handle_tree_bytes (which would mis-decode them)
-                // or TermInput's prefix logic. Split into: mouse events + non-mouse byte stream.
-                // Edge case: a sequence split across reads parses as None and falls into
-                // non_mouse — rare in practice; no cross-read buffering in v1.
-                let (vw, vh) = terminal_view_size(cols, body_rows, tree_width);
-                let term_x = if tree_width == 0 { 0 } else { tree_width + 1 };
-                let term_area = ratatui::layout::Rect::new(term_x, 0, vw, vh);
-                let mut non_mouse: Vec<u8> = Vec::with_capacity(bytes.len());
-                let mut mouse_focus_toggle = false;
-                let mut wheel_scrolled = false;
-                {
-                    let mut i = 0;
-                    while i < bytes.len() {
-                        if let Some((ev, len)) = crate::proxy::mouse::parse_sgr_mouse(&bytes[i..]) {
-                            let in_mux = to_grid_local(term_area, ev.col, ev.row);
-                            // A LEFT-button press in the UNFOCUSED pane switches focus to that
-                            // pane — focus only; the click is not delivered. Right-click is
-                            // reserved for the tree context menu, so it never moves focus.
-                            // Within the focused mux pane, the click forwards.
-                            let is_press = ev.pressed && (ev.cb & 0x60) == 0;
-                            // Wheel events carry the 0x40 bit (cb 64=up, 65=down; +16=Ctrl).
-                            let is_wheel = ev.pressed && (ev.cb & 0x40) != 0;
-                            // Divider drag: grab the divider rule (the column at the effective
-                            // tree width, only when the tree is shown) with the left button and
-                            // drag to resize. Once grabbed it owns every mouse event until the
-                            // button is released. Sets the NATURAL width; the loop-top reconcile
-                            // applies it and resizes the PTYs (same path as prefix h/l).
-                            let col0 = ev.col.saturating_sub(1); // 1-based SGR → 0-based screen col
-                            // A context menu owns every mouse event until the right
-                            // button is released (press-hold-release), exactly like the
-                            // divider drag below. Motion sets the hovered item; button-up
-                            // acts on it (or cancels if released off-menu).
-                            if switcher.menu_active() {
-                                if !ev.pressed {
-                                    match switcher.menu_release() {
-                                        crate::ui::switcher::MenuOutcome::FocusTerminal => {
-                                            // Connect the target's host (mirrors the left-click
-                                            // select path) so its control client streams, then
-                                            // focus the mux on the now-selected session.
-                                            ensure_current_host(&mut mgr, &env, &hosts, &switcher, cols, body_rows, tree_width);
-                                            if app.is_tree_focused() {
-                                                app.toggle();
-                                            }
-                                        }
-                                        crate::ui::switcher::MenuOutcome::Handled => {
-                                            // A menu item may queue an op (split) or a
-                                            // re-scan (reconnect); dispatch them here so it
-                                            // works in either focus state, not only overlay.
-                                            dispatch_pending_op(&mut switcher, &ops, &op_tx);
-                                            kick_rescan(&mut switcher, &env, &hosts, &mgr, &enum_tx);
-                                            ensure_current_host(&mut mgr, &env, &hosts, &switcher, cols, body_rows, tree_width);
-                                        }
-                                        crate::ui::switcher::MenuOutcome::None => {}
-                                    }
-                                    dirty = true;
-                                } else if !is_wheel {
-                                    switcher.menu_hover(col0, ev.row.saturating_sub(1));
-                                    dirty = true;
-                                }
-                                i += len;
-                                continue;
-                            }
-                            if dragging_divider {
-                                if !ev.pressed {
-                                    // Button up ends the drag; persist the final width once
-                                    // (motion resizes live but does not write per cell).
-                                    dragging_divider = false;
-                                    crate::state::save_tree_width(&env.xmux_dir, tree_width_natural);
-                                } else if !is_wheel {
-                                    let target = divider_drag_width(ev.col);
-                                    if target != tree_width_natural {
-                                        tree_width_natural = target;
-                                        dirty = true;
-                                    }
-                                }
-                                i += len;
-                                continue;
-                            }
-                            let is_left_press = is_press && (ev.cb & 0x03) == 0;
-                            // A modal popup (help/input/confirm) moves when its border is
-                            // dragged. Once grabbed it owns every mouse event until release,
-                            // like the divider drag / menu hold above.
-                            if switcher.popup_drag_active() {
-                                if !ev.pressed {
-                                    switcher.end_popup_drag();
-                                } else if !is_wheel {
-                                    switcher.drag_popup(col0, ev.row.saturating_sub(1));
-                                }
-                                dirty = true;
-                                i += len;
-                                continue;
-                            }
-                            if is_left_press
-                                && switcher.begin_popup_drag(col0, ev.row.saturating_sub(1))
-                            {
-                                dirty = true;
-                                i += len;
-                                continue;
-                            }
-                            // A modal popup is mouse-modal: while one is open, every mouse
-                            // event that is not its border-drag (handled above) is swallowed,
-                            // so clicks, wheels, divider grabs, and hovers never reach the
-                            // tree/mux/divider behind it.
-                            if switcher.is_modal_popup_open() {
-                                i += len;
-                                continue;
-                            }
-                            if is_left_press && tree_width > 0 && col0 == tree_width {
-                                dragging_divider = true; // grabbed the divider
-                                i += len;
-                                continue;
-                            }
-                            // Idle motion (motion bit set, no button held) — reported only
-                            // because any-motion tracking (1003h) is on. Over the divider it
-                            // lights the hover cue and is consumed (nothing under it to forward).
-                            // Elsewhere it falls through to the routing below, so a hover over the
-                            // mux pane IS forwarded to the child (the inner app gets hover); over
-                            // the tree it is harmlessly dropped.
-                            if ev.pressed && (ev.cb & 0x23) == 0x23 {
-                                let over_divider = tree_width > 0 && col0 == tree_width;
-                                if over_divider != hovered_divider {
-                                    hovered_divider = over_divider;
-                                    dirty = true;
-                                }
-                                if over_divider {
-                                    i += len;
-                                    continue;
-                                }
-                            }
-                            // Right-button press over a selectable tree row opens its context
-                            // menu (press-hold-release). Tree-focus only: the menu acts on a
-                            // tree row, so it is tree-pane input, not a global — a right-click
-                            // while the mux is focused (or over the mux pane) does not open it
-                            // and does not move focus. The menu's keyboard actions (rename input,
-                            // kill confirm) thus always run in tree focus, so a confirmed kill
-                            // can't quit the cockpit out from under the mux.
-                            let is_right_press = is_press && (ev.cb & 0x03) == 2;
-                            if tree_menu_may_open(is_right_press, app.is_tree_focused(), in_mux.is_some())
-                                && switcher.menu_open(col0, ev.row.saturating_sub(1))
-                            {
-                                dirty = true;
-                                i += len;
-                                continue;
-                            }
-                            let down = (ev.cb & 0x01) != 0;
-                            let ctrl = (ev.cb & 0x10) != 0;
-                            match resolve_mouse_chain(
-                                is_wheel, ctrl, down, is_left_press, app.is_tree_focused(), in_mux.is_some(),
-                            ) {
-                                ChainAction::ScrollTree(down) => {
-                                    // Plain wheel → scroll the cursor LINEARLY through every row
-                                    // (move_selection), like any list. NOT sibling-cycle: arrows do
-                                    // that (move_sibling), but it wraps within a level, so a 2-sibling
-                                    // level just bounces — the "two notches per move" report.
-                                    switcher.mouse_scroll(down);
-                                    wheel_scrolled = true;
-                                    dirty = true;
-                                }
-                                ChainAction::LevelChange(down) => {
-                                    // Ctrl+wheel → change level (↑ ascend / ↓ descend); inject the
-                                    // arrow so the tree path (decode → handle_key → ensure) drives it.
-                                    non_mouse.extend_from_slice(if down { b"\x1b[C" } else { b"\x1b[D" });
-                                }
-                                // The unfocused pane was clicked → switch focus to it (no content
-                                // delivered); toggle flips Overlay⇄Passthrough either direction.
-                                ChainAction::FocusMux | ChainAction::FocusTree => {
-                                    app.toggle();
-                                    mouse_focus_toggle = true;
-                                }
-                                ChainAction::SelectRow => {
-                                    // Left-click a tree row → move the cursor to it (select). The
-                                    // loop top commits the new selection (attach); ensure the
-                                    // clicked row's host connects so its subtree streams in.
-                                    switcher.mouse_select(col0, ev.row.saturating_sub(1));
-                                    ensure_current_host(&mut mgr, &env, &hosts, &switcher, cols, body_rows, tree_width);
-                                    dirty = true;
-                                }
-                                ChainAction::ForwardToMux => {
-                                    if let Some((gc, gr)) = in_mux {
-                                        registry.input(
-                                            &display_key(&hosts, &selection),
-                                            crate::proxy::mouse::encode_sgr_mouse(&ev, gc, gr),
-                                        );
-                                    }
-                                }
-                                ChainAction::Nothing => {}
-                            }
-                            i += len;
-                        } else {
-                            non_mouse.push(bytes[i]);
-                            i += 1;
-                        }
-                    }
-                }
-                // Watchdog: a divider drag is normally ended by the button-up event, but a
-                // release can be lost (split across reads, released off-window, or a terminal
-                // that omits it) — which would strand `dragging_divider` and eat all later
-                // mouse input. Any non-mouse byte (a keystroke, or the split release's own
-                // leftover bytes) ends the drag and persists the final width, so the user is
-                // never trapped past the next input.
-                if dragging_divider && !non_mouse.is_empty() {
-                    dragging_divider = false;
-                    crate::state::save_tree_width(&env.xmux_dir, tree_width_natural);
-                }
-                // Watchdog: a keystroke (or any non-mouse byte) during a held menu ends
-                // the gesture without acting — mirrors the divider-drag watchdog, so a
-                // missed button-up can't strand the menu and eat later input.
-                if switcher.menu_active() && !non_mouse.is_empty() {
-                    switcher.menu_cancel();
+                let outcome = handle_stdin_bytes(
+                    &bytes, &mut mouse_state, &mut switcher, &mut app, &mut registry, &mut mgr,
+                    &env, &mut hosts, &selection, &mut term_input, &mut tree_decoder, &ops, &op_tx,
+                    &enum_tx, &mut tree_width_natural, &mut auto_hide_tree, prefix, cols, body_rows,
+                    tree_width,
+                );
+                if outcome.dirty {
                     dirty = true;
                 }
-                // Watchdog: same recovery for a popup border-drag — a lost button-up
-                // must not strand `popup_drag` and eat all later mouse input.
-                if switcher.popup_drag_active() && !non_mouse.is_empty() {
-                    switcher.end_popup_drag();
-                    dirty = true;
-                }
-                if mouse_focus_toggle {
-                    dirty = true;
-                }
-                if wheel_scrolled {
-                    // The plain-wheel scroll moved the cursor; connect the host it landed on
-                    // so its subtree streams in (mirrors handle_tree_bytes's ensure step).
-                    ensure_current_host(&mut mgr, &env, &hosts, &switcher, cols, body_rows, tree_width);
-                }
-                // Resize-repeat: while the window from a prefix-driven resize is open, a
-                // bare Ctrl+←/→ (no prefix, in either focus) keeps resizing and refreshes
-                // the window. Gated on NOT being mid-prefix (an armed prefix's next key is
-                // a command, not a repeat — else skipping the input path would leave the
-                // prefix armed and mis-read the following key). A pure-mouse read (empty
-                // non_mouse) leaves the window untouched. Leading Ctrl-arrows are peeled off
-                // (handles a coalesced autorepeat burst); any remaining bytes end the window
-                // and fall through to the normal tree/mux routing below.
-                let mut consumed_by_repeat = false;
-                if repeat_until.is_some_and(|d| std::time::Instant::now() < d)
-                    && !tree_armed
-                    && !term_input.is_armed()
-                    && !non_mouse.is_empty()
-                {
-                    let mut n = 0;
-                    while let Some((d, len)) = leading_ctrl_arrow(&non_mouse[n..]) {
-                        apply_width_delta(d, &mut tree_width_natural, &env.xmux_dir);
-                        n += len;
-                    }
-                    if n > 0 {
-                        non_mouse.drain(0..n);
-                        dirty = true;
-                        if non_mouse.is_empty() {
-                            repeat_until = Some(
-                                std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS),
-                            );
-                            consumed_by_repeat = true;
-                        } else {
-                            repeat_until = None; // trailing non-arrow bytes end + route below
-                        }
-                    } else {
-                        repeat_until = None; // first key isn't a Ctrl-arrow → end the window
-                    }
-                }
-                if !consumed_by_repeat && !non_mouse.is_empty() && switcher.feed_help_key(&non_mouse) {
-                    // The help overlay is modal (tmux view-mode style): while open it
-                    // captures every key in EITHER focus — q/Esc closes it, the rest are
-                    // swallowed — so nothing leaks to the tree or the mux pane. Above the
-                    // tree/mux split so the behavior is identical regardless of focus.
-                    dirty = true;
-                } else if !consumed_by_repeat && app.is_tree_focused() {
-                    let (ft, q, wd, th) = handle_tree_bytes(
-                        &non_mouse, &mut tree_decoder, &mut tree_armed, prefix, &mut switcher,
-                        &mut mgr, &env, &hosts, &ops, &op_tx, &enum_tx, cols, body_rows, tree_width,
-                    );
-                    focus_terminal = ft;
-                    quit = q;
-                    if wd != 0 {
-                        // A prefix-driven resize: apply it and open the repeat window so the
-                        // next bare Ctrl+←/→ keeps resizing without re-pressing the prefix.
-                        apply_width_delta(wd, &mut tree_width_natural, &env.xmux_dir);
-                        repeat_until =
-                            Some(std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS));
-                    }
-                    if th {
-                        toggle_auto_hide(&mut auto_hide_tree, &env.xmux_dir);
-                        dirty = true;
-                    }
-                } else if !consumed_by_repeat {
-                    // TERMINAL focus: forward raw bytes to the selected session's PTY;
-                    // TermInput intercepts the prefix (→ tree / quit / help / resize / literal).
-                    for action in term_input.feed(&non_mouse) {
-                        match action {
-                            Action::Forward(f) => registry.input(&display_key(&hosts, &selection), f),
-                            Action::FocusTree(rest) => {
-                                focus_tree = true;
-                                tree_replay = rest;
-                            }
-                            Action::Quit => quit = true,
-                            Action::ShowHelp => {
-                                switcher.toggle_help();
-                                dirty = true;
-                            }
-                            Action::Width(d) => {
-                                // Same resize + repeat-window as the tree path, so a resize
-                                // started from the mux pane chains with bare Ctrl+←/→ too.
-                                apply_width_delta(d, &mut tree_width_natural, &env.xmux_dir);
-                                repeat_until = Some(
-                                    std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS),
-                                );
-                            }
-                            Action::ToggleAutoHide => {
-                                toggle_auto_hide(&mut auto_hide_tree, &env.xmux_dir);
-                                dirty = true;
-                            }
-                            // The mux-focus resolver (TermInput) never emits these — they
-                            // belong to the tree-focus path (resolve_tree).
-                            Action::FocusMux | Action::TreeKey(_) => {}
-                        }
-                    }
-                }
-                if focus_terminal && app.is_tree_focused() {
-                    app.toggle();
-                    // No term.clear(): both states draw the SAME split layout (only the
-                    // divider colour changes), so clearing would blank the screen and
-                    // force a full repaint for nothing.
-                }
-                if focus_tree && !app.is_tree_focused() {
-                    app.toggle();
-                    if !tree_replay.is_empty() {
-                        let (ft, q, wd, th) = handle_tree_bytes(
-                            &tree_replay, &mut tree_decoder, &mut tree_armed, prefix,
-                            &mut switcher, &mut mgr, &env, &hosts, &ops, &op_tx, &enum_tx, cols, body_rows, tree_width,
-                        );
-                        if ft && app.is_tree_focused() {
-                            app.toggle();
-                        }
-                        quit = quit || q;
-                        if wd != 0 {
-                            // A prefix-driven resize on the replayed bytes: apply + open the
-                            // repeat window, same as the direct tree-focus path above.
-                            apply_width_delta(wd, &mut tree_width_natural, &env.xmux_dir);
-                            repeat_until =
-                                Some(std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS));
-                        }
-                        if th {
-                            toggle_auto_hide(&mut auto_hide_tree, &env.xmux_dir);
-                            dirty = true;
-                        }
-                    }
-
-                }
-                if quit {
+                if outcome.quit {
                     break;
                 }
             }
@@ -2978,5 +3079,76 @@ mod tests {
         let sw = Switcher::new(scan);
         assert_eq!(status_line(&sw, true), "focus=tree target=api");
         assert_eq!(status_line(&sw, false), "focus=terminal target=api");
+    }
+
+    #[test]
+    fn handle_stdin_bytes_quit_on_prefix_q_in_tree_focus() {
+        use crate::proxy::app::App;
+        use crate::ui::switcher::{Scan, Switcher};
+        // prefix is Ctrl-G (0x07) in the default config; prefix then 'q' = quit.
+        let scan = Scan { groups: vec![], panes: Default::default() };
+        let mut switcher = Switcher::new(scan);
+        let mut app = App::new(); // tree focus
+        let mut registry = AttachRegistry::new();
+        let mut mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
+        let mut hosts = crate::model::Hosts::default();
+        let mut mouse = MouseState::default();
+        let mut term_input = crate::proxy::input::TermInput::new(0x07);
+        let mut tree_decoder = crate::proxy::decode::KeyDecoder::new();
+        let ops = crate::ui::switcher::tests_support::noop_ops();
+        let (op_tx, _r) = tokio::sync::mpsc::unbounded_channel();
+        let (enum_tx, _er) = tokio::sync::mpsc::unbounded_channel();
+        let sel = Selection::default();
+        let env = fake_env_with_sources(&["local"]);
+        let mut natural = 48u16;
+        let mut hide = false;
+        let out = handle_stdin_bytes(
+            b"\x07q", &mut mouse, &mut switcher, &mut app, &mut registry, &mut mgr, &env,
+            &mut hosts, &sel, &mut term_input, &mut tree_decoder, &ops, &op_tx, &enum_tx,
+            &mut natural, &mut hide, 0x07, 80, 24, crate::ui::switcher::TREE_WIDTH,
+        );
+        assert!(out.quit, "prefix+q in tree focus quits");
+    }
+
+    #[test]
+    fn handle_mouse_event_divider_grab_sets_dragging() {
+        use crate::proxy::app::App;
+        use crate::ui::switcher::{Scan, Switcher};
+        // A left-press exactly on the divider column sets dragging_divider, as the
+        // inline gate did (is_left_press && tree_width > 0 && col0 == tree_width).
+        let scan = Scan { groups: vec![], panes: Default::default() };
+        let mut switcher = Switcher::new(scan);
+        let mut app = App::new();
+        let mut registry = AttachRegistry::new();
+        let mut mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
+        let hosts = crate::model::Hosts::default();
+        let sel = Selection::default();
+        let ops = crate::ui::switcher::tests_support::noop_ops();
+        let (op_tx, _r) = tokio::sync::mpsc::unbounded_channel();
+        let (enum_tx, _er) = tokio::sync::mpsc::unbounded_channel();
+        let mut st = MouseState::default();
+        let tree_width = crate::ui::switcher::TREE_WIDTH;
+        let mut natural = tree_width;
+        // 0-based col0 = ev.col - 1 must equal tree_width to grab the divider rule.
+        let divider_col = tree_width + 1; // 1-based SGR column of the divider
+        // cb=0 → left button, press, no wheel/motion → is_left_press is true.
+        let ev = crate::proxy::mouse::MouseEvent { cb: 0, col: divider_col, row: 3, pressed: true };
+        let (vw, vh) = terminal_view_size(80, 24, tree_width);
+        let term_area = ratatui::layout::Rect::new(tree_width + 1, 0, vw, vh);
+        let mut non_mouse: Vec<u8> = Vec::new();
+        let mut focus_toggle = false;
+        let mut wheel = false;
+        handle_mouse_event(
+            &ev, &mut st, &mut switcher, &mut app, &mut registry, &mut mgr, &env_for_mouse_test(),
+            &hosts, &sel, &ops, &op_tx, &enum_tx, &mut non_mouse, &mut focus_toggle, &mut wheel,
+            term_area, &mut natural, 80, 24, tree_width,
+        );
+        assert!(st.dragging_divider, "left-press on the divider column grabs it");
+    }
+
+    // A throwaway Env for the mouse-event test (its handlers never touch the env on
+    // the divider-grab path, but the signature requires one).
+    fn env_for_mouse_test() -> Env {
+        fake_env_with_sources(&["local"])
     }
 }
