@@ -702,7 +702,7 @@ impl Switcher {
                 continue;
             }
             for sess in &g.sessions {
-                self.name_col_width = self.name_col_width.max(sess.name.chars().count());
+                self.name_col_width = self.name_col_width.max(UnicodeWidthStr::width(sess.name.as_str()));
             }
         }
 
@@ -832,7 +832,7 @@ impl Switcher {
         // be noise. The active window/pane is shown BOLD instead.
         let pad = self
             .name_col_width
-            .saturating_sub(sess.name.chars().count());
+            .saturating_sub(UnicodeWidthStr::width(sess.name.as_str()));
         format!("{}{}   {}", sess.name, " ".repeat(pad), plural(sess.windows))
     }
 
@@ -2471,7 +2471,7 @@ fn fit(candidates: &[String], width: u16) -> String {
     let w = width as usize;
     candidates
         .iter()
-        .find(|c| c.chars().count() <= w)
+        .find(|c| UnicodeWidthStr::width(c.as_str()) <= w)
         .cloned()
         .unwrap_or_else(|| candidates.last().cloned().unwrap_or_default())
 }
@@ -4836,6 +4836,39 @@ mod tests {
         assert!(!sw.select_address("jup/db"), "already on jup/db");
         assert!(!sw.select_address("jup/ghost"), "no such session row");
         assert_eq!(sw.terminal_view_target().target, "db", "cursor unchanged on a miss");
+    }
+
+    #[test]
+    fn session_label_pads_by_display_width_not_char_count() {
+        use unicode_width::UnicodeWidthStr;
+        // Two sessions, one ASCII ("api", width 3) and one CJK ("한국", 2 chars but
+        // width 4). The name column must size to the WIDER display width (4), so the
+        // ASCII label is padded to align the trailing window count.
+        let scan = Scan {
+            groups: vec![Group { source: "jup".into(), err: None, sessions: vec![
+                Session { source: "jup".into(), name: "한국".into(), windows: 2, attached: false, last_attached: 200 },
+                Session { source: "jup".into(), name: "api".into(),  windows: 2, attached: false, last_attached: 100 },
+            ]}],
+            panes: Default::default(),
+        };
+        let sw = Switcher::new(scan); // new() calls rebuild(), which computes name_col_width
+        // name_col_width is a DISPLAY width: max(width("한국")=4, width("api")=3) = 4.
+        assert_eq!(sw.name_col_width, 4, "column width is the display width of the widest name");
+        // The "api" label pads to width 4 (one space), so the "   <count>" suffix
+        // starts at the same display column as it does for "한국".
+        // Both sessions have the same window count so suffix lengths are equal.
+        let api = sw.session_label(&Session { source: "jup".into(), name: "api".into(), windows: 2, attached: false, last_attached: 100 });
+        let cjk = sw.session_label(&Session { source: "jup".into(), name: "한국".into(), windows: 2, attached: false, last_attached: 200 });
+        assert_eq!(UnicodeWidthStr::width(api.as_str()), UnicodeWidthStr::width(cjk.as_str()),
+            "both labels occupy the same display width");
+    }
+
+    #[test]
+    fn fit_selects_by_display_width() {
+        // "한국" has display width 4. A budget of 3 cannot fit it; a budget of 4 can.
+        let cands = vec!["한국".to_string(), "x".to_string()];
+        assert_eq!(fit(&cands, 3), "x", "width-4 candidate rejected at budget 3");
+        assert_eq!(fit(&cands, 4), "한국", "width-4 candidate accepted at budget 4");
     }
 }
 
