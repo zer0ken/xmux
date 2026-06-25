@@ -75,19 +75,29 @@ const TREE_WIDTH_MAX: u16 = 100;
 /// tmux's `bind -r` repeat applied to the tree width. Each repeat resets the window.
 const RESIZE_REPEAT_MS: u64 = 400;
 
+/// How long after the last resize tick before the debounced tree-width persist fires.
+/// Longer than `RESIZE_REPEAT_MS` so a held Ctrl-arrow autorepeat burst persists once
+/// at the end, not per tick.
+const WIDTH_FLUSH_MS: u64 = 400;
+
 fn adjust_tree_width(w: u16, delta: i32) -> u16 {
     (w as i32 + delta).clamp(TREE_WIDTH_MIN as i32, TREE_WIDTH_MAX as i32) as u16
 }
 
-/// Applies a tree-width delta to the natural width: clamps to the allowed range and
-/// persists it. A no-op for a zero delta. Shared by the tree- and mux-focus resize
-/// paths so the adjust + save lives in one place.
-fn apply_width_delta(wd: i32, natural: &mut u16, xmux_dir: &std::path::Path) {
+/// Adjusts the natural tree width by `wd`, clamped to the allowed range. Returns
+/// true if the width actually changed (so the loop can schedule a debounced
+/// persist). A zero delta or a clamp-noop returns false. Write-free: the loop
+/// owns the single persist.
+fn apply_width_delta(wd: i32, natural: &mut u16) -> bool {
     if wd == 0 {
-        return;
+        return false;
     }
-    *natural = adjust_tree_width(*natural, wd);
-    crate::state::save_tree_width(xmux_dir, *natural);
+    let next = adjust_tree_width(*natural, wd);
+    if next == *natural {
+        return false;
+    }
+    *natural = next;
+    true
 }
 
 /// Flips the auto-hide-tree mode and persists it, so the next launch restores it.
@@ -100,9 +110,11 @@ fn toggle_auto_hide(mode: &mut bool, xmux_dir: &std::path::Path) {
 
 /// Applies ONE resolved [`Operation`] to the cockpit's UI state — the single site
 /// both a keypress (via `Action::as_operation`) and a ctl command resolve through,
-/// so the two surfaces can never take divergent effect. Returns whether the cockpit
-/// should quit. `Switch` only moves the cursor; the loop-top `select_attach` commits
-/// the attach off `switcher` on the next pass. No host state is touched here.
+/// so the two surfaces can never take divergent effect. Returns `(quit, width_changed)`:
+/// `quit` signals the loop to exit; `width_changed` signals the loop to schedule the
+/// debounced tree-width persist. `Switch` only moves the cursor; the loop-top
+/// `select_attach` commits the attach off `switcher` on the next pass. No host state
+/// is touched here.
 #[allow(clippy::too_many_arguments)]
 fn apply_operation(
     op: crate::model::Operation,
@@ -113,18 +125,19 @@ fn apply_operation(
     xmux_dir: &std::path::Path,
     _ops: &std::sync::Arc<dyn crate::ui::switcher::Ops>,
     _op_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
-) -> bool {
+) -> (bool, bool) {
     use crate::model::{FocusTarget, Operation};
+    let mut width_changed = false;
     match op {
         Operation::Switch { address } => { switcher.select_address(&address); }
         Operation::Focus(FocusTarget::Terminal) => { app.set_pane_focus(crate::proxy::app::PaneFocus::Terminal); }
         Operation::Focus(FocusTarget::Tree) => { app.set_pane_focus(crate::proxy::app::PaneFocus::Tree); }
         Operation::Rescan => { switcher.request_rescan(); }
-        Operation::TreeWidth(d) => apply_width_delta(d, tree_width_natural, xmux_dir),
+        Operation::TreeWidth(d) => { width_changed = apply_width_delta(d, tree_width_natural); }
         Operation::ToggleAutoHide => toggle_auto_hide(auto_hide_tree, xmux_dir),
-        Operation::Quit => return true,
+        Operation::Quit => return (true, false),
     }
-    false
+    (false, width_changed)
 }
 
 /// The `status` verb reply: the current focus side + the cursor's session target.
@@ -1034,6 +1047,9 @@ struct StdinOutcome {
     focus_tree: bool,
     dirty: bool,
     tree_replay: Vec<u8>,
+    /// True if any `apply_width_delta` call changed the natural tree width; the loop
+    /// uses this to schedule the debounced persist (instead of writing per tick).
+    width_changed: bool,
 }
 
 /// Applies ONE parsed SGR mouse event to the gesture state + tree/registry — the body
@@ -1266,7 +1282,7 @@ fn handle_stdin_bytes(
 ) -> StdinOutcome {
     use std::time::Duration;
     let mut outcome = StdinOutcome::default();
-    let StdinOutcome { quit, focus_terminal, focus_tree, dirty, tree_replay } = &mut outcome;
+    let StdinOutcome { quit, focus_terminal, focus_tree, dirty, tree_replay, width_changed } = &mut outcome;
     // Scan for SGR mouse sequences BEFORE routing to Focus::Tree/Focus::Terminal branches.
     // Mouse capture is global, so mouse bytes arrive in both states; scanning here
     // prevents them from reaching handle_tree_bytes (which would mis-decode them)
@@ -1344,7 +1360,9 @@ fn handle_stdin_bytes(
     {
         let mut n = 0;
         while let Some((d, len)) = leading_ctrl_arrow(&non_mouse[n..]) {
-            apply_width_delta(d, tree_width_natural, &env.xmux_dir);
+            if apply_width_delta(d, tree_width_natural) {
+                *width_changed = true;
+            }
             n += len;
         }
         if n > 0 {
@@ -1382,7 +1400,9 @@ fn handle_stdin_bytes(
         if wd != 0 {
             // A prefix-driven resize: apply it and open the repeat window so the
             // next bare Ctrl+←/→ keeps resizing without re-pressing the prefix.
-            apply_width_delta(wd, tree_width_natural, &env.xmux_dir);
+            if apply_width_delta(wd, tree_width_natural) {
+                *width_changed = true;
+            }
             mouse.repeat_until =
                 Some(std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS));
         }
@@ -1408,7 +1428,9 @@ fn handle_stdin_bytes(
                 Action::Width(d) => {
                     // Same resize + repeat-window as the tree path, so a resize
                     // started from the mux pane chains with bare Ctrl+←/→ too.
-                    apply_width_delta(d, tree_width_natural, &env.xmux_dir);
+                    if apply_width_delta(d, tree_width_natural) {
+                        *width_changed = true;
+                    }
                     mouse.repeat_until = Some(
                         std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS),
                     );
@@ -1443,7 +1465,9 @@ fn handle_stdin_bytes(
             if wd != 0 {
                 // A prefix-driven resize on the replayed bytes: apply + open the
                 // repeat window, same as the direct tree-focus path above.
-                apply_width_delta(wd, tree_width_natural, &env.xmux_dir);
+                if apply_width_delta(wd, tree_width_natural) {
+                    *width_changed = true;
+                }
                 mouse.repeat_until =
                     Some(std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS));
             }
@@ -1659,6 +1683,11 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     frame.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut dirty = true;
     let mut last_draw = std::time::Instant::now() - Duration::from_millis(FRAME_MS);
+    // Debounced tree-width persist: set on each resize tick; flushed once ~400ms after
+    // the last tick (after a burst of Ctrl-arrow autorepeats settles). Avoids fsyncing
+    // the state dir per keystroke during a held autorepeat.
+    let mut width_dirty = false;
+    let mut width_flush_at: Option<std::time::Instant> = None;
 
     loop {
         // Advance the spinner from wall-clock so it animates regardless of which arm
@@ -1766,6 +1795,16 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     );
                 }
             }
+        }
+
+        // Flush the debounced tree-width persist once the resize burst settles.
+        // Armed by each apply_width_delta call (via StdinOutcome::width_changed or
+        // the ctl path); fires once ~WIDTH_FLUSH_MS after the last resize tick. The
+        // frame timer re-enters the loop so this fires even with no further input.
+        if width_dirty && width_flush_at.is_some_and(|d| std::time::Instant::now() >= d) {
+            crate::state::save_tree_width(&env.xmux_dir, tree_width_natural);
+            width_dirty = false;
+            width_flush_at = None;
         }
 
         // Draw the split: the tree (left) and the selected session's live PTY grid
@@ -1959,6 +1998,10 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 if outcome.dirty {
                     dirty = true;
                 }
+                if outcome.width_changed {
+                    width_dirty = true;
+                    width_flush_at = Some(std::time::Instant::now() + Duration::from_millis(WIDTH_FLUSH_MS));
+                }
                 if outcome.quit {
                     break;
                 }
@@ -1966,7 +2009,12 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             Some(cmd) = cmd_rx.recv() => {
                 match cmd {
                     Cmd::Op(op) => {
-                        if apply_operation(op, &mut switcher, &mut app, &mut tree_width_natural, &mut auto_hide_tree, &env.xmux_dir, &ops, &op_tx) {
+                        let (quit_op, wc) = apply_operation(op, &mut switcher, &mut app, &mut tree_width_natural, &mut auto_hide_tree, &env.xmux_dir, &ops, &op_tx);
+                        if wc {
+                            width_dirty = true;
+                            width_flush_at = Some(std::time::Instant::now() + Duration::from_millis(WIDTH_FLUSH_MS));
+                        }
+                        if quit_op {
                             break;
                         }
                         // A Switch/Focus may need the cursor's host connected + its rescan kick consumed.
@@ -2155,6 +2203,12 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         }
     }
 
+    // A resize within the last WIDTH_FLUSH_MS before quit leaves the debounce deadline
+    // unreached, so the final width is still pending — persist it on the way out so the
+    // tree width the user left with survives the next launch.
+    if width_dirty {
+        crate::state::save_tree_width(&env.xmux_dir, tree_width_natural);
+    }
     registry.teardown_all();
     mgr.teardown_all();
     0
@@ -2501,18 +2555,16 @@ mod tests {
     }
 
     #[test]
-    fn apply_width_delta_clamps_and_ignores_zero() {
-        let dir = std::env::temp_dir().join(format!("xmux-awd-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+    fn apply_width_delta_is_write_free_and_reports_change() {
         let mut w = 48u16;
-        apply_width_delta(1, &mut w, &dir);
+        assert!(apply_width_delta(1, &mut w), "a real delta reports changed");
         assert_eq!(w, 49);
-        apply_width_delta(0, &mut w, &dir);
-        assert_eq!(w, 49, "zero delta is a no-op");
+        assert!(!apply_width_delta(0, &mut w), "a zero delta reports unchanged");
+        assert_eq!(w, 49);
+        // Clamp at the max: a delta that cannot move the width reports unchanged.
         let mut hi = TREE_WIDTH_MAX;
-        apply_width_delta(10, &mut hi, &dir);
-        assert_eq!(hi, TREE_WIDTH_MAX, "clamps at the max");
-        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!apply_width_delta(10, &mut hi), "a clamped no-op reports unchanged");
+        assert_eq!(hi, TREE_WIDTH_MAX);
     }
 
     #[test]
@@ -3015,8 +3067,8 @@ mod tests {
         let ops = crate::ui::switcher::tests_support::noop_ops();
         let (op_tx, _op_rx) = tokio::sync::mpsc::unbounded_channel();
 
-        // Switch addr → cursor lands on db.
-        assert!(!apply_operation(Operation::Switch { address: "jup/db".into() }, &mut sw, &mut app, &mut natural, &mut hide, &dir, &ops, &op_tx));
+        // Switch addr → cursor lands on db; returns (quit=false, width_changed=false).
+        assert_eq!(apply_operation(Operation::Switch { address: "jup/db".into() }, &mut sw, &mut app, &mut natural, &mut hide, &dir, &ops, &op_tx), (false, false));
         assert_eq!(sw.terminal_view_target().target, "db");
         // Focus(Terminal) leaves tree focus → terminal focus.
         assert!(app.is_tree_focused());
@@ -3025,10 +3077,10 @@ mod tests {
         // Focus(Tree) returns to tree focus.
         apply_operation(Operation::Focus(FocusTarget::Tree), &mut sw, &mut app, &mut natural, &mut hide, &dir, &ops, &op_tx);
         assert_eq!(app.state, Focus::Tree);
-        // TreeWidth adjusts the natural width; Quit returns true.
-        apply_operation(Operation::TreeWidth(1), &mut sw, &mut app, &mut natural, &mut hide, &dir, &ops, &op_tx);
+        // TreeWidth adjusts the natural width and signals width_changed; Quit signals quit.
+        assert_eq!(apply_operation(Operation::TreeWidth(1), &mut sw, &mut app, &mut natural, &mut hide, &dir, &ops, &op_tx), (false, true));
         assert_eq!(natural, 49);
-        assert!(apply_operation(Operation::Quit, &mut sw, &mut app, &mut natural, &mut hide, &dir, &ops, &op_tx), "Quit signals quit");
+        assert_eq!(apply_operation(Operation::Quit, &mut sw, &mut app, &mut natural, &mut hide, &dir, &ops, &op_tx), (true, false), "Quit signals quit");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
