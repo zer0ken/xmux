@@ -24,6 +24,9 @@ pub trait Mux: Send + Sync {
     /// The canonical mux identity, for backend comparison and diagnostics.
     fn kind(&self) -> &str;
 
+    /// The binary name to invoke on this host.
+    fn bin(&self) -> &str;
+
     /// Per-session vs shared. The supervisor reads this instead of `remote`.
     fn server_model(&self) -> ServerModel;
 
@@ -86,6 +89,8 @@ pub struct Tmux {
 impl Mux for Tmux {
     fn kind(&self) -> &str { "tmux" }
 
+    fn bin(&self) -> &str { &self.bin }
+
     fn server_model(&self) -> ServerModel { ServerModel::Shared }
 
     async fn enumerate(&self, transport: &Transport) -> Result<Vec<Session>, RunError> {
@@ -146,6 +151,8 @@ pub struct Psmux {
 #[async_trait]
 impl Mux for Psmux {
     fn kind(&self) -> &str { "psmux" }
+
+    fn bin(&self) -> &str { &self.bin }
 
     fn server_model(&self) -> ServerModel { ServerModel::PerSession }
 
@@ -217,6 +224,36 @@ pub fn for_binary(bin: &str) -> Box<dyn Mux> {
         }
     }
     Box::new(Tmux { bin: bin.to_string() })
+}
+
+/// Picks the backend for a server from its `<bin> help` output. Open/Closed: a new
+/// mux type is added via a known_muxes() entry, not a branch here. tmux is the
+/// fallback because it has no positive help signal.
+fn classify_help(bin: &str, help_out: &str) -> Box<dyn Mux> {
+    let low = help_out.to_lowercase();
+    for k in known_muxes() {
+        if low.contains(k.name) {
+            return (k.make)(bin.to_string());
+        }
+    }
+    Box::new(Tmux { bin: bin.to_string() })
+}
+
+/// Probes a server's true identity over `transport`, independent of its binary name
+/// and `-V` (psmux mimics tmux). Runs the shared `<bin> help` probe. `Some(backend)`
+/// means the probe ran; `None` means inconclusive, so the caller keeps its backend
+/// and can retry on a later scan.
+pub async fn detect_backend(transport: &Transport, bin: &str, runner: &dyn Runner) -> Option<Box<dyn Mux>> {
+    // ponytail: the shared `help` probe plus per-mux marker covers tmux clones that
+    // name themselves in help; a mux that needs a different probe should extend
+    // MuxKind with its own probe. A real tmux configured as psmux is not
+    // auto-corrected because there is no positive tmux signal, and a failed ssh
+    // probe is indistinguishable from an unreachable host.
+    let (name, args) = transport.exec_argv(false, &[bin.to_string(), "help".to_string()]);
+    match runner.run(&name, &args).await {
+        Ok(out) => Some(classify_help(bin, &String::from_utf8_lossy(&out))),
+        Err(_) => None,
+    }
 }
 
 #[cfg(test)]
@@ -367,6 +404,50 @@ mod tests {
         assert_eq!(m.attach_plan("api", None), argv(&["psmux", "attach", "-t", "api"]));
         assert_eq!(m.server_model(), ServerModel::Shared);
         assert_eq!(m.kind(), "tmux");
+    }
+
+    struct FakeRunner {
+        result: std::sync::Mutex<Option<Result<Vec<u8>, RunError>>>,
+    }
+
+    impl FakeRunner {
+        fn ok(out: &str) -> Self {
+            FakeRunner { result: std::sync::Mutex::new(Some(Ok(out.as_bytes().to_vec()))) }
+        }
+
+        fn err() -> Self {
+            FakeRunner { result: std::sync::Mutex::new(Some(Err(RunError::Other("down".into())))) }
+        }
+    }
+
+    #[async_trait]
+    impl Runner for FakeRunner {
+        async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
+            self.result.lock().unwrap().take().unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn detect_backend_classifies_psmux_help_by_behavior() {
+        let transport = Transport::Local { socket: None };
+        let got = detect_backend(&transport, "tmux", &FakeRunner::ok("usage: PsMuX help")).await.unwrap();
+        assert_eq!(got.kind(), "psmux");
+        assert_eq!(got.server_model(), ServerModel::PerSession);
+        assert_eq!(got.attach_plan("api", None), argv(&["tmux", "attach", "-t", "api"]));
+    }
+
+    #[tokio::test]
+    async fn detect_backend_falls_back_to_tmux_without_psmux_marker() {
+        let transport = Transport::Local { socket: None };
+        let got = detect_backend(&transport, "tmux", &FakeRunner::ok("usage: tmux commands")).await.unwrap();
+        assert_eq!(got.kind(), "tmux");
+        assert_eq!(got.server_model(), ServerModel::Shared);
+    }
+
+    #[tokio::test]
+    async fn detect_backend_err_is_inconclusive() {
+        let transport = Transport::Local { socket: None };
+        assert!(detect_backend(&transport, "tmux", &FakeRunner::err()).await.is_none());
     }
 
     #[test]

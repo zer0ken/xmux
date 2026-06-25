@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use crate::host::HostInventory;
 use crate::model::{DisplayTty, Mux, ServerModel, Transport};
+use crate::source::Runner;
 
 /// Connecting / live / unreachable — replaces the loose `connecting` AtomicBool
 /// (host.rs:334) and the supervisor's `connected: HashSet` tracking (cockpit.rs:1048).
@@ -79,6 +80,7 @@ pub struct Host {
     /// build `mux.switch_client_argv(tty, session)` for `Transport::lower_switch`.
     pub display_tty: DisplayTty,
     pub liveness: Liveness,
+    pub(crate) detected: bool,
     control: Option<crate::host::HostClient>,
 }
 
@@ -93,6 +95,7 @@ impl Host {
             display: HostDisplay::default(),
             display_tty: DisplayTty::default(),
             liveness: Liveness::Connecting,
+            detected: false,
             control: None,
         }
     }
@@ -108,11 +111,26 @@ impl Host {
         self.mux.server_model().display_key(self.id(), address)
     }
 
+    pub(crate) async fn detect_and_correct(&mut self, runner: &dyn Runner) {
+        if self.detected {
+            return;
+        }
+        let bin = self.mux.bin().to_string();
+        let Some(backend) = crate::model::mux::detect_backend(&self.transport, &bin, runner).await else {
+            return;
+        };
+        if backend.kind() != self.mux.kind() {
+            self.mux = backend;
+        }
+        self.detected = true;
+    }
+
     /// Re-enumerate this host's sessions through the mux, updating `inventory` and
     /// `liveness`. `Ok` (possibly empty) ⇒ `Live`; `Err` ⇒ `Unreachable` (and the
     /// error propagates). Replaces `Source::list_sessions` + `HostClient::list_sessions`
     /// + the supervisor `connected` bookkeeping.
     pub async fn enumerate(&mut self) -> Result<(), crate::source::RunError> {
+        self.detect_and_correct(&crate::source::ExecRunner).await;
         match self.mux.enumerate(&self.transport).await {
             Ok(sessions) => {
                 self.inventory.sessions = sessions;
@@ -251,7 +269,7 @@ mod tests {
     use super::*;
     use crate::model::{DeathSignal, EventSource, Mux, ServerModel, SwitchPlan, Transport};
     use crate::session::Session;
-    use crate::source::RunError;
+    use crate::source::{RunError, Runner};
 
     /// A minimal in-test mux: only `server_model` is exercised in the early tasks. The
     /// other methods return trivially since these tasks wire no I/O. Shaped to the
@@ -261,6 +279,7 @@ mod tests {
     #[async_trait::async_trait]
     impl Mux for StubMux {
         fn kind(&self) -> &str { "stub" }
+        fn bin(&self) -> &str { "stub" }
         fn server_model(&self) -> ServerModel { self.0 }
         async fn enumerate(&self, _t: &Transport) -> Result<Vec<Session>, RunError> { Ok(vec![]) }
         fn attach_plan(&self, _s: &str, _w: Option<i64>) -> Vec<String> { vec![] }
@@ -378,6 +397,7 @@ mod tests {
     #[async_trait::async_trait]
     impl Mux for EnumMux {
         fn kind(&self) -> &str { "enum" }
+        fn bin(&self) -> &str { "enum" }
         fn server_model(&self) -> ServerModel { self.model }
         async fn enumerate(&self, _t: &Transport) -> Result<Vec<Session>, RunError> {
             self.result.lock().unwrap().take().unwrap_or(Ok(vec![]))
@@ -544,5 +564,66 @@ mod tests {
         );
         // A Shared host never dies by a .port file — liveness here is unconditionally true.
         assert!(h.psmux_session_live("anything"));
+    }
+
+    struct DetectRunner {
+        result: std::sync::Mutex<Result<Vec<u8>, RunError>>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl DetectRunner {
+        fn ok(out: &str) -> Self {
+            DetectRunner {
+                result: std::sync::Mutex::new(Ok(out.as_bytes().to_vec())),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn err() -> Self {
+            DetectRunner {
+                result: std::sync::Mutex::new(Err(RunError::Other("down".into()))),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Runner for DetectRunner {
+        async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            match &*self.result.lock().unwrap() {
+                Ok(out) => Ok(out.clone()),
+                Err(RunError::Exit { stderr, code }) => Err(RunError::Exit { stderr: stderr.clone(), code: *code }),
+                Err(RunError::Other(e)) => Err(RunError::Other(e.clone())),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn detect_and_correct_replaces_behavior_and_preserves_bin() {
+        let mut h = Host::new(Transport::Local { socket: None }, crate::model::mux::for_binary("tmux"));
+        let runner = DetectRunner::ok("psmux command help");
+        h.detect_and_correct(&runner).await;
+        assert_eq!(h.mux.kind(), "psmux");
+        assert_eq!(h.mux.server_model(), ServerModel::PerSession);
+        assert_eq!(h.mux.attach_plan("api", None), vec!["tmux", "attach", "-t", "api"]);
+        assert!(h.detected);
+
+        h.detect_and_correct(&runner).await;
+        assert_eq!(runner.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn detect_and_correct_retries_after_inconclusive_probe() {
+        let mut h = Host::new(Transport::Local { socket: None }, crate::model::mux::for_binary("tmux"));
+        let runner = DetectRunner::err();
+        h.detect_and_correct(&runner).await;
+        assert_eq!(h.mux.kind(), "tmux");
+        assert_eq!(h.mux.server_model(), ServerModel::Shared);
+        assert!(!h.detected);
     }
 }
