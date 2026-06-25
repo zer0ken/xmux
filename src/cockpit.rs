@@ -903,14 +903,14 @@ fn clear_display_tty_for_attach(hosts: &mut crate::model::Hosts, registry: &Atta
 /// toggle that slipped through mid-iteration. On the close edge: restore the captured focus.
 fn reconcile_input_focus(
     inputting: bool,
-    state: &mut crate::proxy::app::AppState,
-    saved: &mut Option<crate::proxy::app::AppState>,
+    state: &mut crate::proxy::app::Focus,
+    saved: &mut Option<crate::proxy::app::Focus>,
 ) {
     if inputting {
         if saved.is_none() {
             *saved = Some(*state);
         }
-        *state = crate::proxy::app::AppState::Overlay;
+        *state = crate::proxy::app::Focus::Tree;
     } else if let Some(prev) = saved.take() {
         *state = prev;
     }
@@ -1056,7 +1056,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     // opened from, force tree focus so keystrokes reach the input, and restore the captured
     // focus when the input closes (Esc cancel or Enter confirm). Reconciled at the loop top
     // so a mid-iteration focus toggle (e.g. a mouse click) cannot stick.
-    let mut focus_before_input: Option<crate::proxy::app::AppState> = None;
+    let mut focus_before_input: Option<crate::proxy::app::Focus> = None;
 
     // The canonical selection; committed from the switcher's cursor at the loop top.
     let mut selection = Selection::default();
@@ -1168,7 +1168,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // ponytail: resize_all touches every live attachment on each change. It is
         // gated to fire once per actual change (not per loop), matching the existing
         // h/l and console-resize paths; debounce only if toggle-spam proves costly.
-        let want_tree_width = reconciled_tree_width(!app.is_overlay(), auto_hide_tree, tree_width_natural);
+        let want_tree_width = reconciled_tree_width(!app.is_tree_focused(), auto_hide_tree, tree_width_natural);
         if want_tree_width != tree_width {
             // Crossing the hidden sentinel (0) flips the column TOPOLOGY: full-width mux
             // <-> tree+divider+mux. A stale wide-char (CJK) cell at the new tree/divider
@@ -1203,7 +1203,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // PTY), so the tree selection tracks the displayed session's active window — always.
         // select_active_window is idempotent (no move when already on the active window or
         // when the session's panes are unknown), so calling it each iteration is cheap.
-        if !app.is_overlay() {
+        if !app.is_tree_focused() {
             switcher.select_active_window();
         }
         let new_sel = Selection::from_target(&switcher.terminal_view_target());
@@ -1262,7 +1262,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             let grid_arc = (!selection.is_empty())
                 .then(|| registry.grid(&display_key(&env, &selection)))
                 .flatten();
-            let terminal_focused = !app.is_overlay();
+            let terminal_focused = !app.is_tree_focused();
             // The divider glyph reflects auto-hide-tree mode (║ on, │ off).
             switcher.set_auto_hide(auto_hide_tree);
             let t_draw = std::time::Instant::now();
@@ -1337,7 +1337,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 // it instead of quitting (quit is `prefix q` only). Capture its id BEFORE any
                 // reap removes it; a background session dropping (tree focus, or a non-displayed
                 // attach) is just reaped.
-                let displayed_attach_id = (!app.is_overlay() && !selection.is_empty())
+                let displayed_attach_id = (!app.is_tree_focused() && !selection.is_empty())
                     .then(|| registry.get(&display_key(&env, &selection)).map(|a| a.id()))
                     .flatten();
                 let mut detached = false;
@@ -1462,7 +1462,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                             // select path) so its control client streams, then
                                             // focus the mux on the now-selected session.
                                             ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows, tree_width);
-                                            if app.is_overlay() {
+                                            if app.is_tree_focused() {
                                                 app.toggle();
                                             }
                                         }
@@ -1559,7 +1559,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             // kill confirm) thus always run in tree focus, so a confirmed kill
                             // can't quit the cockpit out from under the mux.
                             let is_right_press = is_press && (ev.cb & 0x03) == 2;
-                            if tree_menu_may_open(is_right_press, app.is_overlay(), in_mux.is_some())
+                            if tree_menu_may_open(is_right_press, app.is_tree_focused(), in_mux.is_some())
                                 && switcher.menu_open(col0, ev.row.saturating_sub(1))
                             {
                                 dirty = true;
@@ -1569,7 +1569,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             let down = (ev.cb & 0x01) != 0;
                             let ctrl = (ev.cb & 0x10) != 0;
                             match resolve_mouse_chain(
-                                is_wheel, ctrl, down, is_left_press, app.is_overlay(), in_mux.is_some(),
+                                is_wheel, ctrl, down, is_left_press, app.is_tree_focused(), in_mux.is_some(),
                             ) {
                                 ChainAction::ScrollTree(down) => {
                                     // Plain wheel → scroll the cursor LINEARLY through every row
@@ -1687,7 +1687,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     // swallowed — so nothing leaks to the tree or the mux pane. Above the
                     // tree/mux split so the behavior is identical regardless of focus.
                     dirty = true;
-                } else if !consumed_by_repeat && app.is_overlay() {
+                } else if !consumed_by_repeat && app.is_tree_focused() {
                     let (ft, q, wd, th) = handle_tree_bytes(
                         &non_mouse, &mut tree_decoder, &mut tree_armed, prefix, &mut switcher,
                         &mut mgr, &env, &ops, &op_tx, &enum_tx, cols, body_rows, tree_width,
@@ -1738,20 +1738,20 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         }
                     }
                 }
-                if focus_terminal && app.is_overlay() {
+                if focus_terminal && app.is_tree_focused() {
                     app.toggle();
                     // No term.clear(): both states draw the SAME split layout (only the
                     // divider colour changes), so clearing would blank the screen and
                     // force a full repaint for nothing.
                 }
-                if focus_tree && !app.is_overlay() {
+                if focus_tree && !app.is_tree_focused() {
                     app.toggle();
                     if !tree_replay.is_empty() {
                         let (ft, q, wd, th) = handle_tree_bytes(
                             &tree_replay, &mut tree_decoder, &mut tree_armed, prefix,
                             &mut switcher, &mut mgr, &env, &ops, &op_tx, &enum_tx, cols, body_rows, tree_width,
                         );
-                        if ft && app.is_overlay() {
+                        if ft && app.is_tree_focused() {
                             app.toggle();
                         }
                         quit = quit || q;
@@ -1798,8 +1798,8 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     }
                     Cmd::SetState(kind) => {
                         app.state = match kind {
-                            AppStateKind::Overlay => crate::proxy::app::AppState::Overlay,
-                            AppStateKind::Passthrough => crate::proxy::app::AppState::Passthrough,
+                            AppStateKind::Overlay => crate::proxy::app::Focus::Tree,
+                            AppStateKind::Passthrough => crate::proxy::app::Focus::Terminal,
                         };
                     }
                     Cmd::Keys(bytes) => {
@@ -2565,36 +2565,36 @@ mod tests {
 
     #[test]
     fn prefix_s_toggles_state() {
-        use crate::proxy::app::{App, AppState};
+        use crate::proxy::app::{App, Focus};
         let mut app = App::new();
-        assert!(app.is_overlay());
+        assert!(app.is_tree_focused());
         app.toggle();
-        assert_eq!(app.state, AppState::Passthrough);
+        assert_eq!(app.state, Focus::Terminal);
         app.toggle();
-        assert!(app.is_overlay());
+        assert!(app.is_tree_focused());
     }
 
     #[test]
     fn input_focus_locks_to_overlay_and_restores_prior_focus() {
-        use crate::proxy::app::AppState;
-        // Opened from mux focus: capture Passthrough once, force Overlay so keys reach the input.
-        let mut state = AppState::Passthrough;
+        use crate::proxy::app::Focus;
+        // Opened from mux focus: capture Terminal once, force Tree so keys reach the input.
+        let mut state = Focus::Terminal;
         let mut saved = None;
         reconcile_input_focus(true, &mut state, &mut saved);
-        assert_eq!(state, AppState::Overlay, "input forces tree focus");
-        assert_eq!(saved, Some(AppState::Passthrough), "prior focus captured once");
-        // A stray toggle mid-input is overridden back to Overlay; the capture is not clobbered.
-        state = AppState::Passthrough;
+        assert_eq!(state, Focus::Tree, "input forces tree focus");
+        assert_eq!(saved, Some(Focus::Terminal), "prior focus captured once");
+        // A stray toggle mid-input is overridden back to Tree; the capture is not clobbered.
+        state = Focus::Terminal;
         reconcile_input_focus(true, &mut state, &mut saved);
-        assert_eq!(state, AppState::Overlay, "focus stays locked while the input is open");
-        assert_eq!(saved, Some(AppState::Passthrough), "capture survives re-locks");
+        assert_eq!(state, Focus::Tree, "focus stays locked while the input is open");
+        assert_eq!(saved, Some(Focus::Terminal), "capture survives re-locks");
         // On close, restore the captured focus and clear it.
         reconcile_input_focus(false, &mut state, &mut saved);
-        assert_eq!(state, AppState::Passthrough, "prior focus restored when the input closes");
+        assert_eq!(state, Focus::Terminal, "prior focus restored when the input closes");
         assert_eq!(saved, None, "capture cleared after restore");
         // With nothing captured, a no-input tick leaves focus untouched.
         reconcile_input_focus(false, &mut state, &mut saved);
-        assert_eq!(state, AppState::Passthrough);
+        assert_eq!(state, Focus::Terminal);
     }
 
     // Suppress unused warnings for the test-only env builder kept for future loop tests.

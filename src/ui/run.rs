@@ -19,7 +19,7 @@ use crate::control;
 use crate::ui::switcher::Switcher;
 
 /// The cockpit's state kind, as seen from the control channel. Mirrors
-/// [`crate::proxy::app::AppState`] but lives here so `Cmd` stays in this crate
+/// [`crate::proxy::app::Focus`] but lives here so `Cmd` stays in this crate
 /// without pulling in the full proxy tree.
 pub enum AppStateKind {
     Overlay,

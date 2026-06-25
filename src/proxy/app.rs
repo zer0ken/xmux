@@ -1,46 +1,44 @@
 //! The cockpit's focus state. Both states draw the SAME split (tree on the left,
 //! the cursor session's live grid on the right); the state only chooses the
-//! focused side and where keys go. `Overlay` focuses the tree (keys navigate);
-//! `Passthrough` focuses the terminal (keys forward to the session's pane). The
+//! focused side and where keys go. `Tree` focuses the tree (keys navigate);
+//! `Terminal` focuses the terminal pane (keys forward to the session's pane). The
 //! divider rule is colored to mark the focused side. `prefix Tab` toggles.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AppState {
+pub enum Focus {
     /// Tree focused — keys navigate the host/session tree.
-    Overlay,
+    Tree,
     /// Terminal focused — keys forward to the selected session's active pane.
-    Passthrough,
+    Terminal,
 }
 
 pub struct App {
-    pub state: AppState,
+    pub state: Focus,
 }
 
 impl App {
-    /// Starts in Overlay (the cursor preselected on the most-recent session).
+    /// Starts in `Tree` (the cursor preselected on the most-recent session).
     pub fn new() -> Self {
-        App {
-            state: AppState::Overlay,
-        }
+        App { state: Focus::Tree }
     }
 
-    pub fn is_overlay(&self) -> bool {
-        matches!(self.state, AppState::Overlay)
+    /// Whether the tree sidebar currently owns keystrokes. Reads as a question at
+    /// every call site (e.g. `if app.is_tree_focused() { app.toggle(); }`).
+    pub fn is_tree_focused(&self) -> bool {
+        matches!(self.state, Focus::Tree)
     }
 
     /// Tree ⇄ terminal focus (the `prefix Tab` toggle).
     pub fn toggle(&mut self) {
         self.state = match self.state {
-            AppState::Overlay => AppState::Passthrough,
-            AppState::Passthrough => AppState::Overlay,
+            Focus::Tree => Focus::Terminal,
+            Focus::Terminal => Focus::Tree,
         };
     }
 }
 
 impl Default for App {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 #[cfg(test)]
@@ -48,12 +46,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn app_starts_overlay_and_toggles() {
+    fn app_starts_tree_focused_and_toggles() {
         let mut app = App::new();
-        assert!(app.is_overlay());
+        assert!(app.is_tree_focused(), "starts on the tree (cursor preselected)");
         app.toggle();
-        assert_eq!(app.state, AppState::Passthrough);
+        assert_eq!(app.state, Focus::Terminal);
         app.toggle();
-        assert_eq!(app.state, AppState::Overlay);
+        assert_eq!(app.state, Focus::Tree);
     }
 }
