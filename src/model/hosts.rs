@@ -120,6 +120,10 @@ impl Hosts {
             // Change/window/focus events drive refetch + cursor follow in the render
             // projection (later phase); they touch no Host-owned field here.
             Changed { .. } | WindowChanged { .. } | Focus { .. } => {}
+            // The tty-matched reap of xmux's own display attach is the supervisor's job (it
+            // owns the registry + the recover-from-detach rearm); the Hosts map holds no
+            // per-attach state to fold here.
+            ClientDetached { .. } => {}
         }
     }
 }

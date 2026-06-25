@@ -72,6 +72,11 @@ pub enum HostEvent {
     DisplayTty { host: String, tty: Option<String> },
     /// `%exit` / EOF — reap.
     Exited { host: String, reason: Option<String> },
+    /// `%client-detached <client>` — some client of this host detached. The reader
+    /// does not know which client is xmux's display attach (that tty lives on the
+    /// supervisor's `Host.display_tty`), so it forwards the client tty; the supervisor
+    /// reaps the display attach ONLY when `client` matches `Host.display_tty`.
+    ClientDetached { host: String, client: String },
 }
 
 /// The reader's shared state the cockpit also reads.
@@ -308,13 +313,10 @@ fn dispatch_notif<E: FnMut(HostEvent)>(
                 reason: reason.map(str::to_string).or_else(|| last_error.clone()),
             });
         }
-        // `%client-detached <name>` is a GLOBAL control-mode notification: tmux sends
-        // it to EVERY control client whenever ANY client detaches — often a different
-        // one (our own per-session display attachment, or the user's other terminal),
-        // not us. It does NOT mean our control connection died; our own death arrives
-        // as `%exit` / EOF. Treating it as our exit reaped the whole host's tree on any
-        // unrelated detach. The tree shows no per-session attach state, so it is inert.
-        Notif::ClientDetached { .. } => {}
+        Notif::ClientDetached { client } => emit(HostEvent::ClientDetached {
+            host: host.to_string(),
+            client: client.to_string(),
+        }),
         // %pause/%continue are output flow-control; with `no-output` set there is no
         // output to pause, so they are inert for this metadata-only client.
         Notif::Pause { .. } | Notif::Continue { .. } => {}
@@ -903,16 +905,26 @@ mod tests {
     }
 
     #[test]
-    fn client_detached_does_not_kill_our_control_connection() {
-        // `%client-detached <name>` fires on EVERY control client when ANY client
-        // detaches (commonly a different one — our own display PTY attach, or the
-        // user's other terminal). It must be inert: our own exit arrives as %exit/EOF.
-        // Before this, an unrelated detach emitted Exited and reaped the host's tree.
+    fn client_detached_emits_host_scoped_event_with_client() {
         let mut events = Vec::new();
-        dispatch_notif("jupiter06", Notif::ClientDetached { client: "ignored" }, &Some("ignored".into()), &mut |e| {
-            events.push(e)
-        });
-        assert!(events.is_empty(), "%client-detached must be inert (emitted no events)");
+        dispatch_notif(
+            "jupiter06",
+            Notif::ClientDetached { client: "/dev/pts/3" },
+            &Some("ignored".into()),
+            &mut |e| events.push(e),
+        );
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                HostEvent::ClientDetached { host, client }
+                    if host == "jupiter06" && client == "/dev/pts/3"
+            )),
+            "%client-detached emits a host-scoped ClientDetached carrying the client tty"
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e, HostEvent::Exited { .. })),
+            "it must NOT reap the host (no Exited) — that is the supervisor's tty-matched job"
+        );
     }
 
     /// The `-CC` entry DCS `\x1bP1000p` introduces control mode, and tmux 3.3.6/3.4

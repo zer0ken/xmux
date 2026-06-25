@@ -830,6 +830,10 @@ fn handle_host_event(
             note_host_exited(switcher, connected, &host, reason);
             mgr.reap(&host);
         }
+        HostEvent::ClientDetached { .. } => {
+            // The tty-matched reap of xmux's own display attach is the supervisor's job;
+            // the cockpit event loop holds no per-attach state to fold here.
+        }
     }
 }
 
