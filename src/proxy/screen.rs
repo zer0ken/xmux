@@ -43,18 +43,6 @@ impl Grid {
         self.parser.screen_mut().set_size(rows, cols);
     }
 
-    /// Full repaint of the visible grid + re-emit of the private modes the child
-    /// set, so its input handling is not silently broken after an overlay close.
-    pub fn restore_bytes(&self) -> Vec<u8> {
-        let screen = self.parser.screen();
-        let mut out = screen.contents_formatted();
-        if screen.bracketed_paste() { out.extend_from_slice(b"\x1b[?2004h"); }
-        if screen.application_cursor() { out.extend_from_slice(b"\x1b[?1h"); }
-        if screen.application_keypad() { out.extend_from_slice(b"\x1b="); }
-        if screen.hide_cursor() { out.extend_from_slice(b"\x1b[?25l"); }
-        out
-    }
-
     /// The vt100 cursor as ratatui `(x, y)` (col, row), clamped to the grid.
     pub fn cursor(&self) -> (u16, u16) {
         let screen = self.parser.screen();
@@ -104,10 +92,6 @@ impl Grid {
         }
     }
 
-    #[cfg(test)]
-    fn restore_includes_alt_marker(&self) -> bool {
-        self.parser.screen().contents().contains("alt-text")
-    }
 }
 
 /// Maps a vt100 colour to a ratatui colour. `Default` → `Reset` (terminal
@@ -251,29 +235,4 @@ mod tests {
         assert_eq!(g.cursor(), (3, 0), "cursor is (col, row)");
     }
 
-    #[test]
-    fn reconstructs_plain_content() {
-        let mut g = Grid::new(24, 80);
-        g.feed(b"hello-VT100-grid");
-        let bytes = g.restore_bytes();
-        assert!(!bytes.is_empty());
-        assert!(String::from_utf8_lossy(&bytes).contains("hello-VT100-grid"));
-    }
-
-    #[test]
-    fn tracks_alternate_screen() {
-        let mut g = Grid::new(10, 40);
-        g.feed(b"\x1b[?1049h\x1b[Halt-text");
-        assert!(g.restore_includes_alt_marker());
-    }
-
-    #[test]
-    fn restore_reemits_bracketed_paste_mode() {
-        // child enabled bracketed paste; restore must re-assert it
-        let mut g = Grid::new(10, 40);
-        g.feed(b"\x1b[?2004h");
-        let bytes = g.restore_bytes();
-        assert!(bytes.windows(8).any(|w| w == b"\x1b[?2004h"),
-            "restore must re-emit bracketed-paste enable");
-    }
 }
