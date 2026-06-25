@@ -8,6 +8,7 @@ pub mod death;
 pub mod host;
 pub mod hosts;
 pub mod mux;
+pub mod operation;
 pub mod plan;
 pub mod server_model;
 pub mod transport;
@@ -19,6 +20,7 @@ pub use death::{
 pub use host::{Host, HostDisplay, Liveness, SyncAction};
 pub use hosts::Hosts;
 pub use mux::{for_binary, Mux, Psmux, Tmux};
+pub use operation::{FocusTarget, Operation};
 pub use plan::{DeathSignal, DisplayTty, EventSource, SwitchPlan};
 pub use server_model::ServerModel;
 pub use transport::{LoweredSwitch, Transport};
