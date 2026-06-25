@@ -145,6 +145,12 @@ impl AttachRegistry {
             att.teardown();
         }
     }
+
+    /// The address whose attachment has id `id`, if any. Correlates a `PtyEvent`
+    /// (which carries only the id) back to its display key / host.
+    pub fn address_of_id(&self, id: u64) -> Option<String> {
+        self.map.iter().find(|(_, a)| a.id() == id).map(|(addr, _)| addr.clone())
+    }
 }
 
 impl Default for AttachRegistry {
@@ -157,7 +163,7 @@ impl Default for AttachRegistry {
 impl AttachRegistry {
     /// Test-only: insert a fake entry without a real PTY, to exercise membership /
     /// removal / reap in isolation. `spawn_attachment` is live-only (human gate).
-    fn insert_fake(&mut self, addr: &str, id: u64) {
+    pub(crate) fn insert_fake(&mut self, addr: &str, id: u64) {
         self.map
             .insert(addr.to_string(), crate::proxy::run::fake_attachment(id));
     }

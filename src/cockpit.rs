@@ -317,7 +317,10 @@ fn select_attach(
             // Ready arm) issues a switch-client to the current selection. Overwriting it here
             // would make the switch-client guard think the PTY is already on the new session.
             if !in_flight.contains_key(&key) {
-                let argv = src.attach_command(&sel.session, sel.window);
+                let mut argv = src.attach_command(&sel.session, sel.window);
+                if let Some(last) = argv.last_mut() {
+                    *last = format!("{}{}", crate::model::death::display_tty_marker_prefix(), last);
+                }
                 request_attach(registry, worker, in_flight, attach_seq, &key, argv, cols, rows);
                 host_session.insert(sel.source.clone(), sel.session.clone());
             }
@@ -758,10 +761,13 @@ fn refetch_host(mgr: &HostManager, panes_requested: &mut HashSet<String>, host: 
 
 /// Applies one [`HostEvent`] to the cockpit state (tree, connected set, PTY sync,
 /// reap). Extracted so a burst of events can be drained in one loop iteration.
+/// Returns `true` when the caller should rearm `attach_deadline` + mark `dirty`
+/// (the `ClientDetached` reap path).
 #[allow(clippy::too_many_arguments)]
 fn handle_host_event(
     ev: HostEvent,
     mgr: &mut HostManager,
+    hosts: &mut crate::model::Hosts,
     registry: &mut AttachRegistry,
     switcher: &mut crate::ui::switcher::Switcher,
     env: &Env,
@@ -774,7 +780,7 @@ fn handle_host_event(
     cols: u16,
     rows: u16,
     tree_width: u16,
-) {
+) -> bool {
     match ev {
         HostEvent::Connected { host } | HostEvent::Inventory { host } => {
             connected.insert(host.clone());
@@ -830,9 +836,35 @@ fn handle_host_event(
             note_host_exited(switcher, connected, &host, reason);
             mgr.reap(&host);
         }
-        HostEvent::ClientDetached { .. } => {
-            // The tty-matched reap of xmux's own display attach is the supervisor's job;
-            // the cockpit event loop holds no per-attach state to fold here.
+        HostEvent::ClientDetached { host, client } => {
+            // Reap our display attach ONLY when the detaching client is OUR display client
+            // (matched against the in-memory Host.display_tty). An unrelated client's detach
+            // can never match, so it is structurally inert — no blanket reap.
+            let Some(h) = hosts.get(&host) else { return false; };
+            if !h.matches_display_tty(&client) {
+                return false;
+            }
+            let key = h.display_key(&host); // Shared ⇒ key == host id
+            registry.remove(&key);
+            if let Some(h) = hosts.get_mut(&host) {
+                h.display.current.remove(&key);
+                h.display_tty = crate::model::DisplayTty(None); // the dead client's tty is gone
+            }
+            host_session.remove(&host); // transitional — removed when host_session is dissolved
+            return true; // rearm recovery
+        }
+    }
+    false
+}
+
+/// Records a pump-self-reported display tty on the host that owns the attach id.
+/// The attach key is `display_key`; for a Shared host that IS the host id. Provably
+/// xmux's own client (the marker is emitted only by our attach shell).
+fn record_display_tty(hosts: &mut crate::model::Hosts, registry: &AttachRegistry, id: u64, tty: String) {
+    if let Some(addr) = registry.address_of_id(id) {
+        let host_id = addr.split('/').next().unwrap_or(&addr).to_string();
+        if let Some(h) = hosts.get_mut(&host_id) {
+            h.display_tty = crate::model::DisplayTty(Some(tty));
         }
     }
 }
@@ -963,6 +995,21 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     let (pty_tx, mut pty_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
     let mut worker = DisplayWorker::new(pty_tx);
     let mut registry = AttachRegistry::new();
+
+    // Host model: keyed by id (same as Source::alias). Derives its args from the same
+    // source data that source::build uses: the local source's socket from env.srcs, the
+    // remote ssh aliases from the remote srcs, and the OS from the first src's .os field
+    // (all srcs share the same host OS). Ids are "local" + each alias — the same strings
+    // that HostEvents carry as `host` and that the registry uses as the display key prefix.
+    let ssh_aliases: Vec<String> = env.srcs.iter()
+        .filter(|s| s.remote)
+        .map(|s| s.alias.clone())
+        .collect();
+    let host_os = env.srcs.first().map(|s| s.os.as_str()).unwrap_or(std::env::consts::OS);
+    let local_socket_opt = env.srcs.iter()
+        .find(|s| !s.remote)
+        .and_then(|s| s.socket.clone());
+    let mut hosts = crate::model::Hosts::build(&env.cfg, &ssh_aliases, host_os, &env.xmux_dir, local_socket_opt);
 
     // The switcher, seeded from the source skeletons; events stream the tree in.
     let mut switcher = Switcher::from_sources(env.srcs.iter().map(|s| s.alias.clone()).collect());
@@ -1254,12 +1301,18 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         tokio::select! {
             Some(ev) = host_rx.recv() => {
                 let t = std::time::Instant::now();
-                handle_host_event(ev, &mut mgr, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &mut host_session, &worker, &mut in_flight, &mut attach_seq, cols, body_rows, tree_width);
+                if handle_host_event(ev, &mut mgr, &mut hosts, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &mut host_session, &worker, &mut in_flight, &mut attach_seq, cols, body_rows, tree_width) {
+                    attach_deadline = Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
+                    dirty = true;
+                }
                 let mut budget = EVENT_DRAIN_BUDGET;
                 while budget > 0 {
                     match host_rx.try_recv() {
                         Ok(ev) => {
-                            handle_host_event(ev, &mut mgr, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &mut host_session, &worker, &mut in_flight, &mut attach_seq, cols, body_rows, tree_width);
+                            if handle_host_event(ev, &mut mgr, &mut hosts, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &mut host_session, &worker, &mut in_flight, &mut attach_seq, cols, body_rows, tree_width) {
+                                attach_deadline = Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
+                                dirty = true;
+                            }
                             budget -= 1;
                         }
                         Err(_) => break,
@@ -1280,13 +1333,17 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     .then(|| registry.get(&display_key(&env, &selection)).map(|a| a.id()))
                     .flatten();
                 let mut detached = false;
-                if let PtyEvent::Exited { id } = ev {
-                    if Some(id) == displayed_attach_id {
-                        detached = true;
+                match ev {
+                    PtyEvent::Exited { id } => {
+                        if Some(id) == displayed_attach_id {
+                            detached = true;
+                        }
+                        if !registry.reap(id) {
+                            reaped_ids.insert(id);
+                        }
                     }
-                    if !registry.reap(id) {
-                        reaped_ids.insert(id);
-                    }
+                    PtyEvent::DisplayTty { id, tty } => record_display_tty(&mut hosts, &registry, id, tty),
+                    PtyEvent::Output { .. } => {}
                 }
                 let mut budget = EVENT_DRAIN_BUDGET;
                 while budget > 0 {
@@ -1301,7 +1358,10 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             budget -= 1;
                         }
                         Ok(PtyEvent::Output { .. }) => { budget -= 1; }
-                        Ok(PtyEvent::DisplayTty { .. }) => {} // handled in a later task
+                        Ok(PtyEvent::DisplayTty { id, tty }) => {
+                            record_display_tty(&mut hosts, &registry, id, tty);
+                            budget -= 1;
+                        }
                         Err(_) => break,
                     }
                 }
@@ -1767,6 +1827,16 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         // mux is actually fine (the keep-alive guarantee). Show the error
                         // in the tree, but leave the attachments intact.
                         if !had_err {
+                            // PerSession psmux: a session whose registry .port disappeared is dead
+                            // even if its PTY has not EOF'd. Drop the stale attach so it cannot
+                            // show a dead grid.
+                            if let Some(h) = hosts.get(&source) {
+                                for s in &sessions {
+                                    if !h.psmux_session_live(&s.name) {
+                                        registry.remove(&h.display_key(&s.address()));
+                                    }
+                                }
+                            }
                             sync_source_terminals(&mut registry, &env, &source, &sessions, &mut host_session, &worker, &mut in_flight, &mut attach_seq, cols, body_rows, tree_width);
                         }
                     }
@@ -2423,10 +2493,11 @@ mod tests {
         let mut connected = HashSet::new();
         let mut panes_requested = HashSet::new();
         let mut host_session = HashMap::new();
+        let mut hosts = crate::model::Hosts::default();
         // Focus sets the cached active-window marker (window 0).
-        handle_host_event(
+        let _ = handle_host_event(
             HostEvent::Focus { host: "jup".into(), session: "api".into(), window: 0 },
-            &mut mgr, &mut registry, &mut switcher, &env,
+            &mut mgr, &mut hosts, &mut registry, &mut switcher, &env,
             &mut connected, &mut panes_requested, &mut host_session,
             &worker, &mut in_flight, &mut attach_seq, 80, 24, crate::ui::switcher::TREE_WIDTH,
         );
@@ -2477,9 +2548,10 @@ mod tests {
         let mut connected = HashSet::new();
         let mut panes_requested = HashSet::new();
         let mut host_session = HashMap::new();
-        handle_host_event(
+        let mut hosts = crate::model::Hosts::default();
+        let _ = handle_host_event(
             HostEvent::Focus { host: "jup".into(), session: "api".into(), window: 0 },
-            &mut mgr, &mut registry, &mut switcher, &env,
+            &mut mgr, &mut hosts, &mut registry, &mut switcher, &env,
             &mut connected, &mut panes_requested, &mut host_session,
             &worker, &mut in_flight, &mut attach_seq, 80, 24, crate::ui::switcher::TREE_WIDTH,
         );
@@ -2578,6 +2650,87 @@ mod tests {
             "an in-flight attach must not latch host_session to the new target");
 
         mgr.teardown_all();
+    }
+
+    fn empty_manager() -> HostManager {
+        HostManager::new(tokio::sync::mpsc::unbounded_channel().0)
+    }
+
+    fn detach_test_hosts(alias: &str) -> crate::model::Hosts {
+        let mut hosts = crate::model::Hosts::default();
+        hosts.insert(crate::model::Host::new(
+            crate::model::Transport::Ssh {
+                alias: alias.to_string(),
+                control_path: String::new(),
+                os: "linux".into(),
+            },
+            crate::model::for_binary("tmux"),
+        ));
+        hosts
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn display_tty_event_records_on_the_owning_host() {
+        let mut hosts = detach_test_hosts("jup");
+        let mut registry = AttachRegistry::new();
+        registry.insert_fake("jup", 7); // Shared key == host id
+        record_display_tty(&mut hosts, &registry, 7, "/dev/pts/3".into());
+        assert_eq!(
+            hosts.get("jup").unwrap().display_tty.0.as_deref(),
+            Some("/dev/pts/3"),
+            "the captured tty lands on the host that owns the attach id"
+        );
+        // An id with no attachment is ignored (no panic, no write).
+        record_display_tty(&mut hosts, &registry, 999, "/dev/pts/9".into());
+        assert_eq!(hosts.get("jup").unwrap().display_tty.0.as_deref(), Some("/dev/pts/3"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn client_detached_matching_our_tty_reaps_display_and_rearms() {
+        use std::collections::HashMap;
+        let mut hosts = detach_test_hosts("jup");
+        let mut registry = AttachRegistry::new();
+        let mut switcher = crate::ui::switcher::Switcher::from_sources(vec!["jup".into()]);
+        let env = fake_env_with_sources(&["jup"]);
+        let mut connected = HashSet::new();
+        let mut panes: HashSet<String> = HashSet::new();
+        let mut host_session: HashMap<String, String> = HashMap::new();
+        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
+        let worker = DisplayWorker::new(ptx);
+        let mut in_flight: HashMap<String, u64> = HashMap::new();
+        let mut seq = 0u64;
+        let mut mgr = empty_manager();
+
+        hosts.get_mut("jup").unwrap().display_tty =
+            crate::model::DisplayTty(Some("/dev/pts/3".into()));
+        registry.insert_fake("jup", 7); // live attach under key = host id (Shared)
+        assert!(registry.contains("jup"));
+
+        // An UNRELATED client detaches → inert.
+        let rearm = handle_host_event(
+            HostEvent::ClientDetached { host: "jup".into(), client: "/dev/pts/9".into() },
+            &mut mgr, &mut hosts, &mut registry, &mut switcher, &env, &mut connected,
+            &mut panes, &mut host_session, &worker, &mut in_flight, &mut seq, 80, 24, 30,
+        );
+        assert!(!rearm, "an unrelated client's detach must not rearm");
+        assert!(registry.contains("jup"), "an unrelated client's detach must not reap our attach");
+        assert_eq!(
+            hosts.get("jup").unwrap().display_tty.0.as_deref(), Some("/dev/pts/3"),
+            "an unrelated detach must not clear our captured tty"
+        );
+
+        // OUR display client (the captured tty) detaches → reap + rearm.
+        let rearm = handle_host_event(
+            HostEvent::ClientDetached { host: "jup".into(), client: "/dev/pts/3".into() },
+            &mut mgr, &mut hosts, &mut registry, &mut switcher, &env, &mut connected,
+            &mut panes, &mut host_session, &worker, &mut in_flight, &mut seq, 80, 24, 30,
+        );
+        assert!(rearm, "our own client's detach must rearm recovery");
+        assert!(!registry.contains("jup"), "our display attach is reaped so it cannot persist dead");
+        assert!(
+            hosts.get("jup").unwrap().display_tty.0.is_none(),
+            "the dead client's tty is forgotten so no later switch-client targets it"
+        );
     }
 
     // =========================================================================
