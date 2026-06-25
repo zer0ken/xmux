@@ -519,6 +519,9 @@ pub struct Switcher {
     /// Raw `~/.ssh/config` text (set once by the cockpit). The right-pane info panel
     /// shows the matching Host/Match stanza for a selected unreachable host. Empty in tests.
     ssh_config_text: String,
+    /// The human-readable prefix string (e.g. `"C-g"`, `"C-Space"`) — set once by
+    /// the cockpit from config so the help overlay reflects the active binding.
+    ui_prefix: String,
     /// The tree|mux divider colours (set once by the cockpit from config; tmux defaults
     /// otherwise). See [`DividerColors`].
     colors: DividerColors,
@@ -563,6 +566,7 @@ impl Switcher {
             menu: None,
             screen_area: Rect::default(),
             ssh_config_text: String::new(),
+            ui_prefix: "C-g".into(),
             colors: DividerColors::default(),
             popup_offset: (0, 0),
             popup_rect: Rect::default(),
@@ -1169,6 +1173,12 @@ impl Switcher {
     /// apply otherwise.
     pub fn set_divider_colors(&mut self, colors: DividerColors) {
         self.colors = colors;
+    }
+
+    /// Sets the prefix string shown in the help overlay. The cockpit calls this once
+    /// at startup so the overlay reflects the binding from config's `[ui] prefix`.
+    pub fn set_ui_prefix(&mut self, prefix: String) {
+        self.ui_prefix = prefix;
     }
 
     // --- key handling -------------------------------------------------------
@@ -2258,68 +2268,78 @@ impl Switcher {
         // tmux mode-tree style: a right-aligned, bold key column, a `│` rule, then
         // the description. `Head` breaks the flat list into tree/focus/mux sections;
         // `Note` is a description-only row (the mux state has no keys of its own).
+        //
+        // The tree and mux sections have no configurable keys so they are static.
+        // The focus section uses `self.ui_prefix` so the overlay matches the active
+        // binding from config.
         enum HelpRow {
-            Head(&'static str),
-            Key(&'static str, &'static str),
+            Head(String),
+            Key(String, String),
             Note(&'static str),
             Gap,
         }
-        use HelpRow::*;
-        const ROWS: &[HelpRow] = &[
-            Head("tree"),
-            Key("↑/↓ · j/k", "move between siblings"),
-            Key("→/l · ←/h", "descend into / ascend out of a node"),
-            Key("PgUp/PgDn", "jump by 10"),
-            Key("Home/End", "first / last node"),
-            Key("n", "new (session / window, by level)"),
-            Key("R", "rename the focused session or window"),
-            Key("x", "kill it (y / n confirm)"),
-            Key("/", "fuzzy filter <source>/<name>"),
-            Key("r", "re-scan every host"),
-            Gap,
-            Head("focus (C-g = prefix)"),
-            Key("Enter · C-g →", "focus the mux pane"),
-            Key("C-g Tab", "toggle focus between tree and mux"),
-            Key("C-g ← · C-g Esc", "focus the tree"),
-            Key("C-g C-←/→ · h/l", "resize the tree (C-←/→ then repeats briefly)"),
-            Key("C-g t", "toggle auto-hide-tree (║ divider = on)"),
-            Key("C-g ?", "show this help (q / Esc closes)"),
-            Key("click a pane", "focus that pane"),
-            Key("drag the divider", "resize the tree"),
-            Key("right-click a row", "hold for its menu, release on an item"),
-            Key("C-g q", "quit"),
-            Key("C-g C-g", "send a literal C-g to the mux"),
-            Gap,
-            Head("mux (focused)"),
-            Note("keys, scroll & clicks go to the pane"),
-            Note("(the mux needs its own mouse mode on)"),
+
+        let p = &self.ui_prefix;
+
+        // Tree section — no configurable keys; keep as literals.
+        let rows: Vec<HelpRow> = vec![
+            HelpRow::Head("tree".into()),
+            HelpRow::Key("↑/↓ · j/k".into(), "move between siblings".into()),
+            HelpRow::Key("→/l · ←/h".into(), "descend into / ascend out of a node".into()),
+            HelpRow::Key("PgUp/PgDn".into(), "jump by 10".into()),
+            HelpRow::Key("Home/End".into(), "first / last node".into()),
+            HelpRow::Key("n".into(), "new (session / window, by level)".into()),
+            HelpRow::Key("R".into(), "rename the focused session or window".into()),
+            HelpRow::Key("x".into(), "kill it (y / n confirm)".into()),
+            HelpRow::Key("/".into(), "fuzzy filter <source>/<name>".into()),
+            HelpRow::Key("r".into(), "re-scan every host".into()),
+            HelpRow::Gap,
+            // Focus section — prefix rows built from self.ui_prefix.
+            HelpRow::Head(format!("focus ({p} = prefix)")),
+            HelpRow::Key(format!("Enter · {p} →"), "focus the mux pane".into()),
+            HelpRow::Key(format!("{p} Tab"), "toggle focus between tree and mux".into()),
+            HelpRow::Key(format!("{p} ← · {p} Esc"), "focus the tree".into()),
+            HelpRow::Key(format!("{p} C-←/→ · h/l"), "resize the tree (C-←/→ then repeats briefly)".into()),
+            HelpRow::Key(format!("{p} t"), "toggle auto-hide-tree (║ divider = on)".into()),
+            HelpRow::Key(format!("{p} ?"), "show this help (q / Esc closes)".into()),
+            HelpRow::Key("click a pane".into(), "focus that pane".into()),
+            HelpRow::Key("drag the divider".into(), "resize the tree".into()),
+            HelpRow::Key("right-click a row".into(), "hold for its menu, release on an item".into()),
+            HelpRow::Key(format!("{p} q"), "quit".into()),
+            HelpRow::Key(format!("{p} {p}"), format!("send a literal {p} to the mux")),
+            HelpRow::Gap,
+            // Mux section — no configurable keys; keep as literals.
+            HelpRow::Head("mux (focused)".into()),
+            HelpRow::Note("keys, scroll & clicks go to the pane"),
+            HelpRow::Note("(the mux needs its own mouse mode on)"),
         ];
-        let kw = ROWS
+
+        let kw = rows
             .iter()
             .filter_map(|r| match r {
-                Key(k, _) => Some(k.chars().count()),
+                HelpRow::Key(k, _) => Some(k.chars().count()),
                 _ => None,
             })
             .max()
             .unwrap_or(0);
         let bold = Style::new().add_modifier(Modifier::BOLD);
-        let lines: Vec<Line> = ROWS
-            .iter()
+        let lines: Vec<Line> = rows
+            .into_iter()
             .map(|r| match r {
-                Gap => Line::from(""),
-                Head(h) => Line::from(Span::styled(
+                HelpRow::Gap => Line::from(""),
+                HelpRow::Head(h) => Line::from(Span::styled(
                     format!(" {h}"),
                     bold.add_modifier(Modifier::UNDERLINED),
                 )),
-                Key(k, d) => Line::from(vec![
+                HelpRow::Key(k, d) => Line::from(vec![
                     Span::styled(format!(" {k:>kw$} "), bold),
                     Span::raw("│ "),
-                    Span::raw(*d),
+                    Span::raw(d),
                 ]),
-                Note(n) => Line::from(vec![
+                HelpRow::Note(n) => Line::from(vec![
                     Span::raw(format!(" {:>kw$} ", "")),
                     Span::raw("│ "),
-                    Span::raw(*n),
+                    Span::raw(n),
                 ]),
             })
             .collect();
@@ -4756,6 +4776,23 @@ mod tests {
         // clamped to the area:
         let pos = terminal_cursor_pos(Rect::new(49, 0, 4, 2), (100, 100));
         assert_eq!(pos, Position { x: 52, y: 1 });
+    }
+
+    #[test]
+    fn help_lines_reflects_configured_prefix() {
+        // The focus-section rows must show the active prefix, not a hardcoded "C-g".
+        let mut sw = Switcher::blank();
+        sw.set_ui_prefix("C-Space".into());
+        let (_title, lines) = sw.help_lines();
+        let text: String = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("C-Space"), "custom prefix must appear in help:\n{text}");
+        assert!(!text.contains("C-g"), "hardcoded C-g must not appear when prefix is C-Space:\n{text}");
+
+        // Default prefix (no setter) must still show C-g.
+        let sw_default = Switcher::blank();
+        let (_title, lines_default) = sw_default.help_lines();
+        let text_default: String = lines_default.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        assert!(text_default.contains("C-g"), "default prefix C-g must appear in help:\n{text_default}");
     }
 
     #[test]

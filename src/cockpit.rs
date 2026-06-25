@@ -1565,6 +1565,8 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         inactive: crate::ui::switcher::map_color(&env.cfg.ui.pane_border_style),
         hover: crate::ui::switcher::map_color(&env.cfg.ui.pane_border_hover_style),
     });
+    // The help overlay must show the prefix the user configured, not a literal.
+    switcher.set_ui_prefix(env.ui_prefix.clone());
     // Restore the session the user last had selected (persisted across runs), so the
     // preselect lands there once its host streams in instead of guessing from the
     // unreliable cross-host `session_last_attached` (#1).
