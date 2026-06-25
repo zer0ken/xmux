@@ -1,6 +1,6 @@
-//! Resolves and performs the terminal handover into a mux session: the in-mux
-//! switch plan (same-server teleport vs cross-server detach-to-home) and the
-//! out-of-mux attach that hands the controlling terminal to a child.
+//! The out-of-mux terminal handover into a mux session: the nesting guard
+//! (`in_mux`/`nest_guard`, refusing to attach a mux from inside one) and the
+//! `run_attach` exec that hands the controlling terminal to the mux client.
 
 use anyhow::{anyhow, Result};
 
