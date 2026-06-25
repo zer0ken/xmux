@@ -2202,6 +2202,8 @@ impl Switcher {
     /// `width`. A flash is returned raw — it may exceed `width`; [`Self::footer_lines`]
     /// wraps it so it never clips.
     fn footer_text(&self, width: u16) -> String {
+        // Use the active prefix so the footer matches the user's configured binding.
+        let p = &self.ui_prefix;
         if !self.flash.is_empty() {
             format!(" {}", self.flash)
         } else if !self.scanning.is_empty() {
@@ -2211,7 +2213,7 @@ impl Switcher {
             let done = total.saturating_sub(self.scanning.len());
             fit(
                 &[
-                    format!(" ⟳ scanning hosts {done}/{total}… · C-g q quit · C-g ? help"),
+                    format!(" ⟳ scanning hosts {done}/{total}… · {p} q quit · {p} ? help"),
                     format!(" ⟳ scanning {done}/{total}…"),
                 ],
                 width,
@@ -2221,7 +2223,7 @@ impl Switcher {
             // shows in the footer (with how to clear it).
             fit(
                 &[
-                    format!(" filter: {} · / edit · Esc clear · C-g ? help · C-g q quit", self.filter),
+                    format!(" filter: {} · / edit · Esc clear · {p} ? help · {p} q quit", self.filter),
                     format!(" filter: {}", self.filter),
                 ],
                 width,
@@ -2229,11 +2231,11 @@ impl Switcher {
         } else {
             fit(
                 &[
-                    " ↑/↓ move · Enter/C-g→ focus mux · / filter · n new · R rename · x kill · r refresh · C-g ? help · C-g q quit".to_string(),
-                    " ↑/↓ move · Enter focus mux · / filter · n new · x kill · C-g ? help · C-g q quit".to_string(),
-                    " move · Enter focus mux · / filter · C-g ? help · C-g q quit".to_string(),
-                    " Enter focus mux · C-g ? help · C-g q quit".to_string(),
-                    " C-g ? help · C-g q quit".to_string(),
+                    format!(" ↑/↓ move · Enter/{p}→ focus mux · / filter · n new · R rename · x kill · r refresh · {p} ? help · {p} q quit"),
+                    format!(" ↑/↓ move · Enter focus mux · / filter · n new · x kill · {p} ? help · {p} q quit"),
+                    format!(" move · Enter focus mux · / filter · {p} ? help · {p} q quit"),
+                    format!(" Enter focus mux · {p} ? help · {p} q quit"),
+                    format!(" {p} ? help · {p} q quit"),
                 ],
                 width,
             )
@@ -3470,6 +3472,22 @@ mod tests {
             footer.contains("help") || footer.contains("quit"),
             "footer still offers help/quit hints:\n{footer:?}"
         );
+    }
+
+    #[test]
+    fn footer_text_reflects_configured_prefix() {
+        // The footer always-visible key-hints must show the active prefix, not a
+        // hardcoded "C-g", so a user who sets a different binding sees the right hint.
+        let mut sw = Switcher::blank();
+        sw.set_ui_prefix("C-Space".into());
+        let text = sw.footer_text(200);
+        assert!(text.contains("C-Space"), "custom prefix must appear in footer:\n{text:?}");
+        assert!(!text.contains("C-g"), "hardcoded C-g must not appear when prefix is C-Space:\n{text:?}");
+
+        // Default prefix (no setter) must still show C-g.
+        let sw_default = Switcher::blank();
+        let text_default = sw_default.footer_text(200);
+        assert!(text_default.contains("C-g"), "default prefix C-g must appear in footer:\n{text_default:?}");
     }
 
     #[tokio::test]
