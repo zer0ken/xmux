@@ -60,16 +60,6 @@ pub async fn split_window(s: &Source, target: &str, vertical: bool) -> Result<()
     Ok(())
 }
 
-/// Makes a window active in its session (used before attach so the client lands
-/// on the chosen window).
-pub async fn select_window(s: &Source, sess: &str, window: i64) -> Result<(), RunError> {
-    s.run(&mux::select_window(
-        &s.binary,
-        &mux::window_target(sess, window),
-    ))
-    .await?;
-    Ok(())
-}
 
 #[cfg(test)]
 mod tests {
@@ -206,12 +196,4 @@ mod tests {
         assert!(panes(&local_source(fr), "x").await.is_err());
     }
 
-    #[tokio::test]
-    async fn select_window_targets() {
-        let fr = RecordingRunner::new("", false);
-        select_window(&local_source(fr.clone()), "editor", 3)
-            .await
-            .unwrap();
-        assert_eq!(fr.args(), vec!["select-window", "-t", "editor:3"]);
-    }
 }
