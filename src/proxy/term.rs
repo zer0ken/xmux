@@ -77,7 +77,7 @@ mod windows_mouse {
         ENABLE_VIRTUAL_TERMINAL_INPUT, STD_INPUT_HANDLE,
     };
 
-    pub fn enable() -> anyhow::Result<()> {
+    pub(super) fn enable() -> anyhow::Result<()> {
         // SAFETY: standard console handle; the calls are read-then-write of a mode flag.
         unsafe {
             let h = GetStdHandle(STD_INPUT_HANDLE);
