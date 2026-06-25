@@ -281,11 +281,11 @@ fn to_grid_local(area: ratatui::layout::Rect, col: u16, row: u16) -> Option<(u16
 /// (keyed by the source) and moves it between the host's sessions with
 /// `switch-client`; LOCAL psmux is one-server-per-session, so it keeps one PTY per
 /// SESSION (keyed by `source/session`).
-fn display_key(env: &Env, sel: &Selection) -> String {
-    match env.by_alias.get(&sel.source) {
-        Some(s) if s.remote => sel.source.clone(),
-        _ => sel.address(),
-    }
+fn display_key(hosts: &crate::model::Hosts, sel: &Selection) -> String {
+    hosts
+        .get(&sel.source)
+        .map(|h| h.display_key(&sel.address()))
+        .unwrap_or_else(|| sel.address())
 }
 
 /// Issues an OFF-LOOP attach for `key`: allocates the attachment id, records the request's
@@ -442,6 +442,7 @@ fn run_lowered(lowered: crate::model::LoweredSwitch) {
 fn sync_source_terminals(
     registry: &mut AttachRegistry,
     env: &Env,
+    hosts: &crate::model::Hosts,
     source: &str,
     sessions: &[crate::session::Session],
     host_session: &mut std::collections::HashMap<String, String>,
@@ -456,7 +457,11 @@ fn sync_source_terminals(
         return;
     };
     let (cols, rows) = terminal_view_size(cols, rows, tree_width);
-    if src.remote {
+    let shares_one = hosts
+        .get(source)
+        .map(|h| h.mux.server_model().shares_one_attachment())
+        .unwrap_or(false);
+    if shares_one {
         // One PTY per host. Warm it on the first session if not yet attached; reap it
         // (and forget its session) when the host has no sessions.
         match sessions.first() {
@@ -518,6 +523,7 @@ fn attach_reply_is_current(in_flight: &std::collections::HashMap<String, u64>, k
 fn ensure_current_host(
     mgr: &mut HostManager,
     env: &Env,
+    hosts: &crate::model::Hosts,
     switcher: &crate::ui::switcher::Switcher,
     cols: u16,
     rows: u16,
@@ -526,7 +532,11 @@ fn ensure_current_host(
     let (cols, rows) = terminal_view_size(cols, rows, tree_width);
     if let Some(host) = switcher.current_host() {
         if let Some(src) = env.by_alias.get(&host) {
-            if src.remote {
+            let is_control = hosts
+                .get(&host)
+                .map(|h| matches!(h.mux.event_source(), crate::model::EventSource::Control))
+                .unwrap_or(false);
+            if is_control {
                 let _ = mgr.ensure(&host, src, cols, rows);
             }
         }
@@ -539,12 +549,17 @@ fn ensure_current_host(
 fn kick_rescan(
     switcher: &mut crate::ui::switcher::Switcher,
     env: &Env,
+    hosts: &crate::model::Hosts,
     mgr: &HostManager,
     enum_tx: &tokio::sync::mpsc::UnboundedSender<LocalEnum>,
 ) {
     if switcher.take_rescan_kick() {
         for src in &env.srcs {
-            if src.remote {
+            let is_control = hosts
+                .get(&src.alias)
+                .map(|h| matches!(h.mux.event_source(), crate::model::EventSource::Control))
+                .unwrap_or(false);
+            if is_control {
                 if let Some(c) = mgr.get(&src.alias) {
                     c.list_sessions();
                 }
@@ -564,6 +579,7 @@ fn kick_rescan(
 fn connect_all_sources(
     mgr: &mut HostManager,
     env: &Env,
+    hosts: &crate::model::Hosts,
     cols: u16,
     rows: u16,
     tree_width: u16,
@@ -571,7 +587,11 @@ fn connect_all_sources(
 ) {
     let (cols, rows) = terminal_view_size(cols, rows, tree_width);
     for src in &env.srcs {
-        if src.remote {
+        let is_control = hosts
+            .get(&src.alias)
+            .map(|h| matches!(h.mux.event_source(), crate::model::EventSource::Control))
+            .unwrap_or(false);
+        if is_control {
             let _ = mgr.ensure(&src.alias, src, cols, rows);
         } else {
             spawn_local_enumeration(src.clone(), enum_tx.clone());
@@ -712,6 +732,7 @@ fn handle_tree_bytes(
     switcher: &mut crate::ui::switcher::Switcher,
     mgr: &mut HostManager,
     env: &Env,
+    hosts: &crate::model::Hosts,
     ops: &Arc<dyn crate::ui::switcher::Ops>,
     op_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
     enum_tx: &tokio::sync::mpsc::UnboundedSender<LocalEnum>,
@@ -739,8 +760,8 @@ fn handle_tree_bytes(
         }
     }
     dispatch_pending_op(switcher, ops, op_tx);
-    ensure_current_host(mgr, env, switcher, cols, rows, tree_width);
-    kick_rescan(switcher, env, mgr, enum_tx);
+    ensure_current_host(mgr, env, hosts, switcher, cols, rows, tree_width);
+    kick_rescan(switcher, env, hosts, mgr, enum_tx);
     (focus_terminal, quit, width_delta, toggle_auto_hide)
 }
 
@@ -858,7 +879,7 @@ fn handle_host_event(
                     ),
                 );
                 // Sync this host's display terminal(s) (per-host for remote tmux).
-                sync_source_terminals(registry, env, &host, &sessions, host_session, worker, in_flight, attach_seq, cols, rows, tree_width);
+                sync_source_terminals(registry, env, hosts, &host, &sessions, host_session, worker, in_flight, attach_seq, cols, rows, tree_width);
             }
         }
         HostEvent::Changed { host } => {
@@ -1184,7 +1205,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     // The session each remote host's per-host PTY is currently switched to, so a
     // re-select of the same session skips a redundant switch-client.
     let mut host_session: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    connect_all_sources(&mut mgr, &env, cols, body_rows, tree_width, &enum_tx);
+    connect_all_sources(&mut mgr, &env, &hosts, cols, body_rows, tree_width, &enum_tx);
 
     let spinner_start = std::time::Instant::now();
     let mut tick = tokio::time::interval(Duration::from_millis(SPINNER_FRAME_MS));
@@ -1251,7 +1272,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // below re-creates a fresh client for the viewed session. Keeps the per-host
         // model — recovery from a lost display client is explicit, on demand.
         if switcher.take_reattach_kick() && !selection.is_empty() {
-            let key = display_key(&env, &selection);
+            let key = display_key(&hosts, &selection);
             registry.remove(&key);
             host_session.remove(&selection.source);
             last_attached_sel = Selection::default();
@@ -1290,7 +1311,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     crate::state::save_last_session(&env.xmux_dir, &addr);
                     last_saved_session = addr;
                 }
-                let key = display_key(&env, &selection);
+                let key = display_key(&hosts, &selection);
                 if selection != last_attached_sel
                     || (!registry.contains(&key) && !in_flight.contains_key(&key))
                 {
@@ -1305,7 +1326,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     dirty = true;
                     dbg_log(
                         &env.xmux_dir,
-                        &format!("selection -> key={} sess={}", display_key(&env, &selection), selection.session),
+                        &format!("selection -> key={} sess={}", display_key(&hosts, &selection), selection.session),
                     );
                 }
             }
@@ -1318,7 +1339,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // for remote tmux (one PTY per host) or `source/session` for local psmux.
         if dirty && last_draw.elapsed() >= Duration::from_millis(FRAME_MS) {
             let grid_arc = (!selection.is_empty())
-                .then(|| registry.grid(&display_key(&env, &selection)))
+                .then(|| registry.grid(&display_key(&hosts, &selection)))
                 .flatten();
             let terminal_focused = !app.is_tree_focused();
             // The divider glyph reflects auto-hide-tree mode (║ on, │ off).
@@ -1396,7 +1417,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 // reap removes it; a background session dropping (tree focus, or a non-displayed
                 // attach) is just reaped.
                 let displayed_attach_id = (!app.is_tree_focused() && !selection.is_empty())
-                    .then(|| registry.get(&display_key(&env, &selection)).map(|a| a.id()))
+                    .then(|| registry.get(&display_key(&hosts, &selection)).map(|a| a.id()))
                     .flatten();
                 let mut detached = false;
                 match ev {
@@ -1519,7 +1540,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                             // Connect the target's host (mirrors the left-click
                                             // select path) so its control client streams, then
                                             // focus the mux on the now-selected session.
-                                            ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows, tree_width);
+                                            ensure_current_host(&mut mgr, &env, &hosts, &switcher, cols, body_rows, tree_width);
                                             if app.is_tree_focused() {
                                                 app.toggle();
                                             }
@@ -1529,8 +1550,8 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                             // re-scan (reconnect); dispatch them here so it
                                             // works in either focus state, not only overlay.
                                             dispatch_pending_op(&mut switcher, &ops, &op_tx);
-                                            kick_rescan(&mut switcher, &env, &mgr, &enum_tx);
-                                            ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows, tree_width);
+                                            kick_rescan(&mut switcher, &env, &hosts, &mgr, &enum_tx);
+                                            ensure_current_host(&mut mgr, &env, &hosts, &switcher, cols, body_rows, tree_width);
                                         }
                                         crate::ui::switcher::MenuOutcome::None => {}
                                     }
@@ -1654,13 +1675,13 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                     // loop top commits the new selection (attach); ensure the
                                     // clicked row's host connects so its subtree streams in.
                                     switcher.mouse_select(col0, ev.row.saturating_sub(1));
-                                    ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows, tree_width);
+                                    ensure_current_host(&mut mgr, &env, &hosts, &switcher, cols, body_rows, tree_width);
                                     dirty = true;
                                 }
                                 ChainAction::ForwardToMux => {
                                     if let Some((gc, gr)) = in_mux {
                                         registry.input(
-                                            &display_key(&env, &selection),
+                                            &display_key(&hosts, &selection),
                                             crate::proxy::mouse::encode_sgr_mouse(&ev, gc, gr),
                                         );
                                     }
@@ -1703,7 +1724,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 if wheel_scrolled {
                     // The plain-wheel scroll moved the cursor; connect the host it landed on
                     // so its subtree streams in (mirrors handle_tree_bytes's ensure step).
-                    ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows, tree_width);
+                    ensure_current_host(&mut mgr, &env, &hosts, &switcher, cols, body_rows, tree_width);
                 }
                 // Resize-repeat: while the window from a prefix-driven resize is open, a
                 // bare Ctrl+←/→ (no prefix, in either focus) keeps resizing and refreshes
@@ -1748,7 +1769,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 } else if !consumed_by_repeat && app.is_tree_focused() {
                     let (ft, q, wd, th) = handle_tree_bytes(
                         &non_mouse, &mut tree_decoder, &mut tree_armed, prefix, &mut switcher,
-                        &mut mgr, &env, &ops, &op_tx, &enum_tx, cols, body_rows, tree_width,
+                        &mut mgr, &env, &hosts, &ops, &op_tx, &enum_tx, cols, body_rows, tree_width,
                     );
                     focus_terminal = ft;
                     quit = q;
@@ -1768,7 +1789,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     // TermInput intercepts the prefix (→ tree / quit / help / resize / literal).
                     for action in term_input.feed(&non_mouse) {
                         match action {
-                            Action::Forward(f) => registry.input(&display_key(&env, &selection), f),
+                            Action::Forward(f) => registry.input(&display_key(&hosts, &selection), f),
                             Action::FocusTree(rest) => {
                                 focus_tree = true;
                                 tree_replay = rest;
@@ -1807,7 +1828,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     if !tree_replay.is_empty() {
                         let (ft, q, wd, th) = handle_tree_bytes(
                             &tree_replay, &mut tree_decoder, &mut tree_armed, prefix,
-                            &mut switcher, &mut mgr, &env, &ops, &op_tx, &enum_tx, cols, body_rows, tree_width,
+                            &mut switcher, &mut mgr, &env, &hosts, &ops, &op_tx, &enum_tx, cols, body_rows, tree_width,
                         );
                         if ft && app.is_tree_focused() {
                             app.toggle();
@@ -1839,7 +1860,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         }
                         // A Switch/Focus may need the cursor's host connected + its rescan kick consumed.
                         dispatch_pending_op(&mut switcher, &ops, &op_tx);
-                        ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows, tree_width);
+                        ensure_current_host(&mut mgr, &env, &hosts, &switcher, cols, body_rows, tree_width);
                     }
                     Cmd::Status(reply) => { let _ = reply.send(status_line(&switcher, app.is_tree_focused())); }
                     Cmd::Dump(reply) => {
@@ -1847,7 +1868,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             .size()
                             .unwrap_or(ratatui::layout::Size { width: 80, height: 24 });
                         let grid_arc = (!selection.is_empty())
-                            .then(|| registry.grid(&display_key(&env, &selection)))
+                            .then(|| registry.grid(&display_key(&hosts, &selection)))
                             .flatten();
                         let dump = match &grid_arc {
                             Some(g) => {
@@ -1861,11 +1882,11 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     Cmd::RawKey(k) => {
                         switcher.handle_key(k);
                         dispatch_pending_op(&mut switcher, &ops, &op_tx);
-                        ensure_current_host(&mut mgr, &env, &switcher, cols, body_rows, tree_width);
+                        ensure_current_host(&mut mgr, &env, &hosts, &switcher, cols, body_rows, tree_width);
                     }
                     Cmd::RawBytes(bytes) => {
                         if !bytes.is_empty() {
-                            registry.input(&display_key(&env, &selection), bytes);
+                            registry.input(&display_key(&hosts, &selection), bytes);
                         }
                     }
                 }
@@ -1903,7 +1924,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                     }
                                 }
                             }
-                            sync_source_terminals(&mut registry, &env, &source, &sessions, &mut host_session, &worker, &mut in_flight, &mut attach_seq, cols, body_rows, tree_width);
+                            sync_source_terminals(&mut registry, &env, &hosts, &source, &sessions, &mut host_session, &worker, &mut in_flight, &mut attach_seq, cols, body_rows, tree_width);
                         }
                     }
                     LocalEnum::Panes { address, panes } => {
@@ -1930,7 +1951,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 // Spinner set = the selected session if its PTY is still connecting.
                 let mut sp = HashSet::new();
                 if !selection.is_empty() {
-                    let key = display_key(&env, &selection);
+                    let key = display_key(&hosts, &selection);
                     if in_flight.contains_key(&key) || registry.connecting(&key) {
                         sp.insert(selection.address());
                     }
@@ -1938,29 +1959,41 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 switcher.set_spinner(sp);
             }
             _ = local_poll.tick() => {
-                // Re-enumerate local sources so new/removed sessions + window/pane
+                // Re-enumerate poll sources so new/removed sessions + window/pane
                 // changes sync into the sidebar (no event push for one-server psmux).
                 for src in &env.srcs {
-                    if !src.remote {
+                    let is_control = hosts
+                        .get(&src.alias)
+                        .map(|h| matches!(h.mux.event_source(), crate::model::EventSource::Control))
+                        .unwrap_or(false);
+                    if !is_control {
                         spawn_local_enumeration(src.clone(), enum_tx.clone());
                     }
                 }
             }
             _ = reconnect.tick() => {
                 let (vc, vr) = terminal_view_size(cols, body_rows, tree_width);
-                // Re-ensure each remote control client (a no-op when alive; respawns
+                // Re-ensure each control client (a no-op when alive; respawns
                 // a died one so its list-sessions re-streams and #5 sync resumes).
                 for src in &env.srcs {
-                    if src.remote {
+                    let is_control = hosts
+                        .get(&src.alias)
+                        .map(|h| matches!(h.mux.event_source(), crate::model::EventSource::Control))
+                        .unwrap_or(false);
+                    if is_control {
                         let _ = mgr.ensure(&src.alias, src, vc, vr);
                     }
                 }
-                // Re-warm each remote host's per-host PTY if it dropped (ENSURE-ONLY,
+                // Re-warm each shared host's per-host PTY if it dropped (ENSURE-ONLY,
                 // never reap: a just-respawned control client has an empty inventory
                 // until its list-sessions resolves; reaping on that would tear down a
                 // live PTY. Closed-host reaping is owned by the Inventory/Changed path).
                 for src in &env.srcs {
-                    if !src.remote || registry.contains(&src.alias) {
+                    let shares_one = hosts
+                        .get(&src.alias)
+                        .map(|h| h.mux.server_model().shares_one_attachment())
+                        .unwrap_or(false);
+                    if !shares_one || registry.contains(&src.alias) {
                         continue;
                     }
                     let first = match mgr.get(&src.alias) {
@@ -1979,7 +2012,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 }
                 // Re-attach the selected session's display terminal if it dropped.
                 if !selection.is_empty() {
-                    let key = display_key(&env, &selection);
+                    let key = display_key(&hosts, &selection);
                     if !registry.contains(&key) && !in_flight.contains_key(&key) {
                         select_attach(
                             &mut registry, &hosts, &selection, &worker,
@@ -2231,28 +2264,26 @@ mod tests {
 
     #[test]
     fn display_key_is_per_host_remote_per_session_local() {
-        // REMOTE tmux → one PTY per HOST (key = source); LOCAL psmux → one PTY per
-        // SESSION (key = source/session).
-        let mut remote = fake_source("jup");
-        remote.remote = true;
-        let local = fake_source("local"); // remote = false
-        let by_alias: HashMap<String, Source> =
-            [("jup".to_string(), remote.clone()), ("local".to_string(), local.clone())]
-                .into_iter()
-                .collect();
-        let env = Env {
-            cfg: Config::default(),
-            cfg_warnings: Vec::new(),
-            srcs: vec![remote, local],
-            by_alias,
-            local_bin: "psmux".into(),
-            ui_prefix: "C-g".into(),
-            xmux_dir: std::path::PathBuf::from("."),
-        };
+        // Shared tmux → one PTY per HOST (key = source); PerSession psmux → one PTY
+        // per SESSION (key = source/session). The key is shaped by the host's
+        // ServerModel, read off the Host — never the transport's remote flag.
+        let mut hosts = crate::model::Hosts::default();
+        hosts.insert(crate::model::Host::new(
+            crate::model::Transport::Ssh {
+                alias: "jup".into(),
+                control_path: String::new(),
+                os: "linux".into(),
+            },
+            crate::model::for_binary("tmux"), // Shared
+        ));
+        hosts.insert(crate::model::Host::new(
+            crate::model::Transport::Local { socket: None }, // host id == "local"
+            crate::model::for_binary("psmux"), // PerSession
+        ));
         let rsel = Selection { source: "jup".into(), session: "api".into(), window: None };
-        assert_eq!(display_key(&env, &rsel), "jup", "remote → per-host key");
+        assert_eq!(display_key(&hosts, &rsel), "jup", "shared → per-host key");
         let lsel = Selection { source: "local".into(), session: "work".into(), window: None };
-        assert_eq!(display_key(&env, &lsel), "local/work", "local → per-session key");
+        assert_eq!(display_key(&hosts, &lsel), "local/work", "per-session → per-session key");
     }
 
     #[test]
@@ -2279,15 +2310,15 @@ mod tests {
 
     #[tokio::test]
     async fn connect_all_sources_connects_remote_hosts() {
-        // Remote sources get a control client at startup; local sources enumerate
-        // off the loop (no control client). Here cmd.exe sources are LOCAL, so none
-        // get a control client — they enumerate. Use a remote source to prove connect.
+        // Control-event (tmux) hosts get a control client at startup; poll hosts
+        // enumerate off the loop (no control client). The gate is the host's
+        // event_source, read off the Host — not the transport remote flag. The cmd.exe
+        // binary is a spawnable stand-in for ssh that EOFs at once.
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
         let mut mgr = HostManager::new(tx);
         let (enum_tx, _enum_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut src = fake_source("jupiter06");
-        src.remote = true;
-        src.binary = "cmd.exe".into(); // a spawnable stand-in for ssh that EOFs at once
+        src.binary = "cmd.exe".into();
         let by_alias: HashMap<String, Source> =
             [("jupiter06".to_string(), src.clone())].into_iter().collect();
         let env = Env {
@@ -2299,8 +2330,17 @@ mod tests {
             ui_prefix: "C-g".into(),
             xmux_dir: std::path::PathBuf::from("."),
         };
-        connect_all_sources(&mut mgr, &env, 80, 24, crate::ui::switcher::TREE_WIDTH, &enum_tx);
-        assert!(mgr.get("jupiter06").is_some(), "remote host got a control client");
+        let mut hosts = crate::model::Hosts::default();
+        hosts.insert(crate::model::Host::new(
+            crate::model::Transport::Ssh {
+                alias: "jupiter06".into(),
+                control_path: String::new(),
+                os: "linux".into(),
+            },
+            crate::model::for_binary("tmux"), // Control event source
+        ));
+        connect_all_sources(&mut mgr, &env, &hosts, 80, 24, crate::ui::switcher::TREE_WIDTH, &enum_tx);
+        assert!(mgr.get("jupiter06").is_some(), "control host got a control client");
         mgr.teardown_all();
     }
 
