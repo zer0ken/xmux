@@ -56,10 +56,10 @@ pub async fn new_window(s: &Source, session: &str, name: &str) -> Result<(), Run
 /// Splits a window/session target into a new pane (`vertical` → stacked, else
 /// side-by-side).
 pub async fn split_window(s: &Source, target: &str, vertical: bool) -> Result<(), RunError> {
-    s.run(&mux::split_window(&s.binary, target, vertical)).await?;
+    s.run(&mux::split_window(&s.binary, target, vertical))
+        .await?;
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -195,5 +195,4 @@ mod tests {
         let fr = RecordingRunner::new("", true);
         assert!(panes(&local_source(fr), "x").await.is_err());
     }
-
 }

@@ -50,7 +50,9 @@ impl Hosts {
 
         let local_bin = cfg.local_bin(os);
         hosts.insert(Host::new(
-            Transport::Local { socket: local_socket },
+            Transport::Local {
+                socket: local_socket,
+            },
             for_binary(&local_bin),
         ));
 
@@ -143,17 +145,37 @@ mod tests {
         // Re-inserting the same id replaces in place, does not duplicate the order.
         let local2 = Host::new(Transport::Local { socket: None }, for_binary("psmux"));
         hosts.insert(local2);
-        assert_eq!(hosts.ids(), &["local".to_string()], "same id does not duplicate order");
-        assert_eq!(hosts.get("local").unwrap().mux.server_model(), ServerModel::PerSession, "psmux replaced tmux");
+        assert_eq!(
+            hosts.ids(),
+            &["local".to_string()],
+            "same id does not duplicate order"
+        );
+        assert_eq!(
+            hosts.get("local").unwrap().mux.server_model(),
+            ServerModel::PerSession,
+            "psmux replaced tmux"
+        );
     }
 
     #[test]
     fn build_puts_local_first_then_ssh_hosts_in_order() {
         let cfg = Config::default();
         let aliases: Vec<String> = ["prod", "db"].iter().map(|s| s.to_string()).collect();
-        let hosts = Hosts::build(&cfg, &aliases, "linux", std::path::Path::new("/home/u/.xmux"), None);
-        assert_eq!(hosts.ids(), &["local".to_string(), "prod".to_string(), "db".to_string()]);
-        assert!(matches!(hosts.get("local").unwrap().transport, Transport::Local { .. }));
+        let hosts = Hosts::build(
+            &cfg,
+            &aliases,
+            "linux",
+            std::path::Path::new("/home/u/.xmux"),
+            None,
+        );
+        assert_eq!(
+            hosts.ids(),
+            &["local".to_string(), "prod".to_string(), "db".to_string()]
+        );
+        assert!(matches!(
+            hosts.get("local").unwrap().transport,
+            Transport::Local { .. }
+        ));
         match &hosts.get("prod").unwrap().transport {
             Transport::Ssh { alias, .. } => assert_eq!(alias, "prod"),
             _ => panic!("prod must be an ssh transport"),
@@ -163,9 +185,17 @@ mod tests {
     #[test]
     fn build_local_socket_threads_into_the_transport() {
         let cfg = Config::default();
-        let hosts = Hosts::build(&cfg, &[], "linux", std::path::Path::new("/x"), Some("/tmp/tmux-1000/work".into()));
+        let hosts = Hosts::build(
+            &cfg,
+            &[],
+            "linux",
+            std::path::Path::new("/x"),
+            Some("/tmp/tmux-1000/work".into()),
+        );
         match &hosts.get("local").unwrap().transport {
-            Transport::Local { socket } => assert_eq!(socket.as_deref(), Some("/tmp/tmux-1000/work")),
+            Transport::Local { socket } => {
+                assert_eq!(socket.as_deref(), Some("/tmp/tmux-1000/work"))
+            }
             _ => panic!("local transport"),
         }
     }
@@ -173,7 +203,13 @@ mod tests {
     #[test]
     fn get_mut_and_iter_mut_reach_every_host() {
         let cfg = Config::default();
-        let mut hosts = Hosts::build(&cfg, &["prod".to_string()], "linux", std::path::Path::new("/x"), None);
+        let mut hosts = Hosts::build(
+            &cfg,
+            &["prod".to_string()],
+            "linux",
+            std::path::Path::new("/x"),
+            None,
+        );
         assert!(hosts.get_mut("prod").is_some());
         assert!(hosts.get_mut("absent").is_none());
         assert_eq!(hosts.iter_mut().count(), 2, "local + prod");
@@ -181,26 +217,55 @@ mod tests {
 
     #[test]
     fn apply_exited_clears_tty_and_marks_unreachable() {
-        let mut hosts = Hosts::build(&Config::default(), &["jup".to_string()], "linux", std::path::Path::new("/x"), None);
-        hosts.get_mut("jup").unwrap().record_display_tty(Some("/dev/pts/9".into()));
-        hosts.apply_host_event(&HostEvent::Exited { host: "jup".into(), reason: None });
+        let mut hosts = Hosts::build(
+            &Config::default(),
+            &["jup".to_string()],
+            "linux",
+            std::path::Path::new("/x"),
+            None,
+        );
+        hosts
+            .get_mut("jup")
+            .unwrap()
+            .record_display_tty(Some("/dev/pts/9".into()));
+        hosts.apply_host_event(&HostEvent::Exited {
+            host: "jup".into(),
+            reason: None,
+        });
         let h = hosts.get("jup").unwrap();
-        assert!(h.display_tty.0.is_none(), "death clears the tty so no switch-client targets it");
+        assert!(
+            h.display_tty.0.is_none(),
+            "death clears the tty so no switch-client targets it"
+        );
         assert_eq!(h.liveness, Liveness::Unreachable);
     }
 
     #[test]
     fn apply_connected_marks_live() {
-        let mut hosts = Hosts::build(&Config::default(), &["jup".to_string()], "linux", std::path::Path::new("/x"), None);
+        let mut hosts = Hosts::build(
+            &Config::default(),
+            &["jup".to_string()],
+            "linux",
+            std::path::Path::new("/x"),
+            None,
+        );
         hosts.apply_host_event(&HostEvent::Connected { host: "jup".into() });
         assert_eq!(hosts.get("jup").unwrap().liveness, Liveness::Live);
     }
 
     #[test]
     fn apply_event_for_unknown_host_is_a_noop() {
-        let mut hosts = Hosts::build(&Config::default(), &[], "linux", std::path::Path::new("/x"), None);
+        let mut hosts = Hosts::build(
+            &Config::default(),
+            &[],
+            "linux",
+            std::path::Path::new("/x"),
+            None,
+        );
         // No "ghost" host: routing an event to an id not in the map changes nothing.
-        hosts.apply_host_event(&HostEvent::Connected { host: "ghost".into() });
+        hosts.apply_host_event(&HostEvent::Connected {
+            host: "ghost".into(),
+        });
         assert!(hosts.get("ghost").is_none());
     }
 }

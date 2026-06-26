@@ -376,7 +376,11 @@ pub(crate) fn read_psmux_registry_dir(dir: &Path) -> Vec<String> {
 /// (full windows/attached/recency); a registry name it omits is still surfaced with
 /// a minimal placeholder, so a failed/partial `list-sessions` never blanks the
 /// sidebar. Deduped on name (a session in both sources appears once).
-pub(crate) fn merge_psmux_sessions(source: &str, names: Vec<String>, detail: Vec<Session>) -> Vec<Session> {
+pub(crate) fn merge_psmux_sessions(
+    source: &str,
+    names: Vec<String>,
+    detail: Vec<Session>,
+) -> Vec<Session> {
     let covered: std::collections::HashSet<String> =
         detail.iter().map(|s| s.name.clone()).collect();
     let mut out = detail;
@@ -704,7 +708,13 @@ mod tests {
     fn read_psmux_registry_dir_scans_port_files() {
         let dir = std::env::temp_dir().join(format!("xmux-psmux-reg-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        for f in ["alpha.port", "beta.port", "__warm__.port", "x__y.port", "alpha.key"] {
+        for f in [
+            "alpha.port",
+            "beta.port",
+            "__warm__.port",
+            "x__y.port",
+            "alpha.key",
+        ] {
             std::fs::write(dir.join(f), b"1234").unwrap();
         }
         let got = read_psmux_registry_dir(&dir);
@@ -725,9 +735,13 @@ mod tests {
         // registry (`*.port`) is the authoritative EXISTENCE set: a name present in
         // the registry but missing from the (possibly failed/partial) list-sessions
         // output is still surfaced, with minimal placeholder detail.
-        let detail = vec![
-            Session { source: "local".into(), name: "editor".into(), windows: 3, attached: true, last_attached: 200 },
-        ];
+        let detail = vec![Session {
+            source: "local".into(),
+            name: "editor".into(),
+            windows: 3,
+            attached: true,
+            last_attached: 200,
+        }];
         let names = vec!["editor".to_string(), "build".to_string()];
         let got = merge_psmux_sessions("local", names, detail);
         assert_eq!(got.len(), 2, "no duplicate for the session in both sources");
@@ -736,16 +750,23 @@ mod tests {
         assert!(editor.attached);
         let build = got.iter().find(|s| s.name == "build").unwrap();
         assert_eq!(build.source, "local");
-        assert_eq!(build.windows, 1, "registry-only session gets minimal placeholder detail");
+        assert_eq!(
+            build.windows, 1,
+            "registry-only session gets minimal placeholder detail"
+        );
     }
 
     #[test]
     fn merge_psmux_sessions_empty_registry_falls_back_to_detail() {
         // If the registry read yields nothing (e.g. unreadable), the list-sessions
         // detail still stands on its own.
-        let detail = vec![
-            Session { source: "local".into(), name: "only".into(), windows: 1, attached: false, last_attached: 5 },
-        ];
+        let detail = vec![Session {
+            source: "local".into(),
+            name: "only".into(),
+            windows: 1,
+            attached: false,
+            last_attached: 5,
+        }];
         let got = merge_psmux_sessions("local", Vec::new(), detail);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].name, "only");
@@ -775,7 +796,9 @@ mod tests {
     #[test]
     fn reason_is_no_sessions_matches_line_prefix_markers() {
         assert!(reason_is_no_sessions("no sessions"));
-        assert!(reason_is_no_sessions("no server running on /tmp/tmux-1000/default"));
+        assert!(reason_is_no_sessions(
+            "no server running on /tmp/tmux-1000/default"
+        ));
         assert!(!reason_is_no_sessions("connection timed out"));
         // Not a line prefix → not the idle mux (a MOTD must not masquerade).
         assert!(!reason_is_no_sessions("you have no sessions pending"));

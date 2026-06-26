@@ -616,8 +616,14 @@ bogus = "nope"
     fn host_stanza_extracts_matching_blocks() {
         let cfg = "Match originalhost jupiter00 exec \"probe 1.2.3.4\"\n    HostName 1.2.3.4\n\nHost jupiter00\n    HostName 143.248.140.120\n    User hrlee\n\nHost other\n    HostName 9.9.9.9\n";
         let s = host_stanza(cfg, "jupiter00");
-        assert!(s.contains("HostName 143.248.140.120"), "Host block included: {s}");
-        assert!(s.contains("HostName 1.2.3.4"), "Match block also included: {s}");
+        assert!(
+            s.contains("HostName 143.248.140.120"),
+            "Host block included: {s}"
+        );
+        assert!(
+            s.contains("HostName 1.2.3.4"),
+            "Match block also included: {s}"
+        );
         assert!(s.contains("User hrlee"));
         assert!(!s.contains("9.9.9.9"), "unrelated host excluded: {s}");
         // Empty config / unknown alias → empty.

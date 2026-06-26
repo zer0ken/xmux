@@ -149,7 +149,10 @@ impl AttachRegistry {
     /// The address whose attachment has id `id`, if any. Correlates a `PtyEvent`
     /// (which carries only the id) back to its display key / host.
     pub fn address_of_id(&self, id: u64) -> Option<String> {
-        self.map.iter().find(|(_, a)| a.id() == id).map(|(addr, _)| addr.clone())
+        self.map
+            .iter()
+            .find(|(_, a)| a.id() == id)
+            .map(|(addr, _)| addr.clone())
     }
 }
 
@@ -184,7 +187,10 @@ mod tests {
         assert!(reg.contains("jupiter06/api"));
         assert_eq!(reg.len(), 1);
         reg.remove("jupiter06/api");
-        assert!(!reg.contains("jupiter06/api"), "remove tears down + drops the entry");
+        assert!(
+            !reg.contains("jupiter06/api"),
+            "remove tears down + drops the entry"
+        );
         assert!(reg.is_empty());
     }
 
@@ -194,7 +200,10 @@ mod tests {
         reg.insert_fake("jupiter06/b", 2);
         assert!(reg.contains("jupiter06/b"));
         assert!(reg.reap(2), "reap of a live id returns true");
-        assert!(!reg.contains("jupiter06/b"), "reap removes the EOF'd attachment");
+        assert!(
+            !reg.contains("jupiter06/b"),
+            "reap removes the EOF'd attachment"
+        );
     }
 
     #[test]
@@ -202,7 +211,10 @@ mod tests {
         let mut reg = empty_registry();
         reg.insert_fake("local/work", 1);
         assert!(!reg.reap(999), "reap of an unknown id returns false");
-        assert!(reg.contains("local/work"), "reaping an unknown id leaves the map intact");
+        assert!(
+            reg.contains("local/work"),
+            "reaping an unknown id leaves the map intact"
+        );
     }
 
     #[test]
@@ -218,9 +230,15 @@ mod tests {
     #[test]
     fn connecting_true_for_absent_and_fresh() {
         let mut reg = empty_registry();
-        assert!(reg.connecting("nope"), "an absent address is still 'connecting'");
+        assert!(
+            reg.connecting("nope"),
+            "an absent address is still 'connecting'"
+        );
         reg.insert_fake("local/a", 1);
-        assert!(reg.connecting("local/a"), "a fresh fake attachment starts connecting");
+        assert!(
+            reg.connecting("local/a"),
+            "a fresh fake attachment starts connecting"
+        );
     }
 
     #[test]
@@ -247,7 +265,10 @@ mod tests {
             assert!(!g.lock().unwrap().is_blank());
         }
         reg.clear_grid("local/a");
-        assert!(reg.grid("local/a").unwrap().lock().unwrap().is_blank(), "clear_grid wipes the grid");
+        assert!(
+            reg.grid("local/a").unwrap().lock().unwrap().is_blank(),
+            "clear_grid wipes the grid"
+        );
         reg.clear_grid("absent"); // must not panic
     }
 
@@ -259,6 +280,9 @@ mod tests {
         assert_eq!((id0, id1), (1, 2), "ids are issued sequentially from 1");
         reg.insert("local/a", crate::proxy::run::fake_attachment(id0));
         assert!(reg.contains("local/a"));
-        assert!(reg.grid("local/a").is_some(), "inserted attachment exposes its grid");
+        assert!(
+            reg.grid("local/a").is_some(),
+            "inserted attachment exposes its grid"
+        );
     }
 }

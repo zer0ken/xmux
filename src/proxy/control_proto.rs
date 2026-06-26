@@ -15,11 +15,24 @@ pub enum Line<'a> {
     /// command THIS control client sent (`!!(state->flags & CMDQ_STATE_CONTROL)`
     /// in tmux), `false` for a spontaneous block (startup banner, another client's
     /// command, a hook). The reader pops the correlation FIFO only for `control`.
-    Begin { num: u64, control: bool },
-    End { num: u64 },
-    Error { num: u64 },
-    Output { pane: &'a str, data: &'a str },
-    ExtendedOutput { pane: &'a str, rest: &'a str },
+    Begin {
+        num: u64,
+        control: bool,
+    },
+    End {
+        num: u64,
+    },
+    Error {
+        num: u64,
+    },
+    Output {
+        pane: &'a str,
+        data: &'a str,
+    },
+    ExtendedOutput {
+        pane: &'a str,
+        rest: &'a str,
+    },
     Notification(Notif<'a>),
     Body(&'a str),
 }
@@ -54,7 +67,10 @@ pub enum Notif<'a> {
 pub fn classify(line: &str) -> Line<'_> {
     if let Some(rest) = line.strip_prefix("%begin ") {
         return match frame_num_after(rest) {
-            Some(num) => Line::Begin { num, control: frame_is_control(rest) },
+            Some(num) => Line::Begin {
+                num,
+                control: frame_is_control(rest),
+            },
             None => Line::Notification(Notif::Other),
         };
     }
@@ -120,12 +136,12 @@ pub fn parse_notif(line: &str) -> Notif<'_> {
         // window NOT in the control client's own attached session — tmux sends the
         // unlinked form there. Both must refetch (→ Changed), so they map to the same
         // variants; the displayed session is usually not the control client's session.
-        "%window-add" | "%unlinked-window-add" => {
-            it.next().map_or(Notif::Other, |w| Notif::WindowAdd { window: w })
-        }
-        "%window-close" | "%unlinked-window-close" => {
-            it.next().map_or(Notif::Other, |w| Notif::WindowClose { window: w })
-        }
+        "%window-add" | "%unlinked-window-add" => it
+            .next()
+            .map_or(Notif::Other, |w| Notif::WindowAdd { window: w }),
+        "%window-close" | "%unlinked-window-close" => it
+            .next()
+            .map_or(Notif::Other, |w| Notif::WindowClose { window: w }),
         "%window-renamed" | "%unlinked-window-renamed" => match (it.next(), it.next()) {
             (Some(w), Some(name)) => Notif::WindowRenamed { window: w, name },
             _ => Notif::Other,
@@ -135,17 +151,27 @@ pub fn parse_notif(line: &str) -> Notif<'_> {
             _ => Notif::Other,
         },
         "%session-window-changed" => match (it.next(), it.next()) {
-            (Some(s), Some(w)) => Notif::SessionWindowChanged { session: s, window: w },
+            (Some(s), Some(w)) => Notif::SessionWindowChanged {
+                session: s,
+                window: w,
+            },
             _ => Notif::Other,
         },
-        "%layout-change" => it.next().map_or(Notif::Other, |w| Notif::LayoutChange { window: w }),
+        "%layout-change" => it
+            .next()
+            .map_or(Notif::Other, |w| Notif::LayoutChange { window: w }),
         "%pause" => it.next().map_or(Notif::Other, |p| Notif::Pause { pane: p }),
-        "%continue" => it.next().map_or(Notif::Other, |p| Notif::Continue { pane: p }),
+        "%continue" => it
+            .next()
+            .map_or(Notif::Other, |p| Notif::Continue { pane: p }),
         "%client-detached" => it
             .next()
             .map_or(Notif::Other, |c| Notif::ClientDetached { client: c }),
         "%exit" => {
-            let reason = line.strip_prefix("%exit").map(str::trim).filter(|s| !s.is_empty());
+            let reason = line
+                .strip_prefix("%exit")
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
             Notif::Exit { reason }
         }
         _ => Notif::Other,
@@ -163,51 +189,120 @@ mod tests {
 
     #[test]
     fn classify_frames_and_output() {
-        assert!(matches!(classify("%begin 1363006971 2 1"), Line::Begin { num: 2, control: true }));
+        assert!(matches!(
+            classify("%begin 1363006971 2 1"),
+            Line::Begin {
+                num: 2,
+                control: true
+            }
+        ));
         // flags bit 0 clear ⇒ a spontaneous block (not a reply to our command).
-        assert!(matches!(classify("%begin 1363006971 3 0"), Line::Begin { num: 3, control: false }));
-        assert!(matches!(classify("%end 1363006971 2 1"), Line::End { num: 2 }));
-        assert!(matches!(classify("%error 1363006971 5 0"), Line::Error { num: 5 }));
+        assert!(matches!(
+            classify("%begin 1363006971 3 0"),
+            Line::Begin {
+                num: 3,
+                control: false
+            }
+        ));
+        assert!(matches!(
+            classify("%end 1363006971 2 1"),
+            Line::End { num: 2 }
+        ));
+        assert!(matches!(
+            classify("%error 1363006971 5 0"),
+            Line::Error { num: 5 }
+        ));
         match classify("%output %0 hi\\012") {
-            Line::Output { pane, data } => { assert_eq!(pane, "%0"); assert_eq!(data, "hi\\012"); }
+            Line::Output { pane, data } => {
+                assert_eq!(pane, "%0");
+                assert_eq!(data, "hi\\012");
+            }
             _ => panic!("expected Output"),
         }
         match classify("%extended-output %3 512 : \\033[2J") {
-            Line::ExtendedOutput { pane, rest } => { assert_eq!(pane, "%3"); assert_eq!(rest, "512 : \\033[2J"); }
+            Line::ExtendedOutput { pane, rest } => {
+                assert_eq!(pane, "%3");
+                assert_eq!(rest, "512 : \\033[2J");
+            }
             _ => panic!("expected ExtendedOutput"),
         }
-        assert!(matches!(classify("0: ksh* (1 panes)"), Line::Body("0: ksh* (1 panes)")));
+        assert!(matches!(
+            classify("0: ksh* (1 panes)"),
+            Line::Body("0: ksh* (1 panes)")
+        ));
     }
 
     #[test]
     fn classify_begin_num_is_the_correlator() {
         // %begin <time> <num> <flags> — num is field 2, flags (field 3) bit 0 is
         // the control-reply marker.
-        assert!(matches!(classify("%begin 999 17 0"), Line::Begin { num: 17, control: false }));
+        assert!(matches!(
+            classify("%begin 999 17 0"),
+            Line::Begin {
+                num: 17,
+                control: false
+            }
+        ));
         // A malformed begin (non-numeric num) classifies as an Other notification,
         // never panics.
         assert!(matches!(classify("%begin x y z"), Line::Notification(_)));
     }
 
-
     #[test]
     fn parse_notif_full_table() {
-        assert!(matches!(parse_notif("%session-changed $1 work"),
-            Notif::SessionChanged { id: "$1", name: "work" }));
-        assert!(matches!(parse_notif("%sessions-changed"), Notif::SessionsChanged));
-        assert!(matches!(parse_notif("%window-add @4"), Notif::WindowAdd { window: "@4" }));
-        assert!(matches!(parse_notif("%window-close @4"), Notif::WindowClose { window: "@4" }));
-        assert!(matches!(parse_notif("%window-renamed @4 logs"),
-            Notif::WindowRenamed { window: "@4", name: "logs" }));
-        assert!(matches!(parse_notif("%window-pane-changed @4 %9"),
-            Notif::WindowPaneChanged { window: "@4", pane: "%9" }));
-        assert!(matches!(parse_notif("%session-window-changed $1 @4"),
-            Notif::SessionWindowChanged { session: "$1", window: "@4" }));
-        assert!(matches!(parse_notif("%pause %9"), Notif::Pause { pane: "%9" }));
-        assert!(matches!(parse_notif("%continue %9"), Notif::Continue { pane: "%9" }));
+        assert!(matches!(
+            parse_notif("%session-changed $1 work"),
+            Notif::SessionChanged {
+                id: "$1",
+                name: "work"
+            }
+        ));
+        assert!(matches!(
+            parse_notif("%sessions-changed"),
+            Notif::SessionsChanged
+        ));
+        assert!(matches!(
+            parse_notif("%window-add @4"),
+            Notif::WindowAdd { window: "@4" }
+        ));
+        assert!(matches!(
+            parse_notif("%window-close @4"),
+            Notif::WindowClose { window: "@4" }
+        ));
+        assert!(matches!(
+            parse_notif("%window-renamed @4 logs"),
+            Notif::WindowRenamed {
+                window: "@4",
+                name: "logs"
+            }
+        ));
+        assert!(matches!(
+            parse_notif("%window-pane-changed @4 %9"),
+            Notif::WindowPaneChanged {
+                window: "@4",
+                pane: "%9"
+            }
+        ));
+        assert!(matches!(
+            parse_notif("%session-window-changed $1 @4"),
+            Notif::SessionWindowChanged {
+                session: "$1",
+                window: "@4"
+            }
+        ));
+        assert!(matches!(
+            parse_notif("%pause %9"),
+            Notif::Pause { pane: "%9" }
+        ));
+        assert!(matches!(
+            parse_notif("%continue %9"),
+            Notif::Continue { pane: "%9" }
+        ));
         assert!(matches!(
             parse_notif("%client-detached /dev/pts/3"),
-            Notif::ClientDetached { client: "/dev/pts/3" }
+            Notif::ClientDetached {
+                client: "/dev/pts/3"
+            }
         ));
         // A bare %client-detached with no client argument is malformed → Other (never a
         // ClientDetached with an empty client that could later mis-match an empty tty).
@@ -215,17 +310,32 @@ mod tests {
         // `%unlinked-window-*` (a structural change in a session that is not the
         // control client's own) maps to the same variants as the linked form so the
         // cockpit refetches the tree for it too.
-        assert!(matches!(parse_notif("%unlinked-window-add @9"), Notif::WindowAdd { window: "@9" }));
-        assert!(matches!(parse_notif("%unlinked-window-close @9"), Notif::WindowClose { window: "@9" }));
-        assert!(matches!(parse_notif("%unlinked-window-renamed @9 logs"),
-            Notif::WindowRenamed { window: "@9", name: "logs" }));
+        assert!(matches!(
+            parse_notif("%unlinked-window-add @9"),
+            Notif::WindowAdd { window: "@9" }
+        ));
+        assert!(matches!(
+            parse_notif("%unlinked-window-close @9"),
+            Notif::WindowClose { window: "@9" }
+        ));
+        assert!(matches!(
+            parse_notif("%unlinked-window-renamed @9 logs"),
+            Notif::WindowRenamed {
+                window: "@9",
+                name: "logs"
+            }
+        ));
     }
 
     #[test]
     fn parse_notif_exit_reason_optional() {
         assert!(matches!(parse_notif("%exit"), Notif::Exit { reason: None }));
-        assert!(matches!(parse_notif("%exit too far behind"),
-            Notif::Exit { reason: Some("too far behind") }));
+        assert!(matches!(
+            parse_notif("%exit too far behind"),
+            Notif::Exit {
+                reason: Some("too far behind")
+            }
+        ));
     }
 
     #[test]

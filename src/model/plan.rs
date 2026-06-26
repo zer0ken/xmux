@@ -55,25 +55,44 @@ mod tests {
     #[test]
     fn switch_plan_variants_are_distinct_and_carry_session() {
         assert_eq!(
-            SwitchPlan::Switch { session: "api".into() },
-            SwitchPlan::Switch { session: "api".into() }
+            SwitchPlan::Switch {
+                session: "api".into()
+            },
+            SwitchPlan::Switch {
+                session: "api".into()
+            }
         );
-        assert_ne!(SwitchPlan::PerSessionNoOp, SwitchPlan::Switch { session: "api".into() });
+        assert_ne!(
+            SwitchPlan::PerSessionNoOp,
+            SwitchPlan::Switch {
+                session: "api".into()
+            }
+        );
     }
 
     #[test]
     fn death_signal_variants_are_distinct() {
         assert_ne!(DeathSignal::Eof, DeathSignal::ControlNotice);
         assert_eq!(
-            DeathSignal::PathStat { dir_is_psmux_registry: true },
-            DeathSignal::PathStat { dir_is_psmux_registry: true }
+            DeathSignal::PathStat {
+                dir_is_psmux_registry: true
+            },
+            DeathSignal::PathStat {
+                dir_is_psmux_registry: true
+            }
         );
     }
 
     #[test]
     fn event_source_poll_carries_interval() {
-        assert_eq!(EventSource::Poll { interval_ms: 1500 }, EventSource::Poll { interval_ms: 1500 });
-        assert_ne!(EventSource::Control, EventSource::Poll { interval_ms: 1500 });
+        assert_eq!(
+            EventSource::Poll { interval_ms: 1500 },
+            EventSource::Poll { interval_ms: 1500 }
+        );
+        assert_ne!(
+            EventSource::Control,
+            EventSource::Poll { interval_ms: 1500 }
+        );
     }
 
     #[test]

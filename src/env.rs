@@ -234,11 +234,19 @@ impl Ops for EnvOps {
         with_timeout(DETAIL_TIMEOUT, manage::kill_window(&src, target)).await
     }
 
-    async fn rename_window(&self, source: &str, target: &str, new_name: &str) -> anyhow::Result<()> {
+    async fn rename_window(
+        &self,
+        source: &str,
+        target: &str,
+        new_name: &str,
+    ) -> anyhow::Result<()> {
         let src = self.source(source)?;
-        with_timeout(DETAIL_TIMEOUT, manage::rename_window(&src, target, new_name)).await
+        with_timeout(
+            DETAIL_TIMEOUT,
+            manage::rename_window(&src, target, new_name),
+        )
+        .await
     }
-
 }
 
 #[cfg(test)]

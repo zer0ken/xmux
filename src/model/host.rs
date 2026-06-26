@@ -116,7 +116,8 @@ impl Host {
             return;
         }
         let bin = self.mux.bin().to_string();
-        let Some(backend) = crate::model::mux::detect_backend(&self.transport, &bin, runner).await else {
+        let Some(backend) = crate::model::mux::detect_backend(&self.transport, &bin, runner).await
+        else {
             return;
         };
         if backend.kind() != self.mux.kind() {
@@ -162,7 +163,11 @@ impl Host {
     /// client under this mux's death signal. Delegates to the free
     /// `matches_display_tty` so the filter logic has one home.
     pub fn matches_display_tty(&self, client: &str) -> bool {
-        crate::model::death::matches_display_tty(&self.mux.death_signal(), client, &self.display_tty)
+        crate::model::death::matches_display_tty(
+            &self.mux.death_signal(),
+            client,
+            &self.display_tty,
+        )
     }
 
     /// True when `session` is still live under this mux's death signal. PerSession
@@ -170,9 +175,9 @@ impl Host {
     /// EOF/ControlNotice, not a port file).
     pub fn psmux_session_live(&self, session: &str) -> bool {
         match self.mux.death_signal() {
-            crate::model::DeathSignal::PathStat { dir_is_psmux_registry: true } => {
-                crate::model::death::psmux_session_is_live(session)
-            }
+            crate::model::DeathSignal::PathStat {
+                dir_is_psmux_registry: true,
+            } => crate::model::death::psmux_session_is_live(session),
             _ => true,
         }
     }
@@ -197,14 +202,8 @@ impl Host {
             return Ok(false);
         };
         let argv = self.transport.control_argv(&mux_control);
-        let client = crate::host::HostClient::spawn(
-            self.id(),
-            &argv,
-            cols,
-            rows,
-            events.clone(),
-            &[],
-        )?;
+        let client =
+            crate::host::HostClient::spawn(self.id(), &argv, cols, rows, events.clone(), &[])?;
         self.control = Some(client);
         Ok(true)
     }
@@ -233,7 +232,10 @@ impl Host {
                 let key = self.id().to_string();
                 match self.inventory.sessions.first() {
                     Some(first) if self.display.shows(&key).is_none() => {
-                        vec![SyncAction::Attach { key, session: first.name.clone() }]
+                        vec![SyncAction::Attach {
+                            key,
+                            session: first.name.clone(),
+                        }]
                     }
                     None if self.display.shows(&key).is_some() => {
                         vec![SyncAction::Reap { key }]
@@ -248,7 +250,10 @@ impl Host {
                     let key = self.display_key(&s.address());
                     desired.insert(key.clone());
                     if self.display.shows(&key).is_none() {
-                        actions.push(SyncAction::Attach { key, session: s.name.clone() });
+                        actions.push(SyncAction::Attach {
+                            key,
+                            session: s.name.clone(),
+                        });
                     }
                 }
                 for key in self.display.current.keys() {
@@ -278,30 +283,69 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Mux for StubMux {
-        fn kind(&self) -> &str { "stub" }
-        fn bin(&self) -> &str { "stub" }
-        fn server_model(&self) -> ServerModel { self.0 }
-        async fn enumerate(&self, _t: &Transport) -> Result<Vec<Session>, RunError> { Ok(vec![]) }
-        fn attach_plan(&self, _s: &str, _w: Option<i64>) -> Vec<String> { vec![] }
-        fn switch_plan(&self, _s: &str) -> SwitchPlan { SwitchPlan::PerSessionNoOp }
-        fn switch_client_argv(&self, _tty: &str, _s: &str) -> Vec<String> { vec![] }
-        fn control_argv(&self) -> Option<Vec<String>> { None }
-        fn death_signal(&self) -> DeathSignal { DeathSignal::Eof }
-        fn event_source(&self) -> EventSource { EventSource::Poll { interval_ms: 1500 } }
-        fn list_panes_plan(&self, _s: &str) -> Vec<String> { vec![] }
-        fn new_window_plan(&self, _s: &str, _n: &str) -> Vec<String> { vec![] }
-        fn split_window_plan(&self, _t: &str, _v: bool) -> Vec<String> { vec![] }
-        fn select_window_plan(&self, _t: &str) -> Vec<String> { vec![] }
-        fn kill_window_plan(&self, _t: &str) -> Vec<String> { vec![] }
-        fn rename_window_plan(&self, _t: &str, _n: &str) -> Vec<String> { vec![] }
+        fn kind(&self) -> &str {
+            "stub"
+        }
+        fn bin(&self) -> &str {
+            "stub"
+        }
+        fn server_model(&self) -> ServerModel {
+            self.0
+        }
+        async fn enumerate(&self, _t: &Transport) -> Result<Vec<Session>, RunError> {
+            Ok(vec![])
+        }
+        fn attach_plan(&self, _s: &str, _w: Option<i64>) -> Vec<String> {
+            vec![]
+        }
+        fn switch_plan(&self, _s: &str) -> SwitchPlan {
+            SwitchPlan::PerSessionNoOp
+        }
+        fn switch_client_argv(&self, _tty: &str, _s: &str) -> Vec<String> {
+            vec![]
+        }
+        fn control_argv(&self) -> Option<Vec<String>> {
+            None
+        }
+        fn death_signal(&self) -> DeathSignal {
+            DeathSignal::Eof
+        }
+        fn event_source(&self) -> EventSource {
+            EventSource::Poll { interval_ms: 1500 }
+        }
+        fn list_panes_plan(&self, _s: &str) -> Vec<String> {
+            vec![]
+        }
+        fn new_window_plan(&self, _s: &str, _n: &str) -> Vec<String> {
+            vec![]
+        }
+        fn split_window_plan(&self, _t: &str, _v: bool) -> Vec<String> {
+            vec![]
+        }
+        fn select_window_plan(&self, _t: &str) -> Vec<String> {
+            vec![]
+        }
+        fn kill_window_plan(&self, _t: &str) -> Vec<String> {
+            vec![]
+        }
+        fn rename_window_plan(&self, _t: &str, _n: &str) -> Vec<String> {
+            vec![]
+        }
     }
 
     #[test]
     fn host_id_is_the_transport_host_id() {
-        let h = Host::new(Transport::Local { socket: None }, Box::new(StubMux(ServerModel::Shared)));
+        let h = Host::new(
+            Transport::Local { socket: None },
+            Box::new(StubMux(ServerModel::Shared)),
+        );
         assert_eq!(h.id(), "local");
         let r = Host::new(
-            Transport::Ssh { alias: "jup".into(), control_path: String::new(), os: "linux".into() },
+            Transport::Ssh {
+                alias: "jup".into(),
+                control_path: String::new(),
+                os: "linux".into(),
+            },
             Box::new(StubMux(ServerModel::Shared)),
         );
         assert_eq!(r.id(), "jup");
@@ -311,21 +355,36 @@ mod tests {
     fn display_key_shape_comes_from_the_mux_model_not_a_remote_bool() {
         // Shared (tmux) -> one PTY per HOST: key = host id, ignoring the address.
         let shared = Host::new(
-            Transport::Ssh { alias: "jup".into(), control_path: String::new(), os: "linux".into() },
+            Transport::Ssh {
+                alias: "jup".into(),
+                control_path: String::new(),
+                os: "linux".into(),
+            },
             Box::new(StubMux(ServerModel::Shared)),
         );
-        assert_eq!(shared.display_key("jup/api"), "jup", "shared -> per-host key");
+        assert_eq!(
+            shared.display_key("jup/api"),
+            "jup",
+            "shared -> per-host key"
+        );
         // PerSession (psmux) -> one PTY per SESSION: key = the address.
         let per = Host::new(
             Transport::Local { socket: None },
             Box::new(StubMux(ServerModel::PerSession)),
         );
-        assert_eq!(per.display_key("local/work"), "local/work", "per-session -> per-session key");
+        assert_eq!(
+            per.display_key("local/work"),
+            "local/work",
+            "per-session -> per-session key"
+        );
     }
 
     #[test]
     fn new_host_starts_connecting_with_empty_inventory_and_tty() {
-        let h = Host::new(Transport::Local { socket: None }, Box::new(StubMux(ServerModel::PerSession)));
+        let h = Host::new(
+            Transport::Local { socket: None },
+            Box::new(StubMux(ServerModel::PerSession)),
+        );
         assert_eq!(h.liveness, Liveness::Connecting);
         assert!(h.inventory.sessions.is_empty());
         assert!(h.display_tty.0.is_none());
@@ -338,7 +397,11 @@ mod tests {
         d.set_shows("jup", "api");
         assert_eq!(d.shows("jup"), Some("api"));
         d.set_shows("jup", "build");
-        assert_eq!(d.shows("jup"), Some("build"), "set overwrites the shown session");
+        assert_eq!(
+            d.shows("jup"),
+            Some("build"),
+            "set overwrites the shown session"
+        );
     }
 
     #[test]
@@ -349,8 +412,16 @@ mod tests {
         d.pending.insert(7, "local/work".into());
         assert_eq!(d.in_flight.get("local/work"), Some(&7));
         d.clear("local/work");
-        assert_eq!(d.shows("local/work"), None, "clear forgets the shown session");
-        assert_eq!(d.in_flight.get("local/work"), None, "clear forgets the in-flight seq");
+        assert_eq!(
+            d.shows("local/work"),
+            None,
+            "clear forgets the shown session"
+        );
+        assert_eq!(
+            d.in_flight.get("local/work"),
+            None,
+            "clear forgets the in-flight seq"
+        );
         assert!(
             d.pending.is_empty(),
             "clear forgets the key's pending id so a dead attach cannot leak it forever"
@@ -365,11 +436,18 @@ mod tests {
         // A pre-Ready Exited records the dead id; its Ready later removes it.
         d.pending.insert(7, "jup".into());
         d.reaped_ids.insert(7);
-        assert_eq!(d.pending.get(&7), Some(&"jup".to_string()), "pending maps id -> key");
+        assert_eq!(
+            d.pending.get(&7),
+            Some(&"jup".to_string()),
+            "pending maps id -> key"
+        );
         assert!(d.reaped_ids.contains(&7), "reaped_ids holds the dead id");
         d.reaped_ids.remove(&7);
         d.pending.remove(&7);
-        assert!(d.reaped_ids.is_empty() && d.pending.is_empty(), "round-trips back to empty");
+        assert!(
+            d.reaped_ids.is_empty() && d.pending.is_empty(),
+            "round-trips back to empty"
+        );
     }
 
     #[test]
@@ -385,50 +463,104 @@ mod tests {
     }
     impl EnumMux {
         fn ok(model: ServerModel, names: &[&str]) -> Self {
-            let sessions = names.iter().map(|n| Session {
-                source: "h".into(), name: (*n).into(), windows: 1, attached: false, last_attached: 0,
-            }).collect();
-            EnumMux { model, result: std::sync::Mutex::new(Some(Ok(sessions))) }
+            let sessions = names
+                .iter()
+                .map(|n| Session {
+                    source: "h".into(),
+                    name: (*n).into(),
+                    windows: 1,
+                    attached: false,
+                    last_attached: 0,
+                })
+                .collect();
+            EnumMux {
+                model,
+                result: std::sync::Mutex::new(Some(Ok(sessions))),
+            }
         }
         fn err(model: ServerModel) -> Self {
-            EnumMux { model, result: std::sync::Mutex::new(Some(Err(RunError::Other("down".into())))) }
+            EnumMux {
+                model,
+                result: std::sync::Mutex::new(Some(Err(RunError::Other("down".into())))),
+            }
         }
     }
     #[async_trait::async_trait]
     impl Mux for EnumMux {
-        fn kind(&self) -> &str { "enum" }
-        fn bin(&self) -> &str { "enum" }
-        fn server_model(&self) -> ServerModel { self.model }
+        fn kind(&self) -> &str {
+            "enum"
+        }
+        fn bin(&self) -> &str {
+            "enum"
+        }
+        fn server_model(&self) -> ServerModel {
+            self.model
+        }
         async fn enumerate(&self, _t: &Transport) -> Result<Vec<Session>, RunError> {
             self.result.lock().unwrap().take().unwrap_or(Ok(vec![]))
         }
-        fn attach_plan(&self, _s: &str, _w: Option<i64>) -> Vec<String> { vec![] }
-        fn switch_plan(&self, _s: &str) -> SwitchPlan { SwitchPlan::PerSessionNoOp }
-        fn switch_client_argv(&self, _tty: &str, _s: &str) -> Vec<String> { vec![] }
-        fn control_argv(&self) -> Option<Vec<String>> { None }
-        fn death_signal(&self) -> DeathSignal { DeathSignal::Eof }
-        fn event_source(&self) -> EventSource { EventSource::Poll { interval_ms: 1500 } }
-        fn list_panes_plan(&self, _s: &str) -> Vec<String> { vec![] }
-        fn new_window_plan(&self, _s: &str, _n: &str) -> Vec<String> { vec![] }
-        fn split_window_plan(&self, _t: &str, _v: bool) -> Vec<String> { vec![] }
-        fn select_window_plan(&self, _t: &str) -> Vec<String> { vec![] }
-        fn kill_window_plan(&self, _t: &str) -> Vec<String> { vec![] }
-        fn rename_window_plan(&self, _t: &str, _n: &str) -> Vec<String> { vec![] }
+        fn attach_plan(&self, _s: &str, _w: Option<i64>) -> Vec<String> {
+            vec![]
+        }
+        fn switch_plan(&self, _s: &str) -> SwitchPlan {
+            SwitchPlan::PerSessionNoOp
+        }
+        fn switch_client_argv(&self, _tty: &str, _s: &str) -> Vec<String> {
+            vec![]
+        }
+        fn control_argv(&self) -> Option<Vec<String>> {
+            None
+        }
+        fn death_signal(&self) -> DeathSignal {
+            DeathSignal::Eof
+        }
+        fn event_source(&self) -> EventSource {
+            EventSource::Poll { interval_ms: 1500 }
+        }
+        fn list_panes_plan(&self, _s: &str) -> Vec<String> {
+            vec![]
+        }
+        fn new_window_plan(&self, _s: &str, _n: &str) -> Vec<String> {
+            vec![]
+        }
+        fn split_window_plan(&self, _t: &str, _v: bool) -> Vec<String> {
+            vec![]
+        }
+        fn select_window_plan(&self, _t: &str) -> Vec<String> {
+            vec![]
+        }
+        fn kill_window_plan(&self, _t: &str) -> Vec<String> {
+            vec![]
+        }
+        fn rename_window_plan(&self, _t: &str, _n: &str) -> Vec<String> {
+            vec![]
+        }
     }
 
     #[tokio::test]
     async fn enumerate_ok_fills_inventory_and_goes_live() {
-        let mut h = Host::new(Transport::Local { socket: None }, Box::new(EnumMux::ok(ServerModel::PerSession, &["work", "build"])));
+        let mut h = Host::new(
+            Transport::Local { socket: None },
+            Box::new(EnumMux::ok(ServerModel::PerSession, &["work", "build"])),
+        );
         h.enumerate().await.unwrap();
         assert_eq!(h.liveness, Liveness::Live);
-        let names: Vec<&str> = h.inventory.sessions.iter().map(|s| s.name.as_str()).collect();
+        let names: Vec<&str> = h
+            .inventory
+            .sessions
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
         assert_eq!(names, vec!["work", "build"]);
     }
 
     #[tokio::test]
     async fn enumerate_empty_is_live_not_unreachable() {
         // A reachable mux with zero sessions is Live (the "(empty)" case), not Unreachable.
-        let mut h = Host::new(Transport::Local { socket: None }, Box::new(EnumMux::ok(ServerModel::Shared, &[])));
+        let mut h = Host::new(
+            Transport::Local { socket: None },
+            Box::new(EnumMux::ok(ServerModel::Shared, &[])),
+        );
         h.enumerate().await.unwrap();
         assert_eq!(h.liveness, Liveness::Live);
         assert!(h.inventory.sessions.is_empty());
@@ -436,7 +568,10 @@ mod tests {
 
     #[tokio::test]
     async fn enumerate_err_marks_unreachable_and_propagates() {
-        let mut h = Host::new(Transport::Local { socket: None }, Box::new(EnumMux::err(ServerModel::Shared)));
+        let mut h = Host::new(
+            Transport::Local { socket: None },
+            Box::new(EnumMux::err(ServerModel::Shared)),
+        );
         assert!(h.enumerate().await.is_err());
         assert_eq!(h.liveness, Liveness::Unreachable);
     }
@@ -444,7 +579,11 @@ mod tests {
     #[test]
     fn record_and_clear_display_tty_round_trips() {
         let mut h = Host::new(
-            Transport::Ssh { alias: "jup".into(), control_path: String::new(), os: "linux".into() },
+            Transport::Ssh {
+                alias: "jup".into(),
+                control_path: String::new(),
+                os: "linux".into(),
+            },
             Box::new(StubMux(ServerModel::Shared)),
         );
         assert!(h.display_tty.0.is_none(), "starts with no tty");
@@ -452,7 +591,10 @@ mod tests {
         assert_eq!(h.display_tty.0.as_deref(), Some("/dev/pts/3"));
         // The display attachment died: the tty is cleared so no later switch-client targets it.
         h.clear_display_tty();
-        assert!(h.display_tty.0.is_none(), "clear forgets the dead client's tty");
+        assert!(
+            h.display_tty.0.is_none(),
+            "clear forgets the dead client's tty"
+        );
     }
 
     #[tokio::test]
@@ -468,7 +610,13 @@ mod tests {
     }
 
     fn sess(name: &str) -> Session {
-        Session { source: "h".into(), name: name.into(), windows: 1, attached: false, last_attached: 0 }
+        Session {
+            source: "h".into(),
+            name: name.into(),
+            windows: 1,
+            attached: false,
+            last_attached: 0,
+        }
     }
 
     #[test]
@@ -476,13 +624,20 @@ mod tests {
         // Shared (tmux): ONE attachment per host, keyed by host id, warmed on the first
         // session. With nothing attached yet, sync asks to attach the first session.
         let mut h = Host::new(
-            Transport::Ssh { alias: "jup".into(), control_path: String::new(), os: "linux".into() },
+            Transport::Ssh {
+                alias: "jup".into(),
+                control_path: String::new(),
+                os: "linux".into(),
+            },
             Box::new(StubMux(ServerModel::Shared)),
         );
         h.inventory.sessions = vec![sess("api"), sess("build")];
         assert_eq!(
             h.sync(),
-            vec![SyncAction::Attach { key: "jup".into(), session: "api".into() }],
+            vec![SyncAction::Attach {
+                key: "jup".into(),
+                session: "api".into()
+            }],
             "shared: warm one PTY (host key) on the first session"
         );
         // Once the host key is shown, sync asks for nothing more (selection-driven
@@ -494,7 +649,11 @@ mod tests {
     #[test]
     fn sync_shared_with_no_sessions_reaps_the_host_pty() {
         let mut h = Host::new(
-            Transport::Ssh { alias: "jup".into(), control_path: String::new(), os: "linux".into() },
+            Transport::Ssh {
+                alias: "jup".into(),
+                control_path: String::new(),
+                os: "linux".into(),
+            },
             Box::new(StubMux(ServerModel::Shared)),
         );
         h.display.set_shows("jup", "api"); // a PTY is warm
@@ -508,35 +667,67 @@ mod tests {
         // sessions have source "h", so their addresses are "h/work" etc.; the local host
         // id is "local" but display_key for PerSession uses the address, so keys are
         // "h/work"/"h/build".
-        let mut h = Host::new(Transport::Local { socket: None }, Box::new(StubMux(ServerModel::PerSession)));
+        let mut h = Host::new(
+            Transport::Local { socket: None },
+            Box::new(StubMux(ServerModel::PerSession)),
+        );
         h.inventory.sessions = vec![sess("work"), sess("build")];
         h.display.set_shows("h/build", "build"); // build already attached
         let got = h.sync();
         assert_eq!(
             got,
-            vec![SyncAction::Attach { key: "h/work".into(), session: "work".into() }],
+            vec![SyncAction::Attach {
+                key: "h/work".into(),
+                session: "work".into()
+            }],
             "per-session: attach the missing one only"
         );
         // A session that closed (shown but no longer in inventory) is reaped.
-        let mut h2 = Host::new(Transport::Local { socket: None }, Box::new(StubMux(ServerModel::PerSession)));
+        let mut h2 = Host::new(
+            Transport::Local { socket: None },
+            Box::new(StubMux(ServerModel::PerSession)),
+        );
         h2.inventory.sessions = vec![sess("work")];
         h2.display.set_shows("h/build", "build");
         h2.display.set_shows("h/work", "work");
-        let reaps: Vec<_> = h2.sync().into_iter().filter(|a| matches!(a, SyncAction::Reap { .. })).collect();
-        assert_eq!(reaps, vec![SyncAction::Reap { key: "h/build".into() }], "per-session: reap the closed session");
+        let reaps: Vec<_> = h2
+            .sync()
+            .into_iter()
+            .filter(|a| matches!(a, SyncAction::Reap { .. }))
+            .collect();
+        assert_eq!(
+            reaps,
+            vec![SyncAction::Reap {
+                key: "h/build".into()
+            }],
+            "per-session: reap the closed session"
+        );
     }
 
     #[test]
     fn matches_display_tty_only_for_our_own_client_under_control_notice() {
         use crate::model::{DisplayTty, Transport};
         let mut h = Host::new(
-            Transport::Ssh { alias: "jup".into(), control_path: String::new(), os: "linux".into() },
+            Transport::Ssh {
+                alias: "jup".into(),
+                control_path: String::new(),
+                os: "linux".into(),
+            },
             crate::model::mux::for_binary("tmux"), // Shared → DeathSignal::ControlNotice
         );
-        assert!(!h.matches_display_tty("/dev/pts/3"), "no captured tty → inert");
+        assert!(
+            !h.matches_display_tty("/dev/pts/3"),
+            "no captured tty → inert"
+        );
         h.display_tty = DisplayTty(Some("/dev/pts/3".into()));
-        assert!(h.matches_display_tty("/dev/pts/3"), "our own client's tty matches");
-        assert!(!h.matches_display_tty("/dev/pts/9"), "an unrelated client never matches");
+        assert!(
+            h.matches_display_tty("/dev/pts/3"),
+            "our own client's tty matches"
+        );
+        assert!(
+            !h.matches_display_tty("/dev/pts/9"),
+            "an unrelated client never matches"
+        );
     }
 
     #[test]
@@ -559,7 +750,11 @@ mod tests {
     fn tmux_host_session_is_always_live_by_port_stat() {
         use crate::model::Transport;
         let h = Host::new(
-            Transport::Ssh { alias: "jup".into(), control_path: String::new(), os: "linux".into() },
+            Transport::Ssh {
+                alias: "jup".into(),
+                control_path: String::new(),
+                os: "linux".into(),
+            },
             crate::model::mux::for_binary("tmux"), // Shared → not PathStat
         );
         // A Shared host never dies by a .port file — liveness here is unconditionally true.
@@ -597,7 +792,10 @@ mod tests {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             match &*self.result.lock().unwrap() {
                 Ok(out) => Ok(out.clone()),
-                Err(RunError::Exit { stderr, code }) => Err(RunError::Exit { stderr: stderr.clone(), code: *code }),
+                Err(RunError::Exit { stderr, code }) => Err(RunError::Exit {
+                    stderr: stderr.clone(),
+                    code: *code,
+                }),
                 Err(RunError::Other(e)) => Err(RunError::Other(e.clone())),
             }
         }
@@ -605,12 +803,18 @@ mod tests {
 
     #[tokio::test]
     async fn detect_and_correct_replaces_behavior_and_preserves_bin() {
-        let mut h = Host::new(Transport::Local { socket: None }, crate::model::mux::for_binary("tmux"));
+        let mut h = Host::new(
+            Transport::Local { socket: None },
+            crate::model::mux::for_binary("tmux"),
+        );
         let runner = DetectRunner::ok("psmux command help");
         h.detect_and_correct(&runner).await;
         assert_eq!(h.mux.kind(), "psmux");
         assert_eq!(h.mux.server_model(), ServerModel::PerSession);
-        assert_eq!(h.mux.attach_plan("api", None), vec!["tmux", "attach", "-t", "api"]);
+        assert_eq!(
+            h.mux.attach_plan("api", None),
+            vec!["tmux", "attach", "-t", "api"]
+        );
         assert!(h.detected);
 
         h.detect_and_correct(&runner).await;
@@ -619,7 +823,10 @@ mod tests {
 
     #[tokio::test]
     async fn detect_and_correct_retries_after_inconclusive_probe() {
-        let mut h = Host::new(Transport::Local { socket: None }, crate::model::mux::for_binary("tmux"));
+        let mut h = Host::new(
+            Transport::Local { socket: None },
+            crate::model::mux::for_binary("tmux"),
+        );
         let runner = DetectRunner::err();
         h.detect_and_correct(&runner).await;
         assert_eq!(h.mux.kind(), "tmux");

@@ -21,7 +21,10 @@ const AUTO_HIDE_TREE_FILE: &str = "auto_hide_tree";
 /// Reads the persisted auto-hide-tree mode. `None` when the file is absent or
 /// unrecognised — the caller falls back to the config default.
 pub fn load_auto_hide_tree(xmux_dir: &Path) -> Option<bool> {
-    match std::fs::read_to_string(xmux_dir.join(AUTO_HIDE_TREE_FILE)).ok()?.trim() {
+    match std::fs::read_to_string(xmux_dir.join(AUTO_HIDE_TREE_FILE))
+        .ok()?
+        .trim()
+    {
         "1" => Some(true),
         "0" => Some(false),
         _ => None,
@@ -31,7 +34,10 @@ pub fn load_auto_hide_tree(xmux_dir: &Path) -> Option<bool> {
 /// Persists the auto-hide-tree mode. Best-effort: a write failure only loses the
 /// next launch's restore.
 pub fn save_auto_hide_tree(xmux_dir: &Path, on: bool) {
-    let _ = std::fs::write(xmux_dir.join(AUTO_HIDE_TREE_FILE), if on { "1" } else { "0" });
+    let _ = std::fs::write(
+        xmux_dir.join(AUTO_HIDE_TREE_FILE),
+        if on { "1" } else { "0" },
+    );
 }
 
 /// Reads the persisted tree width. `None` when the file is absent, unreadable, or
@@ -89,7 +95,11 @@ mod tests {
     fn load_blank_file_is_none() {
         let dir = temp_dir("blank");
         save_last_session(&dir, "   \n");
-        assert_eq!(load_last_session(&dir), None, "a blank value is treated as absent");
+        assert_eq!(
+            load_last_session(&dir),
+            None,
+            "a blank value is treated as absent"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

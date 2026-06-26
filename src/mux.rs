@@ -114,7 +114,13 @@ pub fn new_window(bin: &str, session: &str, name: &str) -> Vec<String> {
 /// Splits `target` (a `session` or `session:window`): `-v` stacks the new pane
 /// below, `-h` puts it to the right.
 pub fn split_window(bin: &str, target: &str, vertical: bool) -> Vec<String> {
-    argv(&[bin, "split-window", if vertical { "-v" } else { "-h" }, "-t", target])
+    argv(&[
+        bin,
+        "split-window",
+        if vertical { "-v" } else { "-h" },
+        "-t",
+        target,
+    ])
 }
 
 /// Renames session `old_name` to `new_name`.
@@ -341,9 +347,14 @@ mod tests {
 
     #[test]
     fn kill_and_rename_window_argv() {
-        assert_eq!(kill_window("tmux", "api:2"), sv(&["tmux", "kill-window", "-t", "api:2"]));
-        assert_eq!(rename_window("tmux", "api:2", "logs"),
-            sv(&["tmux", "rename-window", "-t", "api:2", "logs"]));
+        assert_eq!(
+            kill_window("tmux", "api:2"),
+            sv(&["tmux", "kill-window", "-t", "api:2"])
+        );
+        assert_eq!(
+            rename_window("tmux", "api:2", "logs"),
+            sv(&["tmux", "rename-window", "-t", "api:2", "logs"])
+        );
     }
 
     #[test]

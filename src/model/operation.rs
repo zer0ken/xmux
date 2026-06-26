@@ -10,7 +10,9 @@
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Operation {
     /// Switch the display to this `source/session[:window]` address.
-    Switch { address: String },
+    Switch {
+        address: String,
+    },
     /// Move focus between the tree sidebar and the terminal pane.
     Focus(FocusTarget),
     /// Re-enumerate every host (the `r` re-scan).
@@ -47,16 +49,44 @@ mod tests {
     #[test]
     fn focus_target_parses_aliases() {
         assert_eq!(FocusTarget::from_str("tree"), Some(FocusTarget::Tree));
-        assert_eq!(FocusTarget::from_str("terminal"), Some(FocusTarget::Terminal));
-        assert_eq!(FocusTarget::from_str("mux"), Some(FocusTarget::Terminal), "mux is an alias for terminal");
-        assert_eq!(FocusTarget::from_str(" tree "), Some(FocusTarget::Tree), "trims");
+        assert_eq!(
+            FocusTarget::from_str("terminal"),
+            Some(FocusTarget::Terminal)
+        );
+        assert_eq!(
+            FocusTarget::from_str("mux"),
+            Some(FocusTarget::Terminal),
+            "mux is an alias for terminal"
+        );
+        assert_eq!(
+            FocusTarget::from_str(" tree "),
+            Some(FocusTarget::Tree),
+            "trims"
+        );
         assert_eq!(FocusTarget::from_str("sideways"), None);
     }
     #[test]
     fn operation_equality_is_structural() {
-        assert_eq!(Operation::Switch { address: "jup/api".into() }, Operation::Switch { address: "jup/api".into() });
-        assert_ne!(Operation::Switch { address: "jup/api".into() }, Operation::Switch { address: "jup/db".into() });
-        assert_eq!(Operation::Focus(FocusTarget::Tree), Operation::Focus(FocusTarget::Tree));
+        assert_eq!(
+            Operation::Switch {
+                address: "jup/api".into()
+            },
+            Operation::Switch {
+                address: "jup/api".into()
+            }
+        );
+        assert_ne!(
+            Operation::Switch {
+                address: "jup/api".into()
+            },
+            Operation::Switch {
+                address: "jup/db".into()
+            }
+        );
+        assert_eq!(
+            Operation::Focus(FocusTarget::Tree),
+            Operation::Focus(FocusTarget::Tree)
+        );
         assert_ne!(Operation::TreeWidth(1), Operation::TreeWidth(-1));
     }
 }

@@ -140,10 +140,18 @@ mod tests {
             .expect("event channel remains open");
 
         match event {
-            DisplayEvent::Ready { seq, key, attachment } => {
+            DisplayEvent::Ready {
+                seq,
+                key,
+                attachment,
+            } => {
                 assert_eq!(seq, 7);
                 assert_eq!(key, "local/slow");
-                assert_eq!(attachment.id(), 42, "the attachment carries the cockpit-issued id");
+                assert_eq!(
+                    attachment.id(),
+                    42,
+                    "the attachment carries the cockpit-issued id"
+                );
             }
             DisplayEvent::Failed { .. } => panic!("expected Ready"),
         }

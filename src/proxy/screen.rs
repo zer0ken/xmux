@@ -11,7 +11,9 @@ pub struct Grid {
 
 impl Grid {
     pub fn new(rows: u16, cols: u16) -> Self {
-        Self { parser: vt100::Parser::new(rows, cols, 0) }
+        Self {
+            parser: vt100::Parser::new(rows, cols, 0),
+        }
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
@@ -48,7 +50,10 @@ impl Grid {
         let screen = self.parser.screen();
         let (rows, cols) = screen.size();
         let (row, col) = screen.cursor_position();
-        (col.min(cols.saturating_sub(1)), row.min(rows.saturating_sub(1)))
+        (
+            col.min(cols.saturating_sub(1)),
+            row.min(rows.saturating_sub(1)),
+        )
     }
 
     /// Whether the child has hidden its cursor.
@@ -91,7 +96,6 @@ impl Grid {
             }
         }
     }
-
 }
 
 /// Maps a vt100 colour to a ratatui colour. `Default` → `Reset` (terminal
@@ -136,7 +140,10 @@ mod tests {
     #[test]
     fn color_mapping_covers_default_idx_rgb() {
         assert_eq!(vt_color_to_ratatui(vt100::Color::Default), RColor::Reset);
-        assert_eq!(vt_color_to_ratatui(vt100::Color::Idx(4)), RColor::Indexed(4));
+        assert_eq!(
+            vt_color_to_ratatui(vt100::Color::Idx(4)),
+            RColor::Indexed(4)
+        );
         assert_eq!(
             vt_color_to_ratatui(vt100::Color::Rgb(10, 20, 30)),
             RColor::Rgb(10, 20, 30)
@@ -172,7 +179,11 @@ mod tests {
         g.feed(b"\x1b[H\x1b[2JOK"); // recovered grid still repaints
         let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));
         g.render_into(&mut buf, Rect::new(0, 0, 3, 1));
-        assert_eq!(buf[(0, 0)].symbol(), "O", "grid usable after the wide-char edge case");
+        assert_eq!(
+            buf[(0, 0)].symbol(),
+            "O",
+            "grid usable after the wide-char edge case"
+        );
     }
 
     #[test]
@@ -214,7 +225,11 @@ mod tests {
         g.render_into(&mut buf, Rect::new(0, 0, 5, 1));
         assert_eq!(buf[(0, 0)].symbol(), "한");
         assert_eq!(buf[(2, 0)].symbol(), "국");
-        assert_eq!(buf[(4, 0)].symbol(), " ", "straddling wide char blanked, no overflow");
+        assert_eq!(
+            buf[(4, 0)].symbol(),
+            " ",
+            "straddling wide char blanked, no overflow"
+        );
     }
 
     #[test]
@@ -234,5 +249,4 @@ mod tests {
         g.feed(b"abc"); // cursor advances to col 3, row 0
         assert_eq!(g.cursor(), (3, 0), "cursor is (col, row)");
     }
-
 }

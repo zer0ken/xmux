@@ -243,9 +243,9 @@ pub fn parse_ctl_op(line: &str) -> CtlRequest {
         "rescan" => CtlRequest::Op(Operation::Rescan),
         "quit" => CtlRequest::Op(Operation::Quit),
         "toggle-auto-hide" => CtlRequest::Op(Operation::ToggleAutoHide),
-        "switch" if !req.arg.trim().is_empty() => {
-            CtlRequest::Op(Operation::Switch { address: req.arg.trim().to_string() })
-        }
+        "switch" if !req.arg.trim().is_empty() => CtlRequest::Op(Operation::Switch {
+            address: req.arg.trim().to_string(),
+        }),
         "focus" => match FocusTarget::from_str(&req.arg) {
             Some(t) => CtlRequest::Op(Operation::Focus(t)),
             None => CtlRequest::Unknown(line.trim().to_string()),
@@ -318,33 +318,73 @@ mod tests {
     #[test]
     fn parse_ctl_op_semantic_verbs() {
         use crate::model::{FocusTarget, Operation};
-        assert_eq!(parse_ctl_op("switch jup/api"), CtlRequest::Op(Operation::Switch { address: "jup/api".into() }));
-        assert_eq!(parse_ctl_op("focus terminal"), CtlRequest::Op(Operation::Focus(FocusTarget::Terminal)));
-        assert_eq!(parse_ctl_op("focus tree"), CtlRequest::Op(Operation::Focus(FocusTarget::Tree)));
-        assert_eq!(parse_ctl_op("rescan"), CtlRequest::Op(Operation::Rescan), "COR-1: rescan is now reachable over ctl");
+        assert_eq!(
+            parse_ctl_op("switch jup/api"),
+            CtlRequest::Op(Operation::Switch {
+                address: "jup/api".into()
+            })
+        );
+        assert_eq!(
+            parse_ctl_op("focus terminal"),
+            CtlRequest::Op(Operation::Focus(FocusTarget::Terminal))
+        );
+        assert_eq!(
+            parse_ctl_op("focus tree"),
+            CtlRequest::Op(Operation::Focus(FocusTarget::Tree))
+        );
+        assert_eq!(
+            parse_ctl_op("rescan"),
+            CtlRequest::Op(Operation::Rescan),
+            "COR-1: rescan is now reachable over ctl"
+        );
         assert_eq!(parse_ctl_op("quit"), CtlRequest::Op(Operation::Quit));
-        assert_eq!(parse_ctl_op("width -2"), CtlRequest::Op(Operation::TreeWidth(-2)));
-        assert_eq!(parse_ctl_op("toggle-auto-hide"), CtlRequest::Op(Operation::ToggleAutoHide));
+        assert_eq!(
+            parse_ctl_op("width -2"),
+            CtlRequest::Op(Operation::TreeWidth(-2))
+        );
+        assert_eq!(
+            parse_ctl_op("toggle-auto-hide"),
+            CtlRequest::Op(Operation::ToggleAutoHide)
+        );
         assert_eq!(parse_ctl_op("status"), CtlRequest::Status);
         assert_eq!(parse_ctl_op("ping"), CtlRequest::Ping);
         assert_eq!(parse_ctl_op("dump"), CtlRequest::Dump);
     }
     #[test]
     fn parse_ctl_op_raw_namespace_is_test_only_surface() {
-        assert!(matches!(parse_ctl_op("raw:key down"), CtlRequest::RawKey(_)));
-        assert!(matches!(parse_ctl_op("raw:keys 1b5b41"), CtlRequest::RawBytes(b) if b == vec![0x1b, 0x5b, 0x41]));
-        assert!(matches!(parse_ctl_op("raw:text hi"), CtlRequest::RawBytes(b) if b == b"hi".to_vec()));
+        assert!(matches!(
+            parse_ctl_op("raw:key down"),
+            CtlRequest::RawKey(_)
+        ));
+        assert!(
+            matches!(parse_ctl_op("raw:keys 1b5b41"), CtlRequest::RawBytes(b) if b == vec![0x1b, 0x5b, 0x41])
+        );
+        assert!(
+            matches!(parse_ctl_op("raw:text hi"), CtlRequest::RawBytes(b) if b == b"hi".to_vec())
+        );
         // A bare `key` (no raw: prefix) is no longer a recognized verb — the keystroke
         // surface is explicitly behind raw:, so the loose old verb is now Unknown.
         assert!(matches!(parse_ctl_op("key down"), CtlRequest::Unknown(_)));
-        assert!(matches!(parse_ctl_op("overlay"), CtlRequest::Unknown(_)), "overlay verb retired → focus tree");
+        assert!(
+            matches!(parse_ctl_op("overlay"), CtlRequest::Unknown(_)),
+            "overlay verb retired → focus tree"
+        );
     }
     #[test]
     fn parse_ctl_op_rejects_malformed() {
-        assert!(matches!(parse_ctl_op("switch"), CtlRequest::Unknown(_)), "switch needs an address");
-        assert!(matches!(parse_ctl_op("focus sideways"), CtlRequest::Unknown(_)));
+        assert!(
+            matches!(parse_ctl_op("switch"), CtlRequest::Unknown(_)),
+            "switch needs an address"
+        );
+        assert!(matches!(
+            parse_ctl_op("focus sideways"),
+            CtlRequest::Unknown(_)
+        ));
         assert!(matches!(parse_ctl_op("width xx"), CtlRequest::Unknown(_)));
-        assert!(matches!(parse_ctl_op("raw:keys zz"), CtlRequest::Unknown(_)), "bad hex");
+        assert!(
+            matches!(parse_ctl_op("raw:keys zz"), CtlRequest::Unknown(_)),
+            "bad hex"
+        );
         assert!(matches!(parse_ctl_op("bogus"), CtlRequest::Unknown(_)));
     }
     #[test]

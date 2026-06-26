@@ -19,9 +19,12 @@ const MARKER_CLOSE: u8 = 0x07; // BEL
 /// and `PathStat` are per-session deaths that never arrive as a client detach. An
 /// empty/unknown `display_tty` never matches, so an unrelated client's detach is
 /// structurally inert.
-pub fn matches_display_tty(signal: &DeathSignal, detached_tty: &str, display_tty: &DisplayTty) -> bool {
-    matches!(signal, DeathSignal::ControlNotice)
-        && display_tty.0.as_deref() == Some(detached_tty)
+pub fn matches_display_tty(
+    signal: &DeathSignal,
+    detached_tty: &str,
+    display_tty: &DisplayTty,
+) -> bool {
+    matches!(signal, DeathSignal::ControlNotice) && display_tty.0.as_deref() == Some(detached_tty)
 }
 
 /// `~/.psmux/<session>.port` — psmux's per-session liveness marker (one server per
@@ -75,10 +78,22 @@ mod tests {
     fn matches_only_for_control_notice_and_only_our_tty() {
         let ours = DisplayTty(Some("/dev/pts/3".into()));
         // ControlNotice (tmux): matches ONLY our own tty.
-        assert!(matches_display_tty(&DeathSignal::ControlNotice, "/dev/pts/3", &ours));
-        assert!(!matches_display_tty(&DeathSignal::ControlNotice, "/dev/pts/9", &ours));
+        assert!(matches_display_tty(
+            &DeathSignal::ControlNotice,
+            "/dev/pts/3",
+            &ours
+        ));
+        assert!(!matches_display_tty(
+            &DeathSignal::ControlNotice,
+            "/dev/pts/9",
+            &ours
+        ));
         // An unknown/empty display tty never matches → an unrelated detach is inert.
-        assert!(!matches_display_tty(&DeathSignal::ControlNotice, "/dev/pts/3", &DisplayTty(None)));
+        assert!(!matches_display_tty(
+            &DeathSignal::ControlNotice,
+            "/dev/pts/3",
+            &DisplayTty(None)
+        ));
     }
 
     #[test]
@@ -88,7 +103,9 @@ mod tests {
         let ours = DisplayTty(Some("/dev/pts/3".into()));
         assert!(!matches_display_tty(&DeathSignal::Eof, "/dev/pts/3", &ours));
         assert!(!matches_display_tty(
-            &DeathSignal::PathStat { dir_is_psmux_registry: true },
+            &DeathSignal::PathStat {
+                dir_is_psmux_registry: true
+            },
             "/dev/pts/3",
             &ours
         ));
@@ -103,8 +120,14 @@ mod tests {
         // Only xmux's own attach shell runs this, so the captured value is ours.
         let p = display_tty_marker_prefix();
         assert!(p.contains("$(tty"), "self-reports its own tty: {p}");
-        assert!(p.contains("XMUX-DISPLAY-TTY:"), "inside the unique marker: {p}");
-        assert!(p.trim_end().ends_with(';'), "a prefix the attach argv appends exec to: {p}");
+        assert!(
+            p.contains("XMUX-DISPLAY-TTY:"),
+            "inside the unique marker: {p}"
+        );
+        assert!(
+            p.trim_end().ends_with(';'),
+            "a prefix the attach argv appends exec to: {p}"
+        );
     }
 
     #[test]
@@ -119,14 +142,20 @@ mod tests {
 /dev/pts/7 control-client\r\n\
 \x1b]XMUX-DISPLAY-TTY:/dev/pts/3\x07\
 some-banner /dev/pts/5\r\n";
-        assert_eq!(parse_display_tty_marker(stream).as_deref(), Some("/dev/pts/3"));
+        assert_eq!(
+            parse_display_tty_marker(stream).as_deref(),
+            Some("/dev/pts/3")
+        );
     }
 
     #[test]
     fn parse_returns_none_without_the_marker() {
         // Ordinary output (no marker yet) yields nothing — the capture stays pending
         // rather than guessing a tty off unrelated bytes.
-        assert_eq!(parse_display_tty_marker(b"/dev/pts/0 just some output\r\n"), None);
+        assert_eq!(
+            parse_display_tty_marker(b"/dev/pts/0 just some output\r\n"),
+            None
+        );
     }
 
     #[test]
@@ -134,7 +163,10 @@ some-banner /dev/pts/5\r\n";
         // The pump accumulates until it sees one, so a marker that arrives across
         // reads is whole by the time it is found.
         let stream = b"prompt$ \x1b]XMUX-DISPLAY-TTY:/dev/pts/12\x07rest";
-        assert_eq!(parse_display_tty_marker(stream).as_deref(), Some("/dev/pts/12"));
+        assert_eq!(
+            parse_display_tty_marker(stream).as_deref(),
+            Some("/dev/pts/12")
+        );
     }
 
     // --- psmux .port liveness (PathStat death) ---
@@ -142,7 +174,10 @@ some-banner /dev/pts/5\r\n";
     #[test]
     fn psmux_port_path_is_under_registry_dir() {
         let p = psmux_port_path("editor");
-        assert!(p.ends_with(std::path::Path::new(".psmux").join("editor.port")), "{p:?}");
+        assert!(
+            p.ends_with(std::path::Path::new(".psmux").join("editor.port")),
+            "{p:?}"
+        );
     }
 
     #[test]

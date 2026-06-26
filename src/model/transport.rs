@@ -18,7 +18,11 @@ pub enum Transport {
     /// A remote over ssh. `control_path` is the ControlMaster socket (empty ⇒ no
     /// multiplex, e.g. a Windows local side); `os` is the LOCAL platform (gates
     /// ControlMaster). `alias` is the ssh destination.
-    Ssh { alias: String, control_path: String, os: String },
+    Ssh {
+        alias: String,
+        control_path: String,
+        os: String,
+    },
 }
 
 /// The concrete, runnable result of lowering a `SwitchPlan` — what the supervisor
@@ -54,7 +58,12 @@ impl Transport {
     /// listing never hangs. ControlMaster is multiplexed only on a non-windows local
     /// side with a control path.
     fn ssh_opts(&self, tty: bool) -> Vec<String> {
-        let Transport::Ssh { alias, control_path, os } = self else {
+        let Transport::Ssh {
+            alias,
+            control_path,
+            os,
+        } = self
+        else {
             return Vec::new();
         };
         let mut a: Vec<String> = Vec::new();
@@ -174,11 +183,17 @@ mod tests {
     use crate::model::plan::SwitchPlan;
 
     fn ssh(alias: &str, os: &str, cp: &str) -> Transport {
-        Transport::Ssh { alias: alias.into(), control_path: cp.into(), os: os.into() }
+        Transport::Ssh {
+            alias: alias.into(),
+            control_path: cp.into(),
+            os: os.into(),
+        }
     }
 
     fn local(socket: Option<&str>) -> Transport {
-        Transport::Local { socket: socket.map(str::to_string) }
+        Transport::Local {
+            socket: socket.map(str::to_string),
+        }
     }
     fn argv(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|s| s.to_string()).collect()
@@ -192,7 +207,10 @@ mod tests {
 
     #[test]
     fn is_remote_only_for_ssh() {
-        assert!(!Transport::Local { socket: Some("/x".into()) }.is_remote());
+        assert!(!Transport::Local {
+            socket: Some("/x".into())
+        }
+        .is_remote());
         assert!(ssh("prod", "linux", "").is_remote());
     }
 
@@ -232,12 +250,16 @@ mod tests {
         let (n, a) = local(Some("/tmp/tmux-1000/work"))
             .exec_argv(false, &argv(&["tmux", "list-sessions", "-F", "x"]));
         assert_eq!(n, "tmux");
-        assert_eq!(a, argv(&["-S", "/tmp/tmux-1000/work", "list-sessions", "-F", "x"]));
+        assert_eq!(
+            a,
+            argv(&["-S", "/tmp/tmux-1000/work", "list-sessions", "-F", "x"])
+        );
     }
 
     #[test]
     fn exec_argv_remote_wraps_in_ssh() {
-        let (n, a) = ssh("prod", "linux", "").exec_argv(false, &argv(&["tmux", "kill-session", "-t", "x"]));
+        let (n, a) =
+            ssh("prod", "linux", "").exec_argv(false, &argv(&["tmux", "kill-session", "-t", "x"]));
         assert_eq!(n, "ssh");
         assert_eq!(a.last().unwrap(), "tmux kill-session -t x");
     }
@@ -260,7 +282,10 @@ mod tests {
         let got = ssh("prod", "linux", "").control_argv(&argv(&["tmux", "-CC", "attach"]));
         assert_eq!(got[0], "ssh");
         assert!(got.iter().any(|s| s == "-tt"), "{got:?}");
-        assert!(got.iter().any(|s: &String| s.contains("BatchMode=yes")), "{got:?}");
+        assert!(
+            got.iter().any(|s: &String| s.contains("BatchMode=yes")),
+            "{got:?}"
+        );
         assert_eq!(got.last().unwrap(), "tmux -CC attach");
     }
 
@@ -268,10 +293,15 @@ mod tests {
     fn raw_ssh_argv_none_for_local_some_for_ssh() {
         // Pinned against source.rs:253 (run_raw is remote-only).
         assert!(local(None).raw_ssh_argv("anything").is_none());
-        let got = ssh("prod", "linux", "").raw_ssh_argv("c=$(tty); echo $c").unwrap();
+        let got = ssh("prod", "linux", "")
+            .raw_ssh_argv("c=$(tty); echo $c")
+            .unwrap();
         assert_eq!(got[0], "ssh");
         assert_eq!(got.last().unwrap(), "c=$(tty); echo $c");
-        assert!(got.iter().any(|s: &String| s.contains("BatchMode=yes")), "{got:?}");
+        assert!(
+            got.iter().any(|s: &String| s.contains("BatchMode=yes")),
+            "{got:?}"
+        );
     }
 
     // The closure the supervisor supplies, closed over the captured display tty.
@@ -297,13 +327,22 @@ mod tests {
         // local switch-client argv — NOT an ssh raw command (the M2 correctness hole).
         let got = local(None)
             .lower_switch(
-                &SwitchPlan::Switch { session: "api".into() },
+                &SwitchPlan::Switch {
+                    session: "api".into(),
+                },
                 &switch_argv_for("/dev/pts/3"),
             )
             .expect("Shared local lowers to a switch");
         assert_eq!(
             got,
-            LoweredSwitch::Local(argv(&["tmux", "switch-client", "-c", "/dev/pts/3", "-t", "api"]))
+            LoweredSwitch::Local(argv(&[
+                "tmux",
+                "switch-client",
+                "-c",
+                "/dev/pts/3",
+                "-t",
+                "api"
+            ]))
         );
     }
 
@@ -313,13 +352,20 @@ mod tests {
         // joined per-arg-quoted and wrapped behind the ssh options.
         let got = ssh("prod", "linux", "")
             .lower_switch(
-                &SwitchPlan::Switch { session: "api".into() },
+                &SwitchPlan::Switch {
+                    session: "api".into(),
+                },
                 &switch_argv_for("/dev/pts/3"),
             )
             .expect("Shared remote lowers to a switch");
-        let LoweredSwitch::RawSsh(v) = got else { panic!("remote lowers to RawSsh: {got:?}") };
+        let LoweredSwitch::RawSsh(v) = got else {
+            panic!("remote lowers to RawSsh: {got:?}")
+        };
         assert_eq!(v[0], "ssh");
         assert_eq!(v.last().unwrap(), "tmux switch-client -c /dev/pts/3 -t api");
-        assert!(v.iter().any(|s: &String| s.contains("BatchMode=yes")), "{v:?}");
+        assert!(
+            v.iter().any(|s: &String| s.contains("BatchMode=yes")),
+            "{v:?}"
+        );
     }
 }

@@ -466,7 +466,9 @@ mod tests {
         tx.send(PtyCmd::Input(b"cd".to_vec())).unwrap();
         drop(tx); // closing the channel must end the loop so we can join
 
-        handle.join().expect("control loop must return on channel close");
+        handle
+            .join()
+            .expect("control loop must return on channel close");
         assert_eq!(&*writes.lock().unwrap(), b"abcd", "input written in order");
         assert_eq!(&*resizes.lock().unwrap(), &[(80, 24)], "resize applied");
     }
@@ -518,7 +520,10 @@ mod tests {
         let dsr = all.windows(3).filter(|w| *w == b"1;1").count(); // ESC[1;1R cursor reply body
         let da = all.windows(7).filter(|w| *w == b"\x1b[?1;2c").count();
         assert_eq!(dsr, 1, "DSR answered exactly once (split across reads)");
-        assert_eq!(da, 1, "DA answered exactly once (no duplicate at the read boundary)");
+        assert_eq!(
+            da, 1,
+            "DA answered exactly once (no duplicate at the read boundary)"
+        );
     }
 
     #[test]
@@ -540,12 +545,32 @@ mod tests {
         // that completes the first marker; later reads do not re-capture or re-grow.
         let mut acc: Vec<u8> = Vec::new();
         let mut captured: Option<String> = None;
-        scan_marker_once(&mut acc, &mut captured, b"boot \x1b]XMUX-DISPLAY-TTY:/dev/pts/3\x07ok");
-        assert_eq!(captured.as_deref(), Some("/dev/pts/3"), "captured on the completing read");
+        scan_marker_once(
+            &mut acc,
+            &mut captured,
+            b"boot \x1b]XMUX-DISPLAY-TTY:/dev/pts/3\x07ok",
+        );
+        assert_eq!(
+            captured.as_deref(),
+            Some("/dev/pts/3"),
+            "captured on the completing read"
+        );
         let len_after = acc.len();
-        scan_marker_once(&mut acc, &mut captured, b"\x1b]XMUX-DISPLAY-TTY:/dev/pts/9\x07");
-        assert_eq!(captured.as_deref(), Some("/dev/pts/3"), "a later marker does not override our capture");
-        assert_eq!(acc.len(), len_after, "scanning stops once captured (no unbounded growth)");
+        scan_marker_once(
+            &mut acc,
+            &mut captured,
+            b"\x1b]XMUX-DISPLAY-TTY:/dev/pts/9\x07",
+        );
+        assert_eq!(
+            captured.as_deref(),
+            Some("/dev/pts/3"),
+            "a later marker does not override our capture"
+        );
+        assert_eq!(
+            acc.len(),
+            len_after,
+            "scanning stops once captured (no unbounded growth)"
+        );
     }
 
     #[test]
@@ -556,7 +581,11 @@ mod tests {
         scan_marker_once(&mut acc, &mut captured, b"x \x1b]XMUX-DISPLAY-TTY:/dev/p");
         assert!(captured.is_none(), "partial marker is not yet captured");
         scan_marker_once(&mut acc, &mut captured, b"ts/12\x07 rest");
-        assert_eq!(captured.as_deref(), Some("/dev/pts/12"), "captured once the marker completes");
+        assert_eq!(
+            captured.as_deref(),
+            Some("/dev/pts/12"),
+            "captured once the marker completes"
+        );
     }
 
     // End-to-end smoke of the real PTY-attach path: spawn a non-interactive child on
@@ -604,8 +633,14 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        assert!(seen, "child output `{MARKER}` must round-trip into the grid via the pump");
-        assert!(!att.connecting.load(Ordering::Acquire), "first output must clear `connecting`");
+        assert!(
+            seen,
+            "child output `{MARKER}` must round-trip into the grid via the pump"
+        );
+        assert!(
+            !att.connecting.load(Ordering::Acquire),
+            "first output must clear `connecting`"
+        );
         assert!(
             matches!(ev_rx.try_recv(), Ok(PtyEvent::Output { id: 1 }) | Err(_)),
             "the pump emits Output events for the attachment"

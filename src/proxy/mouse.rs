@@ -45,7 +45,15 @@ pub fn parse_sgr_mouse(data: &[u8]) -> Option<(MouseEvent, usize)> {
         _ => return None,
     };
     i += 1;
-    Some((MouseEvent { cb, col, row, pressed }, i))
+    Some((
+        MouseEvent {
+            cb,
+            col,
+            row,
+            pressed,
+        },
+        i,
+    ))
 }
 
 /// Re-encodes an SGR mouse event at new 1-based (col,row).
@@ -80,7 +88,15 @@ mod tests {
     fn parse_press_roundtrip() {
         let input = b"\x1b[<0;10;5M";
         let (ev, len) = parse_sgr_mouse(input).expect("must parse");
-        assert_eq!(ev, MouseEvent { cb: 0, col: 10, row: 5, pressed: true });
+        assert_eq!(
+            ev,
+            MouseEvent {
+                cb: 0,
+                col: 10,
+                row: 5,
+                pressed: true
+            }
+        );
         assert_eq!(len, input.len());
     }
 
@@ -94,7 +110,12 @@ mod tests {
 
     #[test]
     fn encode_at_new_coords() {
-        let ev = MouseEvent { cb: 0, col: 10, row: 5, pressed: true };
+        let ev = MouseEvent {
+            cb: 0,
+            col: 10,
+            row: 5,
+            pressed: true,
+        };
         let encoded = encode_sgr_mouse(&ev, 3, 2);
         assert_eq!(encoded, b"\x1b[<0;3;2M");
     }
@@ -115,18 +136,34 @@ mod tests {
     fn parse_multi_digit_coords() {
         let input = b"\x1b[<32;120;48M";
         let (ev, len) = parse_sgr_mouse(input).expect("multi-digit coords");
-        assert_eq!(ev, MouseEvent { cb: 32, col: 120, row: 48, pressed: true });
+        assert_eq!(
+            ev,
+            MouseEvent {
+                cb: 32,
+                col: 120,
+                row: 48,
+                pressed: true
+            }
+        );
         assert_eq!(len, input.len());
     }
 
     #[test]
     fn parse_overflow_coord_returns_none() {
-        assert!(parse_sgr_mouse(b"\x1b[<0;65536;5M").is_none(), "coordinate >= 65536 must parse as None");
+        assert!(
+            parse_sgr_mouse(b"\x1b[<0;65536;5M").is_none(),
+            "coordinate >= 65536 must parse as None"
+        );
     }
 
     #[test]
     fn encode_release() {
-        let ev = MouseEvent { cb: 0, col: 5, row: 3, pressed: false };
+        let ev = MouseEvent {
+            cb: 0,
+            col: 5,
+            row: 3,
+            pressed: false,
+        };
         let encoded = encode_sgr_mouse(&ev, 5, 3);
         assert_eq!(encoded, b"\x1b[<0;5;3m");
     }

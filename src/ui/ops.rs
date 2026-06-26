@@ -32,7 +32,8 @@ pub trait Ops: Send + Sync {
     async fn rename(&self, s: &Session, new_name: &str) -> anyhow::Result<()>;
     async fn panes(&self, s: &Session) -> anyhow::Result<Vec<WindowPanes>>;
     async fn kill_window(&self, source: &str, target: &str) -> anyhow::Result<()>;
-    async fn rename_window(&self, source: &str, target: &str, new_name: &str) -> anyhow::Result<()>;
+    async fn rename_window(&self, source: &str, target: &str, new_name: &str)
+        -> anyhow::Result<()>;
 }
 
 /// A slow (network) action a keypress queues. The key-handling path only records
@@ -40,13 +41,39 @@ pub trait Ops: Send + Sync {
 /// [`OpResult`], so an ssh round-trip never freezes the UI. Tests pump it inline.
 #[derive(Debug, Clone)]
 pub enum PendingOp {
-    Create { source: String, name: String },
-    NewWindow { source: String, session: String, name: String },
-    SplitWindow { source: String, target: String, session: String, vertical: bool },
-    Rename { sess: Session, new_name: String },
-    Kill { sess: Session },
-    KillWindow { source: String, session: String, target: String },
-    RenameWindow { source: String, session: String, target: String, new_name: String },
+    Create {
+        source: String,
+        name: String,
+    },
+    NewWindow {
+        source: String,
+        session: String,
+        name: String,
+    },
+    SplitWindow {
+        source: String,
+        target: String,
+        session: String,
+        vertical: bool,
+    },
+    Rename {
+        sess: Session,
+        new_name: String,
+    },
+    Kill {
+        sess: Session,
+    },
+    KillWindow {
+        source: String,
+        session: String,
+        target: String,
+    },
+    RenameWindow {
+        source: String,
+        session: String,
+        target: String,
+        new_name: String,
+    },
 }
 
 /// The outcome of a [`PendingOp`], applied back into the switcher state by
@@ -90,18 +117,27 @@ pub async fn run_op(op: &PendingOp, ops: &dyn Ops) -> OpResult {
                 message: format!("create failed: {e}"),
             },
         },
-        PendingOp::NewWindow { source, session, name } => {
-            match ops.new_window(source, session, name).await {
-                Ok(()) => refreshed_panes(ops, source, session).await,
-                Err(e) => OpResult::Failed { message: format!("new window failed: {e}") },
-            }
-        }
-        PendingOp::SplitWindow { source, target, session, vertical } => {
-            match ops.split_window(source, target, *vertical).await {
-                Ok(()) => refreshed_panes(ops, source, session).await,
-                Err(e) => OpResult::Failed { message: format!("split failed: {e}") },
-            }
-        }
+        PendingOp::NewWindow {
+            source,
+            session,
+            name,
+        } => match ops.new_window(source, session, name).await {
+            Ok(()) => refreshed_panes(ops, source, session).await,
+            Err(e) => OpResult::Failed {
+                message: format!("new window failed: {e}"),
+            },
+        },
+        PendingOp::SplitWindow {
+            source,
+            target,
+            session,
+            vertical,
+        } => match ops.split_window(source, target, *vertical).await {
+            Ok(()) => refreshed_panes(ops, source, session).await,
+            Err(e) => OpResult::Failed {
+                message: format!("split failed: {e}"),
+            },
+        },
         PendingOp::Rename { sess, new_name } => match ops.rename(sess, new_name).await {
             Ok(()) => OpResult::Renamed {
                 source: sess.source.clone(),
@@ -120,18 +156,27 @@ pub async fn run_op(op: &PendingOp, ops: &dyn Ops) -> OpResult {
                 message: format!("kill failed: {e}"),
             },
         },
-        PendingOp::KillWindow { source, session, target } => {
-            match ops.kill_window(source, target).await {
-                Ok(()) => refreshed_panes(ops, source, session).await,
-                Err(e) => OpResult::Failed { message: format!("kill window failed: {e}") },
-            }
-        }
-        PendingOp::RenameWindow { source, session, target, new_name } => {
-            match ops.rename_window(source, target, new_name).await {
-                Ok(()) => refreshed_panes(ops, source, session).await,
-                Err(e) => OpResult::Failed { message: format!("rename window failed: {e}") },
-            }
-        }
+        PendingOp::KillWindow {
+            source,
+            session,
+            target,
+        } => match ops.kill_window(source, target).await {
+            Ok(()) => refreshed_panes(ops, source, session).await,
+            Err(e) => OpResult::Failed {
+                message: format!("kill window failed: {e}"),
+            },
+        },
+        PendingOp::RenameWindow {
+            source,
+            session,
+            target,
+            new_name,
+        } => match ops.rename_window(source, target, new_name).await {
+            Ok(()) => refreshed_panes(ops, source, session).await,
+            Err(e) => OpResult::Failed {
+                message: format!("rename window failed: {e}"),
+            },
+        },
     }
 }
 

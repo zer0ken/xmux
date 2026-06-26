@@ -105,7 +105,7 @@ fn apply_width_delta(wd: i32, natural: &mut u16) -> bool {
 /// reconciled at the next loop top (`reconciled_tree_width`); the caller marks dirty.
 fn toggle_auto_hide(mode: &mut bool, xmux_dir: &std::path::Path) {
     *mode = !*mode;
-    crate::state::save_auto_hide_tree(xmux_dir, *mode);
+    crate::prefs::save_auto_hide_tree(xmux_dir, *mode);
 }
 
 /// Applies ONE resolved [`Operation`] to the cockpit's UI state — the single site
@@ -129,11 +129,21 @@ fn apply_operation(
     use crate::model::{FocusTarget, Operation};
     let mut width_changed = false;
     match op {
-        Operation::Switch { address } => { switcher.select_address(&address); }
-        Operation::Focus(FocusTarget::Terminal) => { app.set_pane_focus(crate::proxy::app::PaneFocus::Terminal); }
-        Operation::Focus(FocusTarget::Tree) => { app.set_pane_focus(crate::proxy::app::PaneFocus::Tree); }
-        Operation::Rescan => { switcher.request_rescan(); }
-        Operation::TreeWidth(d) => { width_changed = apply_width_delta(d, tree_width_natural); }
+        Operation::Switch { address } => {
+            switcher.select_address(&address);
+        }
+        Operation::Focus(FocusTarget::Terminal) => {
+            app.set_pane_focus(crate::proxy::app::PaneFocus::Terminal);
+        }
+        Operation::Focus(FocusTarget::Tree) => {
+            app.set_pane_focus(crate::proxy::app::PaneFocus::Tree);
+        }
+        Operation::Rescan => {
+            switcher.request_rescan();
+        }
+        Operation::TreeWidth(d) => {
+            width_changed = apply_width_delta(d, tree_width_natural);
+        }
         Operation::ToggleAutoHide => toggle_auto_hide(auto_hide_tree, xmux_dir),
         Operation::Quit => return (true, false),
     }
@@ -239,7 +249,11 @@ impl Selection {
             return Selection::default();
         }
         let session = crate::mux::session_name(&t.target).to_string();
-        let window = t.target.split(':').nth(1).and_then(|w| w.parse::<i64>().ok());
+        let window = t
+            .target
+            .split(':')
+            .nth(1)
+            .and_then(|w| w.parse::<i64>().ok());
         Selection {
             source: t.source.clone(),
             session,
@@ -290,15 +304,21 @@ fn to_grid_local(area: ratatui::layout::Rect, col: u16, row: u16) -> Option<(u16
     }
 }
 
-/// The `AttachRegistry` key for a selection. REMOTE tmux keeps ONE PTY per HOST
-/// (keyed by the source) and moves it between the host's sessions with
-/// `switch-client`; LOCAL psmux is one-server-per-session, so it keeps one PTY per
-/// SESSION (keyed by `source/session`).
+/// The `AttachRegistry` key for a selection.
 fn display_key(hosts: &crate::model::Hosts, sel: &Selection) -> String {
     hosts
         .get(&sel.source)
-        .map(|h| h.display_key(&sel.address()))
+        .map(|h| host_selection_key(h, sel))
         .unwrap_or_else(|| sel.address())
+}
+
+fn host_selection_key(host: &crate::model::Host, sel: &Selection) -> String {
+    if host.mux.server_model().shares_one_attachment() || !host.mux.stable_per_session_attachments()
+    {
+        host.id().to_string()
+    } else {
+        host.display_key(&sel.address())
+    }
 }
 
 /// The host id owning a display key: Shared keys ARE the host id; PerSession keys are
@@ -369,9 +389,10 @@ fn select_attach(
     let Some(host) = hosts.get_mut(&sel.source) else {
         return false;
     };
-    let key = host.display_key(&sel.address());
+    let key = host_selection_key(host, sel);
     let already = registry.contains(&key);
     let shared = host.mux.server_model().shares_one_attachment();
+    let stable_per_session = host.mux.stable_per_session_attachments();
 
     if shared {
         if !already {
@@ -391,10 +412,23 @@ fn select_attach(
                     // Marker is a remote-shell mechanism: prefix the last element so the
                     // display-tty capture fires before exec'ing the attach command.
                     if let Some(last) = argv.last_mut() {
-                        *last = format!("{}{}", crate::model::death::display_tty_marker_prefix(), last);
+                        *last = format!(
+                            "{}{}",
+                            crate::model::death::display_tty_marker_prefix(),
+                            last
+                        );
                     }
                 }
-                request_attach(registry, worker, &mut host.display, attach_seq, &key, argv, cols, rows);
+                request_attach(
+                    registry,
+                    worker,
+                    &mut host.display,
+                    attach_seq,
+                    &key,
+                    argv,
+                    cols,
+                    rows,
+                );
                 host.display.set_shows(&key, &sel.session);
             }
         } else if host.display.shows(&key) != Some(sel.session.as_str()) {
@@ -421,13 +455,46 @@ fn select_attach(
             }
             host.display.set_shows(&key, &sel.session);
         }
+    } else if !stable_per_session {
+        let showing_selected = host.display.shows(&key) == Some(sel.session.as_str());
+        if !showing_selected {
+            registry.remove(&key);
+            host.display.clear(&key);
+        }
+        if (!showing_selected || !registry.contains(&key))
+            && !host.display.in_flight.contains_key(&key)
+        {
+            let mux_argv = host.mux.attach_plan(&sel.session, None);
+            let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
+            let mut argv = vec![cmd];
+            argv.extend(args);
+            request_attach(
+                registry,
+                worker,
+                &mut host.display,
+                attach_seq,
+                &key,
+                argv,
+                cols,
+                rows,
+            );
+            host.display.set_shows(&key, &sel.session);
+        }
     } else if !already && !host.display.in_flight.contains_key(&key) {
-        // PerSession (psmux): one PTY per session — off-loop attach, deduped by in-flight.
         let mux_argv = host.mux.attach_plan(&sel.session, None);
         let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
         let mut argv = vec![cmd];
         argv.extend(args);
-        request_attach(registry, worker, &mut host.display, attach_seq, &key, argv, cols, rows);
+        request_attach(
+            registry,
+            worker,
+            &mut host.display,
+            attach_seq,
+            &key,
+            argv,
+            cols,
+            rows,
+        );
     }
 
     // Window-row selection → move the session's active window. The fresh shared
@@ -468,10 +535,10 @@ fn run_lowered(lowered: crate::model::LoweredSwitch) {
     });
 }
 
-/// Keeps a source's display terminals in sync with its sessions. REMOTE tmux keeps
-/// ONE PTY per host: warm it on the first session (later session selections
-/// `switch-client` it), and reap it when the host has no sessions left. LOCAL psmux
-/// (one-server-per-session) keeps one PTY per session: ensure each, reap the closed.
+/// Keeps a source's display terminals in sync with its sessions. Shared muxes keep
+/// ONE PTY per host: warm it on the first session (later selections switch it), and
+/// reap it when the host has no sessions left. Stable per-session muxes keep one PTY
+/// per session. Unstable per-session display attaches are selected on demand only.
 /// Called whenever a source's inventory updates (a remote `%`-event refresh or a
 /// local poll), so a new session is reachable and a killed one is torn down (#5).
 #[allow(clippy::too_many_arguments)]
@@ -496,14 +563,29 @@ fn sync_source_terminals(
     };
     let shares_one = host.mux.server_model().shares_one_attachment();
     let remote = host.transport.is_remote();
+    if !shares_one && !host.mux.stable_per_session_attachments() {
+        if sessions.is_empty() {
+            registry.remove(source);
+            host.display.clear(source);
+        }
+        return;
+    }
     if shares_one {
         // One PTY per host. Warm it on the first session if not yet attached; reap it
         // (and forget its session) when the host has no sessions.
         match sessions.first() {
-            Some(first) if !registry.contains(source) && !host.display.in_flight.contains_key(source) => {
+            Some(first)
+                if !registry.contains(source) && !host.display.in_flight.contains_key(source) =>
+            {
                 request_attach(
-                    registry, worker, &mut host.display, attach_seq,
-                    source, shared_display_attach_argv(remote, src, &first.name, None), cols, rows,
+                    registry,
+                    worker,
+                    &mut host.display,
+                    attach_seq,
+                    source,
+                    shared_display_attach_argv(remote, src, &first.name, None),
+                    cols,
+                    rows,
                 );
                 host.display.set_shows(source, &first.name);
             }
@@ -515,15 +597,21 @@ fn sync_source_terminals(
         }
         return;
     }
-    // LOCAL psmux: one PTY per session; request each off-loop + reap closed.
+    // Stable per-session mux: one PTY per session; request each off-loop + reap closed.
     let mut desired: HashSet<String> = HashSet::new();
     for s in sessions {
         let addr = s.address();
         desired.insert(addr.clone());
         if !registry.contains(&addr) && !host.display.in_flight.contains_key(&addr) {
             request_attach(
-                registry, worker, &mut host.display, attach_seq,
-                &addr, src.attach_command(&s.name, None), cols, rows,
+                registry,
+                worker,
+                &mut host.display,
+                attach_seq,
+                &addr,
+                src.attach_command(&s.name, None),
+                cols,
+                rows,
             );
         }
     }
@@ -548,7 +636,11 @@ fn addresses_to_reap(existing: &[String], desired: &HashSet<String>, source: &st
 /// True when a worker `Ready`/`Failed` reply is still the latest in-flight request for its
 /// key. A stale reply (the key was re-requested after a reap, so a newer seq is in flight, or
 /// the key is no longer in flight at all) must not register or clear state.
-fn attach_reply_is_current(in_flight: &std::collections::HashMap<String, u64>, key: &str, seq: u64) -> bool {
+fn attach_reply_is_current(
+    in_flight: &std::collections::HashMap<String, u64>,
+    key: &str,
+    seq: u64,
+) -> bool {
     in_flight.get(key) == Some(&seq)
 }
 
@@ -569,7 +661,9 @@ fn ensure_current_host(
         if let Some(src) = env.by_alias.get(&host) {
             let is_control = hosts
                 .get(&host)
-                .map(|h| h.detected && matches!(h.mux.event_source(), crate::model::EventSource::Control))
+                .map(|h| {
+                    h.detected && matches!(h.mux.event_source(), crate::model::EventSource::Control)
+                })
                 .unwrap_or(false);
             if is_control {
                 let _ = mgr.ensure(&host, src, cols, rows);
@@ -586,7 +680,9 @@ fn transport_for_source(src: &crate::source::Source) -> crate::model::Transport 
             os: src.os.clone(),
         }
     } else {
-        crate::model::Transport::Local { socket: src.socket.clone() }
+        crate::model::Transport::Local {
+            socket: src.socket.clone(),
+        }
     }
 }
 
@@ -623,7 +719,11 @@ fn spawn_detected_enumeration(
             .iter()
             .map(|s| (s.name.clone(), s.address()))
             .collect();
-        let _ = tx.send(LocalEnum::Sessions { source, sessions, err });
+        let _ = tx.send(LocalEnum::Sessions {
+            source,
+            sessions,
+            err,
+        });
         for (name, address) in names {
             let argv = mux.list_panes_plan(&name);
             let (cmd, args) = transport.exec_argv(false, &argv);
@@ -816,7 +916,11 @@ fn resolve_mouse_chain(
     over_mux: bool,
 ) -> ChainAction {
     if is_wheel && wheel_targets_tree(tree_focused, over_mux) {
-        return if ctrl { ChainAction::LevelChange(down) } else { ChainAction::ScrollTree(down) };
+        return if ctrl {
+            ChainAction::LevelChange(down)
+        } else {
+            ChainAction::ScrollTree(down)
+        };
     }
     if is_left_press && tree_focused && over_mux {
         return ChainAction::FocusMux;
@@ -1020,7 +1124,10 @@ fn handle_host_event(
                     ),
                 );
                 // Sync this host's display terminal(s) (per-host for remote tmux).
-                sync_source_terminals(registry, env, hosts, &host, &sessions, worker, attach_seq, cols, rows, tree_width);
+                sync_source_terminals(
+                    registry, env, hosts, &host, &sessions, worker, attach_seq, cols, rows,
+                    tree_width,
+                );
             }
         }
         HostEvent::Changed { host } => {
@@ -1036,12 +1143,18 @@ fn handle_host_event(
             // which echoes back as this notification). Instead probe ONLY the displayed
             // session's new active window; the reply (Focus) updates the marker and
             // follows the cursor without any refetch.
-            let displayed = hosts.get(&host).and_then(|h| h.display.shows(&host).map(str::to_string));
+            let displayed = hosts
+                .get(&host)
+                .and_then(|h| h.display.shows(&host).map(str::to_string));
             if let (Some(client), Some(displayed)) = (mgr.get(&host), displayed) {
                 client.probe_active_window(&displayed);
             }
         }
-        HostEvent::Focus { host, session, window } => {
+        HostEvent::Focus {
+            host,
+            session,
+            window,
+        } => {
             // The active-window probe resolved. Updates the bold+italic marker so the
             // sidebar reflects the mux's current active window. Cursor follow in
             // passthrough happens at the loop top (single unified call), not here.
@@ -1055,7 +1168,9 @@ fn handle_host_event(
             // Reap our display attach ONLY when the detaching client is OUR display client
             // (matched against the in-memory Host.display_tty). An unrelated client's detach
             // can never match, so it is structurally inert — no blanket reap.
-            let Some(h) = hosts.get(&host) else { return false; };
+            let Some(h) = hosts.get(&host) else {
+                return false;
+            };
             if !h.matches_display_tty(&client) {
                 return false;
             }
@@ -1074,7 +1189,12 @@ fn handle_host_event(
 /// Records a pump-self-reported display tty on the host that owns the attach id.
 /// The attach key is `display_key`; for a Shared host that IS the host id. Provably
 /// xmux's own client (the marker is emitted only by our attach shell).
-fn record_display_tty(hosts: &mut crate::model::Hosts, registry: &AttachRegistry, id: u64, tty: String) {
+fn record_display_tty(
+    hosts: &mut crate::model::Hosts,
+    registry: &AttachRegistry,
+    id: u64,
+    tty: String,
+) {
     if let Some(addr) = registry.address_of_id(id) {
         let host_id = addr.split('/').next().unwrap_or(&addr).to_string();
         if let Some(h) = hosts.get_mut(&host_id) {
@@ -1088,10 +1208,18 @@ fn record_display_tty(hosts: &mut crate::model::Hosts, registry: &AttachRegistry
 /// over the pump before exec. Every remote display-attach spawn routes through
 /// this; a spawn site that built the argv directly would leave the host's
 /// display_tty empty and the %client-detached reap unable to match.
-fn marked_remote_attach_argv(src: &crate::source::Source, session: &str, window: Option<i64>) -> Vec<String> {
+fn marked_remote_attach_argv(
+    src: &crate::source::Source,
+    session: &str,
+    window: Option<i64>,
+) -> Vec<String> {
     let mut argv = src.attach_command(session, window);
     if let Some(last) = argv.last_mut() {
-        *last = format!("{}{}", crate::model::death::display_tty_marker_prefix(), last);
+        *last = format!(
+            "{}{}",
+            crate::model::death::display_tty_marker_prefix(),
+            last
+        );
     }
     argv
 }
@@ -1119,7 +1247,11 @@ fn shared_display_attach_argv(
 /// Clears the display tty of the host owning the EOF'd attach `id`, so a dropped
 /// display client cannot leave a stale tty that a later %client-detached matches.
 /// Must run BEFORE the reap removes the registry entry (address_of_id needs it).
-fn clear_display_tty_for_attach(hosts: &mut crate::model::Hosts, registry: &AttachRegistry, id: u64) {
+fn clear_display_tty_for_attach(
+    hosts: &mut crate::model::Hosts,
+    registry: &AttachRegistry,
+    id: u64,
+) {
     if let Some(addr) = registry.address_of_id(id) {
         let host_id = addr.split('/').next().unwrap_or(&addr).to_string();
         if let Some(h) = hosts.get_mut(&host_id) {
@@ -1148,7 +1280,10 @@ fn note_host_exited(
     if connected.remove(host) {
         return false;
     }
-    if reason.as_deref().is_some_and(crate::source::reason_is_no_sessions) {
+    if reason
+        .as_deref()
+        .is_some_and(crate::source::reason_is_no_sessions)
+    {
         switcher.apply_source_result(host.to_string(), Vec::new(), None);
         return false;
     }
@@ -1236,10 +1371,10 @@ fn handle_mouse_event(
     // button is released. Sets the NATURAL width; the loop-top reconcile
     // applies it and resizes the PTYs (same path as prefix h/l).
     let col0 = ev.col.saturating_sub(1); // 1-based SGR → 0-based screen col
-    // A context menu owns every mouse event until the right
-    // button is released (press-hold-release), exactly like the
-    // divider drag below. Motion sets the hovered item; button-up
-    // acts on it (or cancels if released off-menu).
+                                         // A context menu owns every mouse event until the right
+                                         // button is released (press-hold-release), exactly like the
+                                         // divider drag below. Motion sets the hovered item; button-up
+                                         // acts on it (or cancels if released off-menu).
     if switcher.menu_active() {
         if !ev.pressed {
             match switcher.menu_release() {
@@ -1257,7 +1392,9 @@ fn handle_mouse_event(
                     // re-scan (reconnect); dispatch them here so it
                     // works in either focus state, not only overlay.
                     dispatch_pending_op(switcher, ops, op_tx);
-                    kick_rescan(switcher, env, hosts, detecting, mgr, cols, body_rows, enum_tx);
+                    kick_rescan(
+                        switcher, env, hosts, detecting, mgr, cols, body_rows, enum_tx,
+                    );
                     ensure_current_host(mgr, env, hosts, switcher, cols, body_rows, tree_width);
                 }
                 crate::ui::switcher::MenuOutcome::None => {}
@@ -1274,7 +1411,7 @@ fn handle_mouse_event(
             // Button up ends the drag; persist the final width once
             // (motion resizes live but does not write per cell).
             st.dragging_divider = false;
-            crate::state::save_tree_width(&env.xmux_dir, *tree_width_natural);
+            crate::prefs::save_tree_width(&env.xmux_dir, *tree_width_natural);
         } else if !is_wheel {
             let target = divider_drag_width(ev.col);
             if target != *tree_width_natural {
@@ -1297,9 +1434,7 @@ fn handle_mouse_event(
         dirty = true;
         return dirty;
     }
-    if is_left_press
-        && switcher.begin_popup_drag(col0, ev.row.saturating_sub(1))
-    {
+    if is_left_press && switcher.begin_popup_drag(col0, ev.row.saturating_sub(1)) {
         dirty = true;
         return dirty;
     }
@@ -1347,7 +1482,12 @@ fn handle_mouse_event(
     let down = (ev.cb & 0x01) != 0;
     let ctrl = (ev.cb & 0x10) != 0;
     match resolve_mouse_chain(
-        is_wheel, ctrl, down, is_left_press, app.is_tree_focused(), in_mux.is_some(),
+        is_wheel,
+        ctrl,
+        down,
+        is_left_press,
+        app.is_tree_focused(),
+        in_mux.is_some(),
     ) {
         ChainAction::ScrollTree(down) => {
             // Plain wheel → scroll the cursor LINEARLY through every row
@@ -1421,7 +1561,14 @@ fn handle_stdin_bytes(
 ) -> StdinOutcome {
     use std::time::Duration;
     let mut outcome = StdinOutcome::default();
-    let StdinOutcome { quit, focus_terminal, focus_tree, dirty, tree_replay, width_changed } = &mut outcome;
+    let StdinOutcome {
+        quit,
+        focus_terminal,
+        focus_tree,
+        dirty,
+        tree_replay,
+        width_changed,
+    } = &mut outcome;
     // Scan for SGR mouse sequences BEFORE routing to Focus::Tree/Focus::Terminal branches.
     // Mouse capture is global, so mouse bytes arrive in both states; scanning here
     // prevents them from reaching handle_tree_bytes (which would mis-decode them)
@@ -1439,9 +1586,27 @@ fn handle_stdin_bytes(
         while i < bytes.len() {
             if let Some((ev, len)) = crate::proxy::mouse::parse_sgr_mouse(&bytes[i..]) {
                 if handle_mouse_event(
-                    &ev, mouse, switcher, app, registry, mgr, env, hosts, detecting, selection, ops, op_tx,
-                    enum_tx, &mut non_mouse, &mut mouse_focus_toggle, &mut wheel_scrolled,
-                    term_area, tree_width_natural, cols, body_rows, tree_width,
+                    &ev,
+                    mouse,
+                    switcher,
+                    app,
+                    registry,
+                    mgr,
+                    env,
+                    hosts,
+                    detecting,
+                    selection,
+                    ops,
+                    op_tx,
+                    enum_tx,
+                    &mut non_mouse,
+                    &mut mouse_focus_toggle,
+                    &mut wheel_scrolled,
+                    term_area,
+                    tree_width_natural,
+                    cols,
+                    body_rows,
+                    tree_width,
                 ) {
                     *dirty = true;
                 }
@@ -1460,7 +1625,7 @@ fn handle_stdin_bytes(
     // never trapped past the next input.
     if mouse.dragging_divider && !non_mouse.is_empty() {
         mouse.dragging_divider = false;
-        crate::state::save_tree_width(&env.xmux_dir, *tree_width_natural);
+        crate::prefs::save_tree_width(&env.xmux_dir, *tree_width_natural);
     }
     // Watchdog: a keystroke (or any non-mouse byte) during a held menu ends
     // the gesture without acting — mirrors the divider-drag watchdog, so a
@@ -1493,7 +1658,9 @@ fn handle_stdin_bytes(
     // (handles a coalesced autorepeat burst); any remaining bytes end the window
     // and fall through to the normal tree/mux routing below.
     let mut consumed_by_repeat = false;
-    if mouse.repeat_until.is_some_and(|d| std::time::Instant::now() < d)
+    if mouse
+        .repeat_until
+        .is_some_and(|d| std::time::Instant::now() < d)
         && !mouse.tree_armed
         && !term_input.is_armed()
         && !non_mouse.is_empty()
@@ -1509,9 +1676,8 @@ fn handle_stdin_bytes(
             non_mouse.drain(0..n);
             *dirty = true;
             if non_mouse.is_empty() {
-                mouse.repeat_until = Some(
-                    std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS),
-                );
+                mouse.repeat_until =
+                    Some(std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS));
                 consumed_by_repeat = true;
             } else {
                 mouse.repeat_until = None; // trailing non-arrow bytes end + route below
@@ -1532,8 +1698,21 @@ fn handle_stdin_bytes(
         // in handle_tree_bytes swallows everything but the modal's own keys, so a modal
         // never emits FocusMux/quit and the focus toggles below never fire mid-modal.
         let (ft, q, wd, th) = handle_tree_bytes(
-            &non_mouse, tree_decoder, &mut mouse.tree_armed, prefix, switcher,
-            mgr, env, hosts, detecting, ops, op_tx, enum_tx, cols, body_rows, tree_width,
+            &non_mouse,
+            tree_decoder,
+            &mut mouse.tree_armed,
+            prefix,
+            switcher,
+            mgr,
+            env,
+            hosts,
+            detecting,
+            ops,
+            op_tx,
+            enum_tx,
+            cols,
+            body_rows,
+            tree_width,
         );
         *focus_terminal = ft;
         *quit = q;
@@ -1571,9 +1750,8 @@ fn handle_stdin_bytes(
                     if apply_width_delta(d, tree_width_natural) {
                         *width_changed = true;
                     }
-                    mouse.repeat_until = Some(
-                        std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS),
-                    );
+                    mouse.repeat_until =
+                        Some(std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS));
                 }
                 Action::ToggleAutoHide => {
                     toggle_auto_hide(auto_hide_tree, &env.xmux_dir);
@@ -1595,8 +1773,21 @@ fn handle_stdin_bytes(
         app.set_pane_focus(crate::proxy::app::PaneFocus::Tree);
         if !tree_replay.is_empty() {
             let (ft, q, wd, th) = handle_tree_bytes(
-                tree_replay, tree_decoder, &mut mouse.tree_armed, prefix,
-                switcher, mgr, env, hosts, detecting, ops, op_tx, enum_tx, cols, body_rows, tree_width,
+                tree_replay,
+                tree_decoder,
+                &mut mouse.tree_armed,
+                prefix,
+                switcher,
+                mgr,
+                env,
+                hosts,
+                detecting,
+                ops,
+                op_tx,
+                enum_tx,
+                cols,
+                body_rows,
+                tree_width,
             );
             if ft {
                 app.set_pane_focus(crate::proxy::app::PaneFocus::Terminal);
@@ -1616,7 +1807,6 @@ fn handle_stdin_bytes(
                 *dirty = true;
             }
         }
-
     }
     outcome
 }
@@ -1659,7 +1849,11 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         let log = env.xmux_dir.join("panic.log");
         std::panic::set_hook(Box::new(move |info| {
             use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log) {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log)
+            {
                 let _ = writeln!(f, "{info}");
             }
         }));
@@ -1667,20 +1861,20 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
 
     let size = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
     let (mut cols, mut body_rows) = (size.0, size.1.saturating_sub(1)); // status bar = last row
-    // `tree_width` is the EFFECTIVE width (0 = tree hidden, mux full width); every
-    // sizing/render site reads it. `tree_width_natural` holds the tree's natural
-    // width (what prefix h·l adjusts, restored when the tree is shown again).
-    // Restore the natural width the user last set (persisted across runs); clamp a
-    // stale out-of-range value, and fall back to the default when none is saved.
+                                                                        // `tree_width` is the EFFECTIVE width (0 = tree hidden, mux full width); every
+                                                                        // sizing/render site reads it. `tree_width_natural` holds the tree's natural
+                                                                        // width (what prefix h·l adjusts, restored when the tree is shown again).
+                                                                        // Restore the natural width the user last set (persisted across runs); clamp a
+                                                                        // stale out-of-range value, and fall back to the default when none is saved.
     let mut tree_width_natural = adjust_tree_width(
-        crate::state::load_tree_width(&env.xmux_dir).unwrap_or(crate::ui::switcher::TREE_WIDTH),
+        crate::prefs::load_tree_width(&env.xmux_dir).unwrap_or(crate::ui::switcher::TREE_WIDTH),
         0,
     );
     let mut tree_width = tree_width_natural;
     // Auto-hide-tree mode: the live `prefix t` toggle, restored from its persisted
     // state if set, else the `auto-hide-tree` config default. The loop-top reconcile
     // reads it to size the tree (0 = hidden, mux full width) on focus changes.
-    let mut auto_hide_tree = crate::state::load_auto_hide_tree(&env.xmux_dir)
+    let mut auto_hide_tree = crate::prefs::load_auto_hide_tree(&env.xmux_dir)
         .unwrap_or_else(|| env.cfg.ui_auto_hide_tree());
     // The per-event mouse-gesture/input state the stdin arm carries across reads:
     //  - repeat_until: the resize-repeat window — set when a prefix-driven resize fires,
@@ -1705,15 +1899,29 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     // ssh aliases (every non-local source), and the OS from the first src's .os field
     // (all srcs share the same host OS). Ids are "local" + each alias — the same strings
     // that HostEvents carry as `host` and that the registry uses as the display key prefix.
-    let ssh_aliases: Vec<String> = env.srcs.iter()
+    let ssh_aliases: Vec<String> = env
+        .srcs
+        .iter()
         .filter(|s| s.alias != crate::session::LOCAL_SOURCE)
         .map(|s| s.alias.clone())
         .collect();
-    let host_os = env.srcs.first().map(|s| s.os.as_str()).unwrap_or(std::env::consts::OS);
-    let local_socket_opt = env.srcs.iter()
+    let host_os = env
+        .srcs
+        .first()
+        .map(|s| s.os.as_str())
+        .unwrap_or(std::env::consts::OS);
+    let local_socket_opt = env
+        .srcs
+        .iter()
         .find(|s| s.alias == crate::session::LOCAL_SOURCE)
         .and_then(|s| s.socket.clone());
-    let mut hosts = crate::model::Hosts::build(&env.cfg, &ssh_aliases, host_os, &env.xmux_dir, local_socket_opt);
+    let mut hosts = crate::model::Hosts::build(
+        &env.cfg,
+        &ssh_aliases,
+        host_os,
+        &env.xmux_dir,
+        local_socket_opt,
+    );
 
     // The switcher, seeded from the source skeletons; events stream the tree in.
     let mut switcher = Switcher::from_sources(env.srcs.iter().map(|s| s.alias.clone()).collect());
@@ -1734,18 +1942,14 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     // Restore the session the user last had selected (persisted across runs), so the
     // preselect lands there once its host streams in instead of guessing from the
     // unreliable cross-host `session_last_attached` (#1).
-    switcher.set_preferred(crate::state::load_last_session(&env.xmux_dir));
+    switcher.set_preferred(crate::prefs::load_last_session(&env.xmux_dir));
     let mut app = App::new();
 
-    // The canonical selection; committed from the switcher's cursor at the loop top.
-    let mut selection = Selection::default();
-    // Debounced attach: the selection last actually attached/switched to, and the
-    // deadline after which a settled selection is attached (see ATTACH_DEBOUNCE_MS).
-    let mut last_attached_sel = Selection::default();
-    let mut attach_deadline: Option<std::time::Instant> = None;
-    // The session address last persisted as the user's last-selected (#1), so it is
-    // not rewritten on every window step within the same session.
-    let mut last_saved_session = String::new();
+    // The cockpit's runtime state (single source of truth): the canonical selection
+    // committed from the switcher's cursor at the loop top, the attach debounce latch
+    // (last selection actually attached/switched to) + its deadline, and the last
+    // session address persisted as the user's last-selected (#1).
+    let mut state = crate::state::State::default();
     // Off-loop attach sequence. The in-flight set + reaped-ids + which session each display
     // shows now live on each `host.display` (HostDisplay), so the cockpit holds no free
     // host_session/in_flight/reaped_ids side-maps.
@@ -1798,7 +2002,16 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     let mut connected: HashSet<String> = HashSet::new();
     let mut panes_requested: HashSet<String> = HashSet::new();
     let mut detecting: HashSet<String> = HashSet::new();
-    connect_all_sources(&mut mgr, &env, &hosts, &mut detecting, cols, body_rows, tree_width, &enum_tx);
+    connect_all_sources(
+        &mut mgr,
+        &env,
+        &hosts,
+        &mut detecting,
+        cols,
+        body_rows,
+        tree_width,
+        &enum_tx,
+    );
 
     let spinner_start = std::time::Instant::now();
     let mut tick = tokio::time::interval(Duration::from_millis(SPINNER_FRAME_MS));
@@ -1814,7 +2027,8 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     // dropped (so a transient remote disconnect does not leave the right pane stuck
     // on "(attaching…)"). The sweep interval doubles as the retry backoff.
     let reconnect_start = tokio::time::Instant::now() + Duration::from_millis(RECONNECT_MS);
-    let mut reconnect = tokio::time::interval_at(reconnect_start, Duration::from_millis(RECONNECT_MS));
+    let mut reconnect =
+        tokio::time::interval_at(reconnect_start, Duration::from_millis(RECONNECT_MS));
     reconnect.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Frame timer: wakes the loop at the redraw cadence so a pending `dirty` draw is
     // flushed promptly even when no other event arrives. Redraws are gated on `dirty`
@@ -1847,7 +2061,11 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // ponytail: resize_all touches every live attachment on each change. It is
         // gated to fire once per actual change (not per loop), matching the existing
         // h/l and console-resize paths; debounce only if toggle-spam proves costly.
-        let want_tree_width = reconciled_tree_width(app.is_terminal_focused(), auto_hide_tree, tree_width_natural);
+        let want_tree_width = reconciled_tree_width(
+            app.is_terminal_focused(),
+            auto_hide_tree,
+            tree_width_natural,
+        );
         if want_tree_width != tree_width {
             // Crossing the hidden sentinel (0) flips the column TOPOLOGY: full-width mux
             // <-> tree+divider+mux. A stale wide-char (CJK) cell at the new tree/divider
@@ -1871,14 +2089,14 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // detached / dead) attachment down and clear its switch latch so the attach
         // below re-creates a fresh client for the viewed session. Keeps the per-host
         // model — recovery from a lost display client is explicit, on demand.
-        if switcher.take_reattach_kick() && !selection.is_empty() {
-            let key = display_key(&hosts, &selection);
+        if switcher.take_reattach_kick() && !state.selection.is_empty() {
+            let key = display_key(&hosts, &state.selection);
             registry.remove(&key);
-            if let Some(h) = hosts.get_mut(&selection.source) {
+            if let Some(h) = hosts.get_mut(&state.selection.source) {
                 h.display.clear(&key); // drop the prior latch so the re-attach is fresh
             }
-            last_attached_sel = Selection::default();
-            attach_deadline = Some(std::time::Instant::now());
+            state.last_attached_sel = Selection::default();
+            state.attach_deadline = Some(std::time::Instant::now());
         }
         // In passthrough the user no longer drives the tree cursor (stdin goes to the
         // PTY), so the tree selection tracks the displayed session's active window — always.
@@ -1888,51 +2106,66 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             switcher.select_active_window();
         }
         let new_sel = Selection::from_target(&switcher.terminal_view_target());
-        if new_sel != selection {
-            selection = new_sel;
+        if new_sel != state.selection {
+            state.selection = new_sel;
             // Arm the debounce — do NOT attach yet. Rapid navigation keeps pushing the
             // deadline, so only the settled selection attaches (one switch, not a storm).
-            attach_deadline = Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
+            state.attach_deadline =
+                Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
             dirty = true; // the cursor moved → the tree needs a redraw
         }
         // Apply the debounced attach once the selection has settled. The frame timer
         // re-enters the loop, so this fires even with no further input.
-        if attach_deadline.is_some_and(|d| std::time::Instant::now() >= d) {
-            attach_deadline = None;
+        if state
+            .attach_deadline
+            .is_some_and(|d| std::time::Instant::now() >= d)
+        {
+            state.attach_deadline = None;
             // Attach when the settled selection changed OR its display PTY is gone
             // (it may have exited / been reaped while the cursor was elsewhere — then
             // re-selecting the same session must re-attach NOW, not wait for the 2s
             // reconnect sweep, or the pane stays blank). Record it only on a real
             // attach, so a failed attach does not latch and suppress the retry.
-            if !selection.is_empty() {
+            if !state.selection.is_empty() {
                 // Persist the settled session as the user's last-selected, so the next
                 // launch restores it (#1). Only on an address change, so stepping
                 // between windows of one session does not rewrite it every settle.
-                let addr = selection.address();
-                if addr != last_saved_session {
-                    crate::state::save_last_session(&env.xmux_dir, &addr);
-                    last_saved_session = addr;
+                let addr = state.selection.address();
+                if addr != state.last_saved_session {
+                    crate::prefs::save_last_session(&env.xmux_dir, &addr);
+                    state.last_saved_session = addr;
                 }
-                let key = display_key(&hosts, &selection);
+                let key = display_key(&hosts, &state.selection);
                 let in_flight_for_key = hosts
-                    .get(&selection.source)
+                    .get(&state.selection.source)
                     .map(|h| h.display.in_flight.contains_key(&key))
                     .unwrap_or(false);
-                if selection != last_attached_sel
+                if state.selection != state.last_attached_sel
                     || (!registry.contains(&key) && !in_flight_for_key)
                 {
                     let t = std::time::Instant::now();
                     if select_attach(
-                        &mut registry, &mut hosts, &selection, &worker,
-                        &mut attach_seq, cols, body_rows, tree_width, &mgr,
+                        &mut registry,
+                        &mut hosts,
+                        &state.selection,
+                        &worker,
+                        &mut attach_seq,
+                        cols,
+                        body_rows,
+                        tree_width,
+                        &mgr,
                     ) {
-                        last_attached_sel = selection.clone();
+                        state.last_attached_sel = state.selection.clone();
                     }
                     dbg_ms(&env.xmux_dir, "select_attach", t);
                     dirty = true;
                     dbg_log(
                         &env.xmux_dir,
-                        &format!("selection -> key={} sess={}", display_key(&hosts, &selection), selection.session),
+                        &format!(
+                            "state.selection -> key={} sess={}",
+                            display_key(&hosts, &state.selection),
+                            state.selection.session
+                        ),
                     );
                 }
             }
@@ -1943,7 +2176,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // the ctl path); fires once ~WIDTH_FLUSH_MS after the last resize tick. The
         // frame timer re-enters the loop so this fires even with no further input.
         if width_dirty && width_flush_at.is_some_and(|d| std::time::Instant::now() >= d) {
-            crate::state::save_tree_width(&env.xmux_dir, tree_width_natural);
+            crate::prefs::save_tree_width(&env.xmux_dir, tree_width_natural);
             width_dirty = false;
             width_flush_at = None;
         }
@@ -1954,8 +2187,8 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // with full-screen repaints and stall the loop. The display key is the HOST
         // for remote tmux (one PTY per host) or `source/session` for local psmux.
         if dirty && last_draw.elapsed() >= Duration::from_millis(FRAME_MS) {
-            let grid_arc = (!selection.is_empty())
-                .then(|| registry.grid(&display_key(&hosts, &selection)))
+            let grid_arc = (!state.selection.is_empty())
+                .then(|| registry.grid(&display_key(&hosts, &state.selection)))
                 .flatten();
             let terminal_focused = app.is_terminal_focused();
             // The divider glyph reflects auto-hide-tree mode (║ on, │ off).
@@ -2005,7 +2238,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             Some(ev) = host_rx.recv() => {
                 let t = std::time::Instant::now();
                 if handle_host_event(ev, &mut mgr, &mut hosts, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &worker, &mut attach_seq, cols, body_rows, tree_width) {
-                    attach_deadline = Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
+                    state.attach_deadline = Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
                     dirty = true;
                 }
                 let mut budget = EVENT_DRAIN_BUDGET;
@@ -2013,7 +2246,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     match host_rx.try_recv() {
                         Ok(ev) => {
                             if handle_host_event(ev, &mut mgr, &mut hosts, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &worker, &mut attach_seq, cols, body_rows, tree_width) {
-                                attach_deadline = Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
+                                state.attach_deadline = Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
                                 dirty = true;
                             }
                             budget -= 1;
@@ -2032,8 +2265,8 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 // it instead of quitting (quit is `prefix q` only). Capture its id BEFORE any
                 // reap removes it; a background session dropping (tree focus, or a non-displayed
                 // attach) is just reaped.
-                let displayed_attach_id = (app.is_terminal_focused() && !selection.is_empty())
-                    .then(|| registry.get(&display_key(&hosts, &selection)).map(|a| a.id()))
+                let displayed_attach_id = (app.is_terminal_focused() && !state.selection.is_empty())
+                    .then(|| registry.get(&display_key(&hosts, &state.selection)).map(|a| a.id()))
                     .flatten();
                 let mut detached = false;
                 match ev {
@@ -2083,7 +2316,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     // it (reaped above, so the loop-top attach re-fires once its PTY is gone).
                     // Debounced so a session that is genuinely gone makes only a few attempts
                     // before the inventory refetch drops its row and the cursor moves on.
-                    attach_deadline =
+                    state.attach_deadline =
                         Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
                     dirty = true;
                 }
@@ -2109,7 +2342,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                 // while this first-attach was in flight; clearing the latch makes the
                                 // next pass re-run select_attach, which (now that the host PTY exists)
                                 // issues the deferred switch-client to the current selection.
-                                last_attached_sel = Selection::default();
+                                state.last_attached_sel = Selection::default();
                             } else {
                                 // Stale Ready (a newer attach superseded this seq): forget its
                                 // pending id before teardown so the id->key map cannot grow.
@@ -2135,7 +2368,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             Some(bytes) = stdin_rx.recv() => {
                 let outcome = handle_stdin_bytes(
                     &bytes, &mut mouse_state, &mut switcher, &mut app, &mut registry, &mut mgr,
-                    &env, &mut hosts, &mut detecting, &selection, &mut term_input, &mut tree_decoder, &ops, &op_tx,
+                    &env, &mut hosts, &mut detecting, &state.selection, &mut term_input, &mut tree_decoder, &ops, &op_tx,
                     &enum_tx, &mut tree_width_natural, &mut auto_hide_tree, prefix, cols, body_rows,
                     tree_width,
                 );
@@ -2170,8 +2403,8 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         let sz = term
                             .size()
                             .unwrap_or(ratatui::layout::Size { width: 80, height: 24 });
-                        let grid_arc = (!selection.is_empty())
-                            .then(|| registry.grid(&display_key(&hosts, &selection)))
+                        let grid_arc = (!state.selection.is_empty())
+                            .then(|| registry.grid(&display_key(&hosts, &state.selection)))
                             .flatten();
                         let dump = match &grid_arc {
                             Some(g) => {
@@ -2189,7 +2422,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     }
                     Cmd::RawBytes(bytes) => {
                         if !bytes.is_empty() {
-                            registry.input(&display_key(&hosts, &selection), bytes);
+                            registry.input(&display_key(&hosts, &state.selection), bytes);
                         }
                     }
                 }
@@ -2229,7 +2462,12 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             if let Some(h) = hosts.get(&source) {
                                 for s in &sessions {
                                     if !h.psmux_session_live(&s.name) {
-                                        registry.remove(&h.display_key(&s.address()));
+                                        let key = if h.mux.stable_per_session_attachments() {
+                                            h.display_key(&s.address())
+                                        } else {
+                                            source.clone()
+                                        };
+                                        registry.remove(&key);
                                     }
                                 }
                             }
@@ -2259,14 +2497,14 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 }
                 // Spinner set = the selected session if its PTY is still connecting.
                 let mut sp = HashSet::new();
-                if !selection.is_empty() {
-                    let key = display_key(&hosts, &selection);
+                if !state.selection.is_empty() {
+                    let key = display_key(&hosts, &state.selection);
                     let in_flight_for_key = hosts
-                        .get(&selection.source)
+                        .get(&state.selection.source)
                         .map(|h| h.display.in_flight.contains_key(&key))
                         .unwrap_or(false);
                     if in_flight_for_key || registry.connecting(&key) {
-                        sp.insert(selection.address());
+                        sp.insert(state.selection.address());
                     }
                 }
                 switcher.set_spinner(sp);
@@ -2327,15 +2565,15 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     }
                 }
                 // Re-attach the selected session's display terminal if it dropped.
-                if !selection.is_empty() {
-                    let key = display_key(&hosts, &selection);
+                if !state.selection.is_empty() {
+                    let key = display_key(&hosts, &state.selection);
                     let in_flight_for_key = hosts
-                        .get(&selection.source)
+                        .get(&state.selection.source)
                         .map(|h| h.display.in_flight.contains_key(&key))
                         .unwrap_or(false);
                     if !registry.contains(&key) && !in_flight_for_key {
                         select_attach(
-                            &mut registry, &mut hosts, &selection, &worker,
+                            &mut registry, &mut hosts, &state.selection, &worker,
                             &mut attach_seq, cols, body_rows, tree_width, &mgr,
                         );
                     }
@@ -2358,7 +2596,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     // unreached, so the final width is still pending — persist it on the way out so the
     // tree width the user left with survives the next launch.
     if width_dirty {
-        crate::state::save_tree_width(&env.xmux_dir, tree_width_natural);
+        crate::prefs::save_tree_width(&env.xmux_dir, tree_width_natural);
     }
     registry.teardown_all();
     mgr.teardown_all();
@@ -2394,7 +2632,10 @@ fn pick_control_path(env: &Env) -> Option<PathBuf> {
         return None;
     }
     let _ = std::fs::create_dir_all(&env.xmux_dir);
-    Some(crate::control::socket_path(&env.xmux_dir, std::process::id()))
+    Some(crate::control::socket_path(
+        &env.xmux_dir,
+        std::process::id(),
+    ))
 }
 
 #[cfg(test)]
@@ -2419,26 +2660,65 @@ mod tests {
     #[test]
     fn resolve_tree_prefix_commands() {
         assert_eq!(rt(b"\x07q", false), vec![Action::Quit], "prefix q quits");
-        assert_eq!(rt(b"\x07l", false), vec![Action::Width(1)], "prefix l widens");
-        assert_eq!(rt(b"\x07h", false), vec![Action::Width(-1)], "prefix h narrows");
-        assert_eq!(rt(b"\x07t", false), vec![Action::ToggleAutoHide], "prefix t toggles hide");
-        assert_eq!(rt(b"\x07?", false), vec![Action::ShowHelp], "prefix ? toggles help");
+        assert_eq!(
+            rt(b"\x07l", false),
+            vec![Action::Width(1)],
+            "prefix l widens"
+        );
+        assert_eq!(
+            rt(b"\x07h", false),
+            vec![Action::Width(-1)],
+            "prefix h narrows"
+        );
+        assert_eq!(
+            rt(b"\x07t", false),
+            vec![Action::ToggleAutoHide],
+            "prefix t toggles hide"
+        );
+        assert_eq!(
+            rt(b"\x07?", false),
+            vec![Action::ShowHelp],
+            "prefix ? toggles help"
+        );
         // prefix Tab cycles focus to the mux pane, and prefix Right does too. (Tab
         // arrives as Char('\t') from the byte decoder, not KeyCode::Tab — both map to
         // FocusMux so prefix Tab toggles tree⇄mux like it does from the mux side.)
-        assert_eq!(rt(b"\x07\t", false), vec![Action::FocusMux], "prefix Tab cycles focus to mux");
-        assert_eq!(rt(b"\x07\x1b[C", false), vec![Action::FocusMux], "prefix Right focuses mux");
-        assert_eq!(rt(b"\x07\x1b[1;5C", false), vec![Action::Width(1)], "prefix Ctrl-Right widens");
-        assert_eq!(rt(b"\x07\x1b[1;5D", false), vec![Action::Width(-1)], "prefix Ctrl-Left narrows");
+        assert_eq!(
+            rt(b"\x07\t", false),
+            vec![Action::FocusMux],
+            "prefix Tab cycles focus to mux"
+        );
+        assert_eq!(
+            rt(b"\x07\x1b[C", false),
+            vec![Action::FocusMux],
+            "prefix Right focuses mux"
+        );
+        assert_eq!(
+            rt(b"\x07\x1b[1;5C", false),
+            vec![Action::Width(1)],
+            "prefix Ctrl-Right widens"
+        );
+        assert_eq!(
+            rt(b"\x07\x1b[1;5D", false),
+            vec![Action::Width(-1)],
+            "prefix Ctrl-Left narrows"
+        );
     }
 
     #[test]
     fn resolve_tree_enter_focuses_mux_and_nav_is_a_tree_key() {
-        assert_eq!(rt(b"\r", false), vec![Action::FocusMux], "Enter focuses the mux pane");
+        assert_eq!(
+            rt(b"\r", false),
+            vec![Action::FocusMux],
+            "Enter focuses the mux pane"
+        );
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         assert_eq!(
             rt(b"j", false),
-            vec![Action::TreeKey(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE))],
+            vec![Action::TreeKey(KeyEvent::new(
+                KeyCode::Char('j'),
+                KeyModifiers::NONE
+            ))],
             "a nav key is delegated to the tree verbatim"
         );
     }
@@ -2450,12 +2730,18 @@ mod tests {
         // and Enter does NOT focus the mux (it submits the input) — both go to the tree.
         assert_eq!(
             rt(b"\x07", true),
-            vec![Action::TreeKey(KeyEvent::new(KeyCode::Char('\u{7}'), KeyModifiers::NONE))],
+            vec![Action::TreeKey(KeyEvent::new(
+                KeyCode::Char('\u{7}'),
+                KeyModifiers::NONE
+            ))],
             "prefix while inputting is a literal tree key, not an arm"
         );
         assert_eq!(
             rt(b"\r", true),
-            vec![Action::TreeKey(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))],
+            vec![Action::TreeKey(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE
+            ))],
             "Enter while inputting goes to the tree, not focus-switch"
         );
     }
@@ -2463,38 +2749,106 @@ mod tests {
     // --- mouse focus/position rules ----------------------------------------
     #[test]
     fn wheel_targets_tree_only_when_tree_focused_and_over_tree() {
-        assert!(wheel_targets_tree(true, false), "tree focus + over tree → drive the tree");
-        assert!(!wheel_targets_tree(true, true), "tree focus + over the MUX pane → NOT the tree");
-        assert!(!wheel_targets_tree(false, false), "mux focus + over tree → not the tree");
-        assert!(!wheel_targets_tree(false, true), "mux focus + over mux → the mux child, not the tree");
+        assert!(
+            wheel_targets_tree(true, false),
+            "tree focus + over tree → drive the tree"
+        );
+        assert!(
+            !wheel_targets_tree(true, true),
+            "tree focus + over the MUX pane → NOT the tree"
+        );
+        assert!(
+            !wheel_targets_tree(false, false),
+            "mux focus + over tree → not the tree"
+        );
+        assert!(
+            !wheel_targets_tree(false, true),
+            "mux focus + over mux → the mux child, not the tree"
+        );
     }
 
     #[test]
     fn resolve_mouse_chain_routes_by_focus_and_position() {
         use ChainAction::*;
         // wheel: only drives the tree when tree-focused AND over the tree.
-        assert_eq!(resolve_mouse_chain(true, false, true, false, true, false), ScrollTree(true), "wheel, tree focus, over tree → scroll");
-        assert_eq!(resolve_mouse_chain(true, true, false, false, true, false), LevelChange(false), "Ctrl+wheel, tree focus, over tree → level");
-        assert_eq!(resolve_mouse_chain(true, false, true, false, true, true), Nothing, "wheel, tree focus, over MUX → nothing (never crosses panes)");
-        assert_eq!(resolve_mouse_chain(true, false, true, false, false, true), ForwardToMux, "wheel, mux focus, over mux → forward to child");
-        assert_eq!(resolve_mouse_chain(true, false, true, false, false, false), Nothing, "wheel, mux focus, over tree → nothing");
+        assert_eq!(
+            resolve_mouse_chain(true, false, true, false, true, false),
+            ScrollTree(true),
+            "wheel, tree focus, over tree → scroll"
+        );
+        assert_eq!(
+            resolve_mouse_chain(true, true, false, false, true, false),
+            LevelChange(false),
+            "Ctrl+wheel, tree focus, over tree → level"
+        );
+        assert_eq!(
+            resolve_mouse_chain(true, false, true, false, true, true),
+            Nothing,
+            "wheel, tree focus, over MUX → nothing (never crosses panes)"
+        );
+        assert_eq!(
+            resolve_mouse_chain(true, false, true, false, false, true),
+            ForwardToMux,
+            "wheel, mux focus, over mux → forward to child"
+        );
+        assert_eq!(
+            resolve_mouse_chain(true, false, true, false, false, false),
+            Nothing,
+            "wheel, mux focus, over tree → nothing"
+        );
         // left press: focus-switch on the unfocused pane, act on the focused one.
-        assert_eq!(resolve_mouse_chain(false, false, false, true, true, true), FocusMux, "left, tree focus, over mux → focus mux");
-        assert_eq!(resolve_mouse_chain(false, false, false, true, true, false), SelectRow, "left, tree focus, over tree → select row");
-        assert_eq!(resolve_mouse_chain(false, false, false, true, false, false), FocusTree, "left, mux focus, over tree → focus tree");
-        assert_eq!(resolve_mouse_chain(false, false, false, true, false, true), ForwardToMux, "left, mux focus, over mux → forward to child");
+        assert_eq!(
+            resolve_mouse_chain(false, false, false, true, true, true),
+            FocusMux,
+            "left, tree focus, over mux → focus mux"
+        );
+        assert_eq!(
+            resolve_mouse_chain(false, false, false, true, true, false),
+            SelectRow,
+            "left, tree focus, over tree → select row"
+        );
+        assert_eq!(
+            resolve_mouse_chain(false, false, false, true, false, false),
+            FocusTree,
+            "left, mux focus, over tree → focus tree"
+        );
+        assert_eq!(
+            resolve_mouse_chain(false, false, false, true, false, true),
+            ForwardToMux,
+            "left, mux focus, over mux → forward to child"
+        );
         // a non-left, non-wheel press (e.g. right-press that the menu gate declined):
         // forwards to the child only when the mux is focused and the pointer is over it.
-        assert_eq!(resolve_mouse_chain(false, false, false, false, false, true), ForwardToMux, "right-press, mux focus, over mux → forward");
-        assert_eq!(resolve_mouse_chain(false, false, false, false, true, false), Nothing, "right-press, tree focus, over tree → nothing");
+        assert_eq!(
+            resolve_mouse_chain(false, false, false, false, false, true),
+            ForwardToMux,
+            "right-press, mux focus, over mux → forward"
+        );
+        assert_eq!(
+            resolve_mouse_chain(false, false, false, false, true, false),
+            Nothing,
+            "right-press, tree focus, over tree → nothing"
+        );
     }
 
     #[test]
     fn tree_menu_opens_only_in_tree_focus_over_the_tree() {
-        assert!(tree_menu_may_open(true, true, false), "right-press, tree focus, over tree → may open");
-        assert!(!tree_menu_may_open(true, false, false), "right-press while the MUX is focused → never");
-        assert!(!tree_menu_may_open(true, true, true), "right-press over the mux pane → forwards, no tree menu");
-        assert!(!tree_menu_may_open(false, true, false), "a non-right press never opens the menu");
+        assert!(
+            tree_menu_may_open(true, true, false),
+            "right-press, tree focus, over tree → may open"
+        );
+        assert!(
+            !tree_menu_may_open(true, false, false),
+            "right-press while the MUX is focused → never"
+        );
+        assert!(
+            !tree_menu_may_open(true, true, true),
+            "right-press over the mux pane → forwards, no tree menu"
+        );
+        assert!(
+            !tree_menu_may_open(false, true, false),
+            "a non-right press never opens the menu"
+        );
     }
 
     #[test]
@@ -2507,7 +2861,10 @@ mod tests {
             .filter_map(|k| resolve_tree_key(k, &mut armed, 0x07, false))
             .collect();
         assert_eq!(r1, Vec::<Action>::new());
-        assert!(armed, "the prefix arms even when its command arrives in the next read");
+        assert!(
+            armed,
+            "the prefix arms even when its command arrives in the next read"
+        );
         let r2: Vec<Action> = dec
             .feed(b"q")
             .into_iter()
@@ -2531,10 +2888,8 @@ mod tests {
 
     fn fake_env_with_sources(aliases: &[&str]) -> Env {
         let srcs: Vec<Source> = aliases.iter().map(|a| fake_source(a)).collect();
-        let by_alias: HashMap<String, Source> = srcs
-            .iter()
-            .map(|s| (s.alias.clone(), s.clone()))
-            .collect();
+        let by_alias: HashMap<String, Source> =
+            srcs.iter().map(|s| (s.alias.clone(), s.clone())).collect();
         Env {
             cfg: Config::default(),
             cfg_warnings: Vec::new(),
@@ -2554,7 +2909,10 @@ mod tests {
 
     #[test]
     fn selection_from_session_row_target() {
-        let t = TerminalViewTarget { source: "jupiter06".into(), target: "api".into() };
+        let t = TerminalViewTarget {
+            source: "jupiter06".into(),
+            target: "api".into(),
+        };
         let sel = Selection::from_target(&t);
         assert_eq!(sel.source, "jupiter06");
         assert_eq!(sel.session, "api");
@@ -2567,11 +2925,18 @@ mod tests {
     fn selection_from_window_row_target() {
         // A window-row target `session:window` keeps the session as the PTY key and
         // carries the window index for select-window.
-        let t = TerminalViewTarget { source: "jupiter06".into(), target: "api:2".into() };
+        let t = TerminalViewTarget {
+            source: "jupiter06".into(),
+            target: "api:2".into(),
+        };
         let sel = Selection::from_target(&t);
         assert_eq!(sel.session, "api");
         assert_eq!(sel.window, Some(2));
-        assert_eq!(sel.address(), "jupiter06/api", "address is source/session, not the window");
+        assert_eq!(
+            sel.address(),
+            "jupiter06/api",
+            "address is source/session, not the window"
+        );
     }
 
     #[test]
@@ -2589,10 +2954,10 @@ mod tests {
     }
 
     #[test]
-    fn display_key_is_per_host_remote_per_session_local() {
-        // Shared tmux → one PTY per HOST (key = source); PerSession psmux → one PTY
-        // per SESSION (key = source/session). The key is shaped by the host's
-        // ServerModel, read off the Host — never the transport's remote flag.
+    fn display_key_is_per_host_for_shared_and_unstable_psmux() {
+        // Shared tmux and muxes whose display attaches cannot remain independently
+        // pinned both use one PTY per HOST. The key is shaped by mux behavior,
+        // read off the Host — never the transport's remote flag.
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::model::Transport::Ssh {
@@ -2604,12 +2969,24 @@ mod tests {
         ));
         hosts.insert(crate::model::Host::new(
             crate::model::Transport::Local { socket: None }, // host id == "local"
-            crate::model::for_binary("psmux"), // PerSession
+            crate::model::for_binary("psmux"),               // PerSession
         ));
-        let rsel = Selection { source: "jup".into(), session: "api".into(), window: None };
+        let rsel = Selection {
+            source: "jup".into(),
+            session: "api".into(),
+            window: None,
+        };
         assert_eq!(display_key(&hosts, &rsel), "jup", "shared → per-host key");
-        let lsel = Selection { source: "local".into(), session: "work".into(), window: None };
-        assert_eq!(display_key(&hosts, &lsel), "local/work", "per-session → per-session key");
+        let lsel = Selection {
+            source: "local".into(),
+            session: "work".into(),
+            window: None,
+        };
+        assert_eq!(
+            display_key(&hosts, &lsel),
+            "local",
+            "unstable per-session attaches → per-host key"
+        );
     }
 
     #[test]
@@ -2620,13 +2997,20 @@ mod tests {
             crate::model::for_binary("tmux"),
         ));
 
-        apply_scan_result(&mut hosts, "local", Some(crate::model::mux::for_kind("psmux", "tmux")));
+        apply_scan_result(
+            &mut hosts,
+            "local",
+            Some(crate::model::mux::for_kind("psmux", "tmux")),
+        );
 
         let host = hosts.get("local").unwrap();
         assert!(host.detected);
         assert_eq!(host.mux.kind(), "psmux");
         assert_eq!(host.mux.bin(), "tmux");
-        assert!(matches!(host.mux.event_source(), crate::model::EventSource::Poll { .. }));
+        assert!(matches!(
+            host.mux.event_source(),
+            crate::model::EventSource::Poll { .. }
+        ));
     }
 
     #[test]
@@ -2637,13 +3021,20 @@ mod tests {
             crate::model::for_binary("psmux"),
         ));
 
-        apply_scan_result(&mut hosts, "local", Some(crate::model::mux::for_kind("tmux", "psmux")));
+        apply_scan_result(
+            &mut hosts,
+            "local",
+            Some(crate::model::mux::for_kind("tmux", "psmux")),
+        );
 
         let host = hosts.get("local").unwrap();
         assert!(host.detected);
         assert_eq!(host.mux.kind(), "tmux");
         assert_eq!(host.mux.bin(), "psmux");
-        assert!(matches!(host.mux.event_source(), crate::model::EventSource::Control));
+        assert!(matches!(
+            host.mux.event_source(),
+            crate::model::EventSource::Control
+        ));
     }
 
     #[test]
@@ -2658,14 +3049,22 @@ mod tests {
         let mut desired = HashSet::new();
         desired.insert("local/a".to_string());
         let reap = addresses_to_reap(&existing, &desired, "local");
-        assert_eq!(reap, vec!["local/b".to_string()], "only local/b (closed, this source) is reaped");
+        assert_eq!(
+            reap,
+            vec!["local/b".to_string()],
+            "only local/b (closed, this source) is reaped"
+        );
     }
 
     #[test]
     fn addresses_to_reap_empty_desired_reaps_all_of_source() {
         let existing = vec!["local/a".to_string(), "jupiter06/x".to_string()];
         let reap = addresses_to_reap(&existing, &HashSet::new(), "local");
-        assert_eq!(reap, vec!["local/a".to_string()], "every local session gone → reap local/a only");
+        assert_eq!(
+            reap,
+            vec!["local/a".to_string()],
+            "every local session gone → reap local/a only"
+        );
     }
 
     #[tokio::test]
@@ -2679,8 +3078,9 @@ mod tests {
         let (enum_tx, _enum_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut src = fake_source("jupiter06");
         src.binary = "cmd.exe".into();
-        let by_alias: HashMap<String, Source> =
-            [("jupiter06".to_string(), src.clone())].into_iter().collect();
+        let by_alias: HashMap<String, Source> = [("jupiter06".to_string(), src.clone())]
+            .into_iter()
+            .collect();
         let env = Env {
             cfg: Config::default(),
             cfg_warnings: Vec::new(),
@@ -2702,8 +3102,20 @@ mod tests {
         host.detected = true;
         hosts.insert(host);
         let mut detecting = HashSet::new();
-        connect_all_sources(&mut mgr, &env, &hosts, &mut detecting, 80, 24, crate::ui::switcher::TREE_WIDTH, &enum_tx);
-        assert!(mgr.get("jupiter06").is_some(), "control host got a control client");
+        connect_all_sources(
+            &mut mgr,
+            &env,
+            &hosts,
+            &mut detecting,
+            80,
+            24,
+            crate::ui::switcher::TREE_WIDTH,
+            &enum_tx,
+        );
+        assert!(
+            mgr.get("jupiter06").is_some(),
+            "control host got a control client"
+        );
         mgr.teardown_all();
     }
 
@@ -2730,14 +3142,34 @@ mod tests {
 
     #[test]
     fn leading_ctrl_arrow_peels_one_and_ignores_others() {
-        assert_eq!(leading_ctrl_arrow(b"\x1b[1;5C"), Some((1, 6)), "Ctrl-Right widens");
-        assert_eq!(leading_ctrl_arrow(b"\x1b[1;5D"), Some((-1, 6)), "Ctrl-Left narrows");
+        assert_eq!(
+            leading_ctrl_arrow(b"\x1b[1;5C"),
+            Some((1, 6)),
+            "Ctrl-Right widens"
+        );
+        assert_eq!(
+            leading_ctrl_arrow(b"\x1b[1;5D"),
+            Some((-1, 6)),
+            "Ctrl-Left narrows"
+        );
         // A LEADING Ctrl-arrow is peeled even with trailing bytes (the caller loops /
         // routes the remainder) — this is what makes a coalesced autorepeat keep going.
-        assert_eq!(leading_ctrl_arrow(b"\x1b[1;5C\x1b[1;5C"), Some((1, 6)), "peels the first of a burst");
-        assert_eq!(leading_ctrl_arrow(b"\x1b[1;5Cx"), Some((1, 6)), "peels past trailing input");
+        assert_eq!(
+            leading_ctrl_arrow(b"\x1b[1;5C\x1b[1;5C"),
+            Some((1, 6)),
+            "peels the first of a burst"
+        );
+        assert_eq!(
+            leading_ctrl_arrow(b"\x1b[1;5Cx"),
+            Some((1, 6)),
+            "peels past trailing input"
+        );
         // Bare arrows and h/l are not repeat keys.
-        assert_eq!(leading_ctrl_arrow(b"\x1b[C"), None, "bare arrow is not a repeat key");
+        assert_eq!(
+            leading_ctrl_arrow(b"\x1b[C"),
+            None,
+            "bare arrow is not a repeat key"
+        );
         assert_eq!(leading_ctrl_arrow(b"l"), None, "h/l are not repeat keys");
         assert_eq!(leading_ctrl_arrow(b""), None, "empty is not a repeat key");
     }
@@ -2747,11 +3179,17 @@ mod tests {
         let mut w = 48u16;
         assert!(apply_width_delta(1, &mut w), "a real delta reports changed");
         assert_eq!(w, 49);
-        assert!(!apply_width_delta(0, &mut w), "a zero delta reports unchanged");
+        assert!(
+            !apply_width_delta(0, &mut w),
+            "a zero delta reports unchanged"
+        );
         assert_eq!(w, 49);
         // Clamp at the max: a delta that cannot move the width reports unchanged.
         let mut hi = TREE_WIDTH_MAX;
-        assert!(!apply_width_delta(10, &mut hi), "a clamped no-op reports unchanged");
+        assert!(
+            !apply_width_delta(10, &mut hi),
+            "a clamped no-op reports unchanged"
+        );
         assert_eq!(hi, TREE_WIDTH_MAX);
     }
 
@@ -2759,8 +3197,16 @@ mod tests {
     fn divider_drag_width_clamps_to_range() {
         // The dragged 1-based column becomes the 0-based tree width, clamped to range.
         assert_eq!(divider_drag_width(51), 50);
-        assert_eq!(divider_drag_width(5), TREE_WIDTH_MIN, "too far left clamps to min");
-        assert_eq!(divider_drag_width(500), TREE_WIDTH_MAX, "too far right clamps to max");
+        assert_eq!(
+            divider_drag_width(5),
+            TREE_WIDTH_MIN,
+            "too far left clamps to min"
+        );
+        assert_eq!(
+            divider_drag_width(500),
+            TREE_WIDTH_MAX,
+            "too far right clamps to max"
+        );
     }
 
     #[test]
@@ -2768,7 +3214,10 @@ mod tests {
         use std::time::Duration;
         assert_eq!(spinner_frame_at(Duration::from_millis(0)), 0);
         assert_eq!(spinner_frame_at(Duration::from_millis(SPINNER_FRAME_MS)), 1);
-        assert_eq!(spinner_frame_at(Duration::from_millis(SPINNER_FRAME_MS * 3 + 10)), 3);
+        assert_eq!(
+            spinner_frame_at(Duration::from_millis(SPINNER_FRAME_MS * 3 + 10)),
+            3
+        );
     }
 
     #[test]
@@ -2831,8 +3280,16 @@ mod tests {
     #[test]
     fn to_grid_local_zero_col_or_row_returns_none() {
         let area = ratatui::layout::Rect::new(0, 0, 80, 24);
-        assert_eq!(to_grid_local(area, 0, 5), None, "col=0 triggers checked_sub None");
-        assert_eq!(to_grid_local(area, 5, 0), None, "row=0 triggers checked_sub None");
+        assert_eq!(
+            to_grid_local(area, 0, 5),
+            None,
+            "col=0 triggers checked_sub None"
+        );
+        assert_eq!(
+            to_grid_local(area, 5, 0),
+            None,
+            "row=0 triggers checked_sub None"
+        );
     }
 
     #[test]
@@ -2852,12 +3309,23 @@ mod tests {
         let mut switcher = Switcher::from_sources(vec!["jupiter00".into()]);
         let mut connected: HashSet<String> = HashSet::new();
         assert!(
-            note_host_exited(&mut switcher, &mut connected, "jupiter00", Some("no route to host".into())),
+            note_host_exited(
+                &mut switcher,
+                &mut connected,
+                "jupiter00",
+                Some("no route to host".into())
+            ),
             "a never-connected host is marked unreachable on exit"
         );
         let out = dump_overlay(&mut switcher, None, 80, 24);
-        assert!(out.contains("unreachable"), "host reads unreachable:\n{out}");
-        assert!(out.contains("no route to host"), "shows the exit reason:\n{out}");
+        assert!(
+            out.contains("unreachable"),
+            "host reads unreachable:\n{out}"
+        );
+        assert!(
+            out.contains("no route to host"),
+            "shows the exit reason:\n{out}"
+        );
     }
 
     #[tokio::test]
@@ -2868,12 +3336,20 @@ mod tests {
         let mut connected: HashSet<String> = HashSet::new();
         // A reachable host whose mux has no server: "no sessions" → (empty), not ⚠.
         assert!(
-            !note_host_exited(&mut switcher, &mut connected, "jupiter06", Some("no sessions".into())),
+            !note_host_exited(
+                &mut switcher,
+                &mut connected,
+                "jupiter06",
+                Some("no sessions".into())
+            ),
             "an empty mux is reachable, not unreachable"
         );
         let out = dump_overlay(&mut switcher, None, 80, 24);
         assert!(out.contains("empty"), "an empty host reads (empty):\n{out}");
-        assert!(!out.contains("unreachable"), "must NOT read unreachable:\n{out}");
+        assert!(
+            !out.contains("unreachable"),
+            "must NOT read unreachable:\n{out}"
+        );
     }
 
     #[tokio::test]
@@ -2908,12 +3384,26 @@ mod tests {
         note_host_exited(&mut switcher, &mut connected, "jupiter06", None);
         // User hits refresh → the host goes back to a scanning skeleton.
         switcher.request_rescan();
-        assert!(dump_overlay(&mut switcher, None, 80, 24).contains("scanning"), "scanning after refresh");
+        assert!(
+            dump_overlay(&mut switcher, None, 80, 24).contains("scanning"),
+            "scanning after refresh"
+        );
         // The reconnect fails with "no sessions": it must resolve scanning → (empty).
-        note_host_exited(&mut switcher, &mut connected, "jupiter06", Some("no sessions".into()));
+        note_host_exited(
+            &mut switcher,
+            &mut connected,
+            "jupiter06",
+            Some("no sessions".into()),
+        );
         let out = dump_overlay(&mut switcher, None, 80, 24);
-        assert!(out.contains("empty"), "failed reconnect resolves to (empty):\n{out}");
-        assert!(!out.contains("scanning"), "scanning must clear, not load forever:\n{out}");
+        assert!(
+            out.contains("empty"),
+            "failed reconnect resolves to (empty):\n{out}"
+        );
+        assert!(
+            !out.contains("scanning"),
+            "scanning must clear, not load forever:\n{out}"
+        );
     }
 
     #[test]
@@ -2931,15 +3421,39 @@ mod tests {
         panes.insert(
             "jup/api".to_string(),
             vec![
-                WindowPanes { index: 0, name: "w0".into(), active: true, panes: vec![Pane { index: 0, active: true, command: "bash".into() }] },
-                WindowPanes { index: 1, name: "w1".into(), active: false, panes: vec![Pane { index: 0, active: true, command: "bash".into() }] },
+                WindowPanes {
+                    index: 0,
+                    name: "w0".into(),
+                    active: true,
+                    panes: vec![Pane {
+                        index: 0,
+                        active: true,
+                        command: "bash".into(),
+                    }],
+                },
+                WindowPanes {
+                    index: 1,
+                    name: "w1".into(),
+                    active: false,
+                    panes: vec![Pane {
+                        index: 0,
+                        active: true,
+                        command: "bash".into(),
+                    }],
+                },
             ],
         );
         let scan = Scan {
             groups: vec![Group {
                 source: "jup".into(),
                 err: None,
-                sessions: vec![Session { source: "jup".into(), name: "api".into(), windows: 2, attached: false, last_attached: 100 }],
+                sessions: vec![Session {
+                    source: "jup".into(),
+                    name: "api".into(),
+                    windows: 2,
+                    attached: false,
+                    last_attached: 100,
+                }],
             }],
             panes,
         };
@@ -2947,7 +3461,11 @@ mod tests {
         // session row -> (→ descend) window 0 -> (↓ sibling) window 1.
         switcher.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         switcher.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(switcher.terminal_view_target().target, "api:1", "cursor on window 1");
+        assert_eq!(
+            switcher.terminal_view_target().target,
+            "api:1",
+            "cursor on window 1"
+        );
 
         let (htx, _hrx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
         let mut mgr = HostManager::new(htx);
@@ -2961,14 +3479,31 @@ mod tests {
         let mut hosts = crate::model::Hosts::default();
         // Focus sets the cached active-window marker (window 0).
         let _ = handle_host_event(
-            HostEvent::Focus { host: "jup".into(), session: "api".into(), window: 0 },
-            &mut mgr, &mut hosts, &mut registry, &mut switcher, &env,
-            &mut connected, &mut panes_requested,
-            &worker, &mut attach_seq, 80, 24, crate::ui::switcher::TREE_WIDTH,
+            HostEvent::Focus {
+                host: "jup".into(),
+                session: "api".into(),
+                window: 0,
+            },
+            &mut mgr,
+            &mut hosts,
+            &mut registry,
+            &mut switcher,
+            &env,
+            &mut connected,
+            &mut panes_requested,
+            &worker,
+            &mut attach_seq,
+            80,
+            24,
+            crate::ui::switcher::TREE_WIDTH,
         );
         // The loop-top follow (simulated here) consumes the marker and moves the cursor.
         switcher.select_active_window();
-        assert_eq!(switcher.terminal_view_target().target, "api:0", "loop-top follow moved cursor to active window 0");
+        assert_eq!(
+            switcher.terminal_view_target().target,
+            "api:0",
+            "loop-top follow moved cursor to active window 0"
+        );
     }
 
     #[test]
@@ -2985,15 +3520,39 @@ mod tests {
         panes.insert(
             "jup/api".to_string(),
             vec![
-                WindowPanes { index: 0, name: "w0".into(), active: true, panes: vec![Pane { index: 0, active: true, command: "bash".into() }] },
-                WindowPanes { index: 1, name: "w1".into(), active: false, panes: vec![Pane { index: 0, active: true, command: "bash".into() }] },
+                WindowPanes {
+                    index: 0,
+                    name: "w0".into(),
+                    active: true,
+                    panes: vec![Pane {
+                        index: 0,
+                        active: true,
+                        command: "bash".into(),
+                    }],
+                },
+                WindowPanes {
+                    index: 1,
+                    name: "w1".into(),
+                    active: false,
+                    panes: vec![Pane {
+                        index: 0,
+                        active: true,
+                        command: "bash".into(),
+                    }],
+                },
             ],
         );
         let scan = Scan {
             groups: vec![Group {
                 source: "jup".into(),
                 err: None,
-                sessions: vec![Session { source: "jup".into(), name: "api".into(), windows: 2, attached: false, last_attached: 100 }],
+                sessions: vec![Session {
+                    source: "jup".into(),
+                    name: "api".into(),
+                    windows: 2,
+                    attached: false,
+                    last_attached: 100,
+                }],
             }],
             panes,
         };
@@ -3013,12 +3572,29 @@ mod tests {
         let mut panes_requested = HashSet::new();
         let mut hosts = crate::model::Hosts::default();
         let _ = handle_host_event(
-            HostEvent::Focus { host: "jup".into(), session: "api".into(), window: 0 },
-            &mut mgr, &mut hosts, &mut registry, &mut switcher, &env,
-            &mut connected, &mut panes_requested,
-            &worker, &mut attach_seq, 80, 24, crate::ui::switcher::TREE_WIDTH,
+            HostEvent::Focus {
+                host: "jup".into(),
+                session: "api".into(),
+                window: 0,
+            },
+            &mut mgr,
+            &mut hosts,
+            &mut registry,
+            &mut switcher,
+            &env,
+            &mut connected,
+            &mut panes_requested,
+            &worker,
+            &mut attach_seq,
+            80,
+            24,
+            crate::ui::switcher::TREE_WIDTH,
         );
-        assert_eq!(switcher.terminal_view_target().target, "api:1", "handler alone must not move the cursor");
+        assert_eq!(
+            switcher.terminal_view_target().target,
+            "api:1",
+            "handler alone must not move the cursor"
+        );
     }
 
     #[test]
@@ -3045,7 +3621,10 @@ mod tests {
         f.insert("k".to_string(), 5u64);
         assert!(attach_reply_is_current(&f, "k", 5));
         assert!(!attach_reply_is_current(&f, "k", 4), "older seq is stale");
-        assert!(!attach_reply_is_current(&f, "absent", 5), "no in-flight request → stale");
+        assert!(
+            !attach_reply_is_current(&f, "absent", 5),
+            "no in-flight request → stale"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3068,23 +3647,142 @@ mod tests {
         let (etx, _erx) = tokio::sync::mpsc::unbounded_channel::<crate::host::HostEvent>();
         let mgr = HostManager::new(etx);
 
-        let sel_a = Selection { source: "jup".into(), session: "a".into(), window: None };
-        let sel_b = Selection { source: "jup".into(), session: "b".into(), window: None };
+        let sel_a = Selection {
+            source: "jup".into(),
+            session: "a".into(),
+            window: None,
+        };
+        let sel_b = Selection {
+            source: "jup".into(),
+            session: "b".into(),
+            window: None,
+        };
 
         // First attach (session a): requests off-loop, latches display.current[jup]=a, marks in-flight.
-        assert!(select_attach(&mut registry, &mut hosts, &sel_a, &worker,
-            &mut attach_seq, 80, 24, crate::ui::switcher::TREE_WIDTH, &mgr));
+        assert!(select_attach(
+            &mut registry,
+            &mut hosts,
+            &sel_a,
+            &worker,
+            &mut attach_seq,
+            80,
+            24,
+            crate::ui::switcher::TREE_WIDTH,
+            &mgr
+        ));
         assert_eq!(hosts.get("jup").unwrap().display.shows("jup"), Some("a"));
-        assert!(hosts.get("jup").unwrap().display.in_flight.contains_key("jup"), "first attach is in flight");
+        assert!(
+            hosts
+                .get("jup")
+                .unwrap()
+                .display
+                .in_flight
+                .contains_key("jup"),
+            "first attach is in flight"
+        );
 
         // Select session b of the SAME host before a's Ready arrives: must NOT overwrite the
         // shown session (else the switch-client to b after a lands would never fire).
-        assert!(select_attach(&mut registry, &mut hosts, &sel_b, &worker,
-            &mut attach_seq, 80, 24, crate::ui::switcher::TREE_WIDTH, &mgr));
-        assert_eq!(hosts.get("jup").unwrap().display.shows("jup"), Some("a"),
-            "an in-flight attach must not latch the shown session to the new target");
+        assert!(select_attach(
+            &mut registry,
+            &mut hosts,
+            &sel_b,
+            &worker,
+            &mut attach_seq,
+            80,
+            24,
+            crate::ui::switcher::TREE_WIDTH,
+            &mgr
+        ));
+        assert_eq!(
+            hosts.get("jup").unwrap().display.shows("jup"),
+            Some("a"),
+            "an in-flight attach must not latch the shown session to the new target"
+        );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn psmux_selection_replaces_the_single_display_attachment() {
+        let mut hosts = crate::model::Hosts::default();
+        hosts.insert(crate::model::Host::new(
+            crate::model::Transport::Local { socket: None },
+            crate::model::for_binary("psmux"),
+        ));
+        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
+        let mut worker = crate::display::DisplayWorker::with_spawner(
+            ptx,
+            Box::new(|_argv, _cols, _rows, id, _events| Ok(crate::proxy::run::fake_attachment(id))),
+        );
+        let mut registry = AttachRegistry::new();
+        let mut attach_seq = 0u64;
+        let mgr = empty_manager();
+
+        let sel_test2 = Selection {
+            source: "local".into(),
+            session: "test2".into(),
+            window: None,
+        };
+        let sel_test = Selection {
+            source: "local".into(),
+            session: "test".into(),
+            window: None,
+        };
+
+        assert!(select_attach(
+            &mut registry,
+            &mut hosts,
+            &sel_test2,
+            &worker,
+            &mut attach_seq,
+            80,
+            24,
+            crate::ui::switcher::TREE_WIDTH,
+            &mgr
+        ));
+        let ready = tokio::time::timeout(std::time::Duration::from_millis(100), worker.recv())
+            .await
+            .expect("worker replies")
+            .expect("ready");
+        if let crate::display::DisplayEvent::Ready {
+            seq,
+            key,
+            attachment,
+        } = ready
+        {
+            let h = hosts.get_mut("local").unwrap();
+            assert!(attach_reply_is_current(&h.display.in_flight, &key, seq));
+            h.display.in_flight.remove(&key);
+            h.display.pending.remove(&attachment.id());
+            registry.insert(&key, attachment);
+        } else {
+            panic!("expected ready");
+        }
+        assert!(registry.contains("local"), "psmux display is keyed by host");
+        assert_eq!(
+            hosts.get("local").unwrap().display.shows("local"),
+            Some("test2")
+        );
+
+        assert!(select_attach(
+            &mut registry,
+            &mut hosts,
+            &sel_test,
+            &worker,
+            &mut attach_seq,
+            80,
+            24,
+            crate::ui::switcher::TREE_WIDTH,
+            &mgr
+        ));
+
+        let h = hosts.get("local").unwrap();
+        assert_eq!(h.display.shows("local"), Some("test"));
+        assert!(h.display.in_flight.contains_key("local"));
+        assert!(
+            !registry.contains("local"),
+            "old psmux display attach is removed before reattach"
+        );
+    }
     #[test]
     fn local_tmux_shared_second_session_lowers_to_a_local_switch_client_argv() {
         use crate::model::{LoweredSwitch, Transport};
@@ -3099,10 +3797,22 @@ mod tests {
         let LoweredSwitch::Local(argv) = got.expect("local tmux must lower to Local") else {
             panic!("expected LoweredSwitch::Local");
         };
-        assert!(argv.iter().any(|a| a == "tmux"), "argv contains tmux binary");
-        assert!(argv.iter().any(|a| a == "switch-client"), "argv contains switch-client");
-        assert!(argv.iter().any(|a| a == tty), "argv contains the display tty");
-        assert!(argv.iter().any(|a| a == "b"), "argv contains the session name");
+        assert!(
+            argv.iter().any(|a| a == "tmux"),
+            "argv contains tmux binary"
+        );
+        assert!(
+            argv.iter().any(|a| a == "switch-client"),
+            "argv contains switch-client"
+        );
+        assert!(
+            argv.iter().any(|a| a == tty),
+            "argv contains the display tty"
+        );
+        assert!(
+            argv.iter().any(|a| a == "b"),
+            "argv contains the session name"
+        );
     }
 
     fn empty_manager() -> HostManager {
@@ -3135,7 +3845,10 @@ mod tests {
         );
         // An id with no attachment is ignored (no panic, no write).
         record_display_tty(&mut hosts, &registry, 999, "/dev/pts/9".into());
-        assert_eq!(hosts.get("jup").unwrap().display_tty.0.as_deref(), Some("/dev/pts/3"));
+        assert_eq!(
+            hosts.get("jup").unwrap().display_tty.0.as_deref(),
+            Some("/dev/pts/3")
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3158,25 +3871,58 @@ mod tests {
 
         // An UNRELATED client detaches → inert.
         let rearm = handle_host_event(
-            HostEvent::ClientDetached { host: "jup".into(), client: "/dev/pts/9".into() },
-            &mut mgr, &mut hosts, &mut registry, &mut switcher, &env, &mut connected,
-            &mut panes, &worker, &mut seq, 80, 24, 30,
+            HostEvent::ClientDetached {
+                host: "jup".into(),
+                client: "/dev/pts/9".into(),
+            },
+            &mut mgr,
+            &mut hosts,
+            &mut registry,
+            &mut switcher,
+            &env,
+            &mut connected,
+            &mut panes,
+            &worker,
+            &mut seq,
+            80,
+            24,
+            30,
         );
         assert!(!rearm, "an unrelated client's detach must not rearm");
-        assert!(registry.contains("jup"), "an unrelated client's detach must not reap our attach");
+        assert!(
+            registry.contains("jup"),
+            "an unrelated client's detach must not reap our attach"
+        );
         assert_eq!(
-            hosts.get("jup").unwrap().display_tty.0.as_deref(), Some("/dev/pts/3"),
+            hosts.get("jup").unwrap().display_tty.0.as_deref(),
+            Some("/dev/pts/3"),
             "an unrelated detach must not clear our captured tty"
         );
 
         // OUR display client (the captured tty) detaches → reap + rearm.
         let rearm = handle_host_event(
-            HostEvent::ClientDetached { host: "jup".into(), client: "/dev/pts/3".into() },
-            &mut mgr, &mut hosts, &mut registry, &mut switcher, &env, &mut connected,
-            &mut panes, &worker, &mut seq, 80, 24, 30,
+            HostEvent::ClientDetached {
+                host: "jup".into(),
+                client: "/dev/pts/3".into(),
+            },
+            &mut mgr,
+            &mut hosts,
+            &mut registry,
+            &mut switcher,
+            &env,
+            &mut connected,
+            &mut panes,
+            &worker,
+            &mut seq,
+            80,
+            24,
+            30,
         );
         assert!(rearm, "our own client's detach must rearm recovery");
-        assert!(!registry.contains("jup"), "our display attach is reaped so it cannot persist dead");
+        assert!(
+            !registry.contains("jup"),
+            "our display attach is reaped so it cannot persist dead"
+        );
         assert!(
             hosts.get("jup").unwrap().display_tty.0.is_none(),
             "the dead client's tty is forgotten so no later switch-client targets it"
@@ -3185,7 +3931,10 @@ mod tests {
 
     #[test]
     fn marked_remote_attach_argv_prepends_marker_to_last_element() {
-        let src = Source { remote: true, ..fake_source("jup") };
+        let src = Source {
+            remote: true,
+            ..fake_source("jup")
+        };
         let bare = src.attach_command("mysession", None);
         let bare_last = bare.last().cloned().unwrap_or_default();
 
@@ -3213,7 +3962,10 @@ mod tests {
         let prefix = crate::model::death::display_tty_marker_prefix();
         // Remote shared warm: carries the marker so the attach shell self-reports its
         // tty — without it the host's display_tty stays empty and switch-client fails.
-        let remote_src = Source { remote: true, ..fake_source("jup") };
+        let remote_src = Source {
+            remote: true,
+            ..fake_source("jup")
+        };
         let marked = shared_display_attach_argv(true, &remote_src, "sess", None);
         assert!(
             marked.last().unwrap().starts_with(prefix),
@@ -3221,7 +3973,10 @@ mod tests {
         );
         // Local shared warm: bare attach_command. Prepending the shell snippet would
         // corrupt the session-name argument (a local argv has no shell to run it).
-        let local_src = Source { remote: false, ..fake_source("local") };
+        let local_src = Source {
+            remote: false,
+            ..fake_source("local")
+        };
         let bare = shared_display_attach_argv(false, &local_src, "sess", None);
         assert_eq!(
             bare,
@@ -3267,13 +4022,29 @@ mod tests {
         use crate::model::{FocusTarget, Operation};
         use crate::proxy::app::{App, Focus};
         use crate::session::Session;
-        use crate::ui::tree::Group;
         use crate::ui::switcher::{Scan, Switcher};
+        use crate::ui::tree::Group;
         let scan = Scan {
-            groups: vec![Group { source: "jup".into(), err: None, sessions: vec![
-                Session { source: "jup".into(), name: "api".into(), windows: 1, attached: false, last_attached: 200 },
-                Session { source: "jup".into(), name: "db".into(),  windows: 1, attached: false, last_attached: 100 },
-            ]}],
+            groups: vec![Group {
+                source: "jup".into(),
+                err: None,
+                sessions: vec![
+                    Session {
+                        source: "jup".into(),
+                        name: "api".into(),
+                        windows: 1,
+                        attached: false,
+                        last_attached: 200,
+                    },
+                    Session {
+                        source: "jup".into(),
+                        name: "db".into(),
+                        windows: 1,
+                        attached: false,
+                        last_attached: 100,
+                    },
+                ],
+            }],
             panes: Default::default(),
         };
         let mut sw = Switcher::new(scan);
@@ -3286,30 +4057,98 @@ mod tests {
         let (op_tx, _op_rx) = tokio::sync::mpsc::unbounded_channel();
 
         // Switch addr → cursor lands on db; returns (quit=false, width_changed=false).
-        assert_eq!(apply_operation(Operation::Switch { address: "jup/db".into() }, &mut sw, &mut app, &mut natural, &mut hide, &dir, &ops, &op_tx), (false, false));
+        assert_eq!(
+            apply_operation(
+                Operation::Switch {
+                    address: "jup/db".into()
+                },
+                &mut sw,
+                &mut app,
+                &mut natural,
+                &mut hide,
+                &dir,
+                &ops,
+                &op_tx
+            ),
+            (false, false)
+        );
         assert_eq!(sw.terminal_view_target().target, "db");
         // Focus(Terminal) leaves tree focus → terminal focus.
         assert!(app.is_tree_focused());
-        apply_operation(Operation::Focus(FocusTarget::Terminal), &mut sw, &mut app, &mut natural, &mut hide, &dir, &ops, &op_tx);
+        apply_operation(
+            Operation::Focus(FocusTarget::Terminal),
+            &mut sw,
+            &mut app,
+            &mut natural,
+            &mut hide,
+            &dir,
+            &ops,
+            &op_tx,
+        );
         assert_eq!(app.state, Focus::Terminal);
         // Focus(Tree) returns to tree focus.
-        apply_operation(Operation::Focus(FocusTarget::Tree), &mut sw, &mut app, &mut natural, &mut hide, &dir, &ops, &op_tx);
+        apply_operation(
+            Operation::Focus(FocusTarget::Tree),
+            &mut sw,
+            &mut app,
+            &mut natural,
+            &mut hide,
+            &dir,
+            &ops,
+            &op_tx,
+        );
         assert_eq!(app.state, Focus::Tree);
         // TreeWidth adjusts the natural width and signals width_changed; Quit signals quit.
-        assert_eq!(apply_operation(Operation::TreeWidth(1), &mut sw, &mut app, &mut natural, &mut hide, &dir, &ops, &op_tx), (false, true));
+        assert_eq!(
+            apply_operation(
+                Operation::TreeWidth(1),
+                &mut sw,
+                &mut app,
+                &mut natural,
+                &mut hide,
+                &dir,
+                &ops,
+                &op_tx
+            ),
+            (false, true)
+        );
         assert_eq!(natural, 49);
-        assert_eq!(apply_operation(Operation::Quit, &mut sw, &mut app, &mut natural, &mut hide, &dir, &ops, &op_tx), (true, false), "Quit signals quit");
+        assert_eq!(
+            apply_operation(
+                Operation::Quit,
+                &mut sw,
+                &mut app,
+                &mut natural,
+                &mut hide,
+                &dir,
+                &ops,
+                &op_tx
+            ),
+            (true, false),
+            "Quit signals quit"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn status_line_reports_focus_and_address() {
         use crate::session::Session;
-        use crate::ui::tree::Group;
         use crate::ui::switcher::{Scan, Switcher};
-        let scan = Scan { groups: vec![Group { source: "jup".into(), err: None, sessions: vec![
-            Session { source: "jup".into(), name: "api".into(), windows: 1, attached: false, last_attached: 1 },
-        ]}], panes: Default::default() };
+        use crate::ui::tree::Group;
+        let scan = Scan {
+            groups: vec![Group {
+                source: "jup".into(),
+                err: None,
+                sessions: vec![Session {
+                    source: "jup".into(),
+                    name: "api".into(),
+                    windows: 1,
+                    attached: false,
+                    last_attached: 1,
+                }],
+            }],
+            panes: Default::default(),
+        };
         let sw = Switcher::new(scan);
         assert_eq!(status_line(&sw, true), "focus=tree target=api");
         assert_eq!(status_line(&sw, false), "focus=terminal target=api");
@@ -3320,7 +4159,10 @@ mod tests {
         use crate::proxy::app::App;
         use crate::ui::switcher::{Scan, Switcher};
         // prefix is Ctrl-G (0x07) in the default config; prefix then 'q' = quit.
-        let scan = Scan { groups: vec![], panes: Default::default() };
+        let scan = Scan {
+            groups: vec![],
+            panes: Default::default(),
+        };
         let mut switcher = Switcher::new(scan);
         let mut app = App::new(); // tree focus
         let mut registry = AttachRegistry::new();
@@ -3338,9 +4180,27 @@ mod tests {
         let mut natural = 48u16;
         let mut hide = false;
         let out = handle_stdin_bytes(
-            b"\x07q", &mut mouse, &mut switcher, &mut app, &mut registry, &mut mgr, &env,
-            &mut hosts, &mut detecting, &sel, &mut term_input, &mut tree_decoder, &ops, &op_tx, &enum_tx,
-            &mut natural, &mut hide, 0x07, 80, 24, crate::ui::switcher::TREE_WIDTH,
+            b"\x07q",
+            &mut mouse,
+            &mut switcher,
+            &mut app,
+            &mut registry,
+            &mut mgr,
+            &env,
+            &mut hosts,
+            &mut detecting,
+            &sel,
+            &mut term_input,
+            &mut tree_decoder,
+            &ops,
+            &op_tx,
+            &enum_tx,
+            &mut natural,
+            &mut hide,
+            0x07,
+            80,
+            24,
+            crate::ui::switcher::TREE_WIDTH,
         );
         assert!(out.quit, "prefix+q in tree focus quits");
     }
@@ -3355,11 +4215,22 @@ mod tests {
         // confirm, tmux confirm-before style; the point is the key does not quit/focus.)
         use crate::proxy::app::{App, Focus, PaneFocus};
         use crate::session::Session;
-        use crate::ui::tree::Group;
         use crate::ui::switcher::{Scan, Switcher};
-        let scan = Scan { groups: vec![Group { source: "jup".into(), err: None, sessions: vec![
-            Session { source: "jup".into(), name: "api".into(), windows: 1, attached: false, last_attached: 1 },
-        ]}], panes: Default::default() };
+        use crate::ui::tree::Group;
+        let scan = Scan {
+            groups: vec![Group {
+                source: "jup".into(),
+                err: None,
+                sessions: vec![Session {
+                    source: "jup".into(),
+                    name: "api".into(),
+                    windows: 1,
+                    attached: false,
+                    last_attached: 1,
+                }],
+            }],
+            panes: Default::default(),
+        };
         let mut switcher = Switcher::new(scan);
         let mut app = App::new(); // tree focus
         let mut registry = AttachRegistry::new();
@@ -3375,31 +4246,83 @@ mod tests {
         let mut detecting = HashSet::new();
         let mut natural = 48u16;
         let mut hide = false;
-        macro_rules! feed { ($bytes:expr) => {
-            handle_stdin_bytes(
-                $bytes, &mut mouse, &mut switcher, &mut app, &mut registry, &mut mgr, &env,
-                &mut hosts, &mut detecting, &Selection::default(), &mut term_input, &mut tree_decoder, &ops,
-                &op_tx, &enum_tx, &mut natural, &mut hide, 0x07, 80, 24, crate::ui::switcher::TREE_WIDTH,
-            )
-        } }
+        macro_rules! feed {
+            ($bytes:expr) => {
+                handle_stdin_bytes(
+                    $bytes,
+                    &mut mouse,
+                    &mut switcher,
+                    &mut app,
+                    &mut registry,
+                    &mut mgr,
+                    &env,
+                    &mut hosts,
+                    &mut detecting,
+                    &Selection::default(),
+                    &mut term_input,
+                    &mut tree_decoder,
+                    &ops,
+                    &op_tx,
+                    &enum_tx,
+                    &mut natural,
+                    &mut hide,
+                    0x07,
+                    80,
+                    24,
+                    crate::ui::switcher::TREE_WIDTH,
+                )
+            };
+        }
         // `x` on the session row arms the y/n confirm (a modal popup, not an inline input).
         feed!(b"x");
-        assert!(switcher.is_modal_popup_open(), "x armed the kill-confirm popup");
-        assert!(!switcher.is_inputting(), "a kill-confirm is NOT an inline input");
+        assert!(
+            switcher.is_modal_popup_open(),
+            "x armed the kill-confirm popup"
+        );
+        assert!(
+            !switcher.is_inputting(),
+            "a kill-confirm is NOT an inline input"
+        );
         // The loop-top reconciler makes Focus a modal carrying the prior pane.
         app.sync_modal(switcher.modal_kind());
-        assert_eq!(app.state, Focus::Popup { prior: PaneFocus::Tree });
+        assert_eq!(
+            app.state,
+            Focus::Popup {
+                prior: PaneFocus::Tree
+            }
+        );
         // prefix q with the confirm armed: routed to the switcher, NOT a quit.
         let out = feed!(b"\x07q");
-        assert!(!out.quit, "prefix q is owned by the kill-confirm, does not quit");
-        assert_eq!(app.state, Focus::Popup { prior: PaneFocus::Tree }, "pane focus unchanged");
+        assert!(
+            !out.quit,
+            "prefix q is owned by the kill-confirm, does not quit"
+        );
+        assert_eq!(
+            app.state,
+            Focus::Popup {
+                prior: PaneFocus::Tree
+            },
+            "pane focus unchanged"
+        );
         // Re-arm and feed Enter: routed to the switcher, NOT a mux-focus.
         feed!(b"x");
         app.sync_modal(switcher.modal_kind());
-        assert_eq!(app.state, Focus::Popup { prior: PaneFocus::Tree }, "confirm re-armed");
+        assert_eq!(
+            app.state,
+            Focus::Popup {
+                prior: PaneFocus::Tree
+            },
+            "confirm re-armed"
+        );
         let out = feed!(b"\r");
         assert!(!out.quit);
-        assert_eq!(app.state, Focus::Popup { prior: PaneFocus::Tree }, "Enter did not focus the mux");
+        assert_eq!(
+            app.state,
+            Focus::Popup {
+                prior: PaneFocus::Tree
+            },
+            "Enter did not focus the mux"
+        );
     }
 
     #[test]
@@ -3411,18 +4334,35 @@ mod tests {
         use ratatui::{backend::TestBackend, Terminal};
 
         fn run_case(bytes: &[u8]) -> (StdinOutcome, Focus, Focus, usize) {
-            let scan = Scan { groups: vec![Group { source: "local".into(), err: None, sessions: vec![
-                Session { source: "local".into(), name: "api".into(), windows: 1, attached: false, last_attached: 1 },
-            ]}], panes: Default::default() };
+            let scan = Scan {
+                groups: vec![Group {
+                    source: "local".into(),
+                    err: None,
+                    sessions: vec![Session {
+                        source: "local".into(),
+                        name: "api".into(),
+                        windows: 1,
+                        attached: false,
+                        last_attached: 1,
+                    }],
+                }],
+                panes: Default::default(),
+            };
             let mut switcher = Switcher::new(scan);
             let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-            term.draw(|f| switcher.render(f, None, false, crate::ui::switcher::TREE_WIDTH)).unwrap();
+            term.draw(|f| switcher.render(f, None, false, crate::ui::switcher::TREE_WIDTH))
+                .unwrap();
             let opened = (0..10).any(|row| switcher.menu_open(1, row));
             assert!(opened, "menu opens over a rendered tree row");
 
             let mut app = App::new();
             app.sync_modal(switcher.modal_kind());
-            assert_eq!(app.state, Focus::Menu { prior: PaneFocus::Tree });
+            assert_eq!(
+                app.state,
+                Focus::Menu {
+                    prior: PaneFocus::Tree
+                }
+            );
 
             let mut registry = AttachRegistry::new();
             let (att, input_log) = crate::proxy::run::fake_attachment_with_input_log(1);
@@ -3433,7 +4373,11 @@ mod tests {
                 crate::model::Transport::Local { socket: None },
                 crate::model::for_binary("psmux"),
             ));
-            let selection = Selection { source: "local".into(), session: "api".into(), window: None };
+            let selection = Selection {
+                source: "local".into(),
+                session: "api".into(),
+                window: None,
+            };
             let mut mouse = MouseState::default();
             let mut term_input = crate::proxy::input::TermInput::new(0x07);
             let mut tree_decoder = crate::proxy::decode::KeyDecoder::new();
@@ -3446,9 +4390,26 @@ mod tests {
             let mut hide = false;
 
             let out = handle_stdin_bytes(
-                bytes, &mut mouse, &mut switcher, &mut app, &mut registry, &mut mgr, &env,
-                &mut hosts, &mut detecting, &selection, &mut term_input, &mut tree_decoder, &ops, &op_tx,
-                &enum_tx, &mut natural, &mut hide, 0x07, 80, 24,
+                bytes,
+                &mut mouse,
+                &mut switcher,
+                &mut app,
+                &mut registry,
+                &mut mgr,
+                &env,
+                &mut hosts,
+                &mut detecting,
+                &selection,
+                &mut term_input,
+                &mut tree_decoder,
+                &ops,
+                &op_tx,
+                &enum_tx,
+                &mut natural,
+                &mut hide,
+                0x07,
+                80,
+                24,
                 crate::ui::switcher::TREE_WIDTH,
             );
             let during = app.state;
@@ -3458,12 +4419,28 @@ mod tests {
             (out, during, restored, writes)
         }
 
-        for (bytes, label) in [(b"\r".as_slice(), "Enter"), (b"\x07\t".as_slice(), "prefix Tab")] {
+        for (bytes, label) in [
+            (b"\r".as_slice(), "Enter"),
+            (b"\x07\t".as_slice(), "prefix Tab"),
+        ] {
             let (out, during, restored, writes) = run_case(bytes);
             assert!(!out.quit, "{label} over a menu does not quit");
-            assert!(!out.focus_terminal, "{label} over a menu does not request mux focus");
-            assert_eq!(during, Focus::Menu { prior: PaneFocus::Tree }, "{label} preserves the menu restore pane");
-            assert_eq!(restored, Focus::Tree, "{label} closes the menu back to the prior tree pane");
+            assert!(
+                !out.focus_terminal,
+                "{label} over a menu does not request mux focus"
+            );
+            assert_eq!(
+                during,
+                Focus::Menu {
+                    prior: PaneFocus::Tree
+                },
+                "{label} preserves the menu restore pane"
+            );
+            assert_eq!(
+                restored,
+                Focus::Tree,
+                "{label} closes the menu back to the prior tree pane"
+            );
             assert_eq!(writes, 0, "{label} over a menu is not forwarded to the PTY");
         }
     }
@@ -3474,7 +4451,10 @@ mod tests {
         use crate::ui::switcher::{Scan, Switcher};
         // A left-press exactly on the divider column sets dragging_divider, as the
         // inline gate did (is_left_press && tree_width > 0 && col0 == tree_width).
-        let scan = Scan { groups: vec![], panes: Default::default() };
+        let scan = Scan {
+            groups: vec![],
+            panes: Default::default(),
+        };
         let mut switcher = Switcher::new(scan);
         let mut app = App::new();
         let mut registry = AttachRegistry::new();
@@ -3489,8 +4469,13 @@ mod tests {
         let mut natural = tree_width;
         // 0-based col0 = ev.col - 1 must equal tree_width to grab the divider rule.
         let divider_col = tree_width + 1; // 1-based SGR column of the divider
-        // cb=0 → left button, press, no wheel/motion → is_left_press is true.
-        let ev = crate::proxy::mouse::MouseEvent { cb: 0, col: divider_col, row: 3, pressed: true };
+                                          // cb=0 → left button, press, no wheel/motion → is_left_press is true.
+        let ev = crate::proxy::mouse::MouseEvent {
+            cb: 0,
+            col: divider_col,
+            row: 3,
+            pressed: true,
+        };
         let (vw, vh) = terminal_view_size(80, 24, tree_width);
         let term_area = ratatui::layout::Rect::new(tree_width + 1, 0, vw, vh);
         let mut non_mouse: Vec<u8> = Vec::new();
@@ -3498,11 +4483,32 @@ mod tests {
         let mut wheel = false;
         let mut detecting = HashSet::new();
         handle_mouse_event(
-            &ev, &mut st, &mut switcher, &mut app, &mut registry, &mut mgr, &env_for_mouse_test(),
-            &hosts, &mut detecting, &sel, &ops, &op_tx, &enum_tx, &mut non_mouse, &mut focus_toggle, &mut wheel,
-            term_area, &mut natural, 80, 24, tree_width,
+            &ev,
+            &mut st,
+            &mut switcher,
+            &mut app,
+            &mut registry,
+            &mut mgr,
+            &env_for_mouse_test(),
+            &hosts,
+            &mut detecting,
+            &sel,
+            &ops,
+            &op_tx,
+            &enum_tx,
+            &mut non_mouse,
+            &mut focus_toggle,
+            &mut wheel,
+            term_area,
+            &mut natural,
+            80,
+            24,
+            tree_width,
         );
-        assert!(st.dragging_divider, "left-press on the divider column grabs it");
+        assert!(
+            st.dragging_divider,
+            "left-press on the divider column grabs it"
+        );
     }
 
     // A throwaway Env for the mouse-event test (its handlers never touch the env on

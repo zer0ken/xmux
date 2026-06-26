@@ -209,7 +209,11 @@ mod tests {
         for seq in [&b"\x1b[D"[..], &b"\x1b"[..]] {
             let mut t = m();
             t.feed(&[0x07]);
-            assert_eq!(t.feed(seq), vec![Action::FocusTree(vec![])], "seq {seq:?} → tree");
+            assert_eq!(
+                t.feed(seq),
+                vec![Action::FocusTree(vec![])],
+                "seq {seq:?} → tree"
+            );
         }
     }
 
@@ -219,10 +223,17 @@ mod tests {
         // and any trailing bytes resume as forwarded input.
         let mut t = m();
         t.feed(&[0x07]);
-        assert!(t.feed(b"\x1b[C").is_empty(), "prefix → produces no action (stays in mux)");
+        assert!(
+            t.feed(b"\x1b[C").is_empty(),
+            "prefix → produces no action (stays in mux)"
+        );
         let mut t2 = m();
         t2.feed(&[0x07]);
-        assert_eq!(fwd(&t2.feed(b"\x1b[Cabc")), b"abc", "trailing input after prefix → forwards");
+        assert_eq!(
+            fwd(&t2.feed(b"\x1b[Cabc")),
+            b"abc",
+            "trailing input after prefix → forwards"
+        );
     }
 
     #[test]
@@ -233,7 +244,10 @@ mod tests {
         assert_eq!(t.feed(b"\x07\x1b[D"), vec![Action::FocusTree(vec![])]);
         // With trailing input after the arrow, only that trailing input is replayed.
         let mut t2 = m();
-        assert_eq!(t2.feed(b"\x07\x1b[Dabc"), vec![Action::FocusTree(b"abc".to_vec())]);
+        assert_eq!(
+            t2.feed(b"\x07\x1b[Dabc"),
+            vec![Action::FocusTree(b"abc".to_vec())]
+        );
     }
 
     #[test]
@@ -241,7 +255,10 @@ mod tests {
         // `C-g Tab abc` in one read: focus leaves to the tree carrying `abc` (no
         // byte loss — the trailing input belongs to the new focus).
         let mut t = m();
-        assert_eq!(t.feed(b"\x07\tabc"), vec![Action::FocusTree(b"abc".to_vec())]);
+        assert_eq!(
+            t.feed(b"\x07\tabc"),
+            vec![Action::FocusTree(b"abc".to_vec())]
+        );
     }
 
     #[test]
@@ -282,10 +299,18 @@ mod tests {
     fn prefix_then_ctrl_arrow_resizes() {
         let mut t = m();
         t.feed(&[0x07]);
-        assert_eq!(t.feed(b"\x1b[1;5C"), vec![Action::Width(1)], "Ctrl-Right widens");
+        assert_eq!(
+            t.feed(b"\x1b[1;5C"),
+            vec![Action::Width(1)],
+            "Ctrl-Right widens"
+        );
         let mut t2 = m();
         t2.feed(&[0x07]);
-        assert_eq!(t2.feed(b"\x1b[1;5D"), vec![Action::Width(-1)], "Ctrl-Left narrows");
+        assert_eq!(
+            t2.feed(b"\x1b[1;5D"),
+            vec![Action::Width(-1)],
+            "Ctrl-Left narrows"
+        );
     }
 
     #[test]
@@ -320,7 +345,10 @@ mod tests {
         let mut t = m();
         t.feed(&[0x07]);
         let out = t.feed(b"x");
-        assert!(out.is_empty(), "unrecognised follow-up is swallowed: {out:?}");
+        assert!(
+            out.is_empty(),
+            "unrecognised follow-up is swallowed: {out:?}"
+        );
     }
 
     #[test]
@@ -342,7 +370,10 @@ mod tests {
     fn bytes_before_prefix_forward_then_intercept() {
         let mut t = m();
         let out = t.feed(b"hi\x07\t");
-        assert_eq!(out, vec![Action::Forward(b"hi".to_vec()), Action::FocusTree(vec![])]);
+        assert_eq!(
+            out,
+            vec![Action::Forward(b"hi".to_vec()), Action::FocusTree(vec![])]
+        );
     }
 
     #[test]

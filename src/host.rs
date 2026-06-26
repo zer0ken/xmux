@@ -38,11 +38,17 @@ impl Default for HostInventory {
 pub enum HostCmd {
     /// A ready command line (newline-terminated).
     Send(String),
-    Resize { cols: u16, rows: u16 },
+    Resize {
+        cols: u16,
+        rows: u16,
+    },
     /// A command line whose `%begin` block carries a meaningful reply. The writer
     /// pushes `reply` onto the FIFO in lockstep with writing `line`, so the
     /// correlation cannot race the writer (pushing from the calling thread could).
-    Query { line: String, reply: PendingReply },
+    Query {
+        line: String,
+        reply: PendingReply,
+    },
     Shutdown,
 }
 
@@ -65,9 +71,16 @@ pub enum HostEvent {
     /// cockpit moves the sidebar cursor to window `window` of `session` (a no-op
     /// unless the cursor is on a window row of that session — see
     /// [`crate::ui::switcher::Switcher::select_window`]).
-    Focus { host: String, session: String, window: i64 },
+    Focus {
+        host: String,
+        session: String,
+        window: i64,
+    },
     /// `%exit` / EOF — reap.
-    Exited { host: String, reason: Option<String> },
+    Exited {
+        host: String,
+        reason: Option<String>,
+    },
     /// `%client-detached <client>` — some client of this host detached. The reader
     /// does not know which client is xmux's display attach (that tty lives on the
     /// supervisor's `Host.display_tty`), so it forwards the client tty; the supervisor
@@ -87,10 +100,14 @@ pub type InFlight = Arc<Mutex<VecDeque<PendingReply>>>;
 /// What a resolved `%begin…%end` block means to the reader.
 pub enum PendingReply {
     ListSessions,
-    ListPanes { address: String },
+    ListPanes {
+        address: String,
+    },
     /// An active-window probe for `session`: its block body is the active window
     /// index, resolved into a [`HostEvent::Focus`].
-    ActiveWindow { session: String },
+    ActiveWindow {
+        session: String,
+    },
     Ignore,
 }
 
@@ -126,7 +143,10 @@ pub fn run_reader<E: FnMut(HostEvent)>(
         // becomes empty (Body, ignored), a glued line classifies its remainder as
         // `%begin`. Correlation does NOT depend on it: blocks are matched by the
         // `%begin` flags bit (see below), not by a fragile startup-banner heuristic.
-        let line = line.strip_prefix("\x1bP1000p").map(str::to_string).unwrap_or(line);
+        let line = line
+            .strip_prefix("\x1bP1000p")
+            .map(str::to_string)
+            .unwrap_or(line);
         // Inside a block, only the matching %end/%error closes it; everything
         // else is body (notifications never appear inside a block).
         if let Some((num, _, _)) = block.as_ref() {
@@ -185,7 +205,10 @@ pub fn run_reader<E: FnMut(HostEvent)>(
         }
     }
     // Iterator ended = child stdout EOF.
-    emit(HostEvent::Exited { host: host.to_string(), reason: last_error });
+    emit(HostEvent::Exited {
+        host: host.to_string(),
+        reason: last_error,
+    });
 }
 
 /// Resolves a closed `%begin…%end` block by applying its body to the inventory
@@ -203,14 +226,20 @@ fn resolve_block<E: FnMut(HostEvent)>(
             let sessions = parse_sessions(host, &out);
             state.inventory.lock().unwrap().sessions = sessions;
             clear_connecting(state);
-            emit(HostEvent::Connected { host: host.to_string() });
-            emit(HostEvent::Inventory { host: host.to_string() });
+            emit(HostEvent::Connected {
+                host: host.to_string(),
+            });
+            emit(HostEvent::Inventory {
+                host: host.to_string(),
+            });
         }
         PendingReply::ListPanes { address } => {
             let out = body.join("\n");
             let panes = parse_panes(&out);
             state.inventory.lock().unwrap().panes.insert(address, panes);
-            emit(HostEvent::Inventory { host: host.to_string() });
+            emit(HostEvent::Inventory {
+                host: host.to_string(),
+            });
         }
         PendingReply::ActiveWindow { session } => {
             // `display-message -p '#{window_index}'` prints a single line: the active
@@ -245,7 +274,9 @@ fn dispatch_notif<E: FnMut(HostEvent)>(
             // (list-sessions + re-list every session's panes), so the sidebar's
             // session list AND per-session active-window markers resync (#5). The
             // notification carries only an id, so a blanket refetch is simplest.
-            emit(HostEvent::Changed { host: host.to_string() });
+            emit(HostEvent::Changed {
+                host: host.to_string(),
+            });
         }
         Notif::SessionWindowChanged { .. } => {
             // A session's ACTIVE WINDOW switched (e.g. another client did prefix-n).
@@ -253,7 +284,9 @@ fn dispatch_notif<E: FnMut(HostEvent)>(
             // probe the displayed session's new active window so the sidebar cursor
             // follows it (#2). The notification carries only ids ($session @window),
             // so the cursor target is resolved by the cockpit's probe, not here.
-            emit(HostEvent::WindowChanged { host: host.to_string() });
+            emit(HostEvent::WindowChanged {
+                host: host.to_string(),
+            });
         }
         // `%session-changed` (the metadata client's own auto-attached session) and
         // `%window-pane-changed` (a pane became active) do not affect the sidebar
@@ -307,7 +340,9 @@ pub fn run_writer<W: Write>(
             }
             HostCmd::Resize { cols, rows } => {
                 in_flight.lock().unwrap().push_back(PendingReply::Ignore);
-                if w.write_all(refresh_size_line(cols, rows).as_bytes()).is_err() {
+                if w.write_all(refresh_size_line(cols, rows).as_bytes())
+                    .is_err()
+                {
                     return;
                 }
             }
@@ -358,7 +393,10 @@ impl HostClient {
         events: tokio::sync::mpsc::UnboundedSender<HostEvent>,
         extra_env: &[(&str, &str)],
     ) -> anyhow::Result<HostClient> {
-        anyhow::ensure!(!argv.is_empty(), "HostClient::spawn: argv must not be empty");
+        anyhow::ensure!(
+            !argv.is_empty(),
+            "HostClient::spawn: argv must not be empty"
+        );
         let host = host.into();
 
         let mut cmd = Command::new(&argv[0]);
@@ -416,18 +454,10 @@ impl HostClient {
         let reader_in_flight = Arc::clone(&in_flight);
         let reader_events = events.clone();
         let reader = std::thread::spawn(move || {
-            let lines = BufReader::new(stdout)
-                .lines()
-                .map_while(Result::ok);
-            run_reader(
-                &reader_host,
-                lines,
-                &state,
-                &reader_in_flight,
-                |e| {
-                    let _ = reader_events.send(e);
-                },
-            );
+            let lines = BufReader::new(stdout).lines().map_while(Result::ok);
+            run_reader(&reader_host, lines, &state, &reader_in_flight, |e| {
+                let _ = reader_events.send(e);
+            });
         });
 
         // Writer thread: owns the child stdin, drains the command channel.
@@ -593,7 +623,14 @@ impl HostManager {
         if self.clients.contains_key(host) {
             return Ok(false);
         }
-        let client = HostClient::spawn(host, &src.control_argv(), cols, rows, self.events.clone(), &[])?;
+        let client = HostClient::spawn(
+            host,
+            &src.control_argv(),
+            cols,
+            rows,
+            self.events.clone(),
+            &[],
+        )?;
         self.clients.insert(host.to_string(), client);
         Ok(true)
     }
@@ -631,7 +668,10 @@ impl HostManager {
     /// so its stdout EOFs at once and `teardown`'s joins return. Shared by the
     /// `host` and `cockpit` test modules.
     pub(crate) fn insert_fake(&mut self, host: &str) {
-        let argv: Vec<String> = ["cmd.exe", "/c", "rem"].iter().map(|s| s.to_string()).collect();
+        let argv: Vec<String> = ["cmd.exe", "/c", "rem"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let client =
             HostClient::spawn(host, &argv, 80, 24, self.events.clone(), &[]).expect("spawn");
         self.clients.insert(host.to_string(), client);
@@ -651,7 +691,9 @@ mod tests {
 
     #[test]
     fn host_event_carries_host() {
-        let e = HostEvent::Changed { host: "jupiter06".into() };
+        let e = HostEvent::Changed {
+            host: "jupiter06".into(),
+        };
         match e {
             HostEvent::Changed { host } => assert_eq!(host, "jupiter06"),
             _ => panic!("variant"),
@@ -671,7 +713,10 @@ mod tests {
     fn reader_resolves_list_sessions_block_into_inventory() {
         let state = test_state(80, 24);
         let in_flight: InFlight = Default::default();
-        in_flight.lock().unwrap().push_back(PendingReply::ListSessions);
+        in_flight
+            .lock()
+            .unwrap()
+            .push_back(PendingReply::ListSessions);
         let mut events = Vec::new();
         let lines = vec![
             "%begin 1 5 1".to_string(),
@@ -684,7 +729,9 @@ mod tests {
         assert_eq!(inv.sessions.len(), 1);
         assert_eq!(inv.sessions[0].name, "api");
         assert_eq!(inv.sessions[0].source, "jupiter06");
-        assert!(events.iter().any(|e| matches!(e, HostEvent::Connected { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, HostEvent::Connected { .. })));
         assert!(!state.connecting.load(std::sync::atomic::Ordering::Acquire));
     }
 
@@ -708,7 +755,8 @@ mod tests {
         };
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
         let mut mgr = HostManager::new(tx);
-        mgr.ensure("jupiter06", &src, 80, 24).expect("spawn control client");
+        mgr.ensure("jupiter06", &src, 80, 24)
+            .expect("spawn control client");
         let deadline = Instant::now() + Duration::from_secs(20);
         let mut connected = false;
         while !connected && Instant::now() < deadline {
@@ -718,10 +766,26 @@ mod tests {
                 _ => break,
             }
         }
-        assert!(connected, "control client must connect to jupiter06 + resolve list-sessions");
-        let sessions = mgr.get("jupiter06").unwrap().inventory.lock().unwrap().sessions.clone();
-        eprintln!("jupiter06 sessions: {:?}", sessions.iter().map(|s| &s.name).collect::<Vec<_>>());
-        assert!(!sessions.is_empty(), "jupiter06 inventory must list its real sessions");
+        assert!(
+            connected,
+            "control client must connect to jupiter06 + resolve list-sessions"
+        );
+        let sessions = mgr
+            .get("jupiter06")
+            .unwrap()
+            .inventory
+            .lock()
+            .unwrap()
+            .sessions
+            .clone();
+        eprintln!(
+            "jupiter06 sessions: {:?}",
+            sessions.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        assert!(
+            !sessions.is_empty(),
+            "jupiter06 inventory must list its real sessions"
+        );
         mgr.teardown_all();
     }
 
@@ -740,9 +804,17 @@ mod tests {
             let state = test_state(80, 24);
             let in_flight: InFlight = Default::default();
             let mut events = Vec::new();
-            run_reader("jupiter06", vec![line.to_string()].into_iter(), &state, &in_flight, |e| events.push(e));
+            run_reader(
+                "jupiter06",
+                vec![line.to_string()].into_iter(),
+                &state,
+                &in_flight,
+                |e| events.push(e),
+            );
             assert!(
-                events.iter().any(|e| matches!(e, HostEvent::Changed { host } if host == "jupiter06")),
+                events
+                    .iter()
+                    .any(|e| matches!(e, HostEvent::Changed { host } if host == "jupiter06")),
                 "{line:?} must emit Changed"
             );
         }
@@ -764,9 +836,17 @@ mod tests {
             let state = test_state(80, 24);
             let in_flight: InFlight = Default::default();
             let mut events = Vec::new();
-            run_reader("jupiter06", vec![line.to_string()].into_iter(), &state, &in_flight, |e| events.push(e));
+            run_reader(
+                "jupiter06",
+                vec![line.to_string()].into_iter(),
+                &state,
+                &in_flight,
+                |e| events.push(e),
+            );
             assert!(
-                events.iter().any(|e| matches!(e, HostEvent::Changed { host } if host == "jupiter06")),
+                events
+                    .iter()
+                    .any(|e| matches!(e, HostEvent::Changed { host } if host == "jupiter06")),
                 "{line:?} must emit Changed"
             );
         }
@@ -790,11 +870,15 @@ mod tests {
             |e| events.push(e),
         );
         assert!(
-            events.iter().any(|e| matches!(e, HostEvent::WindowChanged { host } if host == "jupiter06")),
+            events
+                .iter()
+                .any(|e| matches!(e, HostEvent::WindowChanged { host } if host == "jupiter06")),
             "%session-window-changed must emit WindowChanged"
         );
         assert!(
-            !events.iter().any(|e| matches!(e, HostEvent::Changed { .. })),
+            !events
+                .iter()
+                .any(|e| matches!(e, HostEvent::Changed { .. })),
             "%session-window-changed must not collapse to a blanket Changed"
         );
     }
@@ -810,7 +894,9 @@ mod tests {
         in_flight
             .lock()
             .unwrap()
-            .push_back(PendingReply::ActiveWindow { session: "api".into() });
+            .push_back(PendingReply::ActiveWindow {
+                session: "api".into(),
+            });
         let mut events = Vec::new();
         let lines = vec![
             "%begin 1 5 1".to_string(),
@@ -854,9 +940,17 @@ mod tests {
             let state = test_state(80, 24);
             let in_flight: InFlight = Default::default();
             let mut events = Vec::new();
-            run_reader("jupiter06", vec![line.to_string()].into_iter(), &state, &in_flight, |e| events.push(e));
+            run_reader(
+                "jupiter06",
+                vec![line.to_string()].into_iter(),
+                &state,
+                &in_flight,
+                |e| events.push(e),
+            );
             assert!(
-                !events.iter().any(|e| matches!(e, HostEvent::Changed { .. })),
+                !events
+                    .iter()
+                    .any(|e| matches!(e, HostEvent::Changed { .. })),
                 "{line:?} must not trigger a refetch"
             );
         }
@@ -867,7 +961,9 @@ mod tests {
         let mut events = Vec::new();
         dispatch_notif(
             "jupiter06",
-            Notif::ClientDetached { client: "/dev/pts/3" },
+            Notif::ClientDetached {
+                client: "/dev/pts/3",
+            },
             &Some("ignored".into()),
             &mut |e| events.push(e),
         );
@@ -897,7 +993,10 @@ mod tests {
         {
             let state = test_state(80, 24);
             let in_flight: InFlight = Default::default();
-            in_flight.lock().unwrap().push_back(PendingReply::ListSessions);
+            in_flight
+                .lock()
+                .unwrap()
+                .push_back(PendingReply::ListSessions);
             let lines = vec![
                 "\x1bP1000p".to_string(),
                 "%begin 1 1 0".to_string(),
@@ -909,14 +1008,21 @@ mod tests {
             .into_iter();
             run_reader("jupiter06", lines, &state, &in_flight, |_| {});
             let inv = state.inventory.lock().unwrap();
-            assert_eq!(inv.sessions.len(), 1, "flags=0 banner stole the ListSessions entry");
+            assert_eq!(
+                inv.sessions.len(),
+                1,
+                "flags=0 banner stole the ListSessions entry"
+            );
             assert_eq!(inv.sessions[0].name, "api");
         }
         // GLUED framing: the DCS prefixed onto the flags=0 banner `%begin` line.
         {
             let state = test_state(80, 24);
             let in_flight: InFlight = Default::default();
-            in_flight.lock().unwrap().push_back(PendingReply::ListSessions);
+            in_flight
+                .lock()
+                .unwrap()
+                .push_back(PendingReply::ListSessions);
             let lines = vec![
                 "\x1bP1000p%begin 1 1 0".to_string(),
                 "%end 1 1 0".to_string(),
@@ -927,7 +1033,11 @@ mod tests {
             .into_iter();
             run_reader("jupiter06", lines, &state, &in_flight, |_| {});
             let inv = state.inventory.lock().unwrap();
-            assert_eq!(inv.sessions.len(), 1, "glued flags=0 banner stole the ListSessions entry");
+            assert_eq!(
+                inv.sessions.len(),
+                1,
+                "glued flags=0 banner stole the ListSessions entry"
+            );
             assert_eq!(inv.sessions[0].name, "api");
         }
     }
@@ -943,7 +1053,10 @@ mod tests {
         // reply, desynced the FIFO, and resolved list-sessions empty.
         let state = test_state(80, 24);
         let in_flight: InFlight = Default::default();
-        in_flight.lock().unwrap().push_back(PendingReply::ListSessions);
+        in_flight
+            .lock()
+            .unwrap()
+            .push_back(PendingReply::ListSessions);
         let lines = vec![
             "\x1bP1000p%begin 1 10 1".to_string(), // DCS glued to the first reply
             "2\t1\t1700000000\tapi".to_string(),
@@ -954,7 +1067,11 @@ mod tests {
         .into_iter();
         run_reader("jupiter00", lines, &state, &in_flight, |_| {});
         let inv = state.inventory.lock().unwrap();
-        assert_eq!(inv.sessions.len(), 1, "list-sessions resolved against the flags=1 block");
+        assert_eq!(
+            inv.sessions.len(),
+            1,
+            "list-sessions resolved against the flags=1 block"
+        );
         assert_eq!(inv.sessions[0].name, "api");
     }
 
@@ -964,7 +1081,10 @@ mod tests {
         // command first) must not consume our queued correlator.
         let state = test_state(80, 24);
         let in_flight: InFlight = Default::default();
-        in_flight.lock().unwrap().push_back(PendingReply::ListSessions);
+        in_flight
+            .lock()
+            .unwrap()
+            .push_back(PendingReply::ListSessions);
         let lines = vec![
             "%begin 1 5 0".to_string(), // spontaneous, flags=0
             "noise".to_string(),
@@ -1028,7 +1148,8 @@ mod tests {
         // `%begin` blocks the reader pops.
         let (tx, rx) = std::sync::mpsc::channel::<HostCmd>();
         let in_flight: InFlight = Default::default();
-        tx.send(HostCmd::Send("refresh-client -f no-output\n".to_string())).unwrap();
+        tx.send(HostCmd::Send("refresh-client -f no-output\n".to_string()))
+            .unwrap();
         tx.send(HostCmd::Resize { cols: 80, rows: 24 }).unwrap();
         tx.send(HostCmd::Shutdown).unwrap();
         drop(tx);
@@ -1051,7 +1172,9 @@ mod tests {
         in_flight
             .lock()
             .unwrap()
-            .push_back(PendingReply::ListPanes { address: "jupiter00/if".into() });
+            .push_back(PendingReply::ListPanes {
+                address: "jupiter00/if".into(),
+            });
         let mut events = Vec::new();
         // PANE_FORMAT: window_index, window_active, pane_index, pane_active,
         // pane_current_command, window_name.
@@ -1068,7 +1191,9 @@ mod tests {
             .get("jupiter00/if")
             .expect("panes recorded under the session address");
         assert_eq!(panes.len(), 1, "one window parsed");
-        assert!(events.iter().any(|e| matches!(e, HostEvent::Inventory { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, HostEvent::Inventory { .. })));
     }
 
     #[test]
@@ -1077,7 +1202,9 @@ mod tests {
         let in_flight: InFlight = Default::default();
         tx.send(HostCmd::Query {
             line: format!("list-panes -s -t if -F '{}'\n", crate::mux::PANE_FORMAT),
-            reply: PendingReply::ListPanes { address: "jupiter00/if".into() },
+            reply: PendingReply::ListPanes {
+                address: "jupiter00/if".into(),
+            },
         })
         .unwrap();
         tx.send(HostCmd::Shutdown).unwrap();
@@ -1085,7 +1212,10 @@ mod tests {
         let mut out: Vec<u8> = Vec::new();
         run_writer(rx, &mut out, &in_flight);
         let s = String::from_utf8(out).unwrap();
-        assert!(s.contains("list-panes -s -t if -F"), "writes the list-panes command: {s}");
+        assert!(
+            s.contains("list-panes -s -t if -F"),
+            "writes the list-panes command: {s}"
+        );
         assert!(
             matches!(in_flight.lock().unwrap().front(), Some(PendingReply::ListPanes { address }) if address == "jupiter00/if"),
             "pushes the ListPanes correlator keyed by the session address"
@@ -1139,5 +1269,4 @@ mod tests {
         mgr.reap("jupiter06");
         assert!(mgr.get("jupiter06").is_none(), "reaped client is dropped");
     }
-
 }

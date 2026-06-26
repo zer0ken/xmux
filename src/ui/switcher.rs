@@ -18,7 +18,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::session::{Pane, Session, WindowPanes};
 use crate::ui::tree::{self, Group};
 
-pub use crate::ui::ops::{run_op, Ops, OpResult, PendingOp};
+pub use crate::ui::ops::{run_op, OpResult, Ops, PendingOp};
 
 /// Tree pane width: border + 1-cell inner padding each side + content.
 pub const TREE_WIDTH: u16 = 48;
@@ -53,7 +53,10 @@ pub fn map_color(s: &str) -> Color {
         }
     }
     let lower = s.to_lowercase();
-    if let Some(idx) = lower.strip_prefix("colour").or_else(|| lower.strip_prefix("color")) {
+    if let Some(idx) = lower
+        .strip_prefix("colour")
+        .or_else(|| lower.strip_prefix("color"))
+    {
         if let Ok(n) = idx.parse::<u8>() {
             return Color::Indexed(n);
         }
@@ -112,7 +115,11 @@ pub struct Scan {
 enum PendingKill {
     Session(Session),
     /// (source, session, target="session:window")
-    Window { source: String, session: String, target: String },
+    Window {
+        source: String,
+        session: String,
+        target: String,
+    },
 }
 
 /// What a tree row references. Hosts, sessions, and windows are selectable; panes
@@ -547,10 +554,13 @@ impl Switcher {
         // preselect, which would yank the displayed session out from under the user on every
         // poll (the selection thrash). The user_moved gate at the target below preserves the
         // launch behavior: an untouched cursor still follows the preferred/recency preselect.
-        let keep = self.rows.get(self.selected).and_then(|r| match &r.reference {
-            RowRef::Session(_) | RowRef::Window { .. } => Some(r.reference.clone()),
-            _ => None,
-        });
+        let keep = self
+            .rows
+            .get(self.selected)
+            .and_then(|r| match &r.reference {
+                RowRef::Session(_) | RowRef::Window { .. } => Some(r.reference.clone()),
+                _ => None,
+            });
         let groups = self.visible_groups();
 
         self.name_col_width = 0;
@@ -559,7 +569,9 @@ impl Switcher {
                 continue;
             }
             for sess in &g.sessions {
-                self.name_col_width = self.name_col_width.max(UnicodeWidthStr::width(sess.name.as_str()));
+                self.name_col_width = self
+                    .name_col_width
+                    .max(UnicodeWidthStr::width(sess.name.as_str()));
             }
         }
 
@@ -654,12 +666,19 @@ impl Switcher {
         // actually removed the target invalidates it — routine rebuilds (the local
         // poll, a remote %-event) must NOT silently cancel it, or answering y/n has a
         // surprise time limit. resolve_kill consumes it; set_selected does not touch it.
-        if self.pending_kill.as_ref().is_some_and(|k| !self.kill_target_present(k)) {
+        if self
+            .pending_kill
+            .as_ref()
+            .is_some_and(|k| !self.kill_target_present(k))
+        {
             self.pending_kill = None;
         }
         let target = self
             .user_moved
-            .then(|| keep.as_ref().and_then(|k| self.rows.iter().position(|r| same_node(&r.reference, k))))
+            .then(|| {
+                keep.as_ref()
+                    .and_then(|k| self.rows.iter().position(|r| same_node(&r.reference, k)))
+            })
             .flatten()
             .or(preferred_row)
             .or(first_session_row)
@@ -690,7 +709,12 @@ impl Switcher {
         let pad = self
             .name_col_width
             .saturating_sub(UnicodeWidthStr::width(sess.name.as_str()));
-        format!("{}{}   {}", sess.name, " ".repeat(pad), plural(sess.windows))
+        format!(
+            "{}{}   {}",
+            sess.name,
+            " ".repeat(pad),
+            plural(sess.windows)
+        )
     }
 
     // --- selection / navigation --------------------------------------------
@@ -781,7 +805,10 @@ impl Switcher {
             return;
         }
         self.user_moved = true;
-        let pos = siblings.iter().position(|&i| i == self.selected).unwrap_or(0) as isize;
+        let pos = siblings
+            .iter()
+            .position(|&i| i == self.selected)
+            .unwrap_or(0) as isize;
         let n = siblings.len() as isize;
         let next = ((pos + delta) % n + n) % n;
         self.set_selected(siblings[next as usize]);
@@ -939,9 +966,10 @@ impl Switcher {
     /// lands on the right session regardless of how the tree is currently ordered.
     /// A no-op (returns false) when no such row exists or the cursor is already there.
     pub fn select_address(&mut self, address: &str) -> bool {
-        let target = self.rows.iter().position(|r| {
-            matches!(&r.reference, RowRef::Session(s) if s.address() == address)
-        });
+        let target = self
+            .rows
+            .iter()
+            .position(|r| matches!(&r.reference, RowRef::Session(s) if s.address() == address));
         match target {
             Some(i) if i != self.selected => {
                 self.user_moved = true;
@@ -1116,7 +1144,10 @@ impl Switcher {
         if !on_border {
             return false;
         }
-        self.popup_drag = Some(PopupDrag { grab: (col, row), origin: self.popup_offset });
+        self.popup_drag = Some(PopupDrag {
+            grab: (col, row),
+            origin: self.popup_offset,
+        });
         true
     }
 
@@ -1125,7 +1156,10 @@ impl Switcher {
         if let Some(d) = self.popup_drag {
             let dx = col as i32 - d.grab.0 as i32;
             let dy = row as i32 - d.grab.1 as i32;
-            self.popup_offset = ((d.origin.0 as i32 + dx) as i16, (d.origin.1 as i32 + dy) as i16);
+            self.popup_offset = (
+                (d.origin.0 as i32 + dx) as i16,
+                (d.origin.1 as i32 + dy) as i16,
+            );
         }
     }
 
@@ -1212,36 +1246,36 @@ impl Switcher {
                     target: None,
                 });
             }
-            InputMode::Rename => {
-                match self.current_ref().cloned() {
-                    Some(RowRef::Host { .. }) => {
-                        self.flash = "cannot rename a host".into();
-                    }
-                    Some(RowRef::Session(sess)) => {
-                        self.input = Some(Input {
-                            mode,
-                            label: " rename session".into(),
-                            buffer: sess.name.clone(),
-                            source: None,
-                            sess: Some(sess),
-                            target: None,
-                        });
-                    }
-                    Some(RowRef::Window { sess, window }) => {
-                        let win_name = self.window_name(&sess.address(), window).unwrap_or_default();
-                        let target = crate::mux::window_target(&sess.name, window);
-                        self.input = Some(Input {
-                            mode,
-                            label: " rename window".into(),
-                            buffer: win_name,
-                            source: Some(sess.source.clone()),
-                            sess: Some(sess),
-                            target: Some(target),
-                        });
-                    }
-                    _ => {}
+            InputMode::Rename => match self.current_ref().cloned() {
+                Some(RowRef::Host { .. }) => {
+                    self.flash = "cannot rename a host".into();
                 }
-            }
+                Some(RowRef::Session(sess)) => {
+                    self.input = Some(Input {
+                        mode,
+                        label: " rename session".into(),
+                        buffer: sess.name.clone(),
+                        source: None,
+                        sess: Some(sess),
+                        target: None,
+                    });
+                }
+                Some(RowRef::Window { sess, window }) => {
+                    let win_name = self
+                        .window_name(&sess.address(), window)
+                        .unwrap_or_default();
+                    let target = crate::mux::window_target(&sess.name, window);
+                    self.input = Some(Input {
+                        mode,
+                        label: " rename window".into(),
+                        buffer: win_name,
+                        source: Some(sess.source.clone()),
+                        sess: Some(sess),
+                        target: Some(target),
+                    });
+                }
+                _ => {}
+            },
             // New/NewWindow/SplitWindow are opened by `open_new` (level-aware).
             InputMode::New | InputMode::NewWindow | InputMode::SplitWindow => {}
         }
@@ -1409,7 +1443,8 @@ impl Switcher {
 
     /// The current name of window `index` under the session at `sess_addr`, if its panes are loaded.
     fn window_name(&self, sess_addr: &str, index: i64) -> Option<String> {
-        self.panes.get(sess_addr)
+        self.panes
+            .get(sess_addr)
             .and_then(|ws| ws.iter().find(|w| w.index == index))
             .map(|w| w.name.clone())
     }
@@ -1444,7 +1479,9 @@ impl Switcher {
         let (Some(source), Some(sess), Some(target)) = (source, sess, target) else {
             return;
         };
-        let cur = target.rsplit(':').next()
+        let cur = target
+            .rsplit(':')
+            .next()
             .and_then(|i| i.parse::<i64>().ok())
             .and_then(|idx| self.window_name(&sess.address(), idx));
         if new_name.is_empty() || cur.as_deref() == Some(new_name) {
@@ -1556,8 +1593,16 @@ impl Switcher {
                     PendingKill::Session(sess) => {
                         self.pending_op = Some(PendingOp::Kill { sess });
                     }
-                    PendingKill::Window { source, session, target } => {
-                        self.pending_op = Some(PendingOp::KillWindow { source, session, target });
+                    PendingKill::Window {
+                        source,
+                        session,
+                        target,
+                    } => {
+                        self.pending_op = Some(PendingOp::KillWindow {
+                            source,
+                            session,
+                            target,
+                        });
                     }
                 }
             }
@@ -1641,7 +1686,9 @@ impl Switcher {
         if !self.user_moved {
             return;
         }
-        let Some(focus) = prior.reference.as_ref() else { return };
+        let Some(focus) = prior.reference.as_ref() else {
+            return;
+        };
         if let Some(i) = self.row_matching(focus) {
             self.set_selected(i);
             return;
@@ -1659,12 +1706,16 @@ impl Switcher {
     fn fallback_after_removal(&self, indent: usize, prior_selected: usize) -> Option<usize> {
         let prior = &self.rows[..prior_selected.min(self.rows.len())];
         let prev_sibling = prior
-            .iter().enumerate().rev()
+            .iter()
+            .enumerate()
+            .rev()
             .find(|(_, r)| r.indent == indent && r.selectable())
             .map(|(i, _)| i);
         prev_sibling.or_else(|| {
             prior
-                .iter().enumerate().rev()
+                .iter()
+                .enumerate()
+                .rev()
                 .find(|(_, r)| r.indent < indent && r.selectable())
                 .map(|(i, _)| i)
         })
@@ -1744,7 +1795,13 @@ impl Switcher {
         // No item is pre-highlighted, and the box opens just below the pointer (see
         // menu_rect) — so an accidental right-click that releases without dragging onto
         // an item does nothing. Selecting is a deliberate move down onto an item.
-        self.menu = Some(Menu { target, title, rect, items, hovered: None });
+        self.menu = Some(Menu {
+            target,
+            title,
+            rect,
+            items,
+            hovered: None,
+        });
         true
     }
 
@@ -1772,7 +1829,11 @@ impl Switcher {
             return MenuOutcome::None;
         };
         let item = menu.items[i];
-        let Some(idx) = self.rows.iter().position(|r| same_node(&r.reference, &menu.target)) else {
+        let Some(idx) = self
+            .rows
+            .iter()
+            .position(|r| same_node(&r.reference, &menu.target))
+        else {
             return MenuOutcome::None;
         };
         // The delegated methods act on the current cursor, so land it on the target,
@@ -1998,7 +2059,12 @@ impl Switcher {
         frame.render_stateful_widget(list, area, &mut self.list_state);
     }
 
-    fn render_terminal_view(&self, frame: &mut Frame, area: Rect, grid: Option<&crate::proxy::screen::Grid>) {
+    fn render_terminal_view(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        grid: Option<&crate::proxy::screen::Grid>,
+    ) {
         // No border box: the live grid fills the area; render_divider draws the
         // separating rule.
         match grid {
@@ -2080,7 +2146,10 @@ impl Switcher {
             // shows in the footer (with how to clear it).
             fit(
                 &[
-                    format!(" filter: {} · / edit · Esc clear · {p} ? help · {p} q quit", self.filter),
+                    format!(
+                        " filter: {} · / edit · Esc clear · {p} ? help · {p} q quit",
+                        self.filter
+                    ),
                     format!(" filter: {}", self.filter),
                 ],
                 width,
@@ -2144,7 +2213,10 @@ impl Switcher {
         let rows: Vec<HelpRow> = vec![
             HelpRow::Head("tree".into()),
             HelpRow::Key("↑/↓ · j/k".into(), "move between siblings".into()),
-            HelpRow::Key("→/l · ←/h".into(), "descend into / ascend out of a node".into()),
+            HelpRow::Key(
+                "→/l · ←/h".into(),
+                "descend into / ascend out of a node".into(),
+            ),
             HelpRow::Key("PgUp/PgDn".into(), "jump by 10".into()),
             HelpRow::Key("Home/End".into(), "first / last node".into()),
             HelpRow::Key("n".into(), "new (session / window, by level)".into()),
@@ -2156,14 +2228,26 @@ impl Switcher {
             // Focus section — prefix rows built from self.ui_prefix.
             HelpRow::Head(format!("focus ({p} = prefix)")),
             HelpRow::Key(format!("Enter · {p} →"), "focus the mux pane".into()),
-            HelpRow::Key(format!("{p} Tab"), "toggle focus between tree and mux".into()),
+            HelpRow::Key(
+                format!("{p} Tab"),
+                "toggle focus between tree and mux".into(),
+            ),
             HelpRow::Key(format!("{p} ← · {p} Esc"), "focus the tree".into()),
-            HelpRow::Key(format!("{p} C-←/→ · h/l"), "resize the tree (C-←/→ then repeats briefly)".into()),
-            HelpRow::Key(format!("{p} t"), "toggle auto-hide-tree (║ divider = on)".into()),
+            HelpRow::Key(
+                format!("{p} C-←/→ · h/l"),
+                "resize the tree (C-←/→ then repeats briefly)".into(),
+            ),
+            HelpRow::Key(
+                format!("{p} t"),
+                "toggle auto-hide-tree (║ divider = on)".into(),
+            ),
             HelpRow::Key(format!("{p} ?"), "show this help (q / Esc closes)".into()),
             HelpRow::Key("click a pane".into(), "focus that pane".into()),
             HelpRow::Key("drag the divider".into(), "resize the tree".into()),
-            HelpRow::Key("right-click a row".into(), "hold for its menu, release on an item".into()),
+            HelpRow::Key(
+                "right-click a row".into(),
+                "hold for its menu, release on an item".into(),
+            ),
             HelpRow::Key(format!("{p} q"), "quit".into()),
             HelpRow::Key(format!("{p} {p}"), format!("send a literal {p} to the mux")),
             HelpRow::Gap,
@@ -2403,7 +2487,11 @@ impl Menu {
 /// of the widest item label (+ a pad cell each side) and the title, plus borders, and
 /// the item count; clamped so it stays fully inside `area` (shifts up/left near an edge).
 fn menu_rect(col: u16, row: u16, items: &[MenuItem], title: &str, area: Rect) -> Rect {
-    let item_w = items.iter().map(|it| UnicodeWidthStr::width(it.label())).max().unwrap_or(0);
+    let item_w = items
+        .iter()
+        .map(|it| UnicodeWidthStr::width(it.label()))
+        .max()
+        .unwrap_or(0);
     let content_w = (item_w + 2).max(UnicodeWidthStr::width(title)) as u16;
     let w = (content_w + 2).min(area.width.max(1));
     let h = (items.len() as u16 + 2).min(area.height.max(1));
@@ -2444,7 +2532,12 @@ fn offset_centered(w: u16, h: u16, area: Rect, offset: (i16, i16)) -> Rect {
     let max_y = area.y + area.height.saturating_sub(base.height);
     let x = (base.x as i32 + offset.0 as i32).clamp(area.x as i32, max_x as i32) as u16;
     let y = (base.y as i32 + offset.1 as i32).clamp(area.y as i32, max_y as i32) as u16;
-    Rect { x, y, width: base.width, height: base.height }
+    Rect {
+        x,
+        y,
+        width: base.width,
+        height: base.height,
+    }
 }
 
 /// A short popup title for an input mode (shown on the box's top border).
@@ -2470,7 +2563,11 @@ mod tests {
         assert_eq!(map_color("yellow"), Color::Yellow);
         assert_eq!(map_color("white"), Color::White);
         assert_eq!(map_color("default"), Color::Reset);
-        assert_eq!(map_color(""), Color::Reset, "empty = inherit/terminal default");
+        assert_eq!(
+            map_color(""),
+            Color::Reset,
+            "empty = inherit/terminal default"
+        );
         assert_eq!(map_color("brightblack"), Color::DarkGray);
     }
 
@@ -2483,8 +2580,16 @@ mod tests {
 
     #[test]
     fn map_color_tolerates_fg_prefix_and_case() {
-        assert_eq!(map_color("fg=blue"), Color::Blue, "tmux style string drops in verbatim");
-        assert_eq!(map_color("  Blue "), Color::Blue, "trimmed and case-insensitive");
+        assert_eq!(
+            map_color("fg=blue"),
+            Color::Blue,
+            "tmux style string drops in verbatim"
+        );
+        assert_eq!(
+            map_color("  Blue "),
+            Color::Blue,
+            "trimmed and case-insensitive"
+        );
         assert_eq!(map_color("fg=#EEE8D5"), Color::Rgb(0xee, 0xe8, 0xd5));
     }
     use ratatui::buffer::Buffer;
@@ -2532,11 +2637,16 @@ mod tests {
                 .push(format!("{source}/{session}:{name}"));
             Ok(())
         }
-        async fn split_window(&self, source: &str, target: &str, vertical: bool) -> anyhow::Result<()> {
-            self.split
-                .lock()
-                .unwrap()
-                .push(format!("{source}/{target}:{}", if vertical { "v" } else { "h" }));
+        async fn split_window(
+            &self,
+            source: &str,
+            target: &str,
+            vertical: bool,
+        ) -> anyhow::Result<()> {
+            self.split.lock().unwrap().push(format!(
+                "{source}/{target}:{}",
+                if vertical { "v" } else { "h" }
+            ));
             Ok(())
         }
         async fn kill(&self, s: &Session) -> anyhow::Result<()> {
@@ -2557,8 +2667,16 @@ mod tests {
             self.killed_windows.lock().unwrap().push(target.to_string());
             Ok(())
         }
-        async fn rename_window(&self, _source: &str, target: &str, new_name: &str) -> anyhow::Result<()> {
-            self.renamed_windows.lock().unwrap().push(format!("{target}->{new_name}"));
+        async fn rename_window(
+            &self,
+            _source: &str,
+            target: &str,
+            new_name: &str,
+        ) -> anyhow::Result<()> {
+            self.renamed_windows
+                .lock()
+                .unwrap()
+                .push(format!("{target}->{new_name}"));
             Ok(())
         }
     }
@@ -2624,7 +2742,9 @@ mod tests {
 
         fn draw(&mut self) {
             let sw = &mut self.sw;
-            self.term.draw(|f| sw.render(f, None, false, TREE_WIDTH)).unwrap();
+            self.term
+                .draw(|f| sw.render(f, None, false, TREE_WIDTH))
+                .unwrap();
         }
 
         async fn key(&mut self, code: KeyCode) {
@@ -2809,14 +2929,20 @@ mod tests {
         // The active window of a session (the one whose live terminal is shown) reads
         // BOLD+ITALIC; an inactive window has neither.
         let h = Harness::new(two_window_scan());
-        let m0 = h.tree_modifier_of("window 0").expect("window 0 row present");
+        let m0 = h
+            .tree_modifier_of("window 0")
+            .expect("window 0 row present");
         assert!(
             m0.contains(Modifier::BOLD) && m0.contains(Modifier::ITALIC),
             "the active window is bold+italic: {m0:?}"
         );
-        let m1 = h.tree_modifier_of("window 1").expect("window 1 row present");
-        assert!(!m1.contains(Modifier::BOLD) && !m1.contains(Modifier::ITALIC),
-            "an inactive window is neither bold nor italic: {m1:?}");
+        let m1 = h
+            .tree_modifier_of("window 1")
+            .expect("window 1 row present");
+        assert!(
+            !m1.contains(Modifier::BOLD) && !m1.contains(Modifier::ITALIC),
+            "an inactive window is neither bold nor italic: {m1:?}"
+        );
     }
 
     #[test]
@@ -2824,15 +2950,30 @@ mod tests {
         // An external active-window change (resolved via the control-client probe)
         // moves the bold+italic marker, without a full inventory refetch.
         let mut h = Harness::new(two_window_scan());
-        assert!(h.sw.set_active_window("jup", "api", 1), "active window moved 0 -> 1");
+        assert!(
+            h.sw.set_active_window("jup", "api", 1),
+            "active window moved 0 -> 1"
+        );
         h.draw();
-        let m1 = h.tree_modifier_of("window 1").expect("window 1 row present");
-        assert!(m1.contains(Modifier::BOLD) && m1.contains(Modifier::ITALIC),
-            "window 1 is now the active window: {m1:?}");
-        let m0 = h.tree_modifier_of("window 0").expect("window 0 row present");
-        assert!(!m0.contains(Modifier::ITALIC), "window 0 no longer active: {m0:?}");
+        let m1 = h
+            .tree_modifier_of("window 1")
+            .expect("window 1 row present");
+        assert!(
+            m1.contains(Modifier::BOLD) && m1.contains(Modifier::ITALIC),
+            "window 1 is now the active window: {m1:?}"
+        );
+        let m0 = h
+            .tree_modifier_of("window 0")
+            .expect("window 0 row present");
+        assert!(
+            !m0.contains(Modifier::ITALIC),
+            "window 0 no longer active: {m0:?}"
+        );
         // Idempotent: re-applying the same active window reports no change.
-        assert!(!h.sw.set_active_window("jup", "api", 1), "no-op when already active");
+        assert!(
+            !h.sw.set_active_window("jup", "api", 1),
+            "no-op when already active"
+        );
     }
 
     #[test]
@@ -2842,9 +2983,18 @@ mod tests {
         let mut sw = Switcher::new(two_window_scan());
         sw.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → window 0
         sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // ↓ → window 1
-        assert!(matches!(sw.current_ref(), Some(RowRef::Window { window: 1, .. })));
-        assert!(sw.select_window("jup", "api", 0), "moved to the new active window");
-        assert!(matches!(sw.current_ref(), Some(RowRef::Window { window: 0, .. })));
+        assert!(matches!(
+            sw.current_ref(),
+            Some(RowRef::Window { window: 1, .. })
+        ));
+        assert!(
+            sw.select_window("jup", "api", 0),
+            "moved to the new active window"
+        );
+        assert!(matches!(
+            sw.current_ref(),
+            Some(RowRef::Window { window: 0, .. })
+        ));
     }
 
     #[test]
@@ -2853,13 +3003,25 @@ mod tests {
         sw.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)); // local host
         assert!(matches!(sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "local"));
         sw.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → first session
-        assert!(matches!(sw.current_ref(), Some(RowRef::Session(s)) if s.name == "editor"), "→ descends host → first session");
+        assert!(
+            matches!(sw.current_ref(), Some(RowRef::Session(s)) if s.name == "editor"),
+            "→ descends host → first session"
+        );
         sw.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → first window
-        assert!(matches!(sw.current_ref(), Some(RowRef::Window { window: 1, .. })), "→ descends to a window");
+        assert!(
+            matches!(sw.current_ref(), Some(RowRef::Window { window: 1, .. })),
+            "→ descends to a window"
+        );
         sw.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)); // ← parent session
-        assert!(matches!(sw.current_ref(), Some(RowRef::Session(s)) if s.name == "editor"), "← ascends window → session");
+        assert!(
+            matches!(sw.current_ref(), Some(RowRef::Session(s)) if s.name == "editor"),
+            "← ascends window → session"
+        );
         sw.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)); // ← parent host
-        assert!(matches!(sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "local"), "← ascends session → host");
+        assert!(
+            matches!(sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "local"),
+            "← ascends session → host"
+        );
     }
 
     #[test]
@@ -2874,26 +3036,49 @@ mod tests {
             "↓ moves to the next session sibling, not into a window"
         );
         sw.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert!(matches!(sw.current_ref(), Some(RowRef::Window { .. })), "→ descends into a window");
+        assert!(
+            matches!(sw.current_ref(), Some(RowRef::Window { .. })),
+            "→ descends into a window"
+        );
 
         // hjkl mirror the arrows exactly.
         let mut sw2 = Switcher::new(sample());
         sw2.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
-        assert!(matches!(sw2.current_ref(), Some(RowRef::Session(s)) if s.name == "build"), "j == ↓");
+        assert!(
+            matches!(sw2.current_ref(), Some(RowRef::Session(s)) if s.name == "build"),
+            "j == ↓"
+        );
         sw2.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
-        assert!(matches!(sw2.current_ref(), Some(RowRef::Window { .. })), "l == →");
+        assert!(
+            matches!(sw2.current_ref(), Some(RowRef::Window { .. })),
+            "l == →"
+        );
         sw2.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
-        assert!(matches!(sw2.current_ref(), Some(RowRef::Session(s)) if s.name == "build"), "h == ←");
+        assert!(
+            matches!(sw2.current_ref(), Some(RowRef::Session(s)) if s.name == "build"),
+            "h == ←"
+        );
         sw2.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
-        assert!(matches!(sw2.current_ref(), Some(RowRef::Session(s)) if s.name == "editor"), "k == ↑");
+        assert!(
+            matches!(sw2.current_ref(), Some(RowRef::Session(s)) if s.name == "editor"),
+            "k == ↑"
+        );
     }
 
     #[test]
     fn active_window_pane_have_no_text_marker() {
         // The active window/pane is shown BOLD (Row::active), not with "(active)" text.
         let w = win(2, "logs", true, vec![pane(1, true, "tail")]);
-        assert_eq!(window_label(&w), "window 2: logs", "no (active) text on the window label");
-        assert_eq!(pane_label(&w.panes[0]), "pane 1  tail", "no (active) text on the pane label");
+        assert_eq!(
+            window_label(&w),
+            "window 2: logs",
+            "no (active) text on the window label"
+        );
+        assert_eq!(
+            pane_label(&w.panes[0]),
+            "pane 1  tail",
+            "no (active) text on the pane label"
+        );
     }
 
     #[test]
@@ -2905,8 +3090,14 @@ mod tests {
         // the sidebar mirroring the displayed window (#3).
         let mut sw = Switcher::new(two_window_scan());
         assert!(matches!(sw.current_ref(), Some(RowRef::Session(_))));
-        assert!(sw.select_window("jup", "api", 1), "follows from the session row to window 1");
-        assert!(matches!(sw.current_ref(), Some(RowRef::Window { window: 1, .. })));
+        assert!(
+            sw.select_window("jup", "api", 1),
+            "follows from the session row to window 1"
+        );
+        assert!(matches!(
+            sw.current_ref(),
+            Some(RowRef::Window { window: 1, .. })
+        ));
     }
 
     #[test]
@@ -2916,10 +3107,19 @@ mod tests {
         // sidebar mirrors the window the mux is displaying (#3). Window 0 is active.
         let mut sw = Switcher::new(two_window_scan());
         assert!(matches!(sw.current_ref(), Some(RowRef::Session(_))));
-        assert!(sw.select_active_window(), "moved to the cached active window");
-        assert!(matches!(sw.current_ref(), Some(RowRef::Window { window: 0, .. })));
+        assert!(
+            sw.select_active_window(),
+            "moved to the cached active window"
+        );
+        assert!(matches!(
+            sw.current_ref(),
+            Some(RowRef::Window { window: 0, .. })
+        ));
         // Idempotent: re-applying when already on the active window reports no move.
-        assert!(!sw.select_active_window(), "no-op when already on the active window");
+        assert!(
+            !sw.select_active_window(),
+            "no-op when already on the active window"
+        );
     }
 
     #[test]
@@ -2928,8 +3128,14 @@ mod tests {
         // window (the window the mux displays), not leave the cursor stuck on the host.
         let mut sw = Switcher::new(two_window_scan());
         sw.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)); // ascend: session → host
-        assert!(matches!(sw.current_ref(), Some(RowRef::Host { .. })), "cursor on the host row");
-        assert!(sw.select_active_window(), "descends from host to the active window");
+        assert!(
+            matches!(sw.current_ref(), Some(RowRef::Host { .. })),
+            "cursor on the host row"
+        );
+        assert!(
+            sw.select_active_window(),
+            "descends from host to the active window"
+        );
         assert!(
             matches!(sw.current_ref(), Some(RowRef::Window { window: 0, .. })),
             "landed on the recent session's active window (0)"
@@ -2943,7 +3149,10 @@ mod tests {
         sw.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → window 0
         sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // ↓ → window 1
         assert!(!sw.select_window("jup", "other", 0));
-        assert!(matches!(sw.current_ref(), Some(RowRef::Window { window: 1, .. })));
+        assert!(matches!(
+            sw.current_ref(),
+            Some(RowRef::Window { window: 1, .. })
+        ));
     }
 
     // --- tests --------------------------------------------------------------
@@ -2985,16 +3194,25 @@ mod tests {
         h.key(KeyCode::Home).await; // local host
         h.key(KeyCode::Right).await; // → editor (session)
         h.key(KeyCode::Right).await; // → editor's first window
-        assert!(matches!(h.sw.current_ref(), Some(RowRef::Window { .. })), "→ reaches a window");
+        assert!(
+            matches!(h.sw.current_ref(), Some(RowRef::Window { .. })),
+            "→ reaches a window"
+        );
         // → on a window does NOT descend onto a pane (panes are not selectable).
         h.key(KeyCode::Right).await;
-        assert!(matches!(h.sw.current_ref(), Some(RowRef::Window { .. })), "→ on a window is a no-op (its panes are not selectable)");
+        assert!(
+            matches!(h.sw.current_ref(), Some(RowRef::Window { .. })),
+            "→ on a window is a no-op (its panes are not selectable)"
+        );
         // ↓/↑ cycle window siblings; the cursor must never land on a pane.
         let mut saw_window = false;
         for _ in 0..8 {
             let r = h.sw.current_ref();
             assert!(r.is_some(), "cursor landed on a node");
-            assert!(!matches!(r, Some(RowRef::Pane)), "cursor must never land on a pane");
+            assert!(
+                !matches!(r, Some(RowRef::Pane)),
+                "cursor must never land on a pane"
+            );
             if matches!(r, Some(RowRef::Window { .. })) {
                 saw_window = true;
             }
@@ -3098,7 +3316,10 @@ mod tests {
         // The lone unreachable host is auto-selected → its right-pane info panel
         // states it is unreachable and shows why.
         let out = h.text();
-        assert!(out.contains("unreachable"), "info pane states unreachable:\n{out}");
+        assert!(
+            out.contains("unreachable"),
+            "info pane states unreachable:\n{out}"
+        );
         assert!(
             out.contains("connection refused"),
             "info pane shows the failure reason:\n{out}"
@@ -3114,9 +3335,15 @@ mod tests {
         h.sw.apply_source_result("jupiter00".into(), vec![], Some("no route".into()));
         h.draw();
         let out = h.text();
-        assert!(out.contains("HostName 143.248.140.120"), "shows the host's ssh config:\n{out}");
+        assert!(
+            out.contains("HostName 143.248.140.120"),
+            "shows the host's ssh config:\n{out}"
+        );
         assert!(out.contains("hrlee"), "shows the configured user:\n{out}");
-        assert!(!out.contains("1.2.3.4"), "does NOT leak an unrelated host's config:\n{out}");
+        assert!(
+            !out.contains("1.2.3.4"),
+            "does NOT leak an unrelated host's config:\n{out}"
+        );
     }
 
     #[tokio::test]
@@ -3129,7 +3356,9 @@ mod tests {
         );
         h.draw();
         assert!(
-            h.tree_text().chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)),
+            h.tree_text()
+                .chars()
+                .any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)),
             "a progress spinner stands in before panes land"
         );
         h.sw.apply_panes(
@@ -3208,9 +3437,15 @@ mod tests {
         // The `r` re-scan also arms an explicit re-attach of the current display, so a
         // detached / dead display client is re-created on demand (the loop consumes it).
         let mut sw = Switcher::from_sources(vec!["h".into()]);
-        assert!(!sw.take_reattach_kick(), "no re-attach armed before a re-scan");
+        assert!(
+            !sw.take_reattach_kick(),
+            "no re-attach armed before a re-scan"
+        );
         sw.request_rescan();
-        assert!(sw.take_reattach_kick(), "an r re-scan arms a display re-attach");
+        assert!(
+            sw.take_reattach_kick(),
+            "an r re-scan arms a display re-attach"
+        );
         assert!(!sw.take_reattach_kick(), "the kick is consumed once");
     }
 
@@ -3313,7 +3548,8 @@ mod tests {
     async fn footer_fits_narrow_width() {
         let mut sw = Switcher::new(sample());
         let mut term = Terminal::new(TestBackend::new(30, 30)).unwrap();
-        term.draw(|f| sw.render(f, None, false, TREE_WIDTH)).unwrap();
+        term.draw(|f| sw.render(f, None, false, TREE_WIDTH))
+            .unwrap();
         let buf = term.backend().buffer();
         let y = buf.area.height - 1;
         let mut footer = String::new();
@@ -3338,13 +3574,22 @@ mod tests {
         let mut sw = Switcher::blank();
         sw.set_ui_prefix("C-Space".into());
         let text = sw.footer_text(200);
-        assert!(text.contains("C-Space"), "custom prefix must appear in footer:\n{text:?}");
-        assert!(!text.contains("C-g"), "hardcoded C-g must not appear when prefix is C-Space:\n{text:?}");
+        assert!(
+            text.contains("C-Space"),
+            "custom prefix must appear in footer:\n{text:?}"
+        );
+        assert!(
+            !text.contains("C-g"),
+            "hardcoded C-g must not appear when prefix is C-Space:\n{text:?}"
+        );
 
         // Default prefix (no setter) must still show C-g.
         let sw_default = Switcher::blank();
         let text_default = sw_default.footer_text(200);
-        assert!(text_default.contains("C-g"), "default prefix C-g must appear in footer:\n{text_default:?}");
+        assert!(
+            text_default.contains("C-g"),
+            "default prefix C-g must appear in footer:\n{text_default:?}"
+        );
     }
 
     #[tokio::test]
@@ -3393,7 +3638,10 @@ mod tests {
         assert!(h.sw.pending_kill.is_some(), "x arms the y/n confirm");
         h.key(KeyCode::Esc).await; // Esc cancels it, like the input prompts
         assert!(h.sw.pending_kill.is_none(), "Esc clears the confirm");
-        assert!(h.ops.killed.lock().unwrap().is_empty(), "Esc must not kill anything");
+        assert!(
+            h.ops.killed.lock().unwrap().is_empty(),
+            "Esc must not kill anything"
+        );
     }
 
     #[tokio::test]
@@ -3473,7 +3721,10 @@ mod tests {
             vec!["local/editor:logs"],
             "n on a session row queues a new window"
         );
-        assert!(h.ops.created.lock().unwrap().is_empty(), "not a session create");
+        assert!(
+            h.ops.created.lock().unwrap().is_empty(),
+            "not a session create"
+        );
     }
 
     #[tokio::test]
@@ -3547,8 +3798,14 @@ mod tests {
         h.ch('/').await;
         h.sw.set_input_text("probeL");
         h.key(KeyCode::Enter).await; // apply filter
-        let t = h.sw.current_attach_target().expect("a session row is visible");
-        assert_eq!(t.target.as_str(), "xmux-probeL", "cursor on filtered session");
+        let t =
+            h.sw.current_attach_target()
+                .expect("a session row is visible");
+        assert_eq!(
+            t.target.as_str(),
+            "xmux-probeL",
+            "cursor on filtered session"
+        );
     }
 
     #[tokio::test]
@@ -3568,7 +3825,9 @@ mod tests {
         h.sw.set_input_text("keep");
         h.key(KeyCode::Enter).await; // apply filter
         h.key(KeyCode::Home).await; // host row
-        let t = h.sw.current_attach_target().expect("host row has a visible session");
+        let t =
+            h.sw.current_attach_target()
+                .expect("host row has a visible session");
         assert_eq!(
             t.target.as_str(),
             "keep-me",
@@ -3653,7 +3912,10 @@ mod tests {
     #[test]
     fn menu_items_by_row_type() {
         use super::MenuItem::*;
-        let host = RowRef::Host { source: "h".into(), unreachable: false };
+        let host = RowRef::Host {
+            source: "h".into(),
+            unreachable: false,
+        };
         assert_eq!(menu_items(&host), vec![NewSession]);
 
         let s = sess("h", "api", 1, false, 0);
@@ -3676,7 +3938,10 @@ mod tests {
     }
 
     fn row_index<F: Fn(&RowRef) -> bool>(h: &Harness, pred: F) -> usize {
-        h.sw.rows.iter().position(|r| pred(&r.reference)).expect("row exists")
+        h.sw.rows
+            .iter()
+            .position(|r| pred(&r.reference))
+            .expect("row exists")
     }
 
     #[tokio::test]
@@ -3687,7 +3952,10 @@ mod tests {
         let (x, y) = row_screen_pos(&h, idx);
         assert!(h.sw.menu_open(x, y), "menu opens over a session row");
         assert!(h.sw.menu_active());
-        assert_eq!(h.sw.selected, before, "opening the menu must not move the tree cursor");
+        assert_eq!(
+            h.sw.selected, before,
+            "opening the menu must not move the tree cursor"
+        );
     }
 
     #[tokio::test]
@@ -3709,7 +3977,10 @@ mod tests {
         h.sw.menu_hover(99, 29);
         assert!(matches!(h.sw.menu_release(), MenuOutcome::None));
         assert!(!h.sw.menu_active(), "menu closes on release");
-        assert!(h.sw.input.is_none() && h.sw.pending_kill.is_none(), "nothing happened");
+        assert!(
+            h.sw.input.is_none() && h.sw.pending_kill.is_none(),
+            "nothing happened"
+        );
     }
 
     #[tokio::test]
@@ -3721,9 +3992,15 @@ mod tests {
         let idx = row_index(&h, |r| matches!(r, RowRef::Session(s) if s.name == "build"));
         let (x, y) = row_screen_pos(&h, idx);
         assert!(h.sw.menu_open(x, y));
-        assert!(matches!(h.sw.menu_release(), MenuOutcome::None), "no drag → no action");
+        assert!(
+            matches!(h.sw.menu_release(), MenuOutcome::None),
+            "no drag → no action"
+        );
         assert!(!h.sw.menu_active());
-        assert!(h.sw.input.is_none() && h.sw.pending_kill.is_none(), "nothing happened");
+        assert!(
+            h.sw.input.is_none() && h.sw.pending_kill.is_none(),
+            "nothing happened"
+        );
     }
 
     #[tokio::test]
@@ -3746,9 +4023,19 @@ mod tests {
         let target = RowRef::Session(s);
         let items = menu_items(&target);
         let focus_at = items.iter().position(|i| *i == MenuItem::Focus).unwrap();
-        h.sw.menu = Some(Menu { target, title: String::new(), rect: Rect::new(0, 0, 20, 7), items, hovered: Some(focus_at) });
+        h.sw.menu = Some(Menu {
+            target,
+            title: String::new(),
+            rect: Rect::new(0, 0, 20, 7),
+            items,
+            hovered: Some(focus_at),
+        });
         assert!(matches!(h.sw.menu_release(), MenuOutcome::FocusTerminal));
-        assert_eq!(cur_session_name(&h).as_deref(), Some("build"), "cursor moved to target");
+        assert_eq!(
+            cur_session_name(&h).as_deref(),
+            Some("build"),
+            "cursor moved to target"
+        );
     }
 
     #[tokio::test]
@@ -3757,7 +4044,13 @@ mod tests {
         let target = RowRef::Session(sess("local", "build", 1, false, 100));
         let items = menu_items(&target);
         let at = items.iter().position(|i| *i == MenuItem::Rename).unwrap();
-        h.sw.menu = Some(Menu { target, title: String::new(), rect: Rect::new(0, 0, 20, 7), items, hovered: Some(at) });
+        h.sw.menu = Some(Menu {
+            target,
+            title: String::new(),
+            rect: Rect::new(0, 0, 20, 7),
+            items,
+            hovered: Some(at),
+        });
         assert!(matches!(h.sw.menu_release(), MenuOutcome::Handled));
         assert!(h.sw.is_inputting(), "rename opens the inline input");
     }
@@ -3768,7 +4061,13 @@ mod tests {
         let target = RowRef::Session(sess("local", "build", 1, false, 100));
         let items = menu_items(&target);
         let at = items.iter().position(|i| *i == MenuItem::Kill).unwrap();
-        h.sw.menu = Some(Menu { target, title: String::new(), rect: Rect::new(0, 0, 20, 7), items, hovered: Some(at) });
+        h.sw.menu = Some(Menu {
+            target,
+            title: String::new(),
+            rect: Rect::new(0, 0, 20, 7),
+            items,
+            hovered: Some(at),
+        });
         assert!(matches!(h.sw.menu_release(), MenuOutcome::Handled));
         assert!(h.sw.pending_kill.is_some(), "kill arms the y/n confirm");
     }
@@ -3779,16 +4078,28 @@ mod tests {
         // the target changed the selection → attach → events → rebuild, which clears
         // pending_kill. Acting on a row must NOT move the cursor.
         let mut h = Harness::new(sample());
-        let editor = row_index(&h, |r| matches!(r, RowRef::Session(s) if s.name == "editor"));
+        let editor = row_index(
+            &h,
+            |r| matches!(r, RowRef::Session(s) if s.name == "editor"),
+        );
         h.sw.set_selected(editor);
         h.sw.user_moved = true;
         // Kill a DIFFERENT session ('build') via the menu.
         let target = RowRef::Session(sess("local", "build", 1, false, 100));
         let items = menu_items(&target);
         let at = items.iter().position(|i| *i == MenuItem::Kill).unwrap();
-        h.sw.menu = Some(Menu { target, title: String::new(), rect: Rect::new(0, 0, 20, 7), items, hovered: Some(at) });
+        h.sw.menu = Some(Menu {
+            target,
+            title: String::new(),
+            rect: Rect::new(0, 0, 20, 7),
+            items,
+            hovered: Some(at),
+        });
         assert!(matches!(h.sw.menu_release(), MenuOutcome::Handled));
-        assert!(h.sw.pending_kill.is_some(), "kill is armed against the clicked row");
+        assert!(
+            h.sw.pending_kill.is_some(),
+            "kill is armed against the clicked row"
+        );
         assert!(
             matches!(h.sw.current_ref(), Some(RowRef::Session(s)) if s.name == "editor"),
             "the cursor stayed put → no selection change to rebuild away the confirm"
@@ -3805,11 +4116,17 @@ mod tests {
         h.sw.arm_kill();
         assert!(h.sw.pending_kill.is_some(), "kill armed");
         h.sw.rebuild(); // a poll/event rebuild
-        assert!(h.sw.pending_kill.is_some(), "confirm survives a routine rebuild — no time limit");
+        assert!(
+            h.sw.pending_kill.is_some(),
+            "confirm survives a routine rebuild — no time limit"
+        );
         // But once the target is actually gone, the stale confirm is dropped.
         h.sw.groups = crate::ui::tree::remove_session(&h.sw.groups, "local/build");
         h.sw.rebuild();
-        assert!(h.sw.pending_kill.is_none(), "a vanished target invalidates the confirm");
+        assert!(
+            h.sw.pending_kill.is_none(),
+            "a vanished target invalidates the confirm"
+        );
     }
 
     #[tokio::test]
@@ -3822,13 +4139,22 @@ mod tests {
         let target = RowRef::Window { sess: s, window: 2 };
         let items = menu_items(&target);
         let at = items.iter().position(|i| *i == MenuItem::Focus).unwrap();
-        h.sw.menu = Some(Menu { target, title: String::new(), rect: Rect::new(0, 0, 20, 5), items, hovered: Some(at) });
+        h.sw.menu = Some(Menu {
+            target,
+            title: String::new(),
+            rect: Rect::new(0, 0, 20, 5),
+            items,
+            hovered: Some(at),
+        });
         assert!(matches!(h.sw.menu_release(), MenuOutcome::FocusTerminal));
         assert!(
             matches!(h.sw.current_ref(), Some(RowRef::Window { window, .. }) if *window == 2),
             "cursor is on the focused window"
         );
-        assert!(!h.sw.select_active_window(), "window 2 is now active → no yank back to window 1");
+        assert!(
+            !h.sw.select_active_window(),
+            "window 2 is now active → no yank back to window 1"
+        );
     }
 
     #[tokio::test]
@@ -3836,7 +4162,10 @@ mod tests {
         // Regression: 'new session' via the host menu must open the name input and,
         // on confirm, create the session — the full gesture-to-op path.
         let mut h = Harness::new(sample());
-        let idx = row_index(&h, |r| matches!(r, RowRef::Host { source, .. } if source == "local"));
+        let idx = row_index(
+            &h,
+            |r| matches!(r, RowRef::Host { source, .. } if source == "local"),
+        );
         let (x, y) = row_screen_pos(&h, idx);
         assert!(h.sw.menu_open(x, y), "menu opens on the host row");
         // Deliberately move onto the first item (no pre-hover), then release.
@@ -3847,7 +4176,12 @@ mod tests {
         h.sw.set_input_text("fresh");
         h.key(KeyCode::Enter).await; // queues + pumps the create op (as the loop would)
         assert!(
-            h.ops.created.lock().unwrap().iter().any(|c| c.contains("fresh")),
+            h.ops
+                .created
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| c.contains("fresh")),
             "the session is created: {:?}",
             h.ops.created.lock().unwrap()
         );
@@ -3860,9 +4194,18 @@ mod tests {
         let target = RowRef::Window { sess: s, window: 2 };
         let items = menu_items(&target);
         let at = items.iter().position(|i| *i == MenuItem::Focus).unwrap();
-        h.sw.menu = Some(Menu { target, title: String::new(), rect: Rect::new(0, 0, 20, 7), items, hovered: Some(at) });
+        h.sw.menu = Some(Menu {
+            target,
+            title: String::new(),
+            rect: Rect::new(0, 0, 20, 7),
+            items,
+            hovered: Some(at),
+        });
         // A window row offers focus / rename / kill — no split.
-        assert!(!items_have_split(&menu_items(&RowRef::Window { sess: sess("local", "editor", 2, true, 200), window: 2 })));
+        assert!(!items_have_split(&menu_items(&RowRef::Window {
+            sess: sess("local", "editor", 2, true, 200),
+            window: 2
+        })));
         assert!(matches!(h.sw.menu_release(), MenuOutcome::FocusTerminal));
     }
 
@@ -3874,14 +4217,29 @@ mod tests {
     #[tokio::test]
     async fn menu_open_on_host_row() {
         let mut h = Harness::new(sample());
-        let idx = row_index(&h, |r| matches!(r, RowRef::Host { source, .. } if source == "local"));
+        let idx = row_index(
+            &h,
+            |r| matches!(r, RowRef::Host { source, .. } if source == "local"),
+        );
         let (x, y) = row_screen_pos(&h, idx);
         assert!(h.sw.menu_open(x, y), "menu opens over a host row");
         // A host menu's first item (new session) opens an input.
-        let target = RowRef::Host { source: "local".into(), unreachable: false };
+        let target = RowRef::Host {
+            source: "local".into(),
+            unreachable: false,
+        };
         let items = menu_items(&target);
-        h.sw.menu = Some(Menu { target, title: String::new(), rect: Rect::new(0, 0, 20, 4), items, hovered: Some(0) });
-        assert!(matches!(h.sw.menu_release(), MenuOutcome::Handled), "new session opens an input");
+        h.sw.menu = Some(Menu {
+            target,
+            title: String::new(),
+            rect: Rect::new(0, 0, 20, 4),
+            items,
+            hovered: Some(0),
+        });
+        assert!(
+            matches!(h.sw.menu_release(), MenuOutcome::Handled),
+            "new session opens an input"
+        );
         assert!(h.sw.is_inputting());
     }
 
@@ -3891,8 +4249,17 @@ mod tests {
         // A target that does not exist in the tree (rebuilt away during the hold).
         let target = RowRef::Session(sess("local", "ghost", 1, false, 0));
         let items = menu_items(&target);
-        h.sw.menu = Some(Menu { target, title: String::new(), rect: Rect::new(0, 0, 20, 7), items, hovered: Some(0) });
-        assert!(matches!(h.sw.menu_release(), MenuOutcome::None), "gone target → no-op");
+        h.sw.menu = Some(Menu {
+            target,
+            title: String::new(),
+            rect: Rect::new(0, 0, 20, 7),
+            items,
+            hovered: Some(0),
+        });
+        assert!(
+            matches!(h.sw.menu_release(), MenuOutcome::None),
+            "gone target → no-op"
+        );
     }
 
     #[test]
@@ -3902,8 +4269,14 @@ mod tests {
         let items = [Focus, Rename, Kill];
         // Anchored near the bottom-right corner → shifted up/left to stay on-screen.
         let r = menu_rect(78, 23, &items, "editor", area);
-        assert!(r.x + r.width <= area.width, "box stays within the right edge");
-        assert!(r.y + r.height <= area.height, "box stays within the bottom edge");
+        assert!(
+            r.x + r.width <= area.width,
+            "box stays within the right edge"
+        );
+        assert!(
+            r.y + r.height <= area.height,
+            "box stays within the bottom edge"
+        );
     }
 
     #[test]
@@ -3911,7 +4284,10 @@ mod tests {
         use super::MenuItem::*;
         let area = Rect::new(0, 0, 80, 24);
         let r = menu_rect(0, 0, &[Focus], "a-very-long-session-name", area);
-        assert!(r.width as usize >= "a-very-long-session-name".len() + 2, "title fits in the box");
+        assert!(
+            r.width as usize >= "a-very-long-session-name".len() + 2,
+            "title fits in the box"
+        );
     }
 
     #[test]
@@ -3930,12 +4306,23 @@ mod tests {
         let target = RowRef::Session(sess("local", "build", 1, false, 100));
         let items = vec![Focus, Rename, Kill, NewWindow];
         // Box at a known spot; hover the second item (rename).
-        h.sw.menu = Some(Menu { target, title: "build".into(), rect: Rect::new(2, 2, 18, 6), items, hovered: Some(1) });
+        h.sw.menu = Some(Menu {
+            target,
+            title: "build".into(),
+            rect: Rect::new(2, 2, 18, 6),
+            items,
+            hovered: Some(1),
+        });
         h.draw();
         let out = h.text();
-        assert!(out.contains("focus") && out.contains("rename") && out.contains("kill"),
-            "menu items render:\n{out}");
-        assert!(out.contains("build"), "the menu shows its target's name as the title:\n{out}");
+        assert!(
+            out.contains("focus") && out.contains("rename") && out.contains("kill"),
+            "menu items render:\n{out}"
+        );
+        assert!(
+            out.contains("build"),
+            "the menu shows its target's name as the title:\n{out}"
+        );
 
         // The hovered row (rename, at box y+1+1 = 4) is reversed across the box interior.
         let buf = h.buf();
@@ -3948,7 +4335,10 @@ mod tests {
         let mut h = Harness::new(sample());
         h.sw.show_help();
         h.draw();
-        assert!(h.text().contains("right-click"), "help mentions the right-click menu");
+        assert!(
+            h.text().contains("right-click"),
+            "help mentions the right-click menu"
+        );
     }
 
     #[tokio::test]
@@ -3958,10 +4348,7 @@ mod tests {
         h.sw.show_help(); // driven by the cockpit's `prefix ?`
         h.draw();
         let out = h.text();
-        assert!(
-            out.contains("keys"),
-            "show_help opens the overlay:\n{out}"
-        );
+        assert!(out.contains("keys"), "show_help opens the overlay:\n{out}");
         assert!(out.contains("fuzzy filter"), "help should list keybindings");
         // Modal dismissal (tmux view-mode): the cockpit routes keys to feed_help_key
         // above the tree/mux split — q closes it; other keys are swallowed (no nav).
@@ -3999,7 +4386,9 @@ mod tests {
         g.feed(b"LIVE-GRID-CONTENT");
         // Render with the live grid supplied.
         let sw = &mut h.sw;
-        h.term.draw(|f| sw.render(f, Some(&g), false, TREE_WIDTH)).unwrap();
+        h.term
+            .draw(|f| sw.render(f, Some(&g), false, TREE_WIDTH))
+            .unwrap();
         let out = buffer_text(h.term.backend().buffer());
         assert!(
             out.contains("LIVE-GRID-CONTENT"),
@@ -4010,8 +4399,7 @@ mod tests {
     // --- j/k nav, select=attach, spinner, footer/help, title --------
 
     fn cur_row_label(h: &Harness) -> String {
-        h.sw
-            .rows
+        h.sw.rows
             .get(h.sw.selected)
             .map(|r| r.label.clone())
             .unwrap_or_default()
@@ -4044,10 +4432,14 @@ mod tests {
     #[tokio::test]
     async fn cursor_move_yields_attach_target() {
         let mut h = Harness::new(sample()); // editor preselected (local session)
-        let t = h.sw.current_attach_target().expect("a session row yields a target");
+        let t =
+            h.sw.current_attach_target()
+                .expect("a session row yields a target");
         assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "editor"));
         h.key(KeyCode::Left).await; // ← ascend to the local HOST row
-        let t = h.sw.current_attach_target().expect("host row targets its first session");
+        let t =
+            h.sw.current_attach_target()
+                .expect("host row targets its first session");
         assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "editor"));
     }
 
@@ -4071,8 +4463,10 @@ mod tests {
         let tree = h.tree_text();
         // a braille spinner glyph from the U+2800 block appears on the inference row.
         let line = tree.lines().find(|l| l.contains("inference")).unwrap_or("");
-        assert!(line.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)),
-            "a braille spinner sits right of a connecting session name:\n{tree}");
+        assert!(
+            line.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)),
+            "a braille spinner sits right of a connecting session name:\n{tree}"
+        );
     }
 
     #[test]
@@ -4082,13 +4476,19 @@ mod tests {
         let mut sw = Switcher::new(sample());
         sw.flash = "host unreachable — cannot create here".into();
         let lines = sw.footer_lines(20);
-        assert!(lines.len() > 1, "long flash wraps across lines, got {lines:?}");
+        assert!(
+            lines.len() > 1,
+            "long flash wraps across lines, got {lines:?}"
+        );
         assert!(
             lines.iter().all(|l| l.chars().count() <= 20),
             "every wrapped line fits the width, got {lines:?}"
         );
         let joined = lines.join("").replace("  ", " ");
-        assert!(joined.contains("cannot create here"), "no text is lost: {joined:?}");
+        assert!(
+            joined.contains("cannot create here"),
+            "no text is lost: {joined:?}"
+        );
     }
 
     #[tokio::test]
@@ -4099,25 +4499,40 @@ mod tests {
         let mut h = Harness::new(sample());
         h.sw.flash = "host unreachable — cannot create here".into();
         h.key(KeyCode::Down).await;
-        assert!(h.sw.flash.is_empty(), "navigation clears the flash, got {:?}", h.sw.flash);
+        assert!(
+            h.sw.flash.is_empty(),
+            "navigation clears the flash, got {:?}",
+            h.sw.flash
+        );
     }
 
     #[tokio::test]
     async fn footer_and_help_reflect_new_model() {
         let mut h = Harness::new(sample());
         let footer = h.footer_text();
-        assert!(!footer.to_lowercase().contains("enter attach"), "Enter is a no-op now:\n{footer}");
-        assert!(footer.contains("focus"),
-            "footer mentions focusing the terminal pane:\n{footer}");
+        assert!(
+            !footer.to_lowercase().contains("enter attach"),
+            "Enter is a no-op now:\n{footer}"
+        );
+        assert!(
+            footer.contains("focus"),
+            "footer mentions focusing the terminal pane:\n{footer}"
+        );
         h.sw.show_help(); // driven by the cockpit's `prefix ?`
         h.draw();
         let help = h.text();
-        assert!(help.contains("focus the mux"),
-            "help explains focusing the mux pane:\n{help}");
-        assert!(!help.contains("select = attach"),
-            "no useless 'select = attach' noise in help:\n{help}");
-        assert!(!help.contains("dwell") && !help.to_lowercase().contains("previous foreground"),
-            "no stale dwell/esc-return strings:\n{help}");
+        assert!(
+            help.contains("focus the mux"),
+            "help explains focusing the mux pane:\n{help}"
+        );
+        assert!(
+            !help.contains("select = attach"),
+            "no useless 'select = attach' noise in help:\n{help}"
+        );
+        assert!(
+            !help.contains("dwell") && !help.to_lowercase().contains("previous foreground"),
+            "no stale dwell/esc-return strings:\n{help}"
+        );
     }
 
     #[tokio::test]
@@ -4137,16 +4552,30 @@ mod tests {
         let fg = |buf: &Buffer, y: u16| buf[(x, y)].fg;
 
         // Tree focused: top = active(Blue), bottom = inactive(Gray).
-        term.draw(|f| sw.render(f, None, false, TREE_WIDTH)).unwrap();
+        term.draw(|f| sw.render(f, None, false, TREE_WIDTH))
+            .unwrap();
         let buf = term.backend().buffer().clone();
-        assert_eq!(fg(&buf, top), Color::Blue, "configured active on the focused half");
-        assert_eq!(fg(&buf, bottom), Color::Gray, "configured inactive on the unfocused half");
+        assert_eq!(
+            fg(&buf, top),
+            Color::Blue,
+            "configured active on the focused half"
+        );
+        assert_eq!(
+            fg(&buf, bottom),
+            Color::Gray,
+            "configured inactive on the unfocused half"
+        );
 
         // Hovering the rule overrides with the configured hover colour.
         sw.set_divider_hovered(true);
-        term.draw(|f| sw.render(f, None, false, TREE_WIDTH)).unwrap();
+        term.draw(|f| sw.render(f, None, false, TREE_WIDTH))
+            .unwrap();
         let buf = term.backend().buffer().clone();
-        assert_eq!(fg(&buf, top), Color::Red, "configured hover colour while hovered");
+        assert_eq!(
+            fg(&buf, top),
+            Color::Red,
+            "configured hover colour while hovered"
+        );
     }
 
     #[tokio::test]
@@ -4165,14 +4594,27 @@ mod tests {
         term.draw(|f| sw.render(f, None, true, TREE_WIDTH)).unwrap();
         let buf = term.backend().buffer().clone();
         assert_eq!(buf[(x, top)].symbol(), "│", "divider still drawn");
-        assert_eq!(fg(&buf, bottom), Color::Green, "mux focus: bottom half accent");
-        assert_eq!(fg(&buf, top), Color::Reset, "mux focus: top half inactive (tmux default)");
+        assert_eq!(
+            fg(&buf, bottom),
+            Color::Green,
+            "mux focus: bottom half accent"
+        );
+        assert_eq!(
+            fg(&buf, top),
+            Color::Reset,
+            "mux focus: top half inactive (tmux default)"
+        );
 
         // Tree focused: accent on the top (tree side), inactive on bottom.
-        term.draw(|f| sw.render(f, None, false, TREE_WIDTH)).unwrap();
+        term.draw(|f| sw.render(f, None, false, TREE_WIDTH))
+            .unwrap();
         let buf = term.backend().buffer().clone();
         assert_eq!(fg(&buf, top), Color::Green, "tree focus: top half accent");
-        assert_eq!(fg(&buf, bottom), Color::Reset, "tree focus: bottom half inactive");
+        assert_eq!(
+            fg(&buf, bottom),
+            Color::Reset,
+            "tree focus: bottom half inactive"
+        );
     }
 
     #[tokio::test]
@@ -4183,12 +4625,21 @@ mod tests {
         let mut sw = Switcher::new(sample());
         let x = TREE_WIDTH;
         sw.set_divider_hovered(true);
-        term.draw(|f| sw.render(f, None, false, TREE_WIDTH)).unwrap();
+        term.draw(|f| sw.render(f, None, false, TREE_WIDTH))
+            .unwrap();
         let buf = term.backend().buffer().clone();
         for y in [2u16, 27u16] {
             let cell = &buf[(x, y)];
-            assert_eq!(cell.symbol(), "┃", "hover: heavy (thick) rule glyph at row {y}");
-            assert_eq!(cell.fg, Color::Yellow, "hover: yellow (psmux hover) at row {y}");
+            assert_eq!(
+                cell.symbol(),
+                "┃",
+                "hover: heavy (thick) rule glyph at row {y}"
+            );
+            assert_eq!(
+                cell.fg,
+                Color::Yellow,
+                "hover: yellow (psmux hover) at row {y}"
+            );
             assert!(
                 !cell.modifier.contains(Modifier::REVERSED),
                 "hover: not reversed/filled (no block) at row {y}",
@@ -4206,12 +4657,22 @@ mod tests {
         let (x, y) = (TREE_WIDTH, 2u16);
 
         sw.set_auto_hide(false);
-        term.draw(|f| sw.render(f, None, false, TREE_WIDTH)).unwrap();
-        assert_eq!(term.backend().buffer()[(x, y)].symbol(), "│", "mode off → single line");
+        term.draw(|f| sw.render(f, None, false, TREE_WIDTH))
+            .unwrap();
+        assert_eq!(
+            term.backend().buffer()[(x, y)].symbol(),
+            "│",
+            "mode off → single line"
+        );
 
         sw.set_auto_hide(true);
-        term.draw(|f| sw.render(f, None, false, TREE_WIDTH)).unwrap();
-        assert_eq!(term.backend().buffer()[(x, y)].symbol(), "║", "mode on → double line");
+        term.draw(|f| sw.render(f, None, false, TREE_WIDTH))
+            .unwrap();
+        assert_eq!(
+            term.backend().buffer()[(x, y)].symbol(),
+            "║",
+            "mode on → double line"
+        );
     }
 
     #[test]
@@ -4227,13 +4688,31 @@ mod tests {
             f.buffer_mut()[(9u16, 4u16)].set_symbol("Y"); // half-width at the same edge column
             f.buffer_mut()[(15u16, 4u16)].set_style(Style::default().bg(Color::Red)); // behind the popup
             let rect = Rect::new(10, 2, 12, 5);
-            render_popup(f, area, rect, "t", vec![Line::from("focus"), Line::from("kill"), Line::from("x")]);
+            render_popup(
+                f,
+                area,
+                rect,
+                "t",
+                vec![Line::from("focus"), Line::from("kill"), Line::from("x")],
+            );
         })
         .unwrap();
         let buf = term.backend().buffer();
-        assert_eq!(buf[(9u16, 3u16)].symbol(), " ", "wide glyph bisected by the left border is blanked");
-        assert_eq!(buf[(9u16, 4u16)].symbol(), "Y", "a half-width char at the edge stays flush — no margin");
-        assert_eq!(buf[(15u16, 4u16)].bg, Color::Reset, "the popup covers the background colour opaquely");
+        assert_eq!(
+            buf[(9u16, 3u16)].symbol(),
+            " ",
+            "wide glyph bisected by the left border is blanked"
+        );
+        assert_eq!(
+            buf[(9u16, 4u16)].symbol(),
+            "Y",
+            "a half-width char at the edge stays flush — no margin"
+        );
+        assert_eq!(
+            buf[(15u16, 4u16)].bg,
+            Color::Reset,
+            "the popup covers the background colour opaquely"
+        );
     }
 
     #[tokio::test]
@@ -4261,7 +4740,9 @@ mod tests {
                     }
                 }
             }
-            let Some((x0, y0)) = tl else { return usize::MAX };
+            let Some((x0, y0)) = tl else {
+                return usize::MAX;
+            };
             let mut w = 0;
             while x0 + w < buf.area.width - 1 && buf[(x0 + w, y0)].symbol() != "┐" {
                 w += 1;
@@ -4285,13 +4766,23 @@ mod tests {
         h.sw.show_help();
         let g = blue_grid();
         h.term.draw(|f| h.sw.render(f, Some(&g), true, 0)).unwrap();
-        assert_eq!(interior_blue(h.buf()), 0, "help popup interior must be opaque");
+        assert_eq!(
+            interior_blue(h.buf()),
+            0,
+            "help popup interior must be opaque"
+        );
 
         let mut h = Harness::new(sample());
         h.ch('/').await;
         let g = blue_grid();
-        h.term.draw(|f| h.sw.render(f, Some(&g), false, TREE_WIDTH)).unwrap();
-        assert_eq!(interior_blue(h.buf()), 0, "input popup interior must be opaque");
+        h.term
+            .draw(|f| h.sw.render(f, Some(&g), false, TREE_WIDTH))
+            .unwrap();
+        assert_eq!(
+            interior_blue(h.buf()),
+            0,
+            "input popup interior must be opaque"
+        );
 
         let mut h = Harness::new(sample());
         let build = row_index(&h, |r| matches!(r, RowRef::Session(s) if s.name == "build"));
@@ -4299,8 +4790,14 @@ mod tests {
         h.sw.user_moved = true;
         h.sw.arm_kill();
         let g = blue_grid();
-        h.term.draw(|f| h.sw.render(f, Some(&g), false, TREE_WIDTH)).unwrap();
-        assert_eq!(interior_blue(h.buf()), 0, "confirm popup interior must be opaque");
+        h.term
+            .draw(|f| h.sw.render(f, Some(&g), false, TREE_WIDTH))
+            .unwrap();
+        assert_eq!(
+            interior_blue(h.buf()),
+            0,
+            "confirm popup interior must be opaque"
+        );
     }
 
     #[test]
@@ -4329,11 +4826,20 @@ mod tests {
         assert!(sw.pending_kill.is_some());
         sw.open_input(InputMode::Rename); // as the menu's Rename would
         assert!(sw.input.is_some(), "input opened");
-        assert!(sw.pending_kill.is_none(), "arming an input cancels a pending kill");
+        assert!(
+            sw.pending_kill.is_none(),
+            "arming an input cancels a pending kill"
+        );
         sw.show_help();
-        assert!(sw.show_help && sw.input.is_none() && sw.pending_kill.is_none(), "help closes the input");
+        assert!(
+            sw.show_help && sw.input.is_none() && sw.pending_kill.is_none(),
+            "help closes the input"
+        );
         sw.arm_kill();
-        assert!(sw.pending_kill.is_some() && !sw.show_help, "arming a kill closes help");
+        assert!(
+            sw.pending_kill.is_some() && !sw.show_help,
+            "arming a kill closes help"
+        );
     }
 
     #[test]
@@ -4346,7 +4852,10 @@ mod tests {
         term.draw(|f| sw.render(f, None, false, 0)).unwrap();
         let r = sw.popup_rect; // border rect is now cached
         sw.close_input(); // close WITHOUT re-rendering → popup_rect is stale
-        assert!(!sw.begin_popup_drag(r.x, r.y), "a stale rect must not grab a closed popup");
+        assert!(
+            !sw.begin_popup_drag(r.x, r.y),
+            "a stale rect must not grab a closed popup"
+        );
     }
 
     #[test]
@@ -4367,7 +4876,10 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
         term.draw(|f| sw.render(f, None, false, 0)).unwrap();
         let r = sw.popup_rect;
-        assert!(!sw.begin_popup_drag(r.x + 2, r.y + 2), "interior press does not start a drag");
+        assert!(
+            !sw.begin_popup_drag(r.x + 2, r.y + 2),
+            "interior press does not start a drag"
+        );
     }
 
     #[test]
@@ -4398,12 +4910,21 @@ mod tests {
         // tmux view-mode style: while open, every key is consumed; q/Esc closes, the
         // rest are swallowed; while closed, nothing is consumed (falls through).
         let mut sw = Switcher::new(sample());
-        assert!(!sw.feed_help_key(b"q"), "closed → not consumed, routes normally");
+        assert!(
+            !sw.feed_help_key(b"q"),
+            "closed → not consumed, routes normally"
+        );
 
         sw.toggle_help();
         assert!(sw.feed_help_key(b"j"), "open → consumed");
-        assert!(sw.show_help, "a non-close key is swallowed but keeps help open");
-        assert!(sw.feed_help_key(b"\x1b[A"), "an arrow (ESC [) is swallowed, not a close");
+        assert!(
+            sw.show_help,
+            "a non-close key is swallowed but keeps help open"
+        );
+        assert!(
+            sw.feed_help_key(b"\x1b[A"),
+            "an arrow (ESC [) is swallowed, not a close"
+        );
         assert!(sw.show_help, "arrow keeps help open");
 
         assert!(sw.feed_help_key(b"q"), "q → consumed");
@@ -4423,7 +4944,10 @@ mod tests {
         let last = buf.area.height - 1;
         // The entry field is NO LONGER on the bottom row.
         let bottom: String = (0..w).map(|x| buf[(x, last)].symbol()).collect();
-        assert!(!bottom.contains('❯'), "entry must not be on the bottom row anymore:\n{bottom}");
+        assert!(
+            !bottom.contains('❯'),
+            "entry must not be on the bottom row anymore:\n{bottom}"
+        );
         // It is in a centered bordered box somewhere in the middle rows.
         let whole: String = (0..buf.area.height)
             .flat_map(|y| (0..w).map(move |x| (x, y)))
@@ -4441,7 +4965,10 @@ mod tests {
         assert!(h.sw.is_inputting(), "input open");
         h.key(KeyCode::Esc).await;
         assert!(!h.sw.is_inputting(), "Esc closes the input");
-        assert!(h.ops.created.lock().unwrap().is_empty(), "Esc must not create anything");
+        assert!(
+            h.ops.created.lock().unwrap().is_empty(),
+            "Esc must not create anything"
+        );
     }
 
     #[test]
@@ -4449,12 +4976,24 @@ mod tests {
         use unicode_width::UnicodeWidthStr;
         let s = "filter sessions · Esc to cancel";
         let lines = wrap_text(s, 19);
-        assert!(lines.len() >= 2, "wraps when narrower than the text: {lines:?}");
-        assert!(lines.iter().all(|l| l.as_str().width() <= 19), "no line exceeds width: {lines:?}");
-        assert!(lines.join(" ").contains("cancel"), "tail survives (not clipped): {lines:?}");
+        assert!(
+            lines.len() >= 2,
+            "wraps when narrower than the text: {lines:?}"
+        );
+        assert!(
+            lines.iter().all(|l| l.as_str().width() <= 19),
+            "no line exceeds width: {lines:?}"
+        );
+        assert!(
+            lines.join(" ").contains("cancel"),
+            "tail survives (not clipped): {lines:?}"
+        );
         // A single word longer than the width is hard-split, each piece within width.
         let long = wrap_text("supercalifragilistic", 5);
-        assert!(long.len() >= 4 && long.iter().all(|l| l.as_str().width() <= 5), "{long:?}");
+        assert!(
+            long.len() >= 4 && long.iter().all(|l| l.as_str().width() <= 5),
+            "{long:?}"
+        );
         // A wide enough width keeps it on one line.
         assert_eq!(wrap_text(s, 100).len(), 1);
     }
@@ -4468,21 +5007,29 @@ mod tests {
         h.key(KeyCode::Char('x')).await; // arm the confirm
         let buf = h.buf();
         let last = buf.area.height - 1;
-        let footer: String = (0..buf.area.width).map(|x| buf[(x, last)].symbol()).collect();
-        assert!(!footer.contains("[y]es"), "confirm must not be in the footer:\n{footer}");
+        let footer: String = (0..buf.area.width)
+            .map(|x| buf[(x, last)].symbol())
+            .collect();
+        assert!(
+            !footer.contains("[y]es"),
+            "confirm must not be in the footer:\n{footer}"
+        );
         // A red "kill" cell exists in a centered box (not the footer row).
         let red_kill = (0..last)
             .flat_map(|y| (0..buf.area.width).map(move |x| (x, y)))
             .any(|(x, y)| buf[(x, y)].symbol() == "k" && buf[(x, y)].fg == Color::Red);
-        assert!(red_kill, "the confirm popup shows red 'kill' text above the footer");
+        assert!(
+            red_kill,
+            "the confirm popup shows red 'kill' text above the footer"
+        );
     }
 
     #[tokio::test]
     async fn kill_on_window_row_targets_the_window() {
         let mut h = Harness::new(sample());
-        h.key(KeyCode::Home).await;   // local host
-        h.key(KeyCode::Right).await;  // → editor (session)
-        h.key(KeyCode::Right).await;  // → editor's first window (window 1)
+        h.key(KeyCode::Home).await; // local host
+        h.key(KeyCode::Right).await; // → editor (session)
+        h.key(KeyCode::Right).await; // → editor's first window (window 1)
         h.sw.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)); // arm kill (raw, not pumped)
         assert!(
             matches!(h.sw.pending_kill, Some(PendingKill::Window { .. })),
@@ -4506,9 +5053,9 @@ mod tests {
         // window. (Only a rebuild that actually removes the target invalidates it; the
         // session case is covered by kill_confirm_survives_a_rebuild_until_the_target_vanishes.)
         let mut h = Harness::new(sample());
-        h.key(KeyCode::Home).await;   // local host
-        h.key(KeyCode::Right).await;  // → editor (session)
-        h.key(KeyCode::Right).await;  // → editor's first window (window 1, name "shell")
+        h.key(KeyCode::Home).await; // local host
+        h.key(KeyCode::Right).await; // → editor (session)
+        h.key(KeyCode::Right).await; // → editor's first window (window 1, name "shell")
         h.sw.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)); // arm kill (raw)
         assert!(
             matches!(h.sw.pending_kill, Some(PendingKill::Window { .. })),
@@ -4524,33 +5071,40 @@ mod tests {
         );
         // 'y' now confirms and queues the kill of the armed window.
         h.sw.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
-        let op = h.sw.take_pending_op().expect("kill queued after surviving rebuild");
+        let op =
+            h.sw.take_pending_op()
+                .expect("kill queued after surviving rebuild");
         assert!(matches!(op, PendingOp::KillWindow { ref target, .. } if target == "editor:1"));
     }
 
     #[tokio::test]
     async fn rename_on_window_row_targets_the_window() {
         let mut h = Harness::new(sample());
-        h.key(KeyCode::Home).await;   // local host
-        h.key(KeyCode::Right).await;  // → editor (session)
-        h.key(KeyCode::Right).await;  // → editor's first window (window 1, name "shell")
+        h.key(KeyCode::Home).await; // local host
+        h.key(KeyCode::Right).await; // → editor (session)
+        h.key(KeyCode::Right).await; // → editor's first window (window 1, name "shell")
         h.sw.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE)); // open rename (raw)
-        // input should be open for window rename
+                                                                                // input should be open for window rename
         assert!(h.sw.input.is_some(), "rename on window row must open input");
-        assert!(h.sw.input.as_ref().unwrap().target.is_some(), "rename on window must have a target");
+        assert!(
+            h.sw.input.as_ref().unwrap().target.is_some(),
+            "rename on window must have a target"
+        );
         h.sw.set_input_text("newname");
         h.sw.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)); // confirm (raw)
         let op = h.sw.take_pending_op().expect("rename window queued");
-        assert!(matches!(op, PendingOp::RenameWindow { ref target, ref new_name, .. }
-            if target == "editor:1" && new_name == "newname"));
+        assert!(
+            matches!(op, PendingOp::RenameWindow { ref target, ref new_name, .. }
+            if target == "editor:1" && new_name == "newname")
+        );
     }
 
     #[tokio::test]
     async fn rename_window_unchanged_name_is_ignored() {
         let mut h = Harness::new(sample());
-        h.key(KeyCode::Home).await;   // local host
-        h.key(KeyCode::Right).await;  // → editor (session)
-        h.key(KeyCode::Right).await;  // → editor's first window (window 1, name "shell")
+        h.key(KeyCode::Home).await; // local host
+        h.key(KeyCode::Right).await; // → editor (session)
+        h.key(KeyCode::Right).await; // → editor's first window (window 1, name "shell")
         h.sw.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE)); // open rename (raw)
         assert!(h.sw.input.is_some(), "rename on window row must open input");
         h.sw.set_input_text("shell"); // same as current name
@@ -4564,9 +5118,9 @@ mod tests {
     #[tokio::test]
     async fn rename_window_rejects_leading_dash() {
         let mut h = Harness::new(sample());
-        h.key(KeyCode::Home).await;   // local host
-        h.key(KeyCode::Right).await;  // → editor (session)
-        h.key(KeyCode::Right).await;  // → editor's first window (window 1)
+        h.key(KeyCode::Home).await; // local host
+        h.key(KeyCode::Right).await; // → editor (session)
+        h.key(KeyCode::Right).await; // → editor's first window (window 1)
         h.sw.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE)); // open rename (raw)
         assert!(h.sw.input.is_some(), "rename on window row must open input");
         h.sw.set_input_text("-bad");
@@ -4615,18 +5169,26 @@ mod tests {
         // to the session row (parent).
         let mut sw = Switcher::new(two_window_scan());
         sw.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → window 0
-        sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));  // ↓ window 1
-        assert!(matches!(sw.current_ref(), Some(RowRef::Window { window: 1, .. })));
+        sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // ↓ window 1
+        assert!(matches!(
+            sw.current_ref(),
+            Some(RowRef::Window { window: 1, .. })
+        ));
         // simulate window 1 removed: re-apply panes without window 1.
-        sw.apply_panes("jup/api".into(), vec![
-            win(0, "w0", true, vec![pane(0, true, "bash")]),
-        ]);
-        assert!(matches!(sw.current_ref(), Some(RowRef::Window { window: 0, .. })),
-            "removed window → previous sibling");
+        sw.apply_panes(
+            "jup/api".into(),
+            vec![win(0, "w0", true, vec![pane(0, true, "bash")])],
+        );
+        assert!(
+            matches!(sw.current_ref(), Some(RowRef::Window { window: 0, .. })),
+            "removed window → previous sibling"
+        );
         // remove window 0 too (session now has no window rows): cursor to the session.
         sw.apply_panes("jup/api".into(), vec![]);
-        assert!(matches!(sw.current_ref(), Some(RowRef::Session(s)) if s.name == "api"),
-            "topmost removed → parent (session row)");
+        assert!(
+            matches!(sw.current_ref(), Some(RowRef::Session(s)) if s.name == "api"),
+            "topmost removed → parent (session row)"
+        );
     }
 
     #[test]
@@ -4640,16 +5202,27 @@ mod tests {
         term.draw(|f| sw.render(f, None, true, 0)).unwrap();
         let buf = term.backend().buffer().clone();
         // Column 0 row 0 must NOT be the divider rule '│' (the divider is gone).
-        assert_ne!(buf[(0, 0)].symbol(), "│", "divider must be absent when tree hidden");
+        assert_ne!(
+            buf[(0, 0)].symbol(),
+            "│",
+            "divider must be absent when tree hidden"
+        );
         // The attaching placeholder text "(attaching…)" begins near x=0 (after its
         // two leading spaces), proving the terminal view owns the left edge.
         let row0: String = (0..40).map(|x| buf[(x, 0)].symbol().to_string()).collect();
-        assert!(row0.contains("(attaching…)"), "terminal view fills row 0: {row0:?}");
+        assert!(
+            row0.contains("(attaching…)"),
+            "terminal view fills row 0: {row0:?}"
+        );
 
         // Sanity: with a normal width the divider rule IS present at the tree edge.
         term.draw(|f| sw.render(f, None, true, 20)).unwrap();
         let buf = term.backend().buffer().clone();
-        assert_eq!(buf[(20, 0)].symbol(), "│", "divider present at x=tree_width when shown");
+        assert_eq!(
+            buf[(20, 0)].symbol(),
+            "│",
+            "divider present at x=tree_width when shown"
+        );
     }
 
     #[test]
@@ -4668,15 +5241,32 @@ mod tests {
         let mut sw = Switcher::blank();
         sw.set_ui_prefix("C-Space".into());
         let (_title, lines) = sw.help_lines();
-        let text: String = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
-        assert!(text.contains("C-Space"), "custom prefix must appear in help:\n{text}");
-        assert!(!text.contains("C-g"), "hardcoded C-g must not appear when prefix is C-Space:\n{text}");
+        let text: String = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("C-Space"),
+            "custom prefix must appear in help:\n{text}"
+        );
+        assert!(
+            !text.contains("C-g"),
+            "hardcoded C-g must not appear when prefix is C-Space:\n{text}"
+        );
 
         // Default prefix (no setter) must still show C-g.
         let sw_default = Switcher::blank();
         let (_title, lines_default) = sw_default.help_lines();
-        let text_default: String = lines_default.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
-        assert!(text_default.contains("C-g"), "default prefix C-g must appear in help:\n{text_default}");
+        let text_default: String = lines_default
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text_default.contains("C-g"),
+            "default prefix C-g must appear in help:\n{text_default}"
+        );
     }
 
     #[test]
@@ -4688,8 +5278,20 @@ mod tests {
                 source: "jup".into(),
                 err: None,
                 sessions: vec![
-                    Session { source: "jup".into(), name: "api".into(), windows: 1, attached: false, last_attached: 200 },
-                    Session { source: "jup".into(), name: "db".into(),  windows: 1, attached: false, last_attached: 100 },
+                    Session {
+                        source: "jup".into(),
+                        name: "api".into(),
+                        windows: 1,
+                        attached: false,
+                        last_attached: 200,
+                    },
+                    Session {
+                        source: "jup".into(),
+                        name: "db".into(),
+                        windows: 1,
+                        attached: false,
+                        last_attached: 100,
+                    },
                 ],
             }],
             panes: Default::default(),
@@ -4701,7 +5303,11 @@ mod tests {
         // Already-there → no move; unknown address → no move, cursor unchanged.
         assert!(!sw.select_address("jup/db"), "already on jup/db");
         assert!(!sw.select_address("jup/ghost"), "no such session row");
-        assert_eq!(sw.terminal_view_target().target, "db", "cursor unchanged on a miss");
+        assert_eq!(
+            sw.terminal_view_target().target,
+            "db",
+            "cursor unchanged on a miss"
+        );
     }
 
     #[test]
@@ -4711,30 +5317,72 @@ mod tests {
         // width 4). The name column must size to the WIDER display width (4), so the
         // ASCII label is padded to align the trailing window count.
         let scan = Scan {
-            groups: vec![Group { source: "jup".into(), err: None, sessions: vec![
-                Session { source: "jup".into(), name: "한국".into(), windows: 2, attached: false, last_attached: 200 },
-                Session { source: "jup".into(), name: "api".into(),  windows: 2, attached: false, last_attached: 100 },
-            ]}],
+            groups: vec![Group {
+                source: "jup".into(),
+                err: None,
+                sessions: vec![
+                    Session {
+                        source: "jup".into(),
+                        name: "한국".into(),
+                        windows: 2,
+                        attached: false,
+                        last_attached: 200,
+                    },
+                    Session {
+                        source: "jup".into(),
+                        name: "api".into(),
+                        windows: 2,
+                        attached: false,
+                        last_attached: 100,
+                    },
+                ],
+            }],
             panes: Default::default(),
         };
         let sw = Switcher::new(scan); // new() calls rebuild(), which computes name_col_width
-        // name_col_width is a DISPLAY width: max(width("한국")=4, width("api")=3) = 4.
-        assert_eq!(sw.name_col_width, 4, "column width is the display width of the widest name");
+                                      // name_col_width is a DISPLAY width: max(width("한국")=4, width("api")=3) = 4.
+        assert_eq!(
+            sw.name_col_width, 4,
+            "column width is the display width of the widest name"
+        );
         // The "api" label pads to width 4 (one space), so the "   <count>" suffix
         // starts at the same display column as it does for "한국".
         // Both sessions have the same window count so suffix lengths are equal.
-        let api = sw.session_label(&Session { source: "jup".into(), name: "api".into(), windows: 2, attached: false, last_attached: 100 });
-        let cjk = sw.session_label(&Session { source: "jup".into(), name: "한국".into(), windows: 2, attached: false, last_attached: 200 });
-        assert_eq!(UnicodeWidthStr::width(api.as_str()), UnicodeWidthStr::width(cjk.as_str()),
-            "both labels occupy the same display width");
+        let api = sw.session_label(&Session {
+            source: "jup".into(),
+            name: "api".into(),
+            windows: 2,
+            attached: false,
+            last_attached: 100,
+        });
+        let cjk = sw.session_label(&Session {
+            source: "jup".into(),
+            name: "한국".into(),
+            windows: 2,
+            attached: false,
+            last_attached: 200,
+        });
+        assert_eq!(
+            UnicodeWidthStr::width(api.as_str()),
+            UnicodeWidthStr::width(cjk.as_str()),
+            "both labels occupy the same display width"
+        );
     }
 
     #[test]
     fn fit_selects_by_display_width() {
         // "한국" has display width 4. A budget of 3 cannot fit it; a budget of 4 can.
         let cands = vec!["한국".to_string(), "x".to_string()];
-        assert_eq!(fit(&cands, 3), "x", "width-4 candidate rejected at budget 3");
-        assert_eq!(fit(&cands, 4), "한국", "width-4 candidate accepted at budget 4");
+        assert_eq!(
+            fit(&cands, 3),
+            "x",
+            "width-4 candidate rejected at budget 3"
+        );
+        assert_eq!(
+            fit(&cands, 4),
+            "한국",
+            "width-4 candidate accepted at budget 4"
+        );
     }
 }
 
@@ -4748,16 +5396,53 @@ pub(crate) mod tests_support {
     struct NoopOps;
     #[async_trait::async_trait]
     impl Ops for NoopOps {
-        fn sources(&self) -> Vec<String> { unreachable!("noop_ops is only constructed, never called") }
-        async fn list_sessions(&self, _source: &str) -> anyhow::Result<Vec<Session>> { unreachable!("noop_ops is only constructed, never called") }
-        async fn new_session(&self, _source: &str, _name: &str) -> anyhow::Result<Session> { unreachable!("noop_ops is only constructed, never called") }
-        async fn new_window(&self, _source: &str, _session: &str, _name: &str) -> anyhow::Result<()> { unreachable!("noop_ops is only constructed, never called") }
-        async fn split_window(&self, _source: &str, _target: &str, _vertical: bool) -> anyhow::Result<()> { unreachable!("noop_ops is only constructed, never called") }
-        async fn kill(&self, _s: &Session) -> anyhow::Result<()> { unreachable!("noop_ops is only constructed, never called") }
-        async fn rename(&self, _s: &Session, _new_name: &str) -> anyhow::Result<()> { unreachable!("noop_ops is only constructed, never called") }
-        async fn panes(&self, _s: &Session) -> anyhow::Result<Vec<WindowPanes>> { unreachable!("noop_ops is only constructed, never called") }
-        async fn kill_window(&self, _source: &str, _target: &str) -> anyhow::Result<()> { unreachable!("noop_ops is only constructed, never called") }
-        async fn rename_window(&self, _source: &str, _target: &str, _new_name: &str) -> anyhow::Result<()> { unreachable!("noop_ops is only constructed, never called") }
+        fn sources(&self) -> Vec<String> {
+            unreachable!("noop_ops is only constructed, never called")
+        }
+        async fn list_sessions(&self, _source: &str) -> anyhow::Result<Vec<Session>> {
+            unreachable!("noop_ops is only constructed, never called")
+        }
+        async fn new_session(&self, _source: &str, _name: &str) -> anyhow::Result<Session> {
+            unreachable!("noop_ops is only constructed, never called")
+        }
+        async fn new_window(
+            &self,
+            _source: &str,
+            _session: &str,
+            _name: &str,
+        ) -> anyhow::Result<()> {
+            unreachable!("noop_ops is only constructed, never called")
+        }
+        async fn split_window(
+            &self,
+            _source: &str,
+            _target: &str,
+            _vertical: bool,
+        ) -> anyhow::Result<()> {
+            unreachable!("noop_ops is only constructed, never called")
+        }
+        async fn kill(&self, _s: &Session) -> anyhow::Result<()> {
+            unreachable!("noop_ops is only constructed, never called")
+        }
+        async fn rename(&self, _s: &Session, _new_name: &str) -> anyhow::Result<()> {
+            unreachable!("noop_ops is only constructed, never called")
+        }
+        async fn panes(&self, _s: &Session) -> anyhow::Result<Vec<WindowPanes>> {
+            unreachable!("noop_ops is only constructed, never called")
+        }
+        async fn kill_window(&self, _source: &str, _target: &str) -> anyhow::Result<()> {
+            unreachable!("noop_ops is only constructed, never called")
+        }
+        async fn rename_window(
+            &self,
+            _source: &str,
+            _target: &str,
+            _new_name: &str,
+        ) -> anyhow::Result<()> {
+            unreachable!("noop_ops is only constructed, never called")
+        }
     }
-    pub(crate) fn noop_ops() -> Arc<dyn Ops> { Arc::new(NoopOps) }
+    pub(crate) fn noop_ops() -> Arc<dyn Ops> {
+        Arc::new(NoopOps)
+    }
 }

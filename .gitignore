@@ -8,3 +8,7 @@
 # scratch
 /tmp/
 graphify-out/
+/host-mux-refactor-archive/
+
+# editor
+/.vscode/

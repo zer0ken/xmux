@@ -55,15 +55,31 @@ mod tests {
     #[test]
     fn semantic_actions_project_to_operations() {
         assert_eq!(Action::Quit.as_operation(), Some(Operation::Quit));
-        assert_eq!(Action::Width(-1).as_operation(), Some(Operation::TreeWidth(-1)));
-        assert_eq!(Action::ToggleAutoHide.as_operation(), Some(Operation::ToggleAutoHide));
-        assert_eq!(Action::FocusMux.as_operation(), Some(Operation::Focus(FocusTarget::Terminal)));
-        assert_eq!(Action::FocusTree(vec![]).as_operation(), Some(Operation::Focus(FocusTarget::Tree)));
+        assert_eq!(
+            Action::Width(-1).as_operation(),
+            Some(Operation::TreeWidth(-1))
+        );
+        assert_eq!(
+            Action::ToggleAutoHide.as_operation(),
+            Some(Operation::ToggleAutoHide)
+        );
+        assert_eq!(
+            Action::FocusMux.as_operation(),
+            Some(Operation::Focus(FocusTarget::Terminal))
+        );
+        assert_eq!(
+            Action::FocusTree(vec![]).as_operation(),
+            Some(Operation::Focus(FocusTarget::Tree))
+        );
     }
     #[test]
     fn byte_and_render_actions_have_no_operation() {
         assert_eq!(Action::Forward(vec![1, 2]).as_operation(), None);
-        assert_eq!(Action::ShowHelp.as_operation(), None, "help is a render toggle, not a domain op");
+        assert_eq!(
+            Action::ShowHelp.as_operation(),
+            None,
+            "help is a render toggle, not a domain op"
+        );
         assert_eq!(
             Action::TreeKey(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE)).as_operation(),
             None,

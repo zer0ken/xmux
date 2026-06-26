@@ -43,7 +43,10 @@ mod tests {
     fn per_session_keys_by_full_address() {
         // PerSession (psmux) keeps one PTY per session — matches cockpit.rs:249
         // (`_ => sel.address()`), the `source/session` address.
-        assert_eq!(ServerModel::PerSession.display_key("local", "local/work"), "local/work");
+        assert_eq!(
+            ServerModel::PerSession.display_key("local", "local/work"),
+            "local/work"
+        );
     }
 
     #[test]

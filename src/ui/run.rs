@@ -54,7 +54,10 @@ pub fn dump_overlay(
         Ok(t) => t,
         Err(_) => return String::new(),
     };
-    if term.draw(|f| switcher.render(f, grid, false, crate::ui::switcher::TREE_WIDTH)).is_err() {
+    if term
+        .draw(|f| switcher.render(f, grid, false, crate::ui::switcher::TREE_WIDTH))
+        .is_err()
+    {
         return String::new();
     }
     flatten_buffer(term.backend().buffer())
@@ -137,17 +140,30 @@ async fn dispatch(line: &str, cmd_tx: &mpsc::Sender<Cmd>) -> String {
         crate::control::CtlRequest::Ping => "pong".into(),
         crate::control::CtlRequest::Dump => {
             let (tx, rx) = oneshot::channel();
-            if cmd_tx.send(Cmd::Dump(tx)).await.is_err() { return String::new(); }
+            if cmd_tx.send(Cmd::Dump(tx)).await.is_err() {
+                return String::new();
+            }
             rx.await.unwrap_or_default()
         }
         crate::control::CtlRequest::Status => {
             let (tx, rx) = oneshot::channel();
-            if cmd_tx.send(Cmd::Status(tx)).await.is_err() { return String::new(); }
+            if cmd_tx.send(Cmd::Status(tx)).await.is_err() {
+                return String::new();
+            }
             rx.await.unwrap_or_default()
         }
-        crate::control::CtlRequest::Op(op) => { let _ = cmd_tx.send(Cmd::Op(op)).await; "ok".into() }
-        crate::control::CtlRequest::RawKey(ev) => { let _ = cmd_tx.send(Cmd::RawKey(ev)).await; "ok".into() }
-        crate::control::CtlRequest::RawBytes(b) => { let _ = cmd_tx.send(Cmd::RawBytes(b)).await; "ok".into() }
+        crate::control::CtlRequest::Op(op) => {
+            let _ = cmd_tx.send(Cmd::Op(op)).await;
+            "ok".into()
+        }
+        crate::control::CtlRequest::RawKey(ev) => {
+            let _ = cmd_tx.send(Cmd::RawKey(ev)).await;
+            "ok".into()
+        }
+        crate::control::CtlRequest::RawBytes(b) => {
+            let _ = cmd_tx.send(Cmd::RawBytes(b)).await;
+            "ok".into()
+        }
         crate::control::CtlRequest::Unknown(_) => "err: unknown command".into(),
     }
 }
@@ -198,9 +214,14 @@ mod tests {
         use crate::model::{FocusTarget, Operation};
         let (tx, mut rx) = mpsc::channel::<Cmd>(8);
         assert_eq!(dispatch("switch jup/api", &tx).await, "ok");
-        assert!(matches!(rx.recv().await, Some(Cmd::Op(Operation::Switch { address })) if address == "jup/api"));
+        assert!(
+            matches!(rx.recv().await, Some(Cmd::Op(Operation::Switch { address })) if address == "jup/api")
+        );
         assert_eq!(dispatch("focus tree", &tx).await, "ok");
-        assert!(matches!(rx.recv().await, Some(Cmd::Op(Operation::Focus(FocusTarget::Tree)))));
+        assert!(matches!(
+            rx.recv().await,
+            Some(Cmd::Op(Operation::Focus(FocusTarget::Tree)))
+        ));
         assert_eq!(dispatch("rescan", &tx).await, "ok");
         assert!(matches!(rx.recv().await, Some(Cmd::Op(Operation::Rescan))));
         // raw: keystrokes still flow, but only via the unstable namespace.
@@ -229,7 +250,10 @@ mod tests {
         grid.feed(b"LIVEGRID");
         let out = dump_overlay(&mut sw, Some(&grid), 100, 30);
         assert!(out.contains("editor"), "tree still rendered:\n{out}");
-        assert!(out.contains("LIVEGRID"), "live grid content rendered:\n{out}");
+        assert!(
+            out.contains("LIVEGRID"),
+            "live grid content rendered:\n{out}"
+        );
     }
 
     #[tokio::test]
@@ -267,8 +291,12 @@ mod tests {
             while let Some(cmd) = rx.recv().await {
                 match cmd {
                     Cmd::RawKey(k) => sw.handle_key(k),
-                    Cmd::Dump(reply) => { let _ = reply.send(dump_switcher(&mut sw, 100, 30)); }
-                    Cmd::Status(reply) => { let _ = reply.send("focus=tree target=editor".into()); }
+                    Cmd::Dump(reply) => {
+                        let _ = reply.send(dump_switcher(&mut sw, 100, 30));
+                    }
+                    Cmd::Status(reply) => {
+                        let _ = reply.send("focus=tree target=editor".into());
+                    }
                     Cmd::Op(_) | Cmd::RawBytes(_) => {}
                 }
             }
@@ -312,5 +340,4 @@ mod tests {
         drop(handle);
         let _ = std::fs::remove_dir_all(&dir);
     }
-
 }
