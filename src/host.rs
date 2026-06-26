@@ -516,6 +516,20 @@ impl HostClient {
         )));
     }
 
+    /// Move xmux's display client (`display_tty`) to `session` over THIS control
+    /// connection (`switch-client -c <tty> -t <session>`). The shared (tmux) session
+    /// switch: routing it over the already-open `-CC` connection avoids spawning a
+    /// fresh `ssh` per switch — on Windows ssh has no ControlMaster, so each fresh
+    /// exec pays a full connect+auth handshake (~0.5s), which is the switch lag (#2).
+    /// The server moves the named client regardless of which client issues the command.
+    pub fn switch_client_on(&self, display_tty: &str, session: &str) {
+        let _ = self.cmd_tx.send(HostCmd::Send(format!(
+            "switch-client -c {} -t {}\n",
+            display_tty,
+            crate::mux::quote_target(session)
+        )));
+    }
+
     /// Tell the child its new client size (the metadata client's size; the PTY
     /// attachments are sized independently by the cockpit).
     pub fn resize(&mut self, cols: u16, rows: u16) {

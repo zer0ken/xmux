@@ -356,11 +356,16 @@ fn select_attach(
     cols: u16,
     rows: u16,
     tree_width: u16,
+    mgr: &HostManager,
 ) -> bool {
     if sel.is_empty() {
         return false;
     }
     let (cols, rows) = terminal_view_size(cols, rows, tree_width);
+    // The host's open `-CC` control connection, if any. switch-client/select-window
+    // ride it instead of a fresh `ssh` per switch (the slow path on Windows, which
+    // has no ssh ControlMaster — each exec re-handshakes, ~0.5s; see #2).
+    let control = mgr.get(&sel.source);
     let Some(host) = hosts.get_mut(&sel.source) else {
         return false;
     };
@@ -400,14 +405,19 @@ fn select_attach(
             // colours/glyphs). The per-host PTY reuses ONE grid across sessions, so
             // without this the old session's uncovered cells stay on screen.
             registry.clear_grid(&key);
-            let plan = host.mux.switch_plan(&sel.session);
             let tty = host.display_tty.0.clone().unwrap_or_default();
-            let lowered = {
-                let builder = |session: &str| host.mux.switch_client_argv(&tty, session);
-                host.transport.lower_switch(&plan, &builder)
-            };
-            if let Some(lowered) = lowered {
-                run_lowered(lowered);
+            if let Some(client) = control {
+                // Over the open -CC connection — no fresh ssh handshake.
+                client.switch_client_on(&tty, &sel.session);
+            } else {
+                let plan = host.mux.switch_plan(&sel.session);
+                let lowered = {
+                    let builder = |session: &str| host.mux.switch_client_argv(&tty, session);
+                    host.transport.lower_switch(&plan, &builder)
+                };
+                if let Some(lowered) = lowered {
+                    run_lowered(lowered);
+                }
             }
             host.display.set_shows(&key, &sel.session);
         }
@@ -426,11 +436,16 @@ fn select_attach(
         let folded_into_attach = !already && shared;
         if !folded_into_attach {
             let target = crate::mux::window_target(&sel.session, win);
-            let mux_argv = host.mux.select_window_plan(&target);
-            let (cmd, args) = host.transport.exec_argv(false, &mux_argv);
-            let mut argv = vec![cmd];
-            argv.extend(args);
-            run_lowered(crate::model::LoweredSwitch::Local(argv));
+            if let Some(client) = control {
+                // Over the open -CC connection — no fresh ssh handshake.
+                client.select_window_on(&target);
+            } else {
+                let mux_argv = host.mux.select_window_plan(&target);
+                let (cmd, args) = host.transport.exec_argv(false, &mux_argv);
+                let mut argv = vec![cmd];
+                argv.extend(args);
+                run_lowered(crate::model::LoweredSwitch::Local(argv));
+            }
         }
     }
     true
@@ -1909,7 +1924,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     let t = std::time::Instant::now();
                     if select_attach(
                         &mut registry, &mut hosts, &selection, &worker,
-                        &mut attach_seq, cols, body_rows, tree_width,
+                        &mut attach_seq, cols, body_rows, tree_width, &mgr,
                     ) {
                         last_attached_sel = selection.clone();
                     }
@@ -2321,7 +2336,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     if !registry.contains(&key) && !in_flight_for_key {
                         select_attach(
                             &mut registry, &mut hosts, &selection, &worker,
-                            &mut attach_seq, cols, body_rows, tree_width,
+                            &mut attach_seq, cols, body_rows, tree_width, &mgr,
                         );
                     }
                 }
@@ -3048,20 +3063,24 @@ mod tests {
         let worker = crate::display::DisplayWorker::new(ptx);
         let mut registry = AttachRegistry::new();
         let mut attach_seq = 0u64;
+        // No control client registered ⇒ select_attach falls back to the lowered-switch
+        // path (this test exercises attach/in-flight latching, not the switch transport).
+        let (etx, _erx) = tokio::sync::mpsc::unbounded_channel::<crate::host::HostEvent>();
+        let mgr = HostManager::new(etx);
 
         let sel_a = Selection { source: "jup".into(), session: "a".into(), window: None };
         let sel_b = Selection { source: "jup".into(), session: "b".into(), window: None };
 
         // First attach (session a): requests off-loop, latches display.current[jup]=a, marks in-flight.
         assert!(select_attach(&mut registry, &mut hosts, &sel_a, &worker,
-            &mut attach_seq, 80, 24, crate::ui::switcher::TREE_WIDTH));
+            &mut attach_seq, 80, 24, crate::ui::switcher::TREE_WIDTH, &mgr));
         assert_eq!(hosts.get("jup").unwrap().display.shows("jup"), Some("a"));
         assert!(hosts.get("jup").unwrap().display.in_flight.contains_key("jup"), "first attach is in flight");
 
         // Select session b of the SAME host before a's Ready arrives: must NOT overwrite the
         // shown session (else the switch-client to b after a lands would never fire).
         assert!(select_attach(&mut registry, &mut hosts, &sel_b, &worker,
-            &mut attach_seq, 80, 24, crate::ui::switcher::TREE_WIDTH));
+            &mut attach_seq, 80, 24, crate::ui::switcher::TREE_WIDTH, &mgr));
         assert_eq!(hosts.get("jup").unwrap().display.shows("jup"), Some("a"),
             "an in-flight attach must not latch the shown session to the new target");
     }
