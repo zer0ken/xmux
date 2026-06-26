@@ -237,34 +237,36 @@ pub fn for_kind(kind: &str, bin: &str) -> Box<dyn Mux> {
     Box::new(Tmux { bin: bin.to_string() })
 }
 
-/// Picks the backend for a server from its `<bin> help` output. Open/Closed: a new
-/// mux type is added via a known_muxes() entry, not a branch here. tmux is the
-/// fallback because it has no positive help signal.
-fn classify_help(bin: &str, help_out: &str) -> Box<dyn Mux> {
-    let low = help_out.to_lowercase();
-    for k in known_muxes() {
-        if low.contains(k.name) {
-            return (k.make)(bin.to_string());
+/// Probes a server's true identity over `transport`, independent of its binary name
+/// and `-V` (psmux mimics tmux's `-V`, reporting a fake `tmux 3.3.6`). Two stages:
+///
+/// 1. `<bin> help` — psmux names itself here (its reliable positive signal). A real
+///    tmux has no `help` command (`tmux help` exits non-zero), so a known-mux marker
+///    in the output means that mux.
+/// 2. `<bin> -V` — reached only when stage 1 carried no marker. A working `-V` is a
+///    real tmux; psmux never reaches here because its `help` already matched.
+///
+/// `Some(backend)` means a probe was conclusive. `None` means BOTH probes failed
+/// (unreachable host / missing binary), so the caller keeps its current backend and
+/// retries on a later scan.
+pub async fn detect_backend(transport: &Transport, bin: &str, runner: &dyn Runner) -> Option<Box<dyn Mux>> {
+    // psmux identifies itself in `help`; check it first because it lies in `-V`.
+    let (name, args) = transport.exec_argv(false, &[bin.to_string(), "help".to_string()]);
+    if let Ok(out) = runner.run(&name, &args).await {
+        let low = String::from_utf8_lossy(&out).to_lowercase();
+        for k in known_muxes() {
+            if low.contains(k.name) {
+                return Some((k.make)(bin.to_string()));
+            }
         }
     }
-    Box::new(Tmux { bin: bin.to_string() })
-}
-
-/// Probes a server's true identity over `transport`, independent of its binary name
-/// and `-V` (psmux mimics tmux). Runs the shared `<bin> help` probe. `Some(backend)`
-/// means the probe ran; `None` means inconclusive, so the caller keeps its backend
-/// and can retry on a later scan.
-pub async fn detect_backend(transport: &Transport, bin: &str, runner: &dyn Runner) -> Option<Box<dyn Mux>> {
-    // ponytail: the shared `help` probe plus per-mux marker covers tmux clones that
-    // name themselves in help; a mux that needs a different probe should extend
-    // MuxKind with its own probe. A real tmux configured as psmux is not
-    // auto-corrected because there is no positive tmux signal, and a failed ssh
-    // probe is indistinguishable from an unreachable host.
-    let (name, args) = transport.exec_argv(false, &[bin.to_string(), "help".to_string()]);
-    match runner.run(&name, &args).await {
-        Ok(out) => Some(classify_help(bin, &String::from_utf8_lossy(&out))),
-        Err(_) => None,
+    // No known-mux marker. A working `-V` is a real tmux (its only positive signal);
+    // both probes failing is inconclusive (unreachable / not a mux) → retry later.
+    let (name, args) = transport.exec_argv(false, &[bin.to_string(), "-V".to_string()]);
+    if runner.run(&name, &args).await.is_ok() {
+        return Some(Box::new(Tmux { bin: bin.to_string() }));
     }
+    None
 }
 
 #[cfg(test)]
@@ -417,48 +419,101 @@ mod tests {
         assert_eq!(m.kind(), "tmux");
     }
 
-    struct FakeRunner {
-        result: std::sync::Mutex<Option<Result<Vec<u8>, RunError>>>,
+    /// Answers the two detection probes (`help` and `-V`) independently so a test can
+    /// model a real tmux (help fails, `-V` succeeds), a psmux (help names itself), or
+    /// an unreachable host (both fail). `None` for a probe ⇒ that probe errors.
+    struct ProbeRunner {
+        help: Option<Vec<u8>>,
+        version: Option<Vec<u8>>,
     }
 
-    impl FakeRunner {
-        fn ok(out: &str) -> Self {
-            FakeRunner { result: std::sync::Mutex::new(Some(Ok(out.as_bytes().to_vec()))) }
-        }
-
-        fn err() -> Self {
-            FakeRunner { result: std::sync::Mutex::new(Some(Err(RunError::Other("down".into())))) }
+    impl ProbeRunner {
+        fn new(help: Option<&str>, version: Option<&str>) -> Self {
+            ProbeRunner {
+                help: help.map(|s| s.as_bytes().to_vec()),
+                version: version.map(|s| s.as_bytes().to_vec()),
+            }
         }
     }
 
     #[async_trait]
-    impl Runner for FakeRunner {
-        async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
-            self.result.lock().unwrap().take().unwrap()
+    impl Runner for ProbeRunner {
+        async fn run(&self, _name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
+            // The `-V` probe's arg is `-V` (local) or `<bin> -V` (ssh-wrapped); anything
+            // else is the `help` probe.
+            let probe = if args.iter().any(|a| a.contains("-V")) {
+                &self.version
+            } else {
+                &self.help
+            };
+            probe.clone().ok_or_else(|| RunError::Other("down".into()))
         }
     }
 
     #[tokio::test]
-    async fn detect_backend_classifies_psmux_help_by_behavior() {
+    async fn detect_backend_classifies_psmux_by_help_marker() {
         let transport = Transport::Local { socket: None };
-        let got = detect_backend(&transport, "tmux", &FakeRunner::ok("usage: PsMuX help")).await.unwrap();
+        // psmux names itself in `help`; `-V` is never reached (it would lie "tmux 3.3.6").
+        let runner = ProbeRunner::new(Some("usage: PsMuX help"), Some("tmux 3.3.6"));
+        let got = detect_backend(&transport, "tmux", &runner).await.unwrap();
         assert_eq!(got.kind(), "psmux");
         assert_eq!(got.server_model(), ServerModel::PerSession);
         assert_eq!(got.attach_plan("api", None), argv(&["tmux", "attach", "-t", "api"]));
     }
 
     #[tokio::test]
-    async fn detect_backend_falls_back_to_tmux_without_psmux_marker() {
+    async fn detect_backend_classifies_real_tmux_via_version_when_help_errors() {
+        // Regression: real tmux has no `help` command (`tmux help` exits non-zero), so
+        // the help probe errors. The `-V` fallback must still identify it as tmux —
+        // otherwise a correctly-configured tmux host never gets detected/connected.
         let transport = Transport::Local { socket: None };
-        let got = detect_backend(&transport, "tmux", &FakeRunner::ok("usage: tmux commands")).await.unwrap();
+        let runner = ProbeRunner::new(None, Some("tmux 3.5a"));
+        let got = detect_backend(&transport, "tmux", &runner).await.unwrap();
         assert_eq!(got.kind(), "tmux");
         assert_eq!(got.server_model(), ServerModel::Shared);
     }
 
     #[tokio::test]
-    async fn detect_backend_err_is_inconclusive() {
+    async fn detect_backend_classifies_tmux_when_help_lacks_marker() {
+        // A `help` that succeeds without a known-mux marker still falls through to `-V`.
         let transport = Transport::Local { socket: None };
-        assert!(detect_backend(&transport, "tmux", &FakeRunner::err()).await.is_none());
+        let runner = ProbeRunner::new(Some("usage: tmux commands"), Some("tmux 3.5a"));
+        let got = detect_backend(&transport, "tmux", &runner).await.unwrap();
+        assert_eq!(got.kind(), "tmux");
+        assert_eq!(got.server_model(), ServerModel::Shared);
+    }
+
+    // LIVE: probe the REAL detect_backend against the configured hosts. `#[ignore]`
+    // (needs ssh jupiter00 + a local psmux). Run on demand:
+    //   cargo test --lib model::mux::tests::detect_backend_live -- --ignored --nocapture
+    #[ignore = "live: needs ssh jupiter00 and local psmux"]
+    #[tokio::test]
+    async fn detect_backend_live() {
+        use crate::source::ExecRunner;
+        let ssh = Transport::Ssh {
+            alias: "jupiter00".into(),
+            control_path: String::new(),
+            os: "windows".into(),
+        };
+        let got = detect_backend(&ssh, "tmux", &ExecRunner).await;
+        eprintln!(
+            "DETECT jupiter00/tmux -> {:?}",
+            got.as_ref().map(|m| (m.kind(), m.server_model()))
+        );
+        let local = Transport::Local { socket: None };
+        let got = detect_backend(&local, "psmux", &ExecRunner).await;
+        eprintln!(
+            "DETECT local/psmux -> {:?}",
+            got.as_ref().map(|m| (m.kind(), m.server_model()))
+        );
+    }
+
+    #[tokio::test]
+    async fn detect_backend_both_probes_fail_is_inconclusive() {
+        // Unreachable host / missing binary: both probes error ⇒ None (retry later).
+        let transport = Transport::Local { socket: None };
+        let runner = ProbeRunner::new(None, None);
+        assert!(detect_backend(&transport, "tmux", &runner).await.is_none());
     }
 
     #[test]
