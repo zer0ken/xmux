@@ -1,4 +1,4 @@
-//! The leaf value types a `Mux` method (or `Transport::lower_switch`) returns:
+//! The leaf value types a `Backend` method (or `Transport::lower_switch`) returns:
 //! the transport-blind intent for moving a shared attachment (`SwitchPlan`), how a
 //! session's death is detected (`DeathSignal`), where change events come from
 //! (`EventSource`), and the captured display tty (`DisplayTty`). No logic — these
@@ -6,7 +6,7 @@
 //! nowhere else; Phase 3's death wiring adds free helpers over this one enum.
 
 /// TRANSPORT-BLIND intent: how (or whether) to move a host's ONE shared display
-/// attachment onto a session. Produced by `Mux::switch_plan`; lowered to a runnable
+/// attachment onto a session. Produced by `Backend::switch_plan`; lowered to a runnable
 /// command by `Transport::lower_switch`. Carries NO transport detail and NO tty.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SwitchPlan {
@@ -43,7 +43,7 @@ pub enum EventSource {
 }
 
 /// xmux's own display-client tty, captured in memory (not a `/tmp` file). Read by
-/// `Mux::switch_client_argv` to build `switch-client -c <tty>`, and filtered against
+/// `Backend::switch_client_argv` to build `switch-client -c <tty>`, and filtered against
 /// by `DeathSignal::ControlNotice`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DisplayTty(pub Option<String>);

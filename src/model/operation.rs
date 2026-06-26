@@ -3,8 +3,8 @@
 //! does. `Switch.address` is the `source/session[:window]` form spelled out the
 //! same way everywhere (Session::address / Selection::address). Session
 //! create/kill/rename is OUT of this plan's scope: no ctl parser, no apply arm,
-//! and no Mux lifecycle method exist for it, so those variants are intentionally
-//! absent (a future release adds the variant + verb + apply arm + Mux method
+//! and no Backend lifecycle method exist for it, so those variants are intentionally
+//! absent (a future release adds the variant + verb + apply arm + Backend method
 //! together).
 
 #[derive(Clone, Debug, PartialEq, Eq)]

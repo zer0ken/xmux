@@ -6,8 +6,9 @@
 
 use std::collections::HashMap;
 
+use crate::backend::Backend;
 use crate::host::HostInventory;
-use crate::model::{DisplayTty, Mux, ServerModel, Transport};
+use crate::model::{DisplayTty, ServerModel, Transport};
 use crate::source::Runner;
 
 /// Connecting / live / unreachable — replaces the loose `connecting` AtomicBool
@@ -71,7 +72,7 @@ impl HostDisplay {
 /// `AttachRegistry`/`DisplayWorker`; `Host` owns only the bookkeeping.
 pub struct Host {
     pub transport: Transport,
-    pub mux: Box<dyn Mux>,
+    pub mux: Box<dyn Backend>,
     /// Live session/window inventory.
     pub inventory: HostInventory,
     /// Which session each display_key shows + what spawn is in flight.
@@ -87,7 +88,7 @@ pub struct Host {
 impl Host {
     /// Builds a host from a transport + mux. Replaces `source::build`'s per-source
     /// construction (source.rs:460), one host at a time.
-    pub fn new(transport: Transport, mux: Box<dyn Mux>) -> Self {
+    pub fn new(transport: Transport, mux: Box<dyn Backend>) -> Self {
         Host {
             transport,
             mux,
@@ -116,7 +117,7 @@ impl Host {
             return;
         }
         let bin = self.mux.bin().to_string();
-        let Some(backend) = crate::model::mux::detect_backend(&self.transport, &bin, runner).await
+        let Some(backend) = crate::backend::detect_backend(&self.transport, &bin, runner).await
         else {
             return;
         };
@@ -272,17 +273,18 @@ impl Host {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{DeathSignal, EventSource, Mux, ServerModel, SwitchPlan, Transport};
+    use crate::backend::Backend;
+    use crate::model::{DeathSignal, EventSource, ServerModel, SwitchPlan, Transport};
     use crate::session::Session;
     use crate::source::{RunError, Runner};
 
     /// A minimal in-test mux: only `server_model` is exercised in the early tasks. The
     /// other methods return trivially since these tasks wire no I/O. Shaped to the
-    /// REVISED `Mux` trait (switch_plan/switch_client_argv, ControlNotice, no lifecycle).
+    /// REVISED `Backend` trait (switch_plan/switch_client_argv, ControlNotice, no lifecycle).
     struct StubMux(ServerModel);
 
     #[async_trait::async_trait]
-    impl Mux for StubMux {
+    impl Backend for StubMux {
         fn kind(&self) -> &str {
             "stub"
         }
@@ -486,7 +488,7 @@ mod tests {
         }
     }
     #[async_trait::async_trait]
-    impl Mux for EnumMux {
+    impl Backend for EnumMux {
         fn kind(&self) -> &str {
             "enum"
         }
@@ -713,7 +715,7 @@ mod tests {
                 control_path: String::new(),
                 os: "linux".into(),
             },
-            crate::model::mux::for_binary("tmux"), // Shared → DeathSignal::ControlNotice
+            crate::backend::for_binary("tmux"), // Shared → DeathSignal::ControlNotice
         );
         assert!(
             !h.matches_display_tty("/dev/pts/3"),
@@ -735,7 +737,7 @@ mod tests {
         use crate::model::Transport;
         let h = Host::new(
             Transport::Local { socket: None },
-            crate::model::mux::for_binary("psmux"), // PerSession → DeathSignal::PathStat
+            crate::backend::for_binary("psmux"), // PerSession → DeathSignal::PathStat
         );
         let name = format!("xmux-hostlive-{}", std::process::id());
         let path = crate::model::death::psmux_port_path(&name);
@@ -755,7 +757,7 @@ mod tests {
                 control_path: String::new(),
                 os: "linux".into(),
             },
-            crate::model::mux::for_binary("tmux"), // Shared → not PathStat
+            crate::backend::for_binary("tmux"), // Shared → not PathStat
         );
         // A Shared host never dies by a .port file — liveness here is unconditionally true.
         assert!(h.psmux_session_live("anything"));
@@ -805,7 +807,7 @@ mod tests {
     async fn detect_and_correct_replaces_behavior_and_preserves_bin() {
         let mut h = Host::new(
             Transport::Local { socket: None },
-            crate::model::mux::for_binary("tmux"),
+            crate::backend::for_binary("tmux"),
         );
         let runner = DetectRunner::ok("psmux command help");
         h.detect_and_correct(&runner).await;
@@ -825,7 +827,7 @@ mod tests {
     async fn detect_and_correct_retries_after_inconclusive_probe() {
         let mut h = Host::new(
             Transport::Local { socket: None },
-            crate::model::mux::for_binary("tmux"),
+            crate::backend::for_binary("tmux"),
         );
         let runner = DetectRunner::err();
         h.detect_and_correct(&runner).await;

@@ -1,4 +1,4 @@
-//! One mux backend per mux. `Box<dyn Mux>` lives inside a `Host`. The method set is
+//! One mux backend per mux. `Box<dyn Backend>` lives inside a `Host`. The method set is
 //! exactly what the supervisor + control reader + manage layer call — no feature
 //! catalogue, and NO session-level lifecycle (no end-to-end caller in this plan).
 //! The backend owns its binary name and `ServerModel`, so nothing above threads a
@@ -20,7 +20,7 @@ use crate::source::{is_no_sessions, ExecRunner, RunError, Runner};
 /// command. Every other method is transport-blind: `switch_plan` returns intent,
 /// the `Transport` lowers it.
 #[async_trait]
-pub trait Mux: Send + Sync {
+pub trait Backend: Send + Sync {
     /// The canonical mux identity, for backend comparison and diagnostics.
     fn kind(&self) -> &str;
 
@@ -91,7 +91,7 @@ pub struct Tmux {
 }
 
 #[async_trait]
-impl Mux for Tmux {
+impl Backend for Tmux {
     fn kind(&self) -> &str {
         "tmux"
     }
@@ -181,7 +181,7 @@ pub struct Psmux {
 }
 
 #[async_trait]
-impl Mux for Psmux {
+impl Backend for Psmux {
     fn kind(&self) -> &str {
         "psmux"
     }
@@ -274,7 +274,7 @@ impl Mux for Psmux {
 
 struct MuxKind {
     name: &'static str,
-    make: fn(String) -> Box<dyn Mux>,
+    make: fn(String) -> Box<dyn Backend>,
 }
 
 // `name` is the canonical identity, help-output marker, and conventional binary
@@ -288,7 +288,7 @@ fn known_muxes() -> &'static [MuxKind] {
 
 /// Picks a mux backend by conventional binary name. tmux is the fallback, matching
 /// the default in `Config::local_bin` / `host_specs`.
-pub fn for_binary(bin: &str) -> Box<dyn Mux> {
+pub fn for_binary(bin: &str) -> Box<dyn Backend> {
     for k in known_muxes() {
         if k.name == bin {
             return (k.make)(bin.to_string());
@@ -301,7 +301,7 @@ pub fn for_binary(bin: &str) -> Box<dyn Mux> {
 
 /// Builds a backend by canonical identity while preserving the binary used to
 /// reach it.
-pub fn for_kind(kind: &str, bin: &str) -> Box<dyn Mux> {
+pub fn for_kind(kind: &str, bin: &str) -> Box<dyn Backend> {
     for k in known_muxes() {
         if k.name == kind {
             return (k.make)(bin.to_string());
@@ -328,7 +328,7 @@ pub async fn detect_backend(
     transport: &Transport,
     bin: &str,
     runner: &dyn Runner,
-) -> Option<Box<dyn Mux>> {
+) -> Option<Box<dyn Backend>> {
     // psmux identifies itself in `help`; check it first because it lies in `-V`.
     let (name, args) = transport.exec_argv(false, &[bin.to_string(), "help".to_string()]);
     if let Ok(out) = runner.run(&name, &args).await {
@@ -377,9 +377,9 @@ mod tests {
 
     #[test]
     fn tmux_is_object_safe() {
-        // The whole point: a Box<dyn Mux> must compile. If the trait gains a
+        // The whole point: a Box<dyn Backend> must compile. If the trait gains a
         // non-dispatchable method this stops compiling.
-        let _m: Box<dyn Mux> = Box::new(tmux());
+        let _m: Box<dyn Backend> = Box::new(tmux());
     }
 
     #[test]
@@ -467,7 +467,7 @@ mod tests {
 
     // LIVE: enumerate over a real local tmux server. `#[ignore]` (needs tmux + a
     // server). Run on demand:
-    //   cargo test --lib model::mux::tests::tmux_enumerate_live -- --ignored --nocapture
+    //   cargo test --lib backend::tests::tmux_enumerate_live -- --ignored --nocapture
     #[ignore = "live: needs a running local tmux server"]
     #[tokio::test]
     async fn tmux_enumerate_live() {
@@ -493,7 +493,7 @@ mod tests {
 
     #[test]
     fn psmux_is_object_safe() {
-        let _m: Box<dyn Mux> = Box::new(psmux());
+        let _m: Box<dyn Backend> = Box::new(psmux());
     }
 
     #[test]
@@ -632,7 +632,7 @@ mod tests {
 
     // LIVE: probe the REAL detect_backend against the configured hosts. `#[ignore]`
     // (needs ssh jupiter00 + a local psmux). Run on demand:
-    //   cargo test --lib model::mux::tests::detect_backend_live -- --ignored --nocapture
+    //   cargo test --lib backend::tests::detect_backend_live -- --ignored --nocapture
     #[ignore = "live: needs ssh jupiter00 and local psmux"]
     #[tokio::test]
     async fn detect_backend_live() {

@@ -694,7 +694,7 @@ fn spawn_host_detection(
     let transport = transport_for_source(&src);
     let bin = src.binary.clone();
     tokio::spawn(async move {
-        let mut host = crate::model::Host::new(transport, crate::model::mux::for_binary(&bin));
+        let mut host = crate::model::Host::new(transport, crate::backend::for_binary(&bin));
         host.detect_and_correct(&crate::source::ExecRunner).await;
         let detected = host.detected.then_some(host.mux);
         let _ = tx.send(LocalEnum::Scanned { source, detected });
@@ -710,7 +710,7 @@ fn spawn_detected_enumeration(
 ) {
     use crate::source::Runner;
     tokio::spawn(async move {
-        let mux = crate::model::mux::for_kind(&mux_kind, &mux_bin);
+        let mux = crate::backend::for_kind(&mux_kind, &mux_bin);
         let (sessions, err) = match mux.enumerate(&transport).await {
             Ok(s) => (s, None),
             Err(e) => (Vec::new(), Some(e.to_string())),
@@ -790,7 +790,7 @@ fn scan_or_dispatch_host(
 fn apply_scan_result(
     hosts: &mut crate::model::Hosts,
     source: &str,
-    detected: Option<Box<dyn crate::model::Mux>>,
+    detected: Option<Box<dyn crate::backend::Backend>>,
 ) {
     let Some(host) = hosts.get_mut(source) else {
         return;
@@ -1040,7 +1040,7 @@ fn handle_tree_bytes(
 enum LocalEnum {
     Scanned {
         source: String,
-        detected: Option<Box<dyn crate::model::Mux>>,
+        detected: Option<Box<dyn crate::backend::Backend>>,
     },
     Sessions {
         source: String,
@@ -2965,11 +2965,11 @@ mod tests {
                 control_path: String::new(),
                 os: "linux".into(),
             },
-            crate::model::for_binary("tmux"), // Shared
+            crate::backend::for_binary("tmux"), // Shared
         ));
         hosts.insert(crate::model::Host::new(
             crate::model::Transport::Local { socket: None }, // host id == "local"
-            crate::model::for_binary("psmux"),               // PerSession
+            crate::backend::for_binary("psmux"),             // PerSession
         ));
         let rsel = Selection {
             source: "jup".into(),
@@ -2994,13 +2994,13 @@ mod tests {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::model::Transport::Local { socket: None },
-            crate::model::for_binary("tmux"),
+            crate::backend::for_binary("tmux"),
         ));
 
         apply_scan_result(
             &mut hosts,
             "local",
-            Some(crate::model::mux::for_kind("psmux", "tmux")),
+            Some(crate::backend::for_kind("psmux", "tmux")),
         );
 
         let host = hosts.get("local").unwrap();
@@ -3018,13 +3018,13 @@ mod tests {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::model::Transport::Local { socket: None },
-            crate::model::for_binary("psmux"),
+            crate::backend::for_binary("psmux"),
         ));
 
         apply_scan_result(
             &mut hosts,
             "local",
-            Some(crate::model::mux::for_kind("tmux", "psmux")),
+            Some(crate::backend::for_kind("tmux", "psmux")),
         );
 
         let host = hosts.get("local").unwrap();
@@ -3097,7 +3097,7 @@ mod tests {
                 control_path: String::new(),
                 os: "linux".into(),
             },
-            crate::model::for_binary("tmux"), // Control event source
+            crate::backend::for_binary("tmux"), // Control event source
         );
         host.detected = true;
         hosts.insert(host);
@@ -3134,9 +3134,9 @@ mod tests {
         // Tree focused (terminal_focused = false): always the natural width.
         assert_eq!(reconciled_tree_width(false, true, 48), 48);
         assert_eq!(reconciled_tree_width(false, false, 48), 48);
-        // Mux focused + setting on: hidden (0).
+        // Backend focused + setting on: hidden (0).
         assert_eq!(reconciled_tree_width(true, true, 48), 0);
-        // Mux focused + setting off: stays shown at natural width.
+        // Backend focused + setting off: stays shown at natural width.
         assert_eq!(reconciled_tree_width(true, false, 48), 48);
     }
 
@@ -3636,7 +3636,7 @@ mod tests {
                 control_path: String::new(),
                 os: "linux".into(),
             },
-            crate::model::for_binary("tmux"),
+            crate::backend::for_binary("tmux"),
         ));
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
         let worker = crate::display::DisplayWorker::new(ptx);
@@ -3706,7 +3706,7 @@ mod tests {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::model::Transport::Local { socket: None },
-            crate::model::for_binary("psmux"),
+            crate::backend::for_binary("psmux"),
         ));
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
         let mut worker = crate::display::DisplayWorker::with_spawner(
@@ -3788,7 +3788,7 @@ mod tests {
         use crate::model::{LoweredSwitch, Transport};
         let host = crate::model::Host::new(
             Transport::Local { socket: None },
-            crate::model::for_binary("tmux"),
+            crate::backend::for_binary("tmux"),
         );
         let plan = host.mux.switch_plan("b");
         let tty = "/dev/pts/7";
@@ -3827,7 +3827,7 @@ mod tests {
                 control_path: String::new(),
                 os: "linux".into(),
             },
-            crate::model::for_binary("tmux"),
+            crate::backend::for_binary("tmux"),
         ));
         hosts
     }
@@ -4012,7 +4012,7 @@ mod tests {
     //    only — the click is not delivered); right-click never moves focus (it opens the
     //    tree context menu). Once the mux pane is focused, clicks/scroll/
     //    right-click reach the mux (status-bar click, pane select, scroll, context menu).
-    //    Mux mouse forwarding requires the mux to have `mouse on` (`set -g mouse on`);
+    //    Backend mouse forwarding requires the mux to have `mouse on` (`set -g mouse on`);
     //    xmux only forwards. (Windows: capture needs ENABLE_VIRTUAL_TERMINAL_INPUT +
     //    the SGR DECSET that crossterm's WinAPI path omits — see proxy::term.)
     // =========================================================================
@@ -4371,7 +4371,7 @@ mod tests {
             let mut hosts = crate::model::Hosts::default();
             hosts.insert(crate::model::Host::new(
                 crate::model::Transport::Local { socket: None },
-                crate::model::for_binary("psmux"),
+                crate::backend::for_binary("psmux"),
             ));
             let selection = Selection {
                 source: "local".into(),

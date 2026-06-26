@@ -1,5 +1,5 @@
 //! The machine boundary: how a mux argv reaches the server. SEPARATE from which
-//! mux runs there (that is `Mux`). `Local` injects `-S <socket>`; `Ssh` wraps the
+//! mux runs there (that is `Backend`). `Local` injects `-S <socket>`; `Ssh` wraps the
 //! argv in an ssh connection with the right tty/batch options. This owns argv
 //! assembly only — it never decides a server model.
 
@@ -46,7 +46,7 @@ impl Transport {
         }
     }
 
-    /// True for `Ssh`. The ONLY query of transport kind — no `Mux` or supervisor
+    /// True for `Ssh`. The ONLY query of transport kind — no `Backend` or supervisor
     /// code reads this to decide a server MODEL (that is `ServerModel`).
     pub fn is_remote(&self) -> bool {
         matches!(self, Transport::Ssh { .. })
@@ -305,7 +305,7 @@ mod tests {
     }
 
     // The closure the supervisor supplies, closed over the captured display tty.
-    // Here a fixed tty stands in. Matches the shape Mux::switch_client_argv builds.
+    // Here a fixed tty stands in. Matches the shape Backend::switch_client_argv builds.
     fn switch_argv_for(tty: &str) -> impl Fn(&str) -> Vec<String> + '_ {
         move |session: &str| argv(&["tmux", "switch-client", "-c", tty, "-t", session])
     }

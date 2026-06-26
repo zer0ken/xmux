@@ -6,6 +6,7 @@
 //! `cli::run` is the sole public entry called by the binary shim in `main.rs`.
 
 pub mod attach;
+pub mod backend;
 pub mod cli;
 pub mod cockpit;
 pub mod config;
