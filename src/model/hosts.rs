@@ -121,6 +121,10 @@ impl Hosts {
             // owns the registry + the recover-from-detach rearm); the Hosts map holds no
             // per-attach state to fold here.
             ClientDetached { .. } => {}
+            // Poll-host data carriers (enumeration results) + the detection probe. Their
+            // sessions/backend are applied by the caller (apply_source_result /
+            // apply_scan_result); they fold no Host-owned liveness here.
+            Scanned { .. } | Sessions { .. } | Panes { .. } => {}
         }
     }
 }

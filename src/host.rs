@@ -86,6 +86,28 @@ pub enum HostEvent {
     /// supervisor's `Host.display_tty`), so it forwards the client tty; the supervisor
     /// reaps the display attach ONLY when `client` matches `Host.display_tty`.
     ClientDetached { host: String, client: String },
+    /// A detection probe resolved (`detect_and_correct`): the host's backend was
+    /// (re)identified. `None` = still undetected / unreachable. Folded back via
+    /// `apply_scan_result`; emitted by the fire-and-forget detection task.
+    Scanned {
+        source: String,
+        detected: Option<Box<dyn crate::backend::Backend>>,
+    },
+    /// A POLL host re-enumerated its sessions. A poll host has no host-level control
+    /// stream, so its [`HostManager`]-owned poll task emits this onto the same bus.
+    /// `err` carries a transient enumeration failure (shown in the tree; attachments
+    /// are kept — the keep-alive guarantee).
+    Sessions {
+        source: String,
+        sessions: Vec<Session>,
+        err: Option<String>,
+    },
+    /// A POLL host's per-session window/pane subtree resolved (keyed by the session's
+    /// `source/name` address), emitted by the poll task after `Sessions`.
+    Panes {
+        address: String,
+        panes: Vec<WindowPanes>,
+    },
 }
 
 /// The reader's shared state the cockpit also reads.
@@ -592,12 +614,66 @@ impl HostClient {
     }
 }
 
-/// Owns one [`HostClient`] per host alias, spawning each lazily on first use and
-/// reaping it on `%exit`/EOF. The bound is the host count: at most one control
-/// child per host. Every client emits onto the one shared `events` sink the
-/// cockpit's loop drains.
+/// A POLL host's self-looping enumeration task. A poll host has no host-level control
+/// stream, so the [`HostManager`] owns this task to re-enumerate sessions + panes on
+/// the backend's cadence and emit them as [`HostEvent`]s onto the same bus the control
+/// clients use. Runs until aborted (reap / teardown) or the event receiver is dropped
+/// (cockpit exit). Mirrors a control client's connect-then-stream role for poll muxes.
+async fn run_poll(
+    source: String,
+    transport: crate::model::Transport,
+    mux_kind: String,
+    mux_bin: String,
+    interval_ms: u64,
+    events: tokio::sync::mpsc::UnboundedSender<HostEvent>,
+) {
+    use crate::source::Runner;
+    let mux = crate::backend::for_kind(&mux_kind, &mux_bin);
+    // Fixed-cadence ticker: the first tick is immediate (enumerate on spawn), then a
+    // sweep every `interval_ms` of wall-clock. Skip ticks missed while one enumeration
+    // ran long, so a slow probe paces the loop instead of piling up overlapping sweeps.
+    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        ticker.tick().await;
+        let (sessions, err) = match mux.enumerate(&transport).await {
+            Ok(s) => (s, None),
+            Err(e) => (Vec::new(), Some(e.to_string())),
+        };
+        let names: Vec<(String, String)> = sessions
+            .iter()
+            .map(|s| (s.name.clone(), s.address()))
+            .collect();
+        if events
+            .send(HostEvent::Sessions {
+                source: source.clone(),
+                sessions,
+                err,
+            })
+            .is_err()
+        {
+            return;
+        }
+        for (name, address) in names {
+            let argv = mux.list_panes_plan(&name);
+            let (cmd, args) = transport.exec_argv(false, &argv);
+            if let Ok(out) = crate::source::ExecRunner.run(&cmd, &args).await {
+                let panes = parse_panes(&String::from_utf8_lossy(&out));
+                if events.send(HostEvent::Panes { address, panes }).is_err() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// Owns each host's metadata channel, spawned lazily on first use and reaped on
+/// `%exit`/EOF (control) or abort (poll). A CONTROL host gets one `-CC` [`HostClient`];
+/// a POLL host gets one [`run_poll`] task. The bound is the host count: at most one of
+/// either per host. Both emit onto the one shared `events` sink the cockpit's loop drains.
 pub struct HostManager {
     clients: HashMap<String, HostClient>,
+    polls: HashMap<String, tokio::task::JoinHandle<()>>,
     events: tokio::sync::mpsc::UnboundedSender<HostEvent>,
 }
 
@@ -605,33 +681,63 @@ impl HostManager {
     pub fn new(events: tokio::sync::mpsc::UnboundedSender<HostEvent>) -> Self {
         Self {
             clients: HashMap::new(),
+            polls: HashMap::new(),
             events,
         }
     }
 
-    /// Ensures `host`'s control client is connected, spawning it lazily from `src`.
-    /// A no-op (`Ok(false)`) if already connected; otherwise spawns, inserts, and
-    /// returns `Ok(true)`. `HostClient::spawn` queues the connect sequence
-    /// (resize → no-output → list-sessions) itself.
+    /// A clone of the shared event-bus sender, for the fire-and-forget detection task
+    /// (`spawn_host_detection`) that emits `HostEvent::Scanned` onto the same bus.
+    pub fn events(&self) -> tokio::sync::mpsc::UnboundedSender<HostEvent> {
+        self.events.clone()
+    }
+
+    /// Ensures `id`'s metadata channel is live, picking the channel from the host's
+    /// `event_source()` — the ONE place that reads it. CONTROL → spawn a `-CC` client
+    /// (connect sequence queued by `HostClient::spawn`); POLL → spawn a self-looping
+    /// poll task at the backend's interval. A no-op (`Ok(false)`) if already live.
     pub fn ensure(
         &mut self,
-        host: &str,
+        id: &str,
+        host: &crate::model::Host,
         src: &crate::source::Source,
         cols: u16,
         rows: u16,
     ) -> anyhow::Result<bool> {
-        if self.clients.contains_key(host) {
+        // A finished poll task leaves a dead JoinHandle in the map (the loop is otherwise
+        // infinite, so this only happens if its body panicked). Drop it so this re-ensure
+        // (startup, cursor move, or the reconnect sweep) respawns it instead of treating
+        // the corpse as live — this is what makes the reconnect sweep a real liveness check.
+        if self.polls.get(id).is_some_and(|h| h.is_finished()) {
+            self.polls.remove(id);
+        }
+        if self.clients.contains_key(id) || self.polls.contains_key(id) {
             return Ok(false);
         }
-        let client = HostClient::spawn(
-            host,
-            &src.control_argv(),
-            cols,
-            rows,
-            self.events.clone(),
-            &[],
-        )?;
-        self.clients.insert(host.to_string(), client);
+        match host.mux.event_source() {
+            crate::model::EventSource::Control => {
+                let client = HostClient::spawn(
+                    id,
+                    &src.control_argv(),
+                    cols,
+                    rows,
+                    self.events.clone(),
+                    &[],
+                )?;
+                self.clients.insert(id.to_string(), client);
+            }
+            crate::model::EventSource::Poll { interval_ms } => {
+                let handle = tokio::spawn(run_poll(
+                    id.to_string(),
+                    host.transport.clone(),
+                    host.mux.kind().to_string(),
+                    host.mux.bin().to_string(),
+                    interval_ms,
+                    self.events.clone(),
+                ));
+                self.polls.insert(id.to_string(), handle);
+            }
+        }
         Ok(true)
     }
 
@@ -639,11 +745,36 @@ impl HostManager {
         self.clients.get(host)
     }
 
-    /// `%exit`/EOF: drop the client (bounded teardown join). The cockpit keeps the
-    /// last-known tree in its switcher state, so the inventory is not re-fetched here.
+    /// Immediate re-enumeration on demand (`r` / menu reconnect). A CONTROL host
+    /// re-issues list-sessions; a POLL host's task is aborted and respawned so the next
+    /// enumeration fires NOW instead of at the next interval. Branches on which channel
+    /// the manager holds — it does NOT read the mux's event source.
+    pub fn rescan(
+        &mut self,
+        id: &str,
+        host: &crate::model::Host,
+        src: &crate::source::Source,
+        cols: u16,
+        rows: u16,
+    ) {
+        if let Some(c) = self.clients.get(id) {
+            c.list_sessions();
+            return;
+        }
+        if let Some(h) = self.polls.remove(id) {
+            h.abort();
+            let _ = self.ensure(id, host, src, cols, rows);
+        }
+    }
+
+    /// `%exit`/EOF (control) or explicit drop (poll): tear down the channel. The cockpit
+    /// keeps the last-known tree in its switcher state, so the inventory is not refetched.
     pub fn reap(&mut self, host: &str) {
         if let Some(c) = self.clients.remove(host) {
             c.teardown();
+        }
+        if let Some(h) = self.polls.remove(host) {
+            h.abort();
         }
     }
 
@@ -653,10 +784,13 @@ impl HostManager {
         }
     }
 
-    /// Drains and tears down every client (bounded join per client).
+    /// Drains and tears down every channel (bounded join per control client; abort per poll task).
     pub fn teardown_all(self) {
         for (_, c) in self.clients {
             c.teardown();
+        }
+        for (_, h) in self.polls {
+            h.abort();
         }
     }
 }
@@ -753,9 +887,17 @@ mod tests {
             socket: None,
             runner: None,
         };
+        let host = crate::model::Host::new(
+            crate::model::Transport::Ssh {
+                alias: "jupiter06".into(),
+                control_path: String::new(),
+                os: "linux".into(),
+            },
+            crate::backend::for_binary("tmux"),
+        );
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
         let mut mgr = HostManager::new(tx);
-        mgr.ensure("jupiter06", &src, 80, 24)
+        mgr.ensure("jupiter06", &host, &src, 80, 24)
             .expect("spawn control client");
         let deadline = Instant::now() + Duration::from_secs(20);
         let mut connected = false;
@@ -1258,7 +1400,11 @@ mod tests {
         assert!(mgr.get("jupiter06").is_some());
         // ensure on an already-connected host returns Ok(false) (no fresh connect).
         let src = fake_source("jupiter06");
-        assert!(!mgr.ensure("jupiter06", &src, 80, 24).unwrap());
+        let host = crate::model::Host::new(
+            crate::model::Transport::Local { socket: None },
+            crate::backend::for_binary("psmux"),
+        );
+        assert!(!mgr.ensure("jupiter06", &host, &src, 80, 24).unwrap());
     }
 
     #[test]
@@ -1268,5 +1414,38 @@ mod tests {
         mgr.insert_fake("jupiter06");
         mgr.reap("jupiter06");
         assert!(mgr.get("jupiter06").is_none(), "reaped client is dropped");
+    }
+
+    #[tokio::test]
+    async fn manager_ensure_poll_host_owns_poll_task_lifecycle() {
+        // A poll host (psmux, EventSource::Poll) gets a self-looping poll TASK owned by
+        // the manager — not a control client. ensure is idempotent while the task lives;
+        // reap aborts it so a later ensure re-spawns it. get() returns None throughout
+        // (a poll host has no `-CC` control client, only the poll task).
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
+        let mut mgr = HostManager::new(tx);
+        let host = crate::model::Host::new(
+            crate::model::Transport::Local { socket: None },
+            crate::backend::for_kind("psmux", "psmux-no-such-binary"),
+        );
+        let src = fake_source("local");
+        assert!(
+            mgr.ensure("local", &host, &src, 80, 24).unwrap(),
+            "first ensure spawns the poll task"
+        );
+        assert!(
+            mgr.get("local").is_none(),
+            "a poll host has no control client"
+        );
+        assert!(
+            !mgr.ensure("local", &host, &src, 80, 24).unwrap(),
+            "ensure is idempotent while the poll task lives"
+        );
+        mgr.reap("local");
+        assert!(
+            mgr.ensure("local", &host, &src, 80, 24).unwrap(),
+            "reap aborted the task so ensure re-spawns it"
+        );
+        mgr.teardown_all();
     }
 }

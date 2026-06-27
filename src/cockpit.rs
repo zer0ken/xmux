@@ -41,12 +41,6 @@ const SPINNER_FRAME_MS: u64 = 120;
 /// monopolize the single thread.
 const EVENT_DRAIN_BUDGET: usize = 512;
 
-/// How often local psmux sources are re-enumerated (no host-level control stream
-/// exists for one-server-per-session psmux, so new/removed sessions and window/pane
-/// structure changes are discovered by polling). Local commands are instant, so a
-/// brisk cadence keeps the sidebar in sync without meaningful cost.
-const LOCAL_POLL_MS: u64 = 1500;
-
 /// Minimum interval between redraws. Drawing is decoupled from events and capped
 /// to this frame rate: rapid input (or a busy PTY) sets a `dirty` flag, and the
 /// loop redraws at most once per frame — so no navigation pattern can flood the
@@ -644,9 +638,10 @@ fn attach_reply_is_current(
     in_flight.get(key) == Some(&seq)
 }
 
-/// Connects the host the cursor is on (if not already), so its control-mode
-/// client's `list-sessions` streams that host's tree in. Poll hosts enumerate via
-/// plain commands and have no host-level connection to ensure.
+/// Connects the host the cursor is on (if not already + detected), so its metadata
+/// channel streams that host's tree in. The manager picks the channel (control client
+/// vs poll task) from the host's `event_source`; an undetected host is skipped until a
+/// detection probe resolves its backend.
 fn ensure_current_host(
     mgr: &mut HostManager,
     env: &Env,
@@ -657,16 +652,10 @@ fn ensure_current_host(
     tree_width: u16,
 ) {
     let (cols, rows) = terminal_view_size(cols, rows, tree_width);
-    if let Some(host) = switcher.current_host() {
-        if let Some(src) = env.by_alias.get(&host) {
-            let is_control = hosts
-                .get(&host)
-                .map(|h| {
-                    h.detected && matches!(h.mux.event_source(), crate::model::EventSource::Control)
-                })
-                .unwrap_or(false);
-            if is_control {
-                let _ = mgr.ensure(&host, src, cols, rows);
+    if let Some(id) = switcher.current_host() {
+        if let (Some(host), Some(src)) = (hosts.get(&id), env.by_alias.get(&id)) {
+            if host.detected {
+                let _ = mgr.ensure(&id, host, src, cols, rows);
             }
         }
     }
@@ -688,7 +677,7 @@ fn transport_for_source(src: &crate::source::Source) -> crate::model::Transport 
 
 fn spawn_host_detection(
     src: crate::source::Source,
-    tx: tokio::sync::mpsc::UnboundedSender<LocalEnum>,
+    tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
 ) {
     let source = src.alias.clone();
     let transport = transport_for_source(&src);
@@ -697,44 +686,13 @@ fn spawn_host_detection(
         let mut host = crate::model::Host::new(transport, crate::backend::for_binary(&bin));
         host.detect_and_correct(&crate::source::ExecRunner).await;
         let detected = host.detected.then_some(host.mux);
-        let _ = tx.send(LocalEnum::Scanned { source, detected });
+        let _ = tx.send(HostEvent::Scanned { source, detected });
     });
 }
 
-fn spawn_detected_enumeration(
-    source: String,
-    transport: crate::model::Transport,
-    mux_kind: String,
-    mux_bin: String,
-    tx: tokio::sync::mpsc::UnboundedSender<LocalEnum>,
-) {
-    use crate::source::Runner;
-    tokio::spawn(async move {
-        let mux = crate::backend::for_kind(&mux_kind, &mux_bin);
-        let (sessions, err) = match mux.enumerate(&transport).await {
-            Ok(s) => (s, None),
-            Err(e) => (Vec::new(), Some(e.to_string())),
-        };
-        let names: Vec<(String, String)> = sessions
-            .iter()
-            .map(|s| (s.name.clone(), s.address()))
-            .collect();
-        let _ = tx.send(LocalEnum::Sessions {
-            source,
-            sessions,
-            err,
-        });
-        for (name, address) in names {
-            let argv = mux.list_panes_plan(&name);
-            let (cmd, args) = transport.exec_argv(false, &argv);
-            if let Ok(out) = crate::source::ExecRunner.run(&cmd, &args).await {
-                let panes = crate::mux::parse_panes(&String::from_utf8_lossy(&out));
-                let _ = tx.send(LocalEnum::Panes { address, panes });
-            }
-        }
-    });
-}
-
+/// Dispatches a DETECTED host onto its metadata channel via the manager, which picks
+/// the channel (control client vs poll task) from the host's `event_source`. Idempotent
+/// — a no-op when the channel is already live.
 fn dispatch_detected_host(
     mgr: &mut HostManager,
     env: &Env,
@@ -742,27 +700,15 @@ fn dispatch_detected_host(
     source: &str,
     cols: u16,
     rows: u16,
-    enum_tx: &tokio::sync::mpsc::UnboundedSender<LocalEnum>,
 ) {
     let Some(host) = hosts.get(source) else {
         return;
     };
-    if matches!(host.mux.event_source(), crate::model::EventSource::Control) {
-        if let Some(src) = env.by_alias.get(source) {
-            let _ = mgr.ensure(source, src, cols, rows);
-        }
-    } else {
-        spawn_detected_enumeration(
-            source.to_string(),
-            host.transport.clone(),
-            host.mux.kind().to_string(),
-            host.mux.bin().to_string(),
-            enum_tx.clone(),
-        );
+    if let Some(src) = env.by_alias.get(source) {
+        let _ = mgr.ensure(source, host, src, cols, rows);
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn scan_or_dispatch_host(
     mgr: &mut HostManager,
     env: &Env,
@@ -771,7 +717,6 @@ fn scan_or_dispatch_host(
     source: &str,
     cols: u16,
     rows: u16,
-    enum_tx: &tokio::sync::mpsc::UnboundedSender<LocalEnum>,
 ) {
     let Some(host) = hosts.get(source) else {
         return;
@@ -779,12 +724,12 @@ fn scan_or_dispatch_host(
     if !host.detected {
         if detecting.insert(source.to_string()) {
             if let Some(src) = env.by_alias.get(source) {
-                spawn_host_detection(src.clone(), enum_tx.clone());
+                spawn_host_detection(src.clone(), mgr.events());
             }
         }
         return;
     }
-    dispatch_detected_host(mgr, env, hosts, source, cols, rows, enum_tx);
+    dispatch_detected_host(mgr, env, hosts, source, cols, rows);
 }
 
 fn apply_scan_result(
@@ -803,10 +748,10 @@ fn apply_scan_result(
     }
 }
 
-/// Consumes a pending re-scan kick (set by `r` or a menu "reconnect"): re-lists every
-/// remote host and re-enumerates every local source — the same probes as first launch.
-/// A no-op when no kick is pending. Shared by the key and context-menu paths.
-#[allow(clippy::too_many_arguments)]
+/// Consumes a pending re-scan kick (set by `r` or a menu "reconnect"): re-enumerates
+/// every detected source via the manager — a control host re-lists sessions, a poll
+/// host respawns its task for an immediate re-enumeration — and (re)detects an
+/// undetected one. A no-op when no kick is pending. Shared by the key and menu paths.
 fn kick_rescan(
     switcher: &mut crate::ui::switcher::Switcher,
     env: &Env,
@@ -815,35 +760,25 @@ fn kick_rescan(
     mgr: &mut HostManager,
     cols: u16,
     rows: u16,
-    enum_tx: &tokio::sync::mpsc::UnboundedSender<LocalEnum>,
 ) {
-    if switcher.take_rescan_kick() {
-        for src in &env.srcs {
-            if hosts.get(&src.alias).map(|h| h.detected).unwrap_or(false) {
-                if hosts
-                    .get(&src.alias)
-                    .map(|h| matches!(h.mux.event_source(), crate::model::EventSource::Control))
-                    .unwrap_or(false)
-                {
-                    if let Some(c) = mgr.get(&src.alias) {
-                        c.list_sessions();
-                    }
-                } else {
-                    dispatch_detected_host(mgr, env, hosts, &src.alias, cols, rows, enum_tx);
-                }
-            } else {
-                scan_or_dispatch_host(mgr, env, hosts, detecting, &src.alias, cols, rows, enum_tx);
+    if !switcher.take_rescan_kick() {
+        return;
+    }
+    for src in &env.srcs {
+        if let Some(host) = hosts.get(&src.alias) {
+            if host.detected {
+                mgr.rescan(&src.alias, host, src, cols, rows);
+                continue;
             }
         }
+        scan_or_dispatch_host(mgr, env, hosts, detecting, &src.alias, cols, rows);
     }
 }
 
-/// Starts each host's first scan at startup, so each host's tree streams in
-/// without waiting for a cursor move. Control clients connect on their own
-/// reader/writer threads; poll hosts enumerate off the loop via the enum channel.
-/// PTYs are attached as each source's sessions arrive (see
-/// [`sync_source_terminals`]).
-#[allow(clippy::too_many_arguments)]
+/// Starts each host's first scan at startup, so each host's tree streams in without
+/// waiting for a cursor move. Control hosts connect a `-CC` client; poll hosts start
+/// their self-looping enumeration task — both owned by the manager. PTYs are attached
+/// as each source's sessions arrive (see [`sync_source_terminals`]).
 fn connect_all_sources(
     mgr: &mut HostManager,
     env: &Env,
@@ -852,11 +787,10 @@ fn connect_all_sources(
     cols: u16,
     rows: u16,
     tree_width: u16,
-    enum_tx: &tokio::sync::mpsc::UnboundedSender<LocalEnum>,
 ) {
     let (cols, rows) = terminal_view_size(cols, rows, tree_width);
     for src in &env.srcs {
-        scan_or_dispatch_host(mgr, env, hosts, detecting, &src.alias, cols, rows, enum_tx);
+        scan_or_dispatch_host(mgr, env, hosts, detecting, &src.alias, cols, rows);
     }
 }
 
@@ -1001,7 +935,6 @@ fn handle_tree_bytes(
     detecting: &mut HashSet<String>,
     ops: &Arc<dyn crate::ui::switcher::Ops>,
     op_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
-    enum_tx: &tokio::sync::mpsc::UnboundedSender<LocalEnum>,
     cols: u16,
     rows: u16,
     tree_width: u16,
@@ -1030,27 +963,8 @@ fn handle_tree_bytes(
     }
     dispatch_pending_op(switcher, ops, op_tx);
     ensure_current_host(mgr, env, hosts, switcher, cols, rows, tree_width);
-    kick_rescan(switcher, env, hosts, detecting, mgr, cols, rows, enum_tx);
+    kick_rescan(switcher, env, hosts, detecting, mgr, cols, rows);
     (focus_terminal, quit, width_delta, toggle_auto_hide)
-}
-
-/// Scan and plain-enumeration results folded back into the cockpit loop. Poll
-/// hosts stream sessions first, then panes per session, because they have no
-/// host-level control stream to enumerate or push changes.
-enum LocalEnum {
-    Scanned {
-        source: String,
-        detected: Option<Box<dyn crate::backend::Backend>>,
-    },
-    Sessions {
-        source: String,
-        sessions: Vec<crate::session::Session>,
-        err: Option<String>,
-    },
-    Panes {
-        address: String,
-        panes: Vec<crate::session::WindowPanes>,
-    },
 }
 
 /// Requests `list-panes` for each of a host's sessions whose panes have not been
@@ -1096,6 +1010,7 @@ fn handle_host_event(
     env: &Env,
     connected: &mut HashSet<String>,
     panes_requested: &mut HashSet<String>,
+    detecting: &mut HashSet<String>,
     worker: &DisplayWorker,
     attach_seq: &mut u64,
     cols: u16,
@@ -1181,6 +1096,61 @@ fn handle_host_event(
                 h.display_tty = crate::model::DisplayTty(None); // the dead client's tty is gone
             }
             return true; // rearm recovery
+        }
+        HostEvent::Scanned { source, detected } => {
+            // A detection probe resolved: (re)identify the backend, then dispatch the
+            // now-detected host onto its metadata channel (control client or poll task).
+            detecting.remove(&source);
+            apply_scan_result(hosts, &source, detected);
+            let (vc, vr) = terminal_view_size(cols, rows, tree_width);
+            dispatch_detected_host(mgr, env, hosts, &source, vc, vr);
+        }
+        HostEvent::Sessions {
+            source,
+            sessions,
+            err,
+        } => {
+            // A poll host re-enumerated. Apply the tree group; on a SUCCESSFUL
+            // enumeration sync its PTY set (a transient failure shows the error but
+            // keeps attachments — the keep-alive guarantee).
+            let had_err = err.is_some();
+            dbg_log(
+                &env.xmux_dir,
+                &format!(
+                    "poll enum source={source} n={} names={:?} err={:?}",
+                    sessions.len(),
+                    sessions.iter().map(|s| &s.name).collect::<Vec<_>>(),
+                    err
+                ),
+            );
+            switcher.apply_source_result(source.clone(), sessions.clone(), err);
+            if !had_err {
+                // PerSession psmux: a session whose registry .port disappeared is dead
+                // even if its PTY has not EOF'd. Drop the stale attach so it cannot
+                // show a dead grid.
+                if let Some(h) = hosts.get(&source) {
+                    for s in &sessions {
+                        if !h.psmux_session_live(&s.name) {
+                            let key = if h.mux.stable_per_session_attachments() {
+                                h.display_key(&s.address())
+                            } else {
+                                source.clone()
+                            };
+                            registry.remove(&key);
+                        }
+                    }
+                }
+                sync_source_terminals(
+                    registry, env, hosts, &source, &sessions, worker, attach_seq, cols, rows,
+                    tree_width,
+                );
+            }
+        }
+        HostEvent::Panes { address, panes } => {
+            // A poll host's per-session window/pane subtree resolved. Local psmux has
+            // no `%`-event stream, so window changes inside the displayed session are
+            // only seen on the poll.
+            switcher.apply_panes(address, panes);
         }
     }
     false
@@ -1346,7 +1316,6 @@ fn handle_mouse_event(
     selection: &Selection,
     ops: &Arc<dyn crate::ui::switcher::Ops>,
     op_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
-    enum_tx: &tokio::sync::mpsc::UnboundedSender<LocalEnum>,
     non_mouse: &mut Vec<u8>,
     mouse_focus_toggle: &mut bool,
     wheel_scrolled: &mut bool,
@@ -1392,9 +1361,7 @@ fn handle_mouse_event(
                     // re-scan (reconnect); dispatch them here so it
                     // works in either focus state, not only overlay.
                     dispatch_pending_op(switcher, ops, op_tx);
-                    kick_rescan(
-                        switcher, env, hosts, detecting, mgr, cols, body_rows, enum_tx,
-                    );
+                    kick_rescan(switcher, env, hosts, detecting, mgr, cols, body_rows);
                     ensure_current_host(mgr, env, hosts, switcher, cols, body_rows, tree_width);
                 }
                 crate::ui::switcher::MenuOutcome::None => {}
@@ -1551,7 +1518,6 @@ fn handle_stdin_bytes(
     tree_decoder: &mut crate::proxy::decode::KeyDecoder,
     ops: &Arc<dyn crate::ui::switcher::Ops>,
     op_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
-    enum_tx: &tokio::sync::mpsc::UnboundedSender<LocalEnum>,
     tree_width_natural: &mut u16,
     auto_hide_tree: &mut bool,
     prefix: u8,
@@ -1598,7 +1564,6 @@ fn handle_stdin_bytes(
                     selection,
                     ops,
                     op_tx,
-                    enum_tx,
                     &mut non_mouse,
                     &mut mouse_focus_toggle,
                     &mut wheel_scrolled,
@@ -1709,7 +1674,6 @@ fn handle_stdin_bytes(
             detecting,
             ops,
             op_tx,
-            enum_tx,
             cols,
             body_rows,
             tree_width,
@@ -1784,7 +1748,6 @@ fn handle_stdin_bytes(
                 detecting,
                 ops,
                 op_tx,
-                enum_tx,
                 cols,
                 body_rows,
                 tree_width,
@@ -1997,7 +1960,6 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     let _control_handle = control.and_then(|p| serve_control(p, cmd_tx));
 
     let (op_tx, mut op_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (enum_tx, mut enum_rx) = tokio::sync::mpsc::unbounded_channel::<LocalEnum>();
 
     let mut connected: HashSet<String> = HashSet::new();
     let mut panes_requested: HashSet<String> = HashSet::new();
@@ -2010,18 +1972,11 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         cols,
         body_rows,
         tree_width,
-        &enum_tx,
     );
 
     let spinner_start = std::time::Instant::now();
     let mut tick = tokio::time::interval(Duration::from_millis(SPINNER_FRAME_MS));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    // Periodic local re-enumeration (one-server-per-session psmux has no event push).
-    // `interval_at(+period)` so the FIRST poll fires after a period, not at t=0 (the
-    // startup `connect_all_sources` already kicked the initial enumeration).
-    let poll_start = tokio::time::Instant::now() + Duration::from_millis(LOCAL_POLL_MS);
-    let mut local_poll = tokio::time::interval_at(poll_start, Duration::from_millis(LOCAL_POLL_MS));
-    local_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Periodic reconnect sweep: re-ensure any died remote control client (so #5
     // metadata sync self-heals) and re-attach the selected session's PTY if it
     // dropped (so a transient remote disconnect does not leave the right pane stuck
@@ -2237,7 +2192,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         tokio::select! {
             Some(ev) = host_rx.recv() => {
                 let t = std::time::Instant::now();
-                if handle_host_event(ev, &mut mgr, &mut hosts, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &worker, &mut attach_seq, cols, body_rows, tree_width) {
+                if handle_host_event(ev, &mut mgr, &mut hosts, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &mut detecting, &worker, &mut attach_seq, cols, body_rows, tree_width) {
                     state.attach_deadline = Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
                     dirty = true;
                 }
@@ -2245,7 +2200,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 while budget > 0 {
                     match host_rx.try_recv() {
                         Ok(ev) => {
-                            if handle_host_event(ev, &mut mgr, &mut hosts, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &worker, &mut attach_seq, cols, body_rows, tree_width) {
+                            if handle_host_event(ev, &mut mgr, &mut hosts, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &mut detecting, &worker, &mut attach_seq, cols, body_rows, tree_width) {
                                 state.attach_deadline = Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
                                 dirty = true;
                             }
@@ -2369,7 +2324,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 let outcome = handle_stdin_bytes(
                     &bytes, &mut mouse_state, &mut switcher, &mut app, &mut registry, &mut mgr,
                     &env, &mut hosts, &mut detecting, &state.selection, &mut term_input, &mut tree_decoder, &ops, &op_tx,
-                    &enum_tx, &mut tree_width_natural, &mut auto_hide_tree, prefix, cols, body_rows,
+                    &mut tree_width_natural, &mut auto_hide_tree, prefix, cols, body_rows,
                     tree_width,
                 );
                 if outcome.dirty {
@@ -2430,57 +2385,6 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             Some(result) = op_rx.recv() => {
                 switcher.apply_op_result(result);
             }
-            Some(le) = enum_rx.recv() => {
-                match le {
-                    LocalEnum::Scanned { source, detected } => {
-                        detecting.remove(&source);
-                        apply_scan_result(&mut hosts, &source, detected);
-                        let (vc, vr) = terminal_view_size(cols, body_rows, tree_width);
-                        dispatch_detected_host(&mut mgr, &env, &hosts, &source, vc, vr, &enum_tx);
-                    }
-                    LocalEnum::Sessions { source, sessions, err } => {
-                        let had_err = err.is_some();
-                        dbg_log(
-                            &env.xmux_dir,
-                            &format!(
-                                "local enum source={source} n={} names={:?} err={:?}",
-                                sessions.len(),
-                                sessions.iter().map(|s| &s.name).collect::<Vec<_>>(),
-                                err
-                            ),
-                        );
-                        switcher.apply_source_result(source.clone(), sessions.clone(), err);
-                        // Only sync the PTY set on a SUCCESSFUL enumeration. A transient
-                        // poll failure returns an empty list with an error; reaping on
-                        // that would tear down every live attachment for a source whose
-                        // mux is actually fine (the keep-alive guarantee). Show the error
-                        // in the tree, but leave the attachments intact.
-                        if !had_err {
-                            // PerSession psmux: a session whose registry .port disappeared is dead
-                            // even if its PTY has not EOF'd. Drop the stale attach so it cannot
-                            // show a dead grid.
-                            if let Some(h) = hosts.get(&source) {
-                                for s in &sessions {
-                                    if !h.psmux_session_live(&s.name) {
-                                        let key = if h.mux.stable_per_session_attachments() {
-                                            h.display_key(&s.address())
-                                        } else {
-                                            source.clone()
-                                        };
-                                        registry.remove(&key);
-                                    }
-                                }
-                            }
-                            sync_source_terminals(&mut registry, &env, &mut hosts, &source, &sessions, &worker, &mut attach_seq, cols, body_rows, tree_width);
-                        }
-                    }
-                    LocalEnum::Panes { address, panes } => {
-                        switcher.apply_panes(address, panes);
-                        // Local psmux has no `%`-event stream, so window changes inside
-                        // the displayed session are only seen on the poll.
-                    }
-                }
-            }
             _ = tick.tick() => {
                 // Resize detection: poll the console size (an ioctl, not a stdin
                 // read). On a change push the new size to the PTYs + control clients.
@@ -2509,30 +2413,22 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 }
                 switcher.set_spinner(sp);
             }
-            _ = local_poll.tick() => {
-                // Re-enumerate poll sources so new/removed sessions + window/pane
-                // changes sync into the sidebar (no event push for one-server psmux).
-                let (vc, vr) = terminal_view_size(cols, body_rows, tree_width);
-                for src in &env.srcs {
-                    let detected_control = hosts
-                        .get(&src.alias)
-                        .map(|h| h.detected && matches!(h.mux.event_source(), crate::model::EventSource::Control))
-                        .unwrap_or(false);
-                    if detected_control { continue; }
-                    scan_or_dispatch_host(&mut mgr, &env, &hosts, &mut detecting, &src.alias, vc, vr, &enum_tx);
-                }
-            }
             _ = reconnect.tick() => {
                 let (vc, vr) = terminal_view_size(cols, body_rows, tree_width);
-                // Re-ensure each control client (a no-op when alive; respawns
-                // a died one so its list-sessions re-streams and #5 sync resumes).
+                // Self-heal sweep over every source: a DETECTED host re-ensures its
+                // metadata channel (a no-op when alive; respawns a died control client or
+                // a finished poll task — the manager picks the channel from event_source),
+                // an UNDETECTED host retries detection (a host down at launch populates its
+                // tree once it returns). This sweep is the sole automatic retry path now
+                // that the per-poll-tick re-enumeration lives inside the poll task itself.
                 for src in &env.srcs {
-                    let is_control = hosts
-                        .get(&src.alias)
-                        .map(|h| h.detected && matches!(h.mux.event_source(), crate::model::EventSource::Control))
-                        .unwrap_or(false);
-                    if is_control {
-                        let _ = mgr.ensure(&src.alias, src, vc, vr);
+                    let detected = hosts.get(&src.alias).map(|h| h.detected).unwrap_or(false);
+                    if detected {
+                        if let Some(host) = hosts.get(&src.alias) {
+                            let _ = mgr.ensure(&src.alias, host, src, vc, vr);
+                        }
+                    } else {
+                        scan_or_dispatch_host(&mut mgr, &env, &hosts, &mut detecting, &src.alias, vc, vr);
                     }
                 }
                 // Re-warm each shared host's per-host PTY if it dropped (ENSURE-ONLY,
@@ -3075,7 +2971,6 @@ mod tests {
         // binary is a spawnable stand-in for ssh that EOFs at once.
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
         let mut mgr = HostManager::new(tx);
-        let (enum_tx, _enum_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut src = fake_source("jupiter06");
         src.binary = "cmd.exe".into();
         let by_alias: HashMap<String, Source> = [("jupiter06".to_string(), src.clone())]
@@ -3110,7 +3005,6 @@ mod tests {
             80,
             24,
             crate::ui::switcher::TREE_WIDTH,
-            &enum_tx,
         );
         assert!(
             mgr.get("jupiter06").is_some(),
@@ -3491,6 +3385,7 @@ mod tests {
             &env,
             &mut connected,
             &mut panes_requested,
+            &mut HashSet::new(),
             &worker,
             &mut attach_seq,
             80,
@@ -3584,6 +3479,7 @@ mod tests {
             &env,
             &mut connected,
             &mut panes_requested,
+            &mut HashSet::new(),
             &worker,
             &mut attach_seq,
             80,
@@ -3882,6 +3778,7 @@ mod tests {
             &env,
             &mut connected,
             &mut panes,
+            &mut HashSet::new(),
             &worker,
             &mut seq,
             80,
@@ -3912,6 +3809,7 @@ mod tests {
             &env,
             &mut connected,
             &mut panes,
+            &mut HashSet::new(),
             &worker,
             &mut seq,
             80,
@@ -4173,7 +4071,6 @@ mod tests {
         let mut tree_decoder = crate::proxy::decode::KeyDecoder::new();
         let ops = crate::ui::switcher::tests_support::noop_ops();
         let (op_tx, _r) = tokio::sync::mpsc::unbounded_channel();
-        let (enum_tx, _er) = tokio::sync::mpsc::unbounded_channel();
         let sel = Selection::default();
         let env = fake_env_with_sources(&["local"]);
         let mut detecting = HashSet::new();
@@ -4194,7 +4091,6 @@ mod tests {
             &mut tree_decoder,
             &ops,
             &op_tx,
-            &enum_tx,
             &mut natural,
             &mut hide,
             0x07,
@@ -4241,7 +4137,6 @@ mod tests {
         let mut tree_decoder = crate::proxy::decode::KeyDecoder::new();
         let ops = crate::ui::switcher::tests_support::noop_ops();
         let (op_tx, _r) = tokio::sync::mpsc::unbounded_channel();
-        let (enum_tx, _er) = tokio::sync::mpsc::unbounded_channel();
         let env = fake_env_with_sources(&["jup"]);
         let mut detecting = HashSet::new();
         let mut natural = 48u16;
@@ -4263,7 +4158,6 @@ mod tests {
                     &mut tree_decoder,
                     &ops,
                     &op_tx,
-                    &enum_tx,
                     &mut natural,
                     &mut hide,
                     0x07,
@@ -4383,7 +4277,6 @@ mod tests {
             let mut tree_decoder = crate::proxy::decode::KeyDecoder::new();
             let ops = crate::ui::switcher::tests_support::noop_ops();
             let (op_tx, _r) = tokio::sync::mpsc::unbounded_channel();
-            let (enum_tx, _er) = tokio::sync::mpsc::unbounded_channel();
             let env = fake_env_with_sources(&["local"]);
             let mut detecting = HashSet::new();
             let mut natural = 48u16;
@@ -4404,7 +4297,6 @@ mod tests {
                 &mut tree_decoder,
                 &ops,
                 &op_tx,
-                &enum_tx,
                 &mut natural,
                 &mut hide,
                 0x07,
@@ -4463,7 +4355,6 @@ mod tests {
         let sel = Selection::default();
         let ops = crate::ui::switcher::tests_support::noop_ops();
         let (op_tx, _r) = tokio::sync::mpsc::unbounded_channel();
-        let (enum_tx, _er) = tokio::sync::mpsc::unbounded_channel();
         let mut st = MouseState::default();
         let tree_width = crate::ui::switcher::TREE_WIDTH;
         let mut natural = tree_width;
@@ -4495,7 +4386,6 @@ mod tests {
             &sel,
             &ops,
             &op_tx,
-            &enum_tx,
             &mut non_mouse,
             &mut focus_toggle,
             &mut wheel,

@@ -504,8 +504,8 @@ mod tests {
 
     #[test]
     fn psmux_polls_and_dies_on_registry_stat() {
-        // No host-level control stream: it is polled at the LOCAL_POLL_MS cadence
-        // (cockpit.rs:48 = 1500). Death is the per-session registry stat.
+        // No host-level control stream: it is polled at its own `event_source` interval
+        // (the manager's poll task uses this cadence). Death is the per-session registry stat.
         let m = psmux();
         assert_eq!(m.control_argv(), None);
         assert_eq!(m.event_source(), EventSource::Poll { interval_ms: 1500 });
