@@ -14,6 +14,12 @@ use crate::mux;
 use crate::session::Session;
 use crate::source::{is_no_sessions, ExecRunner, RunError, Runner};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectOutcome {
+    SharedSwitch,
+    PerSessionReattach,
+}
+
 /// One mux backend. Methods are the EXACT set the supervisor + control reader +
 /// manage layer call. `enumerate` takes `&Transport` because the per-session model
 /// runs a probe (registry read + one list-sessions); the shared model runs one
@@ -30,9 +36,12 @@ pub trait Backend: Send + Sync {
     /// Per-session vs shared. The supervisor reads this instead of `remote`.
     fn server_model(&self) -> ServerModel;
 
-    /// Whether independent long-lived display attaches remain pinned to their target session.
-    fn stable_per_session_attachments(&self) -> bool {
-        true
+    /// How selecting a session should update the visible display attach.
+    fn select(&self) -> SelectOutcome {
+        match self.server_model() {
+            ServerModel::Shared => SelectOutcome::SharedSwitch,
+            ServerModel::PerSession => SelectOutcome::PerSessionReattach,
+        }
     }
 
     /// Lists this host's sessions over `transport`. A reachable empty mux =>
@@ -102,6 +111,10 @@ impl Backend for Tmux {
 
     fn server_model(&self) -> ServerModel {
         ServerModel::Shared
+    }
+
+    fn select(&self) -> SelectOutcome {
+        SelectOutcome::SharedSwitch
     }
 
     async fn enumerate(&self, transport: &Transport) -> Result<Vec<Session>, RunError> {
@@ -194,8 +207,8 @@ impl Backend for Psmux {
         ServerModel::PerSession
     }
 
-    fn stable_per_session_attachments(&self) -> bool {
-        false
+    fn select(&self) -> SelectOutcome {
+        SelectOutcome::PerSessionReattach
     }
 
     async fn enumerate(&self, transport: &Transport) -> Result<Vec<Session>, RunError> {
@@ -376,6 +389,11 @@ mod tests {
     }
 
     #[test]
+    fn tmux_selects_by_shared_switch() {
+        assert_eq!(tmux().select(), SelectOutcome::SharedSwitch);
+    }
+
+    #[test]
     fn tmux_is_object_safe() {
         // The whole point: a Box<dyn Backend> must compile. If the trait gains a
         // non-dispatchable method this stops compiling.
@@ -489,6 +507,11 @@ mod tests {
         let m = psmux();
         assert_eq!(m.kind(), "psmux");
         assert_eq!(m.server_model(), ServerModel::PerSession);
+    }
+
+    #[test]
+    fn psmux_selects_by_reattach() {
+        assert_eq!(psmux().select(), SelectOutcome::PerSessionReattach);
     }
 
     #[test]

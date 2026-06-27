@@ -19,12 +19,6 @@ impl ServerModel {
             ServerModel::PerSession => address.to_string(),
         }
     }
-
-    /// Whether selecting a DIFFERENT session of the same host moves one shared
-    /// attachment (`switch-client`) rather than spawning a new one.
-    pub fn shares_one_attachment(self) -> bool {
-        matches!(self, ServerModel::Shared)
-    }
 }
 
 #[cfg(test)]
@@ -47,13 +41,5 @@ mod tests {
             ServerModel::PerSession.display_key("local", "local/work"),
             "local/work"
         );
-    }
-
-    #[test]
-    fn only_shared_shares_one_attachment() {
-        // The `src.remote` arm of select_attach (cockpit.rs:312) — a switch-client
-        // move — is Shared-only; PerSession spawns/uses a per-session attachment.
-        assert!(ServerModel::Shared.shares_one_attachment());
-        assert!(!ServerModel::PerSession.shares_one_attachment());
     }
 }

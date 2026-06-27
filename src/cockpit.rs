@@ -22,6 +22,7 @@ use std::sync::Arc;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::attach;
+use crate::backend::SelectOutcome;
 use crate::display::{DisplayEnsure, DisplayEvent, DisplayWorker};
 use crate::env::Env;
 use crate::host::{HostEvent, HostManager};
@@ -302,16 +303,13 @@ fn to_grid_local(area: ratatui::layout::Rect, col: u16, row: u16) -> Option<(u16
 fn display_key(hosts: &crate::model::Hosts, sel: &Selection) -> String {
     hosts
         .get(&sel.source)
-        .map(|h| host_selection_key(h, sel))
+        .map(host_selection_key)
         .unwrap_or_else(|| sel.address())
 }
 
-fn host_selection_key(host: &crate::model::Host, sel: &Selection) -> String {
-    if host.mux.server_model().shares_one_attachment() || !host.mux.stable_per_session_attachments()
-    {
-        host.id().to_string()
-    } else {
-        host.display_key(&sel.address())
+fn host_selection_key(host: &crate::model::Host) -> String {
+    match host.mux.select() {
+        SelectOutcome::SharedSwitch | SelectOutcome::PerSessionReattach => host.id().to_string(),
     }
 }
 
@@ -356,7 +354,7 @@ fn request_attach(
 /// Shared (tmux): one kept PTY per host. The first attach lands on the selected
 /// session; selecting a different session of the same host lowers a `SwitchPlan`
 /// via `Transport::lower_switch`, targeting the in-memory `host.display_tty`.
-/// PerSession (psmux): one PTY per session — off-loop attach, deduped by in-flight.
+/// PerSessionReattach (psmux): one PTY per host, reattached when the session changes.
 /// In both cases a window-row selection moves the session's active window server-side,
 /// which the real attached client follows. The bookkeeping (current session per key +
 /// what spawn is in flight) lives on the owning `host.display`.
@@ -383,36 +381,85 @@ fn select_attach(
     let Some(host) = hosts.get_mut(&sel.source) else {
         return false;
     };
-    let key = host_selection_key(host, sel);
+    let key = host_selection_key(host);
     let already = registry.contains(&key);
-    let shared = host.mux.server_model().shares_one_attachment();
-    let stable_per_session = host.mux.stable_per_session_attachments();
 
-    if shared {
-        if !already {
-            // Off-loop first-attach: request the spawn ONLY if one is not already in flight.
-            // Do NOT overwrite display.current while an attach is in flight — the in-flight
-            // attach lands on its ORIGINAL target session, and the post-Ready re-evaluation
-            // (see the Ready arm) issues a switch-client to the current selection. Overwriting
-            // it here would make the switch-client guard think the PTY is already on the new
-            // session.
-            if !host.display.in_flight.contains_key(&key) {
-                // Build the argv (immutable mux/transport reads) BEFORE taking &mut display.
-                let mux_argv = host.mux.attach_plan(&sel.session, sel.window);
+    match host.mux.select() {
+        SelectOutcome::SharedSwitch => {
+            if !already {
+                // Off-loop first-attach: request the spawn ONLY if one is not already in flight.
+                // Do NOT overwrite display.current while an attach is in flight — the in-flight
+                // attach lands on its ORIGINAL target session, and the post-Ready re-evaluation
+                // (see the Ready arm) issues a switch-client to the current selection. Overwriting
+                // it here would make the switch-client guard think the PTY is already on the new
+                // session.
+                if !host.display.in_flight.contains_key(&key) {
+                    // Build the argv (immutable mux/transport reads) BEFORE taking &mut display.
+                    let mux_argv = host.mux.attach_plan(&sel.session, sel.window);
+                    let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
+                    let mut argv = vec![cmd];
+                    argv.extend(args);
+                    if host.transport.is_remote() {
+                        // Marker is a remote-shell mechanism: prefix the last element so the
+                        // display-tty capture fires before exec'ing the attach command.
+                        if let Some(last) = argv.last_mut() {
+                            *last = format!(
+                                "{}{}",
+                                crate::model::death::display_tty_marker_prefix(),
+                                last
+                            );
+                        }
+                    }
+                    request_attach(
+                        registry,
+                        worker,
+                        &mut host.display,
+                        attach_seq,
+                        &key,
+                        argv,
+                        cols,
+                        rows,
+                    );
+                    host.display.set_shows(&key, &sel.session);
+                }
+            } else if host.display.shows(&key) != Some(sel.session.as_str()) {
+                // The host's PTY is on a different session — lower a SwitchPlan to move it.
+                // Wipe the grid first so the previous session's cells do not linger as
+                // residue: switch-client triggers a FULL client redraw, which refills the
+                // cleared grid with the new session's content (a brief blank, not stale
+                // colours/glyphs). The per-host PTY reuses ONE grid across sessions, so
+                // without this the old session's uncovered cells stay on screen.
+                registry.clear_grid(&key);
+                let tty = host.display_tty.0.clone().unwrap_or_default();
+                if let Some(client) = control {
+                    // Over the open -CC connection — no fresh ssh handshake.
+                    client.switch_client_on(&tty, &sel.session);
+                } else {
+                    let plan = host.mux.switch_plan(&sel.session);
+                    let lowered = {
+                        let builder = |session: &str| host.mux.switch_client_argv(&tty, session);
+                        host.transport.lower_switch(&plan, &builder)
+                    };
+                    if let Some(lowered) = lowered {
+                        run_lowered(lowered);
+                    }
+                }
+                host.display.set_shows(&key, &sel.session);
+            }
+        }
+        SelectOutcome::PerSessionReattach => {
+            let showing_selected = host.display.shows(&key) == Some(sel.session.as_str());
+            if !showing_selected {
+                registry.remove(&key);
+                host.display.clear(&key);
+            }
+            if (!showing_selected || !registry.contains(&key))
+                && !host.display.in_flight.contains_key(&key)
+            {
+                let mux_argv = host.mux.attach_plan(&sel.session, None);
                 let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
                 let mut argv = vec![cmd];
                 argv.extend(args);
-                if host.transport.is_remote() {
-                    // Marker is a remote-shell mechanism: prefix the last element so the
-                    // display-tty capture fires before exec'ing the attach command.
-                    if let Some(last) = argv.last_mut() {
-                        *last = format!(
-                            "{}{}",
-                            crate::model::death::display_tty_marker_prefix(),
-                            last
-                        );
-                    }
-                }
                 request_attach(
                     registry,
                     worker,
@@ -425,76 +472,14 @@ fn select_attach(
                 );
                 host.display.set_shows(&key, &sel.session);
             }
-        } else if host.display.shows(&key) != Some(sel.session.as_str()) {
-            // The host's PTY is on a different session — lower a SwitchPlan to move it.
-            // Wipe the grid first so the previous session's cells do not linger as
-            // residue: switch-client triggers a FULL client redraw, which refills the
-            // cleared grid with the new session's content (a brief blank, not stale
-            // colours/glyphs). The per-host PTY reuses ONE grid across sessions, so
-            // without this the old session's uncovered cells stay on screen.
-            registry.clear_grid(&key);
-            let tty = host.display_tty.0.clone().unwrap_or_default();
-            if let Some(client) = control {
-                // Over the open -CC connection — no fresh ssh handshake.
-                client.switch_client_on(&tty, &sel.session);
-            } else {
-                let plan = host.mux.switch_plan(&sel.session);
-                let lowered = {
-                    let builder = |session: &str| host.mux.switch_client_argv(&tty, session);
-                    host.transport.lower_switch(&plan, &builder)
-                };
-                if let Some(lowered) = lowered {
-                    run_lowered(lowered);
-                }
-            }
-            host.display.set_shows(&key, &sel.session);
         }
-    } else if !stable_per_session {
-        let showing_selected = host.display.shows(&key) == Some(sel.session.as_str());
-        if !showing_selected {
-            registry.remove(&key);
-            host.display.clear(&key);
-        }
-        if (!showing_selected || !registry.contains(&key))
-            && !host.display.in_flight.contains_key(&key)
-        {
-            let mux_argv = host.mux.attach_plan(&sel.session, None);
-            let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
-            let mut argv = vec![cmd];
-            argv.extend(args);
-            request_attach(
-                registry,
-                worker,
-                &mut host.display,
-                attach_seq,
-                &key,
-                argv,
-                cols,
-                rows,
-            );
-            host.display.set_shows(&key, &sel.session);
-        }
-    } else if !already && !host.display.in_flight.contains_key(&key) {
-        let mux_argv = host.mux.attach_plan(&sel.session, None);
-        let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
-        let mut argv = vec![cmd];
-        argv.extend(args);
-        request_attach(
-            registry,
-            worker,
-            &mut host.display,
-            attach_seq,
-            &key,
-            argv,
-            cols,
-            rows,
-        );
     }
 
     // Window-row selection → move the session's active window. The fresh shared
     // attach above already folded the window in; otherwise lower a select-window plan.
     if let Some(win) = sel.window {
-        let folded_into_attach = !already && shared;
+        let folded_into_attach =
+            !already && matches!(host.mux.select(), SelectOutcome::SharedSwitch);
         if !folded_into_attach {
             let target = crate::mux::window_target(&sel.session, win);
             if let Some(client) = control {
@@ -529,10 +514,9 @@ fn run_lowered(lowered: crate::model::LoweredSwitch) {
     });
 }
 
-/// Keeps a source's display terminals in sync with its sessions. Shared muxes keep
+/// Keeps a source's display terminal in sync with its sessions. Shared muxes keep
 /// ONE PTY per host: warm it on the first session (later selections switch it), and
-/// reap it when the host has no sessions left. Stable per-session muxes keep one PTY
-/// per session. Unstable per-session display attaches are selected on demand only.
+/// reap it when the host has no sessions left. Reattach muxes are selected on demand.
 /// Called whenever a source's inventory updates (a remote `%`-event refresh or a
 /// local poll), so a new session is reachable and a killed one is torn down (#5).
 #[allow(clippy::too_many_arguments)]
@@ -555,76 +539,42 @@ fn sync_source_terminals(
     let Some(host) = hosts.get_mut(source) else {
         return;
     };
-    let shares_one = host.mux.server_model().shares_one_attachment();
     let remote = host.transport.is_remote();
-    if !shares_one && !host.mux.stable_per_session_attachments() {
-        if sessions.is_empty() {
-            registry.remove(source);
-            host.display.clear(source);
-        }
-        return;
-    }
-    if shares_one {
-        // One PTY per host. Warm it on the first session if not yet attached; reap it
-        // (and forget its session) when the host has no sessions.
-        match sessions.first() {
-            Some(first)
-                if !registry.contains(source) && !host.display.in_flight.contains_key(source) =>
-            {
-                request_attach(
-                    registry,
-                    worker,
-                    &mut host.display,
-                    attach_seq,
-                    source,
-                    shared_display_attach_argv(remote, src, &first.name, None),
-                    cols,
-                    rows,
-                );
-                host.display.set_shows(source, &first.name);
+    match host.mux.select() {
+        SelectOutcome::SharedSwitch => {
+            // One PTY per host. Warm it on the first session if not yet attached; reap it
+            // (and forget its session) when the host has no sessions.
+            match sessions.first() {
+                Some(first)
+                    if !registry.contains(source)
+                        && !host.display.in_flight.contains_key(source) =>
+                {
+                    request_attach(
+                        registry,
+                        worker,
+                        &mut host.display,
+                        attach_seq,
+                        source,
+                        shared_display_attach_argv(remote, src, &first.name, None),
+                        cols,
+                        rows,
+                    );
+                    host.display.set_shows(source, &first.name);
+                }
+                None => {
+                    registry.remove(source);
+                    host.display.clear(source);
+                }
+                _ => {}
             }
-            None => {
+        }
+        SelectOutcome::PerSessionReattach => {
+            if sessions.is_empty() {
                 registry.remove(source);
                 host.display.clear(source);
             }
-            _ => {}
-        }
-        return;
-    }
-    // Stable per-session mux: one PTY per session; request each off-loop + reap closed.
-    let mut desired: HashSet<String> = HashSet::new();
-    for s in sessions {
-        let addr = s.address();
-        desired.insert(addr.clone());
-        if !registry.contains(&addr) && !host.display.in_flight.contains_key(&addr) {
-            request_attach(
-                registry,
-                worker,
-                &mut host.display,
-                attach_seq,
-                &addr,
-                src.attach_command(&s.name, None),
-                cols,
-                rows,
-            );
         }
     }
-    for addr in addresses_to_reap(&registry.addresses(), &desired, source) {
-        registry.remove(&addr);
-        host.display.clear(&addr);
-    }
-}
-
-/// The attached addresses belonging to `source` that are no longer in `desired`
-/// (their sessions closed). Pure so the reap selection is unit-testable. An address
-/// is `source/session`; it belongs to `source` iff it starts with `source/`.
-fn addresses_to_reap(existing: &[String], desired: &HashSet<String>, source: &str) -> Vec<String> {
-    let prefix = format!("{source}/");
-    existing
-        .iter()
-        .filter(|a| a.starts_with(&prefix) && !desired.contains(*a))
-        .cloned()
-        .collect()
 }
 
 /// True when a worker `Ready`/`Failed` reply is still the latest in-flight request for its
@@ -1131,10 +1081,10 @@ fn handle_host_event(
                 if let Some(h) = hosts.get(&source) {
                     for s in &sessions {
                         if !h.psmux_session_live(&s.name) {
-                            let key = if h.mux.stable_per_session_attachments() {
-                                h.display_key(&s.address())
-                            } else {
-                                source.clone()
+                            let key = match h.mux.select() {
+                                SelectOutcome::SharedSwitch | SelectOutcome::PerSessionReattach => {
+                                    source.clone()
+                                }
                             };
                             registry.remove(&key);
                         }
@@ -2436,11 +2386,11 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 // until its list-sessions resolves; reaping on that would tear down a
                 // live PTY. Closed-host reaping is owned by the Inventory/Changed path).
                 for src in &env.srcs {
-                    let shares_one = hosts
+                    let shared_switch = hosts
                         .get(&src.alias)
-                        .map(|h| h.mux.server_model().shares_one_attachment())
+                        .map(|h| matches!(h.mux.select(), SelectOutcome::SharedSwitch))
                         .unwrap_or(false);
-                    if !shares_one || registry.contains(&src.alias) {
+                    if !shared_switch || registry.contains(&src.alias) {
                         continue;
                     }
                     let first = match mgr.get(&src.alias) {
@@ -2850,10 +2800,9 @@ mod tests {
     }
 
     #[test]
-    fn display_key_is_per_host_for_shared_and_unstable_psmux() {
-        // Shared tmux and muxes whose display attaches cannot remain independently
-        // pinned both use one PTY per HOST. The key is shaped by mux behavior,
-        // read off the Host — never the transport's remote flag.
+    fn display_key_is_per_host_for_shared_and_reattach_psmux() {
+        // Shared tmux and reattach psmux both use one PTY per HOST. The key is shaped
+        // by mux behavior, read off the Host — never the transport's remote flag.
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::model::Transport::Ssh {
@@ -2881,7 +2830,7 @@ mod tests {
         assert_eq!(
             display_key(&hosts, &lsel),
             "local",
-            "unstable per-session attaches → per-host key"
+            "reattach per-session muxes use a per-host key"
         );
     }
 
@@ -2931,36 +2880,6 @@ mod tests {
             host.mux.event_source(),
             crate::model::EventSource::Control
         ));
-    }
-
-    #[test]
-    fn addresses_to_reap_picks_this_sources_closed_sessions() {
-        // Only addresses of `source` that are not in the desired set are reaped; a
-        // different source's attachments and still-present sessions are protected.
-        let existing = vec![
-            "local/a".to_string(),
-            "local/b".to_string(),
-            "jupiter06/a".to_string(),
-        ];
-        let mut desired = HashSet::new();
-        desired.insert("local/a".to_string());
-        let reap = addresses_to_reap(&existing, &desired, "local");
-        assert_eq!(
-            reap,
-            vec!["local/b".to_string()],
-            "only local/b (closed, this source) is reaped"
-        );
-    }
-
-    #[test]
-    fn addresses_to_reap_empty_desired_reaps_all_of_source() {
-        let existing = vec!["local/a".to_string(), "jupiter06/x".to_string()];
-        let reap = addresses_to_reap(&existing, &HashSet::new(), "local");
-        assert_eq!(
-            reap,
-            vec!["local/a".to_string()],
-            "every local session gone → reap local/a only"
-        );
     }
 
     #[tokio::test]
