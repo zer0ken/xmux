@@ -173,6 +173,39 @@ git commit -m "refactor(state): introduce runtime State store, hoist cockpit sel
 
 **green-gate:** `cargo build`/`test`(500+신규 그린, 0 fail)/`clippy --all-targets -- -D warnings`(0)/`fmt`. **라이브 게이트(사람 눈):** 터미널 psmux 윈도우 전환→트리 추적 + control 호스트 무회귀. 헤드리스 ctl(switch/status/dump)로 가능한 데까지 검증.
 
+## Phase 4 — 실행 체크리스트 (Phase 3 후 현재 코드 기준 상세)
+
+> `select_attach`의 분기를 `backend.select() -> SelectOutcome` 뒤로 옮기고 분류 메서드 2개(`ServerModel::shares_one_attachment`, `Backend::stable_per_session_attachments`)를 제거. spec §121이 `fn select(&self, addr) -> SelectOutcome`를 명시. **이 phase는 사용자가 보는 PTY attach/표시 경로를 건드린다 — 가장 높은 회귀 위험. TDD + 어드버사리얼 리뷰 + 라이브 시각 검증(사람) 필수.**
+
+**⚠ spec 전제 정정 #3 (코드로 확인 — 결함 A·B에 이은 세 번째 불일치):** spec은 "3-way 분기"라 하나, 현재 백엔드로는 **2-way만 살아있고 1개는 죽은 코드**다:
+- **tmux** = `Shared` → `shares_one_attachment()=true` → `shared` 분기. 키 = host-id.
+- **psmux** = `PerSession` + `stable_per_session_attachments()=false`(backend/mod.rs:197 override) → `!shares_one && !stable` 중간 분기. 키 = host-id (`host_selection_key`: `false || !false = true`). **host당 PTY 1개, 세션 변경 시 remove+reattach**(per-session 서버라 switch-client 불가).
+- **`else`(stable per-session pinned, per-session 키) 분기 = 도달 불가** — `PerSession`+`stable=true` 백엔드가 없음(기본 true지만 유일한 PerSession인 psmux가 false로 override). `select_attach`(477-492), `sync_source_terminals`(594-615), `host_selection_key`(314 `host.display_key`), `handle_host_event` Sessions arm(1135 `h.display_key` 가지), `ServerModel::display_key`의 PerSession arm이 모두 죽은 경로.
+
+**권고 설계(가장 보수적 — YAGNI + spec §10 비목표):** 죽은 stable-per-session 가지를 **재현하지 말고 드롭**(실제 pinned-per-session 백엔드 생길 때 재도입; P2의 "(zellij/) 슬롯 안 만듦"과 동일 원칙). `SelectOutcome`은 2 변종:
+```rust
+pub enum SelectOutcome {
+    SharedSwitch,        // tmux: host당 PTY 1개, switch-client로 in-place 이동
+    PerSessionReattach,  // psmux: host당 PTY 1개, 세션 변경 시 remove+reattach
+}
+```
+`Backend::select(&self) -> SelectOutcome` (인자 불필요 — server_model처럼 백엔드 상수). Tmux→SharedSwitch, Psmux→PerSessionReattach. **`server_model()`·`display_key`는 유지**(model identity·death/reap·host.rs:231·112에서 광범위 사용); 제거 대상은 분류 헬퍼 2개뿐.
+
+**제거할 메서드 2개의 읽기 사이트 5곳 → `select()` match로 치환:**
+1. `host_selection_key`(cockpit.rs:309-316): 두 살아있는 백엔드 다 host-id → `match host.mux.select() { SharedSwitch|PerSessionReattach => host.id() }`로 단순화(죽은 per-session 키 가지 드롭). 실행 시 `host.display_key`/`ServerModel::display_key`의 다른 사용처(host.rs:112/251, cockpit.rs:1092 ClientDetached=Shared host-id LIVE) 안 깨지는지 확인.
+2. `select_attach`(388-389 + 391/452/477 3-way): `match host.mux.select()` → `SharedSwitch`=현 `shared` 본문(first-attach+marker / clear_grid+switch-client-over-control-or-switch_plan / window select-window-unless-folded), `PerSessionReattach`=현 `!stable` 본문(showing 다르면 remove+clear, 아니면 attach; window=select-window plan). 죽은 `else` 드롭.
+3. `sync_source_terminals`(558/560 + 561/567/594 3-way): `SharedSwitch`=warm-one-per-host+reap-when-empty; `PerSessionReattach`=sessions 비면 host-id remove. 죽은 stable 가지(594-615)+`addresses_to_reap`가 그 가지 전용이면 함께 드롭(다른 사용처 확인).
+4. `handle_host_event` Sessions arm(1133-1136): 현재 `if stable { h.display_key(addr) } else { source }` → psmux는 always `source`(host-id). `select()==PerSessionReattach`에서 host-id 키로 단순화, 죽은 가지 드롭.
+5. `reconnect.tick` 재웜(2441 `shares_one_attachment()`): `matches!(host.mux.select(), SelectOutcome::SharedSwitch)`로 치환(shared만 per-host PTY 재웜).
+
+**TDD:** backend 테스트 — `tmux().select()==SharedSwitch`, `psmux().select()==PerSessionReattach`(backend/mod.rs 기존 server_model 테스트 옆). 그 다음 분류 메서드 제거→컴파일러가 5 사이트 가이드. select_attach/sync의 동작은 코드-이동(2 살아있는 가지 보존)이라 기존 테스트가 가드하나 **약함**(attach 경로 커버리지 부족, 메모리 `xmux-merge-review`).
+
+**green-gate:** build/test(그린 유지)/clippy0/fmt. **라이브 시각 게이트(사람 — 무인 검증 불가):** tmux 호스트 세션 간 전환=switch-client in-place(잔상 없음), psmux 세션 간 전환=remove+reattach(새 그리드), window-row 전환=select-window 추적. `xmux-cockpit-local-attach-headless-untestable`로 local attach 헤드리스 위험 → 신선/대화형 세션에서 실행 권장.
+
+## Phase 5 — 로드맵 (P4 후 상세화)
+
+`cockpit.rs`/`switcher.rs` → `src/app.rs`(얇은 배선) + `src/ui/{tree,terminal,popup,status}.rs`. `State`가 display(표시중 attachment+address) 단일 소유 → "표시중==선택" 불변식 구조 성립 → 결함 A 해소. draw 게이팅·마우스 라우팅 보존.
+
 ## Self-Review (Phase 1)
 
 - **Spec 커버리지:** §8.1(State 도입) = Task 2. State 필드는 selection 도메인만 도입(나머지 §4 필드는 §로드맵에서 해당 Phase로 명시 이연). `last_attached_sel` 제거(§8.1)는 결함 A를 현 아키텍처에서 안 고치는 사용자 결정에 따라 **이연** — Phase 5에서 State가 display를 소유하며 자연 obsolete.
