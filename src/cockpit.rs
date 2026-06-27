@@ -448,14 +448,9 @@ fn select_attach(
             }
         }
         SelectOutcome::PerSessionReattach => {
-            let showing_selected = host.display.shows(&key) == Some(sel.session.as_str());
-            if !showing_selected {
-                registry.remove(&key);
-                host.display.clear(&key);
-            }
-            if (!showing_selected || !registry.contains(&key))
-                && !host.display.in_flight.contains_key(&key)
-            {
+            registry.remove(&key);
+            host.display.clear(&key);
+            if !host.display.in_flight.contains_key(&key) {
                 let mux_argv = host.mux.attach_plan(&sel.session, None);
                 let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
                 let mut argv = vec![cmd];
@@ -2247,7 +2242,9 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                 // while this first-attach was in flight; clearing the latch makes the
                                 // next pass re-run select_attach, which (now that the host PTY exists)
                                 // issues the deferred switch-client to the current selection.
-                                state.last_attached_sel = Selection::default();
+                                if matches!(h.mux.select(), SelectOutcome::SharedSwitch) {
+                                    state.last_attached_sel = Selection::default();
+                                }
                             } else {
                                 // Stale Ready (a newer attach superseded this seq): forget its
                                 // pending id before teardown so the id->key map cannot grow.
@@ -3598,6 +3595,56 @@ mod tests {
             "old psmux display attach is removed before reattach"
         );
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn psmux_select_attach_does_not_trust_stale_display_bookkeeping() {
+        let mut hosts = crate::model::Hosts::default();
+        hosts.insert(crate::model::Host::new(
+            crate::model::Transport::Local { socket: None },
+            crate::backend::for_binary("psmux"),
+        ));
+        hosts
+            .get_mut("local")
+            .unwrap()
+            .display
+            .set_shows("local", "target");
+
+        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
+        let worker = crate::display::DisplayWorker::with_spawner(
+            ptx,
+            Box::new(|_argv, _cols, _rows, id, _events| Ok(crate::proxy::run::fake_attachment(id))),
+        );
+        let mut registry = AttachRegistry::new();
+        registry.insert("local", crate::proxy::run::fake_attachment(99));
+        let mut attach_seq = 0u64;
+        let mgr = empty_manager();
+
+        let sel = Selection {
+            source: "local".into(),
+            session: "target".into(),
+            window: None,
+        };
+
+        assert!(select_attach(
+            &mut registry,
+            &mut hosts,
+            &sel,
+            &worker,
+            &mut attach_seq,
+            80,
+            24,
+            crate::ui::switcher::TREE_WIDTH,
+            &mgr
+        ));
+
+        let h = hosts.get("local").unwrap();
+        assert!(h.display.in_flight.contains_key("local"));
+        assert!(
+            !registry.contains("local"),
+            "psmux select_attach must replace the host PTY even when bookkeeping is stale"
+        );
+    }
+
     #[test]
     fn local_tmux_shared_second_session_lowers_to_a_local_switch_client_argv() {
         use crate::model::{LoweredSwitch, Transport};
