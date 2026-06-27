@@ -148,6 +148,31 @@ git commit -m "refactor(state): introduce runtime State store, hoist cockpit sel
 - **Phase 4 — `select()` 통일.** `select_attach`의 3-way 분기를 `backend.select() -> SelectOutcome` 뒤로. `shares_one_attachment`/`stable_per_session_attachments` 제거. host_selection_key 분류 분기도 backend로 흡수.
 - **Phase 5 — Component 분해 + State 완성.** `cockpit.rs`/`switcher.rs`를 `src/app.rs`(얇은 배선) + `src/ui/{tree,terminal,popup,status}.rs`(flat·대등 Component)로 분해. 각 Component가 `&State`/`&dyn Backend`를 직접 받음. **`State`가 display(표시중 attachment + 그 address)를 단일 소유** → "표시중 == 선택" 불변식이 구조적으로 성립, 결함 A 해소. draw 게이팅·마우스 라우팅 보존.
 
+## Phase 3 — 실행 체크리스트 (현재 코드 기준 상세)
+
+> 단일 버스로의 동시성 통합. **거의 원자적** — 채널·소유권을 함께 바꿔야 컴파일·정합한다(반쪽 = double-poll/broken loop). 기존 500 테스트가 무회귀 게이트.
+
+**확정 앵커 (Phase 2 후 검증):** event_source 누수 5곳 = `ensure_current_host`(665) · `dispatch_detected_host`(750) · `kick_rescan`(825) · `local_poll.tick`(2519) · `reconnect.tick`(2532). poll 데이터 경로 = `LocalEnum`(1040) + `spawn_detected_enumeration`(704) + `enum_tx/enum_rx`(2000) + `local_poll` 타이머(2022). `dirty`는 select 후 `if !from_frame`(2590)로 일괄 — 채널 병합해도 보존.
+
+**목표 설계:** `host_tx`/`host_rx` 단일 버스. `HostManager`가 control 클라이언트(`clients`)와 poll task(`polls: HashMap<String, JoinHandle<()>>`)를 둘 다 소유.
+- `HostEvent`에 poll 데이터 변종 흡수: `Scanned{source, detected}` · `Sessions{source, sessions, err}` · `Panes{address, panes}` (host.rs).
+- `run_poll(source, transport, kind, bin, interval_ms, events)` (host.rs): `spawn_detected_enumeration` 로직을 자가-루프로 — enumerate→`Sessions` emit→세션별 list-panes→`Panes` emit→`sleep(interval)`. `events.send` 실패 시 return(수신자 drop).
+- `HostManager::ensure(id, host: &Host, src, cols, rows)`: `event_source()`를 **여기 한 곳에서만** 읽어 Control→`HostClient::spawn`, Poll→`tokio::spawn(run_poll(...))`. 이미 있으면 `Ok(false)`(idempotent).
+- `HostManager::rescan(id, host, src, cols, rows)`: control(`clients`)면 `list_sessions()`, poll(`polls`)면 task `abort()`+respawn(즉시 재열거). **map 소속으로 분기 — event_source 안 읽음.**
+- `HostManager::events()`: detection spawn(`spawn_host_detection`)용 sender clone.
+- `reap`/`teardown_all`: control teardown + poll task `abort()`.
+
+**cockpit 재배선 (event_source 분기 0):**
+- `ensure_current_host`/`dispatch_detected_host`/`reconnect.tick`: `host.detected`면 `mgr.ensure(id, host, src, …)` uniform.
+- `scan_or_dispatch_host`: 미탐지→`spawn_host_detection(src, mgr.events())`, 탐지→`dispatch_detected_host`(→`mgr.ensure`).
+- `kick_rescan`: 미탐지→`scan_or_dispatch_host`, 탐지→`mgr.rescan`.
+- `handle_host_event`에 `detecting: &mut HashSet<String>` 추가 + `Scanned`/`Sessions`/`Panes` arm 흡수(현 `enum_rx` arm 로직 그대로).
+- **삭제:** `LocalEnum` · `spawn_detected_enumeration` · `enum_tx`/`enum_rx` · `local_poll` 타이머+arm · `enum_rx.recv()` arm · `LOCAL_POLL_MS` 상수(+ backend.rs:507 주석 갱신). `enum_tx`를 받던 함수 시그니처(`connect_all_sources`/`scan_or_dispatch_host`/`dispatch_detected_host`/`kick_rescan`/`handle_tree_bytes`/`handle_mouse_event`/`handle_stdin_bytes`)에서 제거 + 전 호출처·테스트 갱신.
+
+**TDD:** 신규 테스트 1개(host.rs) — poll 호스트 lifecycle: `ensure`=Ok(true)→`get()`=None(control 클라이언트 없음)→재`ensure`=Ok(false)→`reap`→재`ensure`=Ok(true). `run_poll`의 emit은 코드 이동(동작 불변)이라 기존 live-enum + apply 테스트가 가드.
+
+**green-gate:** `cargo build`/`test`(500+신규 그린, 0 fail)/`clippy --all-targets -- -D warnings`(0)/`fmt`. **라이브 게이트(사람 눈):** 터미널 psmux 윈도우 전환→트리 추적 + control 호스트 무회귀. 헤드리스 ctl(switch/status/dump)로 가능한 데까지 검증.
+
 ## Self-Review (Phase 1)
 
 - **Spec 커버리지:** §8.1(State 도입) = Task 2. State 필드는 selection 도메인만 도입(나머지 §4 필드는 §로드맵에서 해당 Phase로 명시 이연). `last_attached_sel` 제거(§8.1)는 결함 A를 현 아키텍처에서 안 고치는 사용자 결정에 따라 **이연** — Phase 5에서 State가 display를 소유하며 자연 obsolete.
