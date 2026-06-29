@@ -4,6 +4,7 @@
 
 pub mod ops;
 pub mod run;
+pub mod status;
 pub mod switcher;
 pub mod tree;
 

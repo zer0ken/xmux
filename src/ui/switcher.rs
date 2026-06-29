@@ -16,6 +16,7 @@ use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::session::{Pane, Session, WindowPanes};
+use crate::ui::status::Status;
 use crate::ui::tree::{self, Group};
 
 pub use crate::ui::ops::{run_op, OpResult, Ops, PendingOp};
@@ -82,26 +83,7 @@ pub fn map_color(s: &str) -> Color {
     }
 }
 
-/// The tree|mux divider's three colours, resolved from config (tmux's pane-border
-/// options): `active` marks the focused side, `inactive` the unfocused side, and
-/// `hover` the drag-resize grab cue. Defaults mirror tmux's own code defaults —
-/// `green` / terminal-default / `yellow`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DividerColors {
-    pub active: Color,
-    pub inactive: Color,
-    pub hover: Color,
-}
-
-impl Default for DividerColors {
-    fn default() -> Self {
-        DividerColors {
-            active: Color::Green,
-            inactive: Color::Reset,
-            hover: Color::Yellow,
-        }
-    }
-}
+pub use crate::ui::status::DividerColors;
 
 /// A fully-populated snapshot of the reachable environment.
 #[derive(Clone, Default)]
@@ -222,7 +204,7 @@ fn menu_title(target: &RowRef) -> String {
 /// (Unicode-aware), breaking on spaces; a word longer than `width` is hard-split so
 /// nothing is ever clipped. Always returns at least one line. Used so the input
 /// prompt's description wraps across a narrow tree column instead of being truncated.
-fn wrap_text(text: &str, width: u16) -> Vec<String> {
+pub(crate) fn wrap_text(text: &str, width: u16) -> Vec<String> {
     use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
     let width = (width as usize).max(1);
     let mut lines: Vec<String> = Vec::new();
@@ -339,7 +321,6 @@ pub struct Switcher {
 
     input: Option<Input>,
     pending_kill: Option<PendingKill>,
-    flash: String,
 
     terminal_view_target: TerminalViewTarget,
 
@@ -347,20 +328,9 @@ pub struct Switcher {
     tree_inner: Rect,
 
     show_help: bool,
-    /// Auto-hide-tree mode (set by the cockpit each frame). Drives the divider glyph:
-    /// ║ (double) when on, │ (single) when off — the only on-screen cue, since while
-    /// the mode is on but the tree is focused the tree still shows.
-    auto_hide: bool,
-    /// True while the mouse is hovering the divider rule — the cockpit sets this from
-    /// idle motion so the divider highlights as a grab cue for drag-resize.
-    divider_hovered: bool,
     /// A slow (network) action queued by the last keypress for the event loop to
     /// run off-loop. `None` unless a create/rename/kill is pending dispatch.
     pending_op: Option<PendingOp>,
-    /// Session addresses currently connecting / awaiting first output — a braille
-    /// spinner glyph renders right of their name in the tree.
-    spinner: HashSet<String>,
-    spinner_frame: usize,
     /// The persisted last-selected session address (`source/session`) used to
     /// preselect on launch; `None` ⇒ the local-first preselect. Drives only the
     /// initial preselect (while the user has not moved); once `user_moved` is set,
@@ -372,15 +342,9 @@ pub struct Switcher {
     /// The whole frame area, captured each render so the menu box can be clamped to
     /// the screen at open time (mouse events arrive between renders).
     screen_area: Rect,
-    /// Raw `~/.ssh/config` text (set once by the cockpit). The right-pane info panel
-    /// shows the matching Host/Match stanza for a selected unreachable host. Empty in tests.
-    ssh_config_text: String,
-    /// The human-readable prefix string (e.g. `"C-g"`, `"C-Space"`) — set once by
-    /// the cockpit from config so the help overlay reflects the active binding.
-    ui_prefix: String,
-    /// The tree|mux divider colours (set once by the cockpit from config; tmux defaults
-    /// otherwise). See [`DividerColors`].
-    colors: DividerColors,
+    /// The status surface (divider, footer, host-info) and its view-local state
+    /// (flash, spinner, auto-hide/hover cues, divider colours, ssh-config, prefix).
+    status: Status,
     /// Drag offset (cells) applied to a modal popup's centered position. Reset
     /// to (0,0) when a popup opens; updated while its border is dragged.
     popup_offset: (i16, i16),
@@ -403,22 +367,15 @@ impl Switcher {
             name_col_width: 0,
             input: None,
             pending_kill: None,
-            flash: String::new(),
             terminal_view_target: TerminalViewTarget::default(),
             list_state: ListState::default(),
             tree_inner: Rect::default(),
             show_help: false,
-            auto_hide: false,
-            divider_hovered: false,
             pending_op: None,
-            spinner: HashSet::new(),
-            spinner_frame: 0,
             preferred: None,
             menu: None,
             screen_area: Rect::default(),
-            ssh_config_text: String::new(),
-            ui_prefix: "C-g".into(),
-            colors: DividerColors::default(),
+            status: Status::default(),
             popup_offset: (0, 0),
             popup_rect: Rect::default(),
             popup_drag: None,
@@ -1018,38 +975,38 @@ impl Switcher {
     /// first output. The tree draws a braille spinner right of each matching
     /// session name.
     pub fn set_spinner(&mut self, addresses: HashSet<String>) {
-        self.spinner = addresses;
+        self.status.set_spinner(addresses);
     }
 
     /// Sets the braille spinner frame index. The cockpit derives it from elapsed
     /// wall-clock time, so the spinner animates on every render rather than once
     /// per animation tick (which can starve under a `%output` flood).
     pub fn set_spinner_frame(&mut self, frame: usize) {
-        self.spinner_frame = frame;
+        self.status.set_spinner_frame(frame);
     }
 
     /// Sets auto-hide-tree mode (the cockpit owns it; the divider glyph reflects it).
     pub fn set_auto_hide(&mut self, on: bool) {
-        self.auto_hide = on;
+        self.status.set_auto_hide(on);
     }
 
     /// Sets whether the mouse is hovering the divider (the cockpit derives it from
     /// idle motion); when set, the divider highlights as a drag-resize grab cue.
     pub fn set_divider_hovered(&mut self, on: bool) {
-        self.divider_hovered = on;
+        self.status.set_divider_hovered(on);
     }
 
     /// Sets the tree|mux divider colours. The cockpit calls this once at startup with
     /// the colours parsed from config's `pane-*-border-style` options; tmux defaults
     /// apply otherwise.
     pub fn set_divider_colors(&mut self, colors: DividerColors) {
-        self.colors = colors;
+        self.status.set_divider_colors(colors);
     }
 
     /// Sets the prefix string shown in the help overlay. The cockpit calls this once
     /// at startup so the overlay reflects the binding from config's `[ui] prefix`.
     pub fn set_ui_prefix(&mut self, prefix: String) {
-        self.ui_prefix = prefix;
+        self.status.set_ui_prefix(prefix);
     }
 
     // --- key handling -------------------------------------------------------
@@ -1190,7 +1147,7 @@ impl Switcher {
         // A flash (error/notice) is transient — it lives only until the next key, like a
         // status toast. Clear it here so navigation (or any key) restores the normal help
         // footer; actions below may set a fresh one, which survives because this runs first.
-        self.flash.clear();
+        self.status.flash.clear();
         match ev.code {
             KeyCode::Enter => {}
             // ↑/↓ (and k/j) move between SIBLINGS at the current tree level (next/prev
@@ -1219,7 +1176,7 @@ impl Switcher {
     // --- input row ----------------------------------------------------------
 
     fn open_input(&mut self, mode: InputMode, state: &crate::state::State) {
-        self.flash.clear();
+        self.status.flash.clear();
         self.dismiss_modals();
         match mode {
             InputMode::Filter => {
@@ -1234,7 +1191,7 @@ impl Switcher {
             }
             InputMode::Rename => match self.current_ref().cloned() {
                 Some(RowRef::Host { .. }) => {
-                    self.flash = "cannot rename a host".into();
+                    self.status.flash = "cannot rename a host".into();
                 }
                 Some(RowRef::Session(sess)) => {
                     self.input = Some(Input {
@@ -1272,10 +1229,10 @@ impl Switcher {
     /// direction). The prompt context is captured up front so a streamed cursor
     /// move cannot retarget it.
     fn open_new(&mut self) {
-        self.flash.clear();
+        self.status.flash.clear();
         self.dismiss_modals();
         if self.current_host_unreachable() {
-            self.flash = "host unreachable — cannot create here".into();
+            self.status.flash = "host unreachable — cannot create here".into();
             return;
         }
         let Some(reference) = self.current_ref().cloned() else {
@@ -1452,7 +1409,7 @@ impl Switcher {
         }
         if new_name.starts_with('-') {
             // the mux silently no-ops a '-'-leading name (getopt eats it) — refuse.
-            self.flash = "rename: name cannot start with '-'".into();
+            self.status.flash = "rename: name cannot start with '-'".into();
             return;
         }
         self.pending_op = Some(PendingOp::Rename {
@@ -1481,7 +1438,7 @@ impl Switcher {
             return;
         }
         if new_name.starts_with('-') {
-            self.flash = "rename: name cannot start with '-'".into();
+            self.status.flash = "rename: name cannot start with '-'".into();
             return;
         }
         self.pending_op = Some(PendingOp::RenameWindow {
@@ -1536,7 +1493,7 @@ impl Switcher {
                 self.apply_panes(address, panes, state);
             }
             OpResult::Failed { message } => {
-                self.flash = message;
+                self.status.flash = message;
             }
         }
     }
@@ -1559,7 +1516,7 @@ impl Switcher {
         self.dismiss_modals();
         match self.current_ref().cloned() {
             Some(RowRef::Host { .. }) => {
-                self.flash = "cannot kill a host".into();
+                self.status.flash = "cannot kill a host".into();
             }
             Some(RowRef::Session(sess)) => {
                 self.pending_kill = Some(PendingKill::Session(sess));
@@ -1923,21 +1880,23 @@ impl Switcher {
         // Tree column: the tree plus its footer/help line. The footer is normally one
         // line, but a long flash wraps across several — size the footer to the wrapped
         // line count so it is never clipped.
-        let footer_h = self.footer_lines(tree_width, state).len().max(1) as u16;
+        let footer_h = self.status.footer_lines(tree_width, state).len().max(1) as u16;
         let left = Layout::vertical([
             Constraint::Min(0),           // tree
             Constraint::Length(footer_h), // footer (help / status / wrapped flash)
         ])
         .split(cols[0]);
         self.render_tree(frame, left[0]);
-        self.render_footer(frame, left[1], state);
+        self.status.render_footer(frame, left[1], state);
         // The tree|mux divider marks focus between those two panes.
-        self.render_divider(frame, cols[1], terminal_focused);
+        self.status.render_divider(frame, cols[1], terminal_focused);
         let term_area = cols[2];
         // An unreachable host has no live grid; show an info panel (ssh config stanza
         // + failure reason) in its right pane instead of the blank (attaching…) grid.
         if self.current_host_unreachable() {
-            self.render_host_info(frame, term_area, state);
+            let source = self.current_source().unwrap_or_default();
+            self.status
+                .render_host_info(frame, term_area, state, &source);
         } else {
             self.render_terminal_view(frame, term_area, grid);
         }
@@ -1954,62 +1913,13 @@ impl Switcher {
         self.render_menu(frame);
     }
 
-    /// The vertical rule between the tree (left) and terminal (right). It splits into
-    /// a top and bottom half: the accent (green) half marks WHICH pane holds focus —
-    /// top = tree (left), bottom = mux (right) — and the other half stays dim. A single
-    /// vertical rule cannot lean left/right, so the accent half's position carries the
-    /// signal (adapting tmux's active-pane border). Replaces the per-pane box borders.
-    /// The glyph also encodes auto-hide-tree mode: ║ (double) when on, │ when off — so
-    /// a visible tree that will vanish on blur is distinguishable from a pinned one.
-    fn render_divider(&self, frame: &mut Frame, area: Rect, terminal_focused: bool) {
-        let active = self.colors.active;
-        let inactive = self.colors.inactive;
-        let glyph = if self.auto_hide { "║" } else { "│" };
-        // Hover (mouse over the rule, no button): box-drawing rules have no bold form
-        // (the BOLD modifier does not thicken them), so swap the glyph itself to the
-        // HEAVY vertical (┃) for a genuinely thicker line and recolour it with the
-        // configured hover colour (tmux's `pane-border-hover-style`) — same single rule,
-        // just thicker + lit, as the grab cue.
-        if self.divider_hovered {
-            let style = Style::default().fg(self.colors.hover);
-            let bars = Text::from(
-                (0..area.height)
-                    .map(|_| Line::from(Span::styled("┃", style)))
-                    .collect::<Vec<_>>(),
-            );
-            frame.render_widget(Paragraph::new(bars), area);
-            return;
-        }
-        let colors: Vec<Color> = if area.height <= 1 {
-            // Too short to split: show the active-marker color in the single cell.
-            vec![active; area.height as usize]
-        } else {
-            let top_rows = area.height.div_ceil(2); // top takes the extra row on odd heights
-            let (top, bottom) = if terminal_focused {
-                (inactive, active) // mux focused → accent on the bottom (mux side)
-            } else {
-                (active, inactive) // tree focused → accent on the top (tree side)
-            };
-            (0..area.height)
-                .map(|y| if y < top_rows { top } else { bottom })
-                .collect()
-        };
-        let bars = Text::from(
-            colors
-                .into_iter()
-                .map(|c| Line::from(Span::styled(glyph, Style::default().fg(c))))
-                .collect::<Vec<_>>(),
-        );
-        frame.render_widget(Paragraph::new(bars), area);
-    }
-
     fn render_tree(&mut self, frame: &mut Frame, area: Rect) {
         // No border box: the tree fills its column outright and a single rule
         // (render_divider) separates it from the terminal view.
         self.tree_inner = area;
 
         const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-        let spinner_glyph = SPINNER[self.spinner_frame % SPINNER.len()];
+        let spinner_glyph = SPINNER[self.status.spinner_frame % SPINNER.len()];
 
         let items: Vec<ListItem> = self
             .rows
@@ -2040,7 +1950,7 @@ impl Switcher {
                     Span::styled(pad_label(&row.label), style),
                 ];
                 // Spinner glyph: shown right of the session name when connecting.
-                if matches!(&row.reference, RowRef::Session(s) if self.spinner.contains(&s.address())) {
+                if matches!(&row.reference, RowRef::Session(s) if self.status.spinner.contains(&s.address())) {
                     let sp_style = Style::default().fg(COLOR_HINT);
                     spans.push(Span::styled(spinner_glyph.to_string(), sp_style));
                 }
@@ -2080,114 +1990,7 @@ impl Switcher {
 
     /// Sets the raw `~/.ssh/config` text the unreachable-host info panel reads.
     pub fn set_ssh_config_text(&mut self, text: String) {
-        self.ssh_config_text = text;
-    }
-
-    /// The right-pane info panel for a selected unreachable host: the failure reason
-    /// and the host's `~/.ssh/config` stanza, so the user can see WHY the control
-    /// connection failed without leaving the cockpit.
-    fn render_host_info(&self, frame: &mut Frame, area: Rect, state: &crate::state::State) {
-        let alias = self.current_source().unwrap_or_default();
-        let reason = state
-            .groups
-            .iter()
-            .find(|g| g.source == alias)
-            .and_then(|g| g.err.clone())
-            .unwrap_or_else(|| "connection closed".into());
-        let mut lines = vec![
-            Line::from(Span::styled(
-                format!(" ⚠ {alias} unreachable"),
-                Style::default().fg(Color::Yellow),
-            )),
-            Line::from(""),
-            Line::from(format!(" reason: {reason}")),
-            Line::from(""),
-            Line::from(Span::styled(
-                " ~/.ssh/config:",
-                Style::default().add_modifier(Modifier::DIM),
-            )),
-        ];
-        let stanza = crate::config::host_stanza(&self.ssh_config_text, &alias);
-        if stanza.is_empty() {
-            lines.push(Line::from(Span::styled(
-                " (no matching ssh config entry)",
-                Style::default().add_modifier(Modifier::DIM),
-            )));
-        } else {
-            for l in stanza.lines() {
-                lines.push(Line::from(format!(" {l}")));
-            }
-        }
-        frame.render_widget(Paragraph::new(Text::from(lines)), area);
-    }
-
-    /// The footer's logical text (confirm / flash / scanning / filter / help), fit to
-    /// `width`. A flash is returned raw — it may exceed `width`; [`Self::footer_lines`]
-    /// wraps it so it never clips.
-    fn footer_text(&self, width: u16, state: &crate::state::State) -> String {
-        // Use the active prefix so the footer matches the user's configured binding.
-        let p = &self.ui_prefix;
-        if !self.flash.is_empty() {
-            format!(" {}", self.flash)
-        } else if !state.scanning.is_empty() {
-            // A subtle global indicator while host probes are in flight; clears
-            // (falls through to the help line) once every host has settled.
-            let total = state.groups.len();
-            let done = total.saturating_sub(state.scanning.len());
-            fit(
-                &[
-                    format!(" ⟳ scanning hosts {done}/{total}… · {p} q quit · {p} ? help"),
-                    format!(" ⟳ scanning {done}/{total}…"),
-                ],
-                width,
-            )
-        } else if !state.filter.is_empty() {
-            // The active filter has no border title to live in any more, so it
-            // shows in the footer (with how to clear it).
-            fit(
-                &[
-                    format!(
-                        " filter: {} · / edit · Esc clear · {p} ? help · {p} q quit",
-                        state.filter
-                    ),
-                    format!(" filter: {}", state.filter),
-                ],
-                width,
-            )
-        } else {
-            fit(
-                &[
-                    format!(" ↑/↓ move · Enter/{p}→ focus mux · / filter · n new · R rename · x kill · r refresh · {p} ? help · {p} q quit"),
-                    format!(" ↑/↓ move · Enter focus mux · / filter · n new · x kill · {p} ? help · {p} q quit"),
-                    format!(" move · Enter focus mux · / filter · {p} ? help · {p} q quit"),
-                    format!(" Enter focus mux · {p} ? help · {p} q quit"),
-                    format!(" {p} ? help · {p} q quit"),
-                ],
-                width,
-            )
-        }
-    }
-
-    /// The footer text split into the lines to render. The fit-based text is always one
-    /// line; only a flash (an arbitrary error/notice) may exceed `width`, so it wraps
-    /// across the narrow tree-column footer rather than clipping.
-    fn footer_lines(&self, width: u16, state: &crate::state::State) -> Vec<String> {
-        let text = self.footer_text(width, state);
-        // Only a flash can exceed `width` (the fit-based text is already constrained);
-        // wrap it on word boundaries with a consistent left margin.
-        if self.flash.is_empty() {
-            return vec![text];
-        }
-        wrap_text(text.trim_start(), width.saturating_sub(1))
-            .into_iter()
-            .map(|l| format!(" {l}"))
-            .collect()
-    }
-
-    fn render_footer(&self, frame: &mut Frame, area: Rect, state: &crate::state::State) {
-        let lines = self.footer_lines(area.width, state);
-        let text = Text::from(lines.into_iter().map(Line::from).collect::<Vec<_>>());
-        frame.render_widget(Paragraph::new(text), area);
+        self.status.set_ssh_config_text(text);
     }
 
     /// The help overlay's `(title, lines)`, built once and rendered through the
@@ -2198,8 +2001,8 @@ impl Switcher {
         // `Note` is a description-only row (the mux state has no keys of its own).
         //
         // The tree and mux sections have no configurable keys so they are static.
-        // The focus section uses `self.ui_prefix` so the overlay matches the active
-        // binding from config.
+        // The focus section uses `self.status.ui_prefix` so the overlay matches the
+        // active binding from config.
         enum HelpRow {
             Head(String),
             Key(String, String),
@@ -2207,7 +2010,7 @@ impl Switcher {
             Gap,
         }
 
-        let p = &self.ui_prefix;
+        let p = &self.status.ui_prefix;
 
         // Tree section — no configurable keys; keep as literals.
         let rows: Vec<HelpRow> = vec![
@@ -2225,7 +2028,7 @@ impl Switcher {
             HelpRow::Key("/".into(), "fuzzy filter <source>/<name>".into()),
             HelpRow::Key("r".into(), "re-scan every host".into()),
             HelpRow::Gap,
-            // Focus section — prefix rows built from self.ui_prefix.
+            // Focus section — prefix rows built from self.status.ui_prefix.
             HelpRow::Head(format!("focus ({p} = prefix)")),
             HelpRow::Key(format!("Enter · {p} →"), "focus the mux pane".into()),
             HelpRow::Key(
@@ -2408,7 +2211,7 @@ fn plural(n: i64) -> String {
 
 /// Picks the first (longest) candidate whose width fits `width`, falling back
 /// to the last (shortest) when even that does not fit.
-fn fit(candidates: &[String], width: u16) -> String {
+pub(crate) fn fit(candidates: &[String], width: u16) -> String {
     let w = width as usize;
     candidates
         .iter()
@@ -3639,7 +3442,7 @@ mod tests {
         let state = crate::state::State::default();
         let mut sw = Switcher::blank();
         sw.set_ui_prefix("C-Space".into());
-        let text = sw.footer_text(200, &state);
+        let text = sw.status.footer_text(200, &state);
         assert!(
             text.contains("C-Space"),
             "custom prefix must appear in footer:\n{text:?}"
@@ -3651,7 +3454,7 @@ mod tests {
 
         // Default prefix (no setter) must still show C-g.
         let sw_default = Switcher::blank();
-        let text_default = sw_default.footer_text(200, &state);
+        let text_default = sw_default.status.footer_text(200, &state);
         assert!(
             text_default.contains("C-g"),
             "default prefix C-g must appear in footer:\n{text_default:?}"
@@ -3925,9 +3728,9 @@ mod tests {
         );
         h.ch('n').await;
         assert!(
-            h.sw.flash.to_lowercase().contains("unreachable"),
+            h.sw.status.flash.to_lowercase().contains("unreachable"),
             "create on unreachable host should flash unreachable, got {:?}",
-            h.sw.flash
+            h.sw.status.flash
         );
         assert!(h.ops.created.lock().unwrap().is_empty());
     }
@@ -4569,8 +4372,8 @@ mod tests {
         // than clip at the column edge (a narrow tree would otherwise hide most of it).
         let state = crate::state::State::from_scan(sample());
         let mut sw = Switcher::new(&state);
-        sw.flash = "host unreachable — cannot create here".into();
-        let lines = sw.footer_lines(20, &state);
+        sw.status.flash = "host unreachable — cannot create here".into();
+        let lines = sw.status.footer_lines(20, &state);
         assert!(
             lines.len() > 1,
             "long flash wraps across lines, got {lines:?}"
@@ -4592,12 +4395,12 @@ mod tests {
         // dismisses it so the normal help/status footer returns. Regression: it persisted
         // because only the input-opening actions cleared it, so navigation never did.
         let mut h = Harness::new(sample());
-        h.sw.flash = "host unreachable — cannot create here".into();
+        h.sw.status.flash = "host unreachable — cannot create here".into();
         h.key(KeyCode::Down).await;
         assert!(
-            h.sw.flash.is_empty(),
+            h.sw.status.flash.is_empty(),
             "navigation clears the flash, got {:?}",
-            h.sw.flash
+            h.sw.status.flash
         );
     }
 
@@ -5270,9 +5073,9 @@ mod tests {
             "leading-dash window rename must be refused"
         );
         assert!(
-            h.sw.flash.contains("cannot start with"),
+            h.sw.status.flash.contains("cannot start with"),
             "leading-dash window rename must set a flash message, got {:?}",
-            h.sw.flash
+            h.sw.status.flash
         );
     }
 
@@ -5282,9 +5085,9 @@ mod tests {
         h.key(KeyCode::Home).await; // local host row
         h.ch('x').await;
         assert!(
-            h.sw.flash.to_lowercase().contains("cannot kill"),
+            h.sw.status.flash.to_lowercase().contains("cannot kill"),
             "kill on host row must flash an error, got {:?}",
-            h.sw.flash
+            h.sw.status.flash
         );
         assert!(h.sw.pending_kill.is_none(), "no kill queued");
     }
@@ -5295,9 +5098,9 @@ mod tests {
         h.key(KeyCode::Home).await; // local host row
         h.ch('R').await;
         assert!(
-            h.sw.flash.to_lowercase().contains("cannot rename"),
+            h.sw.status.flash.to_lowercase().contains("cannot rename"),
             "rename on host row must flash an error, got {:?}",
-            h.sw.flash
+            h.sw.status.flash
         );
         assert!(h.sw.input.is_none(), "no input opened");
     }

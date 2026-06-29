@@ -11,17 +11,22 @@ ratatui rendering.
 `tree.rs` is side-effect-free model logic over groups and sessions.
 `switcher.rs` is the aggregate interactive TUI surface: cursor, flattened rows,
 menus, popups, inline input, key/mouse handling, operation result application,
-and render state. `ops.rs` performs slower side-effecting operations behind the
-switcher interface. `run.rs` bridges the control socket into cockpit commands
-and can flatten renders for `dump`.
+and render state. `status.rs` owns the status-bar surface — the divider rule,
+the footer, and the unreachable-host info panel — plus its view-local state
+(flash, spinner, divider colours, ui prefix), rendering from `&State`. `ops.rs`
+performs slower side-effecting operations behind the switcher interface.
+`run.rs` bridges the control socket into cockpit commands and can flatten
+renders for `dump`.
 
 ## Module Seams
 
 - Pure row/group transforms belong in `tree.rs`.
+- Status-bar rendering (divider, footer, host-info) and its view-local state
+  belong in `status.rs`; it reads inventory from `&State`, not the switcher.
 - External effects initiated by UI actions belong behind `ops.rs`.
 - Control socket serving and dump rendering belong in `run.rs`.
-- Interaction state and ratatui rendering live in `switcher.rs` until a smaller
-  seam exists for the specific surface being changed.
+- Other interaction state and ratatui rendering live in `switcher.rs` until a
+  smaller seam exists for the specific surface being changed.
 
 ## Invariants
 
