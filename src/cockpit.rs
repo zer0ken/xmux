@@ -1901,9 +1901,14 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         }
     };
 
-    // Route panic output to a file instead of stderr so a panic never corrupts the
-    // alternate screen. Worker threads (PTY pumps) catch+recover their own panics
-    // (see Grid::feed); TermGuard restores the screen on a main-thread unwind.
+    // On a panic, log the full detail to a file (from any thread — partial writes
+    // never corrupt the alternate screen), and on the MAIN thread (which owns the
+    // terminal) ALSO restore the screen and print a one-line pointer to stderr, so the
+    // user sees that xmux crashed and where the detail is rather than a bare exit code.
+    // The restore is main-thread-only: worker threads (PTY pumps) catch+recover their
+    // own panics (see Grid::feed); a stray worker panic must not tear the screen down
+    // under a still-running cockpit. TermGuard's Drop also restores on the main-thread
+    // unwind — idempotent with this.
     {
         let log = env.xmux_dir.join("panic.log");
         std::panic::set_hook(Box::new(move |info| {
@@ -1914,6 +1919,16 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 .open(&log)
             {
                 let _ = writeln!(f, "{info}");
+            }
+            if std::thread::current().name() == Some("main") {
+                use ratatui::crossterm::{
+                    event::DisableMouseCapture, execute, terminal::disable_raw_mode,
+                    terminal::LeaveAlternateScreen,
+                };
+                let _ = disable_raw_mode();
+                let _ = execute!(std::io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
+                eprintln!("xmux: internal error — {info}");
+                eprintln!("xmux: full detail logged to {}", log.display());
             }
         }));
     }
