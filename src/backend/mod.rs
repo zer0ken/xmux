@@ -14,11 +14,13 @@ use crate::mux;
 use crate::session::Session;
 use crate::source::{ExecRunner, RunError, Runner};
 
+mod control;
 mod psmux;
 mod tmux;
 
+pub use control::{ControlProtocol, Line, Notif};
 pub use psmux::Psmux;
-pub use tmux::Tmux;
+pub use tmux::{Tmux, TmuxControl};
 
 // The psmux-registry helpers live in `backend/psmux/registry.rs`; surface them at the
 // `backend` level so the legacy `source::Source` path can re-export them from here.
@@ -106,6 +108,15 @@ pub trait Backend: Send + Sync {
     /// The control argv for a `-CC` metadata channel. `None` for a mux with no
     /// host-level control stream (it is polled).
     fn control_argv(&self) -> Option<Vec<String>>;
+
+    /// The control-mode wire protocol (line classification + notification→event policy
+    /// + command-line builders) the host reader drives this `-CC` channel with. `None`
+    /// for a mux with no host-level control stream (it is polled), matching `control_argv`.
+    /// The protocol is stateless, so the reference is `'static` (a shared unit struct) —
+    /// the host reader/writer threads borrow it for their whole lifetime.
+    fn control_protocol(&self) -> Option<&'static dyn ControlProtocol> {
+        None
+    }
 
     /// How this host learns a session/attachment died.
     fn death_signal(&self) -> DeathSignal;

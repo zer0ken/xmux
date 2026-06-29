@@ -1,5 +1,4 @@
 pub mod app;
-pub mod control_proto;
 pub mod decode;
 pub mod dispatch;
 pub mod input;

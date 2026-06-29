@@ -202,9 +202,21 @@ impl Host {
         let Some(mux_control) = self.mux.control_argv() else {
             return Ok(false);
         };
+        // A Control event source guarantees a control protocol (both come from the same
+        // backend): tmux is the only backend that reports either.
+        let proto = self.mux.control_protocol().ok_or_else(|| {
+            anyhow::anyhow!("backend has a control event source but no control protocol")
+        })?;
         let argv = self.transport.control_argv(&mux_control);
-        let client =
-            crate::host::HostClient::spawn(self.id(), &argv, cols, rows, events.clone(), &[])?;
+        let client = crate::host::HostClient::spawn(
+            self.id(),
+            proto,
+            &argv,
+            cols,
+            rows,
+            events.clone(),
+            &[],
+        )?;
         self.control = Some(client);
         Ok(true)
     }

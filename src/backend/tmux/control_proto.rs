@@ -178,11 +178,6 @@ pub fn parse_notif(line: &str) -> Notif<'_> {
     }
 }
 
-/// `refresh-client -C WxH` — the `x`-form is correct for 3.3.x (`[research §7]`).
-pub fn refresh_size_line(cols: u16, rows: u16) -> String {
-    format!("refresh-client -C {cols}x{rows}\n")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,10 +331,5 @@ mod tests {
                 reason: Some("too far behind")
             }
         ));
-    }
-
-    #[test]
-    fn size_line_uses_x_form() {
-        assert_eq!(refresh_size_line(80, 24), "refresh-client -C 80x24\n"); // x-form, NOT comma
     }
 }

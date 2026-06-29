@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use crate::mux::{parse_panes, parse_sessions, SESSION_FORMAT};
-use crate::proxy::control_proto::{classify, refresh_size_line, Line, Notif};
+use crate::backend::{ControlProtocol, Line, Notif};
+use crate::mux::{parse_panes, parse_sessions};
 use crate::session::{Session, WindowPanes};
 
 /// One host's session/window inventory, seeded from list-sessions/list-panes and
@@ -133,22 +133,13 @@ pub enum PendingReply {
     Ignore,
 }
 
-/// The control-mode command line that prints `session`'s active window index
-/// (`display-message -p -t <session> '#{window_index}'`). Pure so the wire format
-/// — the escaped `#{…}` braces and the quoted target — is unit-tested.
-pub fn active_window_query_line(session: &str) -> String {
-    format!(
-        "display-message -p -t {} '#{{window_index}}'\n",
-        crate::mux::quote_target(session)
-    )
-}
-
 /// Runs the line state machine over `lines` (an `Iterator<Item=String>` of stdout
 /// lines, already split on `\n`), driving `state`, `in_flight`, and emitting events
 /// via `emit`. Returns when the iterator ends (child EOF). Pure over its inputs so
 /// a test feeds canned bytes; the real reader wraps a `BufRead`.
 pub fn run_reader<E: FnMut(HostEvent)>(
     host: &str,
+    proto: &dyn ControlProtocol,
     lines: impl Iterator<Item = String>,
     state: &ReaderState,
     in_flight: &InFlight,
@@ -173,7 +164,7 @@ pub fn run_reader<E: FnMut(HostEvent)>(
         // else is body (notifications never appear inside a block).
         if let Some((num, _, _)) = block.as_ref() {
             let num = *num;
-            let (close, is_err) = match classify(&line) {
+            let (close, is_err) = match proto.classify(&line) {
                 Line::End { num: n } if n == num => (true, false),
                 Line::Error { num: n } if n == num => (true, true),
                 _ => (false, false),
@@ -196,7 +187,7 @@ pub fn run_reader<E: FnMut(HostEvent)>(
             }
             continue;
         }
-        match classify(&line) {
+        match proto.classify(&line) {
             Line::Begin { num, control } => {
                 // A block replying to a command WE sent (flags bit 0 set) pops the
                 // correlation FIFO; a spontaneous block (startup banner, another
@@ -221,7 +212,7 @@ pub fn run_reader<E: FnMut(HostEvent)>(
             // flag sends it anyway, discard it (just note the channel is live) — the
             // control client is metadata-only.
             Line::Output { .. } | Line::ExtendedOutput { .. } => clear_connecting(state),
-            Line::Notification(n) => dispatch_notif(host, n, &last_error, &mut emit),
+            Line::Notification(n) => dispatch_notif(host, proto, n, &last_error, &mut emit),
             // Stray frame/body outside a block.
             Line::End { .. } | Line::Error { .. } | Line::Body(_) => {}
         }
@@ -279,58 +270,18 @@ fn resolve_block<E: FnMut(HostEvent)>(
     }
 }
 
-/// Maps one notification to the cockpit event it triggers (the metadata client
-/// holds no per-session display state, so notifications emit events, not mutate it).
+/// Maps one notification to the cockpit event it triggers and emits it. The policy
+/// table lives behind the backend's [`ControlProtocol::notif_event`] (a tmux protocol
+/// detail); this thin wrapper just forwards the event when there is one.
 fn dispatch_notif<E: FnMut(HostEvent)>(
     host: &str,
+    proto: &dyn ControlProtocol,
     notif: Notif<'_>,
     last_error: &Option<String>,
     emit: &mut E,
 ) {
-    match notif {
-        Notif::SessionsChanged
-        | Notif::WindowAdd { .. }
-        | Notif::WindowClose { .. }
-        | Notif::WindowRenamed { .. } => {
-            // The server's session/window STRUCTURE changed; the cockpit refetches
-            // (list-sessions + re-list every session's panes), so the sidebar's
-            // session list AND per-session active-window markers resync (#5). The
-            // notification carries only an id, so a blanket refetch is simplest.
-            emit(HostEvent::Changed {
-                host: host.to_string(),
-            });
-        }
-        Notif::SessionWindowChanged { .. } => {
-            // A session's ACTIVE WINDOW switched (e.g. another client did prefix-n).
-            // WindowChanged refetches the markers like Changed AND has the cockpit
-            // probe the displayed session's new active window so the sidebar cursor
-            // follows it (#2). The notification carries only ids ($session @window),
-            // so the cursor target is resolved by the cockpit's probe, not here.
-            emit(HostEvent::WindowChanged {
-                host: host.to_string(),
-            });
-        }
-        // `%session-changed` (the metadata client's own auto-attached session) and
-        // `%window-pane-changed` (a pane became active) do not affect the sidebar
-        // tree — the per-session PTY attachments own the live pane — so they are inert.
-        Notif::SessionChanged { .. } | Notif::WindowPaneChanged { .. } => {}
-        Notif::Exit { reason } => {
-            // `%exit` may carry its own reason; otherwise fall back to the last error
-            // block ("no sessions" / "no server running") so an empty mux is not
-            // mistaken for a dead host.
-            emit(HostEvent::Exited {
-                host: host.to_string(),
-                reason: reason.map(str::to_string).or_else(|| last_error.clone()),
-            });
-        }
-        Notif::ClientDetached { client } => emit(HostEvent::ClientDetached {
-            host: host.to_string(),
-            client: client.to_string(),
-        }),
-        // %pause/%continue are output flow-control; with `no-output` set there is no
-        // output to pause, so they are inert for this metadata-only client.
-        Notif::Pause { .. } | Notif::Continue { .. } => {}
-        Notif::LayoutChange { .. } | Notif::Other => {}
+    if let Some(event) = proto.notif_event(host, notif, last_error) {
+        emit(event);
     }
 }
 
@@ -349,6 +300,7 @@ fn clear_connecting(state: &ReaderState) {
 /// after each command so a real child sees it promptly. Returns on `Shutdown`.
 pub fn run_writer<W: Write>(
     rx: std::sync::mpsc::Receiver<HostCmd>,
+    proto: &dyn ControlProtocol,
     w: &mut W,
     in_flight: &InFlight,
 ) {
@@ -362,9 +314,7 @@ pub fn run_writer<W: Write>(
             }
             HostCmd::Resize { cols, rows } => {
                 in_flight.lock().unwrap().push_back(PendingReply::Ignore);
-                if w.write_all(refresh_size_line(cols, rows).as_bytes())
-                    .is_err()
-                {
+                if w.write_all(proto.size_line(cols, rows).as_bytes()).is_err() {
                     return;
                 }
             }
@@ -393,6 +343,10 @@ pub struct HostClient {
     pub connecting: Arc<AtomicBool>,
     /// Current client size; updated by `resize`.
     pub size: (u16, u16),
+    /// The backend's control-mode protocol — builds every command line this client
+    /// sends. Shared `'static` (the impl is stateless), so the reader/writer threads
+    /// borrow it without owning a clone.
+    proto: &'static dyn ControlProtocol,
     /// Queue commands to the writer thread.
     cmd_tx: std::sync::mpsc::Sender<HostCmd>,
     child: Child,
@@ -409,6 +363,7 @@ impl HostClient {
     /// flow-control pause → list-sessions). `events` is the cockpit's loop sink.
     pub fn spawn(
         host: impl Into<String>,
+        proto: &'static dyn ControlProtocol,
         argv: &[String],
         cols: u16,
         rows: u16,
@@ -477,7 +432,7 @@ impl HostClient {
         let reader_events = events.clone();
         let reader = std::thread::spawn(move || {
             let lines = BufReader::new(stdout).lines().map_while(Result::ok);
-            run_reader(&reader_host, lines, &state, &reader_in_flight, |e| {
+            run_reader(&reader_host, proto, lines, &state, &reader_in_flight, |e| {
                 let _ = reader_events.send(e);
             });
         });
@@ -485,22 +440,19 @@ impl HostClient {
         // Writer thread: owns the child stdin, drains the command channel.
         let writer_in_flight = Arc::clone(&in_flight);
         let writer = std::thread::spawn(move || {
-            run_writer(cmd_rx, &mut stdin, &writer_in_flight);
+            run_writer(cmd_rx, proto, &mut stdin, &writer_in_flight);
         });
 
-        // Connect sequence: size the client, then SUPPRESS %output — this control
-        // connection is a metadata / change-event / `select-window` channel ONLY;
-        // the per-session PTY attaches own the pixels, so streaming pane output here
-        // is pure waste (and risks flooding the single-threaded loop). `no-output`
-        // keeps notifications (%window-*/%session-*) flowing but stops %output. An
-        // older mux that lacks the flag just %errors it (correlated as Ignore) —
-        // harmless. Then list sessions.
+        // Connect sequence: size the client, then run the backend's connect preamble
+        // (it SUPPRESSES %output — this control connection is a metadata / change-event /
+        // `select-window` channel ONLY; the per-session PTY attaches own the pixels), then
+        // list sessions (the correlated query whose block resolves the inventory).
         let _ = cmd_tx.send(HostCmd::Resize { cols, rows });
-        let _ = cmd_tx.send(HostCmd::Send("refresh-client -f no-output\n".to_string()));
+        for line in proto.connect_lines() {
+            let _ = cmd_tx.send(HostCmd::Send(line));
+        }
         let _ = cmd_tx.send(HostCmd::Query {
-            // SESSION_FORMAT contains TABs; single-quote it so tmux's line parser
-            // keeps it as one arg (an unquoted tab would split the format).
-            line: format!("list-sessions -F '{SESSION_FORMAT}'\n"),
+            line: proto.list_sessions_line(),
             reply: PendingReply::ListSessions,
         });
 
@@ -509,6 +461,7 @@ impl HostClient {
             inventory,
             connecting,
             size: (cols, rows),
+            proto,
             cmd_tx,
             child,
             reader: Some(reader),
@@ -521,7 +474,7 @@ impl HostClient {
     /// prefix — we are already inside the tmux command interpreter).
     pub fn list_sessions(&self) {
         let _ = self.cmd_tx.send(HostCmd::Query {
-            line: format!("list-sessions -F '{SESSION_FORMAT}'\n"),
+            line: self.proto.list_sessions_line(),
             reply: PendingReply::ListSessions,
         });
     }
@@ -532,14 +485,8 @@ impl HostClient {
     /// on the "loading…" placeholder forever — the control client never volunteers
     /// pane data, it must be asked.
     pub fn list_panes(&self, session: &str, address: String) {
-        // Quote the target so a session name with spaces/quotes survives the
-        // control-mode command parser (it splits on whitespace).
         let _ = self.cmd_tx.send(HostCmd::Query {
-            line: format!(
-                "list-panes -s -t {} -F '{}'\n",
-                crate::mux::quote_target(session),
-                crate::mux::PANE_FORMAT
-            ),
+            line: self.proto.list_panes_line(session),
             reply: PendingReply::ListPanes { address },
         });
     }
@@ -549,7 +496,7 @@ impl HostClient {
     /// to the new active window after an external `%session-window-changed` (#2).
     pub fn probe_active_window(&self, session: &str) {
         let _ = self.cmd_tx.send(HostCmd::Query {
-            line: active_window_query_line(session),
+            line: self.proto.active_window_line(session),
             reply: PendingReply::ActiveWindow {
                 session: session.to_string(),
             },
@@ -562,10 +509,9 @@ impl HostClient {
     /// attached PTY client follows because the session's active window changes
     /// server-side (#4).
     pub fn select_window_on(&self, target: &str) {
-        let _ = self.cmd_tx.send(HostCmd::Send(format!(
-            "select-window -t {}\n",
-            crate::mux::quote_target(target)
-        )));
+        let _ = self
+            .cmd_tx
+            .send(HostCmd::Send(self.proto.select_window_line(target)));
     }
 
     /// Move xmux's display client (`display_tty`) to `session` over THIS control
@@ -575,11 +521,9 @@ impl HostClient {
     /// exec pays a full connect+auth handshake (~0.5s), which is the switch lag (#2).
     /// The server moves the named client regardless of which client issues the command.
     pub fn switch_client_on(&self, display_tty: &str, session: &str) {
-        let _ = self.cmd_tx.send(HostCmd::Send(format!(
-            "switch-client -c {} -t {}\n",
-            display_tty,
-            crate::mux::quote_target(session)
-        )));
+        let _ = self.cmd_tx.send(HostCmd::Send(
+            self.proto.switch_client_line(display_tty, session),
+        ));
     }
 
     /// Tell the child its new client size (the metadata client's size; the PTY
@@ -716,8 +660,14 @@ impl HostManager {
         }
         match host.mux.event_source() {
             crate::model::EventSource::Control => {
+                // A Control event source guarantees a control protocol (both come from
+                // the same backend): tmux is the only backend that reports either.
+                let proto = host.mux.control_protocol().ok_or_else(|| {
+                    anyhow::anyhow!("backend has a control event source but no control protocol")
+                })?;
                 let client = HostClient::spawn(
                     id,
+                    proto,
                     &src.control_argv(),
                     cols,
                     rows,
@@ -795,6 +745,15 @@ impl HostManager {
     }
 }
 
+/// The shared `'static` tmux control protocol, for tests that drive the reader/writer
+/// or spawn a fake control child. Both the `host` and `cockpit` test modules use it.
+#[cfg(test)]
+pub(crate) fn test_control_proto() -> &'static dyn ControlProtocol {
+    crate::backend::for_binary("tmux")
+        .control_protocol()
+        .expect("tmux has a control protocol")
+}
+
 #[cfg(test)]
 impl HostManager {
     /// Inserts a real no-op control child keyed by `host`, proving the map insert
@@ -806,8 +765,16 @@ impl HostManager {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let client =
-            HostClient::spawn(host, &argv, 80, 24, self.events.clone(), &[]).expect("spawn");
+        let client = HostClient::spawn(
+            host,
+            test_control_proto(),
+            &argv,
+            80,
+            24,
+            self.events.clone(),
+            &[],
+        )
+        .expect("spawn");
         self.clients.insert(host.to_string(), client);
     }
 }
@@ -858,7 +825,14 @@ mod tests {
             "%end 1 5 1".to_string(),
         ]
         .into_iter();
-        run_reader("jupiter06", lines, &state, &in_flight, |e| events.push(e));
+        run_reader(
+            "jupiter06",
+            test_control_proto(),
+            lines,
+            &state,
+            &in_flight,
+            |e| events.push(e),
+        );
         let inv = state.inventory.lock().unwrap();
         assert_eq!(inv.sessions.len(), 1);
         assert_eq!(inv.sessions[0].name, "api");
@@ -948,6 +922,7 @@ mod tests {
             let mut events = Vec::new();
             run_reader(
                 "jupiter06",
+                test_control_proto(),
                 vec![line.to_string()].into_iter(),
                 &state,
                 &in_flight,
@@ -980,6 +955,7 @@ mod tests {
             let mut events = Vec::new();
             run_reader(
                 "jupiter06",
+                test_control_proto(),
                 vec![line.to_string()].into_iter(),
                 &state,
                 &in_flight,
@@ -1006,6 +982,7 @@ mod tests {
         let mut events = Vec::new();
         run_reader(
             "jupiter06",
+            test_control_proto(),
             vec!["%session-window-changed $0 @1".to_string()].into_iter(),
             &state,
             &in_flight,
@@ -1046,7 +1023,14 @@ mod tests {
             "%end 1 5 1".to_string(),
         ]
         .into_iter();
-        run_reader("jupiter06", lines, &state, &in_flight, |e| events.push(e));
+        run_reader(
+            "jupiter06",
+            test_control_proto(),
+            lines,
+            &state,
+            &in_flight,
+            |e| events.push(e),
+        );
         assert!(
             events.iter().any(|e| matches!(
                 e,
@@ -1062,12 +1046,13 @@ mod tests {
         // The probe targets the session and prints its active window index. The
         // format braces are escaped (so `#{window_index}` reaches tmux literally)
         // and a session name with spaces is quoted for the control-mode parser.
+        let proto = test_control_proto();
         assert_eq!(
-            active_window_query_line("api"),
+            proto.active_window_line("api"),
             "display-message -p -t api '#{window_index}'\n"
         );
         assert_eq!(
-            active_window_query_line("my proj"),
+            proto.active_window_line("my proj"),
             "display-message -p -t 'my proj' '#{window_index}'\n"
         );
     }
@@ -1084,6 +1069,7 @@ mod tests {
             let mut events = Vec::new();
             run_reader(
                 "jupiter06",
+                test_control_proto(),
                 vec![line.to_string()].into_iter(),
                 &state,
                 &in_flight,
@@ -1103,6 +1089,7 @@ mod tests {
         let mut events = Vec::new();
         dispatch_notif(
             "jupiter06",
+            test_control_proto(),
             Notif::ClientDetached {
                 client: "/dev/pts/3",
             },
@@ -1148,7 +1135,14 @@ mod tests {
                 "%end 1 2 1".to_string(),
             ]
             .into_iter();
-            run_reader("jupiter06", lines, &state, &in_flight, |_| {});
+            run_reader(
+                "jupiter06",
+                test_control_proto(),
+                lines,
+                &state,
+                &in_flight,
+                |_| {},
+            );
             let inv = state.inventory.lock().unwrap();
             assert_eq!(
                 inv.sessions.len(),
@@ -1173,7 +1167,14 @@ mod tests {
                 "%end 1 2 1".to_string(),
             ]
             .into_iter();
-            run_reader("jupiter06", lines, &state, &in_flight, |_| {});
+            run_reader(
+                "jupiter06",
+                test_control_proto(),
+                lines,
+                &state,
+                &in_flight,
+                |_| {},
+            );
             let inv = state.inventory.lock().unwrap();
             assert_eq!(
                 inv.sessions.len(),
@@ -1207,7 +1208,14 @@ mod tests {
             "%end 1 11 0".to_string(),
         ]
         .into_iter();
-        run_reader("jupiter00", lines, &state, &in_flight, |_| {});
+        run_reader(
+            "jupiter00",
+            test_control_proto(),
+            lines,
+            &state,
+            &in_flight,
+            |_| {},
+        );
         let inv = state.inventory.lock().unwrap();
         assert_eq!(
             inv.sessions.len(),
@@ -1236,7 +1244,7 @@ mod tests {
             "%end 1 6 1".to_string(),
         ]
         .into_iter();
-        run_reader("h", lines, &state, &in_flight, |_| {});
+        run_reader("h", test_control_proto(), lines, &state, &in_flight, |_| {});
         assert_eq!(state.inventory.lock().unwrap().sessions.len(), 1);
     }
 
@@ -1247,6 +1255,7 @@ mod tests {
         let mut events = Vec::new();
         run_reader(
             "jupiter06",
+            test_control_proto(),
             vec!["%exit too far behind".to_string()].into_iter(),
             &state,
             &in_flight,
@@ -1273,7 +1282,14 @@ mod tests {
             "%exit".to_string(),
         ]
         .into_iter();
-        run_reader("jupiter06", lines, &state, &in_flight, |e| events.push(e));
+        run_reader(
+            "jupiter06",
+            test_control_proto(),
+            lines,
+            &state,
+            &in_flight,
+            |e| events.push(e),
+        );
         assert!(
             events.iter().any(|e| matches!(
                 e,
@@ -1296,7 +1312,7 @@ mod tests {
         tx.send(HostCmd::Shutdown).unwrap();
         drop(tx);
         let mut out: Vec<u8> = Vec::new();
-        run_writer(rx, &mut out, &in_flight);
+        run_writer(rx, test_control_proto(), &mut out, &in_flight);
         let s = String::from_utf8(out).unwrap();
         assert!(s.contains("refresh-client -f no-output\n"));
         assert!(s.contains("refresh-client -C 80x24\n"));
@@ -1326,7 +1342,14 @@ mod tests {
             "%end 1 5 1".to_string(),
         ]
         .into_iter();
-        run_reader("jupiter00", lines, &state, &in_flight, |e| events.push(e));
+        run_reader(
+            "jupiter00",
+            test_control_proto(),
+            lines,
+            &state,
+            &in_flight,
+            |e| events.push(e),
+        );
         let inv = state.inventory.lock().unwrap();
         let panes = inv
             .panes
@@ -1352,7 +1375,7 @@ mod tests {
         tx.send(HostCmd::Shutdown).unwrap();
         drop(tx);
         let mut out: Vec<u8> = Vec::new();
-        run_writer(rx, &mut out, &in_flight);
+        run_writer(rx, test_control_proto(), &mut out, &in_flight);
         let s = String::from_utf8(out).unwrap();
         assert!(
             s.contains("list-panes -s -t if -F"),
@@ -1372,7 +1395,8 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let client = HostClient::spawn("local", &argv, 80, 24, tx, &[]).expect("spawn");
+        let client = HostClient::spawn("local", test_control_proto(), &argv, 80, 24, tx, &[])
+            .expect("spawn");
         // echo exits immediately, closing pipes → teardown's joins return promptly.
         client.teardown();
     }
