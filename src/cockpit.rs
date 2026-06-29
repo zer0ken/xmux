@@ -2263,7 +2263,19 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             // the previous session.
             let grid_arc = state
                 .display_matches_selection()
-                .then(|| registry.grid(&display_key(&hosts, &state.selection)))
+                .then(|| {
+                    let ctx = crate::driver::DriverCtx {
+                        registry: &mut registry,
+                        hosts: &mut hosts,
+                        worker: &worker,
+                        mgr: &mgr,
+                        attach_seq: &mut attach_seq,
+                        cols,
+                        body_rows,
+                        tree_width,
+                    };
+                    driver.grid(&state.selection, &ctx)
+                })
                 .flatten();
             let terminal_focused = state.focus.is_terminal_focused();
             // The divider glyph reflects auto-hide-tree mode (║ on, │ off).
@@ -2503,7 +2515,19 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             .unwrap_or(ratatui::layout::Size { width: 80, height: 24 });
                         let grid_arc = state
                             .display_matches_selection()
-                            .then(|| registry.grid(&display_key(&hosts, &state.selection)))
+                            .then(|| {
+                                let ctx = crate::driver::DriverCtx {
+                                    registry: &mut registry,
+                                    hosts: &mut hosts,
+                                    worker: &worker,
+                                    mgr: &mgr,
+                                    attach_seq: &mut attach_seq,
+                                    cols,
+                                    body_rows,
+                                    tree_width,
+                                };
+                                driver.grid(&state.selection, &ctx)
+                            })
                             .flatten();
                         let dump = match &grid_arc {
                             Some(g) => {
@@ -2536,7 +2560,17 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     }
                     Cmd::RawBytes(bytes) => {
                         if !bytes.is_empty() {
-                            registry.input(&display_key(&hosts, &state.selection), bytes);
+                            let ctx = crate::driver::DriverCtx {
+                                registry: &mut registry,
+                                hosts: &mut hosts,
+                                worker: &worker,
+                                mgr: &mgr,
+                                attach_seq: &mut attach_seq,
+                                cols,
+                                body_rows,
+                                tree_width,
+                            };
+                            driver.input(&state.selection, bytes, &ctx);
                         }
                     }
                 }
