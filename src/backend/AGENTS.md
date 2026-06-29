@@ -7,6 +7,19 @@ knows the mux binary, server model, enumeration behavior, attach command shape,
 control-channel availability, event source, death signal, and window/session
 operation plans.
 
+One mux is one directory. `mod.rs` holds the cross-mux surface: the `Backend`
+trait, `SelectOutcome`, identity detection (`detect_backend`), and the factory
+functions (`for_binary`, `for_kind`). Each concrete mux lives in its own
+sub-directory and is re-exported from `mod.rs`:
+
+- `tmux/mod.rs` — `Tmux` and its `Backend` impl, plus the helpers used only by it
+  (`benign_empty`, `mux_control_argv`).
+- `psmux/mod.rs` — `Psmux` and its `Backend` impl, plus its poll cadence constant
+  (`PSMUX_POLL_MS`).
+
+Sub-modules pull the shared trait, value types, and imports from the parent via
+`use super::*;`. `crate::backend::{Tmux, Psmux}` resolve through the re-exports.
+
 ## Mental Model
 
 Backends describe mux intent. `Transport` lowers machine execution. Shared muxes
