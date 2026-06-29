@@ -20,8 +20,8 @@ use crate::ui::switcher::Switcher;
 
 /// A unit of work the cockpit loop processes, from the control socket.
 pub enum Cmd {
-    /// A resolved domain command — applied at the cockpit's single apply site.
-    Op(crate::model::Operation),
+    /// A resolved domain action — folded in at the cockpit's single `State::apply` site.
+    Op(crate::model::Action),
     /// A control-channel `status` request: reply with the focus + selection line.
     Status(oneshot::Sender<String>),
     /// A control-channel `dump` request: reply with the rendered screen.
@@ -217,19 +217,19 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_resolves_semantic_verbs_to_op_cmds() {
-        use crate::model::{FocusTarget, Operation};
+        use crate::model::{Action, FocusTarget};
         let (tx, mut rx) = mpsc::channel::<Cmd>(8);
         assert_eq!(dispatch("switch jup/api", &tx).await, "ok");
         assert!(
-            matches!(rx.recv().await, Some(Cmd::Op(Operation::Switch { address })) if address == "jup/api")
+            matches!(rx.recv().await, Some(Cmd::Op(Action::Switch { address })) if address == "jup/api")
         );
         assert_eq!(dispatch("focus tree", &tx).await, "ok");
         assert!(matches!(
             rx.recv().await,
-            Some(Cmd::Op(Operation::Focus(FocusTarget::Tree)))
+            Some(Cmd::Op(Action::Focus(FocusTarget::Tree)))
         ));
         assert_eq!(dispatch("rescan", &tx).await, "ok");
-        assert!(matches!(rx.recv().await, Some(Cmd::Op(Operation::Rescan))));
+        assert!(matches!(rx.recv().await, Some(Cmd::Op(Action::Rescan))));
         // raw: keystrokes still flow, but only via the unstable namespace.
         assert_eq!(dispatch("raw:keys 1b5b41", &tx).await, "ok");
         assert!(matches!(rx.recv().await, Some(Cmd::RawBytes(b)) if b == vec![0x1b, 0x5b, 0x41]));

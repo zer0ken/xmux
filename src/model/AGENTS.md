@@ -3,18 +3,25 @@
 ## Purpose
 
 `model` holds runtime domain values shared across backend, transport, host,
-control, and cockpit code: host state, host collections, operations, transport
-lowering results, server models, plans, and death-signal helpers.
+control, and cockpit code: host state, host collections, the `Action`/`Command`
+unidirectional-flow vocabulary, transport lowering results, server models,
+plans, and death-signal helpers.
 
 ## Mental Model
 
 The model layer carries facts and intent, not live process ownership. A `Host`
-combines machine transport and mux backend state. `Operation` is the semantic
-command language shared by key handling and ctl.
+combines machine transport and mux backend state. `Action` is the single domain
+intent vocabulary shared by key handling and ctl; `Command` is the matching
+effect vocabulary the run loop dispatches. `State::apply(Action) -> Vec<Command>`
+(in `crate::state`) is the one site that turns an `Action` into state changes +
+`Command`s.
 
 ## Module Seams
 
-- `operation.rs` defines the domain actions exposed to automation and UI input.
+- `action.rs` defines the domain `Action` (intent) and `Command` (effect)
+  enums plus `FocusTarget`. The cockpit's raw-byte input `Action`
+  (`proxy::dispatch`) projects INTO this via `as_action`; the two are distinct
+  types in separate modules.
 - `transport.rs` lowers backend intent into executable argv for local or remote
   hosts.
 - `host.rs` and `hosts.rs` store per-host domain state and collections.
@@ -23,8 +30,8 @@ command language shared by key handling and ctl.
 
 ## Invariants
 
-- `Operation` variants should represent user-visible domain actions, not key
-  strokes.
+- `Action` variants represent user-visible domain intents, not key strokes;
+  `Command` variants represent effects the run loop carries out.
 - Live control clients, polling tasks, and PTY attachments are owned outside
   `model`.
 - Transport lowering should preserve backend intent without introducing mux
@@ -33,8 +40,8 @@ command language shared by key handling and ctl.
 ## Common Pitfalls
 
 - Do not put task lifecycle or process handles into domain model values.
-- Do not add an `Operation` for behavior that is only a test hook; raw ctl input
-  already covers low-level injection.
+- Do not add an `Action`/`Command` for behavior that is only a test hook; raw
+  ctl input already covers low-level injection.
 - Do not split host state between new registries without checking `Hosts`,
   `Host`, and `HostManager` ownership.
 
@@ -47,4 +54,5 @@ command language shared by key handling and ctl.
 ## Verification
 
 - Run model tests for equality, parsing, lowering, and collection behavior.
-- Run ctl and cockpit tests when changing `Operation` or `FocusTarget`.
+- Run state, ctl, and cockpit tests when changing `Action`, `Command`, or
+  `FocusTarget` (`State::apply` and its debounce live in `crate::state`).

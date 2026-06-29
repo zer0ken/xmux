@@ -39,7 +39,9 @@ renders for `dump`.
 - Modal and menu input owns keys while open; those keys must not leak to mux
   passthrough or global shortcuts. At most one modal is open: `State.popup` is
   one Option, so opening any modal drops whatever was open.
-- UI actions that become domain commands should resolve through `Operation`.
+- UI actions that become domain intents should resolve to a `model::Action`
+  (the cockpit input `Action` projects via `as_action`), applied at
+  `State::apply`.
 
 ## Common Pitfalls
 

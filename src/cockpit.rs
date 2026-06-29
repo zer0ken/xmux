@@ -29,6 +29,10 @@ use crate::host::{HostEvent, HostManager};
 use crate::proxy::dispatch::Action;
 use crate::proxy::registry::AttachRegistry;
 use crate::proxy::run::PtyEvent;
+/// The settled-attach debounce (the freeze fix). Owned by `state` (the `apply(Tick)`
+/// re-arm uses it); the host-event re-arm paths reference the same constant so the
+/// value can never drift between the two.
+use crate::state::ATTACH_DEBOUNCE_MS;
 use crate::ui::switcher::TerminalViewTarget;
 
 /// Milliseconds per braille-spinner frame. The frame index is derived from
@@ -48,14 +52,6 @@ const EVENT_DRAIN_BUDGET: usize = 512;
 /// terminal with full-screen repaints and stall the single-threaded loop. A frame
 /// timer at this cadence flushes a pending dirty draw promptly even with no input.
 const FRAME_MS: u64 = 33;
-
-/// Debounce before a cursor move attaches/switches its session+window. Rapid
-/// navigation must NOT switch-client / select-window per step: each switch makes the
-/// remote mux send a full-screen repaint, and a storm of repaints floods the draw —
-/// the single-threaded loop then spends all its time redrawing, which IS the freeze.
-/// Deferring the attach until the cursor settles keeps per-step redraws to a cheap
-/// tree-only diff. Re-checked on the spinner tick, so it fires even with no further input.
-const ATTACH_DEBOUNCE_MS: u64 = 90;
 
 /// How often the reconnect sweep runs: re-ensures a died remote control client and
 /// re-attaches the selected session's PTY if it dropped. Doubles as the retry
@@ -103,50 +99,53 @@ fn toggle_auto_hide(mode: &mut bool, xmux_dir: &std::path::Path) {
     crate::prefs::save_auto_hide_tree(xmux_dir, *mode);
 }
 
-/// Applies ONE resolved [`Operation`] to the cockpit's UI state — the single site
-/// both a keypress (via `Action::as_operation`) and a ctl command resolve through,
-/// so the two surfaces can never take divergent effect. Returns `(quit, width_changed)`:
-/// `quit` signals the loop to exit; `width_changed` signals the loop to schedule the
-/// debounced tree-width persist. `Switch` only moves the cursor; the loop-top
-/// `select_attach` commits the attach off `switcher` on the next pass. No host state
-/// is touched here.
-#[allow(clippy::too_many_arguments)]
-fn apply_operation(
-    op: crate::model::Operation,
+/// Folds ONE domain [`Action`] in at the single mutation site ([`State::apply`]) and
+/// runs the [`Command`]s it returns — the site both a keypress (via
+/// `proxy::dispatch::Action::as_action`) and a ctl command resolve through, so the two
+/// surfaces can never take divergent effect. Returns `(quit, width_changed)`: `quit`
+/// signals the loop to exit; `width_changed` signals the loop to schedule the debounced
+/// tree-width persist. `Switch` only moves the cursor (a `SelectAddress` command); the
+/// loop-top `Tick`/`select_attach` commits the attach on a later pass.
+///
+/// Only the synchronous, registry-free commands arise here — `Attach`/
+/// `PersistLastSession` come exclusively from `Action::Tick`, which the run loop drives
+/// with full registry access. `Action::Quit` is the only quit path through this dispatcher.
+///
+/// [`Action`]: crate::model::Action
+/// [`Command`]: crate::model::Command
+/// [`State::apply`]: crate::state::State::apply
+fn dispatch_action(
+    action: crate::model::Action,
     switcher: &mut crate::ui::switcher::Switcher,
     state: &mut crate::state::State,
     tree_width_natural: &mut u16,
     auto_hide_tree: &mut bool,
     xmux_dir: &std::path::Path,
-    _ops: &std::sync::Arc<dyn crate::ui::switcher::Ops>,
-    _op_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
 ) -> (bool, bool) {
-    use crate::model::{FocusTarget, Operation};
+    use crate::model::Command;
+    let mut quit = false;
     let mut width_changed = false;
-    match op {
-        Operation::Switch { address } => {
-            switcher.select_address(&address, state);
+    for cmd in state.apply(action) {
+        match cmd {
+            Command::SelectAddress(address) => {
+                switcher.select_address(&address, state);
+            }
+            Command::Rescan => {
+                switcher.request_rescan(state);
+            }
+            Command::AdjustTreeWidth(d) => {
+                if apply_width_delta(d, tree_width_natural) {
+                    width_changed = true;
+                }
+            }
+            Command::ToggleAutoHide => toggle_auto_hide(auto_hide_tree, xmux_dir),
+            Command::Quit => quit = true,
+            // Settled-selection effects come only from Action::Tick, dispatched by the
+            // run loop with registry/host access — never from a key/ctl action here.
+            Command::PersistLastSession(_) | Command::Attach(_) => {}
         }
-        Operation::Focus(FocusTarget::Terminal) => {
-            state
-                .focus
-                .set_pane_focus(crate::proxy::app::PaneFocus::Terminal);
-        }
-        Operation::Focus(FocusTarget::Tree) => {
-            state
-                .focus
-                .set_pane_focus(crate::proxy::app::PaneFocus::Tree);
-        }
-        Operation::Rescan => {
-            switcher.request_rescan(state);
-        }
-        Operation::TreeWidth(d) => {
-            width_changed = apply_width_delta(d, tree_width_natural);
-        }
-        Operation::ToggleAutoHide => toggle_auto_hide(auto_hide_tree, xmux_dir),
-        Operation::Quit => return (true, false),
     }
-    (false, width_changed)
+    (quit, width_changed)
 }
 
 /// The `status` verb reply: the current focus side + the cursor's session target.
@@ -231,7 +230,7 @@ fn dbg_ms(dir: &std::path::Path, label: &str, start: std::time::Instant) {
 /// `Switcher` owns the tree + cursor; the cockpit commits the cursor's target into
 /// this struct, and the render, input routing, and spinner all key off it. `window`
 /// is `Some` only for a window-row selection.
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Selection {
     pub source: String,
     /// Empty ⇒ no terminal view (cursor on a host/loading row).
@@ -270,17 +269,27 @@ impl Selection {
     }
 }
 
+/// Derives the selection from the switcher cursor and, if it moved, routes it through
+/// the single mutation site as [`Action::Select`] — which records the new selection
+/// and marks the attach pending. It arms NO deadline; the trailing [`Action::Tick`]
+/// arms the debounce (re-armed on every move, so rapid navigation coalesces into one
+/// trailing attach). Returns true when the selection changed (the tree needs a redraw).
+///
+/// In 5.4d-i the switcher cursor is still the selection authority; this only routes
+/// the derived value through `apply` instead of mutating `state` directly. (The
+/// authority inversion — `state.selection` authoritative, cursor following — is 5.5.)
+///
+/// [`Action::Select`]: crate::model::Action::Select
+/// [`Action::Tick`]: crate::model::Action::Tick
 fn sync_selection_from_switcher(
     state: &mut crate::state::State,
     switcher: &crate::ui::switcher::Switcher,
-    deadline: std::time::Instant,
 ) -> bool {
     let new_sel = Selection::from_target(&switcher.terminal_view_target());
     if new_sel == state.selection {
         return false;
     }
-    state.selection = new_sel;
-    state.attach_deadline = Some(deadline);
+    state.apply(crate::model::Action::Select(new_sel));
     true
 }
 
@@ -337,29 +346,29 @@ fn host_of_key(key: &str) -> &str {
     key.split_once('/').map_or(key, |(h, _)| h)
 }
 
-/// Whether the on-screen grid may be shown: the confirmed display truth must name
-/// the same host+session as the current selection. Window is ignored — the same
-/// session's PTY renders whatever window the mux has active, so a window step needs
-/// no "(attaching…)". A mismatch (mid-reattach, or selection moved off the displayed
-/// session) renders "(attaching…)" instead of the previous session — defect A:
-/// displayed == selected, structurally.
-fn display_matches_selection(displayed: &Selection, selection: &Selection) -> bool {
-    !selection.is_empty()
-        && displayed.source == selection.source
-        && displayed.session == selection.session
-}
-
-/// Whether to (re)issue an attach for the settled selection. Fire when the selection
-/// differs from what is confirmed on screen, or when its display PTY is gone (exited /
-/// reaped while the cursor was elsewhere) — but never while an attach for the key is
-/// already in flight, so the async-attach window cannot spawn a storm of duplicates.
-fn should_attach(
+/// The runtime attach facts the debounce gate needs, fed to [`State::apply`] as DATA
+/// on [`Action::Tick`](crate::model::Action::Tick): whether the selected session's
+/// display PTY is live, and whether an attach for its key is already in flight. The
+/// gate (`should_attach`) lives in `State`; these facts (registry + host bookkeeping)
+/// do not, so the loop computes them just before the Tick. An empty selection yields
+/// `(false, false)` — the gate short-circuits on emptiness anyway.
+///
+/// [`State::apply`]: crate::state::State::apply
+fn selection_attach_facts(
+    registry: &AttachRegistry,
+    hosts: &crate::model::Hosts,
     selection: &Selection,
-    displayed: &Selection,
-    key_live: bool,
-    in_flight: bool,
-) -> bool {
-    (selection != displayed || !key_live) && !in_flight
+) -> (bool, bool) {
+    if selection.is_empty() {
+        return (false, false);
+    }
+    let key = display_key(hosts, selection);
+    let key_live = registry.contains(&key);
+    let in_flight = hosts
+        .get(&selection.source)
+        .map(|h| h.display.in_flight.contains_key(&key))
+        .unwrap_or(false);
+    (key_live, in_flight)
 }
 
 /// Issues an OFF-LOOP attach for `key`: allocates the attachment id, records the request's
@@ -2063,79 +2072,69 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         if state.focus.is_terminal_focused() {
             switcher.select_active_window(&mut state);
         }
-        if sync_selection_from_switcher(
-            &mut state,
-            &switcher,
-            std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS),
-        ) {
-            // Arm the debounce — do NOT attach yet. Rapid navigation keeps pushing the
-            // deadline, so only the settled selection attaches (one switch, not a storm).
-            dirty = true; // the cursor moved → the tree needs a redraw
+        if sync_selection_from_switcher(&mut state, &switcher) {
+            // The cursor moved → the tree needs a redraw. The attach is NOT issued
+            // here: the Select above only marks it pending; the Tick below arms the
+            // debounce, re-armed on every move so only the settled selection attaches.
+            dirty = true;
         }
-        // Apply the debounced attach once the selection has settled. The frame timer
-        // re-enters the loop, so this fires even with no further input.
-        if state
-            .attach_deadline
-            .is_some_and(|d| std::time::Instant::now() >= d)
+        // Drive one debounce beat. The clock and the registry/host attach facts enter
+        // as DATA on the Tick; State::apply owns the arm/fire decision (one mutation
+        // site). The frame timer re-enters the loop, so the settled attach fires even
+        // with no further input.
         {
-            state.attach_deadline = None;
-            // Attach when the settled selection changed OR its display PTY is gone
-            // (it may have exited / been reaped while the cursor was elsewhere — then
-            // re-selecting the same session must re-attach NOW, not wait for the 2s
-            // reconnect sweep, or the pane stays blank). Record it only on a real
-            // attach, so a failed attach does not latch and suppress the retry.
-            if !state.selection.is_empty() {
-                // Persist the settled session as the user's last-selected, so the next
-                // launch restores it (#1). Only on an address change, so stepping
-                // between windows of one session does not rewrite it every settle.
-                let addr = state.selection.address();
-                if addr != state.last_saved_session {
-                    crate::prefs::save_last_session(&env.xmux_dir, &addr);
-                    state.last_saved_session = addr;
-                }
-                let key = display_key(&hosts, &state.selection);
-                let in_flight_for_key = hosts
-                    .get(&state.selection.source)
-                    .map(|h| h.display.in_flight.contains_key(&key))
-                    .unwrap_or(false);
-                if should_attach(
-                    &state.selection,
-                    &state.displayed,
-                    registry.contains(&key),
-                    in_flight_for_key,
-                ) {
-                    let t = std::time::Instant::now();
-                    if select_attach(
-                        &mut registry,
-                        &mut hosts,
-                        &state.selection,
-                        &worker,
-                        &mut attach_seq,
-                        cols,
-                        body_rows,
-                        tree_width,
-                        &mgr,
-                    ) {
-                        // A synchronous path (switch-client / select-window / already
-                        // attached) leaves a live grid for the key right now → the
-                        // selection is on screen. An async path (first-attach /
-                        // per-session reattach) removed or never had the key → the grid
-                        // is "(attaching…)" until DisplayReady confirms it (which sets
-                        // state.displayed then). Probing the registry tells them apart.
-                        if registry.contains(&display_key(&hosts, &state.selection)) {
-                            state.displayed = state.selection.clone();
-                        }
+            let (key_live, in_flight) = selection_attach_facts(&registry, &hosts, &state.selection);
+            let cmds = state.apply(crate::model::Action::Tick {
+                now: std::time::Instant::now(),
+                key_live,
+                in_flight,
+            });
+            for cmd in cmds {
+                match cmd {
+                    crate::model::Command::PersistLastSession(addr) => {
+                        crate::prefs::save_last_session(&env.xmux_dir, &addr);
                     }
-                    dbg_ms(&env.xmux_dir, "select_attach", t);
-                    dirty = true;
-                    dbg_log(
-                        &env.xmux_dir,
-                        &format!(
-                            "state.selection -> key={} sess={}",
-                            display_key(&hosts, &state.selection),
-                            state.selection.session
-                        ),
-                    );
+                    crate::model::Command::Attach(sel) => {
+                        let t = std::time::Instant::now();
+                        if select_attach(
+                            &mut registry,
+                            &mut hosts,
+                            &sel,
+                            &worker,
+                            &mut attach_seq,
+                            cols,
+                            body_rows,
+                            tree_width,
+                            &mgr,
+                        ) {
+                            // A synchronous path (switch-client / select-window / already
+                            // attached) leaves a live grid for the key right now → the
+                            // selection is on screen. An async path (first-attach /
+                            // per-session reattach) removed or never had the key → the grid
+                            // is "(attaching…)" until DisplayReady confirms it (which sets
+                            // state.displayed then). Probing the registry tells them apart.
+                            if registry.contains(&display_key(&hosts, &sel)) {
+                                state.displayed = sel.clone();
+                            }
+                        }
+                        dbg_ms(&env.xmux_dir, "select_attach", t);
+                        dirty = true;
+                        dbg_log(
+                            &env.xmux_dir,
+                            &format!(
+                                "state.selection -> key={} sess={}",
+                                display_key(&hosts, &sel),
+                                sel.session
+                            ),
+                        );
+                    }
+                    // The settled-selection Tick never returns the synchronous
+                    // key/ctl-only commands.
+                    crate::model::Command::SelectAddress(_)
+                    | crate::model::Command::Rescan
+                    | crate::model::Command::AdjustTreeWidth(_)
+                    | crate::model::Command::ToggleAutoHide
+                    | crate::model::Command::Quit => {}
                 }
             }
         }
@@ -2159,7 +2158,8 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             // Show the grid only when the confirmed display truth matches the selection
             // (defect A): a stale attachment mid-reattach renders "(attaching…)", never
             // the previous session.
-            let grid_arc = display_matches_selection(&state.displayed, &state.selection)
+            let grid_arc = state
+                .display_matches_selection()
                 .then(|| registry.grid(&display_key(&hosts, &state.selection)))
                 .flatten();
             let terminal_focused = state.focus.is_terminal_focused();
@@ -2376,8 +2376,8 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             }
             Some(cmd) = cmd_rx.recv() => {
                 match cmd {
-                    Cmd::Op(op) => {
-                        let (quit_op, wc) = apply_operation(op, &mut switcher, &mut state, &mut tree_width_natural, &mut auto_hide_tree, &env.xmux_dir, &ops, &op_tx);
+                    Cmd::Op(action) => {
+                        let (quit_op, wc) = dispatch_action(action, &mut switcher, &mut state, &mut tree_width_natural, &mut auto_hide_tree, &env.xmux_dir);
                         if wc {
                             width_dirty = true;
                             width_flush_at = Some(std::time::Instant::now() + Duration::from_millis(WIDTH_FLUSH_MS));
@@ -2388,7 +2388,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         // A Switch/Focus may need the cursor's host connected + its rescan kick consumed.
                         dispatch_pending_op(&mut switcher, &ops, &op_tx);
                         ensure_current_host(&mut mgr, &env, &hosts, &switcher, cols, body_rows, tree_width);
-                        if sync_selection_from_switcher(&mut state, &switcher, std::time::Instant::now()) {
+                        if sync_selection_from_switcher(&mut state, &switcher) {
                             dirty = true;
                         }
                     }
@@ -2397,7 +2397,8 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         let sz = term
                             .size()
                             .unwrap_or(ratatui::layout::Size { width: 80, height: 24 });
-                        let grid_arc = display_matches_selection(&state.displayed, &state.selection)
+                        let grid_arc = state
+                            .display_matches_selection()
                             .then(|| registry.grid(&display_key(&hosts, &state.selection)))
                             .flatten();
                         let dump = match &grid_arc {
@@ -2413,7 +2414,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         switcher.handle_key(k, &mut state);
                         dispatch_pending_op(&mut switcher, &ops, &op_tx);
                         ensure_current_host(&mut mgr, &env, &hosts, &switcher, cols, body_rows, tree_width);
-                        if sync_selection_from_switcher(&mut state, &switcher, std::time::Instant::now()) {
+                        if sync_selection_from_switcher(&mut state, &switcher) {
                             dirty = true;
                         }
                     }
@@ -3764,25 +3765,30 @@ mod tests {
             session: "api".into(),
             window: None,
         };
+        let with = |displayed: Selection, selection: Selection| {
+            let s = crate::state::State {
+                displayed,
+                selection,
+                ..crate::state::State::default()
+            };
+            s.display_matches_selection()
+        };
         // Nothing selected → never a grid.
-        assert!(!display_matches_selection(
-            &Selection::default(),
-            &Selection::default()
-        ));
+        assert!(!with(Selection::default(), Selection::default()));
         // Confirmed truth names the same host+session → show the grid.
-        assert!(display_matches_selection(&sel, &sel));
+        assert!(with(sel.clone(), sel.clone()));
         // A different session (mid-reattach) → "(attaching…)", not the old session.
         let other_session = Selection {
             session: "db".into(),
             ..sel.clone()
         };
-        assert!(!display_matches_selection(&other_session, &sel));
+        assert!(!with(other_session, sel.clone()));
         // A different host → "(attaching…)".
         let other_host = Selection {
             source: "h2".into(),
             ..sel.clone()
         };
-        assert!(!display_matches_selection(&other_host, &sel));
+        assert!(!with(other_host, sel.clone()));
         // Same session, different window → still shown: one PTY renders the active window.
         let displayed_w = Selection {
             window: Some(1),
@@ -3792,7 +3798,7 @@ mod tests {
             window: Some(3),
             ..sel.clone()
         };
-        assert!(display_matches_selection(&displayed_w, &selection_w));
+        assert!(with(displayed_w, selection_w));
     }
 
     #[test]
@@ -3806,14 +3812,22 @@ mod tests {
             session: "db".into(),
             ..a.clone()
         };
+        let gate = |selection: &Selection, displayed: &Selection, key_live, in_flight| {
+            let s = crate::state::State {
+                selection: selection.clone(),
+                displayed: displayed.clone(),
+                ..crate::state::State::default()
+            };
+            s.should_attach(key_live, in_flight)
+        };
         // Settled: displayed == selection, PTY live, nothing in flight → no attach.
-        assert!(!should_attach(&a, &a, true, false));
+        assert!(!gate(&a, &a, true, false));
         // Selection moved off the displayed session → attach.
-        assert!(should_attach(&b, &a, true, false));
+        assert!(gate(&b, &a, true, false));
         // An attach for the key is already in flight → never re-fire (no storm).
-        assert!(!should_attach(&b, &a, false, true));
+        assert!(!gate(&b, &a, false, true));
         // PTY gone (exited / reaped) while displayed == selection → re-attach to recover.
-        assert!(should_attach(&a, &a, false, false));
+        assert!(gate(&a, &a, false, false));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -4101,8 +4115,8 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn apply_operation_switch_moves_cursor_focus_toggles_width_and_quit() {
-        use crate::model::{FocusTarget, Operation};
+    fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
+        use crate::model::{Action, FocusTarget};
         use crate::proxy::app::Focus;
         use crate::session::Session;
         use crate::ui::switcher::{Scan, Switcher};
@@ -4136,13 +4150,11 @@ mod tests {
         let mut hide = false;
         let dir = std::env::temp_dir().join(format!("xmux-apply-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let ops = crate::ui::switcher::tests_support::noop_ops();
-        let (op_tx, _op_rx) = tokio::sync::mpsc::unbounded_channel();
 
         // Switch addr → cursor lands on db; returns (quit=false, width_changed=false).
         assert_eq!(
-            apply_operation(
-                Operation::Switch {
+            dispatch_action(
+                Action::Switch {
                     address: "jup/db".into()
                 },
                 &mut sw,
@@ -4150,62 +4162,52 @@ mod tests {
                 &mut natural,
                 &mut hide,
                 &dir,
-                &ops,
-                &op_tx
             ),
             (false, false)
         );
         assert_eq!(sw.terminal_view_target().target, "db");
         // Focus(Terminal) leaves tree focus → terminal focus.
         assert!(state.focus.is_tree_focused());
-        apply_operation(
-            Operation::Focus(FocusTarget::Terminal),
+        dispatch_action(
+            Action::Focus(FocusTarget::Terminal),
             &mut sw,
             &mut state,
             &mut natural,
             &mut hide,
             &dir,
-            &ops,
-            &op_tx,
         );
         assert_eq!(state.focus, Focus::Terminal);
         // Focus(Tree) returns to tree focus.
-        apply_operation(
-            Operation::Focus(FocusTarget::Tree),
+        dispatch_action(
+            Action::Focus(FocusTarget::Tree),
             &mut sw,
             &mut state,
             &mut natural,
             &mut hide,
             &dir,
-            &ops,
-            &op_tx,
         );
         assert_eq!(state.focus, Focus::Tree);
         // TreeWidth adjusts the natural width and signals width_changed; Quit signals quit.
         assert_eq!(
-            apply_operation(
-                Operation::TreeWidth(1),
+            dispatch_action(
+                Action::TreeWidth(1),
                 &mut sw,
                 &mut state,
                 &mut natural,
                 &mut hide,
                 &dir,
-                &ops,
-                &op_tx
             ),
             (false, true)
         );
         assert_eq!(natural, 49);
         assert_eq!(
-            apply_operation(
-                Operation::Quit,
+            dispatch_action(
+                Action::Quit,
                 &mut sw,
                 &mut state,
                 &mut natural,
                 &mut hide,
                 &dir,
-                &ops,
-                &op_tx
             ),
             (true, false),
             "Quit signals quit"
@@ -4240,7 +4242,7 @@ mod tests {
 
     #[test]
     fn ctl_switch_syncs_canonical_selection_immediately() {
-        use crate::model::Operation;
+        use crate::model::Action;
         use crate::session::Session;
         use crate::ui::switcher::{Scan, Switcher};
         use crate::ui::tree::Group;
@@ -4273,12 +4275,10 @@ mod tests {
         let mut natural = 48u16;
         let mut hide = false;
         let dir = std::env::temp_dir().join(format!("xmux-ctl-switch-sync-{}", std::process::id()));
-        let ops = crate::ui::switcher::tests_support::noop_ops();
-        let (op_tx, _op_rx) = tokio::sync::mpsc::unbounded_channel();
 
-        sync_selection_from_switcher(&mut state, &sw, std::time::Instant::now());
-        apply_operation(
-            Operation::Switch {
+        sync_selection_from_switcher(&mut state, &sw);
+        dispatch_action(
+            Action::Switch {
                 address: "jup/db".into(),
             },
             &mut sw,
@@ -4286,15 +4286,19 @@ mod tests {
             &mut natural,
             &mut hide,
             &dir,
-            &ops,
-            &op_tx,
         );
 
-        let deadline = std::time::Instant::now();
-        assert!(sync_selection_from_switcher(&mut state, &sw, deadline));
+        // The switch moved the cursor to db; the loop-top derive routes it through
+        // apply(Select) — selection becomes jup/db and the attach is marked pending
+        // (the deadline is armed by the next Tick, not here).
+        assert!(sync_selection_from_switcher(&mut state, &sw));
         assert_eq!(state.selection.source, "jup");
         assert_eq!(state.selection.session, "db");
-        assert_eq!(state.attach_deadline, Some(deadline));
+        assert!(state.attach_pending, "Select marks the attach pending");
+        assert!(
+            state.attach_deadline.is_none(),
+            "Select arms no deadline — the trailing Tick does"
+        );
     }
 
     #[test]

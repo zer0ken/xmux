@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::model::{FocusTarget, Operation};
+use crate::model::{Action, FocusTarget};
 
 use interprocess::local_socket::tokio::Stream;
 use interprocess::local_socket::traits::tokio::Stream as _;
@@ -213,12 +213,12 @@ pub(crate) fn parse_hex(s: &str) -> Result<Vec<u8>, String> {
         .collect()
 }
 
-/// A parsed ctl command resolved to its domain meaning. The semantic verbs map to
-/// `Operation`; the keystroke-injection surface lives behind a `raw:` namespace and
-/// is unstable/test-only.
+/// A parsed ctl command resolved to its domain meaning. The semantic verbs map to a
+/// domain [`Action`]; the keystroke-injection surface lives behind a `raw:` namespace
+/// and is unstable/test-only.
 #[derive(Debug, PartialEq)]
 pub enum CtlRequest {
-    Op(Operation),
+    Op(Action),
     Status,
     Ping,
     Dump,
@@ -230,28 +230,28 @@ pub enum CtlRequest {
 }
 
 /// Resolves a ctl request line to a `CtlRequest`. Semantic verbs (`switch`,
-/// `focus`, `rescan`, `quit`, `width`, `toggle-auto-hide`) become `Operation`; the
-/// raw keystroke surface is `raw:key` / `raw:keys` / `raw:text`. Anything else is
+/// `focus`, `rescan`, `quit`, `width`, `toggle-auto-hide`) become a domain [`Action`];
+/// the raw keystroke surface is `raw:key` / `raw:keys` / `raw:text`. Anything else is
 /// `Unknown` (the dispatcher replies `err: ...`). ctl speaks the DOMAIN here, not
-/// internal key names (C-CTL): the wire never references an Action/KeyCode again.
+/// internal key names (C-CTL): the wire never references an input Action/KeyCode again.
 pub fn parse_ctl_op(line: &str) -> CtlRequest {
     let req = parse_request(line);
     match req.verb.as_str() {
         "ping" => CtlRequest::Ping,
         "dump" => CtlRequest::Dump,
         "status" => CtlRequest::Status,
-        "rescan" => CtlRequest::Op(Operation::Rescan),
-        "quit" => CtlRequest::Op(Operation::Quit),
-        "toggle-auto-hide" => CtlRequest::Op(Operation::ToggleAutoHide),
-        "switch" if !req.arg.trim().is_empty() => CtlRequest::Op(Operation::Switch {
+        "rescan" => CtlRequest::Op(Action::Rescan),
+        "quit" => CtlRequest::Op(Action::Quit),
+        "toggle-auto-hide" => CtlRequest::Op(Action::ToggleAutoHide),
+        "switch" if !req.arg.trim().is_empty() => CtlRequest::Op(Action::Switch {
             address: req.arg.trim().to_string(),
         }),
         "focus" => match FocusTarget::from_str(&req.arg) {
-            Some(t) => CtlRequest::Op(Operation::Focus(t)),
+            Some(t) => CtlRequest::Op(Action::Focus(t)),
             None => CtlRequest::Unknown(line.trim().to_string()),
         },
         "width" => match req.arg.trim().parse::<i32>() {
-            Ok(d) => CtlRequest::Op(Operation::TreeWidth(d)),
+            Ok(d) => CtlRequest::Op(Action::TreeWidth(d)),
             Err(_) => CtlRequest::Unknown(line.trim().to_string()),
         },
         "raw:key" => match parse_key(&req.arg) {
@@ -317,34 +317,34 @@ mod tests {
 
     #[test]
     fn parse_ctl_op_semantic_verbs() {
-        use crate::model::{FocusTarget, Operation};
+        use crate::model::{Action, FocusTarget};
         assert_eq!(
             parse_ctl_op("switch jup/api"),
-            CtlRequest::Op(Operation::Switch {
+            CtlRequest::Op(Action::Switch {
                 address: "jup/api".into()
             })
         );
         assert_eq!(
             parse_ctl_op("focus terminal"),
-            CtlRequest::Op(Operation::Focus(FocusTarget::Terminal))
+            CtlRequest::Op(Action::Focus(FocusTarget::Terminal))
         );
         assert_eq!(
             parse_ctl_op("focus tree"),
-            CtlRequest::Op(Operation::Focus(FocusTarget::Tree))
+            CtlRequest::Op(Action::Focus(FocusTarget::Tree))
         );
         assert_eq!(
             parse_ctl_op("rescan"),
-            CtlRequest::Op(Operation::Rescan),
+            CtlRequest::Op(Action::Rescan),
             "COR-1: rescan is now reachable over ctl"
         );
-        assert_eq!(parse_ctl_op("quit"), CtlRequest::Op(Operation::Quit));
+        assert_eq!(parse_ctl_op("quit"), CtlRequest::Op(Action::Quit));
         assert_eq!(
             parse_ctl_op("width -2"),
-            CtlRequest::Op(Operation::TreeWidth(-2))
+            CtlRequest::Op(Action::TreeWidth(-2))
         );
         assert_eq!(
             parse_ctl_op("toggle-auto-hide"),
-            CtlRequest::Op(Operation::ToggleAutoHide)
+            CtlRequest::Op(Action::ToggleAutoHide)
         );
         assert_eq!(parse_ctl_op("status"), CtlRequest::Status);
         assert_eq!(parse_ctl_op("ping"), CtlRequest::Ping);

@@ -891,7 +891,7 @@ impl Switcher {
     }
 
     /// Moves the sidebar cursor to the session row whose address (`source/session`)
-    /// is `address`. The semantic target of `Operation::Switch` — addresses a row by
+    /// is `address`. The semantic target of `Action::Switch` — addresses a row by
     /// identity, not a screen position or a relative step, so an agent driving ctl
     /// lands on the right session regardless of how the tree is currently ordered.
     /// A no-op (returns false) when no such row exists or the cursor is already there.
@@ -5361,7 +5361,7 @@ pub(crate) mod tests_support {
     use std::sync::Arc;
     /// A do-nothing [`Ops`] for apply-site tests. `Switch`/`Focus`/`Width`/`Quit`
     /// never call into `Ops`, so its methods are never reached; constructing it is
-    /// all the `apply_operation` effect test needs.
+    /// all a cockpit action-dispatch effect test needs.
     struct NoopOps;
     #[async_trait::async_trait]
     impl Ops for NoopOps {
