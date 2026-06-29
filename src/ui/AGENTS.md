@@ -17,8 +17,13 @@ the transient popup geometry (drag offset / drawn rect). `status.rs` owns the
 status-bar surface — the divider rule,
 the footer, and the unreachable-host info panel — plus its view-local state
 (flash, spinner, divider colours, ui prefix), rendering from `&State`. `ops.rs`
-performs slower side-effecting operations behind the switcher interface.
-`run.rs` bridges the control socket into cockpit commands and can flatten
+holds the off-loop mux-action boundary: the `Ops` trait over the live mux, the
+`OpResult` outcomes, and `run_op` which executes one `MuxOp` against `Ops` in a
+detached task. A switcher key that COMMITS a slow action (Enter on an input, `y`
+on a kill confirm) resolves it through `State::apply` into a
+`Command::RunOp(MuxOp)` it RETURNS up; the run loop spawns `run_op` and folds the
+`OpResult` back through the op channel (the switcher no longer holds a pending-op
+queue). `run.rs` bridges the control socket into cockpit commands and can flatten
 renders for `dump`.
 
 ## Module Seams
@@ -26,7 +31,9 @@ renders for `dump`.
 - Pure row/group transforms belong in `tree.rs`.
 - Status-bar rendering (divider, footer, host-info) and its view-local state
   belong in `status.rs`; it reads inventory from `&State`, not the switcher.
-- External effects initiated by UI actions belong behind `ops.rs`.
+- Slow (network) mux effects belong behind `ops.rs` (`Ops`/`run_op`/`OpResult`);
+  a committing key emits `Command::RunOp(MuxOp)` for the run loop to spawn, it
+  does not call the mux itself.
 - Control socket serving and dump rendering belong in `run.rs`.
 - Other interaction state and ratatui rendering live in `switcher.rs` until a
   smaller seam exists for the specific surface being changed.

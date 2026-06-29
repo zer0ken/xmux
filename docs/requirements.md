@@ -108,8 +108,10 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
 - **FR-E3** — Rename a session (`R`); a leading-dash name is refused.
   **Tests:** `rename_*`, `rename_rejects_leading_dash`.
 - **FR-E4** — Create/kill/rename run off the key path so a slow ssh round-trip never
-  freezes rendering or the control channel. **Tests:** `take_pending_op_*`,
-  `*deferred*`, `event_loop` op handling.
+  freezes rendering or the control channel. A committing key folds through
+  `State::apply` into a `Command::RunOp(MuxOp)` the run loop spawns off-loop.
+  **Tests:** `slow_op_is_deferred_off_the_key_path`, `*deferred*`, `apply_*` (the
+  RunOp folds), `event_loop` op handling.
 
 ## F. Control channel
 

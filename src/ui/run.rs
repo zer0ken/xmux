@@ -299,7 +299,11 @@ mod tests {
         let consumer = tokio::spawn(async move {
             while let Some(cmd) = rx.recv().await {
                 match cmd {
-                    Cmd::RawKey(k) => sw.handle_key(k, &mut state),
+                    Cmd::RawKey(k) => {
+                        // This minimal consumer does not run off-loop ops; drop the
+                        // commands handle_key returns.
+                        let _ = sw.handle_key(k, &mut state);
+                    }
                     Cmd::Dump(reply) => {
                         let _ = reply.send(dump_switcher(&mut sw, &state, 100, 30));
                     }

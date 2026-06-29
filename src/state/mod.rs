@@ -141,7 +141,7 @@ impl State {
     /// [`Action`]: crate::model::Action
     /// [`Command`]: crate::model::Command
     pub fn apply(&mut self, action: crate::model::Action) -> Vec<crate::model::Command> {
-        use crate::model::{Action, Command, FocusTarget};
+        use crate::model::{Action, Command, FocusTarget, MuxOp};
         use std::time::Duration;
         match action {
             Action::Switch { address } => vec![Command::SelectAddress(address)],
@@ -208,6 +208,56 @@ impl State {
                 }
                 cmds
             }
+            // Session-lifecycle intents are pure effect emitters: they fold into the
+            // MuxOp the run loop runs off-loop. `apply` mutates no domain state — the
+            // inventory change arrives later as the OpResult.
+            Action::CreateSession { source, name } => {
+                vec![Command::RunOp(MuxOp::Create { source, name })]
+            }
+            Action::NewWindow {
+                source,
+                session,
+                name,
+            } => vec![Command::RunOp(MuxOp::NewWindow {
+                source,
+                session,
+                name,
+            })],
+            Action::SplitWindow {
+                source,
+                target,
+                session,
+                vertical,
+            } => vec![Command::RunOp(MuxOp::SplitWindow {
+                source,
+                target,
+                session,
+                vertical,
+            })],
+            Action::RenameSession { sess, new_name } => {
+                vec![Command::RunOp(MuxOp::Rename { sess, new_name })]
+            }
+            Action::KillSession { sess } => vec![Command::RunOp(MuxOp::Kill { sess })],
+            Action::KillWindow {
+                source,
+                session,
+                target,
+            } => vec![Command::RunOp(MuxOp::KillWindow {
+                source,
+                session,
+                target,
+            })],
+            Action::RenameWindow {
+                source,
+                session,
+                target,
+                new_name,
+            } => vec![Command::RunOp(MuxOp::RenameWindow {
+                source,
+                session,
+                target,
+                new_name,
+            })],
         }
     }
 
@@ -567,5 +617,157 @@ mod tests {
     fn apply_quit_emits_quit_command() {
         let mut s = State::default();
         assert_eq!(s.apply(Action::Quit), vec![Command::Quit]);
+    }
+
+    // --- session-lifecycle intents fold into Command::RunOp ------------------
+    // Each lifecycle Action is a pure intent → effect: apply mutates nothing and
+    // returns the MuxOp descriptor the run loop runs off-loop. The OpResult
+    // flow-back stays the existing channel path (5.4d-iii territory).
+
+    fn a_sess(name: &str) -> crate::session::Session {
+        crate::session::Session {
+            source: "jup".into(),
+            name: name.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn apply_create_session_emits_run_op_create() {
+        use crate::model::MuxOp;
+        let mut s = State::default();
+        assert_eq!(
+            s.apply(Action::CreateSession {
+                source: "jup".into(),
+                name: "api".into(),
+            }),
+            vec![Command::RunOp(MuxOp::Create {
+                source: "jup".into(),
+                name: "api".into(),
+            })]
+        );
+    }
+
+    #[test]
+    fn apply_new_window_emits_run_op_new_window() {
+        use crate::model::MuxOp;
+        let mut s = State::default();
+        assert_eq!(
+            s.apply(Action::NewWindow {
+                source: "jup".into(),
+                session: "api".into(),
+                name: "logs".into(),
+            }),
+            vec![Command::RunOp(MuxOp::NewWindow {
+                source: "jup".into(),
+                session: "api".into(),
+                name: "logs".into(),
+            })]
+        );
+    }
+
+    #[test]
+    fn apply_split_window_emits_run_op_split() {
+        use crate::model::MuxOp;
+        let mut s = State::default();
+        assert_eq!(
+            s.apply(Action::SplitWindow {
+                source: "jup".into(),
+                target: "api:1".into(),
+                session: "api".into(),
+                vertical: false,
+            }),
+            vec![Command::RunOp(MuxOp::SplitWindow {
+                source: "jup".into(),
+                target: "api:1".into(),
+                session: "api".into(),
+                vertical: false,
+            })]
+        );
+    }
+
+    #[test]
+    fn apply_rename_session_emits_run_op_rename() {
+        use crate::model::MuxOp;
+        let mut s = State::default();
+        assert_eq!(
+            s.apply(Action::RenameSession {
+                sess: a_sess("api"),
+                new_name: "svc".into(),
+            }),
+            vec![Command::RunOp(MuxOp::Rename {
+                sess: a_sess("api"),
+                new_name: "svc".into(),
+            })]
+        );
+    }
+
+    #[test]
+    fn apply_kill_session_emits_run_op_kill() {
+        use crate::model::MuxOp;
+        let mut s = State::default();
+        assert_eq!(
+            s.apply(Action::KillSession {
+                sess: a_sess("api")
+            }),
+            vec![Command::RunOp(MuxOp::Kill {
+                sess: a_sess("api")
+            })]
+        );
+    }
+
+    #[test]
+    fn apply_kill_window_emits_run_op_kill_window() {
+        use crate::model::MuxOp;
+        let mut s = State::default();
+        assert_eq!(
+            s.apply(Action::KillWindow {
+                source: "jup".into(),
+                session: "api".into(),
+                target: "api:1".into(),
+            }),
+            vec![Command::RunOp(MuxOp::KillWindow {
+                source: "jup".into(),
+                session: "api".into(),
+                target: "api:1".into(),
+            })]
+        );
+    }
+
+    #[test]
+    fn apply_rename_window_emits_run_op_rename_window() {
+        use crate::model::MuxOp;
+        let mut s = State::default();
+        assert_eq!(
+            s.apply(Action::RenameWindow {
+                source: "jup".into(),
+                session: "api".into(),
+                target: "api:1".into(),
+                new_name: "logs".into(),
+            }),
+            vec![Command::RunOp(MuxOp::RenameWindow {
+                source: "jup".into(),
+                session: "api".into(),
+                target: "api:1".into(),
+                new_name: "logs".into(),
+            })]
+        );
+    }
+
+    #[test]
+    fn apply_lifecycle_action_does_not_touch_selection_or_focus() {
+        // Lifecycle intents are pure effect emitters: they leave domain state alone
+        // (the OpResult that follows mutates the inventory, not apply).
+        let mut s = State::default();
+        let before_sel = s.selection.clone();
+        s.apply(Action::KillSession {
+            sess: a_sess("api"),
+        });
+        assert_eq!(
+            s.selection, before_sel,
+            "kill intent leaves selection alone"
+        );
+        assert!(s.focus.is_tree_focused(), "kill intent leaves focus alone");
+        assert!(s.popup.is_none(), "kill intent leaves the popup alone");
     }
 }

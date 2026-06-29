@@ -114,6 +114,7 @@ fn toggle_auto_hide(mode: &mut bool, xmux_dir: &std::path::Path) {
 /// [`Action`]: crate::model::Action
 /// [`Command`]: crate::model::Command
 /// [`State::apply`]: crate::state::State::apply
+#[allow(clippy::too_many_arguments)]
 fn dispatch_action(
     action: crate::model::Action,
     switcher: &mut crate::ui::switcher::Switcher,
@@ -121,11 +122,45 @@ fn dispatch_action(
     tree_width_natural: &mut u16,
     auto_hide_tree: &mut bool,
     xmux_dir: &std::path::Path,
+    ops: &Arc<dyn crate::ui::switcher::Ops>,
+    op_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
+) -> (bool, bool) {
+    dispatch_commands(
+        state.apply(action),
+        switcher,
+        state,
+        tree_width_natural,
+        auto_hide_tree,
+        xmux_dir,
+        ops,
+        op_tx,
+    )
+}
+
+/// Runs the [`Command`]s an [`Action`] produced — the sole dispatcher of the
+/// synchronous, registry-free effects. `SelectAddress`/`Rescan`/`AdjustTreeWidth`/
+/// `ToggleAutoHide`/`Quit` act on the switcher/width/loop here; `RunOp` is spawned
+/// off-loop against the live mux (its `OpResult` folds back through `op_tx`, the
+/// existing channel). `Attach`/`PersistLastSession` arise only from `Action::Tick`,
+/// dispatched by the run loop with full registry access — never here.
+///
+/// [`Action`]: crate::model::Action
+/// [`Command`]: crate::model::Command
+#[allow(clippy::too_many_arguments)]
+fn dispatch_commands(
+    cmds: Vec<crate::model::Command>,
+    switcher: &mut crate::ui::switcher::Switcher,
+    state: &mut crate::state::State,
+    tree_width_natural: &mut u16,
+    auto_hide_tree: &mut bool,
+    xmux_dir: &std::path::Path,
+    ops: &Arc<dyn crate::ui::switcher::Ops>,
+    op_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
 ) -> (bool, bool) {
     use crate::model::Command;
     let mut quit = false;
     let mut width_changed = false;
-    for cmd in state.apply(action) {
+    for cmd in cmds {
         match cmd {
             Command::SelectAddress(address) => {
                 switcher.select_address(&address, state);
@@ -140,6 +175,7 @@ fn dispatch_action(
             }
             Command::ToggleAutoHide => toggle_auto_hide(auto_hide_tree, xmux_dir),
             Command::Quit => quit = true,
+            Command::RunOp(op) => spawn_op(op, ops, op_tx),
             // Settled-selection effects come only from Action::Tick, dispatched by the
             // run loop with registry/host access — never from a key/ctl action here.
             Command::PersistLastSession(_) | Command::Attach(_) => {}
@@ -939,6 +975,7 @@ fn handle_tree_bytes(
     let mut quit = false;
     let mut width_delta = 0i32;
     let mut toggle_auto_hide = false;
+    let mut op_cmds: Vec<crate::model::Command> = Vec::new();
     for key in tree_decoder.feed(bytes) {
         // Re-query per key: opening a modal popup (via a TreeKey applied below) flips
         // this, which changes how the next key in this same read resolves. Gating on
@@ -947,7 +984,9 @@ fn handle_tree_bytes(
         // focus the mux while a confirm is on screen; only y/n/Esc act on it.
         let is_inputting = state.is_modal_popup_open();
         match resolve_tree_key(key, tree_armed, prefix, is_inputting) {
-            Some(Action::TreeKey(k)) => switcher.handle_key(k, state),
+            // A committed input/kill confirm folds through State::apply, which returns
+            // the off-loop RunOp commands; collect them and spawn after the batch.
+            Some(Action::TreeKey(k)) => op_cmds.extend(switcher.handle_key(k, state)),
             Some(Action::FocusMux) => focus_terminal = true,
             Some(Action::Quit) => quit = true,
             Some(Action::Width(d)) => width_delta = d,
@@ -957,7 +996,11 @@ fn handle_tree_bytes(
             Some(Action::Forward(_)) | Some(Action::FocusTree(_)) | None => {}
         }
     }
-    dispatch_pending_op(switcher, ops, op_tx);
+    for cmd in op_cmds {
+        if let crate::model::Command::RunOp(op) = cmd {
+            spawn_op(op, ops, op_tx);
+        }
+    }
     ensure_current_host(mgr, env, hosts, switcher, cols, rows, tree_width);
     kick_rescan(switcher, env, hosts, detecting, mgr, cols, rows);
     (focus_terminal, quit, width_delta, toggle_auto_hide)
@@ -1312,8 +1355,6 @@ fn handle_mouse_event(
     hosts: &crate::model::Hosts,
     detecting: &mut HashSet<String>,
     selection: &Selection,
-    ops: &Arc<dyn crate::ui::switcher::Ops>,
-    op_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
     non_mouse: &mut Vec<u8>,
     mouse_focus_toggle: &mut bool,
     wheel_scrolled: &mut bool,
@@ -1357,10 +1398,10 @@ fn handle_mouse_event(
                         .set_pane_focus(crate::proxy::app::PaneFocus::Terminal);
                 }
                 crate::ui::switcher::MenuOutcome::Handled => {
-                    // A menu item may queue an op (split) or a
-                    // re-scan (reconnect); dispatch them here so it
-                    // works in either focus state, not only overlay.
-                    dispatch_pending_op(switcher, ops, op_tx);
+                    // A menu item only OPENS the next modal (input / kill confirm) — the
+                    // actual mux op is committed later from that modal (Enter / y), which
+                    // returns its RunOp through handle_key. Here just consume any re-scan
+                    // (reconnect) kick and ensure the target's host is connected.
                     kick_rescan(switcher, env, hosts, detecting, mgr, cols, body_rows);
                     ensure_current_host(mgr, env, hosts, switcher, cols, body_rows, tree_width);
                 }
@@ -1565,8 +1606,6 @@ fn handle_stdin_bytes(
                     hosts,
                     detecting,
                     selection,
-                    ops,
-                    op_tx,
                     &mut non_mouse,
                     &mut mouse_focus_toggle,
                     &mut wheel_scrolled,
@@ -2129,11 +2168,12 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         );
                     }
                     // The settled-selection Tick never returns the synchronous
-                    // key/ctl-only commands.
+                    // key/ctl-only commands or a session-lifecycle RunOp.
                     crate::model::Command::SelectAddress(_)
                     | crate::model::Command::Rescan
                     | crate::model::Command::AdjustTreeWidth(_)
                     | crate::model::Command::ToggleAutoHide
+                    | crate::model::Command::RunOp(_)
                     | crate::model::Command::Quit => {}
                 }
             }
@@ -2377,7 +2417,9 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             Some(cmd) = cmd_rx.recv() => {
                 match cmd {
                     Cmd::Op(action) => {
-                        let (quit_op, wc) = dispatch_action(action, &mut switcher, &mut state, &mut tree_width_natural, &mut auto_hide_tree, &env.xmux_dir);
+                        // dispatch_action spawns any RunOp (a ctl-driven lifecycle action)
+                        // off-loop itself; its OpResult folds back through op_tx as usual.
+                        let (quit_op, wc) = dispatch_action(action, &mut switcher, &mut state, &mut tree_width_natural, &mut auto_hide_tree, &env.xmux_dir, &ops, &op_tx);
                         if wc {
                             width_dirty = true;
                             width_flush_at = Some(std::time::Instant::now() + Duration::from_millis(WIDTH_FLUSH_MS));
@@ -2385,8 +2427,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         if quit_op {
                             break;
                         }
-                        // A Switch/Focus may need the cursor's host connected + its rescan kick consumed.
-                        dispatch_pending_op(&mut switcher, &ops, &op_tx);
+                        // A Switch/Focus may need the cursor's host connected.
                         ensure_current_host(&mut mgr, &env, &hosts, &switcher, cols, body_rows, tree_width);
                         if sync_selection_from_switcher(&mut state, &switcher) {
                             dirty = true;
@@ -2411,8 +2452,13 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         let _ = reply.send(dump);
                     }
                     Cmd::RawKey(k) => {
-                        switcher.handle_key(k, &mut state);
-                        dispatch_pending_op(&mut switcher, &ops, &op_tx);
+                        // A committed input/kill confirm returns its RunOp commands;
+                        // spawn them off-loop (result folds back through op_tx).
+                        for cmd in switcher.handle_key(k, &mut state) {
+                            if let crate::model::Command::RunOp(op) = cmd {
+                                spawn_op(op, &ops, &op_tx);
+                            }
+                        }
                         ensure_current_host(&mut mgr, &env, &hosts, &switcher, cols, body_rows, tree_width);
                         if sync_selection_from_switcher(&mut state, &switcher) {
                             dirty = true;
@@ -2542,22 +2588,21 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     0
 }
 
-/// After a key was handled in Focus::Tree: take any queued create/rename/kill and run it
-/// OFF the loop in a detached task, folding its result back through `op_tx`, so a
-/// slow ssh round-trip never freezes rendering, host streaming, or the control socket.
-fn dispatch_pending_op(
-    switcher: &mut crate::ui::switcher::Switcher,
+/// Runs a [`MuxOp`](crate::model::MuxOp) (the create/rename/kill/... a key resolved
+/// to, via `State::apply` → [`Command::RunOp`](crate::model::Command)) OFF the loop in
+/// a detached task, folding its result back through `op_tx`, so a slow ssh round-trip
+/// never freezes rendering, host streaming, or the control socket.
+fn spawn_op(
+    op: crate::model::MuxOp,
     ops: &Arc<dyn crate::ui::switcher::Ops>,
     op_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
 ) {
-    if let Some(op) = switcher.take_pending_op() {
-        let ops = ops.clone();
-        let tx = op_tx.clone();
-        tokio::spawn(async move {
-            let result = crate::ui::switcher::run_op(&op, ops.as_ref()).await;
-            let _ = tx.send(result);
-        });
-    }
+    let ops = ops.clone();
+    let tx = op_tx.clone();
+    tokio::spawn(async move {
+        let result = crate::ui::switcher::run_op(&op, ops.as_ref()).await;
+        let _ = tx.send(result);
+    });
 }
 
 /// The braille-spinner frame index for `elapsed` since the cockpit started.
@@ -4148,6 +4193,8 @@ mod tests {
         let mut sw = Switcher::new(&mut state);
         let mut natural = 48u16;
         let mut hide = false;
+        let ops = crate::ui::switcher::tests_support::noop_ops();
+        let (op_tx, _op_rx) = tokio::sync::mpsc::unbounded_channel();
         let dir = std::env::temp_dir().join(format!("xmux-apply-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -4162,6 +4209,8 @@ mod tests {
                 &mut natural,
                 &mut hide,
                 &dir,
+                &ops,
+                &op_tx,
             ),
             (false, false)
         );
@@ -4175,6 +4224,8 @@ mod tests {
             &mut natural,
             &mut hide,
             &dir,
+            &ops,
+            &op_tx,
         );
         assert_eq!(state.focus, Focus::Terminal);
         // Focus(Tree) returns to tree focus.
@@ -4185,6 +4236,8 @@ mod tests {
             &mut natural,
             &mut hide,
             &dir,
+            &ops,
+            &op_tx,
         );
         assert_eq!(state.focus, Focus::Tree);
         // TreeWidth adjusts the natural width and signals width_changed; Quit signals quit.
@@ -4196,6 +4249,8 @@ mod tests {
                 &mut natural,
                 &mut hide,
                 &dir,
+                &ops,
+                &op_tx,
             ),
             (false, true)
         );
@@ -4208,6 +4263,8 @@ mod tests {
                 &mut natural,
                 &mut hide,
                 &dir,
+                &ops,
+                &op_tx,
             ),
             (true, false),
             "Quit signals quit"
@@ -4274,6 +4331,8 @@ mod tests {
         let mut sw = Switcher::new(&mut state);
         let mut natural = 48u16;
         let mut hide = false;
+        let ops = crate::ui::switcher::tests_support::noop_ops();
+        let (op_tx, _op_rx) = tokio::sync::mpsc::unbounded_channel();
         let dir = std::env::temp_dir().join(format!("xmux-ctl-switch-sync-{}", std::process::id()));
 
         sync_selection_from_switcher(&mut state, &sw);
@@ -4286,6 +4345,8 @@ mod tests {
             &mut natural,
             &mut hide,
             &dir,
+            &ops,
+            &op_tx,
         );
 
         // The switch moved the cursor to db; the loop-top derive routes it through
@@ -4612,8 +4673,6 @@ mod tests {
         let mut mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let hosts = crate::model::Hosts::default();
         let sel = Selection::default();
-        let ops = crate::ui::switcher::tests_support::noop_ops();
-        let (op_tx, _r) = tokio::sync::mpsc::unbounded_channel();
         let mut st = MouseState::default();
         let tree_width = crate::ui::switcher::TREE_WIDTH;
         let mut natural = tree_width;
@@ -4643,8 +4702,6 @@ mod tests {
             &hosts,
             &mut detecting,
             &sel,
-            &ops,
-            &op_tx,
             &mut non_mouse,
             &mut focus_toggle,
             &mut wheel,

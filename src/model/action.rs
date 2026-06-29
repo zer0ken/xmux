@@ -9,11 +9,15 @@
 //!
 //! `Action` is the DOMAIN vocabulary, distinct from `proxy::dispatch::Action` (the
 //! cockpit's raw-byte input vocabulary, which projects INTO this via `as_action`).
-//! The display/navigation intents (Switch/Focus/Rescan/TreeWidth/ToggleAutoHide/Quit)
-//! plus the selection/attach-debounce intents (`Select`/`Tick`) live here; the async
-//! session-lifecycle path (`PendingOp`) is not folded in yet.
+//! The display/navigation intents (Switch/Focus/Rescan/TreeWidth/ToggleAutoHide/Quit),
+//! the selection/attach-debounce intents (`Select`/`Tick`), and the async
+//! session-lifecycle intents (`CreateSession`/`NewWindow`/`SplitWindow`/`RenameSession`/
+//! `KillSession`/`KillWindow`/`RenameWindow`) all live here. A lifecycle intent folds
+//! into a [`Command::RunOp`] carrying the [`MuxOp`] descriptor the run loop runs
+//! off-loop against the live mux.
 
 use crate::cockpit::Selection;
+use crate::session::Session;
 use std::time::Instant;
 
 /// A domain intent. The single input the [`State::apply`](crate::state::State::apply)
@@ -51,6 +55,38 @@ pub enum Action {
         /// Whether an attach for the selected session's key is already in flight.
         in_flight: bool,
     },
+    /// Create a new session named `name` (empty = mux auto-name) on `source`.
+    CreateSession { source: String, name: String },
+    /// Create a new window named `name` (empty = mux auto-name) in `session` on `source`.
+    NewWindow {
+        source: String,
+        session: String,
+        name: String,
+    },
+    /// Split window `target` (`session:window`) of `session` on `source` into a new pane.
+    SplitWindow {
+        source: String,
+        target: String,
+        session: String,
+        vertical: bool,
+    },
+    /// Rename `sess` to `new_name`.
+    RenameSession { sess: Session, new_name: String },
+    /// Kill `sess`.
+    KillSession { sess: Session },
+    /// Kill window `target` (`session:window`) of `session` on `source`.
+    KillWindow {
+        source: String,
+        session: String,
+        target: String,
+    },
+    /// Rename window `target` (`session:window`) of `session` on `source` to `new_name`.
+    RenameWindow {
+        source: String,
+        session: String,
+        target: String,
+        new_name: String,
+    },
 }
 
 /// A side effect for the run loop to carry out. `apply` returns these; the loop is
@@ -73,6 +109,51 @@ pub enum Command {
     Attach(Selection),
     /// Exit the cockpit run loop.
     Quit,
+    /// Run a slow (network) mux action off the event loop. The run loop spawns
+    /// [`run_op`](crate::ui::switcher::run_op) on a detached task and folds its
+    /// `OpResult` back through the existing op channel, so an ssh round-trip never
+    /// freezes rendering.
+    RunOp(MuxOp),
+}
+
+/// A slow (network) mux action — the descriptor [`Command::RunOp`] carries and
+/// [`run_op`](crate::ui::switcher::run_op) executes against the live mux. Built by
+/// `State::apply` from a session-lifecycle [`Action`]; pure data, no I/O.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MuxOp {
+    Create {
+        source: String,
+        name: String,
+    },
+    NewWindow {
+        source: String,
+        session: String,
+        name: String,
+    },
+    SplitWindow {
+        source: String,
+        target: String,
+        session: String,
+        vertical: bool,
+    },
+    Rename {
+        sess: Session,
+        new_name: String,
+    },
+    Kill {
+        sess: Session,
+    },
+    KillWindow {
+        source: String,
+        session: String,
+        target: String,
+    },
+    RenameWindow {
+        source: String,
+        session: String,
+        target: String,
+        new_name: String,
+    },
 }
 
 /// Which pane [`Action::Focus`] targets. The ctl `focus` verb and the keyboard

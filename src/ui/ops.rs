@@ -1,9 +1,10 @@
 //! The off-loop operation boundary: the slow (network) mux actions a keypress
-//! queues (`PendingOp`), their outcomes (`OpResult`), the `Ops` trait the cockpit
-//! implements over the live mux, and `run_op` which executes one `PendingOp`
-//! against `Ops` in a detached task. Pure over `Ops` — no switcher state — so it
-//! never touches the event loop.
+//! requests (the [`MuxOp`] carried by [`Command::RunOp`](crate::model::Command)),
+//! their outcomes (`OpResult`), the `Ops` trait the cockpit implements over the live
+//! mux, and `run_op` which executes one `MuxOp` against `Ops` in a detached task.
+//! Pure over `Ops` — no switcher state — so it never touches the event loop.
 
+use crate::model::MuxOp;
 use crate::session::{Session, WindowPanes};
 
 /// The side-effecting actions the switcher delegates to the host program. The
@@ -36,47 +37,7 @@ pub trait Ops: Send + Sync {
         -> anyhow::Result<()>;
 }
 
-/// A slow (network) action a keypress queues. The key-handling path only records
-/// it; the event loop runs it off-loop via [`run_op`] and applies the
-/// [`OpResult`], so an ssh round-trip never freezes the UI. Tests pump it inline.
-#[derive(Debug, Clone)]
-pub enum PendingOp {
-    Create {
-        source: String,
-        name: String,
-    },
-    NewWindow {
-        source: String,
-        session: String,
-        name: String,
-    },
-    SplitWindow {
-        source: String,
-        target: String,
-        session: String,
-        vertical: bool,
-    },
-    Rename {
-        sess: Session,
-        new_name: String,
-    },
-    Kill {
-        sess: Session,
-    },
-    KillWindow {
-        source: String,
-        session: String,
-        target: String,
-    },
-    RenameWindow {
-        source: String,
-        session: String,
-        target: String,
-        new_name: String,
-    },
-}
-
-/// The outcome of a [`PendingOp`], applied back into the switcher state by
+/// The outcome of a [`MuxOp`], applied back into the switcher state by
 /// [`Switcher::apply_op_result`].
 #[derive(Debug, Clone)]
 pub enum OpResult {
@@ -103,12 +64,11 @@ pub enum OpResult {
     },
 }
 
-/// Runs a queued [`PendingOp`] against the live mux and returns its [`OpResult`].
-/// Pure over `ops` (no switcher state), so it runs in a detached task off the
-/// event loop.
-pub async fn run_op(op: &PendingOp, ops: &dyn Ops) -> OpResult {
+/// Runs a [`MuxOp`] against the live mux and returns its [`OpResult`]. Pure over
+/// `ops` (no switcher state), so it runs in a detached task off the event loop.
+pub async fn run_op(op: &MuxOp, ops: &dyn Ops) -> OpResult {
     match op {
-        PendingOp::Create { source, name } => match ops.new_session(source, name).await {
+        MuxOp::Create { source, name } => match ops.new_session(source, name).await {
             Ok(session) => {
                 let panes = ops.panes(&session).await.unwrap_or_default();
                 OpResult::Created { session, panes }
@@ -117,7 +77,7 @@ pub async fn run_op(op: &PendingOp, ops: &dyn Ops) -> OpResult {
                 message: format!("create failed: {e}"),
             },
         },
-        PendingOp::NewWindow {
+        MuxOp::NewWindow {
             source,
             session,
             name,
@@ -127,7 +87,7 @@ pub async fn run_op(op: &PendingOp, ops: &dyn Ops) -> OpResult {
                 message: format!("new window failed: {e}"),
             },
         },
-        PendingOp::SplitWindow {
+        MuxOp::SplitWindow {
             source,
             target,
             session,
@@ -138,7 +98,7 @@ pub async fn run_op(op: &PendingOp, ops: &dyn Ops) -> OpResult {
                 message: format!("split failed: {e}"),
             },
         },
-        PendingOp::Rename { sess, new_name } => match ops.rename(sess, new_name).await {
+        MuxOp::Rename { sess, new_name } => match ops.rename(sess, new_name).await {
             Ok(()) => OpResult::Renamed {
                 source: sess.source.clone(),
                 old_name: sess.name.clone(),
@@ -148,7 +108,7 @@ pub async fn run_op(op: &PendingOp, ops: &dyn Ops) -> OpResult {
                 message: format!("rename failed: {e}"),
             },
         },
-        PendingOp::Kill { sess } => match ops.kill(sess).await {
+        MuxOp::Kill { sess } => match ops.kill(sess).await {
             Ok(()) => OpResult::Killed {
                 address: sess.address(),
             },
@@ -156,7 +116,7 @@ pub async fn run_op(op: &PendingOp, ops: &dyn Ops) -> OpResult {
                 message: format!("kill failed: {e}"),
             },
         },
-        PendingOp::KillWindow {
+        MuxOp::KillWindow {
             source,
             session,
             target,
@@ -166,7 +126,7 @@ pub async fn run_op(op: &PendingOp, ops: &dyn Ops) -> OpResult {
                 message: format!("kill window failed: {e}"),
             },
         },
-        PendingOp::RenameWindow {
+        MuxOp::RenameWindow {
             source,
             session,
             target,

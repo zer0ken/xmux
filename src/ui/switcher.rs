@@ -15,11 +15,12 @@ use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
+use crate::model::{Action, Command};
 use crate::session::{Pane, Session, WindowPanes};
 use crate::ui::status::Status;
 use crate::ui::tree::{self, Group};
 
-pub use crate::ui::ops::{run_op, OpResult, Ops, PendingOp};
+pub use crate::ui::ops::{run_op, OpResult, Ops};
 
 /// Tree pane width: border + 1-cell inner padding each side + content.
 pub const TREE_WIDTH: u16 = 48;
@@ -338,9 +339,6 @@ pub struct Switcher {
     list_state: ListState,
     tree_inner: Rect,
 
-    /// A slow (network) action queued by the last keypress for the event loop to
-    /// run off-loop. `None` unless a create/rename/kill is pending dispatch.
-    pending_op: Option<PendingOp>,
     /// The persisted last-selected session address (`source/session`) used to
     /// preselect on launch; `None` ⇒ the local-first preselect. Drives only the
     /// initial preselect (while the user has not moved); once `user_moved` is set,
@@ -375,7 +373,6 @@ impl Switcher {
             terminal_view_target: TerminalViewTarget::default(),
             list_state: ListState::default(),
             tree_inner: Rect::default(),
-            pending_op: None,
             preferred: None,
             screen_area: Rect::default(),
             status: Status::default(),
@@ -1103,14 +1100,18 @@ impl Switcher {
         true
     }
 
-    pub fn handle_key(&mut self, ev: KeyEvent, state: &mut crate::state::State) {
+    /// Handles one key against the switcher. Navigation/modal-open keys mutate the
+    /// switcher's own view state and `state.popup` directly and return no command;
+    /// the keys that COMMIT a slow mux action (Enter on an input, `y` on a kill
+    /// confirm) return the [`Command`]s `State::apply` produced for the run loop to
+    /// dispatch (off-loop `run_op`). The caller dispatches the returned commands; an
+    /// empty vec means there was no effect.
+    pub fn handle_key(&mut self, ev: KeyEvent, state: &mut crate::state::State) -> Vec<Command> {
         if matches!(state.popup, Some(Popup::Input(_))) {
-            self.handle_input_key(ev, state);
-            return;
+            return self.handle_input_key(ev, state);
         }
         if matches!(state.popup, Some(Popup::Kill(_))) {
-            self.resolve_kill(ev, state);
-            return;
+            return self.resolve_kill(ev, state);
         }
         // A flash (error/notice) is transient — it lives only until the next key, like a
         // status toast. Clear it here so navigation (or any key) restores the normal help
@@ -1139,6 +1140,7 @@ impl Switcher {
             },
             _ => {}
         }
+        Vec::new()
     }
 
     // --- input row ----------------------------------------------------------
@@ -1242,12 +1244,12 @@ impl Switcher {
         state.popup = None;
     }
 
-    fn handle_input_key(&mut self, ev: KeyEvent, state: &mut crate::state::State) {
+    fn handle_input_key(&mut self, ev: KeyEvent, state: &mut crate::state::State) -> Vec<Command> {
         match ev.code {
             KeyCode::Enter => {
                 let (mode, val, source, sess, target) = {
                     let Some(Popup::Input(input)) = &state.popup else {
-                        return;
+                        return Vec::new();
                     };
                     (
                         input.mode,
@@ -1257,46 +1259,44 @@ impl Switcher {
                         input.target.clone(),
                     )
                 };
+                // Close the input first so a queue helper that early-returns on a
+                // validation failure (empty/unchanged name) still dismisses the modal.
+                self.close_input(state);
                 match mode {
                     InputMode::Filter => {
                         state.filter = val;
-                        self.close_input(state);
                         self.rebuild(state);
+                        Vec::new()
                     }
-                    InputMode::New => {
-                        self.queue_create(source, &val);
-                        self.close_input(state);
-                    }
-                    InputMode::NewWindow => {
-                        self.queue_new_window(source, sess, &val);
-                        self.close_input(state);
-                    }
-                    InputMode::SplitWindow => {
-                        self.queue_split(source, sess, target, &val);
-                        self.close_input(state);
-                    }
+                    InputMode::New => self.queue_create(source, &val, state),
+                    InputMode::NewWindow => self.queue_new_window(source, sess, &val, state),
+                    InputMode::SplitWindow => self.queue_split(source, sess, target, &val, state),
                     InputMode::Rename => {
                         if target.is_some() {
-                            self.queue_rename_window(source, sess, target, &val, state);
+                            self.queue_rename_window(source, sess, target, &val, state)
                         } else {
-                            self.queue_rename(sess, &val);
+                            self.queue_rename(sess, &val, state)
                         }
-                        self.close_input(state);
                     }
                 }
             }
-            KeyCode::Esc => self.close_input(state),
+            KeyCode::Esc => {
+                self.close_input(state);
+                Vec::new()
+            }
             KeyCode::Backspace => {
                 if let Some(Popup::Input(input)) = state.popup.as_mut() {
                     input.buffer.pop();
                 }
+                Vec::new()
             }
             KeyCode::Char(c) => {
                 if let Some(Popup::Input(input)) = state.popup.as_mut() {
                     input.buffer.push(c);
                 }
+                Vec::new()
             }
-            _ => {}
+            _ => Vec::new(),
         }
     }
 
@@ -1307,51 +1307,66 @@ impl Switcher {
         }
     }
 
-    /// Queues a create for the event loop. The network call is NOT made here, so
-    /// the key-handling path never blocks on an ssh round-trip; [`run_op`]
-    /// performs it off-loop and [`Switcher::apply_op_result`] folds the result in.
-    fn queue_create(&mut self, source: Option<String>, name: &str) {
+    /// Resolves a create into an [`Action::CreateSession`] and folds it through
+    /// `State::apply`, returning the resulting [`Command`] (a `RunOp`) for the run
+    /// loop to dispatch off-loop. The network call is NOT made here, so the
+    /// key-handling path never blocks on an ssh round-trip; [`run_op`] performs it
+    /// off-loop and [`Switcher::apply_op_result`] folds the result in.
+    fn queue_create(
+        &mut self,
+        source: Option<String>,
+        name: &str,
+        state: &mut crate::state::State,
+    ) -> Vec<Command> {
         let Some(source) = source else {
-            return;
+            return Vec::new();
         };
-        self.pending_op = Some(PendingOp::Create {
+        state.apply(Action::CreateSession {
             source,
             name: name.to_string(),
-        });
+        })
     }
 
-    /// Queues a new-window in the captured session (the `n` action on a session
-    /// row). An empty name lets the mux auto-name the window.
-    fn queue_new_window(&mut self, source: Option<String>, sess: Option<Session>, name: &str) {
+    /// Resolves a new-window in the captured session (the `n` action on a session
+    /// row) into an [`Action::NewWindow`]. An empty name lets the mux auto-name it.
+    fn queue_new_window(
+        &mut self,
+        source: Option<String>,
+        sess: Option<Session>,
+        name: &str,
+        state: &mut crate::state::State,
+    ) -> Vec<Command> {
         let (Some(source), Some(sess)) = (source, sess) else {
-            return;
+            return Vec::new();
         };
-        self.pending_op = Some(PendingOp::NewWindow {
+        state.apply(Action::NewWindow {
             source,
             session: sess.name,
             name: name.to_string(),
-        });
+        })
     }
 
-    /// Queues a split of the captured window target (the `n` action on a window
-    /// row). The direction defaults to vertical unless the buffer starts with `h`.
+    /// Resolves a split of the captured window target (the `n` action on a window
+    /// row) into an [`Action::SplitWindow`]. The direction defaults to vertical
+    /// unless the buffer starts with `h`.
     fn queue_split(
         &mut self,
         source: Option<String>,
         sess: Option<Session>,
         target: Option<String>,
         dir: &str,
-    ) {
+        state: &mut crate::state::State,
+    ) -> Vec<Command> {
         let (Some(source), Some(sess), Some(target)) = (source, sess, target) else {
-            return;
+            return Vec::new();
         };
         let vertical = !dir.trim().eq_ignore_ascii_case("h");
-        self.pending_op = Some(PendingOp::SplitWindow {
+        state.apply(Action::SplitWindow {
             source,
             target,
             session: sess.name,
             vertical,
-        });
+        })
     }
 
     /// The current name of window `index` under the session at `sess_addr`, if its panes are loaded.
@@ -1368,24 +1383,30 @@ impl Switcher {
             .map(|w| w.name.clone())
     }
 
-    /// Queues a rename for the event loop after the synchronous validation that
-    /// needs no network. See [`Switcher::queue_create`] for why the op is deferred.
-    fn queue_rename(&mut self, sess: Option<Session>, new_name: &str) {
+    /// Resolves a rename into an [`Action::RenameSession`] after the synchronous
+    /// validation that needs no network. See [`Switcher::queue_create`] for why the
+    /// op is deferred off-loop.
+    fn queue_rename(
+        &mut self,
+        sess: Option<Session>,
+        new_name: &str,
+        state: &mut crate::state::State,
+    ) -> Vec<Command> {
         let Some(sess) = sess else {
-            return;
+            return Vec::new();
         };
         if new_name.is_empty() || new_name == sess.name {
-            return;
+            return Vec::new();
         }
         if new_name.starts_with('-') {
             // the mux silently no-ops a '-'-leading name (getopt eats it) — refuse.
             self.status.flash = "rename: name cannot start with '-'".into();
-            return;
+            return Vec::new();
         }
-        self.pending_op = Some(PendingOp::Rename {
+        state.apply(Action::RenameSession {
             sess,
             new_name: new_name.to_string(),
-        });
+        })
     }
 
     fn queue_rename_window(
@@ -1394,10 +1415,10 @@ impl Switcher {
         sess: Option<Session>,
         target: Option<String>,
         new_name: &str,
-        state: &crate::state::State,
-    ) {
+        state: &mut crate::state::State,
+    ) -> Vec<Command> {
         let (Some(source), Some(sess), Some(target)) = (source, sess, target) else {
-            return;
+            return Vec::new();
         };
         let cur = target
             .rsplit(':')
@@ -1405,23 +1426,23 @@ impl Switcher {
             .and_then(|i| i.parse::<i64>().ok())
             .and_then(|idx| self.window_name(&sess.address(), idx, state));
         if new_name.is_empty() || cur.as_deref() == Some(new_name) {
-            return;
+            return Vec::new();
         }
         if new_name.starts_with('-') {
             self.status.flash = "rename: name cannot start with '-'".into();
-            return;
+            return Vec::new();
         }
-        self.pending_op = Some(PendingOp::RenameWindow {
+        state.apply(Action::RenameWindow {
             source,
             session: sess.name,
             target,
             new_name: new_name.to_string(),
-        });
+        })
     }
 
-    /// Applies a completed [`PendingOp`] to the in-memory tree. The result is
-    /// applied on the event loop after `run_op` returns off-loop, so a slow ssh
-    /// round-trip never blocks rendering.
+    /// Applies a completed [`MuxOp`](crate::model::MuxOp)'s [`OpResult`] to the
+    /// in-memory tree. The result is applied on the event loop after `run_op`
+    /// returns off-loop, so a slow ssh round-trip never blocks rendering.
     pub fn apply_op_result(&mut self, result: OpResult, state: &mut crate::state::State) {
         match result {
             OpResult::Created { session, panes } => {
@@ -1468,12 +1489,6 @@ impl Switcher {
         }
     }
 
-    /// Takes the action queued by the last keypress, if any, for the event loop to
-    /// run off-loop. Consumes it so it dispatches once.
-    pub fn take_pending_op(&mut self) -> Option<PendingOp> {
-        self.pending_op.take()
-    }
-
     fn row_of_session(&self, address: &str) -> Option<usize> {
         self.rows
             .iter()
@@ -1503,30 +1518,29 @@ impl Switcher {
         }
     }
 
-    fn resolve_kill(&mut self, ev: KeyEvent, state: &mut crate::state::State) {
+    fn resolve_kill(&mut self, ev: KeyEvent, state: &mut crate::state::State) -> Vec<Command> {
         // tmux confirm-before semantics: only y/Y confirms; any other key — n, Esc, or
         // anything else — cancels (the pending confirm is taken either way).
         let confirmed = matches!(ev.code, KeyCode::Char('y') | KeyCode::Char('Y'));
-        if let Some(Popup::Kill(armed)) = state.popup.take() {
-            if confirmed {
-                match armed {
-                    PendingKill::Session(sess) => {
-                        self.pending_op = Some(PendingOp::Kill { sess });
-                    }
-                    PendingKill::Window {
-                        source,
-                        session,
-                        target,
-                    } => {
-                        self.pending_op = Some(PendingOp::KillWindow {
-                            source,
-                            session,
-                            target,
-                        });
-                    }
-                }
-            }
+        let Some(Popup::Kill(armed)) = state.popup.take() else {
+            return Vec::new();
+        };
+        if !confirmed {
+            return Vec::new();
         }
+        let action = match armed {
+            PendingKill::Session(sess) => Action::KillSession { sess },
+            PendingKill::Window {
+                source,
+                session,
+                target,
+            } => Action::KillWindow {
+                source,
+                session,
+                target,
+            },
+        };
+        state.apply(action)
     }
 
     // --- refresh ------------------------------------------------------------
@@ -2522,13 +2536,17 @@ mod tests {
         }
 
         async fn key(&mut self, code: KeyCode) {
-            self.sw
+            let cmds = self
+                .sw
                 .handle_key(KeyEvent::new(code, KeyModifiers::NONE), &mut self.state);
-            // Pump any queued slow op inline so tests observe its effect, exactly
-            // as the real event loop does (only off-loop there).
-            if let Some(op) = self.sw.take_pending_op() {
-                let r = run_op(&op, &self.ops).await;
-                self.sw.apply_op_result(r, &mut self.state);
+            // Pump any RunOp inline so tests observe its effect, exactly as the real
+            // event loop does (only off-loop there): apply turned the committing key
+            // into a Command::RunOp, run_op executes it, apply_op_result folds it in.
+            for cmd in cmds {
+                if let Command::RunOp(op) = cmd {
+                    let r = run_op(&op, &self.ops).await;
+                    self.sw.apply_op_result(r, &mut self.state);
+                }
             }
             self.draw();
         }
@@ -2678,6 +2696,16 @@ mod tests {
             RowRef::Session(s) => Some(s.name.clone()),
             _ => None,
         }
+    }
+
+    /// The single [`MuxOp`](crate::model::MuxOp) a committing key resolved to, pulled
+    /// out of the [`Command`]s `handle_key` returned — the off-loop op the run loop
+    /// would spawn. `None` when no op was queued (validation refused / cancelled).
+    fn only_run_op(cmds: Vec<Command>) -> Option<crate::model::MuxOp> {
+        cmds.into_iter().find_map(|c| match c {
+            Command::RunOp(op) => Some(op),
+            _ => None,
+        })
     }
 
     fn two_window_scan() -> Scan {
@@ -3527,7 +3555,7 @@ mod tests {
         h.key(KeyCode::Left).await; // ← ascend to the local HOST row
         h.ch('n').await; // open New (create a session) on local
         h.sw.set_input_text("scratch", &mut h.state);
-        h.sw.handle_key(
+        let cmds = h.sw.handle_key(
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             &mut h.state,
         ); // raw: not pumped
@@ -3535,9 +3563,7 @@ mod tests {
             h.ops.created.lock().unwrap().is_empty(),
             "create must be deferred off the key path, not run inline"
         );
-        let op =
-            h.sw.take_pending_op()
-                .expect("a create was queued for the loop");
+        let op = only_run_op(cmds).expect("a create was queued for the loop");
         let r = run_op(&op, &h.ops).await;
         assert_eq!(
             h.ops.created.lock().unwrap().len(),
@@ -4960,12 +4986,14 @@ mod tests {
         };
         assert_eq!(target, "editor:1");
         // confirm with y
-        h.sw.handle_key(
+        let cmds = h.sw.handle_key(
             KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
             &mut h.state,
         );
-        let op = h.sw.take_pending_op().expect("kill window queued");
-        assert!(matches!(op, PendingOp::KillWindow { ref target, .. } if target == "editor:1"));
+        let op = only_run_op(cmds).expect("kill window queued");
+        assert!(
+            matches!(op, crate::model::MuxOp::KillWindow { ref target, .. } if target == "editor:1")
+        );
     }
 
     #[tokio::test]
@@ -4995,14 +5023,14 @@ mod tests {
             "the confirm survives a same-tree rebuild — no time limit"
         );
         // 'y' now confirms and queues the kill of the armed window.
-        h.sw.handle_key(
+        let cmds = h.sw.handle_key(
             KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
             &mut h.state,
         );
-        let op =
-            h.sw.take_pending_op()
-                .expect("kill queued after surviving rebuild");
-        assert!(matches!(op, PendingOp::KillWindow { ref target, .. } if target == "editor:1"));
+        let op = only_run_op(cmds).expect("kill queued after surviving rebuild");
+        assert!(
+            matches!(op, crate::model::MuxOp::KillWindow { ref target, .. } if target == "editor:1")
+        );
     }
 
     #[tokio::test]
@@ -5025,13 +5053,13 @@ mod tests {
             "rename on window must have a target"
         );
         h.sw.set_input_text("newname", &mut h.state);
-        h.sw.handle_key(
+        let cmds = h.sw.handle_key(
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             &mut h.state,
         ); // confirm (raw)
-        let op = h.sw.take_pending_op().expect("rename window queued");
+        let op = only_run_op(cmds).expect("rename window queued");
         assert!(
-            matches!(op, PendingOp::RenameWindow { ref target, ref new_name, .. }
+            matches!(op, crate::model::MuxOp::RenameWindow { ref target, ref new_name, .. }
             if target == "editor:1" && new_name == "newname")
         );
     }
@@ -5051,12 +5079,12 @@ mod tests {
             "rename on window row must open input"
         );
         h.sw.set_input_text("shell", &mut h.state); // same as current name
-        h.sw.handle_key(
+        let cmds = h.sw.handle_key(
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             &mut h.state,
         );
         assert!(
-            h.sw.take_pending_op().is_none(),
+            only_run_op(cmds).is_none(),
             "unchanged window name must not queue a RenameWindow op"
         );
     }
@@ -5076,12 +5104,12 @@ mod tests {
             "rename on window row must open input"
         );
         h.sw.set_input_text("-bad", &mut h.state);
-        h.sw.handle_key(
+        let cmds = h.sw.handle_key(
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             &mut h.state,
         );
         assert!(
-            h.sw.take_pending_op().is_none(),
+            only_run_op(cmds).is_none(),
             "leading-dash window rename must be refused"
         );
         assert!(

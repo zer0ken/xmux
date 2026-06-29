@@ -28,7 +28,11 @@ navigation coalesces into one trailing attach — and, once the deadline elapses
 and the `should_attach` gate holds, returns `Command::Attach` (plus
 `Command::PersistLastSession` on an address change). `should_attach` and
 `display_matches_selection` are the pure gate methods that read `selection` /
-`displayed`.
+`displayed`. The session-lifecycle intents (`CreateSession` / `NewWindow` /
+`SplitWindow` / `RenameSession` / `KillSession` / `KillWindow` / `RenameWindow`)
+are pure effect emitters: `apply` mutates no domain state and returns a single
+`Command::RunOp(MuxOp)` the run loop runs off-loop (the inventory change arrives
+later as the op's result).
 
 `popup` is one `Option<ui::switcher::Popup>` — at most one of help / inline
 input / kill confirm / context menu. A single Option (not four independent

@@ -19,9 +19,10 @@ effect vocabulary the run loop dispatches. `State::apply(Action) -> Vec<Command>
 ## Module Seams
 
 - `action.rs` defines the domain `Action` (intent) and `Command` (effect)
-  enums plus `FocusTarget`. The cockpit's raw-byte input `Action`
-  (`proxy::dispatch`) projects INTO this via `as_action`; the two are distinct
-  types in separate modules.
+  enums, `FocusTarget`, and `MuxOp` (the slow-mux-action descriptor
+  `Command::RunOp` carries and `ui::ops::run_op` runs off-loop). The cockpit's
+  raw-byte input `Action` (`proxy::dispatch`) projects INTO this via `as_action`;
+  the two are distinct types in separate modules.
 - `transport.rs` lowers backend intent into executable argv for local or remote
   hosts.
 - `host.rs` and `hosts.rs` store per-host domain state and collections.
