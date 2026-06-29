@@ -413,7 +413,8 @@ fn selection_attach_facts(
 /// Issues an OFF-LOOP attach for `key`: allocates the attachment id, records the request's
 /// seq in the owning host's `display.in_flight` + the id→key in `display.pending`, and asks
 /// the worker to spawn. The worker's `Ready` reply (handled in the cockpit loop) inserts the
-/// finished attachment into the registry. `display` MUST be the host that owns `key`.
+/// finished attachment into the registry. `display` MUST be the host that owns `key`. Returns
+/// the allocated attachment id so a caller can correlate a follow-up probe to it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn request_attach(
     registry: &mut AttachRegistry,
@@ -424,7 +425,7 @@ pub(crate) fn request_attach(
     argv: Vec<String>,
     cols: u16,
     rows: u16,
-) {
+) -> u64 {
     let id = registry.alloc_id();
     *attach_seq += 1;
     display.in_flight.insert(key.to_string(), *attach_seq);
@@ -437,6 +438,7 @@ pub(crate) fn request_attach(
         rows,
         id,
     });
+    id
 }
 
 /// Makes the SELECTED session live in its host's display terminal and lands it on
@@ -458,6 +460,7 @@ pub(crate) fn select_attach(
     sel: &Selection,
     worker: &DisplayWorker,
     env: &Env,
+    pty_tx: &tokio::sync::mpsc::UnboundedSender<PtyEvent>,
     attach_seq: &mut u64,
     cols: u16,
     rows: u16,
@@ -477,6 +480,7 @@ pub(crate) fn select_attach(
         worker,
         mgr,
         env,
+        pty_tx,
         attach_seq,
         cols,
         body_rows: rows,
@@ -517,6 +521,7 @@ fn sync_source_terminals(
     sessions: &[crate::session::Session],
     worker: &DisplayWorker,
     mgr: &HostManager,
+    pty_tx: &tokio::sync::mpsc::UnboundedSender<PtyEvent>,
     attach_seq: &mut u64,
     cols: u16,
     rows: u16,
@@ -532,6 +537,7 @@ fn sync_source_terminals(
         worker,
         mgr,
         env,
+        pty_tx,
         attach_seq,
         cols,
         body_rows: rows,
@@ -950,6 +956,7 @@ fn handle_host_event(
     panes_requested: &mut HashSet<String>,
     detecting: &mut HashSet<String>,
     worker: &DisplayWorker,
+    pty_tx: &tokio::sync::mpsc::UnboundedSender<PtyEvent>,
     attach_seq: &mut u64,
     cols: u16,
     rows: u16,
@@ -973,6 +980,7 @@ fn handle_host_event(
             panes_requested,
             detecting,
             worker,
+            pty_tx,
             attach_seq,
             cols,
             rows,
@@ -1002,6 +1010,7 @@ fn run_event_effect(
     panes_requested: &mut HashSet<String>,
     detecting: &mut HashSet<String>,
     worker: &DisplayWorker,
+    pty_tx: &tokio::sync::mpsc::UnboundedSender<PtyEvent>,
     attach_seq: &mut u64,
     cols: u16,
     rows: u16,
@@ -1032,8 +1041,8 @@ fn run_event_effect(
                 );
                 // Sync this host's display terminal(s) (per-host for remote tmux).
                 sync_source_terminals(
-                    registry, env, hosts, &host, &sessions, worker, mgr, attach_seq, cols, rows,
-                    tree_width,
+                    registry, env, hosts, &host, &sessions, worker, mgr, pty_tx, attach_seq, cols,
+                    rows, tree_width,
                 );
             }
         }
@@ -1102,8 +1111,8 @@ fn run_event_effect(
                 }
             }
             sync_source_terminals(
-                registry, env, hosts, &source, &sessions, worker, mgr, attach_seq, cols, rows,
-                tree_width,
+                registry, env, hosts, &source, &sessions, worker, mgr, pty_tx, attach_seq, cols,
+                rows, tree_width,
             );
         }
     }
@@ -1839,6 +1848,9 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
 
     // The live PTY attachments: one real attached mux client per session.
     let (pty_tx, mut pty_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
+    // A clone the drivers can hand to an off-loop probe (e.g. the psmux display-tty
+    // capture) so its DisplayTty result folds back through the same event channel.
+    let driver_pty_tx = pty_tx.clone();
     let mut worker = DisplayWorker::new(pty_tx);
     let mut registry = AttachRegistry::new();
 
@@ -2082,6 +2094,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             &sel,
                             &worker,
                             &env,
+                            &driver_pty_tx,
                             &mut attach_seq,
                             cols,
                             body_rows,
@@ -2153,6 +2166,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         worker: &worker,
                         mgr: &mgr,
                         env: &env,
+                        pty_tx: &driver_pty_tx,
                         attach_seq: &mut attach_seq,
                         cols,
                         body_rows,
@@ -2209,7 +2223,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         tokio::select! {
             Some(ev) = host_rx.recv() => {
                 let t = std::time::Instant::now();
-                if handle_host_event(ev, &mut mgr, &mut hosts, &mut registry, &mut switcher, &mut state, &env, &mut connected, &mut panes_requested, &mut detecting, &worker, &mut attach_seq, cols, body_rows, tree_width) {
+                if handle_host_event(ev, &mut mgr, &mut hosts, &mut registry, &mut switcher, &mut state, &env, &mut connected, &mut panes_requested, &mut detecting, &worker, &driver_pty_tx, &mut attach_seq, cols, body_rows, tree_width) {
                     state.attach_deadline = Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
                     dirty = true;
                 }
@@ -2217,7 +2231,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 while budget > 0 {
                     match host_rx.try_recv() {
                         Ok(ev) => {
-                            if handle_host_event(ev, &mut mgr, &mut hosts, &mut registry, &mut switcher, &mut state, &env, &mut connected, &mut panes_requested, &mut detecting, &worker, &mut attach_seq, cols, body_rows, tree_width) {
+                            if handle_host_event(ev, &mut mgr, &mut hosts, &mut registry, &mut switcher, &mut state, &env, &mut connected, &mut panes_requested, &mut detecting, &worker, &driver_pty_tx, &mut attach_seq, cols, body_rows, tree_width) {
                                 state.attach_deadline = Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
                                 dirty = true;
                             }
@@ -2410,6 +2424,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                     worker: &worker,
                                     mgr: &mgr,
                                     env: &env,
+                                    pty_tx: &driver_pty_tx,
                                     attach_seq: &mut attach_seq,
                                     cols,
                                     body_rows,
@@ -2458,6 +2473,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                     worker: &worker,
                                     mgr: &mgr,
                                     env: &env,
+                                    pty_tx: &driver_pty_tx,
                                     attach_seq: &mut attach_seq,
                                     cols,
                                     body_rows,
@@ -2539,7 +2555,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     }
                     sync_source_terminals(
                         &mut registry, &env, &mut hosts, &src.alias, &inventory, &worker, &mgr,
-                        &mut attach_seq, cols, body_rows, tree_width,
+                        &driver_pty_tx, &mut attach_seq, cols, body_rows, tree_width,
                     );
                 }
                 // Re-attach the selected session's display terminal if it dropped.
@@ -2552,7 +2568,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     if !registry.contains(&key) && !in_flight_for_key {
                         select_attach(
                             &mut registry, &mut hosts, &state.selection, &worker, &env,
-                            &mut attach_seq, cols, body_rows, tree_width, &mgr,
+                            &driver_pty_tx, &mut attach_seq, cols, body_rows, tree_width, &mgr,
                         );
                     }
                 }
@@ -3429,6 +3445,7 @@ mod tests {
         let worker = DisplayWorker::new(ptx);
         let mut attach_seq = 0u64;
         let env = fake_env_with_sources(&["jup"]);
+        let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
         let mut connected = HashSet::new();
         let mut panes_requested = HashSet::new();
         let mut hosts = crate::model::Hosts::default();
@@ -3449,6 +3466,7 @@ mod tests {
             &mut panes_requested,
             &mut HashSet::new(),
             &worker,
+            &pty_tx,
             &mut attach_seq,
             80,
             24,
@@ -3529,6 +3547,7 @@ mod tests {
         let worker = DisplayWorker::new(ptx);
         let mut attach_seq = 0u64;
         let env = fake_env_with_sources(&["jup"]);
+        let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
         let mut connected = HashSet::new();
         let mut panes_requested = HashSet::new();
         let mut hosts = crate::model::Hosts::default();
@@ -3548,6 +3567,7 @@ mod tests {
             &mut panes_requested,
             &mut HashSet::new(),
             &worker,
+            &pty_tx,
             &mut attach_seq,
             80,
             24,
@@ -3610,6 +3630,7 @@ mod tests {
         let (etx, _erx) = tokio::sync::mpsc::unbounded_channel::<crate::host::HostEvent>();
         let mgr = HostManager::new(etx);
         let env = fake_env_with_sources(&["jup"]);
+        let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
 
         let sel_a = Selection {
             source: "jup".into(),
@@ -3629,6 +3650,7 @@ mod tests {
             &sel_a,
             &worker,
             &env,
+            &pty_tx,
             &mut attach_seq,
             80,
             24,
@@ -3654,6 +3676,7 @@ mod tests {
             &sel_b,
             &worker,
             &env,
+            &pty_tx,
             &mut attach_seq,
             80,
             24,
@@ -3683,6 +3706,7 @@ mod tests {
         let mut attach_seq = 0u64;
         let mgr = empty_manager();
         let env = fake_env_with_sources(&["local"]);
+        let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
 
         let sel_test2 = Selection {
             source: "local".into(),
@@ -3701,6 +3725,7 @@ mod tests {
             &sel_test2,
             &worker,
             &env,
+            &pty_tx,
             &mut attach_seq,
             80,
             24,
@@ -3737,6 +3762,7 @@ mod tests {
             &sel_test,
             &worker,
             &env,
+            &pty_tx,
             &mut attach_seq,
             80,
             24,
@@ -3776,6 +3802,7 @@ mod tests {
         let mut attach_seq = 0u64;
         let mgr = empty_manager();
         let env = fake_env_with_sources(&["local"]);
+        let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
 
         let sel = Selection {
             source: "local".into(),
@@ -3789,6 +3816,7 @@ mod tests {
             &sel,
             &worker,
             &env,
+            &pty_tx,
             &mut attach_seq,
             80,
             24,
@@ -3899,6 +3927,7 @@ mod tests {
         let mut attach_seq = 7u64;
         let mgr = empty_manager();
         let env = fake_env_with_sources(&["local"]);
+        let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
 
         let sel = Selection {
             source: "local".into(),
@@ -3912,6 +3941,7 @@ mod tests {
             &sel,
             &worker,
             &env,
+            &pty_tx,
             &mut attach_seq,
             80,
             24,
@@ -4002,6 +4032,7 @@ mod tests {
         let mut panes: HashSet<String> = HashSet::new();
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
         let worker = DisplayWorker::new(ptx);
+        let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
         let mut seq = 0u64;
         let mut mgr = empty_manager();
 
@@ -4026,6 +4057,7 @@ mod tests {
             &mut panes,
             &mut HashSet::new(),
             &worker,
+            &pty_tx,
             &mut seq,
             80,
             24,
@@ -4058,6 +4090,7 @@ mod tests {
             &mut panes,
             &mut HashSet::new(),
             &worker,
+            &pty_tx,
             &mut seq,
             80,
             24,
