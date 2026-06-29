@@ -936,14 +936,14 @@ fn handle_tree_bytes(
         // ANY modal popup (not just the inline input) makes a modal OWN its keys — a
         // kill-confirm swallows prefix/Enter, so `prefix q` can't quit and Enter can't
         // focus the mux while a confirm is on screen; only y/n/Esc act on it.
-        let is_inputting = switcher.is_modal_popup_open();
+        let is_inputting = state.is_modal_popup_open();
         match resolve_tree_key(key, tree_armed, prefix, is_inputting) {
             Some(Action::TreeKey(k)) => switcher.handle_key(k, state),
             Some(Action::FocusMux) => focus_terminal = true,
             Some(Action::Quit) => quit = true,
             Some(Action::Width(d)) => width_delta = d,
             Some(Action::ToggleAutoHide) => toggle_auto_hide = true,
-            Some(Action::ShowHelp) => switcher.toggle_help(),
+            Some(Action::ShowHelp) => switcher.toggle_help(state),
             // resolve_tree_key never emits the mux-only variants; None = armed/consumed.
             Some(Action::Forward(_)) | Some(Action::FocusTree(_)) | None => {}
         }
@@ -1333,7 +1333,7 @@ fn handle_mouse_event(
                                          // button is released (press-hold-release), exactly like the
                                          // divider drag below. Motion sets the hovered item; button-up
                                          // acts on it (or cancels if released off-menu).
-    if switcher.menu_active() {
+    if state.menu_active() {
         if !ev.pressed {
             match switcher.menu_release(state) {
                 crate::ui::switcher::MenuOutcome::FocusTerminal => {
@@ -1359,7 +1359,7 @@ fn handle_mouse_event(
             }
             dirty = true;
         } else if !is_wheel {
-            switcher.menu_hover(col0, ev.row.saturating_sub(1));
+            switcher.menu_hover(col0, ev.row.saturating_sub(1), state);
             dirty = true;
         }
         return dirty;
@@ -1392,7 +1392,7 @@ fn handle_mouse_event(
         dirty = true;
         return dirty;
     }
-    if is_left_press && switcher.begin_popup_drag(col0, ev.row.saturating_sub(1)) {
+    if is_left_press && switcher.begin_popup_drag(col0, ev.row.saturating_sub(1), state) {
         dirty = true;
         return dirty;
     }
@@ -1400,7 +1400,7 @@ fn handle_mouse_event(
     // event that is not its border-drag (handled above) is swallowed,
     // so clicks, wheels, divider grabs, and hovers never reach the
     // tree/mux/divider behind it.
-    if switcher.is_modal_popup_open() {
+    if state.is_modal_popup_open() {
         return dirty;
     }
     if is_left_press && tree_width > 0 && col0 == tree_width {
@@ -1435,7 +1435,7 @@ fn handle_mouse_event(
         is_right_press,
         state.focus.is_tree_focused(),
         in_mux.is_some(),
-    ) && switcher.menu_open(col0, ev.row.saturating_sub(1))
+    ) && switcher.menu_open(col0, ev.row.saturating_sub(1), state)
     {
         dirty = true;
         return dirty;
@@ -1589,8 +1589,8 @@ fn handle_stdin_bytes(
     // Watchdog: a keystroke (or any non-mouse byte) during a held menu ends
     // the gesture without acting — mirrors the divider-drag watchdog, so a
     // missed button-up can't strand the menu and eat later input.
-    if switcher.menu_active() && !non_mouse.is_empty() {
-        switcher.menu_cancel();
+    if state.menu_active() && !non_mouse.is_empty() {
+        switcher.menu_cancel(state);
         non_mouse.clear();
         *dirty = true;
     }
@@ -1645,7 +1645,7 @@ fn handle_stdin_bytes(
             mouse.repeat_until = None; // first key isn't a Ctrl-arrow → end the window
         }
     }
-    if !consumed_by_repeat && !non_mouse.is_empty() && switcher.feed_help_key(&non_mouse) {
+    if !consumed_by_repeat && !non_mouse.is_empty() && switcher.feed_help_key(&non_mouse, state) {
         // The help overlay is modal (tmux view-mode style): while open it
         // captures every key in EITHER focus — q/Esc closes it, the rest are
         // swallowed — so nothing leaks to the tree or the mux pane. Above the
@@ -1700,7 +1700,7 @@ fn handle_stdin_bytes(
                 }
                 Action::Quit => *quit = true,
                 Action::ShowHelp => {
-                    switcher.toggle_help();
+                    switcher.toggle_help(state);
                     *dirty = true;
                 }
                 Action::Width(d) => {
@@ -1895,7 +1895,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     let mut state =
         crate::state::State::from_sources(env.srcs.iter().map(|s| s.alias.clone()).collect());
     // The switcher, built over that seeded inventory; events stream the tree in.
-    let mut switcher = Switcher::from_sources(&state);
+    let mut switcher = Switcher::from_sources(&mut state);
     // Feed the switcher the ssh config so an unreachable host's info pane can show its
     // Host/Match stanza. Read once; a missing file just yields no stanza.
     switcher.set_ssh_config_text(
@@ -2007,10 +2007,11 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // changed selection ensures its PTY + (for a window row) switches the window.
         switcher.set_spinner_frame(spinner_frame_at(spinner_start.elapsed()));
         switcher.set_divider_hovered(mouse_state.hovered_divider);
-        // Derive the modal dimension of focus from the switcher's open-modal kind: open
-        // a modal → Focus becomes Popup/Menu carrying the current pane; close it →
-        // restore that pane. The single owner of the modal/pane reconciliation.
-        state.focus.sync_modal(switcher.modal_kind());
+        // Derive the modal dimension of focus from the open-modal kind: open a modal →
+        // Focus becomes Popup/Menu carrying the current pane; close it → restore that
+        // pane. The single owner of the modal/pane reconciliation.
+        let modal_kind = state.modal_kind();
+        state.focus.sync_modal(modal_kind);
         // The single owner of the effective tree width: reconcile it to the current
         // focus + the hide setting, and to any natural-width change from prefix h/l.
         // On a change (focus toggled, hide flips the width, or h/l resized the tree),
@@ -2060,7 +2061,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // select_active_window is idempotent (no move when already on the active window or
         // when the session's panes are unknown), so calling it each iteration is cheap.
         if state.focus.is_terminal_focused() {
-            switcher.select_active_window(&state);
+            switcher.select_active_window(&mut state);
         }
         if sync_selection_from_switcher(
             &mut state,
@@ -3211,7 +3212,7 @@ mod tests {
         use crate::ui::run::dump_overlay;
         use crate::ui::switcher::Switcher;
         let mut state = crate::state::State::from_sources(vec!["jupiter00".into()]);
-        let mut switcher = Switcher::from_sources(&state);
+        let mut switcher = Switcher::from_sources(&mut state);
         let mut connected: HashSet<String> = HashSet::new();
         assert!(
             note_host_exited(
@@ -3239,7 +3240,7 @@ mod tests {
         use crate::ui::run::dump_overlay;
         use crate::ui::switcher::Switcher;
         let mut state = crate::state::State::from_sources(vec!["jupiter06".into()]);
-        let mut switcher = Switcher::from_sources(&state);
+        let mut switcher = Switcher::from_sources(&mut state);
         let mut connected: HashSet<String> = HashSet::new();
         // A reachable host whose mux has no server: "no sessions" → (empty), not ⚠.
         assert!(
@@ -3264,7 +3265,7 @@ mod tests {
     async fn host_exited_after_connect_keeps_tree() {
         use crate::ui::switcher::Switcher;
         let mut state = crate::state::State::from_sources(vec!["jupiter06".into()]);
-        let mut switcher = Switcher::from_sources(&state);
+        let mut switcher = Switcher::from_sources(&mut state);
         let mut connected: HashSet<String> = HashSet::new();
         connected.insert("jupiter06".into());
         assert!(
@@ -3287,7 +3288,7 @@ mod tests {
         use crate::ui::run::dump_overlay;
         use crate::ui::switcher::Switcher;
         let mut state = crate::state::State::from_sources(vec!["jupiter06".into()]);
-        let mut switcher = Switcher::from_sources(&state);
+        let mut switcher = Switcher::from_sources(&mut state);
         let mut connected: HashSet<String> = HashSet::new();
         connected.insert("jupiter06".into());
         // First drop of the connected host: keeps last-known tree, clears connected.
@@ -3369,7 +3370,7 @@ mod tests {
             panes,
         };
         let mut state = crate::state::State::from_scan(scan);
-        let mut switcher = Switcher::new(&state);
+        let mut switcher = Switcher::new(&mut state);
         // session row -> (→ descend) window 0 -> (↓ sibling) window 1.
         switcher.handle_key(
             KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
@@ -3415,7 +3416,7 @@ mod tests {
             crate::ui::switcher::TREE_WIDTH,
         );
         // The loop-top follow (simulated here) consumes the marker and moves the cursor.
-        switcher.select_active_window(&state);
+        switcher.select_active_window(&mut state);
         assert_eq!(
             switcher.terminal_view_target().target,
             "api:0",
@@ -3474,7 +3475,7 @@ mod tests {
             panes,
         };
         let mut state = crate::state::State::from_scan(scan);
-        let mut switcher = Switcher::new(&state);
+        let mut switcher = Switcher::new(&mut state);
         switcher.handle_key(
             KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
             &mut state,
@@ -3933,7 +3934,7 @@ mod tests {
         let mut hosts = detach_test_hosts("jup");
         let mut registry = AttachRegistry::new();
         let mut state = crate::state::State::from_sources(vec!["jup".into()]);
-        let mut switcher = crate::ui::switcher::Switcher::from_sources(&state);
+        let mut switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
         let env = fake_env_with_sources(&["jup"]);
         let mut connected = HashSet::new();
         let mut panes: HashSet<String> = HashSet::new();
@@ -4130,7 +4131,7 @@ mod tests {
             panes: Default::default(),
         };
         let mut state = crate::state::State::from_scan(scan);
-        let mut sw = Switcher::new(&state);
+        let mut sw = Switcher::new(&mut state);
         let mut natural = 48u16;
         let mut hide = false;
         let dir = std::env::temp_dir().join(format!("xmux-apply-{}", std::process::id()));
@@ -4231,8 +4232,8 @@ mod tests {
             }],
             panes: Default::default(),
         };
-        let state = crate::state::State::from_scan(scan);
-        let sw = Switcher::new(&state);
+        let mut state = crate::state::State::from_scan(scan);
+        let sw = Switcher::new(&mut state);
         assert_eq!(status_line(&sw, true), "focus=tree target=api");
         assert_eq!(status_line(&sw, false), "focus=terminal target=api");
     }
@@ -4268,7 +4269,7 @@ mod tests {
             panes: Default::default(),
         };
         let mut state = crate::state::State::from_scan(scan);
-        let mut sw = Switcher::new(&state);
+        let mut sw = Switcher::new(&mut state);
         let mut natural = 48u16;
         let mut hide = false;
         let dir = std::env::temp_dir().join(format!("xmux-ctl-switch-sync-{}", std::process::id()));
@@ -4305,7 +4306,7 @@ mod tests {
             panes: Default::default(),
         };
         let mut state = crate::state::State::from_scan(scan); // tree focus
-        let mut switcher = Switcher::new(&state);
+        let mut switcher = Switcher::new(&mut state);
         let mut registry = AttachRegistry::new();
         let mut mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let mut hosts = crate::model::Hosts::default();
@@ -4371,7 +4372,7 @@ mod tests {
             panes: Default::default(),
         };
         let mut state = crate::state::State::from_scan(scan); // tree focus
-        let mut switcher = Switcher::new(&state);
+        let mut switcher = Switcher::new(&mut state);
         let mut registry = AttachRegistry::new();
         let mut mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let mut hosts = crate::model::Hosts::default();
@@ -4413,15 +4414,18 @@ mod tests {
         // `x` on the session row arms the y/n confirm (a modal popup, not an inline input).
         feed!(b"x");
         assert!(
-            switcher.is_modal_popup_open(),
+            state.is_modal_popup_open(),
             "x armed the kill-confirm popup"
         );
         assert!(
-            !switcher.is_inputting(),
+            !state.is_inputting(),
             "a kill-confirm is NOT an inline input"
         );
         // The loop-top reconciler makes Focus a modal carrying the prior pane.
-        state.focus.sync_modal(switcher.modal_kind());
+        {
+            let mk = state.modal_kind();
+            state.focus.sync_modal(mk);
+        }
         assert_eq!(
             state.focus,
             Focus::Popup {
@@ -4443,7 +4447,10 @@ mod tests {
         );
         // Re-arm and feed Enter: routed to the switcher, NOT a mux-focus.
         feed!(b"x");
-        state.focus.sync_modal(switcher.modal_kind());
+        {
+            let mk = state.modal_kind();
+            state.focus.sync_modal(mk);
+        }
         assert_eq!(
             state.focus,
             Focus::Popup {
@@ -4486,14 +4493,17 @@ mod tests {
                 panes: Default::default(),
             };
             let mut state = crate::state::State::from_scan(scan);
-            let mut switcher = Switcher::new(&state);
+            let mut switcher = Switcher::new(&mut state);
             let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
             term.draw(|f| switcher.render(f, None, false, crate::ui::switcher::TREE_WIDTH, &state))
                 .unwrap();
-            let opened = (0..10).any(|row| switcher.menu_open(1, row));
+            let opened = (0..10).any(|row| switcher.menu_open(1, row, &mut state));
             assert!(opened, "menu opens over a rendered tree row");
 
-            state.focus.sync_modal(switcher.modal_kind());
+            {
+                let mk = state.modal_kind();
+                state.focus.sync_modal(mk);
+            }
             assert_eq!(
                 state.focus,
                 Focus::Menu {
@@ -4548,7 +4558,10 @@ mod tests {
                 crate::ui::switcher::TREE_WIDTH,
             );
             let during = state.focus;
-            state.focus.sync_modal(switcher.modal_kind());
+            {
+                let mk = state.modal_kind();
+                state.focus.sync_modal(mk);
+            }
             let restored = state.focus;
             let writes = input_log.lock().unwrap().len();
             (out, during, restored, writes)
@@ -4590,7 +4603,7 @@ mod tests {
             panes: Default::default(),
         };
         let mut state = crate::state::State::from_scan(scan);
-        let mut switcher = Switcher::new(&state);
+        let mut switcher = Switcher::new(&mut state);
         let mut registry = AttachRegistry::new();
         let mut mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let hosts = crate::model::Hosts::default();

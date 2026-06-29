@@ -239,8 +239,8 @@ mod tests {
 
     #[tokio::test]
     async fn dump_switcher_flattens_buffer() {
-        let state = crate::state::State::from_scan(sample());
-        let mut sw = Switcher::new(&state);
+        let mut state = crate::state::State::from_scan(sample());
+        let mut sw = Switcher::new(&mut state);
         let out = dump_switcher(&mut sw, &state, 100, 30);
         assert!(out.contains("editor"));
         // The dump renders the full overlay (tree + footer); the footer's nav hint
@@ -252,8 +252,8 @@ mod tests {
     async fn dump_overlay_renders_the_live_grid() {
         // A dump with a live grid must include both the tree AND the grid content
         // (the terminal-view pane), so a headless `dump` reflects the live screen.
-        let state = crate::state::State::from_scan(sample());
-        let mut sw = Switcher::new(&state);
+        let mut state = crate::state::State::from_scan(sample());
+        let mut sw = Switcher::new(&mut state);
         let mut grid = crate::proxy::screen::Grid::new(30, 100);
         grid.feed(b"LIVEGRID");
         let out = dump_overlay(&mut sw, Some(&grid), 100, 30, &state);
@@ -295,7 +295,7 @@ mod tests {
         // standing in for the cockpit loop: it answers `dump` and applies keys. It
         // exits when the channel closes (all senders dropped).
         let mut state = crate::state::State::from_scan(sample());
-        let mut sw = Switcher::new(&state);
+        let mut sw = Switcher::new(&mut state);
         let consumer = tokio::spawn(async move {
             while let Some(cmd) = rx.recv().await {
                 match cmd {

@@ -10,8 +10,11 @@ ratatui rendering.
 
 `tree.rs` is side-effect-free model logic over groups and sessions.
 `switcher.rs` is the aggregate interactive TUI surface: cursor, flattened rows,
-menus, popups, inline input, key/mouse handling, operation result application,
-and render state. `status.rs` owns the status-bar surface — the divider rule,
+modal/menu/input BEHAVIOR and rendering, key/mouse handling, operation result
+application, and render state. The open modal itself lives in `State.popup`
+(the `Popup` enum is defined here); the switcher reads/writes it and owns only
+the transient popup geometry (drag offset / drawn rect). `status.rs` owns the
+status-bar surface — the divider rule,
 the footer, and the unreachable-host info panel — plus its view-local state
 (flash, spinner, divider colours, ui prefix), rendering from `&State`. `ops.rs`
 performs slower side-effecting operations behind the switcher interface.
@@ -34,7 +37,8 @@ renders for `dump`.
   signature make mutation explicit.
 - `dump` should reflect the same split view the main draw path renders.
 - Modal and menu input owns keys while open; those keys must not leak to mux
-  passthrough or global shortcuts.
+  passthrough or global shortcuts. At most one modal is open: `State.popup` is
+  one Option, so opening any modal drops whatever was open.
 - UI actions that become domain commands should resolve through `Operation`.
 
 ## Common Pitfalls

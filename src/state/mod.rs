@@ -1,6 +1,6 @@
 //! Runtime domain state: the single source of truth the new architecture's
 //! components read from. Carries the cockpit loop's inventory, selection,
-//! display-truth, and focus fields.
+//! display-truth, focus, and the open modal popup.
 use crate::cockpit::Selection;
 use crate::session::WindowPanes;
 use crate::ui::tree::Group;
@@ -38,9 +38,54 @@ pub struct State {
     /// The cockpit's focus state machine — which pane keys go to and whether a
     /// modal is open. The single source of truth for focus.
     pub focus: crate::proxy::app::Focus,
+    /// The single open modal, if any (help / inline input / kill confirm / context
+    /// menu). One Option — not four independent fields — so the modals' mutual
+    /// exclusion is structural: opening one drops whatever was open, and two can
+    /// never coexist. The switcher owns the modal behavior and the transient popup
+    /// geometry (drag offset / drawn rect); this owns which modal is open + its content.
+    pub(crate) popup: Option<crate::ui::switcher::Popup>,
 }
 
 impl State {
+    /// True while a centered modal popup (help / inline input / kill confirm) is
+    /// open. These three are draggable and drive [`ModalKind::Popup`]; the context
+    /// menu is separate (pointer-anchored).
+    ///
+    /// [`ModalKind::Popup`]: crate::proxy::app::ModalKind::Popup
+    pub fn is_modal_popup_open(&self) -> bool {
+        use crate::ui::switcher::Popup;
+        matches!(
+            self.popup,
+            Some(Popup::Help | Popup::Input(_) | Popup::Kill(_))
+        )
+    }
+
+    /// True while an inline input (filter / rename / new) is open. The cockpit
+    /// routes every key to the switcher then, with no focus-switch hijack.
+    pub fn is_inputting(&self) -> bool {
+        matches!(self.popup, Some(crate::ui::switcher::Popup::Input(_)))
+    }
+
+    /// True while the right-click context menu is open.
+    pub fn menu_active(&self) -> bool {
+        matches!(self.popup, Some(crate::ui::switcher::Popup::Menu(_)))
+    }
+
+    /// Which kind of modal is open — the focus machine derives its modal dimension
+    /// from this each loop-top, so [`Focus`] can never mirror-and-desync from the
+    /// open popup. A centered popup and the context menu are mutually exclusive.
+    ///
+    /// [`Focus`]: crate::proxy::app::Focus
+    pub(crate) fn modal_kind(&self) -> Option<crate::proxy::app::ModalKind> {
+        use crate::proxy::app::ModalKind;
+        use crate::ui::switcher::Popup;
+        match self.popup {
+            Some(Popup::Help | Popup::Input(_) | Popup::Kill(_)) => Some(ModalKind::Popup),
+            Some(Popup::Menu(_)) => Some(ModalKind::Menu),
+            None => None,
+        }
+    }
+
     /// Builds the inventory from a complete snapshot: every host is resolved
     /// (reachable or unreachable per its `err`) and every session's panes are
     /// considered known. Other state fields stay default.
@@ -91,5 +136,10 @@ mod tests {
         assert!(s.attach_deadline.is_none());
         assert_eq!(s.last_saved_session, "");
         assert!(s.focus.is_tree_focused());
+        assert!(s.popup.is_none());
+        assert!(!s.is_modal_popup_open());
+        assert!(!s.is_inputting());
+        assert!(!s.menu_active());
+        assert!(s.modal_kind().is_none());
     }
 }
