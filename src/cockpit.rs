@@ -22,7 +22,6 @@ use std::sync::Arc;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::attach;
-use crate::backend::SelectOutcome;
 use crate::display::{DisplayEnsure, DisplayEvent, DisplayWorker};
 use crate::env::Env;
 use crate::host::{HostEvent, HostManager};
@@ -337,7 +336,7 @@ fn sync_selection_from_switcher(
 /// (the tree-hidden sentinel) gives the full `cols` with no divider; the view HEIGHT is
 /// the full terminal height (`body_rows + 1`) because the footer and input occupy
 /// the tree column, leaving the terminal column the full height. Both clamp to at least 1.
-fn terminal_view_size(cols: u16, body_rows: u16, tree_width: u16) -> (u16, u16) {
+pub(crate) fn terminal_view_size(cols: u16, body_rows: u16, tree_width: u16) -> (u16, u16) {
     // tree_width == 0 is the "tree hidden" sentinel: the mux takes the full width
     // with no divider column. Otherwise subtract the tree column + the 1-col divider.
     let view_cols = if tree_width == 0 {
@@ -370,10 +369,14 @@ pub(crate) fn display_key(hosts: &crate::model::Hosts, sel: &Selection) -> Strin
         .unwrap_or_else(|| sel.address())
 }
 
-fn host_selection_key(host: &crate::model::Host) -> String {
-    match host.mux.select() {
-        SelectOutcome::SharedSwitch | SelectOutcome::PerSessionReattach => host.id().to_string(),
-    }
+/// The display key for a host's selection. Both server models key the live display by
+/// HOST id: tmux keeps one PTY per host (shared, moved by switch-client), and psmux —
+/// though one-server-per-session — is displayed through ONE per-host PTY that is
+/// reattached on every session change. This is the supervisor/driver authority for the
+/// live attach path; it deliberately differs from `ServerModel::display_key` (which
+/// keys psmux per-session and has no live caller).
+pub(crate) fn host_selection_key(host: &crate::model::Host) -> String {
+    host.id().to_string()
 }
 
 /// The host id owning a display key: Shared keys ARE the host id; PerSession keys are
@@ -412,7 +415,7 @@ fn selection_attach_facts(
 /// the worker to spawn. The worker's `Ready` reply (handled in the cockpit loop) inserts the
 /// finished attachment into the registry. `display` MUST be the host that owns `key`.
 #[allow(clippy::too_many_arguments)]
-fn request_attach(
+pub(crate) fn request_attach(
     registry: &mut AttachRegistry,
     worker: &DisplayWorker,
     display: &mut crate::model::HostDisplay,
@@ -439,19 +442,22 @@ fn request_attach(
 /// Makes the SELECTED session live in its host's display terminal and lands it on
 /// the selected window. Returns `true` when the selection has a session to show.
 ///
-/// Shared (tmux): one kept PTY per host. The first attach lands on the selected
-/// session; selecting a different session of the same host lowers a `SwitchPlan`
-/// via `Transport::lower_switch`, targeting the in-memory `host.display_tty`.
-/// PerSessionReattach (psmux): one PTY per host, reattached when the session changes.
-/// In both cases a window-row selection moves the session's active window server-side,
-/// which the real attached client follows. The bookkeeping (current session per key +
-/// what spawn is in flight) lives on the owning `host.display`.
+/// The per-mux DECISION lives in the host's [`MuxDriver`](crate::driver::MuxDriver):
+/// this dispatcher picks the driver off the host's model ([`driver_for`]) and hands it
+/// the supervisor capabilities via [`DriverCtx`]. Shared (tmux) keeps one PTY per host,
+/// moved with `switch-client`; PerSession (psmux) reattaches a per-host PTY on each
+/// session change. The bookkeeping (current session per key + in-flight spawn) lives on
+/// the owning `host.display`.
+///
+/// [`driver_for`]: crate::driver::driver_for
+/// [`DriverCtx`]: crate::driver::DriverCtx
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn select_attach(
     registry: &mut AttachRegistry,
     hosts: &mut crate::model::Hosts,
     sel: &Selection,
     worker: &DisplayWorker,
+    env: &Env,
     attach_seq: &mut u64,
     cols: u16,
     rows: u16,
@@ -461,126 +467,27 @@ pub(crate) fn select_attach(
     if sel.is_empty() {
         return false;
     }
-    let (cols, rows) = terminal_view_size(cols, rows, tree_width);
-    // The host's open `-CC` control connection, if any. switch-client/select-window
-    // ride it instead of a fresh `ssh` per switch (the slow path on Windows, which
-    // has no ssh ControlMaster — each exec re-handshakes, ~0.5s; see #2).
-    let control = mgr.get(&sel.source);
-    let Some(host) = hosts.get_mut(&sel.source) else {
+    let Some(host) = hosts.get(&sel.source) else {
         return false;
     };
-    let key = host_selection_key(host);
-    let already = registry.contains(&key);
-
-    match host.mux.select() {
-        SelectOutcome::SharedSwitch => {
-            if !already {
-                // Off-loop first-attach: request the spawn ONLY if one is not already in flight.
-                // Do NOT overwrite display.current while an attach is in flight — the in-flight
-                // attach lands on its ORIGINAL target session, and the post-Ready re-evaluation
-                // (see the Ready arm) issues a switch-client to the current selection. Overwriting
-                // it here would make the switch-client guard think the PTY is already on the new
-                // session.
-                if !host.display.in_flight.contains_key(&key) {
-                    // Build the argv (immutable mux/transport reads) BEFORE taking &mut display.
-                    let mux_argv = host.mux.attach_plan(&sel.session, sel.window);
-                    let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
-                    let mut argv = vec![cmd];
-                    argv.extend(args);
-                    if host.transport.is_remote() {
-                        // Marker is a remote-shell mechanism: prefix the last element so the
-                        // display-tty capture fires before exec'ing the attach command.
-                        if let Some(last) = argv.last_mut() {
-                            *last = format!(
-                                "{}{}",
-                                crate::model::death::display_tty_marker_prefix(),
-                                last
-                            );
-                        }
-                    }
-                    request_attach(
-                        registry,
-                        worker,
-                        &mut host.display,
-                        attach_seq,
-                        &key,
-                        argv,
-                        cols,
-                        rows,
-                    );
-                    host.display.set_shows(&key, &sel.session);
-                }
-            } else if host.display.shows(&key) != Some(sel.session.as_str()) {
-                // The host's PTY is on a different session — lower a SwitchPlan to move it.
-                // Wipe the grid first so the previous session's cells do not linger as
-                // residue: switch-client triggers a FULL client redraw, which refills the
-                // cleared grid with the new session's content (a brief blank, not stale
-                // colours/glyphs). The per-host PTY reuses ONE grid across sessions, so
-                // without this the old session's uncovered cells stay on screen.
-                registry.clear_grid(&key);
-                let tty = host.display_tty.0.clone().unwrap_or_default();
-                if let Some(client) = control {
-                    // Over the open -CC connection — no fresh ssh handshake.
-                    client.switch_client_on(&tty, &sel.session);
-                } else {
-                    let plan = host.mux.switch_plan(&sel.session);
-                    let lowered = {
-                        let builder = |session: &str| host.mux.switch_client_argv(&tty, session);
-                        host.transport.lower_switch(&plan, &builder)
-                    };
-                    if let Some(lowered) = lowered {
-                        run_lowered(lowered);
-                    }
-                }
-                host.display.set_shows(&key, &sel.session);
-            }
-        }
-        SelectOutcome::PerSessionReattach => {
-            registry.remove(&key);
-            host.display.clear(&key);
-            let mux_argv = host.mux.attach_plan(&sel.session, None);
-            let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
-            let mut argv = vec![cmd];
-            argv.extend(args);
-            request_attach(
-                registry,
-                worker,
-                &mut host.display,
-                attach_seq,
-                &key,
-                argv,
-                cols,
-                rows,
-            );
-            host.display.set_shows(&key, &sel.session);
-        }
-    }
-
-    // Window-row selection → move the session's active window. The fresh shared
-    // attach above already folded the window in; otherwise lower a select-window plan.
-    if let Some(win) = sel.window {
-        let folded_into_attach =
-            !already && matches!(host.mux.select(), SelectOutcome::SharedSwitch);
-        if !folded_into_attach {
-            let target = crate::mux::window_target(&sel.session, win);
-            if let Some(client) = control {
-                // Over the open -CC connection — no fresh ssh handshake.
-                client.select_window_on(&target);
-            } else {
-                let mux_argv = host.mux.select_window_plan(&target);
-                let (cmd, args) = host.transport.exec_argv(false, &mux_argv);
-                let mut argv = vec![cmd];
-                argv.extend(args);
-                run_lowered(crate::model::LoweredSwitch::Local(argv));
-            }
-        }
-    }
-    true
+    let mut driver = crate::driver::driver_for(host);
+    let mut ctx = crate::driver::DriverCtx {
+        registry,
+        hosts,
+        worker,
+        mgr,
+        env,
+        attach_seq,
+        cols,
+        body_rows: rows,
+        tree_width,
+    };
+    driver.show(sel, &mut ctx)
 }
 
 /// Spawns the lowered switch command off the event loop. Local variants run as a
 /// plain subprocess; RawSsh variants run the full ssh argv non-interactively.
-fn run_lowered(lowered: crate::model::LoweredSwitch) {
+pub(crate) fn run_lowered(lowered: crate::model::LoweredSwitch) {
     use crate::model::LoweredSwitch;
     use crate::source::Runner;
     let argv = match lowered {
@@ -595,11 +502,12 @@ fn run_lowered(lowered: crate::model::LoweredSwitch) {
     });
 }
 
-/// Keeps a source's display terminal in sync with its sessions. Shared muxes keep
-/// ONE PTY per host: warm it on the first session (later selections switch it), and
-/// reap it when the host has no sessions left. Reattach muxes are selected on demand.
-/// Called whenever a source's inventory updates (a remote `%`-event refresh or a
-/// local poll), so a new session is reachable and a killed one is torn down (#5).
+/// Keeps a source's display terminal in sync with its sessions by delegating to the
+/// host's driver, which owns the warm/reap decision (shared warms one host PTY on the
+/// first session and reaps it when empty; per-session is selected on demand and only
+/// reaps when empty). Called whenever a source's inventory updates (a remote `%`-event
+/// refresh or a local poll), so a new session is reachable and a killed one is torn
+/// down (#5).
 #[allow(clippy::too_many_arguments)]
 fn sync_source_terminals(
     registry: &mut AttachRegistry,
@@ -608,54 +516,28 @@ fn sync_source_terminals(
     source: &str,
     sessions: &[crate::session::Session],
     worker: &DisplayWorker,
+    mgr: &HostManager,
     attach_seq: &mut u64,
     cols: u16,
     rows: u16,
     tree_width: u16,
 ) {
-    let Some(src) = env.by_alias.get(source) else {
+    let Some(host) = hosts.get(source) else {
         return;
     };
-    let (cols, rows) = terminal_view_size(cols, rows, tree_width);
-    let Some(host) = hosts.get_mut(source) else {
-        return;
+    let mut driver = crate::driver::driver_for(host);
+    let mut ctx = crate::driver::DriverCtx {
+        registry,
+        hosts,
+        worker,
+        mgr,
+        env,
+        attach_seq,
+        cols,
+        body_rows: rows,
+        tree_width,
     };
-    let remote = host.transport.is_remote();
-    match host.mux.select() {
-        SelectOutcome::SharedSwitch => {
-            // One PTY per host. Warm it on the first session if not yet attached; reap it
-            // (and forget its session) when the host has no sessions.
-            match sessions.first() {
-                Some(first)
-                    if !registry.contains(source)
-                        && !host.display.in_flight.contains_key(source) =>
-                {
-                    request_attach(
-                        registry,
-                        worker,
-                        &mut host.display,
-                        attach_seq,
-                        source,
-                        shared_display_attach_argv(remote, src, &first.name, None),
-                        cols,
-                        rows,
-                    );
-                    host.display.set_shows(source, &first.name);
-                }
-                None => {
-                    registry.remove(source);
-                    host.display.clear(source);
-                }
-                _ => {}
-            }
-        }
-        SelectOutcome::PerSessionReattach => {
-            if sessions.is_empty() {
-                registry.remove(source);
-                host.display.clear(source);
-            }
-        }
-    }
+    driver.sync(source, sessions, &mut ctx);
 }
 
 /// True when a worker `Ready`/`Failed` reply is still the latest in-flight request for its
@@ -1150,7 +1032,7 @@ fn run_event_effect(
                 );
                 // Sync this host's display terminal(s) (per-host for remote tmux).
                 sync_source_terminals(
-                    registry, env, hosts, &host, &sessions, worker, attach_seq, cols, rows,
+                    registry, env, hosts, &host, &sessions, worker, mgr, attach_seq, cols, rows,
                     tree_width,
                 );
             }
@@ -1214,17 +1096,13 @@ fn run_event_effect(
             if let Some(h) = hosts.get(&source) {
                 for s in &sessions {
                     if !h.psmux_session_live(&s.name) {
-                        let key = match h.mux.select() {
-                            SelectOutcome::SharedSwitch | SelectOutcome::PerSessionReattach => {
-                                source.clone()
-                            }
-                        };
-                        registry.remove(&key);
+                        // The host-keyed display attachment (one per-host PTY, reattached).
+                        registry.remove(&host_selection_key(h));
                     }
                 }
             }
             sync_source_terminals(
-                registry, env, hosts, &source, &sessions, worker, attach_seq, cols, rows,
+                registry, env, hosts, &source, &sessions, worker, mgr, attach_seq, cols, rows,
                 tree_width,
             );
         }
@@ -1277,7 +1155,7 @@ fn marked_remote_attach_argv(
 /// the local argv's session-name argument. Every shared warm routes through this so
 /// the marker decision matches `select_attach` (marker iff `transport.is_remote()`)
 /// and cannot drift between spawn sites.
-fn shared_display_attach_argv(
+pub(crate) fn shared_display_attach_argv(
     remote: bool,
     src: &crate::source::Source,
     session: &str,
@@ -2106,10 +1984,10 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     // the state dir per keystroke during a held autorepeat.
     let mut width_dirty = false;
     let mut width_flush_at: Option<std::time::Instant> = None;
-    // The mux DRIVER: the supervisor passes the selection as INTENT; the driver owns
-    // how it lands on screen. SeamDriver delegates to the existing free functions, so
-    // routing through it changes no behavior.
-    let mut driver: Box<dyn crate::driver::MuxDriver> = Box::new(crate::driver::SeamDriver);
+    // The mux DRIVER: the supervisor passes the selection as INTENT; the driver owns how
+    // it lands on screen. There is no single driver — each call selects the host's driver
+    // off its model (`crate::driver::driver_for`), so the supervisor never branches on the
+    // mux kind. Drivers are zero-sized, so a fresh value per call is free.
 
     loop {
         // Advance the spinner from wall-clock so it animates regardless of which arm
@@ -2197,17 +2075,19 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     }
                     crate::model::Command::Attach(sel) => {
                         let t = std::time::Instant::now();
-                        let mut ctx = crate::driver::DriverCtx {
-                            registry: &mut registry,
-                            hosts: &mut hosts,
-                            worker: &worker,
-                            mgr: &mgr,
-                            attach_seq: &mut attach_seq,
+                        // select_attach picks the host's driver and hands it the intent.
+                        let shown = select_attach(
+                            &mut registry,
+                            &mut hosts,
+                            &sel,
+                            &worker,
+                            &env,
+                            &mut attach_seq,
                             cols,
                             body_rows,
                             tree_width,
-                        };
-                        let shown = driver.show(&sel, &mut ctx);
+                            &mgr,
+                        );
                         if shown {
                             // A synchronous path (switch-client / select-window / already
                             // attached) leaves a live grid for the key right now → the
@@ -2261,22 +2141,27 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             // Show the grid only when the confirmed display truth matches the selection
             // (defect A): a stale attachment mid-reattach renders "(attaching…)", never
             // the previous session.
-            let grid_arc = state
-                .display_matches_selection()
-                .then(|| {
+            let show_grid = state.display_matches_selection();
+            let driver = hosts
+                .get(&state.selection.source)
+                .map(crate::driver::driver_for);
+            let grid_arc = match (show_grid, driver) {
+                (true, Some(driver)) => {
                     let ctx = crate::driver::DriverCtx {
                         registry: &mut registry,
                         hosts: &mut hosts,
                         worker: &worker,
                         mgr: &mgr,
+                        env: &env,
                         attach_seq: &mut attach_seq,
                         cols,
                         body_rows,
                         tree_width,
                     };
                     driver.grid(&state.selection, &ctx)
-                })
-                .flatten();
+                }
+                _ => None,
+            };
             let terminal_focused = state.focus.is_terminal_focused();
             // The divider glyph reflects auto-hide-tree mode (║ on, │ off).
             switcher.set_auto_hide(auto_hide_tree);
@@ -2513,22 +2398,27 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         let sz = term
                             .size()
                             .unwrap_or(ratatui::layout::Size { width: 80, height: 24 });
-                        let grid_arc = state
-                            .display_matches_selection()
-                            .then(|| {
+                        let show_grid = state.display_matches_selection();
+                        let driver = hosts
+                            .get(&state.selection.source)
+                            .map(crate::driver::driver_for);
+                        let grid_arc = match (show_grid, driver) {
+                            (true, Some(driver)) => {
                                 let ctx = crate::driver::DriverCtx {
                                     registry: &mut registry,
                                     hosts: &mut hosts,
                                     worker: &worker,
                                     mgr: &mgr,
+                                    env: &env,
                                     attach_seq: &mut attach_seq,
                                     cols,
                                     body_rows,
                                     tree_width,
                                 };
                                 driver.grid(&state.selection, &ctx)
-                            })
-                            .flatten();
+                            }
+                            _ => None,
+                        };
                         let dump = match &grid_arc {
                             Some(g) => {
                                 let guard = g.lock().ok();
@@ -2560,17 +2450,21 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     }
                     Cmd::RawBytes(bytes) => {
                         if !bytes.is_empty() {
-                            let ctx = crate::driver::DriverCtx {
-                                registry: &mut registry,
-                                hosts: &mut hosts,
-                                worker: &worker,
-                                mgr: &mgr,
-                                attach_seq: &mut attach_seq,
-                                cols,
-                                body_rows,
-                                tree_width,
-                            };
-                            driver.input(&state.selection, bytes, &ctx);
+                            if let Some(host) = hosts.get(&state.selection.source) {
+                                let mut driver = crate::driver::driver_for(host);
+                                let ctx = crate::driver::DriverCtx {
+                                    registry: &mut registry,
+                                    hosts: &mut hosts,
+                                    worker: &worker,
+                                    mgr: &mgr,
+                                    env: &env,
+                                    attach_seq: &mut attach_seq,
+                                    cols,
+                                    body_rows,
+                                    tree_width,
+                                };
+                                driver.input(&state.selection, bytes, &ctx);
+                            }
                         }
                     }
                 }
@@ -2624,34 +2518,29 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         scan_or_dispatch_host(&mut mgr, &env, &hosts, &mut detecting, &src.alias, vc, vr);
                     }
                 }
-                // Re-warm each shared host's per-host PTY if it dropped (ENSURE-ONLY,
-                // never reap: a just-respawned control client has an empty inventory
-                // until its list-sessions resolves; reaping on that would tear down a
-                // live PTY. Closed-host reaping is owned by the Inventory/Changed path).
+                // Re-warm each host's dropped per-host PTY via its driver (ENSURE-ONLY,
+                // never reap: a just-respawned control client has an empty inventory until
+                // its list-sessions resolves; reaping on that would tear down a live PTY.
+                // Closed-host reaping is owned by the Inventory/Changed path). The driver's
+                // sync reaps when given an EMPTY inventory, so the empty case is skipped
+                // here — only a non-empty inventory is handed in. psmux sync is a no-op for
+                // a non-empty inventory (its attaches are selected on demand), so this stays
+                // a shared-host re-warm without the cockpit naming the mux kind.
                 for src in &env.srcs {
-                    let shared_switch = hosts
-                        .get(&src.alias)
-                        .map(|h| matches!(h.mux.select(), SelectOutcome::SharedSwitch))
-                        .unwrap_or(false);
-                    if !shared_switch || registry.contains(&src.alias) {
+                    if hosts.get(&src.alias).is_none() {
                         continue;
                     }
-                    let first = match mgr.get(&src.alias) {
-                        Some(client) => client.inventory.lock().unwrap().sessions.first().cloned(),
+                    let inventory = match mgr.get(&src.alias) {
+                        Some(client) => client.inventory.lock().unwrap().sessions.clone(),
                         None => continue,
                     };
-                    if let Some(s) = first {
-                        if let Some(host) = hosts.get_mut(&src.alias) {
-                            if !host.display.in_flight.contains_key(&src.alias) {
-                                let remote = host.transport.is_remote();
-                                request_attach(
-                                    &mut registry, &worker, &mut host.display, &mut attach_seq,
-                                    &src.alias, shared_display_attach_argv(remote, src, &s.name, None), vc, vr,
-                                );
-                                host.display.set_shows(&src.alias, &s.name);
-                            }
-                        }
+                    if inventory.is_empty() {
+                        continue;
                     }
+                    sync_source_terminals(
+                        &mut registry, &env, &mut hosts, &src.alias, &inventory, &worker, &mgr,
+                        &mut attach_seq, cols, body_rows, tree_width,
+                    );
                 }
                 // Re-attach the selected session's display terminal if it dropped.
                 if !state.selection.is_empty() {
@@ -2661,17 +2550,10 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         .map(|h| h.display.in_flight.contains_key(&key))
                         .unwrap_or(false);
                     if !registry.contains(&key) && !in_flight_for_key {
-                        let mut ctx = crate::driver::DriverCtx {
-                            registry: &mut registry,
-                            hosts: &mut hosts,
-                            worker: &worker,
-                            mgr: &mgr,
-                            attach_seq: &mut attach_seq,
-                            cols,
-                            body_rows,
-                            tree_width,
-                        };
-                        driver.show(&state.selection, &mut ctx);
+                        select_attach(
+                            &mut registry, &mut hosts, &state.selection, &worker, &env,
+                            &mut attach_seq, cols, body_rows, tree_width, &mgr,
+                        );
                     }
                 }
             }
@@ -3727,6 +3609,7 @@ mod tests {
         // path (this test exercises attach/in-flight latching, not the switch transport).
         let (etx, _erx) = tokio::sync::mpsc::unbounded_channel::<crate::host::HostEvent>();
         let mgr = HostManager::new(etx);
+        let env = fake_env_with_sources(&["jup"]);
 
         let sel_a = Selection {
             source: "jup".into(),
@@ -3745,6 +3628,7 @@ mod tests {
             &mut hosts,
             &sel_a,
             &worker,
+            &env,
             &mut attach_seq,
             80,
             24,
@@ -3769,6 +3653,7 @@ mod tests {
             &mut hosts,
             &sel_b,
             &worker,
+            &env,
             &mut attach_seq,
             80,
             24,
@@ -3797,6 +3682,7 @@ mod tests {
         let mut registry = AttachRegistry::new();
         let mut attach_seq = 0u64;
         let mgr = empty_manager();
+        let env = fake_env_with_sources(&["local"]);
 
         let sel_test2 = Selection {
             source: "local".into(),
@@ -3814,6 +3700,7 @@ mod tests {
             &mut hosts,
             &sel_test2,
             &worker,
+            &env,
             &mut attach_seq,
             80,
             24,
@@ -3849,6 +3736,7 @@ mod tests {
             &mut hosts,
             &sel_test,
             &worker,
+            &env,
             &mut attach_seq,
             80,
             24,
@@ -3887,6 +3775,7 @@ mod tests {
         registry.insert("local", crate::proxy::run::fake_attachment(99));
         let mut attach_seq = 0u64;
         let mgr = empty_manager();
+        let env = fake_env_with_sources(&["local"]);
 
         let sel = Selection {
             source: "local".into(),
@@ -3899,6 +3788,7 @@ mod tests {
             &mut hosts,
             &sel,
             &worker,
+            &env,
             &mut attach_seq,
             80,
             24,
@@ -4008,6 +3898,7 @@ mod tests {
         let mut registry = AttachRegistry::new();
         let mut attach_seq = 7u64;
         let mgr = empty_manager();
+        let env = fake_env_with_sources(&["local"]);
 
         let sel = Selection {
             source: "local".into(),
@@ -4020,6 +3911,7 @@ mod tests {
             &mut hosts,
             &sel,
             &worker,
+            &env,
             &mut attach_seq,
             80,
             24,
