@@ -39,8 +39,18 @@ impl Backend for Psmux {
         transport: &Transport,
         runner: &dyn Runner,
     ) -> Result<Vec<Session>, RunError> {
-        // The registry (`~/.psmux/<name>.port`) is the authoritative existence set;
-        // one list-sessions supplies display detail (empty on a default-route miss).
+        // The local-registry merge is a LOCAL-psmux behavior: `~/.psmux` is THIS
+        // machine's registry, with no remote awareness. A REMOTE psmux host has its
+        // own registry on the far side, unreachable here, so it must enumerate the
+        // generic way (list-sessions over ssh) — identical to a remote tmux. Folding
+        // the local registry into a remote host would inject local session names as
+        // phantoms and (worse) swallow an ssh failure into a fake empty/populated list.
+        let Transport::Local { .. } = transport else {
+            return crate::backend::enumerate_via_list_sessions(&self.bin, transport, runner).await;
+        };
+        // Local psmux: the registry (`~/.psmux/<name>.port`) is the authoritative
+        // existence set; one list-sessions supplies display detail (empty on a
+        // default-route miss).
         let names = registry::read_psmux_registry_dir(&registry::psmux_registry_dir());
         let (name, args) = transport.exec_argv(false, &mux::list_sessions(&self.bin));
         let detail = match runner.run(&name, &args).await {
@@ -109,5 +119,111 @@ impl Backend for Psmux {
     }
     fn rename_window_plan(&self, target: &str, new: &str) -> Vec<String> {
         mux::rename_window(&self.bin, target, new)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// Returns one canned `list-sessions` result, ignoring the command.
+    struct CannedRunner(Mutex<Option<Result<Vec<u8>, RunError>>>);
+
+    impl CannedRunner {
+        fn ok(out: &str) -> Self {
+            CannedRunner(Mutex::new(Some(Ok(out.as_bytes().to_vec()))))
+        }
+        fn err(e: RunError) -> Self {
+            CannedRunner(Mutex::new(Some(Err(e))))
+        }
+    }
+
+    #[async_trait]
+    impl Runner for CannedRunner {
+        async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
+            self.0
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap_or_else(|| Ok(Vec::new()))
+        }
+    }
+
+    fn psmux() -> Psmux {
+        Psmux {
+            bin: "psmux".into(),
+        }
+    }
+
+    fn ssh(alias: &str) -> Transport {
+        Transport::Ssh {
+            alias: alias.into(),
+            control_path: String::new(),
+            os: "linux".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_psmux_enumerates_via_list_sessions_no_local_registry() {
+        // A REMOTE psmux host must NOT read this machine's `~/.psmux` registry: its
+        // sessions come solely from the list-sessions output, tagged with the remote
+        // host id. The result is EXACTLY the parsed rows — no local registry name is
+        // merged in as a phantom (the regression `for_binary("psmux")` would cause).
+        let m = psmux();
+        let runner = CannedRunner::ok("2\t1\t100\teditor\n1\t0\t0\tbuild\n");
+        let got = m.enumerate(&ssh("prod"), &runner).await.unwrap();
+        let names: Vec<&str> = got.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["editor", "build"],
+            "exactly the list-sessions rows"
+        );
+        assert!(
+            got.iter().all(|s| s.source == "prod"),
+            "tagged with the remote host id, not local: {got:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_psmux_ssh_failure_is_error_not_empty() {
+        // An ssh-unreachable remote psmux host must surface as `Err`, exactly like a
+        // remote tmux. The local-registry arm's `Err(_) => Vec::new()` would have
+        // hidden the failure as a (fake) reachable host — the second half of the bug.
+        let m = psmux();
+        let runner = CannedRunner::err(RunError::Other(
+            "ssh: connect to host prod port 22: Connection timed out".into(),
+        ));
+        assert!(m.enumerate(&ssh("prod"), &runner).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn remote_psmux_benign_no_server_is_empty_not_error() {
+        // A reachable-but-empty remote mux ("no server running") is `Ok(vec![])`,
+        // matching the generic path's `is_no_sessions` classification.
+        let m = psmux();
+        let runner = CannedRunner::err(RunError::Exit {
+            stderr: "no server running on /tmp/psmux-1000/default".into(),
+            code: 1,
+        });
+        assert!(m.enumerate(&ssh("prod"), &runner).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn local_psmux_swallows_error_into_registry_merge() {
+        // The LOCAL arm keeps its one-server-per-session registry-merge behavior: a
+        // list-sessions error is swallowed to empty DETAIL and merged with the
+        // registry names, so it returns `Ok(...)` (the registry set, possibly empty) —
+        // it never errors. This is the exact opposite of the remote arm above, which
+        // pins that the Local-vs-Ssh dispatch is intact.
+        let m = psmux();
+        let runner = CannedRunner::err(RunError::Other("psmux: default route is dead".into()));
+        let got = m
+            .enumerate(&Transport::Local { socket: None }, &runner)
+            .await;
+        assert!(
+            got.is_ok(),
+            "local psmux swallows the error into the registry merge, never errors: {got:?}"
+        );
     }
 }

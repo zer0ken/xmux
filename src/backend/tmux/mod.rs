@@ -11,12 +11,6 @@ pub mod control_proto;
 
 use control_proto::{classify, Line, Notif};
 
-/// Reports whether `err` means "reachable but no sessions" rather than
-/// "unreachable" (the `is_no_sessions` rule). Used by `Tmux::enumerate`.
-fn benign_empty(err: &RunError) -> bool {
-    is_no_sessions(err)
-}
-
 /// The `-CC` control argv `[bin, -CC, attach]`.
 fn mux_control_argv(bin: &str) -> Vec<String> {
     vec![bin.to_string(), "-CC".to_string(), "attach".to_string()]
@@ -51,15 +45,7 @@ impl Backend for Tmux {
         transport: &Transport,
         runner: &dyn Runner,
     ) -> Result<Vec<Session>, RunError> {
-        let (name, args) = transport.exec_argv(false, &mux::list_sessions(&self.bin));
-        match runner.run(&name, &args).await {
-            Ok(out) => Ok(mux::parse_sessions(
-                transport.host_id(),
-                &String::from_utf8_lossy(&out),
-            )),
-            Err(e) if benign_empty(&e) => Ok(Vec::new()),
-            Err(e) => Err(e),
-        }
+        crate::backend::enumerate_via_list_sessions(&self.bin, transport, runner).await
     }
 
     fn attach_plan(&self, session: &str, _window: Option<i64>) -> Vec<String> {

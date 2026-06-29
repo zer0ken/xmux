@@ -39,6 +39,28 @@ pub(crate) fn is_no_sessions(err: &RunError) -> bool {
     reason_is_no_sessions(stderr)
 }
 
+/// The aggregate-server enumeration shared by every mux that has a real
+/// `list-sessions`: run `<bin> list-sessions -F …` over `transport` via `runner`,
+/// parse the rows (tagged with the host id), and classify an error as a
+/// reachable-but-empty mux (`Ok(vec![])`) versus an unreachable host (`Err`). tmux
+/// always uses it; psmux uses it for a REMOTE host (the local-registry merge is a
+/// LOCAL-psmux behavior — `~/.psmux` has no remote awareness).
+pub(crate) async fn enumerate_via_list_sessions(
+    bin: &str,
+    transport: &Transport,
+    runner: &dyn Runner,
+) -> Result<Vec<Session>, RunError> {
+    let (name, args) = transport.exec_argv(false, &mux::list_sessions(bin));
+    match runner.run(&name, &args).await {
+        Ok(out) => Ok(mux::parse_sessions(
+            transport.host_id(),
+            &String::from_utf8_lossy(&out),
+        )),
+        Err(e) if is_no_sessions(&e) => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
+}
+
 /// True when `text` (a mux error / exit reason) means "reachable but no server /
 /// no sessions" rather than a real transport failure. The control-mode path gets a
 /// plain string (the `%exit` / `%error` reason), not a [`RunError`], so it calls
