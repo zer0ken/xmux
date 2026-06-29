@@ -569,9 +569,9 @@ async fn run_poll(
     mux_kind: String,
     mux_bin: String,
     interval_ms: u64,
+    xmux_dir: std::path::PathBuf,
     events: tokio::sync::mpsc::UnboundedSender<HostEvent>,
 ) {
-    use crate::source::Runner;
     let mux = crate::backend::for_kind(&mux_kind, &mux_bin);
     // Fixed-cadence ticker: the first tick is immediate (enumerate on spawn), then a
     // sweep every `interval_ms` of wall-clock. Skip ticks missed while one enumeration
@@ -580,33 +580,38 @@ async fn run_poll(
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         ticker.tick().await;
-        let (sessions, err) = match mux.enumerate(&transport, &crate::source::ExecRunner).await {
-            Ok(s) => (s, None),
-            Err(e) => (Vec::new(), Some(e.to_string())),
-        };
-        let names: Vec<(String, String)> = sessions
-            .iter()
-            .map(|s| (s.name.clone(), s.address()))
-            .collect();
-        if events
-            .send(HostEvent::Sessions {
-                source: source.clone(),
+        // `poll_once` (the mux-blind sweep) hands each event back here. The cockpit's
+        // receiver dropping (its exit) is the loop's other stop condition besides abort,
+        // so a failed send latches `gone` and the loop returns after this sweep.
+        let mut gone = false;
+        mux.poll_once(&source, &transport, &crate::source::ExecRunner, &mut |ev| {
+            // Log every poll enumeration UNCONDITIONALLY (success AND error) at the
+            // producer, where `err` is in hand: `apply_event` drops the error path
+            // before the cockpit's success-only log, so a transient poll failure is
+            // otherwise invisible in debug.log. `XMUX_DEBUG`-gated, single line.
+            if let HostEvent::Sessions {
+                source,
                 sessions,
                 err,
-            })
-            .is_err()
-        {
-            return;
-        }
-        for (name, address) in names {
-            let argv = mux.list_panes_plan(&name);
-            let (cmd, args) = transport.exec_argv(false, &argv);
-            if let Ok(out) = crate::source::ExecRunner.run(&cmd, &args).await {
-                let panes = parse_panes(&String::from_utf8_lossy(&out));
-                if events.send(HostEvent::Panes { address, panes }).is_err() {
-                    return;
-                }
+            } = &ev
+            {
+                crate::cockpit::dbg_log(
+                    &xmux_dir,
+                    &format!(
+                        "poll enum source={source} n={} names={:?} err={:?}",
+                        sessions.len(),
+                        sessions.iter().map(|s| &s.name).collect::<Vec<_>>(),
+                        err
+                    ),
+                );
             }
+            if events.send(ev).is_err() {
+                gone = true;
+            }
+        })
+        .await;
+        if gone {
+            return;
         }
     }
 }
@@ -619,6 +624,10 @@ pub struct HostManager {
     clients: HashMap<String, HostClient>,
     polls: HashMap<String, tokio::task::JoinHandle<()>>,
     events: tokio::sync::mpsc::UnboundedSender<HostEvent>,
+    /// Where a poll task writes its `XMUX_DEBUG`-gated `debug.log` enum line. Defaults
+    /// to the cwd; the cockpit sets the real `~/.xmux` once at startup. Inert under test
+    /// (no `XMUX_DEBUG`), so the default never writes.
+    xmux_dir: std::path::PathBuf,
 }
 
 impl HostManager {
@@ -627,7 +636,14 @@ impl HostManager {
             clients: HashMap::new(),
             polls: HashMap::new(),
             events,
+            xmux_dir: std::path::PathBuf::from("."),
         }
+    }
+
+    /// Sets the debug-log directory for poll tasks (the cockpit's `~/.xmux`). Called
+    /// once at startup, before any host is ensured.
+    pub fn set_xmux_dir(&mut self, dir: std::path::PathBuf) {
+        self.xmux_dir = dir;
     }
 
     /// A clone of the shared event-bus sender, for the fire-and-forget detection task
@@ -683,6 +699,7 @@ impl HostManager {
                     host.mux.kind().to_string(),
                     host.mux.bin().to_string(),
                     interval_ms,
+                    self.xmux_dir.clone(),
                     self.events.clone(),
                 ));
                 self.polls.insert(id.to_string(), handle);

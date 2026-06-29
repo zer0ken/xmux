@@ -7,10 +7,11 @@
 
 use async_trait::async_trait;
 
+use crate::host::HostEvent;
 use crate::model::plan::{DeathSignal, EventSource, SwitchPlan};
 use crate::model::server_model::ServerModel;
 use crate::model::transport::Transport;
-use crate::mux;
+use crate::mux::{self, parse_panes};
 use crate::session::Session;
 use crate::source::{RunError, Runner};
 
@@ -146,6 +147,44 @@ pub trait Backend: Send + Sync {
 
     /// The change/event channel for this mux.
     fn event_source(&self) -> EventSource;
+
+    /// One poll sweep for a POLL host: enumerate sessions, then enumerate each
+    /// session's panes, emitting a [`HostEvent::Sessions`] followed by one
+    /// [`HostEvent::Panes`] per session — the same payloads and order a control
+    /// client's metadata path produces. Built from the existing trait methods
+    /// (`enumerate`, `list_panes_plan`) plus `parse_panes`, so it is mux-blind and
+    /// needs no per-impl override: tmux is control-driven and never calls it; psmux
+    /// uses this default. The host manager owns the ticker/cancel lifecycle and calls
+    /// this once per tick; `emit` is its sink onto the shared event bus.
+    async fn poll_once(
+        &self,
+        source: &str,
+        transport: &Transport,
+        runner: &dyn Runner,
+        emit: &mut (dyn FnMut(HostEvent) + Send),
+    ) {
+        let (sessions, err) = match self.enumerate(transport, runner).await {
+            Ok(s) => (s, None),
+            Err(e) => (Vec::new(), Some(e.to_string())),
+        };
+        let names: Vec<(String, String)> = sessions
+            .iter()
+            .map(|s| (s.name.clone(), s.address()))
+            .collect();
+        emit(HostEvent::Sessions {
+            source: source.to_string(),
+            sessions,
+            err,
+        });
+        for (name, address) in names {
+            let argv = self.list_panes_plan(&name);
+            let (cmd, args) = transport.exec_argv(false, &argv);
+            if let Ok(out) = runner.run(&cmd, &args).await {
+                let panes = parse_panes(&String::from_utf8_lossy(&out));
+                emit(HostEvent::Panes { address, panes });
+            }
+        }
+    }
 
     fn list_panes_plan(&self, session: &str) -> Vec<String>;
     fn new_window_plan(&self, session: &str, name: &str) -> Vec<String>;
@@ -623,5 +662,108 @@ mod tests {
         assert!(!is_no_sessions(&RunError::Other(
             "exec: \"tmux\": executable file not found".into()
         )));
+    }
+
+    /// Always errors — models an unreachable poll host (ssh connect failure).
+    struct FailRunner;
+
+    #[async_trait]
+    impl Runner for FailRunner {
+        async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
+            Err(RunError::Other("ssh: connect to host down".into()))
+        }
+    }
+
+    /// Regression (Phase Y5): a poll sweep whose enumeration ERRORS must still surface
+    /// `err` on the emitted `Sessions` event. Before, the producer dropped the failure
+    /// from the debug log; the event payload is the signal a transient failure happened
+    /// (the tree shows it, attachments are kept). A remote psmux enumerates via
+    /// list-sessions over ssh, so a failed run becomes `Sessions { err: Some(_) }`.
+    #[tokio::test]
+    async fn poll_once_surfaces_enumeration_error_on_sessions_event() {
+        use crate::host::HostEvent;
+        let transport = Transport::Ssh {
+            alias: "down-host".into(),
+            control_path: String::new(),
+            os: "linux".into(),
+        };
+        let mut events: Vec<HostEvent> = Vec::new();
+        psmux()
+            .poll_once("down-host", &transport, &FailRunner, &mut |e| {
+                events.push(e)
+            })
+            .await;
+        // Exactly the Sessions event fires (no panes — enumeration returned nothing),
+        // and it carries the error so a transient poll failure stays observable.
+        let sessions_ev = events
+            .iter()
+            .find(|e| matches!(e, HostEvent::Sessions { .. }))
+            .expect("poll_once emits a Sessions event");
+        let HostEvent::Sessions {
+            source,
+            sessions,
+            err,
+        } = sessions_ev
+        else {
+            unreachable!()
+        };
+        assert_eq!(source, "down-host");
+        assert!(
+            sessions.is_empty(),
+            "a failed enumeration yields no sessions"
+        );
+        assert!(
+            err.is_some(),
+            "the error must surface on the Sessions event"
+        );
+        // No session names ⇒ no per-session Panes follow-up.
+        assert!(!events.iter().any(|e| matches!(e, HostEvent::Panes { .. })));
+    }
+
+    /// A SUCCESSFUL poll sweep emits `Sessions { err: None }` then one `Panes` per
+    /// session — the order and payloads a control client's metadata path produces.
+    #[tokio::test]
+    async fn poll_once_emits_sessions_then_panes_on_success() {
+        use crate::host::HostEvent;
+
+        /// Answers list-sessions with one session, then list-panes with one pane.
+        struct OkRunner;
+        #[async_trait]
+        impl Runner for OkRunner {
+            async fn run(&self, _name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
+                let joined = args.join(" ");
+                if joined.contains("list-panes") {
+                    // win_idx, win_active, pane_idx, pane_active, command, win_name.
+                    Ok(b"0\t1\t0\t1\tbash\twork\n".to_vec())
+                } else {
+                    // session row parsed by mux::parse_sessions.
+                    Ok(b"1\t1\t1700000000\twork\n".to_vec())
+                }
+            }
+        }
+
+        let transport = Transport::Ssh {
+            alias: "host".into(),
+            control_path: String::new(),
+            os: "linux".into(),
+        };
+        let mut events: Vec<HostEvent> = Vec::new();
+        psmux()
+            .poll_once("host", &transport, &OkRunner, &mut |e| events.push(e))
+            .await;
+        // Sessions first, then Panes — same order as today.
+        match &events[0] {
+            HostEvent::Sessions {
+                source,
+                sessions,
+                err,
+            } => {
+                assert_eq!(source, "host");
+                assert_eq!(sessions.len(), 1);
+                assert!(err.is_none());
+            }
+            _ => panic!("first event must be Sessions"),
+        }
+        assert!(matches!(events.get(1), Some(HostEvent::Panes { .. })));
     }
 }

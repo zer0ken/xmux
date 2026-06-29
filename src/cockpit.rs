@@ -232,7 +232,7 @@ fn reconciled_tree_width(terminal_focused: bool, auto_hide_tree: bool, natural: 
 /// Appends a diagnostic line to `<xmux_dir>/debug.log` when `XMUX_DEBUG` is set in
 /// the environment. A no-op otherwise, so it costs nothing in normal runs. Used to
 /// trace the live attach/selection/inventory flow that headless tests cannot reach.
-fn dbg_log(dir: &std::path::Path, msg: &str) {
+pub(crate) fn dbg_log(dir: &std::path::Path, msg: &str) {
     if std::env::var_os("XMUX_DEBUG").is_none() {
         return;
     }
@@ -1206,14 +1206,9 @@ fn run_event_effect(
         }
         EventEffect::SyncPollSessions { source, sessions } => {
             // A poll host's SUCCESSFUL enumeration (the tree group is already applied).
-            dbg_log(
-                &env.xmux_dir,
-                &format!(
-                    "poll enum source={source} n={} names={:?}",
-                    sessions.len(),
-                    sessions.iter().map(|s| &s.name).collect::<Vec<_>>()
-                ),
-            );
+            // The `poll enum` debug line is logged UNCONDITIONALLY at the producer
+            // (`run_poll`), where `err` is in hand — `apply_event` drops the error path
+            // before reaching here, so logging here would only ever see successes.
             // PerSession psmux: a session whose registry .port disappeared is dead even
             // if its PTY has not EOF'd. Drop the stale attach so it cannot show a dead grid.
             if let Some(h) = hosts.get(&source) {
@@ -1962,6 +1957,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     // The control-mode metadata clients: one per remote host.
     let (host_tx, mut host_rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
     let mut mgr = HostManager::new(host_tx);
+    mgr.set_xmux_dir(env.xmux_dir.clone());
 
     // The live PTY attachments: one real attached mux client per session.
     let (pty_tx, mut pty_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
