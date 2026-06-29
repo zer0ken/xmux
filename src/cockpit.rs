@@ -333,6 +333,31 @@ fn host_of_key(key: &str) -> &str {
     key.split_once('/').map_or(key, |(h, _)| h)
 }
 
+/// Whether the on-screen grid may be shown: the confirmed display truth must name
+/// the same host+session as the current selection. Window is ignored — the same
+/// session's PTY renders whatever window the mux has active, so a window step needs
+/// no "(attaching…)". A mismatch (mid-reattach, or selection moved off the displayed
+/// session) renders "(attaching…)" instead of the previous session — defect A:
+/// displayed == selected, structurally.
+fn display_matches_selection(displayed: &Selection, selection: &Selection) -> bool {
+    !selection.is_empty()
+        && displayed.source == selection.source
+        && displayed.session == selection.session
+}
+
+/// Whether to (re)issue an attach for the settled selection. Fire when the selection
+/// differs from what is confirmed on screen, or when its display PTY is gone (exited /
+/// reaped while the cursor was elsewhere) — but never while an attach for the key is
+/// already in flight, so the async-attach window cannot spawn a storm of duplicates.
+fn should_attach(
+    selection: &Selection,
+    displayed: &Selection,
+    key_live: bool,
+    in_flight: bool,
+) -> bool {
+    (selection != displayed || !key_live) && !in_flight
+}
+
 /// Issues an OFF-LOOP attach for `key`: allocates the attachment id, records the request's
 /// seq in the owning host's `display.in_flight` + the id→key in `display.pending`, and asks
 /// the worker to spawn. The worker's `Ready` reply (handled in the cockpit loop) inserts the
@@ -2007,7 +2032,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             if let Some(h) = hosts.get_mut(&state.selection.source) {
                 h.display.clear(&key); // drop the prior latch so the re-attach is fresh
             }
-            state.last_attached_sel = Selection::default();
+            state.displayed = Selection::default(); // nothing confirmed on screen → "(attaching…)"
             state.attach_deadline = Some(std::time::Instant::now());
         }
         // In passthrough the user no longer drives the tree cursor (stdin goes to the
@@ -2052,9 +2077,12 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     .get(&state.selection.source)
                     .map(|h| h.display.in_flight.contains_key(&key))
                     .unwrap_or(false);
-                if state.selection != state.last_attached_sel
-                    || (!registry.contains(&key) && !in_flight_for_key)
-                {
+                if should_attach(
+                    &state.selection,
+                    &state.displayed,
+                    registry.contains(&key),
+                    in_flight_for_key,
+                ) {
                     let t = std::time::Instant::now();
                     if select_attach(
                         &mut registry,
@@ -2067,7 +2095,15 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         tree_width,
                         &mgr,
                     ) {
-                        state.last_attached_sel = state.selection.clone();
+                        // A synchronous path (switch-client / select-window / already
+                        // attached) leaves a live grid for the key right now → the
+                        // selection is on screen. An async path (first-attach /
+                        // per-session reattach) removed or never had the key → the grid
+                        // is "(attaching…)" until DisplayReady confirms it (which sets
+                        // state.displayed then). Probing the registry tells them apart.
+                        if registry.contains(&display_key(&hosts, &state.selection)) {
+                            state.displayed = state.selection.clone();
+                        }
                     }
                     dbg_ms(&env.xmux_dir, "select_attach", t);
                     dirty = true;
@@ -2099,7 +2135,10 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // with full-screen repaints and stall the loop. The display key is the HOST
         // for remote tmux (one PTY per host) or `source/session` for local psmux.
         if dirty && last_draw.elapsed() >= Duration::from_millis(FRAME_MS) {
-            let grid_arc = (!state.selection.is_empty())
+            // Show the grid only when the confirmed display truth matches the selection
+            // (defect A): a stale attachment mid-reattach renders "(attaching…)", never
+            // the previous session.
+            let grid_arc = display_matches_selection(&state.displayed, &state.selection)
                 .then(|| registry.grid(&display_key(&hosts, &state.selection)))
                 .flatten();
             let terminal_focused = app.is_terminal_focused();
@@ -2257,14 +2296,20 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             } else if attach_reply_is_current(&h.display.in_flight, &key, seq) {
                                 h.display.in_flight.remove(&key);
                                 h.display.pending.remove(&attachment.id());
+                                // This attach is now the live grid for the key. Record the
+                                // session it shows as the confirmed display truth, so the
+                                // terminal view switches from "(attaching…)" to its content.
+                                // If the selection moved to another session of the same host
+                                // while this attach was in flight, displayed now differs from
+                                // selection, so the next pass re-runs select_attach to switch
+                                // (Shared) / reattach (PerSession) to where the cursor is.
+                                let shown = h.display.shows(&key).unwrap_or_default().to_string();
                                 registry.insert(&key, attachment);
-                                // The selection may have moved to another session of the same host
-                                // while this first-attach was in flight; clearing the latch makes the
-                                // next pass re-run select_attach, which (now that the host PTY exists)
-                                // issues the deferred switch-client to the current selection.
-                                if matches!(h.mux.select(), SelectOutcome::SharedSwitch) {
-                                    state.last_attached_sel = Selection::default();
-                                }
+                                state.displayed = Selection {
+                                    source: hid.clone(),
+                                    session: shown,
+                                    window: None,
+                                };
                             } else {
                                 // Stale Ready (a newer attach superseded this seq): forget its
                                 // pending id before teardown so the id->key map cannot grow.
@@ -2328,7 +2373,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         let sz = term
                             .size()
                             .unwrap_or(ratatui::layout::Size { width: 80, height: 24 });
-                        let grid_arc = (!state.selection.is_empty())
+                        let grid_arc = display_matches_selection(&state.displayed, &state.selection)
                             .then(|| registry.grid(&display_key(&hosts, &state.selection)))
                             .flatten();
                         let dump = match &grid_arc {
@@ -3669,6 +3714,65 @@ mod tests {
             !registry.contains("local"),
             "psmux select_attach must replace the host PTY even when bookkeeping is stale"
         );
+    }
+
+    #[test]
+    fn display_matches_selection_gates_grid_on_confirmed_session() {
+        let sel = Selection {
+            source: "h".into(),
+            session: "api".into(),
+            window: None,
+        };
+        // Nothing selected → never a grid.
+        assert!(!display_matches_selection(
+            &Selection::default(),
+            &Selection::default()
+        ));
+        // Confirmed truth names the same host+session → show the grid.
+        assert!(display_matches_selection(&sel, &sel));
+        // A different session (mid-reattach) → "(attaching…)", not the old session.
+        let other_session = Selection {
+            session: "db".into(),
+            ..sel.clone()
+        };
+        assert!(!display_matches_selection(&other_session, &sel));
+        // A different host → "(attaching…)".
+        let other_host = Selection {
+            source: "h2".into(),
+            ..sel.clone()
+        };
+        assert!(!display_matches_selection(&other_host, &sel));
+        // Same session, different window → still shown: one PTY renders the active window.
+        let displayed_w = Selection {
+            window: Some(1),
+            ..sel.clone()
+        };
+        let selection_w = Selection {
+            window: Some(3),
+            ..sel.clone()
+        };
+        assert!(display_matches_selection(&displayed_w, &selection_w));
+    }
+
+    #[test]
+    fn should_attach_fires_on_change_and_recovery_never_storms_in_flight() {
+        let a = Selection {
+            source: "h".into(),
+            session: "api".into(),
+            window: None,
+        };
+        let b = Selection {
+            session: "db".into(),
+            ..a.clone()
+        };
+        // Settled: displayed == selection, PTY live, nothing in flight → no attach.
+        assert!(!should_attach(&a, &a, true, false));
+        // Selection moved off the displayed session → attach.
+        assert!(should_attach(&b, &a, true, false));
+        // An attach for the key is already in flight → never re-fire (no storm).
+        assert!(!should_attach(&b, &a, false, true));
+        // PTY gone (exited / reaped) while displayed == selection → re-attach to recover.
+        assert!(should_attach(&a, &a, false, false));
     }
 
     #[tokio::test(flavor = "current_thread")]
