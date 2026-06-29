@@ -106,11 +106,16 @@ mod tests {
     // propagation, concurrency, timeout) — all source-type-agnostic. Uses `tmux`
     // (the aggregate-server path) so `list_sessions` exercises the runner directly;
     // local psmux's one-server-per-session registry path is tested in `source`.
-    fn local_source(alias: &str, r: Arc<dyn Runner>) -> Source {
+    // Modeled as a REMOTE source so each distinct `alias` is a distinct host id: the
+    // session tag is the host id (`transport.host_id()`), which for a remote equals the
+    // alias. (Only one LOCAL source can exist, always with the alias `"local"`, so
+    // distinct test hosts are remotes.) The `StaticRunner` ignores the wrapped argv, so
+    // remote-vs-local does not change the canned output.
+    fn scan_source(alias: &str, r: Arc<dyn Runner>) -> Source {
         Source {
             alias: alias.into(),
             binary: "tmux".into(),
-            remote: false,
+            remote: true,
             control_path: String::new(),
             os: "linux".into(),
             socket: None,
@@ -128,9 +133,9 @@ mod tests {
     #[tokio::test]
     async fn scan_all_preserves_order_and_content() {
         let srcs = vec![
-            local_source("a", static_ok("2\t1\t1781246739\teditor\n")),
-            local_source("b", static_ok("1\t0\t0\tbuild\n")),
-            local_source("c", static_ok("3\t1\t1781246800\tshell\n")),
+            scan_source("a", static_ok("2\t1\t1781246739\teditor\n")),
+            scan_source("b", static_ok("1\t0\t0\tbuild\n")),
+            scan_source("c", static_ok("3\t1\t1781246800\tshell\n")),
         ];
         let got = scan_all(&srcs, Duration::from_secs(1), 4).await;
         assert_eq!(got.len(), 3);
@@ -148,15 +153,15 @@ mod tests {
     #[tokio::test]
     async fn scan_all_one_unreachable_does_not_stop_others() {
         let srcs = vec![
-            local_source("a", static_ok("1\t1\t0\tone\n")),
-            local_source(
+            scan_source("a", static_ok("1\t1\t0\tone\n")),
+            scan_source(
                 "b",
                 Arc::new(StaticRunner {
                     out: Vec::new(),
                     err_msg: Some("ssh: connect to host b port 22: Connection timed out".into()),
                 }),
             ),
-            local_source("c", static_ok("1\t0\t0\ttwo\n")),
+            scan_source("c", static_ok("1\t0\t0\ttwo\n")),
         ];
         let got = scan_all(&srcs, Duration::from_secs(1), 4).await;
         assert_eq!(got.len(), 3);
@@ -170,7 +175,7 @@ mod tests {
 
     #[tokio::test]
     async fn scan_all_reachable_empty() {
-        let srcs = vec![local_source(
+        let srcs = vec![scan_source(
             "a",
             Arc::new(StaticRunner {
                 out: Vec::new(),
@@ -206,7 +211,7 @@ mod tests {
             active: AtomicI32::new(0),
             max: AtomicI32::new(0),
         });
-        let srcs: Vec<Source> = (0..5).map(|_| local_source("s", cr.clone())).collect();
+        let srcs: Vec<Source> = (0..5).map(|_| scan_source("s", cr.clone())).collect();
         let got = scan_all(&srcs, Duration::from_secs(1), 2).await;
         assert_eq!(got.len(), 5);
         assert!(
@@ -222,7 +227,7 @@ mod tests {
             active: AtomicI32::new(0),
             max: AtomicI32::new(0),
         });
-        let srcs: Vec<Source> = (0..4).map(|_| local_source("s", cr.clone())).collect();
+        let srcs: Vec<Source> = (0..4).map(|_| scan_source("s", cr.clone())).collect();
         let got = scan_all(&srcs, Duration::from_secs(1), 0).await;
         assert_eq!(got.len(), 4);
         assert!(
@@ -245,7 +250,7 @@ mod tests {
 
     #[tokio::test]
     async fn scan_all_per_source_timeout() {
-        let srcs = vec![local_source("slow", Arc::new(BlockingRunner))];
+        let srcs = vec![scan_source("slow", Arc::new(BlockingRunner))];
         let start = std::time::Instant::now();
         let got = scan_all(&srcs, Duration::from_millis(20), 4).await;
         assert!(

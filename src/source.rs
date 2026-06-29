@@ -255,61 +255,44 @@ impl Source {
         self.run_with().run("ssh", &args).await
     }
 
-    /// True for a LOCAL psmux source. psmux is one-server-per-session (no aggregate
-    /// server): a bare `list-sessions` returns at most the one server it routed to,
-    /// so its sessions must be enumerated from psmux's filesystem registry instead.
-    pub fn is_local_psmux(&self) -> bool {
-        !self.remote && self.binary == "psmux"
-    }
-
-    /// Enumerates the local psmux default-socket sessions. psmux is one-server-per-
-    /// session over localhost TCP with no aggregate server: a bare `list-sessions`
-    /// aggregates every live session WHEN its default route reaches a live server,
-    /// but that route can land on a dead/stale server and return nothing even though
-    /// sessions exist. So the filesystem registry (`~/.psmux/<name>.port`, the
-    /// substrate psmux itself discovers with) is the authoritative EXISTENCE set, and
-    /// a single `list-sessions` supplies the display detail; the two are merged so
-    /// every live session surfaces with full detail when available.
-    async fn list_sessions_psmux(&self) -> Result<Vec<Session>, RunError> {
-        let names = read_psmux_registry_dir(&psmux_registry_dir());
-        let detail = match self.run(&mux::list_sessions(&self.binary)).await {
-            Ok(out) => mux::parse_sessions(&self.alias, &String::from_utf8_lossy(&out)),
-            // The default route could not answer; the registry names still surface.
-            Err(_) => Vec::new(),
-        };
-        Ok(merge_psmux_sessions(&self.alias, names, detail))
+    /// The machine transport this source reaches its mux over. A remote source is an
+    /// ssh transport carrying the same alias/control-path/os; a local source is a
+    /// `Local` transport carrying the same `-S` socket. Mirrors the fields
+    /// `Source::exec_argv`/`ssh_args` consume, so `Transport::exec_argv` lowers the
+    /// argv identically.
+    fn transport(&self) -> crate::model::Transport {
+        if self.remote {
+            crate::model::Transport::Ssh {
+                alias: self.alias.clone(),
+                control_path: self.control_path.clone(),
+                os: self.os.clone(),
+            }
+        } else {
+            crate::model::Transport::Local {
+                socket: self.socket.clone(),
+            }
+        }
     }
 
     /// Returns the source's sessions. A reachable mux with no sessions returns an
     /// empty vec; an unreachable source returns an error.
+    ///
+    /// Enumeration (which mux, its registry-merge vs aggregate-list behaviour, and the
+    /// reachable-but-empty classification) lives entirely in `backend`: `for_binary`
+    /// selects the mux from the binary name and `Backend::enumerate` runs the probe
+    /// over this source's [`Source::transport`]. This is a thin shim — the source layer
+    /// no longer branches on the mux kind.
     pub async fn list_sessions(&self) -> Result<Vec<Session>, RunError> {
-        if self.is_local_psmux() {
-            return self.list_sessions_psmux().await;
-        }
-        match self.run(&mux::list_sessions(&self.binary)).await {
-            Ok(out) => Ok(mux::parse_sessions(
-                &self.alias,
-                &String::from_utf8_lossy(&out),
-            )),
-            Err(e) => {
-                if is_no_sessions(&e) {
-                    Ok(Vec::new())
-                } else {
-                    Err(e)
-                }
-            }
-        }
+        crate::backend::for_binary(&self.binary)
+            .enumerate(&self.transport(), self.run_with())
+            .await
     }
 }
 
-// The reachable-but-empty classification and the psmux registry enumeration now live
-// in `backend/` (backend depends on nothing mux-specific outside itself). These thin
-// re-exports keep the legacy `Source` path (and the cockpit's `reason_is_no_sessions`)
-// resolving the same names at the same `crate::source::…` paths.
-pub(crate) use crate::backend::{
-    is_no_sessions, merge_psmux_sessions, psmux_registry_dir, read_psmux_registry_dir,
-    reason_is_no_sessions,
-};
+// The reachable-but-empty classification lives in `backend/`. The cockpit reaches its
+// `%exit`/`%error`-reason check through `crate::source::reason_is_no_sessions`, so the
+// name is re-exported here to keep that path resolving.
+pub(crate) use crate::backend::reason_is_no_sessions;
 
 /// Renders one argument safe for a POSIX shell. A string of only safe characters
 /// passes through; anything else is single-quoted with embedded single-quotes
@@ -576,15 +559,6 @@ mod tests {
         assert!(got[0].attached);
         assert_eq!(got[0].source, "local");
         assert_eq!(got[1].last_attached, 0);
-    }
-
-    #[test]
-    fn is_local_psmux_only_for_local_psmux() {
-        // psmux is one-server-per-session; the registry enumeration path is taken
-        // only for a LOCAL psmux source, never local tmux or any remote.
-        assert!(src("local", "psmux", false, "", "").is_local_psmux());
-        assert!(!src("local", "tmux", false, "", "").is_local_psmux());
-        assert!(!src("prod", "psmux", true, "", "").is_local_psmux());
     }
 
     #[tokio::test]

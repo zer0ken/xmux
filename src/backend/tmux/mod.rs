@@ -46,9 +46,13 @@ impl Backend for Tmux {
         SelectOutcome::SharedSwitch
     }
 
-    async fn enumerate(&self, transport: &Transport) -> Result<Vec<Session>, RunError> {
+    async fn enumerate(
+        &self,
+        transport: &Transport,
+        runner: &dyn Runner,
+    ) -> Result<Vec<Session>, RunError> {
         let (name, args) = transport.exec_argv(false, &mux::list_sessions(&self.bin));
-        match ExecRunner.run(&name, &args).await {
+        match runner.run(&name, &args).await {
             Ok(out) => Ok(mux::parse_sessions(
                 transport.host_id(),
                 &String::from_utf8_lossy(&out),

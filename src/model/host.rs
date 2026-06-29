@@ -133,7 +133,11 @@ impl Host {
     /// + the supervisor `connected` bookkeeping.
     pub async fn enumerate(&mut self) -> Result<(), crate::source::RunError> {
         self.detect_and_correct(&crate::source::ExecRunner).await;
-        match self.mux.enumerate(&self.transport).await {
+        match self
+            .mux
+            .enumerate(&self.transport, &crate::source::ExecRunner)
+            .await
+        {
             Ok(sessions) => {
                 self.inventory.sessions = sessions;
                 self.liveness = Liveness::Live;
@@ -306,7 +310,11 @@ mod tests {
         fn server_model(&self) -> ServerModel {
             self.0
         }
-        async fn enumerate(&self, _t: &Transport) -> Result<Vec<Session>, RunError> {
+        async fn enumerate(
+            &self,
+            _t: &Transport,
+            _r: &dyn crate::source::Runner,
+        ) -> Result<Vec<Session>, RunError> {
             Ok(vec![])
         }
         fn attach_plan(&self, _s: &str, _w: Option<i64>) -> Vec<String> {
@@ -510,7 +518,11 @@ mod tests {
         fn server_model(&self) -> ServerModel {
             self.model
         }
-        async fn enumerate(&self, _t: &Transport) -> Result<Vec<Session>, RunError> {
+        async fn enumerate(
+            &self,
+            _t: &Transport,
+            _r: &dyn crate::source::Runner,
+        ) -> Result<Vec<Session>, RunError> {
             self.result.lock().unwrap().take().unwrap_or(Ok(vec![]))
         }
         fn attach_plan(&self, _s: &str, _w: Option<i64>) -> Vec<String> {

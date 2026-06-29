@@ -580,7 +580,7 @@ async fn run_poll(
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         ticker.tick().await;
-        let (sessions, err) = match mux.enumerate(&transport).await {
+        let (sessions, err) = match mux.enumerate(&transport, &crate::source::ExecRunner).await {
             Ok(s) => (s, None),
             Err(e) => (Vec::new(), Some(e.to_string())),
         };

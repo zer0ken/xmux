@@ -12,7 +12,7 @@ use crate::model::server_model::ServerModel;
 use crate::model::transport::Transport;
 use crate::mux;
 use crate::session::Session;
-use crate::source::{ExecRunner, RunError, Runner};
+use crate::source::{RunError, Runner};
 
 mod control;
 mod psmux;
@@ -21,10 +21,6 @@ mod tmux;
 pub use control::{ControlProtocol, Line, Notif};
 pub use psmux::Psmux;
 pub use tmux::{Tmux, TmuxControl};
-
-// The psmux-registry helpers live in `backend/psmux/registry.rs`; surface them at the
-// `backend` level so the legacy `source::Source` path can re-export them from here.
-pub(crate) use psmux::{merge_psmux_sessions, psmux_registry_dir, read_psmux_registry_dir};
 
 /// Reports whether `err` means "the mux is reachable but has no sessions" rather
 /// than "the host is unreachable". tmux exits non-zero with a "no server
@@ -85,9 +81,14 @@ pub trait Backend: Send + Sync {
         }
     }
 
-    /// Lists this host's sessions over `transport`. A reachable empty mux =>
-    /// `Ok(vec![])`; unreachable => `Err`.
-    async fn enumerate(&self, transport: &Transport) -> Result<Vec<Session>, RunError>;
+    /// Lists this host's sessions over `transport`, executing its probe via
+    /// `runner` (the real [`ExecRunner`] in production; an injected fake under test).
+    /// A reachable empty mux => `Ok(vec![])`; unreachable => `Err`.
+    async fn enumerate(
+        &self,
+        transport: &Transport,
+        runner: &dyn Runner,
+    ) -> Result<Vec<Session>, RunError>;
 
     /// The interactive attach argv (`argv[0]` = binary). The window is selected
     /// separately via `select_window_plan`; the transport folds it for a remote
@@ -338,7 +339,7 @@ mod tests {
     async fn tmux_enumerate_live() {
         let t = Transport::Local { socket: None };
         let sessions = tmux()
-            .enumerate(&t)
+            .enumerate(&t, &crate::source::ExecRunner)
             .await
             .expect("reachable tmux (empty is Ok)");
         eprintln!(

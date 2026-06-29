@@ -5,10 +5,6 @@ use super::*;
 
 mod registry;
 
-// Lift the psmux-registry helpers to the `backend` level (re-exported there) so the
-// legacy `source::Source` path can reach them at a backend path, not the reverse.
-pub(crate) use registry::{merge_psmux_sessions, psmux_registry_dir, read_psmux_registry_dir};
-
 /// The local-psmux poll cadence (psmux is one-server-per-session with no event
 /// push, so changes are discovered by re-enumeration). Mirrors the supervisor's
 /// loop constant; held here so the supervisor reads it off the mux, not a literal.
@@ -38,12 +34,16 @@ impl Backend for Psmux {
         SelectOutcome::PerSessionReattach
     }
 
-    async fn enumerate(&self, transport: &Transport) -> Result<Vec<Session>, RunError> {
+    async fn enumerate(
+        &self,
+        transport: &Transport,
+        runner: &dyn Runner,
+    ) -> Result<Vec<Session>, RunError> {
         // The registry (`~/.psmux/<name>.port`) is the authoritative existence set;
         // one list-sessions supplies display detail (empty on a default-route miss).
         let names = registry::read_psmux_registry_dir(&registry::psmux_registry_dir());
         let (name, args) = transport.exec_argv(false, &mux::list_sessions(&self.bin));
-        let detail = match ExecRunner.run(&name, &args).await {
+        let detail = match runner.run(&name, &args).await {
             Ok(out) => mux::parse_sessions(transport.host_id(), &String::from_utf8_lossy(&out)),
             Err(_) => Vec::new(),
         };
