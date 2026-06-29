@@ -4,7 +4,7 @@
 //! reachable-but-empty vs unreachable distinction — so the layers above speak in
 //! sessions, not transports.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -302,101 +302,14 @@ impl Source {
     }
 }
 
-/// Reports whether `err` means "the mux is reachable but has no sessions" rather
-/// than "the host is unreachable". tmux exits non-zero with a "no server
-/// running" message when idle, so this distinguishes an empty-but-alive mux from
-/// a dead one. Only a real command exit (carrying stderr) can be benign; a
-/// missing binary or a connect failure is always unreachable.
-pub fn is_no_sessions(err: &RunError) -> bool {
-    let RunError::Exit { stderr, code } = err else {
-        return false;
-    };
-    // command-not-found (127), not-executable (126), and ssh failure (255) are
-    // never a healthy-but-empty mux — a broken host must not be hidden as empty.
-    if matches!(code, 126 | 127 | 255) {
-        return false;
-    }
-    reason_is_no_sessions(stderr)
-}
-
-/// True when `text` (a mux error / exit reason) means "reachable but no server /
-/// no sessions" rather than a real transport failure. The control-mode path gets a
-/// plain string (the `%exit` / `%error` reason), not a [`RunError`], so it calls
-/// this directly. Matches the marker as a line PREFIX so a login banner / MOTD line
-/// like "you have no sessions pending" cannot masquerade as the idle mux.
-pub fn reason_is_no_sessions(text: &str) -> bool {
-    text.to_lowercase().split('\n').any(|line| {
-        let line = line.trim();
-        line.starts_with("no server running") || line.starts_with("no sessions")
-    })
-}
-
-/// psmux's per-machine session registry directory (`~/.psmux`). Each live session
-/// has a `<name>.port` file there (psmux is one-server-per-session over localhost
-/// TCP, with this directory as its discovery substrate — there is no aggregate
-/// server to list).
-pub(crate) fn psmux_registry_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".psmux")
-}
-
-/// The live DEFAULT-SOCKET session names among psmux registry filenames. A live
-/// session is a `<base>.port` file; sibling `.key`/`.sid`/bookkeeping files are
-/// ignored. A base containing `__` is excluded: it is either the warm-pool standby
-/// (`__warm__`) or a `-L`-namespaced session (`<ns>__<name>`), neither of which is
-/// a default-socket session. Sorted + deduped for a stable order.
-fn psmux_session_names(filenames: &[String]) -> Vec<String> {
-    let mut names: Vec<String> = filenames
-        .iter()
-        .filter_map(|f| f.strip_suffix(".port"))
-        .filter(|base| !base.contains("__"))
-        .map(str::to_string)
-        .collect();
-    names.sort();
-    names.dedup();
-    names
-}
-
-/// Reads psmux's registry `dir` and returns its live default-socket session names.
-/// A missing/unreadable directory yields an empty list (no local sessions).
-pub(crate) fn read_psmux_registry_dir(dir: &Path) -> Vec<String> {
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let files: Vec<String> = rd
-        .flatten()
-        .filter_map(|e| e.file_name().into_string().ok())
-        .collect();
-    psmux_session_names(&files)
-}
-
-/// Merges psmux's registry session NAMES (authoritative existence) with the
-/// `list-sessions` DETAIL rows. A `list-sessions` row wins for a session it covers
-/// (full windows/attached/recency); a registry name it omits is still surfaced with
-/// a minimal placeholder, so a failed/partial `list-sessions` never blanks the
-/// sidebar. Deduped on name (a session in both sources appears once).
-pub(crate) fn merge_psmux_sessions(
-    source: &str,
-    names: Vec<String>,
-    detail: Vec<Session>,
-) -> Vec<Session> {
-    let covered: std::collections::HashSet<String> =
-        detail.iter().map(|s| s.name.clone()).collect();
-    let mut out = detail;
-    for name in names {
-        if !covered.contains(&name) {
-            out.push(Session {
-                source: source.to_string(),
-                name,
-                windows: 1,
-                attached: false,
-                last_attached: 0,
-            });
-        }
-    }
-    out
-}
+// The reachable-but-empty classification and the psmux registry enumeration now live
+// in `backend/` (backend depends on nothing mux-specific outside itself). These thin
+// re-exports keep the legacy `Source` path (and the cockpit's `reason_is_no_sessions`)
+// resolving the same names at the same `crate::source::…` paths.
+pub(crate) use crate::backend::{
+    is_no_sessions, merge_psmux_sessions, psmux_registry_dir, read_psmux_registry_dir,
+    reason_is_no_sessions,
+};
 
 /// Renders one argument safe for a POSIX shell. A string of only safe characters
 /// passes through; anything else is single-quoted with embedded single-quotes
@@ -674,114 +587,6 @@ mod tests {
         assert!(!src("prod", "psmux", true, "", "").is_local_psmux());
     }
 
-    #[test]
-    fn psmux_session_names_excludes_warm_namespaced_and_non_port() {
-        // psmux writes `<base>.port` per live session in its registry dir. A base
-        // containing `__` is the warm-pool standby (`__warm__`) or a `-L`-namespaced
-        // session (`<ns>__<name>`); neither is a default-socket session. Sibling
-        // `.key`/`.sid`/bookkeeping files are not `.port` and are ignored.
-        let files: Vec<String> = [
-            "xmux.port",
-            "build.port",
-            "__warm__.port",
-            "ns__sess.port",
-            "xmux.key",
-            "xmux.sid",
-            "last_session",
-            "next_session_id",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-        assert_eq!(
-            psmux_session_names(&files),
-            vec!["build".to_string(), "xmux".to_string()]
-        );
-    }
-
-    #[test]
-    fn psmux_session_names_empty() {
-        assert!(psmux_session_names(&[]).is_empty());
-    }
-
-    #[test]
-    fn read_psmux_registry_dir_scans_port_files() {
-        let dir = std::env::temp_dir().join(format!("xmux-psmux-reg-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        for f in [
-            "alpha.port",
-            "beta.port",
-            "__warm__.port",
-            "x__y.port",
-            "alpha.key",
-        ] {
-            std::fs::write(dir.join(f), b"1234").unwrap();
-        }
-        let got = read_psmux_registry_dir(&dir);
-        let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(got, vec!["alpha".to_string(), "beta".to_string()]);
-    }
-
-    #[test]
-    fn read_psmux_registry_dir_missing_is_empty() {
-        let dir = std::env::temp_dir().join("xmux-psmux-absent-zzzz-does-not-exist");
-        assert!(read_psmux_registry_dir(&dir).is_empty());
-    }
-
-    #[test]
-    fn merge_psmux_sessions_prefers_detail_and_keeps_registry_only() {
-        // psmux's `list-sessions` aggregates every live default-socket session in one
-        // call, so its rows carry the real detail (windows/attached/recency). The
-        // registry (`*.port`) is the authoritative EXISTENCE set: a name present in
-        // the registry but missing from the (possibly failed/partial) list-sessions
-        // output is still surfaced, with minimal placeholder detail.
-        let detail = vec![Session {
-            source: "local".into(),
-            name: "editor".into(),
-            windows: 3,
-            attached: true,
-            last_attached: 200,
-        }];
-        let names = vec!["editor".to_string(), "build".to_string()];
-        let got = merge_psmux_sessions("local", names, detail);
-        assert_eq!(got.len(), 2, "no duplicate for the session in both sources");
-        let editor = got.iter().find(|s| s.name == "editor").unwrap();
-        assert_eq!(editor.windows, 3, "detail row wins (full info)");
-        assert!(editor.attached);
-        let build = got.iter().find(|s| s.name == "build").unwrap();
-        assert_eq!(build.source, "local");
-        assert_eq!(
-            build.windows, 1,
-            "registry-only session gets minimal placeholder detail"
-        );
-    }
-
-    #[test]
-    fn merge_psmux_sessions_empty_registry_falls_back_to_detail() {
-        // If the registry read yields nothing (e.g. unreadable), the list-sessions
-        // detail still stands on its own.
-        let detail = vec![Session {
-            source: "local".into(),
-            name: "only".into(),
-            windows: 1,
-            attached: false,
-            last_attached: 5,
-        }];
-        let got = merge_psmux_sessions("local", Vec::new(), detail);
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].name, "only");
-    }
-
-    #[test]
-    fn merge_psmux_sessions_no_detail_surfaces_registry_names() {
-        // The reported failure: list-sessions returns nothing even though sessions
-        // exist. The registry names must still surface so the sidebar is not blank.
-        let got = merge_psmux_sessions("local", vec!["a".into(), "b".into()], Vec::new());
-        let names: Vec<&str> = got.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["a", "b"]);
-        assert!(got.iter().all(|s| s.source == "local"));
-    }
-
     #[tokio::test]
     async fn list_sessions_benign_no_server_is_empty_not_error() {
         let mut s = src("prod", "tmux", true, "linux", "");
@@ -793,17 +598,6 @@ mod tests {
         assert!(got.is_empty());
     }
 
-    #[test]
-    fn reason_is_no_sessions_matches_line_prefix_markers() {
-        assert!(reason_is_no_sessions("no sessions"));
-        assert!(reason_is_no_sessions(
-            "no server running on /tmp/tmux-1000/default"
-        ));
-        assert!(!reason_is_no_sessions("connection timed out"));
-        // Not a line prefix → not the idle mux (a MOTD must not masquerade).
-        assert!(!reason_is_no_sessions("you have no sessions pending"));
-    }
-
     #[tokio::test]
     async fn list_sessions_unreachable_is_error() {
         let mut s = src("prod", "tmux", true, "linux", "");
@@ -811,40 +605,6 @@ mod tests {
             "ssh: connect to host prod port 22: Connection timed out".into(),
         )));
         assert!(s.list_sessions().await.is_err());
-    }
-
-    #[test]
-    fn is_no_sessions_classification() {
-        assert!(is_no_sessions(&RunError::Exit {
-            code: 1,
-            stderr: "no server running on /tmp/tmux-1000/default".into(),
-        }));
-        assert!(is_no_sessions(&RunError::Exit {
-            code: 1,
-            stderr: "no sessions".into(),
-        }));
-        assert!(!is_no_sessions(&RunError::Exit {
-            code: 1,
-            stderr: "permission denied".into(),
-        }));
-        // A banner line merely CONTAINING the phrase must not misclassify.
-        assert!(!is_no_sessions(&RunError::Exit {
-            code: 1,
-            stderr: "Last login...\nYou have no sessions pending.\n".into(),
-        }));
-        // command-not-found / ssh failure are never benign.
-        assert!(!is_no_sessions(&RunError::Exit {
-            code: 127,
-            stderr: "tmux: command not found\nno sessions\n".into(),
-        }));
-        assert!(!is_no_sessions(&RunError::Exit {
-            code: 255,
-            stderr: "ssh: connect failed\n".into(),
-        }));
-        // A non-exit error (missing binary / connect failure) is NOT benign.
-        assert!(!is_no_sessions(&RunError::Other(
-            "exec: \"tmux\": executable file not found".into()
-        )));
     }
 
     #[test]

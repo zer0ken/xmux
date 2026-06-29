@@ -12,13 +12,46 @@ use crate::model::server_model::ServerModel;
 use crate::model::transport::Transport;
 use crate::mux;
 use crate::session::Session;
-use crate::source::{is_no_sessions, ExecRunner, RunError, Runner};
+use crate::source::{ExecRunner, RunError, Runner};
 
 mod psmux;
 mod tmux;
 
 pub use psmux::Psmux;
 pub use tmux::Tmux;
+
+// The psmux-registry helpers live in `backend/psmux/registry.rs`; surface them at the
+// `backend` level so the legacy `source::Source` path can re-export them from here.
+pub(crate) use psmux::{merge_psmux_sessions, psmux_registry_dir, read_psmux_registry_dir};
+
+/// Reports whether `err` means "the mux is reachable but has no sessions" rather
+/// than "the host is unreachable". tmux exits non-zero with a "no server
+/// running" message when idle, so this distinguishes an empty-but-alive mux from
+/// a dead one. Only a real command exit (carrying stderr) can be benign; a
+/// missing binary or a connect failure is always unreachable.
+pub(crate) fn is_no_sessions(err: &RunError) -> bool {
+    let RunError::Exit { stderr, code } = err else {
+        return false;
+    };
+    // command-not-found (127), not-executable (126), and ssh failure (255) are
+    // never a healthy-but-empty mux — a broken host must not be hidden as empty.
+    if matches!(code, 126 | 127 | 255) {
+        return false;
+    }
+    reason_is_no_sessions(stderr)
+}
+
+/// True when `text` (a mux error / exit reason) means "reachable but no server /
+/// no sessions" rather than a real transport failure. The control-mode path gets a
+/// plain string (the `%exit` / `%error` reason), not a [`RunError`], so it calls
+/// this directly. Matches the marker as a line PREFIX so a login banner / MOTD line
+/// like "you have no sessions pending" cannot masquerade as the idle mux.
+pub(crate) fn reason_is_no_sessions(text: &str) -> bool {
+    text.to_lowercase().split('\n').any(|line| {
+        let line = line.trim();
+        line.starts_with("no server running") || line.starts_with("no sessions")
+    })
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SelectOutcome {
@@ -511,5 +544,50 @@ mod tests {
         assert_eq!(t.kind(), "tmux");
         assert_eq!(t.bin(), "psmux");
         assert_eq!(t.event_source(), EventSource::Control);
+    }
+
+    #[test]
+    fn reason_is_no_sessions_matches_line_prefix_markers() {
+        assert!(reason_is_no_sessions("no sessions"));
+        assert!(reason_is_no_sessions(
+            "no server running on /tmp/tmux-1000/default"
+        ));
+        assert!(!reason_is_no_sessions("connection timed out"));
+        // Not a line prefix → not the idle mux (a MOTD must not masquerade).
+        assert!(!reason_is_no_sessions("you have no sessions pending"));
+    }
+
+    #[test]
+    fn is_no_sessions_classification() {
+        assert!(is_no_sessions(&RunError::Exit {
+            code: 1,
+            stderr: "no server running on /tmp/tmux-1000/default".into(),
+        }));
+        assert!(is_no_sessions(&RunError::Exit {
+            code: 1,
+            stderr: "no sessions".into(),
+        }));
+        assert!(!is_no_sessions(&RunError::Exit {
+            code: 1,
+            stderr: "permission denied".into(),
+        }));
+        // A banner line merely CONTAINING the phrase must not misclassify.
+        assert!(!is_no_sessions(&RunError::Exit {
+            code: 1,
+            stderr: "Last login...\nYou have no sessions pending.\n".into(),
+        }));
+        // command-not-found / ssh failure are never benign.
+        assert!(!is_no_sessions(&RunError::Exit {
+            code: 127,
+            stderr: "tmux: command not found\nno sessions\n".into(),
+        }));
+        assert!(!is_no_sessions(&RunError::Exit {
+            code: 255,
+            stderr: "ssh: connect failed\n".into(),
+        }));
+        // A non-exit error (missing binary / connect failure) is NOT benign.
+        assert!(!is_no_sessions(&RunError::Other(
+            "exec: \"tmux\": executable file not found".into()
+        )));
     }
 }
