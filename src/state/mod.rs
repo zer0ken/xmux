@@ -181,23 +181,31 @@ impl State {
                     self.attach_deadline = Some(now + Duration::from_millis(ATTACH_DEBOUNCE_MS));
                     return Vec::new();
                 }
-                // Fire the settled attach once the debounce deadline has elapsed.
+                // The debounce deadline has elapsed.
                 if self.attach_deadline.is_none_or(|d| now < d) {
                     return Vec::new();
                 }
                 self.attach_deadline = None;
-                if self.selection.is_empty() || !self.should_attach(key_live, in_flight) {
+                if self.selection.is_empty() {
                     return Vec::new();
                 }
                 let mut cmds = Vec::new();
-                // Persist the settled session as last-selected, but only on an address
-                // change, so stepping between windows of one session does not rewrite it.
+                // Persist the settled session as last-selected — INDEPENDENT of the
+                // attach gate, so it records even when the attach is suppressed (e.g.
+                // an in-flight attach on the same shared host while the cursor moves to
+                // another of its sessions). Only on an address change, so stepping
+                // between windows of one session does not rewrite it.
                 let addr = self.selection.address();
                 if addr != self.last_saved_session {
                     self.last_saved_session = addr.clone();
                     cmds.push(Command::PersistLastSession(addr));
                 }
-                cmds.push(Command::Attach(self.selection.clone()));
+                // Fire the attach only when the gate holds (selection differs from the
+                // confirmed display, or its PTY is gone) and nothing is in flight — the
+                // freeze invariant depends on this gate, so it stays exactly as is.
+                if self.should_attach(key_live, in_flight) {
+                    cmds.push(Command::Attach(self.selection.clone()));
+                }
                 cmds
             }
         }
@@ -368,11 +376,12 @@ mod tests {
     #[test]
     fn apply_tick_does_not_fire_when_already_displayed_and_live() {
         // should_attach gate: selection == displayed AND key_live AND not in_flight
-        // ⇒ nothing to do.
+        // ⇒ nothing to do (already persisted, so no persist command either).
         let t0 = Instant::now();
         let mut s = State {
             selection: sel("api"),
             displayed: sel("api"),
+            last_saved_session: "jup/api".into(), // already persisted → no persist command
             attach_deadline: Some(t0),
             ..State::default()
         };
@@ -415,7 +424,10 @@ mod tests {
     }
 
     #[test]
-    fn apply_tick_does_not_fire_while_in_flight() {
+    fn apply_tick_does_not_fire_attach_while_in_flight_but_still_persists() {
+        // The attach is suppressed while one is in flight (no storm), but the settled
+        // session is still recorded as last-selected — the persist is independent of
+        // the attach gate.
         let t0 = Instant::now();
         let mut s = State {
             selection: sel("db"),
@@ -429,9 +441,65 @@ mod tests {
             in_flight: true,
         });
         assert!(
-            cmds.is_empty(),
+            !cmds.iter().any(|c| matches!(c, Command::Attach(_))),
             "never spawn a second attach while one is already in flight"
         );
+        assert_eq!(
+            cmds,
+            vec![Command::PersistLastSession("jup/db".into())],
+            "the settled session is still persisted while the attach is suppressed"
+        );
+    }
+
+    #[test]
+    fn apply_tick_persists_second_session_of_same_host_while_first_attach_in_flight() {
+        // Differential parity: settle on B → B attaches (its attach now in flight on
+        // the shared host key) → settle on C of the SAME host → its Tick sees the key
+        // still in flight, so the attach is suppressed, but C MUST still be persisted
+        // as last-selected (else the next launch wrongly restores B).
+        let mut s = State::default();
+        let t0 = Instant::now();
+        // Settle on B and let its attach fire (no in-flight yet, B differs from the
+        // empty displayed).
+        s.apply(Action::Select(sel("b")));
+        s.apply(Action::Tick {
+            now: t0,
+            key_live: false,
+            in_flight: false,
+        }); // arms
+        let b_cmds = s.apply(Action::Tick {
+            now: t0 + Duration::from_millis(90),
+            key_live: false,
+            in_flight: false,
+        });
+        assert_eq!(
+            b_cmds,
+            vec![
+                Command::PersistLastSession("jup/b".into()),
+                Command::Attach(sel("b")),
+            ],
+        );
+        // Move to C of the same host while B's attach is still in flight.
+        s.apply(Action::Select(sel("c")));
+        s.apply(Action::Tick {
+            now: t0 + Duration::from_millis(100),
+            key_live: false,
+            in_flight: true,
+        }); // arms
+        let c_cmds = s.apply(Action::Tick {
+            now: t0 + Duration::from_millis(190),
+            key_live: false,
+            in_flight: true, // first attach (B) still in flight on the shared host key
+        });
+        assert!(
+            c_cmds.contains(&Command::PersistLastSession("jup/c".into())),
+            "C must be persisted even though its attach is suppressed by in_flight: {c_cmds:?}"
+        );
+        assert!(
+            !c_cmds.iter().any(|c| matches!(c, Command::Attach(_))),
+            "C's attach is suppressed while B's attach is in flight (no storm): {c_cmds:?}"
+        );
+        assert_eq!(s.last_saved_session, "jup/c");
     }
 
     #[test]
