@@ -22,10 +22,12 @@ Sub-modules pull the shared trait, value types, and imports from the parent via
 
 ## Mental Model
 
-Backends describe mux intent. `Transport` lowers machine execution. Shared muxes
-such as tmux use one aggregate server and a host-level control stream. Per-session
-muxes such as psmux enumerate differently and keep selection as a per-session
-reattach concern.
+Backends describe mux vocabulary and classification. `Transport` lowers machine
+execution. The `MuxDriver` trait (`src/driver.rs`) owns per-host display
+orchestration and the concrete attach decision; backends supply the argv, server
+model, and enumeration behavior that drivers consume. Shared muxes such as tmux
+use one aggregate server and a host-level control stream. Per-session muxes such
+as psmux enumerate differently and supply a per-session attach plan.
 
 ## Module Seams
 
@@ -34,7 +36,10 @@ reattach concern.
 - Plan methods return mux argv or mux intent; they do not decide local versus
   ssh execution.
 - `SelectOutcome`, `ServerModel`, `EventSource`, and `DeathSignal` are the
-  values callers use instead of branching on backend names.
+  classification values callers use instead of branching on backend names.
+  `SelectOutcome` classifies the attach pattern a backend implies; the `MuxDriver`
+  in `src/driver.rs` acts on that classification (one PTY per host for
+  `SharedSwitch`; in-place client switch or reattach for `PerSessionReattach`).
 
 ## Invariants
 

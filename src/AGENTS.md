@@ -22,6 +22,16 @@ the live split view.
   low-level injection.
 - `display.rs` owns the off-runtime worker that spawns PTY attachments and
   returns `DisplayEvent`s. It never owns the registry.
+- `driver.rs` defines the `MuxDriver` trait and the `driver_for(host)` factory.
+  `MuxDriver::show` carries per-host display orchestration — which PTY to use,
+  whether to `switch-client` or reattach — and is the sole site for that
+  per-mux decision. `cockpit.rs` calls `driver_for` and then `show`; it branches
+  on nothing mux-specific. `TmuxDriver` keeps one PTY per host and moves it with
+  `switch-client`; `PsmuxDriver` switches in place via `switch-client -c <tty>`
+  when a live client with a captured tty is known, else reattaches. `DriverCtx`
+  injects supervisor-owned capabilities (registry, hosts, worker, mgr, env,
+  pty_tx, attach_seq, view size) so the driver owns the decision without owning
+  the infrastructure.
 - `host.rs` owns control-mode reader/writer machinery, poll task management,
   host inventory, and `HostEvent`s. It is a metadata path only.
 - `cockpit.rs` coordinates these modules and owns the main event loop. Inbound
@@ -44,6 +54,9 @@ the live split view.
   future non-`RunOp` command from a key is silently dropped.
 - `Selection` is the canonical selected source/session/window value consumed by
   display selection and rendering.
+- The per-mux display decision lives in the `MuxDriver` implementation.
+  `cockpit.rs` does not branch on mux kind for display; it calls
+  `driver_for(host).show(sel, ctx)` and reads back the grid via `driver.grid`.
 - `DisplayWorker` spawns attachments and hands them back; `AttachRegistry`
   stores and tears them down.
 - Host metadata events update inventory and selection aids, not display grids.
@@ -54,8 +67,10 @@ the live split view.
 - Do not block the cockpit loop on process spawn, PTY close, pipe reads, writes,
   or resize operations.
 - Do not treat `Source` as the preferred place for new execution semantics;
-  prefer `model::Transport` for machine execution and `backend::Backend` for
-  mux behavior.
+  prefer `model::Transport` for machine execution, `backend::Backend` for
+  mux vocabulary and classification (attach argv, server model, enumeration),
+  and `driver.rs` (`MuxDriver` impls) for per-host display orchestration and
+  the concrete switch/reattach decision.
 
 ## Before Editing
 
