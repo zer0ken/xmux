@@ -65,7 +65,21 @@ impl Backend for Psmux {
     }
 
     fn attach_plan(&self, session: &str, _window: Option<i64>) -> Vec<String> {
-        mux::attach(&self.bin, session)
+        // psmux is one-server-per-session: each session is its own server on its own
+        // port (`~/.psmux/<name>.port`). A bare `attach -t <name>` on the DEFAULT
+        // socket does not reach that session's server — it lands on a warm clone / the
+        // default session — so selecting another session shows the wrong content.
+        // `new-session -A -s <name>` (attach-if-exists, no `-d`) routes to the
+        // session's OWN server and attaches the REAL session (verified: `-A -s
+        // <existing>` finds it without creating a duplicate; cf. the `-CC` form in
+        // 679bf3b). Window selection stays separate via `select_window_plan`.
+        vec![
+            self.bin.clone(),
+            "new-session".to_string(),
+            "-A".to_string(),
+            "-s".to_string(),
+            session.to_string(),
+        ]
     }
 
     fn switch_plan(&self, _session: &str) -> SwitchPlan {

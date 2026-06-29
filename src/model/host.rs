@@ -839,7 +839,7 @@ mod tests {
         assert_eq!(h.mux.server_model(), ServerModel::PerSession);
         assert_eq!(
             h.mux.attach_plan("api", None),
-            vec!["tmux", "attach", "-t", "api"]
+            vec!["tmux", "new-session", "-A", "-s", "api"]
         );
         assert!(h.detected);
 

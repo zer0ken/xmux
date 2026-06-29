@@ -450,10 +450,13 @@ mod tests {
     }
 
     #[test]
-    fn psmux_attach_plan_is_plain_attach() {
+    fn psmux_attach_plan_routes_to_the_per_session_server() {
+        // psmux is one-server-per-session, so the display attach must use
+        // `new-session -A -s <name>` (routes to that session's own server) rather
+        // than a bare `attach -t <name>` on the default socket (a warm clone).
         assert_eq!(
             psmux().attach_plan("work", None),
-            argv(&["psmux", "attach", "-t", "work"])
+            argv(&["psmux", "new-session", "-A", "-s", "work"])
         );
     }
 
@@ -476,7 +479,7 @@ mod tests {
         let m = Psmux { bin: "tmux".into() };
         assert_eq!(
             m.attach_plan("api", None),
-            argv(&["tmux", "attach", "-t", "api"])
+            argv(&["tmux", "new-session", "-A", "-s", "api"])
         );
         assert_eq!(m.server_model(), ServerModel::PerSession);
         assert_eq!(m.kind(), "psmux");
@@ -536,7 +539,7 @@ mod tests {
         assert_eq!(got.server_model(), ServerModel::PerSession);
         assert_eq!(
             got.attach_plan("api", None),
-            argv(&["tmux", "attach", "-t", "api"])
+            argv(&["tmux", "new-session", "-A", "-s", "api"])
         );
     }
 
