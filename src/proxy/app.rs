@@ -16,9 +16,10 @@ pub enum PaneFocus {
     Terminal,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Focus {
     /// Tree pane focused — keys navigate the host/session tree.
+    #[default]
     Tree,
     /// Terminal pane focused — keys forward to the selected session's active pane.
     Terminal,
@@ -37,38 +38,29 @@ pub enum ModalKind {
     Menu,
 }
 
-pub struct App {
-    pub state: Focus,
-}
-
-impl App {
-    /// Starts in `Tree` (the cursor preselected on the most-recent session).
-    pub fn new() -> Self {
-        App { state: Focus::Tree }
-    }
-
+impl Focus {
     /// True only in the bare `Tree` pane state — false during any modal, even one
     /// opened from the tree. Gates set-pane / mux-active decisions; key-routing
     /// sites add `|| is_modal()` so a modal still receives keys.
     pub fn is_tree_focused(&self) -> bool {
-        matches!(self.state, Focus::Tree)
+        matches!(self, Focus::Tree)
     }
 
     /// True only in the bare `Terminal` pane state — false during any modal.
     pub fn is_terminal_focused(&self) -> bool {
-        matches!(self.state, Focus::Terminal)
+        matches!(self, Focus::Terminal)
     }
 
     /// True while a modal (popup or menu) is the focus state.
     pub fn is_modal(&self) -> bool {
-        matches!(self.state, Focus::Popup { .. } | Focus::Menu { .. })
+        matches!(self, Focus::Popup { .. } | Focus::Menu { .. })
     }
 
     /// The EFFECTIVE pane focus: the active pane, or — during a modal — the pane it
     /// was opened from. Lets `status` report the pane behind a modal as the focus.
     pub fn pane_is_tree(&self) -> bool {
         matches!(
-            self.state,
+            self,
             Focus::Tree
                 | Focus::Popup {
                     prior: PaneFocus::Tree
@@ -87,7 +79,7 @@ impl App {
             PaneFocus::Tree => PaneFocus::Terminal,
             PaneFocus::Terminal => PaneFocus::Tree,
         };
-        self.state = match self.state {
+        *self = match *self {
             Focus::Tree => Focus::Terminal,
             Focus::Terminal => Focus::Tree,
             Focus::Popup { prior } => Focus::Popup { prior: flip(prior) },
@@ -99,7 +91,7 @@ impl App {
     /// carried `prior`, so a focus request during/closing a modal lands on `p` after
     /// restore (the context-menu "focus mux" path).
     pub fn set_pane_focus(&mut self, p: PaneFocus) {
-        self.state = match self.state {
+        *self = match *self {
             Focus::Tree | Focus::Terminal => match p {
                 PaneFocus::Tree => Focus::Tree,
                 PaneFocus::Terminal => Focus::Terminal,
@@ -122,7 +114,7 @@ impl App {
                 PaneFocus::Terminal
             }
         };
-        self.state = match (kind, self.state) {
+        *self = match (kind, *self) {
             // No modal: collapse any open modal back onto its prior pane.
             (None, Focus::Popup { prior }) | (None, Focus::Menu { prior }) => match prior {
                 PaneFocus::Tree => Focus::Tree,
@@ -146,44 +138,36 @@ impl App {
     }
 }
 
-impl Default for App {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn app_starts_tree_focused_and_toggles() {
-        let mut app = App::new();
+        let mut focus = Focus::default();
         assert!(
-            app.is_tree_focused(),
+            focus.is_tree_focused(),
             "starts on the tree (cursor preselected)"
         );
-        app.toggle();
-        assert_eq!(app.state, Focus::Terminal);
-        app.toggle();
-        assert_eq!(app.state, Focus::Tree);
+        focus.toggle();
+        assert_eq!(focus, Focus::Terminal);
+        focus.toggle();
+        assert_eq!(focus, Focus::Tree);
     }
 
     #[test]
     fn popup_carries_and_restores_prior_from_terminal() {
-        let mut app = App {
-            state: Focus::Terminal,
-        };
-        app.sync_modal(Some(ModalKind::Popup));
+        let mut focus = Focus::Terminal;
+        focus.sync_modal(Some(ModalKind::Popup));
         assert_eq!(
-            app.state,
+            focus,
             Focus::Popup {
                 prior: PaneFocus::Terminal
             }
         );
-        app.sync_modal(None);
+        focus.sync_modal(None);
         assert_eq!(
-            app.state,
+            focus,
             Focus::Terminal,
             "restored to the pane it opened from"
         );
@@ -191,56 +175,56 @@ mod tests {
 
     #[test]
     fn popup_carries_and_restores_prior_from_tree() {
-        let mut app = App::new(); // Tree
-        app.sync_modal(Some(ModalKind::Popup));
+        let mut focus = Focus::default(); // Tree
+        focus.sync_modal(Some(ModalKind::Popup));
         assert_eq!(
-            app.state,
+            focus,
             Focus::Popup {
                 prior: PaneFocus::Tree
             }
         );
-        app.sync_modal(None);
-        assert_eq!(app.state, Focus::Tree);
+        focus.sync_modal(None);
+        assert_eq!(focus, Focus::Tree);
     }
 
     #[test]
     fn menu_carries_and_restores_prior_from_tree() {
-        let mut app = App::new(); // Tree
-        app.sync_modal(Some(ModalKind::Menu));
+        let mut focus = Focus::default(); // Tree
+        focus.sync_modal(Some(ModalKind::Menu));
         assert_eq!(
-            app.state,
+            focus,
             Focus::Menu {
                 prior: PaneFocus::Tree
             }
         );
-        app.sync_modal(None);
-        assert_eq!(app.state, Focus::Tree);
+        focus.sync_modal(None);
+        assert_eq!(focus, Focus::Tree);
     }
 
     #[test]
     fn toggle_during_a_modal_flips_prior_and_keeps_the_modal() {
-        let mut app = App::new(); // Tree
-        app.sync_modal(Some(ModalKind::Popup));
-        app.toggle();
+        let mut focus = Focus::default(); // Tree
+        focus.sync_modal(Some(ModalKind::Popup));
+        focus.toggle();
         assert_eq!(
-            app.state,
+            focus,
             Focus::Popup {
                 prior: PaneFocus::Terminal
             },
             "toggle flips the carried prior, the modal stays open",
         );
-        app.sync_modal(None);
-        assert_eq!(app.state, Focus::Terminal, "restored to the flipped pane");
+        focus.sync_modal(None);
+        assert_eq!(focus, Focus::Terminal, "restored to the flipped pane");
     }
 
     #[test]
     fn sync_modal_is_idempotent_while_held_and_does_not_recapture() {
-        let mut app = App::new(); // Tree
-        app.sync_modal(Some(ModalKind::Popup));
-        app.toggle(); // prior -> Terminal
-        app.sync_modal(Some(ModalKind::Popup)); // same kind, still held
+        let mut focus = Focus::default(); // Tree
+        focus.sync_modal(Some(ModalKind::Popup));
+        focus.toggle(); // prior -> Terminal
+        focus.sync_modal(Some(ModalKind::Popup)); // same kind, still held
         assert_eq!(
-            app.state,
+            focus,
             Focus::Popup {
                 prior: PaneFocus::Terminal
             },
@@ -250,14 +234,12 @@ mod tests {
 
     #[test]
     fn kind_switch_keeps_prior() {
-        let mut app = App {
-            state: Focus::Menu {
-                prior: PaneFocus::Terminal,
-            },
+        let mut focus = Focus::Menu {
+            prior: PaneFocus::Terminal,
         };
-        app.sync_modal(Some(ModalKind::Popup));
+        focus.sync_modal(Some(ModalKind::Popup));
         assert_eq!(
-            app.state,
+            focus,
             Focus::Popup {
                 prior: PaneFocus::Terminal
             },
@@ -268,29 +250,27 @@ mod tests {
     #[test]
     fn set_pane_focus_during_a_menu_targets_the_restore_pane() {
         // The menu "focus mux" path: state is Menu{prior:Tree}, focus-mux requested.
-        let mut app = App {
-            state: Focus::Menu {
-                prior: PaneFocus::Tree,
-            },
+        let mut focus = Focus::Menu {
+            prior: PaneFocus::Tree,
         };
-        app.set_pane_focus(PaneFocus::Terminal);
+        focus.set_pane_focus(PaneFocus::Terminal);
         assert_eq!(
-            app.state,
+            focus,
             Focus::Menu {
                 prior: PaneFocus::Terminal
             }
         );
-        app.sync_modal(None);
-        assert_eq!(app.state, Focus::Terminal, "menu closed onto the mux");
+        focus.sync_modal(None);
+        assert_eq!(focus, Focus::Terminal, "menu closed onto the mux");
     }
 
     #[test]
     fn set_pane_focus_when_not_modal_sets_the_state() {
-        let mut app = App::new(); // Tree
-        app.set_pane_focus(PaneFocus::Terminal);
-        assert_eq!(app.state, Focus::Terminal);
-        app.set_pane_focus(PaneFocus::Tree);
-        assert_eq!(app.state, Focus::Tree);
+        let mut focus = Focus::default(); // Tree
+        focus.set_pane_focus(PaneFocus::Terminal);
+        assert_eq!(focus, Focus::Terminal);
+        focus.set_pane_focus(PaneFocus::Tree);
+        assert_eq!(focus, Focus::Tree);
     }
 
     #[test]
@@ -311,11 +291,10 @@ mod tests {
                 prior: PaneFocus::Terminal,
             },
         ] {
-            let app = App { state };
             let n = [
-                app.is_tree_focused(),
-                app.is_terminal_focused(),
-                app.is_modal(),
+                state.is_tree_focused(),
+                state.is_terminal_focused(),
+                state.is_modal(),
             ]
             .into_iter()
             .filter(|&b| b)
@@ -325,54 +304,36 @@ mod tests {
                 "exactly one of tree/terminal/modal holds for {state:?}"
             );
         }
-        assert!(App { state: Focus::Tree }.is_tree_focused());
-        assert!(App {
-            state: Focus::Terminal
-        }
-        .is_terminal_focused());
-        assert!(App {
-            state: Focus::Popup {
-                prior: PaneFocus::Tree
-            }
+        assert!(Focus::Tree.is_tree_focused());
+        assert!(Focus::Terminal.is_terminal_focused());
+        assert!(Focus::Popup {
+            prior: PaneFocus::Tree
         }
         .is_modal());
-        assert!(App {
-            state: Focus::Menu {
-                prior: PaneFocus::Terminal
-            }
+        assert!(Focus::Menu {
+            prior: PaneFocus::Terminal
         }
         .is_modal());
     }
 
     #[test]
     fn pane_is_tree_reports_the_effective_pane() {
-        assert!(App { state: Focus::Tree }.pane_is_tree());
-        assert!(App {
-            state: Focus::Popup {
-                prior: PaneFocus::Tree
-            }
+        assert!(Focus::Tree.pane_is_tree());
+        assert!(Focus::Popup {
+            prior: PaneFocus::Tree
         }
         .pane_is_tree());
-        assert!(App {
-            state: Focus::Menu {
-                prior: PaneFocus::Tree
-            }
+        assert!(Focus::Menu {
+            prior: PaneFocus::Tree
         }
         .pane_is_tree());
-        assert!(!App {
-            state: Focus::Terminal
+        assert!(!Focus::Terminal.pane_is_tree());
+        assert!(!Focus::Popup {
+            prior: PaneFocus::Terminal
         }
         .pane_is_tree());
-        assert!(!App {
-            state: Focus::Popup {
-                prior: PaneFocus::Terminal
-            }
-        }
-        .pane_is_tree());
-        assert!(!App {
-            state: Focus::Menu {
-                prior: PaneFocus::Terminal
-            }
+        assert!(!Focus::Menu {
+            prior: PaneFocus::Terminal
         }
         .pane_is_tree());
     }

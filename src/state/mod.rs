@@ -1,7 +1,6 @@
 //! Runtime domain state: the single source of truth the new architecture's
-//! components read from. This phase carries the cockpit loop's selection and
-//! display-truth fields; later phases fold in focus, inventory, popup, and dirty
-//! tracking as the components that consume them land.
+//! components read from. Carries the cockpit loop's inventory, selection,
+//! display-truth, and focus fields.
 use crate::cockpit::Selection;
 use crate::session::WindowPanes;
 use crate::ui::tree::Group;
@@ -36,8 +35,9 @@ pub struct State {
     /// The session address last persisted as the user's last-selected, so it is
     /// not rewritten on every window step within the same session.
     pub last_saved_session: String,
-    // ponytail: focus/popup/dirty (spec §4) land in the phase whose components
-    // consume them, not speculatively now.
+    /// The cockpit's focus state machine — which pane keys go to and whether a
+    /// modal is open. The single source of truth for focus.
+    pub focus: crate::proxy::app::Focus,
 }
 
 impl State {
@@ -90,5 +90,6 @@ mod tests {
         assert!(s.displayed.is_empty());
         assert!(s.attach_deadline.is_none());
         assert_eq!(s.last_saved_session, "");
+        assert!(s.focus.is_tree_focused());
     }
 }

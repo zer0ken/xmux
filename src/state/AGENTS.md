@@ -10,15 +10,17 @@ tree.
 ## Mental Model
 
 `State` is the cockpit's durable runtime state bag. It owns the inventory
-(`groups`/`panes`/`scanning`/`panes_loaded`) and the active `filter`, plus the
-canonical `selection`, the confirmed `displayed` address, the debounced attach
+(`groups`/`panes`/`scanning`/`panes_loaded`) and the active `filter`, the
+canonical `selection`, the confirmed `displayed` address, the `focus` state
+machine (which pane keys go to; whether a modal is open), the debounced attach
 deadline, and the last session address persisted to prefs. `from_scan` /
 `from_sources` seed the inventory.
 
 ## Module Seams
 
-- `State` depends on `cockpit::Selection` for selected source/session/window, and
-  on `ui::tree::Group` + `session::WindowPanes` for the inventory.
+- `State` depends on `cockpit::Selection` for selected source/session/window,
+  `ui::tree::Group` + `session::WindowPanes` for the inventory, and
+  `proxy::app::Focus` for the focus state machine.
 - It stores state facts only; event handling and side effects remain in cockpit
   and related runtime modules.
 
@@ -29,6 +31,8 @@ deadline, and the last session address persisted to prefs. `from_scan` /
   only at confirmation (a synchronous switch/select-window, or `DisplayReady`).
   The grid renders only while `displayed` matches `selection`'s session, so a
   stale attachment shows "(attaching…)" rather than the previous session.
+- `focus` is the single source of truth for which pane owns keys and which modal
+  (if any) is open; a modal carries the pane it restores to.
 - `attach_deadline` is the debounce gate for settled selection attachment.
 - `last_saved_session` prevents rewriting prefs on every window step within the
   same session.

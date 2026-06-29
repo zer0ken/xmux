@@ -115,7 +115,6 @@ fn apply_operation(
     op: crate::model::Operation,
     switcher: &mut crate::ui::switcher::Switcher,
     state: &mut crate::state::State,
-    app: &mut crate::proxy::app::App,
     tree_width_natural: &mut u16,
     auto_hide_tree: &mut bool,
     xmux_dir: &std::path::Path,
@@ -129,10 +128,14 @@ fn apply_operation(
             switcher.select_address(&address, state);
         }
         Operation::Focus(FocusTarget::Terminal) => {
-            app.set_pane_focus(crate::proxy::app::PaneFocus::Terminal);
+            state
+                .focus
+                .set_pane_focus(crate::proxy::app::PaneFocus::Terminal);
         }
         Operation::Focus(FocusTarget::Tree) => {
-            app.set_pane_focus(crate::proxy::app::PaneFocus::Tree);
+            state
+                .focus
+                .set_pane_focus(crate::proxy::app::PaneFocus::Tree);
         }
         Operation::Rescan => {
             switcher.request_rescan(state);
@@ -1284,8 +1287,8 @@ struct StdinOutcome {
 /// of the inline `while i < bytes.len()` mouse branch, lifted verbatim. Runs the modal/
 /// gesture gates (menu, divider drag, popup drag, modal swallow, divider grab, idle
 /// hover, menu open) in the SAME order, then the focus×position routing. Mutates `st`
-/// (the gesture latches), `app` (mid-loop focus toggles — routing re-reads focus per
-/// event, so deferring would change behavior), and the byte-loop accumulators
+/// (the gesture latches), `state.focus` (mid-loop focus toggles — routing re-reads focus
+/// per event, so deferring would change behavior), and the byte-loop accumulators
 /// (`non_mouse`, `mouse_focus_toggle`, `wheel_scrolled`). Returns whether a redraw is
 /// needed for this event.
 #[allow(clippy::too_many_arguments)]
@@ -1294,7 +1297,6 @@ fn handle_mouse_event(
     st: &mut MouseState,
     switcher: &mut crate::ui::switcher::Switcher,
     state: &mut crate::state::State,
-    app: &mut crate::proxy::app::App,
     registry: &mut AttachRegistry,
     mgr: &mut HostManager,
     env: &Env,
@@ -1341,7 +1343,9 @@ fn handle_mouse_event(
                     ensure_current_host(mgr, env, hosts, switcher, cols, body_rows, tree_width);
                     // Focus state is `Menu{prior}` here; set the restore pane to the mux
                     // so closing the menu (next loop-top sync_modal(None)) lands on it.
-                    app.set_pane_focus(crate::proxy::app::PaneFocus::Terminal);
+                    state
+                        .focus
+                        .set_pane_focus(crate::proxy::app::PaneFocus::Terminal);
                 }
                 crate::ui::switcher::MenuOutcome::Handled => {
                     // A menu item may queue an op (split) or a
@@ -1427,8 +1431,11 @@ fn handle_mouse_event(
     // kill confirm) thus always run in tree focus, so a confirmed kill
     // can't quit the cockpit out from under the mux.
     let is_right_press = is_press && (ev.cb & 0x03) == 2;
-    if tree_menu_may_open(is_right_press, app.is_tree_focused(), in_mux.is_some())
-        && switcher.menu_open(col0, ev.row.saturating_sub(1))
+    if tree_menu_may_open(
+        is_right_press,
+        state.focus.is_tree_focused(),
+        in_mux.is_some(),
+    ) && switcher.menu_open(col0, ev.row.saturating_sub(1))
     {
         dirty = true;
         return dirty;
@@ -1440,7 +1447,7 @@ fn handle_mouse_event(
         ctrl,
         down,
         is_left_press,
-        app.is_tree_focused(),
+        state.focus.is_tree_focused(),
         in_mux.is_some(),
     ) {
         ChainAction::ScrollTree(down) => {
@@ -1460,7 +1467,7 @@ fn handle_mouse_event(
         // The unfocused pane was clicked → switch focus to it (no content
         // delivered); toggle flips Focus::Tree⇄Focus::Terminal either direction.
         ChainAction::FocusMux | ChainAction::FocusTree => {
-            app.toggle();
+            state.focus.toggle();
             *mouse_focus_toggle = true;
         }
         ChainAction::SelectRow => {
@@ -1488,14 +1495,13 @@ fn handle_mouse_event(
 /// (routed via [`handle_mouse_event`]) vs a non-mouse byte stream, runs the lost-release
 /// watchdogs, the resize-repeat window, and the help-modal / tree-focus / mux-focus
 /// routing — in the SAME order as the inline arm. The final focus toggles (+ replay)
-/// run inside on `&mut app`, so the loop only acts on `dirty`/`quit`. No behavior change.
+/// run inside on `state.focus`, so the loop only acts on `dirty`/`quit`. No behavior change.
 #[allow(clippy::too_many_arguments)]
 fn handle_stdin_bytes(
     bytes: &[u8],
     mouse: &mut MouseState,
     switcher: &mut crate::ui::switcher::Switcher,
     state: &mut crate::state::State,
-    app: &mut crate::proxy::app::App,
     registry: &mut AttachRegistry,
     mgr: &mut HostManager,
     env: &Env,
@@ -1544,7 +1550,6 @@ fn handle_stdin_bytes(
                     mouse,
                     switcher,
                     state,
-                    app,
                     registry,
                     mgr,
                     env,
@@ -1646,7 +1651,7 @@ fn handle_stdin_bytes(
         // swallowed — so nothing leaks to the tree or the mux pane. Above the
         // tree/mux split so the behavior is identical regardless of focus.
         *dirty = true;
-    } else if !consumed_by_repeat && (app.is_tree_focused() || app.is_modal()) {
+    } else if !consumed_by_repeat && (state.focus.is_tree_focused() || state.focus.is_modal()) {
         // Tree pane OR any modal: route to the switcher path. A modal popup (input /
         // kill-confirm) opened from EITHER pane owns its keys here; the resolver gating
         // in handle_tree_bytes swallows everything but the modal's own keys, so a modal
@@ -1718,13 +1723,17 @@ fn handle_stdin_bytes(
         }
     }
     if *focus_terminal {
-        app.set_pane_focus(crate::proxy::app::PaneFocus::Terminal);
+        state
+            .focus
+            .set_pane_focus(crate::proxy::app::PaneFocus::Terminal);
         // No term.clear(): both states draw the SAME split layout (only the
         // divider colour changes), so clearing would blank the screen and
         // force a full repaint for nothing.
     }
     if *focus_tree {
-        app.set_pane_focus(crate::proxy::app::PaneFocus::Tree);
+        state
+            .focus
+            .set_pane_focus(crate::proxy::app::PaneFocus::Tree);
         if !tree_replay.is_empty() {
             let (ft, q, wd, th) = handle_tree_bytes(
                 tree_replay,
@@ -1744,7 +1753,9 @@ fn handle_stdin_bytes(
                 tree_width,
             );
             if ft {
-                app.set_pane_focus(crate::proxy::app::PaneFocus::Terminal);
+                state
+                    .focus
+                    .set_pane_focus(crate::proxy::app::PaneFocus::Terminal);
             }
             *quit = *quit || q;
             if wd != 0 {
@@ -1770,7 +1781,6 @@ fn handle_stdin_bytes(
 /// client per remote host for inventory/events/window-switch. It serves a picker
 /// control socket so a headless driver can inject keys/text and dump the screen.
 pub async fn run_cockpit(env: Arc<Env>) -> i32 {
-    use crate::proxy::app::App;
     use crate::proxy::decode::KeyDecoder;
     use crate::proxy::input::TermInput;
     use crate::proxy::term::{parse_prefix, TermGuard};
@@ -1904,7 +1914,6 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     // preselect lands there once its host streams in instead of guessing from the
     // unreliable cross-host `session_last_attached` (#1).
     switcher.set_preferred(crate::prefs::load_last_session(&env.xmux_dir));
-    let mut app = App::new();
 
     // Off-loop attach sequence. The in-flight set + reaped-ids + which session each display
     // shows now live on each `host.display` (HostDisplay), so the cockpit holds no free
@@ -2001,7 +2010,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // Derive the modal dimension of focus from the switcher's open-modal kind: open
         // a modal → Focus becomes Popup/Menu carrying the current pane; close it →
         // restore that pane. The single owner of the modal/pane reconciliation.
-        app.sync_modal(switcher.modal_kind());
+        state.focus.sync_modal(switcher.modal_kind());
         // The single owner of the effective tree width: reconcile it to the current
         // focus + the hide setting, and to any natural-width change from prefix h/l.
         // On a change (focus toggled, hide flips the width, or h/l resized the tree),
@@ -2010,7 +2019,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // gated to fire once per actual change (not per loop), matching the existing
         // h/l and console-resize paths; debounce only if toggle-spam proves costly.
         let want_tree_width = reconciled_tree_width(
-            app.is_terminal_focused(),
+            state.focus.is_terminal_focused(),
             auto_hide_tree,
             tree_width_natural,
         );
@@ -2050,7 +2059,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // PTY), so the tree selection tracks the displayed session's active window — always.
         // select_active_window is idempotent (no move when already on the active window or
         // when the session's panes are unknown), so calling it each iteration is cheap.
-        if app.is_terminal_focused() {
+        if state.focus.is_terminal_focused() {
             switcher.select_active_window(&state);
         }
         if sync_selection_from_switcher(
@@ -2152,7 +2161,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             let grid_arc = display_matches_selection(&state.displayed, &state.selection)
                 .then(|| registry.grid(&display_key(&hosts, &state.selection)))
                 .flatten();
-            let terminal_focused = app.is_terminal_focused();
+            let terminal_focused = state.focus.is_terminal_focused();
             // The divider glyph reflects auto-hide-tree mode (║ on, │ off).
             switcher.set_auto_hide(auto_hide_tree);
             let t_draw = std::time::Instant::now();
@@ -2227,7 +2236,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 // it instead of quitting (quit is `prefix q` only). Capture its id BEFORE any
                 // reap removes it; a background session dropping (tree focus, or a non-displayed
                 // attach) is just reaped.
-                let displayed_attach_id = (app.is_terminal_focused() && !state.selection.is_empty())
+                let displayed_attach_id = (state.focus.is_terminal_focused() && !state.selection.is_empty())
                     .then(|| registry.get(&display_key(&hosts, &state.selection)).map(|a| a.id()))
                     .flatten();
                 let mut detached = false;
@@ -2348,7 +2357,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 // (the ForwardToMux path reads the selection for display_key/registry input).
                 let selection = state.selection.clone();
                 let outcome = handle_stdin_bytes(
-                    &bytes, &mut mouse_state, &mut switcher, &mut state, &mut app, &mut registry, &mut mgr,
+                    &bytes, &mut mouse_state, &mut switcher, &mut state, &mut registry, &mut mgr,
                     &env, &mut hosts, &mut detecting, &selection, &mut term_input, &mut tree_decoder, &ops, &op_tx,
                     &mut tree_width_natural, &mut auto_hide_tree, prefix, cols, body_rows,
                     tree_width,
@@ -2367,7 +2376,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             Some(cmd) = cmd_rx.recv() => {
                 match cmd {
                     Cmd::Op(op) => {
-                        let (quit_op, wc) = apply_operation(op, &mut switcher, &mut state, &mut app, &mut tree_width_natural, &mut auto_hide_tree, &env.xmux_dir, &ops, &op_tx);
+                        let (quit_op, wc) = apply_operation(op, &mut switcher, &mut state, &mut tree_width_natural, &mut auto_hide_tree, &env.xmux_dir, &ops, &op_tx);
                         if wc {
                             width_dirty = true;
                             width_flush_at = Some(std::time::Instant::now() + Duration::from_millis(WIDTH_FLUSH_MS));
@@ -2382,7 +2391,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             dirty = true;
                         }
                     }
-                    Cmd::Status(reply) => { let _ = reply.send(status_line(&switcher, app.pane_is_tree())); }
+                    Cmd::Status(reply) => { let _ = reply.send(status_line(&switcher, state.focus.pane_is_tree())); }
                     Cmd::Dump(reply) => {
                         let sz = term
                             .size()
@@ -3513,13 +3522,13 @@ mod tests {
 
     #[test]
     fn prefix_s_toggles_state() {
-        use crate::proxy::app::{App, Focus};
-        let mut app = App::new();
-        assert!(app.is_tree_focused());
-        app.toggle();
-        assert_eq!(app.state, Focus::Terminal);
-        app.toggle();
-        assert!(app.is_tree_focused());
+        use crate::proxy::app::Focus;
+        let mut focus = Focus::default();
+        assert!(focus.is_tree_focused());
+        focus.toggle();
+        assert_eq!(focus, Focus::Terminal);
+        focus.toggle();
+        assert!(focus.is_tree_focused());
     }
 
     // Suppress unused warnings for the test-only env builder kept for future loop tests.
@@ -4093,7 +4102,7 @@ mod tests {
     #[test]
     fn apply_operation_switch_moves_cursor_focus_toggles_width_and_quit() {
         use crate::model::{FocusTarget, Operation};
-        use crate::proxy::app::{App, Focus};
+        use crate::proxy::app::Focus;
         use crate::session::Session;
         use crate::ui::switcher::{Scan, Switcher};
         use crate::ui::tree::Group;
@@ -4122,7 +4131,6 @@ mod tests {
         };
         let mut state = crate::state::State::from_scan(scan);
         let mut sw = Switcher::new(&state);
-        let mut app = App::new();
         let mut natural = 48u16;
         let mut hide = false;
         let dir = std::env::temp_dir().join(format!("xmux-apply-{}", std::process::id()));
@@ -4138,7 +4146,6 @@ mod tests {
                 },
                 &mut sw,
                 &mut state,
-                &mut app,
                 &mut natural,
                 &mut hide,
                 &dir,
@@ -4149,39 +4156,36 @@ mod tests {
         );
         assert_eq!(sw.terminal_view_target().target, "db");
         // Focus(Terminal) leaves tree focus → terminal focus.
-        assert!(app.is_tree_focused());
+        assert!(state.focus.is_tree_focused());
         apply_operation(
             Operation::Focus(FocusTarget::Terminal),
             &mut sw,
             &mut state,
-            &mut app,
             &mut natural,
             &mut hide,
             &dir,
             &ops,
             &op_tx,
         );
-        assert_eq!(app.state, Focus::Terminal);
+        assert_eq!(state.focus, Focus::Terminal);
         // Focus(Tree) returns to tree focus.
         apply_operation(
             Operation::Focus(FocusTarget::Tree),
             &mut sw,
             &mut state,
-            &mut app,
             &mut natural,
             &mut hide,
             &dir,
             &ops,
             &op_tx,
         );
-        assert_eq!(app.state, Focus::Tree);
+        assert_eq!(state.focus, Focus::Tree);
         // TreeWidth adjusts the natural width and signals width_changed; Quit signals quit.
         assert_eq!(
             apply_operation(
                 Operation::TreeWidth(1),
                 &mut sw,
                 &mut state,
-                &mut app,
                 &mut natural,
                 &mut hide,
                 &dir,
@@ -4196,7 +4200,6 @@ mod tests {
                 Operation::Quit,
                 &mut sw,
                 &mut state,
-                &mut app,
                 &mut natural,
                 &mut hide,
                 &dir,
@@ -4266,7 +4269,6 @@ mod tests {
         };
         let mut state = crate::state::State::from_scan(scan);
         let mut sw = Switcher::new(&state);
-        let mut app = crate::proxy::app::App::new();
         let mut natural = 48u16;
         let mut hide = false;
         let dir = std::env::temp_dir().join(format!("xmux-ctl-switch-sync-{}", std::process::id()));
@@ -4280,7 +4282,6 @@ mod tests {
             },
             &mut sw,
             &mut state,
-            &mut app,
             &mut natural,
             &mut hide,
             &dir,
@@ -4297,16 +4298,14 @@ mod tests {
 
     #[test]
     fn handle_stdin_bytes_quit_on_prefix_q_in_tree_focus() {
-        use crate::proxy::app::App;
         use crate::ui::switcher::{Scan, Switcher};
         // prefix is Ctrl-G (0x07) in the default config; prefix then 'q' = quit.
         let scan = Scan {
             groups: vec![],
             panes: Default::default(),
         };
-        let mut state = crate::state::State::from_scan(scan);
+        let mut state = crate::state::State::from_scan(scan); // tree focus
         let mut switcher = Switcher::new(&state);
-        let mut app = App::new(); // tree focus
         let mut registry = AttachRegistry::new();
         let mut mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let mut hosts = crate::model::Hosts::default();
@@ -4325,7 +4324,6 @@ mod tests {
             &mut mouse,
             &mut switcher,
             &mut state,
-            &mut app,
             &mut registry,
             &mut mgr,
             &env,
@@ -4354,7 +4352,7 @@ mod tests {
         // it instead of resolving to FocusMux — so a confirm can neither quit the cockpit
         // nor focus the mux out from under itself. (The first swallowed key cancels the
         // confirm, tmux confirm-before style; the point is the key does not quit/focus.)
-        use crate::proxy::app::{App, Focus, PaneFocus};
+        use crate::proxy::app::{Focus, PaneFocus};
         use crate::session::Session;
         use crate::ui::switcher::{Scan, Switcher};
         use crate::ui::tree::Group;
@@ -4372,9 +4370,8 @@ mod tests {
             }],
             panes: Default::default(),
         };
-        let mut state = crate::state::State::from_scan(scan);
+        let mut state = crate::state::State::from_scan(scan); // tree focus
         let mut switcher = Switcher::new(&state);
-        let mut app = App::new(); // tree focus
         let mut registry = AttachRegistry::new();
         let mut mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let mut hosts = crate::model::Hosts::default();
@@ -4394,7 +4391,6 @@ mod tests {
                     &mut mouse,
                     &mut switcher,
                     &mut state,
-                    &mut app,
                     &mut registry,
                     &mut mgr,
                     &env,
@@ -4425,9 +4421,9 @@ mod tests {
             "a kill-confirm is NOT an inline input"
         );
         // The loop-top reconciler makes Focus a modal carrying the prior pane.
-        app.sync_modal(switcher.modal_kind());
+        state.focus.sync_modal(switcher.modal_kind());
         assert_eq!(
-            app.state,
+            state.focus,
             Focus::Popup {
                 prior: PaneFocus::Tree
             }
@@ -4439,7 +4435,7 @@ mod tests {
             "prefix q is owned by the kill-confirm, does not quit"
         );
         assert_eq!(
-            app.state,
+            state.focus,
             Focus::Popup {
                 prior: PaneFocus::Tree
             },
@@ -4447,9 +4443,9 @@ mod tests {
         );
         // Re-arm and feed Enter: routed to the switcher, NOT a mux-focus.
         feed!(b"x");
-        app.sync_modal(switcher.modal_kind());
+        state.focus.sync_modal(switcher.modal_kind());
         assert_eq!(
-            app.state,
+            state.focus,
             Focus::Popup {
                 prior: PaneFocus::Tree
             },
@@ -4458,7 +4454,7 @@ mod tests {
         let out = feed!(b"\r");
         assert!(!out.quit);
         assert_eq!(
-            app.state,
+            state.focus,
             Focus::Popup {
                 prior: PaneFocus::Tree
             },
@@ -4468,7 +4464,7 @@ mod tests {
 
     #[test]
     fn menu_keyboard_input_is_consumed_without_changing_restore_pane_or_writing_pty() {
-        use crate::proxy::app::{App, Focus, PaneFocus};
+        use crate::proxy::app::{Focus, PaneFocus};
         use crate::session::Session;
         use crate::ui::switcher::{Scan, Switcher};
         use crate::ui::tree::Group;
@@ -4497,10 +4493,9 @@ mod tests {
             let opened = (0..10).any(|row| switcher.menu_open(1, row));
             assert!(opened, "menu opens over a rendered tree row");
 
-            let mut app = App::new();
-            app.sync_modal(switcher.modal_kind());
+            state.focus.sync_modal(switcher.modal_kind());
             assert_eq!(
-                app.state,
+                state.focus,
                 Focus::Menu {
                     prior: PaneFocus::Tree
                 }
@@ -4535,7 +4530,6 @@ mod tests {
                 &mut mouse,
                 &mut switcher,
                 &mut state,
-                &mut app,
                 &mut registry,
                 &mut mgr,
                 &env,
@@ -4553,9 +4547,9 @@ mod tests {
                 24,
                 crate::ui::switcher::TREE_WIDTH,
             );
-            let during = app.state;
-            app.sync_modal(switcher.modal_kind());
-            let restored = app.state;
+            let during = state.focus;
+            state.focus.sync_modal(switcher.modal_kind());
+            let restored = state.focus;
             let writes = input_log.lock().unwrap().len();
             (out, during, restored, writes)
         }
@@ -4588,7 +4582,6 @@ mod tests {
 
     #[test]
     fn handle_mouse_event_divider_grab_sets_dragging() {
-        use crate::proxy::app::App;
         use crate::ui::switcher::{Scan, Switcher};
         // A left-press exactly on the divider column sets dragging_divider, as the
         // inline gate did (is_left_press && tree_width > 0 && col0 == tree_width).
@@ -4598,7 +4591,6 @@ mod tests {
         };
         let mut state = crate::state::State::from_scan(scan);
         let mut switcher = Switcher::new(&state);
-        let mut app = App::new();
         let mut registry = AttachRegistry::new();
         let mut mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let hosts = crate::model::Hosts::default();
@@ -4628,7 +4620,6 @@ mod tests {
             &mut st,
             &mut switcher,
             &mut state,
-            &mut app,
             &mut registry,
             &mut mgr,
             &env_for_mouse_test(),
