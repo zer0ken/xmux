@@ -114,6 +114,7 @@ fn toggle_auto_hide(mode: &mut bool, xmux_dir: &std::path::Path) {
 fn apply_operation(
     op: crate::model::Operation,
     switcher: &mut crate::ui::switcher::Switcher,
+    state: &mut crate::state::State,
     app: &mut crate::proxy::app::App,
     tree_width_natural: &mut u16,
     auto_hide_tree: &mut bool,
@@ -125,7 +126,7 @@ fn apply_operation(
     let mut width_changed = false;
     match op {
         Operation::Switch { address } => {
-            switcher.select_address(&address);
+            switcher.select_address(&address, state);
         }
         Operation::Focus(FocusTarget::Terminal) => {
             app.set_pane_focus(crate::proxy::app::PaneFocus::Terminal);
@@ -134,7 +135,7 @@ fn apply_operation(
             app.set_pane_focus(crate::proxy::app::PaneFocus::Tree);
         }
         Operation::Rescan => {
-            switcher.request_rescan();
+            switcher.request_rescan(state);
         }
         Operation::TreeWidth(d) => {
             width_changed = apply_width_delta(d, tree_width_natural);
@@ -911,6 +912,7 @@ fn handle_tree_bytes(
     tree_armed: &mut bool,
     prefix: u8,
     switcher: &mut crate::ui::switcher::Switcher,
+    state: &mut crate::state::State,
     mgr: &mut HostManager,
     env: &Env,
     hosts: &crate::model::Hosts,
@@ -933,7 +935,7 @@ fn handle_tree_bytes(
         // focus the mux while a confirm is on screen; only y/n/Esc act on it.
         let is_inputting = switcher.is_modal_popup_open();
         match resolve_tree_key(key, tree_armed, prefix, is_inputting) {
-            Some(Action::TreeKey(k)) => switcher.handle_key(k),
+            Some(Action::TreeKey(k)) => switcher.handle_key(k, state),
             Some(Action::FocusMux) => focus_terminal = true,
             Some(Action::Quit) => quit = true,
             Some(Action::Width(d)) => width_delta = d,
@@ -989,6 +991,7 @@ fn handle_host_event(
     hosts: &mut crate::model::Hosts,
     registry: &mut AttachRegistry,
     switcher: &mut crate::ui::switcher::Switcher,
+    state: &mut crate::state::State,
     env: &Env,
     connected: &mut HashSet<String>,
     panes_requested: &mut HashSet<String>,
@@ -1005,9 +1008,9 @@ fn handle_host_event(
             if let Some(client) = mgr.get(&host) {
                 let sessions = {
                     let inv = client.inventory.lock().unwrap();
-                    switcher.apply_source_result(host.clone(), inv.sessions.clone(), None);
+                    switcher.apply_source_result(host.clone(), inv.sessions.clone(), None, state);
                     for (addr, windows) in inv.panes.iter() {
-                        switcher.apply_panes(addr.clone(), windows.clone());
+                        switcher.apply_panes(addr.clone(), windows.clone(), state);
                     }
                     inv.sessions.clone()
                 };
@@ -1055,10 +1058,10 @@ fn handle_host_event(
             // The active-window probe resolved. Updates the bold+italic marker so the
             // sidebar reflects the mux's current active window. Cursor follow in
             // passthrough happens at the loop top (single unified call), not here.
-            switcher.set_active_window(&host, &session, window);
+            switcher.set_active_window(&host, &session, window, state);
         }
         HostEvent::Exited { host, reason } => {
-            note_host_exited(switcher, connected, &host, reason);
+            note_host_exited(switcher, state, connected, &host, reason);
             mgr.reap(&host);
         }
         HostEvent::ClientDetached { host, client } => {
@@ -1105,7 +1108,7 @@ fn handle_host_event(
                     err
                 ),
             );
-            switcher.apply_source_result(source.clone(), sessions.clone(), err);
+            switcher.apply_source_result(source.clone(), sessions.clone(), err, state);
             if !had_err {
                 // PerSession psmux: a session whose registry .port disappeared is dead
                 // even if its PTY has not EOF'd. Drop the stale attach so it cannot
@@ -1132,7 +1135,7 @@ fn handle_host_event(
             // A poll host's per-session window/pane subtree resolved. Local psmux has
             // no `%`-event stream, so window changes inside the displayed session are
             // only seen on the poll.
-            switcher.apply_panes(address, panes);
+            switcher.apply_panes(address, panes, state);
         }
     }
     false
@@ -1220,6 +1223,7 @@ fn clear_display_tty_for_attach(
 /// unreachable.
 fn note_host_exited(
     switcher: &mut crate::ui::switcher::Switcher,
+    state: &mut crate::state::State,
     connected: &mut HashSet<String>,
     host: &str,
     reason: Option<String>,
@@ -1236,11 +1240,11 @@ fn note_host_exited(
         .as_deref()
         .is_some_and(crate::source::reason_is_no_sessions)
     {
-        switcher.apply_source_result(host.to_string(), Vec::new(), None);
+        switcher.apply_source_result(host.to_string(), Vec::new(), None, state);
         return false;
     }
     let msg = reason.unwrap_or_else(|| "connection closed".into());
-    switcher.apply_source_result(host.to_string(), Vec::new(), Some(msg));
+    switcher.apply_source_result(host.to_string(), Vec::new(), Some(msg), state);
     true
 }
 
@@ -1289,6 +1293,7 @@ fn handle_mouse_event(
     ev: &crate::proxy::mouse::MouseEvent,
     st: &mut MouseState,
     switcher: &mut crate::ui::switcher::Switcher,
+    state: &mut crate::state::State,
     app: &mut crate::proxy::app::App,
     registry: &mut AttachRegistry,
     mgr: &mut HostManager,
@@ -1328,7 +1333,7 @@ fn handle_mouse_event(
                                          // acts on it (or cancels if released off-menu).
     if switcher.menu_active() {
         if !ev.pressed {
-            match switcher.menu_release() {
+            match switcher.menu_release(state) {
                 crate::ui::switcher::MenuOutcome::FocusTerminal => {
                     // Connect the target's host (mirrors the left-click
                     // select path) so its control client streams, then
@@ -1443,7 +1448,7 @@ fn handle_mouse_event(
             // (move_selection), like any list. NOT sibling-cycle: arrows do
             // that (move_sibling), but it wraps within a level, so a 2-sibling
             // level just bounces — the "two notches per move" report.
-            switcher.mouse_scroll(down);
+            switcher.mouse_scroll(down, state);
             *wheel_scrolled = true;
             dirty = true;
         }
@@ -1462,7 +1467,7 @@ fn handle_mouse_event(
             // Left-click a tree row → move the cursor to it (select). The
             // loop top commits the new selection (attach); ensure the
             // clicked row's host connects so its subtree streams in.
-            switcher.mouse_select(col0, ev.row.saturating_sub(1));
+            switcher.mouse_select(col0, ev.row.saturating_sub(1), state);
             ensure_current_host(mgr, env, hosts, switcher, cols, body_rows, tree_width);
             dirty = true;
         }
@@ -1489,6 +1494,7 @@ fn handle_stdin_bytes(
     bytes: &[u8],
     mouse: &mut MouseState,
     switcher: &mut crate::ui::switcher::Switcher,
+    state: &mut crate::state::State,
     app: &mut crate::proxy::app::App,
     registry: &mut AttachRegistry,
     mgr: &mut HostManager,
@@ -1537,6 +1543,7 @@ fn handle_stdin_bytes(
                     &ev,
                     mouse,
                     switcher,
+                    state,
                     app,
                     registry,
                     mgr,
@@ -1650,6 +1657,7 @@ fn handle_stdin_bytes(
             &mut mouse.tree_armed,
             prefix,
             switcher,
+            state,
             mgr,
             env,
             hosts,
@@ -1724,6 +1732,7 @@ fn handle_stdin_bytes(
                 &mut mouse.tree_armed,
                 prefix,
                 switcher,
+                state,
                 mgr,
                 env,
                 hosts,
@@ -1868,8 +1877,15 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         local_socket_opt,
     );
 
-    // The switcher, seeded from the source skeletons; events stream the tree in.
-    let mut switcher = Switcher::from_sources(env.srcs.iter().map(|s| s.alias.clone()).collect());
+    // The cockpit's runtime state (single source of truth): the inventory the
+    // components read, the canonical selection committed from the switcher's cursor at
+    // the loop top, the attach debounce latch (last selection actually attached/switched
+    // to) + its deadline, and the last session address persisted as the user's
+    // last-selected (#1). Seeded from the source skeletons; events stream the tree in.
+    let mut state =
+        crate::state::State::from_sources(env.srcs.iter().map(|s| s.alias.clone()).collect());
+    // The switcher, built over that seeded inventory; events stream the tree in.
+    let mut switcher = Switcher::from_sources(&state);
     // Feed the switcher the ssh config so an unreachable host's info pane can show its
     // Host/Match stanza. Read once; a missing file just yields no stanza.
     switcher.set_ssh_config_text(
@@ -1890,11 +1906,6 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     switcher.set_preferred(crate::prefs::load_last_session(&env.xmux_dir));
     let mut app = App::new();
 
-    // The cockpit's runtime state (single source of truth): the canonical selection
-    // committed from the switcher's cursor at the loop top, the attach debounce latch
-    // (last selection actually attached/switched to) + its deadline, and the last
-    // session address persisted as the user's last-selected (#1).
-    let mut state = crate::state::State::default();
     // Off-loop attach sequence. The in-flight set + reaped-ids + which session each display
     // shows now live on each `host.display` (HostDisplay), so the cockpit holds no free
     // host_session/in_flight/reaped_ids side-maps.
@@ -2040,7 +2051,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // select_active_window is idempotent (no move when already on the active window or
         // when the session's panes are unknown), so calling it each iteration is cheap.
         if app.is_terminal_focused() {
-            switcher.select_active_window();
+            switcher.select_active_window(&state);
         }
         if sync_selection_from_switcher(
             &mut state,
@@ -2159,13 +2170,13 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     dbg_ms(&env.xmux_dir, "grid_lock", t_lock);
                     term.draw(|f| {
                         let t_render = std::time::Instant::now();
-                        switcher.render(f, guard.as_deref(), terminal_focused, tree_width);
+                        switcher.render(f, guard.as_deref(), terminal_focused, tree_width, &state);
                         dbg_ms(&xmux_dir, "render", t_render);
                     })
                 }
                 None => term.draw(|f| {
                     let t_render = std::time::Instant::now();
-                    switcher.render(f, None, terminal_focused, tree_width);
+                    switcher.render(f, None, terminal_focused, tree_width, &state);
                     dbg_ms(&xmux_dir, "render", t_render);
                 }),
             };
@@ -2188,7 +2199,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         tokio::select! {
             Some(ev) = host_rx.recv() => {
                 let t = std::time::Instant::now();
-                if handle_host_event(ev, &mut mgr, &mut hosts, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &mut detecting, &worker, &mut attach_seq, cols, body_rows, tree_width) {
+                if handle_host_event(ev, &mut mgr, &mut hosts, &mut registry, &mut switcher, &mut state, &env, &mut connected, &mut panes_requested, &mut detecting, &worker, &mut attach_seq, cols, body_rows, tree_width) {
                     state.attach_deadline = Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
                     dirty = true;
                 }
@@ -2196,7 +2207,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 while budget > 0 {
                     match host_rx.try_recv() {
                         Ok(ev) => {
-                            if handle_host_event(ev, &mut mgr, &mut hosts, &mut registry, &mut switcher, &env, &mut connected, &mut panes_requested, &mut detecting, &worker, &mut attach_seq, cols, body_rows, tree_width) {
+                            if handle_host_event(ev, &mut mgr, &mut hosts, &mut registry, &mut switcher, &mut state, &env, &mut connected, &mut panes_requested, &mut detecting, &worker, &mut attach_seq, cols, body_rows, tree_width) {
                                 state.attach_deadline = Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
                                 dirty = true;
                             }
@@ -2333,9 +2344,12 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 }
             }
             Some(bytes) = stdin_rx.recv() => {
+                // Clone the selection so &mut state can be threaded through alongside it
+                // (the ForwardToMux path reads the selection for display_key/registry input).
+                let selection = state.selection.clone();
                 let outcome = handle_stdin_bytes(
-                    &bytes, &mut mouse_state, &mut switcher, &mut app, &mut registry, &mut mgr,
-                    &env, &mut hosts, &mut detecting, &state.selection, &mut term_input, &mut tree_decoder, &ops, &op_tx,
+                    &bytes, &mut mouse_state, &mut switcher, &mut state, &mut app, &mut registry, &mut mgr,
+                    &env, &mut hosts, &mut detecting, &selection, &mut term_input, &mut tree_decoder, &ops, &op_tx,
                     &mut tree_width_natural, &mut auto_hide_tree, prefix, cols, body_rows,
                     tree_width,
                 );
@@ -2353,7 +2367,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             Some(cmd) = cmd_rx.recv() => {
                 match cmd {
                     Cmd::Op(op) => {
-                        let (quit_op, wc) = apply_operation(op, &mut switcher, &mut app, &mut tree_width_natural, &mut auto_hide_tree, &env.xmux_dir, &ops, &op_tx);
+                        let (quit_op, wc) = apply_operation(op, &mut switcher, &mut state, &mut app, &mut tree_width_natural, &mut auto_hide_tree, &env.xmux_dir, &ops, &op_tx);
                         if wc {
                             width_dirty = true;
                             width_flush_at = Some(std::time::Instant::now() + Duration::from_millis(WIDTH_FLUSH_MS));
@@ -2379,14 +2393,14 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         let dump = match &grid_arc {
                             Some(g) => {
                                 let guard = g.lock().ok();
-                                dump_overlay(&mut switcher, guard.as_deref(), sz.width, sz.height)
+                                dump_overlay(&mut switcher, guard.as_deref(), sz.width, sz.height, &state)
                             }
-                            None => dump_overlay(&mut switcher, None, sz.width, sz.height),
+                            None => dump_overlay(&mut switcher, None, sz.width, sz.height, &state),
                         };
                         let _ = reply.send(dump);
                     }
                     Cmd::RawKey(k) => {
-                        switcher.handle_key(k);
+                        switcher.handle_key(k, &mut state);
                         dispatch_pending_op(&mut switcher, &ops, &op_tx);
                         ensure_current_host(&mut mgr, &env, &hosts, &switcher, cols, body_rows, tree_width);
                         if sync_selection_from_switcher(&mut state, &switcher, std::time::Instant::now()) {
@@ -2401,7 +2415,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 }
             }
             Some(result) = op_rx.recv() => {
-                switcher.apply_op_result(result);
+                switcher.apply_op_result(result, &mut state);
             }
             _ = tick.tick() => {
                 // Resize detection: poll the console size (an ioctl, not a stdin
@@ -3187,18 +3201,20 @@ mod tests {
     async fn host_exited_before_connect_marks_unreachable() {
         use crate::ui::run::dump_overlay;
         use crate::ui::switcher::Switcher;
-        let mut switcher = Switcher::from_sources(vec!["jupiter00".into()]);
+        let mut state = crate::state::State::from_sources(vec!["jupiter00".into()]);
+        let mut switcher = Switcher::from_sources(&state);
         let mut connected: HashSet<String> = HashSet::new();
         assert!(
             note_host_exited(
                 &mut switcher,
+                &mut state,
                 &mut connected,
                 "jupiter00",
                 Some("no route to host".into())
             ),
             "a never-connected host is marked unreachable on exit"
         );
-        let out = dump_overlay(&mut switcher, None, 80, 24);
+        let out = dump_overlay(&mut switcher, None, 80, 24, &state);
         assert!(
             out.contains("unreachable"),
             "host reads unreachable:\n{out}"
@@ -3213,19 +3229,21 @@ mod tests {
     async fn host_exited_with_no_sessions_marks_empty_not_unreachable() {
         use crate::ui::run::dump_overlay;
         use crate::ui::switcher::Switcher;
-        let mut switcher = Switcher::from_sources(vec!["jupiter06".into()]);
+        let mut state = crate::state::State::from_sources(vec!["jupiter06".into()]);
+        let mut switcher = Switcher::from_sources(&state);
         let mut connected: HashSet<String> = HashSet::new();
         // A reachable host whose mux has no server: "no sessions" → (empty), not ⚠.
         assert!(
             !note_host_exited(
                 &mut switcher,
+                &mut state,
                 &mut connected,
                 "jupiter06",
                 Some("no sessions".into())
             ),
             "an empty mux is reachable, not unreachable"
         );
-        let out = dump_overlay(&mut switcher, None, 80, 24);
+        let out = dump_overlay(&mut switcher, None, 80, 24, &state);
         assert!(out.contains("empty"), "an empty host reads (empty):\n{out}");
         assert!(
             !out.contains("unreachable"),
@@ -3236,11 +3254,12 @@ mod tests {
     #[tokio::test]
     async fn host_exited_after_connect_keeps_tree() {
         use crate::ui::switcher::Switcher;
-        let mut switcher = Switcher::from_sources(vec!["jupiter06".into()]);
+        let mut state = crate::state::State::from_sources(vec!["jupiter06".into()]);
+        let mut switcher = Switcher::from_sources(&state);
         let mut connected: HashSet<String> = HashSet::new();
         connected.insert("jupiter06".into());
         assert!(
-            !note_host_exited(&mut switcher, &mut connected, "jupiter06", None),
+            !note_host_exited(&mut switcher, &mut state, &mut connected, "jupiter06", None),
             "an already-connected host is not marked unreachable on exit"
         );
         assert!(
@@ -3258,25 +3277,27 @@ mod tests {
         // sessions) must resolve to "(empty)", not spin.
         use crate::ui::run::dump_overlay;
         use crate::ui::switcher::Switcher;
-        let mut switcher = Switcher::from_sources(vec!["jupiter06".into()]);
+        let mut state = crate::state::State::from_sources(vec!["jupiter06".into()]);
+        let mut switcher = Switcher::from_sources(&state);
         let mut connected: HashSet<String> = HashSet::new();
         connected.insert("jupiter06".into());
         // First drop of the connected host: keeps last-known tree, clears connected.
-        note_host_exited(&mut switcher, &mut connected, "jupiter06", None);
+        note_host_exited(&mut switcher, &mut state, &mut connected, "jupiter06", None);
         // User hits refresh → the host goes back to a scanning skeleton.
-        switcher.request_rescan();
+        switcher.request_rescan(&mut state);
         assert!(
-            dump_overlay(&mut switcher, None, 80, 24).contains("scanning"),
+            dump_overlay(&mut switcher, None, 80, 24, &state).contains("scanning"),
             "scanning after refresh"
         );
         // The reconnect fails with "no sessions": it must resolve scanning → (empty).
         note_host_exited(
             &mut switcher,
+            &mut state,
             &mut connected,
             "jupiter06",
             Some("no sessions".into()),
         );
-        let out = dump_overlay(&mut switcher, None, 80, 24);
+        let out = dump_overlay(&mut switcher, None, 80, 24, &state);
         assert!(
             out.contains("empty"),
             "failed reconnect resolves to (empty):\n{out}"
@@ -3338,10 +3359,14 @@ mod tests {
             }],
             panes,
         };
-        let mut switcher = Switcher::new(scan);
+        let mut state = crate::state::State::from_scan(scan);
+        let mut switcher = Switcher::new(&state);
         // session row -> (→ descend) window 0 -> (↓ sibling) window 1.
-        switcher.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        switcher.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        switcher.handle_key(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            &mut state,
+        );
+        switcher.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut state);
         assert_eq!(
             switcher.terminal_view_target().target,
             "api:1",
@@ -3369,6 +3394,7 @@ mod tests {
             &mut hosts,
             &mut registry,
             &mut switcher,
+            &mut state,
             &env,
             &mut connected,
             &mut panes_requested,
@@ -3380,7 +3406,7 @@ mod tests {
             crate::ui::switcher::TREE_WIDTH,
         );
         // The loop-top follow (simulated here) consumes the marker and moves the cursor.
-        switcher.select_active_window();
+        switcher.select_active_window(&state);
         assert_eq!(
             switcher.terminal_view_target().target,
             "api:0",
@@ -3438,9 +3464,13 @@ mod tests {
             }],
             panes,
         };
-        let mut switcher = Switcher::new(scan);
-        switcher.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → window 0
-        switcher.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // ↓ → window 1
+        let mut state = crate::state::State::from_scan(scan);
+        let mut switcher = Switcher::new(&state);
+        switcher.handle_key(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            &mut state,
+        ); // → window 0
+        switcher.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut state); // ↓ → window 1
         assert_eq!(switcher.terminal_view_target().target, "api:1");
 
         let (htx, _hrx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
@@ -3463,6 +3493,7 @@ mod tests {
             &mut hosts,
             &mut registry,
             &mut switcher,
+            &mut state,
             &env,
             &mut connected,
             &mut panes_requested,
@@ -3892,7 +3923,8 @@ mod tests {
     async fn client_detached_matching_our_tty_reaps_display_and_rearms() {
         let mut hosts = detach_test_hosts("jup");
         let mut registry = AttachRegistry::new();
-        let mut switcher = crate::ui::switcher::Switcher::from_sources(vec!["jup".into()]);
+        let mut state = crate::state::State::from_sources(vec!["jup".into()]);
+        let mut switcher = crate::ui::switcher::Switcher::from_sources(&state);
         let env = fake_env_with_sources(&["jup"]);
         let mut connected = HashSet::new();
         let mut panes: HashSet<String> = HashSet::new();
@@ -3916,6 +3948,7 @@ mod tests {
             &mut hosts,
             &mut registry,
             &mut switcher,
+            &mut state,
             &env,
             &mut connected,
             &mut panes,
@@ -3947,6 +3980,7 @@ mod tests {
             &mut hosts,
             &mut registry,
             &mut switcher,
+            &mut state,
             &env,
             &mut connected,
             &mut panes,
@@ -4086,7 +4120,8 @@ mod tests {
             }],
             panes: Default::default(),
         };
-        let mut sw = Switcher::new(scan);
+        let mut state = crate::state::State::from_scan(scan);
+        let mut sw = Switcher::new(&state);
         let mut app = App::new();
         let mut natural = 48u16;
         let mut hide = false;
@@ -4102,6 +4137,7 @@ mod tests {
                     address: "jup/db".into()
                 },
                 &mut sw,
+                &mut state,
                 &mut app,
                 &mut natural,
                 &mut hide,
@@ -4117,6 +4153,7 @@ mod tests {
         apply_operation(
             Operation::Focus(FocusTarget::Terminal),
             &mut sw,
+            &mut state,
             &mut app,
             &mut natural,
             &mut hide,
@@ -4129,6 +4166,7 @@ mod tests {
         apply_operation(
             Operation::Focus(FocusTarget::Tree),
             &mut sw,
+            &mut state,
             &mut app,
             &mut natural,
             &mut hide,
@@ -4142,6 +4180,7 @@ mod tests {
             apply_operation(
                 Operation::TreeWidth(1),
                 &mut sw,
+                &mut state,
                 &mut app,
                 &mut natural,
                 &mut hide,
@@ -4156,6 +4195,7 @@ mod tests {
             apply_operation(
                 Operation::Quit,
                 &mut sw,
+                &mut state,
                 &mut app,
                 &mut natural,
                 &mut hide,
@@ -4188,7 +4228,8 @@ mod tests {
             }],
             panes: Default::default(),
         };
-        let sw = Switcher::new(scan);
+        let state = crate::state::State::from_scan(scan);
+        let sw = Switcher::new(&state);
         assert_eq!(status_line(&sw, true), "focus=tree target=api");
         assert_eq!(status_line(&sw, false), "focus=terminal target=api");
     }
@@ -4223,14 +4264,14 @@ mod tests {
             }],
             panes: Default::default(),
         };
-        let mut sw = Switcher::new(scan);
+        let mut state = crate::state::State::from_scan(scan);
+        let mut sw = Switcher::new(&state);
         let mut app = crate::proxy::app::App::new();
         let mut natural = 48u16;
         let mut hide = false;
         let dir = std::env::temp_dir().join(format!("xmux-ctl-switch-sync-{}", std::process::id()));
         let ops = crate::ui::switcher::tests_support::noop_ops();
         let (op_tx, _op_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut state = crate::state::State::default();
 
         sync_selection_from_switcher(&mut state, &sw, std::time::Instant::now());
         apply_operation(
@@ -4238,6 +4279,7 @@ mod tests {
                 address: "jup/db".into(),
             },
             &mut sw,
+            &mut state,
             &mut app,
             &mut natural,
             &mut hide,
@@ -4262,7 +4304,8 @@ mod tests {
             groups: vec![],
             panes: Default::default(),
         };
-        let mut switcher = Switcher::new(scan);
+        let mut state = crate::state::State::from_scan(scan);
+        let mut switcher = Switcher::new(&state);
         let mut app = App::new(); // tree focus
         let mut registry = AttachRegistry::new();
         let mut mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
@@ -4281,6 +4324,7 @@ mod tests {
             b"\x07q",
             &mut mouse,
             &mut switcher,
+            &mut state,
             &mut app,
             &mut registry,
             &mut mgr,
@@ -4328,7 +4372,8 @@ mod tests {
             }],
             panes: Default::default(),
         };
-        let mut switcher = Switcher::new(scan);
+        let mut state = crate::state::State::from_scan(scan);
+        let mut switcher = Switcher::new(&state);
         let mut app = App::new(); // tree focus
         let mut registry = AttachRegistry::new();
         let mut mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
@@ -4348,6 +4393,7 @@ mod tests {
                     $bytes,
                     &mut mouse,
                     &mut switcher,
+                    &mut state,
                     &mut app,
                     &mut registry,
                     &mut mgr,
@@ -4443,9 +4489,10 @@ mod tests {
                 }],
                 panes: Default::default(),
             };
-            let mut switcher = Switcher::new(scan);
+            let mut state = crate::state::State::from_scan(scan);
+            let mut switcher = Switcher::new(&state);
             let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-            term.draw(|f| switcher.render(f, None, false, crate::ui::switcher::TREE_WIDTH))
+            term.draw(|f| switcher.render(f, None, false, crate::ui::switcher::TREE_WIDTH, &state))
                 .unwrap();
             let opened = (0..10).any(|row| switcher.menu_open(1, row));
             assert!(opened, "menu opens over a rendered tree row");
@@ -4487,6 +4534,7 @@ mod tests {
                 bytes,
                 &mut mouse,
                 &mut switcher,
+                &mut state,
                 &mut app,
                 &mut registry,
                 &mut mgr,
@@ -4548,7 +4596,8 @@ mod tests {
             groups: vec![],
             panes: Default::default(),
         };
-        let mut switcher = Switcher::new(scan);
+        let mut state = crate::state::State::from_scan(scan);
+        let mut switcher = Switcher::new(&state);
         let mut app = App::new();
         let mut registry = AttachRegistry::new();
         let mut mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
@@ -4578,6 +4627,7 @@ mod tests {
             &ev,
             &mut st,
             &mut switcher,
+            &mut state,
             &mut app,
             &mut registry,
             &mut mgr,

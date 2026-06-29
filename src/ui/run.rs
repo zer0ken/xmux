@@ -34,8 +34,13 @@ pub enum Cmd {
 
 /// Renders the switcher to an off-screen buffer and flattens it — the payload the
 /// control channel's `dump` returns.
-pub fn dump_switcher(switcher: &mut Switcher, width: u16, height: u16) -> String {
-    dump_overlay(switcher, None, width, height)
+pub fn dump_switcher(
+    switcher: &mut Switcher,
+    state: &crate::state::State,
+    width: u16,
+    height: u16,
+) -> String {
+    dump_overlay(switcher, None, width, height, state)
 }
 
 /// Renders the tree-focus view — the switcher with the cursor host's live `grid` (if
@@ -47,6 +52,7 @@ pub fn dump_overlay(
     grid: Option<&crate::proxy::screen::Grid>,
     width: u16,
     height: u16,
+    state: &crate::state::State,
 ) -> String {
     let w = width.max(1);
     let h = height.max(1);
@@ -55,7 +61,7 @@ pub fn dump_overlay(
         Err(_) => return String::new(),
     };
     if term
-        .draw(|f| switcher.render(f, grid, false, crate::ui::switcher::TREE_WIDTH))
+        .draw(|f| switcher.render(f, grid, false, crate::ui::switcher::TREE_WIDTH, state))
         .is_err()
     {
         return String::new();
@@ -233,8 +239,9 @@ mod tests {
 
     #[tokio::test]
     async fn dump_switcher_flattens_buffer() {
-        let mut sw = Switcher::new(sample());
-        let out = dump_switcher(&mut sw, 100, 30);
+        let state = crate::state::State::from_scan(sample());
+        let mut sw = Switcher::new(&state);
+        let out = dump_switcher(&mut sw, &state, 100, 30);
         assert!(out.contains("editor"));
         // The dump renders the full overlay (tree + footer); the footer's nav hint
         // is always present (the overlay carries no chrome titles).
@@ -245,10 +252,11 @@ mod tests {
     async fn dump_overlay_renders_the_live_grid() {
         // A dump with a live grid must include both the tree AND the grid content
         // (the terminal-view pane), so a headless `dump` reflects the live screen.
-        let mut sw = Switcher::new(sample());
+        let state = crate::state::State::from_scan(sample());
+        let mut sw = Switcher::new(&state);
         let mut grid = crate::proxy::screen::Grid::new(30, 100);
         grid.feed(b"LIVEGRID");
-        let out = dump_overlay(&mut sw, Some(&grid), 100, 30);
+        let out = dump_overlay(&mut sw, Some(&grid), 100, 30, &state);
         assert!(out.contains("editor"), "tree still rendered:\n{out}");
         assert!(
             out.contains("LIVEGRID"),
@@ -286,13 +294,14 @@ mod tests {
         // A minimal in-test consumer drives the switcher directly off the channel,
         // standing in for the cockpit loop: it answers `dump` and applies keys. It
         // exits when the channel closes (all senders dropped).
-        let mut sw = Switcher::new(sample());
+        let mut state = crate::state::State::from_scan(sample());
+        let mut sw = Switcher::new(&state);
         let consumer = tokio::spawn(async move {
             while let Some(cmd) = rx.recv().await {
                 match cmd {
-                    Cmd::RawKey(k) => sw.handle_key(k),
+                    Cmd::RawKey(k) => sw.handle_key(k, &mut state),
                     Cmd::Dump(reply) => {
-                        let _ = reply.send(dump_switcher(&mut sw, 100, 30));
+                        let _ = reply.send(dump_switcher(&mut sw, &state, 100, 30));
                     }
                     Cmd::Status(reply) => {
                         let _ = reply.send("focus=tree target=editor".into());

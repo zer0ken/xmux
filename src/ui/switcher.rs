@@ -322,13 +322,6 @@ struct Input {
 
 /// The switcher state machine.
 pub struct Switcher {
-    groups: Vec<Group>,
-    panes: HashMap<String, Vec<WindowPanes>>,
-    /// Sources whose `list-sessions` has not yet returned (host shows scanning…).
-    scanning: HashSet<String>,
-    /// Session addresses whose `list-panes` has resolved (success or failure) —
-    /// until then the session shows a loading… placeholder.
-    panes_loaded: HashSet<String>,
     /// Set once the user explicitly moves the cursor; while false, streaming
     /// results advance the preselect toward the most-recent session.
     user_moved: bool,
@@ -344,7 +337,6 @@ pub struct Switcher {
     selected: usize,
     name_col_width: usize,
 
-    filter: String,
     input: Option<Input>,
     pending_kill: Option<PendingKill>,
     flash: String,
@@ -403,17 +395,12 @@ pub struct Switcher {
 impl Switcher {
     fn blank() -> Self {
         Switcher {
-            groups: Vec::new(),
-            panes: HashMap::new(),
-            scanning: HashSet::new(),
-            panes_loaded: HashSet::new(),
             user_moved: false,
             rescan_kick: false,
             reattach_kick: false,
             rows: Vec::new(),
             selected: 0,
             name_col_width: 0,
-            filter: String::new(),
             input: None,
             pending_kill: None,
             flash: String::new(),
@@ -438,38 +425,24 @@ impl Switcher {
         }
     }
 
-    /// Builds from a complete snapshot: every host is resolved (reachable or
-    /// unreachable per its `err`) and every session's panes are considered known.
-    pub fn new(scan: Scan) -> Self {
+    /// Builds from a complete snapshot's inventory (carried on `state`): every host
+    /// is resolved (reachable or unreachable per its `err`) and every session's panes
+    /// are considered known. The caller seeds `state` via [`crate::state::State::from_scan`].
+    pub fn new(state: &crate::state::State) -> Self {
         let mut s = Switcher::blank();
-        s.groups = scan.groups;
-        s.panes = scan.panes;
-        s.panes_loaded = s
-            .groups
-            .iter()
-            .flat_map(|g| g.sessions.iter().map(|sess| sess.address()))
-            .collect();
-        s.rebuild();
+        s.rebuild(state);
         s
     }
 
     /// Seeds the switcher from the resolved source list alone — no probing — so
     /// the first frame paints host-skeleton rows, each in a scanning state, in
     /// tens of milliseconds. Streamed [`apply_source_result`]/[`apply_panes`]
-    /// calls fill the tree in afterward.
-    pub fn from_sources(aliases: Vec<String>) -> Self {
+    /// calls fill the tree in afterward. The caller seeds `state` via
+    /// [`crate::state::State::from_sources`].
+    pub fn from_sources(state: &crate::state::State) -> Self {
         let mut s = Switcher::blank();
-        s.scanning = aliases.iter().cloned().collect();
-        s.groups = aliases
-            .into_iter()
-            .map(|source| Group {
-                source,
-                err: None,
-                sessions: Vec::new(),
-            })
-            .collect();
         s.rescan_kick = true; // the event loop kicks the probes on the first frame
-        s.rebuild();
+        s.rebuild(state);
         s
     }
 
@@ -506,14 +479,15 @@ impl Switcher {
 
     // --- tree model ---------------------------------------------------------
 
-    fn visible_groups(&self) -> Vec<Group> {
-        let groups = if self.filter.is_empty() {
-            self.groups.clone()
+    fn visible_groups(&self, state: &crate::state::State) -> Vec<Group> {
+        let groups = if state.filter.is_empty() {
+            state.groups.clone()
         } else {
-            let filtered = tree::filter_groups(&self.groups, &self.filter);
+            let filtered = tree::filter_groups(&state.groups, &state.filter);
             if filtered.is_empty() {
                 // XM-01: a non-matching filter must not be a dead end.
-                self.groups
+                state
+                    .groups
                     .iter()
                     .map(|g| Group {
                         source: g.source.clone(),
@@ -547,7 +521,7 @@ impl Switcher {
         }
     }
 
-    fn rebuild(&mut self) {
+    fn rebuild(&mut self, state: &crate::state::State) {
         // Once the user has moved the cursor, hold their current session/window selection
         // across this rebuild when it survives (matched by identity) — a routine rebuild
         // (local poll, remote %-event refetch) must NOT snap the cursor back to the recency
@@ -561,7 +535,7 @@ impl Switcher {
                 RowRef::Session(_) | RowRef::Window { .. } => Some(r.reference.clone()),
                 _ => None,
             });
-        let groups = self.visible_groups();
+        let groups = self.visible_groups(state);
 
         self.name_col_width = 0;
         for g in &groups {
@@ -587,7 +561,7 @@ impl Switcher {
         let mut first_session_row: Option<usize> = None;
 
         for g in &groups {
-            let scanning = self.scanning.contains(&g.source);
+            let scanning = state.scanning.contains(&g.source);
             let unreachable = g.err.is_some();
             rows.push(Row {
                 label: g.source.clone(),
@@ -619,8 +593,8 @@ impl Switcher {
                     reference: RowRef::Session(sess.clone()),
                     active: false,
                 });
-                if self.panes_loaded.contains(&sess.address()) {
-                    if let Some(windows) = self.panes.get(&sess.address()) {
+                if state.panes_loaded.contains(&sess.address()) {
+                    if let Some(windows) = state.panes.get(&sess.address()) {
                         for w in windows {
                             rows.push(Row {
                                 label: window_label(w),
@@ -684,7 +658,7 @@ impl Switcher {
             .or(first_session_row)
             .or_else(|| self.rows.iter().position(Row::selectable))
             .unwrap_or(0);
-        self.set_selected(target);
+        self.set_selected(target, state);
     }
 
     /// The dim trailing annotation for a host row: its scan state when it has no
@@ -728,17 +702,17 @@ impl Switcher {
             .collect()
     }
 
-    fn set_selected(&mut self, idx: usize) {
+    fn set_selected(&mut self, idx: usize, state: &crate::state::State) {
         if self.rows.is_empty() {
             return;
         }
         let idx = idx.min(self.rows.len() - 1);
         self.selected = idx;
         self.list_state.select(Some(idx));
-        self.on_focus_changed();
+        self.on_focus_changed(state);
     }
 
-    fn move_selection(&mut self, delta: isize) {
+    fn move_selection(&mut self, delta: isize, state: &crate::state::State) {
         let sel = self.selectable_indices();
         if sel.is_empty() {
             return;
@@ -747,7 +721,7 @@ impl Switcher {
         let cur = sel.iter().position(|&i| i == self.selected).unwrap_or(0) as isize;
         let n = sel.len() as isize;
         let next = ((cur + delta) % n + n) % n;
-        self.set_selected(sel[next as usize]);
+        self.set_selected(sel[next as usize], state);
     }
 
     /// `→`: descend to the FIRST child of the selected node (host→its first session,
@@ -755,7 +729,7 @@ impl Switcher {
     /// their parent at a deeper indent, so the child is the next row when its indent
     /// is greater. A no-op when the only children are non-selectable (a window's
     /// panes) or there are none.
-    fn descend(&mut self) {
+    fn descend(&mut self, state: &crate::state::State) {
         let cur = self.selected;
         let Some(cur_indent) = self.rows.get(cur).map(|r| r.indent) else {
             return;
@@ -763,14 +737,14 @@ impl Switcher {
         if let Some(child) = self.rows.get(cur + 1) {
             if child.indent > cur_indent && child.selectable() {
                 self.user_moved = true;
-                self.set_selected(cur + 1);
+                self.set_selected(cur + 1, state);
             }
         }
     }
 
     /// `←`: ascend to the PARENT of the selected node (window→its session, session→its
     /// host) — the nearest preceding row at a shallower indent. A no-op on a host row.
-    fn ascend(&mut self) {
+    fn ascend(&mut self, state: &crate::state::State) {
         let cur = self.selected;
         let Some(cur_indent) = self.rows.get(cur).map(|r| r.indent) else {
             return;
@@ -781,7 +755,7 @@ impl Switcher {
         for i in (0..cur).rev() {
             if self.rows[i].indent < cur_indent {
                 self.user_moved = true;
-                self.set_selected(i);
+                self.set_selected(i, state);
                 return;
             }
         }
@@ -790,7 +764,7 @@ impl Switcher {
     /// ↑/↓ (or k/j): move to the next/prev sibling at the current tree level — the
     /// next selectable row at the SAME indent level (e.g. session→next session,
     /// skipping windows/panes nested under it). Wraps like `move_selection`.
-    fn move_sibling(&mut self, delta: isize) {
+    fn move_sibling(&mut self, delta: isize, state: &crate::state::State) {
         let Some(cur_indent) = self.rows.get(self.selected).map(|r| r.indent) else {
             return;
         };
@@ -811,10 +785,10 @@ impl Switcher {
             .unwrap_or(0) as isize;
         let n = siblings.len() as isize;
         let next = ((pos + delta) % n + n) % n;
-        self.set_selected(siblings[next as usize]);
+        self.set_selected(siblings[next as usize], state);
     }
 
-    fn move_to(&mut self, pos: isize) {
+    fn move_to(&mut self, pos: isize, state: &crate::state::State) {
         let sel = self.selectable_indices();
         if sel.is_empty() {
             return;
@@ -825,7 +799,7 @@ impl Switcher {
         } else {
             pos as usize
         };
-        self.set_selected(sel[idx]);
+        self.set_selected(sel[idx], state);
     }
 
     fn current_ref(&self) -> Option<&RowRef> {
@@ -844,11 +818,11 @@ impl Switcher {
     /// The session the mux is DISPLAYING for the cursor's row: the cursor's own session
     /// (session/window row) or, on a host row, the host's recent session — the same
     /// resolution `target_for` uses. Lets the passthrough follow descend from a host.
-    fn displayed_session(&self) -> Option<Session> {
+    fn displayed_session(&self, state: &crate::state::State) -> Option<Session> {
         match self.current_ref()? {
             RowRef::Session(s) => Some(s.clone()),
             RowRef::Window { sess, .. } => Some(sess.clone()),
-            RowRef::Host { source, .. } => self.first_session_of(source),
+            RowRef::Host { source, .. } => self.first_session_of(source, state),
             _ => None,
         }
     }
@@ -859,28 +833,28 @@ impl Switcher {
 
     // --- preview ------------------------------------------------------------
 
-    fn first_session_of(&self, source: &str) -> Option<Session> {
+    fn first_session_of(&self, source: &str, state: &crate::state::State) -> Option<Session> {
         // The source's first VISIBLE session (its sessions are kept recency-sorted),
         // mirroring `filter_groups` for just this one group — NOT cloning every host's
         // sessions via `visible_groups`, since this runs on every cursor move onto a
         // host row (the navigation hot path).
-        let g = self.groups.iter().find(|g| g.source == source)?;
+        let g = state.groups.iter().find(|g| g.source == source)?;
         if g.err.is_some() {
             return None; // unreachable host: its sessions carry no meaning
         }
-        if self.filter.is_empty() || tree::fuzzy_match(&self.filter, &g.source) {
+        if state.filter.is_empty() || tree::fuzzy_match(&state.filter, &g.source) {
             g.sessions.first().cloned()
         } else {
             g.sessions
                 .iter()
-                .find(|s| tree::fuzzy_match(&self.filter, &s.address()))
+                .find(|s| tree::fuzzy_match(&state.filter, &s.address()))
                 .cloned()
         }
     }
 
-    fn target_for(&self, reference: &RowRef) -> TerminalViewTarget {
+    fn target_for(&self, reference: &RowRef, state: &crate::state::State) -> TerminalViewTarget {
         match reference {
-            RowRef::Host { source, .. } => match self.first_session_of(source) {
+            RowRef::Host { source, .. } => match self.first_session_of(source, state) {
                 Some(sess) => TerminalViewTarget {
                     source: sess.source,
                     target: sess.name,
@@ -899,9 +873,9 @@ impl Switcher {
         }
     }
 
-    fn on_focus_changed(&mut self) {
+    fn on_focus_changed(&mut self, state: &crate::state::State) {
         self.terminal_view_target = match self.current_ref() {
-            Some(r) => self.target_for(r),
+            Some(r) => self.target_for(r, state),
             None => TerminalViewTarget::default(),
         };
     }
@@ -910,9 +884,9 @@ impl Switcher {
     /// `switch-client` on every cursor move (`select = attach`). Returns `Some`
     /// only for session, window, or host-with-session rows; `None` for pane,
     /// loading, and empty-host rows.
-    pub fn current_attach_target(&self) -> Option<TerminalViewTarget> {
+    pub fn current_attach_target(&self, state: &crate::state::State) -> Option<TerminalViewTarget> {
         let r = self.current_ref()?;
-        let tgt = self.target_for(r);
+        let tgt = self.target_for(r, state);
         if tgt.target.is_empty() {
             None
         } else {
@@ -935,7 +909,13 @@ impl Switcher {
     /// driving the tree cursor (stdin goes to the PTY), so following from the session
     /// row mirrors the mux without yanking a tree-navigating user. A no-op when the
     /// cursor is on a different host/session. Returns whether it moved.
-    pub fn select_window(&mut self, source: &str, session: &str, window: i64) -> bool {
+    pub fn select_window(
+        &mut self,
+        source: &str,
+        session: &str,
+        window: i64,
+        state: &crate::state::State,
+    ) -> bool {
         let on_this_session = match self.current_ref() {
             Some(RowRef::Session(s)) => s.source == source && s.name == session,
             Some(RowRef::Window { sess, .. }) => sess.source == source && sess.name == session,
@@ -953,7 +933,7 @@ impl Switcher {
         match target {
             Some(i) if i != self.selected => {
                 self.user_moved = true;
-                self.set_selected(i);
+                self.set_selected(i, state);
                 true
             }
             _ => false,
@@ -965,7 +945,7 @@ impl Switcher {
     /// identity, not a screen position or a relative step, so an agent driving ctl
     /// lands on the right session regardless of how the tree is currently ordered.
     /// A no-op (returns false) when no such row exists or the cursor is already there.
-    pub fn select_address(&mut self, address: &str) -> bool {
+    pub fn select_address(&mut self, address: &str, state: &crate::state::State) -> bool {
         let target = self
             .rows
             .iter()
@@ -973,7 +953,7 @@ impl Switcher {
         match target {
             Some(i) if i != self.selected => {
                 self.user_moved = true;
-                self.set_selected(i);
+                self.set_selected(i, state);
                 true
             }
             _ => false,
@@ -986,12 +966,12 @@ impl Switcher {
     /// so the sidebar mirrors the window the mux is showing (#3). A no-op when the
     /// displayed session or its active window is unknown (e.g. panes not yet loaded, or
     /// an unreachable host). Returns whether it moved.
-    pub fn select_active_window(&mut self) -> bool {
-        let Some(sess) = self.displayed_session() else {
+    pub fn select_active_window(&mut self, state: &crate::state::State) -> bool {
+        let Some(sess) = self.displayed_session(state) else {
             return false;
         };
         let addr = sess.address();
-        let Some(window) = self
+        let Some(window) = state
             .panes
             .get(&addr)
             .and_then(|ws| ws.iter().find(|w| w.active))
@@ -999,7 +979,7 @@ impl Switcher {
         else {
             return false;
         };
-        self.select_window(&sess.source, &sess.name, window)
+        self.select_window(&sess.source, &sess.name, window, state)
     }
 
     /// Marks `window` as the active window of `source`/`session` in the cached
@@ -1007,9 +987,15 @@ impl Switcher {
     /// (the control-client probe resolves an external `%session-window-changed` to
     /// the new active window; a blanket refetch per change would storm the loop).
     /// Returns whether the active window actually changed.
-    pub fn set_active_window(&mut self, source: &str, session: &str, window: i64) -> bool {
+    pub fn set_active_window(
+        &mut self,
+        source: &str,
+        session: &str,
+        window: i64,
+        state: &mut crate::state::State,
+    ) -> bool {
         let addr = format!("{source}/{session}");
-        let Some(windows) = self.panes.get_mut(&addr) else {
+        let Some(windows) = state.panes.get_mut(&addr) else {
             return false;
         };
         let mut changed = false;
@@ -1022,8 +1008,8 @@ impl Switcher {
         }
         if changed {
             let prior = self.capture_focus();
-            self.rebuild();
-            self.restore_focus(prior);
+            self.rebuild(state);
+            self.restore_focus(prior, state);
         }
         changed
     }
@@ -1192,9 +1178,9 @@ impl Switcher {
         true
     }
 
-    pub fn handle_key(&mut self, ev: KeyEvent) {
+    pub fn handle_key(&mut self, ev: KeyEvent, state: &mut crate::state::State) {
         if self.input.is_some() {
-            self.handle_input_key(ev);
+            self.handle_input_key(ev, state);
             return;
         }
         if self.pending_kill.is_some() {
@@ -1210,20 +1196,20 @@ impl Switcher {
             // ↑/↓ (and k/j) move between SIBLINGS at the current tree level (next/prev
             // node at the same depth); →/← (and l/h) change level — → descends to the
             // first child, ← ascends to the parent. hjkl mirror the arrows. (#1, #2)
-            KeyCode::Up | KeyCode::Char('k') => self.move_sibling(-1),
-            KeyCode::Down | KeyCode::Char('j') => self.move_sibling(1),
-            KeyCode::Right | KeyCode::Char('l') => self.descend(),
-            KeyCode::Left | KeyCode::Char('h') => self.ascend(),
-            KeyCode::PageUp => self.move_selection(-10),
-            KeyCode::PageDown => self.move_selection(10),
-            KeyCode::Home => self.move_to(0),
-            KeyCode::End => self.move_to(-1),
+            KeyCode::Up | KeyCode::Char('k') => self.move_sibling(-1, state),
+            KeyCode::Down | KeyCode::Char('j') => self.move_sibling(1, state),
+            KeyCode::Right | KeyCode::Char('l') => self.descend(state),
+            KeyCode::Left | KeyCode::Char('h') => self.ascend(state),
+            KeyCode::PageUp => self.move_selection(-10, state),
+            KeyCode::PageDown => self.move_selection(10, state),
+            KeyCode::Home => self.move_to(0, state),
+            KeyCode::End => self.move_to(-1, state),
             KeyCode::Char(c) => match c {
-                '/' => self.open_input(InputMode::Filter),
+                '/' => self.open_input(InputMode::Filter, state),
                 'n' => self.open_new(),
-                'R' => self.open_input(InputMode::Rename),
+                'R' => self.open_input(InputMode::Rename, state),
                 'x' => self.arm_kill(),
-                'r' => self.request_rescan(),
+                'r' => self.request_rescan(state),
                 _ => {}
             },
             _ => {}
@@ -1232,7 +1218,7 @@ impl Switcher {
 
     // --- input row ----------------------------------------------------------
 
-    fn open_input(&mut self, mode: InputMode) {
+    fn open_input(&mut self, mode: InputMode, state: &crate::state::State) {
         self.flash.clear();
         self.dismiss_modals();
         match mode {
@@ -1240,7 +1226,7 @@ impl Switcher {
                 self.input = Some(Input {
                     mode,
                     label: " filter sessions".into(),
-                    buffer: self.filter.clone(),
+                    buffer: state.filter.clone(),
                     source: None,
                     sess: None,
                     target: None,
@@ -1262,7 +1248,7 @@ impl Switcher {
                 }
                 Some(RowRef::Window { sess, window }) => {
                     let win_name = self
-                        .window_name(&sess.address(), window)
+                        .window_name(&sess.address(), window, state)
                         .unwrap_or_default();
                     let target = crate::mux::window_target(&sess.name, window);
                     self.input = Some(Input {
@@ -1331,7 +1317,7 @@ impl Switcher {
         self.input = None;
     }
 
-    fn handle_input_key(&mut self, ev: KeyEvent) {
+    fn handle_input_key(&mut self, ev: KeyEvent, state: &mut crate::state::State) {
         match ev.code {
             KeyCode::Enter => {
                 let (mode, val, source, sess, target) = {
@@ -1346,9 +1332,9 @@ impl Switcher {
                 };
                 match mode {
                     InputMode::Filter => {
-                        self.filter = val;
+                        state.filter = val;
                         self.close_input();
-                        self.rebuild();
+                        self.rebuild(state);
                     }
                     InputMode::New => {
                         self.queue_create(source, &val);
@@ -1364,7 +1350,7 @@ impl Switcher {
                     }
                     InputMode::Rename => {
                         if target.is_some() {
-                            self.queue_rename_window(source, sess, target, &val);
+                            self.queue_rename_window(source, sess, target, &val, state);
                         } else {
                             self.queue_rename(sess, &val);
                         }
@@ -1442,8 +1428,14 @@ impl Switcher {
     }
 
     /// The current name of window `index` under the session at `sess_addr`, if its panes are loaded.
-    fn window_name(&self, sess_addr: &str, index: i64) -> Option<String> {
-        self.panes
+    fn window_name(
+        &self,
+        sess_addr: &str,
+        index: i64,
+        state: &crate::state::State,
+    ) -> Option<String> {
+        state
+            .panes
             .get(sess_addr)
             .and_then(|ws| ws.iter().find(|w| w.index == index))
             .map(|w| w.name.clone())
@@ -1475,6 +1467,7 @@ impl Switcher {
         sess: Option<Session>,
         target: Option<String>,
         new_name: &str,
+        state: &crate::state::State,
     ) {
         let (Some(source), Some(sess), Some(target)) = (source, sess, target) else {
             return;
@@ -1483,7 +1476,7 @@ impl Switcher {
             .rsplit(':')
             .next()
             .and_then(|i| i.parse::<i64>().ok())
-            .and_then(|idx| self.window_name(&sess.address(), idx));
+            .and_then(|idx| self.window_name(&sess.address(), idx, state));
         if new_name.is_empty() || cur.as_deref() == Some(new_name) {
             return;
         }
@@ -1502,17 +1495,17 @@ impl Switcher {
     /// Applies a completed [`PendingOp`] to the in-memory tree. The result is
     /// applied on the event loop after `run_op` returns off-loop, so a slow ssh
     /// round-trip never blocks rendering.
-    pub fn apply_op_result(&mut self, result: OpResult) {
+    pub fn apply_op_result(&mut self, result: OpResult, state: &mut crate::state::State) {
         match result {
             OpResult::Created { session, panes } => {
                 let addr = session.address();
-                self.panes.insert(addr.clone(), panes);
-                self.panes_loaded.insert(addr.clone());
-                self.groups = tree::add_session(&self.groups, session);
-                self.rebuild();
+                state.panes.insert(addr.clone(), panes);
+                state.panes_loaded.insert(addr.clone());
+                state.groups = tree::add_session(&state.groups, session);
+                self.rebuild(state);
                 if let Some(i) = self.row_of_session(&addr) {
                     self.user_moved = true;
-                    self.set_selected(i);
+                    self.set_selected(i, state);
                 }
             }
             OpResult::Renamed {
@@ -1522,25 +1515,25 @@ impl Switcher {
             } => {
                 let old_addr = format!("{source}/{old_name}");
                 let new_addr = format!("{source}/{new_name}");
-                if let Some(wins) = self.panes.remove(&old_addr) {
-                    self.panes.insert(new_addr.clone(), wins);
+                if let Some(wins) = state.panes.remove(&old_addr) {
+                    state.panes.insert(new_addr.clone(), wins);
                 }
-                if self.panes_loaded.remove(&old_addr) {
-                    self.panes_loaded.insert(new_addr);
+                if state.panes_loaded.remove(&old_addr) {
+                    state.panes_loaded.insert(new_addr);
                 }
-                self.groups = tree::rename_session(&self.groups, &old_addr, &new_name);
-                self.rebuild();
+                state.groups = tree::rename_session(&state.groups, &old_addr, &new_name);
+                self.rebuild(state);
             }
             OpResult::Killed { address } => {
-                self.panes.remove(&address);
-                self.panes_loaded.remove(&address);
-                self.groups = tree::remove_session(&self.groups, &address);
-                self.rebuild();
+                state.panes.remove(&address);
+                state.panes_loaded.remove(&address);
+                state.groups = tree::remove_session(&state.groups, &address);
+                self.rebuild(state);
             }
             OpResult::PanesRefreshed { address, panes } => {
                 // A new window or split: replace the session's subtree so the new
                 // window/pane shows. apply_panes restores the cursor.
-                self.apply_panes(address, panes);
+                self.apply_panes(address, panes, state);
             }
             OpResult::Failed { message } => {
                 self.flash = message;
@@ -1615,19 +1608,19 @@ impl Switcher {
     /// re-kick the streaming probes (the `r` re-scan) — sessions and panes stream
     /// back in exactly as on first launch. Keeps the cursor on the focused host
     /// if the user had moved it there.
-    pub fn request_rescan(&mut self) {
+    pub fn request_rescan(&mut self, state: &mut crate::state::State) {
         let prior = self.capture_focus();
-        self.scanning = self.groups.iter().map(|g| g.source.clone()).collect();
-        for g in self.groups.iter_mut() {
+        state.scanning = state.groups.iter().map(|g| g.source.clone()).collect();
+        for g in state.groups.iter_mut() {
             g.err = None;
             g.sessions.clear();
         }
-        self.panes.clear();
-        self.panes_loaded.clear();
+        state.panes.clear();
+        state.panes_loaded.clear();
         self.rescan_kick = true;
         self.reattach_kick = true;
-        self.rebuild();
-        self.restore_focus(prior);
+        self.rebuild(state);
+        self.restore_focus(prior, state);
     }
 
     /// Streams in one source's `list-sessions` outcome: clears its scanning
@@ -1638,33 +1631,39 @@ impl Switcher {
         source: String,
         mut sessions: Vec<Session>,
         err: Option<String>,
+        state: &mut crate::state::State,
     ) {
         let prior = self.capture_focus();
-        self.scanning.remove(&source);
+        state.scanning.remove(&source);
         tree::sort_by_recency(&mut sessions);
-        if let Some(g) = self.groups.iter_mut().find(|g| g.source == source) {
+        if let Some(g) = state.groups.iter_mut().find(|g| g.source == source) {
             g.err = err;
             g.sessions = sessions;
         } else {
-            self.groups.push(Group {
+            state.groups.push(Group {
                 source,
                 err,
                 sessions,
             });
         }
-        self.rebuild();
-        self.restore_focus(prior);
+        self.rebuild(state);
+        self.restore_focus(prior, state);
     }
 
     /// Streams in one session's `list-panes` outcome, clearing its loading
     /// placeholder. An empty `panes` (a failed/timed-out fetch) still resolves the
     /// session — it shows no children rather than spinning forever.
-    pub fn apply_panes(&mut self, address: String, panes: Vec<WindowPanes>) {
+    pub fn apply_panes(
+        &mut self,
+        address: String,
+        panes: Vec<WindowPanes>,
+        state: &mut crate::state::State,
+    ) {
         let prior = self.capture_focus();
-        self.panes_loaded.insert(address.clone());
-        self.panes.insert(address, panes);
-        self.rebuild();
-        self.restore_focus(prior);
+        state.panes_loaded.insert(address.clone());
+        state.panes.insert(address, panes);
+        self.rebuild(state);
+        self.restore_focus(prior, state);
     }
 
     /// Captures the cursor state needed to restore or gracefully redirect focus
@@ -1682,7 +1681,7 @@ impl Switcher {
     /// vanished (killed/removed), land on the previous sibling at the same
     /// indent or, when there is none, the parent. An untouched cursor follows
     /// the rebuild's recency preselect.
-    fn restore_focus(&mut self, prior: PriorFocus) {
+    fn restore_focus(&mut self, prior: PriorFocus, state: &crate::state::State) {
         if !self.user_moved {
             return;
         }
@@ -1690,13 +1689,13 @@ impl Switcher {
             return;
         };
         if let Some(i) = self.row_matching(focus) {
-            self.set_selected(i);
+            self.set_selected(i, state);
             return;
         }
         // The focused node vanished (killed/removed): land on the previous sibling
         // at its level, else the parent.
         if let Some(i) = self.fallback_after_removal(prior.indent, prior.selected) {
-            self.set_selected(i);
+            self.set_selected(i, state);
         }
     }
 
@@ -1737,7 +1736,7 @@ impl Switcher {
     }
 
     /// Single click: move the cursor to the clicked row (select; never attach).
-    pub fn mouse_select(&mut self, col: u16, row: u16) {
+    pub fn mouse_select(&mut self, col: u16, row: u16, state: &crate::state::State) {
         if !self.in_tree(col, row) {
             return;
         }
@@ -1745,19 +1744,19 @@ impl Switcher {
         let idx = offset + (row.saturating_sub(self.tree_inner.y)) as usize;
         if self.rows.get(idx).is_some_and(Row::selectable) {
             self.user_moved = true;
-            self.set_selected(idx);
+            self.set_selected(idx, state);
         }
     }
 
     /// Double click: selects the clicked row (the preceding single click already
     /// moved the cursor; with select=attach there is no separate attach action).
-    pub fn mouse_attach(&mut self, col: u16, row: u16) {
-        self.mouse_select(col, row);
+    pub fn mouse_attach(&mut self, col: u16, row: u16, state: &crate::state::State) {
+        self.mouse_select(col, row, state);
     }
 
     /// Scroll wheel: move the cursor (panes skipped) in the given direction.
-    pub fn mouse_scroll(&mut self, down: bool) {
-        self.move_selection(if down { 1 } else { -1 });
+    pub fn mouse_scroll(&mut self, down: bool, state: &crate::state::State) {
+        self.move_selection(if down { 1 } else { -1 }, state);
     }
 
     // --- context menu -------------------------------------------------------
@@ -1821,7 +1820,7 @@ impl Switcher {
     /// Right-button up: act on the hovered item against the (re-located) target row,
     /// then close the menu. Released off-menu (no hovered item) cancels. The target is
     /// re-found by identity so a rebuild during the hold can't act on a stale node.
-    pub fn menu_release(&mut self) -> MenuOutcome {
+    pub fn menu_release(&mut self, state: &mut crate::state::State) -> MenuOutcome {
         let Some(menu) = self.menu.take() else {
             return MenuOutcome::None;
         };
@@ -1845,7 +1844,7 @@ impl Switcher {
         // that intends to move there.
         let prior = self.capture_focus();
         self.user_moved = true;
-        self.set_selected(idx);
+        self.set_selected(idx, state);
         match item {
             MenuItem::Focus => {
                 // For a window, optimistically mark it active in the cache. Otherwise the
@@ -1854,23 +1853,23 @@ impl Switcher {
                 // active window — so focusing a different window of the already-displayed
                 // session did nothing. The real select-window follows from the selection.
                 if let RowRef::Window { sess, window } = &menu.target {
-                    self.set_active_window(&sess.source, &sess.name, *window);
+                    self.set_active_window(&sess.source, &sess.name, *window, state);
                 }
                 MenuOutcome::FocusTerminal
             }
             MenuItem::NewSession | MenuItem::NewWindow => {
                 self.open_new();
-                self.restore_focus(prior);
+                self.restore_focus(prior, state);
                 MenuOutcome::Handled
             }
             MenuItem::Rename => {
-                self.open_input(InputMode::Rename);
-                self.restore_focus(prior);
+                self.open_input(InputMode::Rename, state);
+                self.restore_focus(prior, state);
                 MenuOutcome::Handled
             }
             MenuItem::Kill => {
                 self.arm_kill();
-                self.restore_focus(prior);
+                self.restore_focus(prior, state);
                 MenuOutcome::Handled
             }
         }
@@ -1889,6 +1888,7 @@ impl Switcher {
         grid: Option<&crate::proxy::screen::Grid>,
         terminal_focused: bool,
         tree_width: u16,
+        state: &crate::state::State,
     ) {
         let area = frame.area();
         self.screen_area = area;
@@ -1923,21 +1923,21 @@ impl Switcher {
         // Tree column: the tree plus its footer/help line. The footer is normally one
         // line, but a long flash wraps across several — size the footer to the wrapped
         // line count so it is never clipped.
-        let footer_h = self.footer_lines(tree_width).len().max(1) as u16;
+        let footer_h = self.footer_lines(tree_width, state).len().max(1) as u16;
         let left = Layout::vertical([
             Constraint::Min(0),           // tree
             Constraint::Length(footer_h), // footer (help / status / wrapped flash)
         ])
         .split(cols[0]);
         self.render_tree(frame, left[0]);
-        self.render_footer(frame, left[1]);
+        self.render_footer(frame, left[1], state);
         // The tree|mux divider marks focus between those two panes.
         self.render_divider(frame, cols[1], terminal_focused);
         let term_area = cols[2];
         // An unreachable host has no live grid; show an info panel (ssh config stanza
         // + failure reason) in its right pane instead of the blank (attaching…) grid.
         if self.current_host_unreachable() {
-            self.render_host_info(frame, term_area);
+            self.render_host_info(frame, term_area, state);
         } else {
             self.render_terminal_view(frame, term_area, grid);
         }
@@ -2086,9 +2086,9 @@ impl Switcher {
     /// The right-pane info panel for a selected unreachable host: the failure reason
     /// and the host's `~/.ssh/config` stanza, so the user can see WHY the control
     /// connection failed without leaving the cockpit.
-    fn render_host_info(&self, frame: &mut Frame, area: Rect) {
+    fn render_host_info(&self, frame: &mut Frame, area: Rect, state: &crate::state::State) {
         let alias = self.current_source().unwrap_or_default();
-        let reason = self
+        let reason = state
             .groups
             .iter()
             .find(|g| g.source == alias)
@@ -2124,16 +2124,16 @@ impl Switcher {
     /// The footer's logical text (confirm / flash / scanning / filter / help), fit to
     /// `width`. A flash is returned raw — it may exceed `width`; [`Self::footer_lines`]
     /// wraps it so it never clips.
-    fn footer_text(&self, width: u16) -> String {
+    fn footer_text(&self, width: u16, state: &crate::state::State) -> String {
         // Use the active prefix so the footer matches the user's configured binding.
         let p = &self.ui_prefix;
         if !self.flash.is_empty() {
             format!(" {}", self.flash)
-        } else if !self.scanning.is_empty() {
+        } else if !state.scanning.is_empty() {
             // A subtle global indicator while host probes are in flight; clears
             // (falls through to the help line) once every host has settled.
-            let total = self.groups.len();
-            let done = total.saturating_sub(self.scanning.len());
+            let total = state.groups.len();
+            let done = total.saturating_sub(state.scanning.len());
             fit(
                 &[
                     format!(" ⟳ scanning hosts {done}/{total}… · {p} q quit · {p} ? help"),
@@ -2141,16 +2141,16 @@ impl Switcher {
                 ],
                 width,
             )
-        } else if !self.filter.is_empty() {
+        } else if !state.filter.is_empty() {
             // The active filter has no border title to live in any more, so it
             // shows in the footer (with how to clear it).
             fit(
                 &[
                     format!(
                         " filter: {} · / edit · Esc clear · {p} ? help · {p} q quit",
-                        self.filter
+                        state.filter
                     ),
-                    format!(" filter: {}", self.filter),
+                    format!(" filter: {}", state.filter),
                 ],
                 width,
             )
@@ -2171,8 +2171,8 @@ impl Switcher {
     /// The footer text split into the lines to render. The fit-based text is always one
     /// line; only a flash (an arbitrary error/notice) may exceed `width`, so it wraps
     /// across the narrow tree-column footer rather than clipping.
-    fn footer_lines(&self, width: u16) -> Vec<String> {
-        let text = self.footer_text(width);
+    fn footer_lines(&self, width: u16, state: &crate::state::State) -> Vec<String> {
+        let text = self.footer_text(width, state);
         // Only a flash can exceed `width` (the fit-based text is already constrained);
         // wrap it on word boundaries with a consistent left margin.
         if self.flash.is_empty() {
@@ -2184,8 +2184,8 @@ impl Switcher {
             .collect()
     }
 
-    fn render_footer(&self, frame: &mut Frame, area: Rect) {
-        let lines = self.footer_lines(area.width);
+    fn render_footer(&self, frame: &mut Frame, area: Rect, state: &crate::state::State) {
+        let lines = self.footer_lines(area.width, state);
         let text = Text::from(lines.into_iter().map(Line::from).collect::<Vec<_>>());
         frame.render_widget(Paragraph::new(text), area);
     }
@@ -2685,6 +2685,7 @@ mod tests {
 
     struct Harness {
         sw: Switcher,
+        state: crate::state::State,
         term: Terminal<TestBackend>,
         ops: RecordOps,
     }
@@ -2693,8 +2694,10 @@ mod tests {
         fn new(scan: Scan) -> Self {
             let backend = TestBackend::new(100, 30);
             let term = Terminal::new(backend).unwrap();
+            let state = crate::state::State::from_scan(scan);
             let mut h = Harness {
-                sw: Switcher::new(scan),
+                sw: Switcher::new(&state),
+                state,
                 term,
                 ops: RecordOps::default(),
             };
@@ -2706,8 +2709,10 @@ mod tests {
             let backend = TestBackend::new(100, 30);
             let term = Terminal::new(backend).unwrap();
             let aliases = aliases.iter().map(|s| s.to_string()).collect();
+            let state = crate::state::State::from_sources(aliases);
             let mut h = Harness {
-                sw: Switcher::from_sources(aliases),
+                sw: Switcher::from_sources(&state),
+                state,
                 term,
                 ops: RecordOps::default(),
             };
@@ -2742,18 +2747,20 @@ mod tests {
 
         fn draw(&mut self) {
             let sw = &mut self.sw;
+            let state = &self.state;
             self.term
-                .draw(|f| sw.render(f, None, false, TREE_WIDTH))
+                .draw(|f| sw.render(f, None, false, TREE_WIDTH, state))
                 .unwrap();
         }
 
         async fn key(&mut self, code: KeyCode) {
-            self.sw.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+            self.sw
+                .handle_key(KeyEvent::new(code, KeyModifiers::NONE), &mut self.state);
             // Pump any queued slow op inline so tests observe its effect, exactly
             // as the real event loop does (only off-loop there).
             if let Some(op) = self.sw.take_pending_op() {
                 let r = run_op(&op, &self.ops).await;
-                self.sw.apply_op_result(r);
+                self.sw.apply_op_result(r, &mut self.state);
             }
             self.draw();
         }
@@ -2951,7 +2958,7 @@ mod tests {
         // moves the bold+italic marker, without a full inventory refetch.
         let mut h = Harness::new(two_window_scan());
         assert!(
-            h.sw.set_active_window("jup", "api", 1),
+            h.sw.set_active_window("jup", "api", 1, &mut h.state),
             "active window moved 0 -> 1"
         );
         h.draw();
@@ -2971,7 +2978,7 @@ mod tests {
         );
         // Idempotent: re-applying the same active window reports no change.
         assert!(
-            !h.sw.set_active_window("jup", "api", 1),
+            !h.sw.set_active_window("jup", "api", 1, &mut h.state),
             "no-op when already active"
         );
     }
@@ -2980,15 +2987,19 @@ mod tests {
     fn select_window_follows_external_change_on_a_window_row() {
         // Cursor on window 1's row; an external client switches the session's
         // active window to 0. The sidebar cursor must follow to window 0's row.
-        let mut sw = Switcher::new(two_window_scan());
-        sw.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → window 0
-        sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // ↓ → window 1
+        let mut state = crate::state::State::from_scan(two_window_scan());
+        let mut sw = Switcher::new(&state);
+        sw.handle_key(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            &mut state,
+        ); // → window 0
+        sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut state); // ↓ → window 1
         assert!(matches!(
             sw.current_ref(),
             Some(RowRef::Window { window: 1, .. })
         ));
         assert!(
-            sw.select_window("jup", "api", 0),
+            sw.select_window("jup", "api", 0, &state),
             "moved to the new active window"
         );
         assert!(matches!(
@@ -2999,25 +3010,32 @@ mod tests {
 
     #[test]
     fn right_descends_left_ascends_tree_levels() {
-        let mut sw = Switcher::new(sample());
-        sw.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)); // local host
+        let mut state = crate::state::State::from_scan(sample());
+        let mut sw = Switcher::new(&state);
+        sw.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE), &mut state); // local host
         assert!(matches!(sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "local"));
-        sw.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → first session
+        sw.handle_key(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            &mut state,
+        ); // → first session
         assert!(
             matches!(sw.current_ref(), Some(RowRef::Session(s)) if s.name == "editor"),
             "→ descends host → first session"
         );
-        sw.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → first window
+        sw.handle_key(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            &mut state,
+        ); // → first window
         assert!(
             matches!(sw.current_ref(), Some(RowRef::Window { window: 1, .. })),
             "→ descends to a window"
         );
-        sw.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)); // ← parent session
+        sw.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), &mut state); // ← parent session
         assert!(
             matches!(sw.current_ref(), Some(RowRef::Session(s)) if s.name == "editor"),
             "← ascends window → session"
         );
-        sw.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)); // ← parent host
+        sw.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), &mut state); // ← parent host
         assert!(
             matches!(sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "local"),
             "← ascends session → host"
@@ -3028,37 +3046,54 @@ mod tests {
     fn up_down_move_within_level_and_hjkl_match_arrows() {
         // ↑/↓ (and k/j) move between SIBLINGS at the current tree level — they do NOT
         // descend into children. →/← (and l/h) change level (descend/ascend). (#1,#2)
-        let mut sw = Switcher::new(sample()); // editor (local) preselected
+        let mut state = crate::state::State::from_scan(sample());
+        let mut sw = Switcher::new(&state); // editor (local) preselected
         assert!(matches!(sw.current_ref(), Some(RowRef::Session(s)) if s.name == "editor"));
-        sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut state);
         assert!(
             matches!(sw.current_ref(), Some(RowRef::Session(s)) if s.name == "build"),
             "↓ moves to the next session sibling, not into a window"
         );
-        sw.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        sw.handle_key(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            &mut state,
+        );
         assert!(
             matches!(sw.current_ref(), Some(RowRef::Window { .. })),
             "→ descends into a window"
         );
 
         // hjkl mirror the arrows exactly.
-        let mut sw2 = Switcher::new(sample());
-        sw2.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        let mut state2 = crate::state::State::from_scan(sample());
+        let mut sw2 = Switcher::new(&state2);
+        sw2.handle_key(
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+            &mut state2,
+        );
         assert!(
             matches!(sw2.current_ref(), Some(RowRef::Session(s)) if s.name == "build"),
             "j == ↓"
         );
-        sw2.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
+        sw2.handle_key(
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
+            &mut state2,
+        );
         assert!(
             matches!(sw2.current_ref(), Some(RowRef::Window { .. })),
             "l == →"
         );
-        sw2.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        sw2.handle_key(
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
+            &mut state2,
+        );
         assert!(
             matches!(sw2.current_ref(), Some(RowRef::Session(s)) if s.name == "build"),
             "h == ←"
         );
-        sw2.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        sw2.handle_key(
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE),
+            &mut state2,
+        );
         assert!(
             matches!(sw2.current_ref(), Some(RowRef::Session(s)) if s.name == "editor"),
             "k == ↑"
@@ -3088,10 +3123,11 @@ mod tests {
         // then. An active-window change must move the cursor to that window even from
         // the SESSION row — this is how focus→mux and in-mux window navigation keep
         // the sidebar mirroring the displayed window (#3).
-        let mut sw = Switcher::new(two_window_scan());
+        let state = crate::state::State::from_scan(two_window_scan());
+        let mut sw = Switcher::new(&state);
         assert!(matches!(sw.current_ref(), Some(RowRef::Session(_))));
         assert!(
-            sw.select_window("jup", "api", 1),
+            sw.select_window("jup", "api", 1, &state),
             "follows from the session row to window 1"
         );
         assert!(matches!(
@@ -3105,10 +3141,11 @@ mod tests {
         // focus→mux: with the cursor on the session row, select_active_window moves
         // it to the session's currently-active window (from cached panes) so the
         // sidebar mirrors the window the mux is displaying (#3). Window 0 is active.
-        let mut sw = Switcher::new(two_window_scan());
+        let state = crate::state::State::from_scan(two_window_scan());
+        let mut sw = Switcher::new(&state);
         assert!(matches!(sw.current_ref(), Some(RowRef::Session(_))));
         assert!(
-            sw.select_active_window(),
+            sw.select_active_window(&state),
             "moved to the cached active window"
         );
         assert!(matches!(
@@ -3117,7 +3154,7 @@ mod tests {
         ));
         // Idempotent: re-applying when already on the active window reports no move.
         assert!(
-            !sw.select_active_window(),
+            !sw.select_active_window(&state),
             "no-op when already on the active window"
         );
     }
@@ -3126,14 +3163,15 @@ mod tests {
     fn select_active_window_descends_from_a_host_row() {
         // focus→mux from a HOST row must descend into the host's recent session's active
         // window (the window the mux displays), not leave the cursor stuck on the host.
-        let mut sw = Switcher::new(two_window_scan());
-        sw.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)); // ascend: session → host
+        let mut state = crate::state::State::from_scan(two_window_scan());
+        let mut sw = Switcher::new(&state);
+        sw.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), &mut state); // ascend: session → host
         assert!(
             matches!(sw.current_ref(), Some(RowRef::Host { .. })),
             "cursor on the host row"
         );
         assert!(
-            sw.select_active_window(),
+            sw.select_active_window(&state),
             "descends from host to the active window"
         );
         assert!(
@@ -3145,10 +3183,14 @@ mod tests {
     #[test]
     fn select_window_no_move_for_another_session() {
         // A window change on a session the cursor is NOT on must not move it.
-        let mut sw = Switcher::new(two_window_scan());
-        sw.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → window 0
-        sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // ↓ → window 1
-        assert!(!sw.select_window("jup", "other", 0));
+        let mut state = crate::state::State::from_scan(two_window_scan());
+        let mut sw = Switcher::new(&state);
+        sw.handle_key(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            &mut state,
+        ); // → window 0
+        sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut state); // ↓ → window 1
+        assert!(!sw.select_window("jup", "other", 0, &state));
         assert!(matches!(
             sw.current_ref(),
             Some(RowRef::Window { window: 1, .. })
@@ -3271,6 +3313,7 @@ mod tests {
             "local".into(),
             vec![sess("local", "editor", 2, false, 100)],
             None,
+            &mut h.state,
         );
         h.draw();
         let out = h.tree_text();
@@ -3291,7 +3334,7 @@ mod tests {
     #[tokio::test]
     async fn apply_source_result_empty_shows_empty_hint() {
         let mut h = Harness::from_sources(&["local"]);
-        h.sw.apply_source_result("local".into(), vec![], None);
+        h.sw.apply_source_result("local".into(), vec![], None, &mut h.state);
         h.draw();
         let out = h.text();
         assert!(
@@ -3304,7 +3347,12 @@ mod tests {
     #[tokio::test]
     async fn apply_source_result_unreachable_marks_tree_and_reason_in_info_pane() {
         let mut h = Harness::from_sources(&["prod"]);
-        h.sw.apply_source_result("prod".into(), vec![], Some("connection refused".into()));
+        h.sw.apply_source_result(
+            "prod".into(),
+            vec![],
+            Some("connection refused".into()),
+            &mut h.state,
+        );
         h.draw();
         // Tree: only the ⚠ marker beside the name — not the verbose reason.
         let tree = h.tree_text();
@@ -3332,7 +3380,12 @@ mod tests {
         h.sw.set_ssh_config_text(
             "Host jupiter00\n    HostName 143.248.140.120\n    User hrlee\n\nHost other\n    HostName 1.2.3.4\n".into(),
         );
-        h.sw.apply_source_result("jupiter00".into(), vec![], Some("no route".into()));
+        h.sw.apply_source_result(
+            "jupiter00".into(),
+            vec![],
+            Some("no route".into()),
+            &mut h.state,
+        );
         h.draw();
         let out = h.text();
         assert!(
@@ -3353,6 +3406,7 @@ mod tests {
             "local".into(),
             vec![sess("local", "editor", 1, false, 100)],
             None,
+            &mut h.state,
         );
         h.draw();
         assert!(
@@ -3364,6 +3418,7 @@ mod tests {
         h.sw.apply_panes(
             "local/editor".into(),
             vec![win(1, "shell", true, vec![pane(1, true, "bash")])],
+            &mut h.state,
         );
         h.draw();
         let out = h.tree_text();
@@ -3389,6 +3444,7 @@ mod tests {
             "local".into(),
             vec![sess("local", "editor", 1, false, 100)],
             None,
+            &mut h.state,
         );
         h.draw();
         assert_eq!(cur_session_name(&h).as_deref(), Some("editor"));
@@ -3396,6 +3452,7 @@ mod tests {
             "jupiter00".into(),
             vec![sess("jupiter00", "infer", 1, false, 300)],
             None,
+            &mut h.state,
         );
         h.draw();
         assert_eq!(
@@ -3415,6 +3472,7 @@ mod tests {
             "local".into(),
             vec![sess("local", "editor", 1, false, 100)],
             None,
+            &mut h.state,
         );
         h.draw();
         // The preferred host has not streamed yet → the local-first default stands.
@@ -3423,6 +3481,7 @@ mod tests {
             "jupiter00".into(),
             vec![sess("jupiter00", "infer", 1, false, 300)],
             None,
+            &mut h.state,
         );
         h.draw();
         assert_eq!(
@@ -3436,12 +3495,13 @@ mod tests {
     async fn request_rescan_arms_a_display_reattach() {
         // The `r` re-scan also arms an explicit re-attach of the current display, so a
         // detached / dead display client is re-created on demand (the loop consumes it).
-        let mut sw = Switcher::from_sources(vec!["h".into()]);
+        let mut state = crate::state::State::from_sources(vec!["h".into()]);
+        let mut sw = Switcher::from_sources(&state);
         assert!(
             !sw.take_reattach_kick(),
             "no re-attach armed before a re-scan"
         );
-        sw.request_rescan();
+        sw.request_rescan(&mut state);
         assert!(
             sw.take_reattach_kick(),
             "an r re-scan arms a display re-attach"
@@ -3454,11 +3514,13 @@ mod tests {
         // The selection thrash: once the user has moved the cursor onto a session, a bare
         // rebuild (a frequent poll / %-event that does not route through restore_focus)
         // must keep it there, not snap it back to the recency/preferred preselect.
-        let mut sw = Switcher::from_sources(vec!["h".into()]);
+        let mut state = crate::state::State::from_sources(vec!["h".into()]);
+        let mut sw = Switcher::from_sources(&state);
         sw.apply_source_result(
             "h".into(),
             vec![sess("h", "a", 1, false, 200), sess("h", "b", 1, false, 100)],
             None,
+            &mut state,
         );
         let names: Vec<String> = sw
             .rows
@@ -3476,9 +3538,9 @@ mod tests {
             .iter()
             .position(|r| matches!(&r.reference, RowRef::Session(s) if s.name == other))
             .expect("other session row");
-        sw.set_selected(idx);
+        sw.set_selected(idx, &state);
         sw.user_moved = true;
-        sw.rebuild();
+        sw.rebuild(&state);
         let got = match sw.current_ref() {
             Some(RowRef::Session(s)) => s.name.clone(),
             _ => "<not a session>".to_string(),
@@ -3499,6 +3561,7 @@ mod tests {
                 sess("local", "build", 1, false, 50),
             ],
             None,
+            &mut h.state,
         );
         h.draw();
         // editor preselected (most recent local); move down to build.
@@ -3509,6 +3572,7 @@ mod tests {
             "jupiter00".into(),
             vec![sess("jupiter00", "infer", 1, false, 300)],
             None,
+            &mut h.state,
         );
         h.draw();
         assert_eq!(
@@ -3530,8 +3594,8 @@ mod tests {
             footer.contains("/2"),
             "footer shows the host progress fraction:\n{footer:?}"
         );
-        h.sw.apply_source_result("local".into(), vec![], None);
-        h.sw.apply_source_result("jupiter00".into(), vec![], None);
+        h.sw.apply_source_result("local".into(), vec![], None, &mut h.state);
+        h.sw.apply_source_result("jupiter00".into(), vec![], None, &mut h.state);
         h.draw();
         let footer = h.footer_text();
         assert!(
@@ -3546,9 +3610,10 @@ mod tests {
 
     #[tokio::test]
     async fn footer_fits_narrow_width() {
-        let mut sw = Switcher::new(sample());
+        let state = crate::state::State::from_scan(sample());
+        let mut sw = Switcher::new(&state);
         let mut term = Terminal::new(TestBackend::new(30, 30)).unwrap();
-        term.draw(|f| sw.render(f, None, false, TREE_WIDTH))
+        term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
             .unwrap();
         let buf = term.backend().buffer();
         let y = buf.area.height - 1;
@@ -3571,9 +3636,10 @@ mod tests {
     fn footer_text_reflects_configured_prefix() {
         // The footer always-visible key-hints must show the active prefix, not a
         // hardcoded "C-g", so a user who sets a different binding sees the right hint.
+        let state = crate::state::State::default();
         let mut sw = Switcher::blank();
         sw.set_ui_prefix("C-Space".into());
-        let text = sw.footer_text(200);
+        let text = sw.footer_text(200, &state);
         assert!(
             text.contains("C-Space"),
             "custom prefix must appear in footer:\n{text:?}"
@@ -3585,7 +3651,7 @@ mod tests {
 
         // Default prefix (no setter) must still show C-g.
         let sw_default = Switcher::blank();
-        let text_default = sw_default.footer_text(200);
+        let text_default = sw_default.footer_text(200, &state);
         assert!(
             text_default.contains("C-g"),
             "default prefix C-g must appear in footer:\n{text_default:?}"
@@ -3648,7 +3714,7 @@ mod tests {
     async fn kill_removes_session_and_cache() {
         let mut h = Harness::new(sample());
         // editor (local) is the default preselect; kill the focused session.
-        assert!(h.sw.panes.contains_key("local/editor"));
+        assert!(h.state.panes.contains_key("local/editor"));
         h.ch('x').await; // arm
         assert!(
             h.text().contains("kill local/editor?"),
@@ -3659,7 +3725,7 @@ mod tests {
         assert_eq!(h.ops.killed.lock().unwrap().len(), 1);
         assert_eq!(h.ops.killed.lock().unwrap()[0].name, "editor");
         assert!(
-            !h.sw.panes.contains_key("local/editor"),
+            !h.state.panes.contains_key("local/editor"),
             "kill must invalidate cache"
         );
         assert!(
@@ -3687,7 +3753,10 @@ mod tests {
         h.key(KeyCode::Left).await; // ← ascend to the local HOST row
         h.ch('n').await; // open New (create a session) on local
         h.sw.set_input_text("scratch");
-        h.sw.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)); // raw: not pumped
+        h.sw.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut h.state,
+        ); // raw: not pumped
         assert!(
             h.ops.created.lock().unwrap().is_empty(),
             "create must be deferred off the key path, not run inline"
@@ -3701,7 +3770,7 @@ mod tests {
             1,
             "the op runs only when the loop pumps it"
         );
-        h.sw.apply_op_result(r);
+        h.sw.apply_op_result(r, &mut h.state);
         assert!(
             h.sw.row_of_session("local/scratch").is_some(),
             "applying the result folds the new session into the tree"
@@ -3754,12 +3823,14 @@ mod tests {
             "alpha".into(),
             vec![sess("alpha", "a-sess", 1, false, 100)],
             None,
+            &mut h.state,
         );
         h.ch('R').await; // capture alpha/a-sess
         h.sw.apply_source_result(
             "beta".into(),
             vec![sess("beta", "b-sess", 1, false, 999)],
             None,
+            &mut h.state,
         );
         h.sw.set_input_text("renamed");
         h.key(KeyCode::Enter).await;
@@ -3794,12 +3865,13 @@ mod tests {
                 sess("local", "xmux-probeL", 1, false, 50),
             ],
             None,
+            &mut h.state,
         );
         h.ch('/').await;
         h.sw.set_input_text("probeL");
         h.key(KeyCode::Enter).await; // apply filter
         let t =
-            h.sw.current_attach_target()
+            h.sw.current_attach_target(&h.state)
                 .expect("a session row is visible");
         assert_eq!(
             t.target.as_str(),
@@ -3820,13 +3892,14 @@ mod tests {
                 sess("alpha", "other", 1, false, 999),
             ],
             None,
+            &mut h.state,
         );
         h.ch('/').await;
         h.sw.set_input_text("keep");
         h.key(KeyCode::Enter).await; // apply filter
         h.key(KeyCode::Home).await; // host row
         let t =
-            h.sw.current_attach_target()
+            h.sw.current_attach_target(&h.state)
                 .expect("host row has a visible session");
         assert_eq!(
             t.target.as_str(),
@@ -3890,11 +3963,11 @@ mod tests {
         let mut h = Harness::new(sample());
         // inference preselected; double-click inside the tree moves the cursor.
         let before = h.sw.selected;
-        h.sw.mouse_attach(5, 4);
+        h.sw.mouse_attach(5, 4, &h.state);
         // cursor moved (or stayed on the same selectable row — just check no panic
         // and current_attach_target is populated).
         assert!(
-            h.sw.current_attach_target().is_some(),
+            h.sw.current_attach_target(&h.state).is_some(),
             "double click yields an attach target"
         );
         let _ = before; // used
@@ -3903,7 +3976,7 @@ mod tests {
     #[tokio::test]
     async fn single_click_moves_cursor() {
         let mut h = Harness::new(sample());
-        h.sw.mouse_select(5, 4);
+        h.sw.mouse_select(5, 4, &h.state);
         // After a single click the cursor is on a selectable row (not pane/loading).
         let selectable = h.sw.rows.get(h.sw.selected).is_some_and(Row::selectable);
         assert!(selectable, "single click must land on a selectable row");
@@ -3975,7 +4048,7 @@ mod tests {
         h.sw.menu_open(x, y);
         // Drag fully outside the box → highlight clears → release cancels.
         h.sw.menu_hover(99, 29);
-        assert!(matches!(h.sw.menu_release(), MenuOutcome::None));
+        assert!(matches!(h.sw.menu_release(&mut h.state), MenuOutcome::None));
         assert!(!h.sw.menu_active(), "menu closes on release");
         assert!(
             h.sw.input.is_none() && h.sw.pending_kill.is_none(),
@@ -3993,7 +4066,7 @@ mod tests {
         let (x, y) = row_screen_pos(&h, idx);
         assert!(h.sw.menu_open(x, y));
         assert!(
-            matches!(h.sw.menu_release(), MenuOutcome::None),
+            matches!(h.sw.menu_release(&mut h.state), MenuOutcome::None),
             "no drag → no action"
         );
         assert!(!h.sw.menu_active());
@@ -4030,7 +4103,10 @@ mod tests {
             items,
             hovered: Some(focus_at),
         });
-        assert!(matches!(h.sw.menu_release(), MenuOutcome::FocusTerminal));
+        assert!(matches!(
+            h.sw.menu_release(&mut h.state),
+            MenuOutcome::FocusTerminal
+        ));
         assert_eq!(
             cur_session_name(&h).as_deref(),
             Some("build"),
@@ -4051,7 +4127,10 @@ mod tests {
             items,
             hovered: Some(at),
         });
-        assert!(matches!(h.sw.menu_release(), MenuOutcome::Handled));
+        assert!(matches!(
+            h.sw.menu_release(&mut h.state),
+            MenuOutcome::Handled
+        ));
         assert!(h.sw.is_inputting(), "rename opens the inline input");
     }
 
@@ -4068,7 +4147,10 @@ mod tests {
             items,
             hovered: Some(at),
         });
-        assert!(matches!(h.sw.menu_release(), MenuOutcome::Handled));
+        assert!(matches!(
+            h.sw.menu_release(&mut h.state),
+            MenuOutcome::Handled
+        ));
         assert!(h.sw.pending_kill.is_some(), "kill arms the y/n confirm");
     }
 
@@ -4082,7 +4164,7 @@ mod tests {
             &h,
             |r| matches!(r, RowRef::Session(s) if s.name == "editor"),
         );
-        h.sw.set_selected(editor);
+        h.sw.set_selected(editor, &h.state);
         h.sw.user_moved = true;
         // Kill a DIFFERENT session ('build') via the menu.
         let target = RowRef::Session(sess("local", "build", 1, false, 100));
@@ -4095,7 +4177,10 @@ mod tests {
             items,
             hovered: Some(at),
         });
-        assert!(matches!(h.sw.menu_release(), MenuOutcome::Handled));
+        assert!(matches!(
+            h.sw.menu_release(&mut h.state),
+            MenuOutcome::Handled
+        ));
         assert!(
             h.sw.pending_kill.is_some(),
             "kill is armed against the clicked row"
@@ -4112,17 +4197,17 @@ mod tests {
         // poll, a remote %-event) used to clear pending_kill out from under the user.
         let mut h = Harness::new(sample());
         let build = row_index(&h, |r| matches!(r, RowRef::Session(s) if s.name == "build"));
-        h.sw.set_selected(build);
+        h.sw.set_selected(build, &h.state);
         h.sw.arm_kill();
         assert!(h.sw.pending_kill.is_some(), "kill armed");
-        h.sw.rebuild(); // a poll/event rebuild
+        h.sw.rebuild(&h.state); // a poll/event rebuild
         assert!(
             h.sw.pending_kill.is_some(),
             "confirm survives a routine rebuild — no time limit"
         );
         // But once the target is actually gone, the stale confirm is dropped.
-        h.sw.groups = crate::ui::tree::remove_session(&h.sw.groups, "local/build");
-        h.sw.rebuild();
+        h.state.groups = crate::ui::tree::remove_session(&h.state.groups, "local/build");
+        h.sw.rebuild(&h.state);
         assert!(
             h.sw.pending_kill.is_none(),
             "a vanished target invalidates the confirm"
@@ -4146,13 +4231,16 @@ mod tests {
             items,
             hovered: Some(at),
         });
-        assert!(matches!(h.sw.menu_release(), MenuOutcome::FocusTerminal));
+        assert!(matches!(
+            h.sw.menu_release(&mut h.state),
+            MenuOutcome::FocusTerminal
+        ));
         assert!(
             matches!(h.sw.current_ref(), Some(RowRef::Window { window, .. }) if *window == 2),
             "cursor is on the focused window"
         );
         assert!(
-            !h.sw.select_active_window(),
+            !h.sw.select_active_window(&h.state),
             "window 2 is now active → no yank back to window 1"
         );
     }
@@ -4171,7 +4259,10 @@ mod tests {
         // Deliberately move onto the first item (no pre-hover), then release.
         let rect = h.sw.menu.as_ref().unwrap().rect;
         h.sw.menu_hover(rect.x + 1, rect.y + 1);
-        assert!(matches!(h.sw.menu_release(), MenuOutcome::Handled));
+        assert!(matches!(
+            h.sw.menu_release(&mut h.state),
+            MenuOutcome::Handled
+        ));
         assert!(h.sw.is_inputting(), "new session opens the name input");
         h.sw.set_input_text("fresh");
         h.key(KeyCode::Enter).await; // queues + pumps the create op (as the loop would)
@@ -4206,7 +4297,10 @@ mod tests {
             sess: sess("local", "editor", 2, true, 200),
             window: 2
         })));
-        assert!(matches!(h.sw.menu_release(), MenuOutcome::FocusTerminal));
+        assert!(matches!(
+            h.sw.menu_release(&mut h.state),
+            MenuOutcome::FocusTerminal
+        ));
     }
 
     fn items_have_split(items: &[MenuItem]) -> bool {
@@ -4237,7 +4331,7 @@ mod tests {
             hovered: Some(0),
         });
         assert!(
-            matches!(h.sw.menu_release(), MenuOutcome::Handled),
+            matches!(h.sw.menu_release(&mut h.state), MenuOutcome::Handled),
             "new session opens an input"
         );
         assert!(h.sw.is_inputting());
@@ -4257,7 +4351,7 @@ mod tests {
             hovered: Some(0),
         });
         assert!(
-            matches!(h.sw.menu_release(), MenuOutcome::None),
+            matches!(h.sw.menu_release(&mut h.state), MenuOutcome::None),
             "gone target → no-op"
         );
     }
@@ -4387,7 +4481,7 @@ mod tests {
         // Render with the live grid supplied.
         let sw = &mut h.sw;
         h.term
-            .draw(|f| sw.render(f, Some(&g), false, TREE_WIDTH))
+            .draw(|f| sw.render(f, Some(&g), false, TREE_WIDTH, &h.state))
             .unwrap();
         let out = buffer_text(h.term.backend().buffer());
         assert!(
@@ -4433,12 +4527,12 @@ mod tests {
     async fn cursor_move_yields_attach_target() {
         let mut h = Harness::new(sample()); // editor preselected (local session)
         let t =
-            h.sw.current_attach_target()
+            h.sw.current_attach_target(&h.state)
                 .expect("a session row yields a target");
         assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "editor"));
         h.key(KeyCode::Left).await; // ← ascend to the local HOST row
         let t =
-            h.sw.current_attach_target()
+            h.sw.current_attach_target(&h.state)
                 .expect("host row targets its first session");
         assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "editor"));
     }
@@ -4473,9 +4567,10 @@ mod tests {
     fn long_flash_wraps_in_narrow_footer_instead_of_clipping() {
         // The footer lives in the tree column; a long flash must wrap across lines rather
         // than clip at the column edge (a narrow tree would otherwise hide most of it).
-        let mut sw = Switcher::new(sample());
+        let state = crate::state::State::from_scan(sample());
+        let mut sw = Switcher::new(&state);
         sw.flash = "host unreachable — cannot create here".into();
-        let lines = sw.footer_lines(20);
+        let lines = sw.footer_lines(20, &state);
         assert!(
             lines.len() > 1,
             "long flash wraps across lines, got {lines:?}"
@@ -4541,7 +4636,8 @@ mod tests {
         // focused half, inactive on the other, hover overrides both while hovered.
         let backend = TestBackend::new(100, 30);
         let mut term = Terminal::new(backend).unwrap();
-        let mut sw = Switcher::new(sample());
+        let state = crate::state::State::from_scan(sample());
+        let mut sw = Switcher::new(&state);
         sw.set_divider_colors(DividerColors {
             active: Color::Blue,
             inactive: Color::Gray,
@@ -4552,7 +4648,7 @@ mod tests {
         let fg = |buf: &Buffer, y: u16| buf[(x, y)].fg;
 
         // Tree focused: top = active(Blue), bottom = inactive(Gray).
-        term.draw(|f| sw.render(f, None, false, TREE_WIDTH))
+        term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
             .unwrap();
         let buf = term.backend().buffer().clone();
         assert_eq!(
@@ -4568,7 +4664,7 @@ mod tests {
 
         // Hovering the rule overrides with the configured hover colour.
         sw.set_divider_hovered(true);
-        term.draw(|f| sw.render(f, None, false, TREE_WIDTH))
+        term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
             .unwrap();
         let buf = term.backend().buffer().clone();
         assert_eq!(
@@ -4584,14 +4680,16 @@ mod tests {
         // focus — top = tree (left), bottom = mux (right) — and the other half is dim.
         let backend = TestBackend::new(100, 30);
         let mut term = Terminal::new(backend).unwrap();
-        let mut sw = Switcher::new(sample());
+        let state = crate::state::State::from_scan(sample());
+        let mut sw = Switcher::new(&state);
         let x = TREE_WIDTH;
         let (top, bottom) = (2u16, 27u16); // within the top / bottom halves of height 30
         let fg = |buf: &Buffer, y: u16| buf[(x, y)].fg;
 
         // Mux focused: accent on the bottom (mux side), inactive on top. The inactive
         // half is the tmux default (terminal default = Color::Reset), not a dim grey.
-        term.draw(|f| sw.render(f, None, true, TREE_WIDTH)).unwrap();
+        term.draw(|f| sw.render(f, None, true, TREE_WIDTH, &state))
+            .unwrap();
         let buf = term.backend().buffer().clone();
         assert_eq!(buf[(x, top)].symbol(), "│", "divider still drawn");
         assert_eq!(
@@ -4606,7 +4704,7 @@ mod tests {
         );
 
         // Tree focused: accent on the top (tree side), inactive on bottom.
-        term.draw(|f| sw.render(f, None, false, TREE_WIDTH))
+        term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
             .unwrap();
         let buf = term.backend().buffer().clone();
         assert_eq!(fg(&buf, top), Color::Green, "tree focus: top half accent");
@@ -4622,10 +4720,11 @@ mod tests {
         // Hover swaps the rule to the HEAVY vertical (┃) — box-drawing has no bold form,
         // so the thicker glyph IS the weight cue — and recolours it brighter. No fill.
         let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        let mut sw = Switcher::new(sample());
+        let state = crate::state::State::from_scan(sample());
+        let mut sw = Switcher::new(&state);
         let x = TREE_WIDTH;
         sw.set_divider_hovered(true);
-        term.draw(|f| sw.render(f, None, false, TREE_WIDTH))
+        term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
             .unwrap();
         let buf = term.backend().buffer().clone();
         for y in [2u16, 27u16] {
@@ -4653,11 +4752,12 @@ mod tests {
         // tree that will vanish on blur is distinguishable from a pinned one.
         let backend = TestBackend::new(100, 30);
         let mut term = Terminal::new(backend).unwrap();
-        let mut sw = Switcher::new(sample());
+        let state = crate::state::State::from_scan(sample());
+        let mut sw = Switcher::new(&state);
         let (x, y) = (TREE_WIDTH, 2u16);
 
         sw.set_auto_hide(false);
-        term.draw(|f| sw.render(f, None, false, TREE_WIDTH))
+        term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
             .unwrap();
         assert_eq!(
             term.backend().buffer()[(x, y)].symbol(),
@@ -4666,7 +4766,7 @@ mod tests {
         );
 
         sw.set_auto_hide(true);
-        term.draw(|f| sw.render(f, None, false, TREE_WIDTH))
+        term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
             .unwrap();
         assert_eq!(
             term.backend().buffer()[(x, y)].symbol(),
@@ -4765,7 +4865,9 @@ mod tests {
         let mut h = Harness::new(sample());
         h.sw.show_help();
         let g = blue_grid();
-        h.term.draw(|f| h.sw.render(f, Some(&g), true, 0)).unwrap();
+        h.term
+            .draw(|f| h.sw.render(f, Some(&g), true, 0, &h.state))
+            .unwrap();
         assert_eq!(
             interior_blue(h.buf()),
             0,
@@ -4776,7 +4878,7 @@ mod tests {
         h.ch('/').await;
         let g = blue_grid();
         h.term
-            .draw(|f| h.sw.render(f, Some(&g), false, TREE_WIDTH))
+            .draw(|f| h.sw.render(f, Some(&g), false, TREE_WIDTH, &h.state))
             .unwrap();
         assert_eq!(
             interior_blue(h.buf()),
@@ -4786,12 +4888,12 @@ mod tests {
 
         let mut h = Harness::new(sample());
         let build = row_index(&h, |r| matches!(r, RowRef::Session(s) if s.name == "build"));
-        h.sw.set_selected(build);
+        h.sw.set_selected(build, &h.state);
         h.sw.user_moved = true;
         h.sw.arm_kill();
         let g = blue_grid();
         h.term
-            .draw(|f| h.sw.render(f, Some(&g), false, TREE_WIDTH))
+            .draw(|f| h.sw.render(f, Some(&g), false, TREE_WIDTH, &h.state))
             .unwrap();
         assert_eq!(
             interior_blue(h.buf()),
@@ -4802,15 +4904,16 @@ mod tests {
 
     #[test]
     fn popup_border_press_then_drag_moves_the_rect() {
-        let mut sw = Switcher::new(sample());
-        sw.open_input(InputMode::Filter); // a small popup with room to move both ways
+        let state = crate::state::State::from_scan(sample());
+        let mut sw = Switcher::new(&state);
+        sw.open_input(InputMode::Filter, &state); // a small popup with room to move both ways
         let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        term.draw(|f| sw.render(f, None, false, 0)).unwrap();
+        term.draw(|f| sw.render(f, None, false, 0, &state)).unwrap();
         let before = sw.popup_rect;
         let (bx, by) = (before.x, before.y); // top-left corner is on the border
         assert!(sw.begin_popup_drag(bx, by), "press on the border grabs");
         sw.drag_popup(bx + 5, by + 3);
-        term.draw(|f| sw.render(f, None, false, 0)).unwrap();
+        term.draw(|f| sw.render(f, None, false, 0, &state)).unwrap();
         assert_eq!(sw.popup_rect.x, before.x + 5, "moved right by 5");
         assert_eq!(sw.popup_rect.y, before.y + 3, "moved down by 3");
         sw.end_popup_drag();
@@ -4821,10 +4924,11 @@ mod tests {
     fn modals_are_mutually_exclusive() {
         // Opening any modal closes the others, so the drawn popup always matches where
         // keystrokes route (the context menu can open input/confirm bypassing handle_key).
-        let mut sw = Switcher::new(sample());
+        let state = crate::state::State::from_scan(sample());
+        let mut sw = Switcher::new(&state);
         sw.arm_kill();
         assert!(sw.pending_kill.is_some());
-        sw.open_input(InputMode::Rename); // as the menu's Rename would
+        sw.open_input(InputMode::Rename, &state); // as the menu's Rename would
         assert!(sw.input.is_some(), "input opened");
         assert!(
             sw.pending_kill.is_none(),
@@ -4846,10 +4950,11 @@ mod tests {
     fn closed_popup_cannot_be_grabbed_even_with_a_stale_rect() {
         // popup_rect is refreshed only on render; a popup closed by a keystroke leaves a
         // stale rect. A press must NOT grab a popup that is no longer open.
-        let mut sw = Switcher::new(sample());
-        sw.open_input(InputMode::Filter);
+        let state = crate::state::State::from_scan(sample());
+        let mut sw = Switcher::new(&state);
+        sw.open_input(InputMode::Filter, &state);
         let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        term.draw(|f| sw.render(f, None, false, 0)).unwrap();
+        term.draw(|f| sw.render(f, None, false, 0, &state)).unwrap();
         let r = sw.popup_rect; // border rect is now cached
         sw.close_input(); // close WITHOUT re-rendering → popup_rect is stale
         assert!(
@@ -4862,19 +4967,21 @@ mod tests {
     fn popup_renders_without_panicking_on_a_narrow_screen() {
         // A terminal narrower than the popup's 24-col minimum must not panic
         // (the width is `.max(24).min(width)`, never `clamp(24, width)`).
-        let mut sw = Switcher::new(sample());
+        let state = crate::state::State::from_scan(sample());
+        let mut sw = Switcher::new(&state);
         sw.show_help();
         let mut term = Terminal::new(TestBackend::new(10, 10)).unwrap();
-        term.draw(|f| sw.render(f, None, false, 0)).unwrap();
+        term.draw(|f| sw.render(f, None, false, 0, &state)).unwrap();
         assert!(sw.popup_rect.width <= 10, "popup fits the narrow screen");
     }
 
     #[test]
     fn popup_interior_press_does_not_grab() {
-        let mut sw = Switcher::new(sample());
+        let state = crate::state::State::from_scan(sample());
+        let mut sw = Switcher::new(&state);
         sw.show_help();
         let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        term.draw(|f| sw.render(f, None, false, 0)).unwrap();
+        term.draw(|f| sw.render(f, None, false, 0, &state)).unwrap();
         let r = sw.popup_rect;
         assert!(
             !sw.begin_popup_drag(r.x + 2, r.y + 2),
@@ -4884,20 +4991,22 @@ mod tests {
 
     #[test]
     fn popup_drag_clamps_within_screen() {
-        let mut sw = Switcher::new(sample());
+        let state = crate::state::State::from_scan(sample());
+        let mut sw = Switcher::new(&state);
         sw.show_help();
         let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        term.draw(|f| sw.render(f, None, false, 0)).unwrap();
+        term.draw(|f| sw.render(f, None, false, 0, &state)).unwrap();
         let r = sw.popup_rect;
         assert!(sw.begin_popup_drag(r.x, r.y));
         sw.drag_popup(r.x.saturating_sub(50), r.y); // yank far left, past the edge
-        term.draw(|f| sw.render(f, None, false, 0)).unwrap();
+        term.draw(|f| sw.render(f, None, false, 0, &state)).unwrap();
         assert_eq!(sw.popup_rect.x, 0, "clamped to the left screen edge");
     }
 
     #[test]
     fn toggle_help_flips_visibility() {
-        let mut sw = Switcher::new(sample());
+        let state = crate::state::State::from_scan(sample());
+        let mut sw = Switcher::new(&state);
         assert!(!sw.show_help);
         sw.toggle_help();
         assert!(sw.show_help);
@@ -4909,7 +5018,8 @@ mod tests {
     fn feed_help_key_is_modal_and_closes_on_q_or_esc() {
         // tmux view-mode style: while open, every key is consumed; q/Esc closes, the
         // rest are swallowed; while closed, nothing is consumed (falls through).
-        let mut sw = Switcher::new(sample());
+        let state = crate::state::State::from_scan(sample());
+        let mut sw = Switcher::new(&state);
         assert!(
             !sw.feed_help_key(b"q"),
             "closed → not consumed, routes normally"
@@ -5002,7 +5112,7 @@ mod tests {
     async fn kill_confirm_is_a_centered_red_popup_not_the_footer() {
         let mut h = Harness::new(sample());
         let build = row_index(&h, |r| matches!(r, RowRef::Session(s) if s.name == "build"));
-        h.sw.set_selected(build);
+        h.sw.set_selected(build, &h.state);
         h.sw.user_moved = true;
         h.key(KeyCode::Char('x')).await; // arm the confirm
         let buf = h.buf();
@@ -5030,7 +5140,10 @@ mod tests {
         h.key(KeyCode::Home).await; // local host
         h.key(KeyCode::Right).await; // → editor (session)
         h.key(KeyCode::Right).await; // → editor's first window (window 1)
-        h.sw.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)); // arm kill (raw, not pumped)
+        h.sw.handle_key(
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+            &mut h.state,
+        ); // arm kill (raw, not pumped)
         assert!(
             matches!(h.sw.pending_kill, Some(PendingKill::Window { .. })),
             "kill on window row must set a window PendingKill"
@@ -5041,7 +5154,10 @@ mod tests {
         };
         assert_eq!(target, "editor:1");
         // confirm with y
-        h.sw.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        h.sw.handle_key(
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+            &mut h.state,
+        );
         let op = h.sw.take_pending_op().expect("kill window queued");
         assert!(matches!(op, PendingOp::KillWindow { ref target, .. } if target == "editor:1"));
     }
@@ -5056,7 +5172,10 @@ mod tests {
         h.key(KeyCode::Home).await; // local host
         h.key(KeyCode::Right).await; // → editor (session)
         h.key(KeyCode::Right).await; // → editor's first window (window 1, name "shell")
-        h.sw.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)); // arm kill (raw)
+        h.sw.handle_key(
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+            &mut h.state,
+        ); // arm kill (raw)
         assert!(
             matches!(h.sw.pending_kill, Some(PendingKill::Window { .. })),
             "arm_kill must set a window PendingKill"
@@ -5064,13 +5183,16 @@ mod tests {
         // Stream the same panes (a rebuild) — the target window still exists.
         let s = sample();
         let editor_panes = s.panes["local/editor"].clone();
-        h.sw.apply_panes("local/editor".to_string(), editor_panes);
+        h.sw.apply_panes("local/editor".to_string(), editor_panes, &mut h.state);
         assert!(
             h.sw.pending_kill.is_some(),
             "the confirm survives a same-tree rebuild — no time limit"
         );
         // 'y' now confirms and queues the kill of the armed window.
-        h.sw.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        h.sw.handle_key(
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+            &mut h.state,
+        );
         let op =
             h.sw.take_pending_op()
                 .expect("kill queued after surviving rebuild");
@@ -5083,15 +5205,21 @@ mod tests {
         h.key(KeyCode::Home).await; // local host
         h.key(KeyCode::Right).await; // → editor (session)
         h.key(KeyCode::Right).await; // → editor's first window (window 1, name "shell")
-        h.sw.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE)); // open rename (raw)
-                                                                                // input should be open for window rename
+        h.sw.handle_key(
+            KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE),
+            &mut h.state,
+        ); // open rename (raw)
+           // input should be open for window rename
         assert!(h.sw.input.is_some(), "rename on window row must open input");
         assert!(
             h.sw.input.as_ref().unwrap().target.is_some(),
             "rename on window must have a target"
         );
         h.sw.set_input_text("newname");
-        h.sw.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)); // confirm (raw)
+        h.sw.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut h.state,
+        ); // confirm (raw)
         let op = h.sw.take_pending_op().expect("rename window queued");
         assert!(
             matches!(op, PendingOp::RenameWindow { ref target, ref new_name, .. }
@@ -5105,10 +5233,16 @@ mod tests {
         h.key(KeyCode::Home).await; // local host
         h.key(KeyCode::Right).await; // → editor (session)
         h.key(KeyCode::Right).await; // → editor's first window (window 1, name "shell")
-        h.sw.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE)); // open rename (raw)
+        h.sw.handle_key(
+            KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE),
+            &mut h.state,
+        ); // open rename (raw)
         assert!(h.sw.input.is_some(), "rename on window row must open input");
         h.sw.set_input_text("shell"); // same as current name
-        h.sw.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        h.sw.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut h.state,
+        );
         assert!(
             h.sw.take_pending_op().is_none(),
             "unchanged window name must not queue a RenameWindow op"
@@ -5121,10 +5255,16 @@ mod tests {
         h.key(KeyCode::Home).await; // local host
         h.key(KeyCode::Right).await; // → editor (session)
         h.key(KeyCode::Right).await; // → editor's first window (window 1)
-        h.sw.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE)); // open rename (raw)
+        h.sw.handle_key(
+            KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE),
+            &mut h.state,
+        ); // open rename (raw)
         assert!(h.sw.input.is_some(), "rename on window row must open input");
         h.sw.set_input_text("-bad");
-        h.sw.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        h.sw.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut h.state,
+        );
         assert!(
             h.sw.take_pending_op().is_none(),
             "leading-dash window rename must be refused"
@@ -5167,9 +5307,13 @@ mod tests {
         // two windows under jup/api; cursor on window 1. Remove window 1 → cursor to
         // window 0 (previous sibling). Remove window 0 (now the only/topmost) → cursor
         // to the session row (parent).
-        let mut sw = Switcher::new(two_window_scan());
-        sw.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → window 0
-        sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // ↓ window 1
+        let mut state = crate::state::State::from_scan(two_window_scan());
+        let mut sw = Switcher::new(&state);
+        sw.handle_key(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            &mut state,
+        ); // → window 0
+        sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut state); // ↓ window 1
         assert!(matches!(
             sw.current_ref(),
             Some(RowRef::Window { window: 1, .. })
@@ -5178,13 +5322,14 @@ mod tests {
         sw.apply_panes(
             "jup/api".into(),
             vec![win(0, "w0", true, vec![pane(0, true, "bash")])],
+            &mut state,
         );
         assert!(
             matches!(sw.current_ref(), Some(RowRef::Window { window: 0, .. })),
             "removed window → previous sibling"
         );
         // remove window 0 too (session now has no window rows): cursor to the session.
-        sw.apply_panes("jup/api".into(), vec![]);
+        sw.apply_panes("jup/api".into(), vec![], &mut state);
         assert!(
             matches!(sw.current_ref(), Some(RowRef::Session(s)) if s.name == "api"),
             "topmost removed → parent (session row)"
@@ -5195,11 +5340,12 @@ mod tests {
     fn render_tree_width_zero_gives_terminal_full_width() {
         // A two-source skeleton is enough; grid None renders the "(attaching…)"
         // placeholder across the whole width when the tree is hidden.
-        let mut sw = Switcher::from_sources(vec!["local".into(), "jupiter06".into()]);
+        let state = crate::state::State::from_sources(vec!["local".into(), "jupiter06".into()]);
+        let mut sw = Switcher::from_sources(&state);
         let mut term = Terminal::new(TestBackend::new(40, 10)).unwrap();
 
         // tree_width == 0 → no tree column, no divider: the terminal view starts at x=0.
-        term.draw(|f| sw.render(f, None, true, 0)).unwrap();
+        term.draw(|f| sw.render(f, None, true, 0, &state)).unwrap();
         let buf = term.backend().buffer().clone();
         // Column 0 row 0 must NOT be the divider rule '│' (the divider is gone).
         assert_ne!(
@@ -5216,7 +5362,7 @@ mod tests {
         );
 
         // Sanity: with a normal width the divider rule IS present at the tree edge.
-        term.draw(|f| sw.render(f, None, true, 20)).unwrap();
+        term.draw(|f| sw.render(f, None, true, 20, &state)).unwrap();
         let buf = term.backend().buffer().clone();
         assert_eq!(
             buf[(20, 0)].symbol(),
@@ -5296,13 +5442,17 @@ mod tests {
             }],
             panes: Default::default(),
         };
-        let mut sw = Switcher::new(scan);
+        let state = crate::state::State::from_scan(scan);
+        let mut sw = Switcher::new(&state);
         // Cursor starts on the most-recent session row (api). Jump to db by address.
-        assert!(sw.select_address("jup/db"), "moved to jup/db");
+        assert!(sw.select_address("jup/db", &state), "moved to jup/db");
         assert_eq!(sw.terminal_view_target().target, "db");
         // Already-there → no move; unknown address → no move, cursor unchanged.
-        assert!(!sw.select_address("jup/db"), "already on jup/db");
-        assert!(!sw.select_address("jup/ghost"), "no such session row");
+        assert!(!sw.select_address("jup/db", &state), "already on jup/db");
+        assert!(
+            !sw.select_address("jup/ghost", &state),
+            "no such session row"
+        );
         assert_eq!(
             sw.terminal_view_target().target,
             "db",
@@ -5339,8 +5489,9 @@ mod tests {
             }],
             panes: Default::default(),
         };
-        let sw = Switcher::new(scan); // new() calls rebuild(), which computes name_col_width
-                                      // name_col_width is a DISPLAY width: max(width("한국")=4, width("api")=3) = 4.
+        let state = crate::state::State::from_scan(scan);
+        let sw = Switcher::new(&state); // new() calls rebuild(), which computes name_col_width
+                                        // name_col_width is a DISPLAY width: max(width("한국")=4, width("api")=3) = 4.
         assert_eq!(
             sw.name_col_width, 4,
             "column width is the display width of the widest name"
