@@ -363,7 +363,7 @@ fn to_grid_local(area: ratatui::layout::Rect, col: u16, row: u16) -> Option<(u16
 }
 
 /// The `AttachRegistry` key for a selection.
-fn display_key(hosts: &crate::model::Hosts, sel: &Selection) -> String {
+pub(crate) fn display_key(hosts: &crate::model::Hosts, sel: &Selection) -> String {
     hosts
         .get(&sel.source)
         .map(host_selection_key)
@@ -447,7 +447,7 @@ fn request_attach(
 /// which the real attached client follows. The bookkeeping (current session per key +
 /// what spawn is in flight) lives on the owning `host.display`.
 #[allow(clippy::too_many_arguments)]
-fn select_attach(
+pub(crate) fn select_attach(
     registry: &mut AttachRegistry,
     hosts: &mut crate::model::Hosts,
     sel: &Selection,

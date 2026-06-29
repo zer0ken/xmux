@@ -13,6 +13,7 @@ pub mod config;
 pub mod control;
 pub mod discovery;
 pub mod display;
+pub mod driver;
 pub mod env;
 pub mod host;
 pub mod manage;
