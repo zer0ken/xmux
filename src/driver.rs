@@ -119,4 +119,72 @@ mod tests {
         // non-dispatchable method this stops compiling.
         let _d: Box<dyn MuxDriver> = Box::new(SeamDriver);
     }
+
+    /// Through the driver boundary, a psmux selection still REPLACES the single
+    /// host-keyed display attachment (the per-session reattach). This pins the seam's
+    /// faithfulness independently of `select_attach` keeping its current name/shape, so
+    /// a future driver that owns the decision must preserve the same observable effect
+    /// (the 4a5f053 per-session attach behavior). Headless: a fake spawner, no live psmux.
+    #[tokio::test(flavor = "current_thread")]
+    async fn seam_show_replaces_the_psmux_display_attachment() {
+        let mut hosts = crate::model::Hosts::default();
+        hosts.insert(crate::model::Host::new(
+            crate::model::Transport::Local { socket: None },
+            crate::backend::for_binary("psmux"),
+        ));
+        // A stale attachment + bookkeeping for a different session: show() must drop it
+        // and reattach for the selected session (psmux is one PTY per host, reattached).
+        hosts
+            .get_mut("local")
+            .unwrap()
+            .display
+            .set_shows("local", "old");
+
+        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
+        let worker = crate::display::DisplayWorker::with_spawner(
+            ptx,
+            Box::new(|_argv, _cols, _rows, id, _events| Ok(crate::proxy::run::fake_attachment(id))),
+        );
+        let mut registry = AttachRegistry::new();
+        registry.insert("local", crate::proxy::run::fake_attachment(99));
+        let mut attach_seq = 0u64;
+        let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
+
+        let sel = Selection {
+            source: "local".into(),
+            session: "target".into(),
+            window: None,
+        };
+
+        let mut driver: Box<dyn MuxDriver> = Box::new(SeamDriver);
+        let shown = {
+            let mut ctx = DriverCtx {
+                registry: &mut registry,
+                hosts: &mut hosts,
+                worker: &worker,
+                mgr: &mgr,
+                attach_seq: &mut attach_seq,
+                cols: 80,
+                body_rows: 24,
+                tree_width: crate::ui::switcher::TREE_WIDTH,
+            };
+            driver.show(&sel, &mut ctx)
+        };
+
+        assert!(shown, "a selection with a session has something to show");
+        let h = hosts.get("local").unwrap();
+        assert_eq!(
+            h.display.shows("local"),
+            Some("target"),
+            "show records the newly-selected session on the host key"
+        );
+        assert!(
+            h.display.in_flight.contains_key("local"),
+            "show requests a fresh per-session reattach"
+        );
+        assert!(
+            !registry.contains("local"),
+            "the stale display attachment is removed before reattach"
+        );
+    }
 }
