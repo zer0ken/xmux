@@ -156,6 +156,91 @@ pub enum MuxOp {
     },
 }
 
+/// A backend follow-up a [`HostEvent`](crate::host::HostEvent) requires after
+/// [`State::apply_event`](crate::state::State::apply_event) has folded the event's
+/// self-contained state mutation. `apply_event` owns the domain-state changes (tree
+/// rebuild, marker move, unreachable mark); these effects carry the backend I/O the
+/// state layer must not perform itself (the AGENTS rule: no IO/registry mutation in
+/// `state`). The cockpit run loop is the sole executor — it holds the host clients,
+/// the attach registry, and the display worker the effects act on.
+///
+/// The events whose payload is self-contained (`Focus`/`Panes`) produce NO effect —
+/// `apply_event` mutates the tree directly and returns an empty `Vec`. The events
+/// that need a backend handle (a host client's inventory lock, a control-mode probe,
+/// the registry, the detection box) return the matching effect for the loop to run.
+/// Not `Clone`/`Eq` — `DispatchScanned` carries a `Box<dyn Backend>`; tests match
+/// structurally.
+pub enum EventEffect {
+    /// `Connected`/`Inventory`: read `host`'s live inventory (behind the host
+    /// client's lock), apply it to the tree, request each session's panes, and sync
+    /// the host's display terminal(s). The data lives behind a backend lock the state
+    /// layer cannot reach, so the apply itself is the loop's job here.
+    ApplyInventory { host: String },
+    /// `Changed`: the server's session/window STRUCTURE changed — refetch `host`'s
+    /// inventory (re-run list-sessions + re-list panes).
+    Refetch { host: String },
+    /// `WindowChanged`: a session's active window switched — probe the displayed
+    /// session's new active window over `host`'s control connection (no refetch).
+    ProbeActiveWindow { host: String },
+    /// `Exited`: reap `host`'s metadata client. (`apply_event` has already folded the
+    /// tree/connected-set state change; this is the backend teardown.)
+    ReapHost { host: String },
+    /// `ClientDetached`: reap xmux's own display attach on `host` IFF the detaching
+    /// `client` tty matches the host's recorded display tty. The loop owns the
+    /// registry + the recover-from-detach rearm, so the match + reap run there.
+    ReapDisplayAttach { host: String, client: String },
+    /// `Scanned`: a detection probe resolved — (re)identify `source`'s backend with
+    /// `detected`, then dispatch the now-detected host onto its metadata channel.
+    DispatchScanned {
+        source: String,
+        detected: Option<Box<dyn crate::backend::Backend>>,
+    },
+    /// `Sessions` (poll host, no enumeration error): drop any stale attach whose
+    /// registry `.port` vanished, then sync `source`'s display terminal(s).
+    /// (`apply_event` has already applied the enumerated sessions to the tree.)
+    SyncPollSessions {
+        source: String,
+        sessions: Vec<Session>,
+    },
+}
+
+// Hand-written: `Box<dyn Backend>` is not `Debug`, so `DispatchScanned` cannot derive
+// it. Print the variant + its string fields (the detection box as a presence flag)
+// so test assertion messages can format `{effects:?}`.
+impl std::fmt::Debug for EventEffect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EventEffect::ApplyInventory { host } => f
+                .debug_struct("ApplyInventory")
+                .field("host", host)
+                .finish(),
+            EventEffect::Refetch { host } => f.debug_struct("Refetch").field("host", host).finish(),
+            EventEffect::ProbeActiveWindow { host } => f
+                .debug_struct("ProbeActiveWindow")
+                .field("host", host)
+                .finish(),
+            EventEffect::ReapHost { host } => {
+                f.debug_struct("ReapHost").field("host", host).finish()
+            }
+            EventEffect::ReapDisplayAttach { host, client } => f
+                .debug_struct("ReapDisplayAttach")
+                .field("host", host)
+                .field("client", client)
+                .finish(),
+            EventEffect::DispatchScanned { source, detected } => f
+                .debug_struct("DispatchScanned")
+                .field("source", source)
+                .field("detected_some", &detected.is_some())
+                .finish(),
+            EventEffect::SyncPollSessions { source, sessions } => f
+                .debug_struct("SyncPollSessions")
+                .field("source", source)
+                .field("sessions", sessions)
+                .finish(),
+        }
+    }
+}
+
 /// Which pane [`Action::Focus`] targets. The ctl `focus` verb and the keyboard
 /// focus toggles both resolve to this.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

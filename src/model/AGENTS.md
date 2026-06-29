@@ -3,9 +3,9 @@
 ## Purpose
 
 `model` holds runtime domain values shared across backend, transport, host,
-control, and cockpit code: host state, host collections, the `Action`/`Command`
-unidirectional-flow vocabulary, transport lowering results, server models,
-plans, and death-signal helpers.
+control, and cockpit code: host state, host collections, the
+`Action`/`Command`/`EventEffect` unidirectional-flow vocabulary, transport
+lowering results, server models, plans, and death-signal helpers.
 
 ## Mental Model
 
@@ -14,15 +14,21 @@ combines machine transport and mux backend state. `Action` is the single domain
 intent vocabulary shared by key handling and ctl; `Command` is the matching
 effect vocabulary the run loop dispatches. `State::apply(Action) -> Vec<Command>`
 (in `crate::state`) is the one site that turns an `Action` into state changes +
-`Command`s.
+`Command`s. `EventEffect` is the inbound mirror: `State::apply_event(HostEvent)
+-> Vec<EventEffect>` (in `crate::state`) folds a backend event's self-contained
+state mutation and returns the backend follow-ups (refetch / probe / reap / sync
+/ scan-dispatch) the run loop runs against the host clients + registry.
 
 ## Module Seams
 
 - `action.rs` defines the domain `Action` (intent) and `Command` (effect)
-  enums, `FocusTarget`, and `MuxOp` (the slow-mux-action descriptor
-  `Command::RunOp` carries and `ui::ops::run_op` runs off-loop). The cockpit's
+  enums, `FocusTarget`, `MuxOp` (the slow-mux-action descriptor `Command::RunOp`
+  carries and `ui::ops::run_op` runs off-loop), and `EventEffect` (the backend
+  follow-up `State::apply_event` returns for a `HostEvent`). The cockpit's
   raw-byte input `Action` (`proxy::dispatch`) projects INTO this via `as_action`;
-  the two are distinct types in separate modules.
+  the two are distinct types in separate modules. `EventEffect` is not
+  `Clone`/`Eq` (its `DispatchScanned` carries a `Box<dyn Backend>`) and has a
+  hand-written `Debug`.
 - `transport.rs` lowers backend intent into executable argv for local or remote
   hosts.
 - `host.rs` and `hosts.rs` store per-host domain state and collections.
@@ -32,7 +38,9 @@ effect vocabulary the run loop dispatches. `State::apply(Action) -> Vec<Command>
 ## Invariants
 
 - `Action` variants represent user-visible domain intents, not key strokes;
-  `Command` variants represent effects the run loop carries out.
+  `Command` variants represent effects the run loop carries out; `EventEffect`
+  variants represent the backend I/O an inbound `HostEvent` requires after its
+  state mutation has been folded.
 - Live control clients, polling tasks, and PTY attachments are owned outside
   `model`.
 - Transport lowering should preserve backend intent without introducing mux

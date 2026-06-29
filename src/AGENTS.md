@@ -24,16 +24,24 @@ the live split view.
   returns `DisplayEvent`s. It never owns the registry.
 - `host.rs` owns control-mode reader/writer machinery, poll task management,
   host inventory, and `HostEvent`s. It is a metadata path only.
-- `cockpit.rs` coordinates these modules and owns the main event loop.
+- `cockpit.rs` coordinates these modules and owns the main event loop. Inbound
+  `HostEvent`s route through `State::apply_event` (the event-driven mutation site);
+  `handle_host_event` is then a thin executor that runs the returned `EventEffect`s
+  (`run_event_effect`) against the host clients, registry, and display worker.
 - `source.rs` and `env.rs` are compatibility and config assembly plumbing for
   source definitions and command construction.
 
 ## Invariants
 
-- `State::apply(Action) -> Vec<Command>` is the single domain-mutation site;
+- `State::apply(Action) -> Vec<Command>` is the single intent-driven mutation site;
   `dispatch_action` runs its synchronous commands for key- and ctl-derived
   actions, and the loop-top `Tick` runs the settled-attach commands. The two
   surfaces (keys, ctl) can never diverge because both flow through `apply`.
+  `State::apply_event(HostEvent) -> Vec<EventEffect>` is the matching event-driven
+  mutation site for inbound backend events.
+- Every batch of `Command`s a switcher key produces (`handle_key`) routes through
+  the single `dispatch_commands` dispatcher — never a `RunOp`-only filter — so no
+  future non-`RunOp` command from a key is silently dropped.
 - `Selection` is the canonical selected source/session/window value consumed by
   display selection and rendering.
 - `DisplayWorker` spawns attachments and hands them back; `AttachRegistry`

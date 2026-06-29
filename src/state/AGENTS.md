@@ -4,8 +4,9 @@
 
 `state` is the cockpit's single source of truth: the reachable inventory plus the
 selection/display runtime fields that need stable ownership outside the main
-loop's local variables, and `State::apply` — the single domain-mutation site. UI
-components read `&State` instead of reaching into the tree.
+loop's local variables, and `State::apply` / `State::apply_event` — the two
+domain-mutation sites (intent-driven and event-driven). UI components read
+`&State` instead of reaching into the tree.
 
 ## Mental Model
 
@@ -34,6 +35,19 @@ are pure effect emitters: `apply` mutates no domain state and returns a single
 `Command::RunOp(MuxOp)` the run loop runs off-loop (the inventory change arrives
 later as the op's result).
 
+`State::apply_event(HostEvent, &mut Switcher, &mut connected) -> Vec<EventEffect>`
+is the inbound mirror of `apply`: the single event-driven mutation site. It folds
+the arms whose data is SELF-CONTAINED in the event (the `Focus` active-window
+marker, a `Panes` subtree, a `Sessions` poll enumeration, the `Exited`
+unreachable mark) into `State` through the switcher, and returns the backend
+follow-ups it cannot perform itself as `EventEffect`s for the run loop to run
+(`ApplyInventory` / `Refetch` / `ProbeActiveWindow` / `ReapHost` /
+`ReapDisplayAttach` / `DispatchScanned` / `SyncPollSessions`). The `connected`
+once-connected set enters as DATA (like the clock on `Tick`): an `Exited` of a
+once-connected host is a transient drop that keeps the last-known tree. The
+`Connected`/`Inventory` inventory lives behind the host client's lock the state
+layer cannot reach, so its apply is deferred to the loop as `ApplyInventory`.
+
 `popup` is one `Option<ui::switcher::Popup>` — at most one of help / inline
 input / kill confirm / context menu. A single Option (not four independent
 fields) makes the modals' mutual exclusion structural: opening one drops
@@ -46,10 +60,15 @@ the transient popup geometry (drag offset / drawn rect).
 - `State` depends on `cockpit::Selection` for selected source/session/window,
   `ui::tree::Group` + `session::WindowPanes` for the inventory,
   `proxy::app::Focus` for the focus state machine, `ui::switcher::Popup` for the
-  open modal, and `model::{Action, Command}` for the `apply` vocabulary.
-- It stores state facts + the single mutation site (`apply`); the run loop owns
-  effect dispatch (switcher cursor move, attach, prefs IO, quit) and feeds back
-  the runtime attach facts on `Tick`. No IO/spawning/channel sends happen here.
+  open modal, `model::{Action, Command}` for the `apply` vocabulary, and
+  `host::HostEvent` + `model::EventEffect` + `&mut ui::switcher::Switcher` for
+  `apply_event` (the switcher rebuilds the tree against `&mut State`).
+- It stores state facts + the two mutation sites (`apply` / `apply_event`); the
+  run loop owns effect dispatch — for `apply` the synchronous `Command`s (switcher
+  cursor move, attach, prefs IO, quit) and for `apply_event` the `EventEffect`
+  backend follow-ups (inventory lock apply, refetch, probe, reap, sync,
+  scan-dispatch) — and feeds back the runtime attach facts on `Tick`. No
+  IO/spawning/channel sends happen here.
 
 ## Invariants
 

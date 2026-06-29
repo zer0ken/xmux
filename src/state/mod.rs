@@ -261,6 +261,90 @@ impl State {
         }
     }
 
+    /// The single event-driven mutation site: folds one backend [`HostEvent`] into the
+    /// domain state and returns the backend follow-ups as [`EventEffect`]s. The mirror
+    /// of [`apply`](State::apply) for the inbound (backend → state) direction — every
+    /// `%`-notification, metadata reply, poll result, and reap routes through here, so
+    /// State owns the event-driven mutations just as `apply` owns the intent-driven ones.
+    ///
+    /// `apply_event` performs only the mutations whose data is SELF-CONTAINED in the
+    /// event (the active-window marker, a pane subtree, a poll enumeration, the
+    /// unreachable mark) — driven through the switcher, which rebuilds the tree against
+    /// `&mut State`. The follow-ups that need a backend handle the state layer must not
+    /// hold (a host client's inventory lock, a control-mode probe, the attach registry,
+    /// the detection dispatch) are returned as [`EventEffect`]s for the run loop — the
+    /// sole executor — to carry out (the AGENTS rule: no IO/registry mutation here).
+    ///
+    /// `connected` (the run loop's once-connected set) enters as data, like the clock on
+    /// `Tick`: an `Exited` of a once-connected host is a transient drop that keeps the
+    /// last-known tree; otherwise it resolves the host's real state.
+    ///
+    /// [`HostEvent`]: crate::host::HostEvent
+    /// [`EventEffect`]: crate::model::EventEffect
+    pub fn apply_event(
+        &mut self,
+        ev: crate::host::HostEvent,
+        switcher: &mut crate::ui::switcher::Switcher,
+        connected: &mut std::collections::HashSet<String>,
+    ) -> Vec<crate::model::EventEffect> {
+        use crate::host::HostEvent;
+        use crate::model::EventEffect;
+        match ev {
+            HostEvent::Connected { host } | HostEvent::Inventory { host } => {
+                // The inventory lives behind the host client's lock the state layer
+                // cannot reach; record the connected mark and let the loop apply it.
+                connected.insert(host.clone());
+                vec![EventEffect::ApplyInventory { host }]
+            }
+            HostEvent::Changed { host } => vec![EventEffect::Refetch { host }],
+            HostEvent::WindowChanged { host } => vec![EventEffect::ProbeActiveWindow { host }],
+            HostEvent::Focus {
+                host,
+                session,
+                window,
+            } => {
+                // The active-window probe resolved — flip the bold+italic marker. A pure
+                // state mutation: cursor follow is a loop-top concern, not here.
+                switcher.set_active_window(&host, &session, window, self);
+                Vec::new()
+            }
+            HostEvent::Exited { host, reason } => {
+                // Mark the host unreachable in the tree (unless a transient drop of a
+                // once-connected host), then reap its dead client.
+                crate::cockpit::note_host_exited(switcher, self, connected, &host, reason);
+                vec![EventEffect::ReapHost { host }]
+            }
+            HostEvent::ClientDetached { host, client } => {
+                // The tty match against the host's recorded display tty + the registry
+                // reap are loop-owned; forward the descriptor, mutate no State.
+                vec![EventEffect::ReapDisplayAttach { host, client }]
+            }
+            HostEvent::Scanned { source, detected } => {
+                vec![EventEffect::DispatchScanned { source, detected }]
+            }
+            HostEvent::Sessions {
+                source,
+                sessions,
+                err,
+            } => {
+                // Apply the poll enumeration to the tree. On a SUCCESSFUL enumeration
+                // hand the sessions back so the loop drops any stale attach + syncs the
+                // PTY set; a transient failure shows the error but keeps attachments.
+                let had_err = err.is_some();
+                switcher.apply_source_result(source.clone(), sessions.clone(), err, self);
+                if had_err {
+                    Vec::new()
+                } else {
+                    vec![EventEffect::SyncPollSessions { source, sessions }]
+                }
+            }
+            HostEvent::Panes { address, panes } => {
+                switcher.apply_panes(address, panes, self);
+                Vec::new()
+            }
+        }
+    }
+
     /// Whether to (re)issue an attach for the settled selection. Fire when the
     /// selection differs from what is confirmed on screen, or when its display PTY is
     /// gone (`!key_live` — exited / reaped while the cursor was elsewhere) — but never
@@ -769,5 +853,346 @@ mod tests {
         );
         assert!(s.focus.is_tree_focused(), "kill intent leaves focus alone");
         assert!(s.popup.is_none(), "kill intent leaves the popup alone");
+    }
+
+    // --- apply_event(HostEvent) -----------------------------------------------
+    // State owns the EVENT-DRIVEN mutations: apply_event folds the self-contained
+    // arms (Focus marker, Panes subtree, Sessions enumeration, Exited unreachable
+    // mark) into State directly, and returns the backend follow-ups (refetch /
+    // probe / reap / sync / scan-dispatch) as EventEffects for the run loop to run.
+    use crate::host::HostEvent;
+    use crate::model::EventEffect;
+    use crate::session::{Pane, Session, WindowPanes};
+    use crate::ui::switcher::{Scan, Switcher};
+    use crate::ui::tree::Group;
+    use std::collections::HashSet;
+
+    fn one_session_scan() -> Scan {
+        let mut panes = HashMap::new();
+        panes.insert(
+            "jup/api".to_string(),
+            vec![
+                WindowPanes {
+                    index: 0,
+                    name: "w0".into(),
+                    active: true,
+                    panes: vec![Pane {
+                        index: 0,
+                        active: true,
+                        command: "bash".into(),
+                    }],
+                },
+                WindowPanes {
+                    index: 1,
+                    name: "w1".into(),
+                    active: false,
+                    panes: vec![Pane {
+                        index: 0,
+                        active: true,
+                        command: "bash".into(),
+                    }],
+                },
+            ],
+        );
+        Scan {
+            groups: vec![Group {
+                source: "jup".into(),
+                err: None,
+                sessions: vec![Session {
+                    source: "jup".into(),
+                    name: "api".into(),
+                    windows: 2,
+                    attached: false,
+                    last_attached: 100,
+                }],
+            }],
+            panes,
+        }
+    }
+
+    fn with_switcher(scan: Scan) -> (State, Switcher) {
+        let mut state = State::from_scan(scan);
+        let sw = Switcher::new(&mut state);
+        (state, sw)
+    }
+
+    #[test]
+    fn apply_event_focus_moves_marker_and_emits_no_effect() {
+        // Focus is self-contained (host/session/window in the payload): apply_event
+        // flips the active-window marker in State and produces no backend effect.
+        let (mut state, mut sw) = with_switcher(one_session_scan());
+        let mut connected = HashSet::new();
+        // window 0 is active in the scan; move the marker to window 1.
+        let effects = state.apply_event(
+            HostEvent::Focus {
+                host: "jup".into(),
+                session: "api".into(),
+                window: 1,
+            },
+            &mut sw,
+            &mut connected,
+        );
+        assert!(
+            effects.is_empty(),
+            "Focus is a pure state mutation — no backend effect"
+        );
+        let windows = state.panes.get("jup/api").unwrap();
+        assert!(windows.iter().find(|w| w.index == 1).unwrap().active);
+        assert!(!windows.iter().find(|w| w.index == 0).unwrap().active);
+    }
+
+    #[test]
+    fn apply_event_panes_loads_subtree_and_emits_no_effect() {
+        // Panes carries its data; apply_event applies it and marks the address loaded.
+        let (mut state, mut sw) = with_switcher(one_session_scan());
+        let mut connected = HashSet::new();
+        let new_panes = vec![WindowPanes {
+            index: 0,
+            name: "only".into(),
+            active: true,
+            panes: vec![Pane {
+                index: 0,
+                active: true,
+                command: "zsh".into(),
+            }],
+        }];
+        let effects = state.apply_event(
+            HostEvent::Panes {
+                address: "jup/db".into(),
+                panes: new_panes,
+            },
+            &mut sw,
+            &mut connected,
+        );
+        assert!(effects.is_empty(), "Panes is a pure state mutation");
+        assert!(state.panes_loaded.contains("jup/db"));
+        assert_eq!(state.panes.get("jup/db").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn apply_event_connected_marks_connected_and_emits_apply_inventory() {
+        // Connected/Inventory's data lives behind the host client's lock, which State
+        // cannot reach — so apply_event records the connected mark and hands the
+        // inventory apply back to the loop as an effect.
+        let (mut state, mut sw) = with_switcher(one_session_scan());
+        let mut connected = HashSet::new();
+        let effects = state.apply_event(
+            HostEvent::Connected { host: "jup".into() },
+            &mut sw,
+            &mut connected,
+        );
+        assert!(connected.contains("jup"), "Connected records the host");
+        assert!(
+            matches!(effects.as_slice(), [EventEffect::ApplyInventory { host }] if host == "jup"),
+            "Connected returns one ApplyInventory effect: {effects:?}"
+        );
+        // Inventory behaves identically (the arm is shared).
+        let effects = state.apply_event(
+            HostEvent::Inventory { host: "jup".into() },
+            &mut sw,
+            &mut connected,
+        );
+        assert!(
+            matches!(effects.as_slice(), [EventEffect::ApplyInventory { host }] if host == "jup"),
+        );
+    }
+
+    #[test]
+    fn apply_event_changed_emits_refetch() {
+        let (mut state, mut sw) = with_switcher(one_session_scan());
+        let mut connected = HashSet::new();
+        let effects = state.apply_event(
+            HostEvent::Changed { host: "jup".into() },
+            &mut sw,
+            &mut connected,
+        );
+        assert!(
+            matches!(effects.as_slice(), [EventEffect::Refetch { host }] if host == "jup"),
+            "Changed returns one Refetch effect: {effects:?}"
+        );
+    }
+
+    #[test]
+    fn apply_event_window_changed_emits_probe() {
+        let (mut state, mut sw) = with_switcher(one_session_scan());
+        let mut connected = HashSet::new();
+        let effects = state.apply_event(
+            HostEvent::WindowChanged { host: "jup".into() },
+            &mut sw,
+            &mut connected,
+        );
+        assert!(
+            matches!(effects.as_slice(), [EventEffect::ProbeActiveWindow { host }] if host == "jup"),
+            "WindowChanged returns one ProbeActiveWindow effect: {effects:?}"
+        );
+    }
+
+    #[test]
+    fn apply_event_client_detached_emits_reap_display_attach_with_no_state_change() {
+        // The tty match + reap need the host registry (loop-owned); apply_event only
+        // forwards the descriptor and touches no State.
+        let (mut state, mut sw) = with_switcher(one_session_scan());
+        let mut connected = HashSet::new();
+        let before_groups = state.groups.len();
+        let before_sessions = state.groups[0].sessions.len();
+        let effects = state.apply_event(
+            HostEvent::ClientDetached {
+                host: "jup".into(),
+                client: "/dev/pts/3".into(),
+            },
+            &mut sw,
+            &mut connected,
+        );
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [EventEffect::ReapDisplayAttach { host, client }]
+                    if host == "jup" && client == "/dev/pts/3"
+            ),
+            "ClientDetached forwards a ReapDisplayAttach effect: {effects:?}"
+        );
+        // ClientDetached mutates no State (the tree group set is untouched).
+        assert_eq!(state.groups.len(), before_groups);
+        assert_eq!(state.groups[0].sessions.len(), before_sessions);
+        assert!(state.popup.is_none());
+    }
+
+    #[test]
+    fn apply_event_exited_marks_unreachable_and_emits_reap() {
+        // A never-connected host exiting with a real failure marks the tree
+        // unreachable (a State mutation) AND asks the loop to reap the client.
+        let (mut state, mut sw) = with_switcher(one_session_scan());
+        let mut connected = HashSet::new(); // not connected → not a transient drop
+        let effects = state.apply_event(
+            HostEvent::Exited {
+                host: "jup".into(),
+                reason: Some("connection refused".into()),
+            },
+            &mut sw,
+            &mut connected,
+        );
+        assert!(
+            matches!(effects.as_slice(), [EventEffect::ReapHost { host }] if host == "jup"),
+            "Exited returns one ReapHost effect: {effects:?}"
+        );
+        let g = state.groups.iter().find(|g| g.source == "jup").unwrap();
+        assert!(
+            g.err.is_some(),
+            "the host is marked unreachable in the tree"
+        );
+    }
+
+    #[test]
+    fn apply_event_exited_of_connected_host_keeps_tree_and_still_reaps() {
+        // A transient drop of a once-connected host keeps its last-known tree (no
+        // unreachable flash) but still reaps the dead client.
+        let (mut state, mut sw) = with_switcher(one_session_scan());
+        let mut connected = HashSet::new();
+        connected.insert("jup".to_string());
+        let effects = state.apply_event(
+            HostEvent::Exited {
+                host: "jup".into(),
+                reason: None,
+            },
+            &mut sw,
+            &mut connected,
+        );
+        assert!(matches!(effects.as_slice(), [EventEffect::ReapHost { host }] if host == "jup"),);
+        assert!(
+            !connected.contains("jup"),
+            "the connected mark is cleared so a later failed reconnect resolves"
+        );
+        let g = state.groups.iter().find(|g| g.source == "jup").unwrap();
+        assert!(
+            g.err.is_none(),
+            "a transient drop keeps the last-known tree"
+        );
+    }
+
+    #[test]
+    fn apply_event_sessions_applies_tree_and_emits_sync_on_success() {
+        // A poll host's enumeration is self-contained: apply_event applies the
+        // sessions to the tree and hands the sessions back for the stale-attach /
+        // sync follow-up the loop owns.
+        let mut state = State::from_sources(vec!["local".into()]);
+        let mut sw = Switcher::from_sources(&mut state);
+        let mut connected = HashSet::new();
+        let sessions = vec![Session {
+            source: "local".into(),
+            name: "work".into(),
+            windows: 1,
+            attached: false,
+            last_attached: 5,
+        }];
+        let effects = state.apply_event(
+            HostEvent::Sessions {
+                source: "local".into(),
+                sessions: sessions.clone(),
+                err: None,
+            },
+            &mut sw,
+            &mut connected,
+        );
+        assert!(
+            !state.scanning.contains("local"),
+            "the enumerated source is no longer scanning"
+        );
+        let g = state.groups.iter().find(|g| g.source == "local").unwrap();
+        assert_eq!(g.sessions.len(), 1, "the session is in the tree");
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [EventEffect::SyncPollSessions { source, sessions: s }]
+                    if source == "local" && s.len() == 1
+            ),
+            "a successful enumeration syncs terminals: {effects:?}"
+        );
+    }
+
+    #[test]
+    fn apply_event_sessions_with_error_applies_tree_but_emits_no_sync() {
+        // A transient enumeration failure shows the error in the tree but keeps
+        // attachments (the keep-alive guarantee) — no sync effect.
+        let mut state = State::from_sources(vec!["local".into()]);
+        let mut sw = Switcher::from_sources(&mut state);
+        let mut connected = HashSet::new();
+        let effects = state.apply_event(
+            HostEvent::Sessions {
+                source: "local".into(),
+                sessions: Vec::new(),
+                err: Some("poll failed".into()),
+            },
+            &mut sw,
+            &mut connected,
+        );
+        let g = state.groups.iter().find(|g| g.source == "local").unwrap();
+        assert_eq!(g.err.as_deref(), Some("poll failed"));
+        assert!(
+            effects.is_empty(),
+            "a failed enumeration keeps attachments — no sync effect: {effects:?}"
+        );
+    }
+
+    #[test]
+    fn apply_event_scanned_emits_dispatch_carrying_the_detection() {
+        // The detection box + the host-channel dispatch are loop-owned; apply_event
+        // forwards the descriptor (no detection here = still undetected).
+        let (mut state, mut sw) = with_switcher(one_session_scan());
+        let mut connected = HashSet::new();
+        let effects = state.apply_event(
+            HostEvent::Scanned {
+                source: "jup".into(),
+                detected: None,
+            },
+            &mut sw,
+            &mut connected,
+        );
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [EventEffect::DispatchScanned { source, detected: None }] if source == "jup"
+            ),
+            "Scanned forwards a DispatchScanned effect: {effects:?}"
+        );
     }
 }

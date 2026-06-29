@@ -12,7 +12,7 @@ pub mod plan;
 pub mod server_model;
 pub mod transport;
 
-pub use action::{Action, Command, FocusTarget, MuxOp};
+pub use action::{Action, Command, EventEffect, FocusTarget, MuxOp};
 pub use death::{
     display_tty_marker_prefix, matches_display_tty, parse_display_tty_marker, psmux_port_path,
     psmux_session_is_live,

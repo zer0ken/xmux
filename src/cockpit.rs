@@ -967,6 +967,9 @@ fn handle_tree_bytes(
     detecting: &mut HashSet<String>,
     ops: &Arc<dyn crate::ui::switcher::Ops>,
     op_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
+    tree_width_natural: &mut u16,
+    auto_hide_tree: &mut bool,
+    width_changed: &mut bool,
     cols: u16,
     rows: u16,
     tree_width: u16,
@@ -975,7 +978,7 @@ fn handle_tree_bytes(
     let mut quit = false;
     let mut width_delta = 0i32;
     let mut toggle_auto_hide = false;
-    let mut op_cmds: Vec<crate::model::Command> = Vec::new();
+    let mut key_cmds: Vec<crate::model::Command> = Vec::new();
     for key in tree_decoder.feed(bytes) {
         // Re-query per key: opening a modal popup (via a TreeKey applied below) flips
         // this, which changes how the next key in this same read resolves. Gating on
@@ -985,8 +988,8 @@ fn handle_tree_bytes(
         let is_inputting = state.is_modal_popup_open();
         match resolve_tree_key(key, tree_armed, prefix, is_inputting) {
             // A committed input/kill confirm folds through State::apply, which returns
-            // the off-loop RunOp commands; collect them and spawn after the batch.
-            Some(Action::TreeKey(k)) => op_cmds.extend(switcher.handle_key(k, state)),
+            // its Commands; collect them and dispatch the whole batch below.
+            Some(Action::TreeKey(k)) => key_cmds.extend(switcher.handle_key(k, state)),
             Some(Action::FocusMux) => focus_terminal = true,
             Some(Action::Quit) => quit = true,
             Some(Action::Width(d)) => width_delta = d,
@@ -996,10 +999,23 @@ fn handle_tree_bytes(
             Some(Action::Forward(_)) | Some(Action::FocusTree(_)) | None => {}
         }
     }
-    for cmd in op_cmds {
-        if let crate::model::Command::RunOp(op) = cmd {
-            spawn_op(op, ops, op_tx);
-        }
+    // Route the FULL command batch through the single dispatcher (not just RunOp): a
+    // switcher key emits only RunOp today, but dispatch_commands handles every variant
+    // so a future non-RunOp command is acted on, never silently dropped. quit/
+    // width-change it reports merge into this function's outputs.
+    let (cmd_quit, cmd_width_changed) = dispatch_commands(
+        key_cmds,
+        switcher,
+        state,
+        tree_width_natural,
+        auto_hide_tree,
+        &env.xmux_dir,
+        ops,
+        op_tx,
+    );
+    quit |= cmd_quit;
+    if cmd_width_changed {
+        *width_changed = true;
     }
     ensure_current_host(mgr, env, hosts, switcher, cols, rows, tree_width);
     kick_rescan(switcher, env, hosts, detecting, mgr, cols, rows);
@@ -1057,9 +1073,63 @@ fn handle_host_event(
     rows: u16,
     tree_width: u16,
 ) -> bool {
-    match ev {
-        HostEvent::Connected { host } | HostEvent::Inventory { host } => {
-            connected.insert(host.clone());
+    // State owns the event-driven mutations: apply_event folds the self-contained
+    // arms (Focus marker, Panes subtree, Sessions enumeration, Exited unreachable
+    // mark) into State and returns the backend follow-ups it cannot perform itself.
+    // This loop is the sole executor of those effects — it holds the host clients,
+    // the registry, and the display worker the state layer must not reach.
+    let mut rearm = false;
+    for effect in state.apply_event(ev, switcher, connected) {
+        if run_event_effect(
+            effect,
+            mgr,
+            hosts,
+            registry,
+            switcher,
+            state,
+            env,
+            panes_requested,
+            detecting,
+            worker,
+            attach_seq,
+            cols,
+            rows,
+            tree_width,
+        ) {
+            rearm = true;
+        }
+    }
+    rearm
+}
+
+/// Carries out one [`EventEffect`](crate::model::EventEffect) `State::apply_event`
+/// returned — the backend I/O the state layer cannot perform (a host client's
+/// inventory lock, a control-mode probe, the attach registry, the detection
+/// dispatch). Returns `true` only for the matched-client display-attach reap, which
+/// asks the caller to rearm `attach_deadline` + mark `dirty` (the recover-from-detach
+/// path).
+#[allow(clippy::too_many_arguments)]
+fn run_event_effect(
+    effect: crate::model::EventEffect,
+    mgr: &mut HostManager,
+    hosts: &mut crate::model::Hosts,
+    registry: &mut AttachRegistry,
+    switcher: &mut crate::ui::switcher::Switcher,
+    state: &mut crate::state::State,
+    env: &Env,
+    panes_requested: &mut HashSet<String>,
+    detecting: &mut HashSet<String>,
+    worker: &DisplayWorker,
+    attach_seq: &mut u64,
+    cols: u16,
+    rows: u16,
+    tree_width: u16,
+) -> bool {
+    use crate::model::EventEffect;
+    match effect {
+        EventEffect::ApplyInventory { host } => {
+            // The metadata reply's inventory lives behind the host client's lock; apply
+            // it to the tree, request each session's panes, and sync the display PTY(s).
             if let Some(client) = mgr.get(&host) {
                 let sessions = {
                     let inv = client.inventory.lock().unwrap();
@@ -1085,12 +1155,12 @@ fn handle_host_event(
                 );
             }
         }
-        HostEvent::Changed { host } => {
+        EventEffect::Refetch { host } => {
             // The server's session/window structure changed (a `%`-notification).
             // Refetch so the tree, panes, and PTY set resync (#5 sidebar sync).
             refetch_host(mgr, panes_requested, &host);
         }
-        HostEvent::WindowChanged { host } => {
+        EventEffect::ProbeActiveWindow { host } => {
             // A session's ACTIVE WINDOW switched — the structure did NOT change, so do
             // NOT refetch the whole inventory: a full list-sessions + per-session
             // list-panes per change storms the single-threaded loop and freezes the UI
@@ -1105,21 +1175,10 @@ fn handle_host_event(
                 client.probe_active_window(&displayed);
             }
         }
-        HostEvent::Focus {
-            host,
-            session,
-            window,
-        } => {
-            // The active-window probe resolved. Updates the bold+italic marker so the
-            // sidebar reflects the mux's current active window. Cursor follow in
-            // passthrough happens at the loop top (single unified call), not here.
-            switcher.set_active_window(&host, &session, window, state);
-        }
-        HostEvent::Exited { host, reason } => {
-            note_host_exited(switcher, state, connected, &host, reason);
+        EventEffect::ReapHost { host } => {
             mgr.reap(&host);
         }
-        HostEvent::ClientDetached { host, client } => {
+        EventEffect::ReapDisplayAttach { host, client } => {
             // Reap our display attach ONLY when the detaching client is OUR display client
             // (matched against the in-memory Host.display_tty). An unrelated client's detach
             // can never match, so it is structurally inert — no blanket reap.
@@ -1137,7 +1196,7 @@ fn handle_host_event(
             }
             return true; // rearm recovery
         }
-        HostEvent::Scanned { source, detected } => {
+        EventEffect::DispatchScanned { source, detected } => {
             // A detection probe resolved: (re)identify the backend, then dispatch the
             // now-detected host onto its metadata channel (control client or poll task).
             detecting.remove(&source);
@@ -1145,52 +1204,34 @@ fn handle_host_event(
             let (vc, vr) = terminal_view_size(cols, rows, tree_width);
             dispatch_detected_host(mgr, env, hosts, &source, vc, vr);
         }
-        HostEvent::Sessions {
-            source,
-            sessions,
-            err,
-        } => {
-            // A poll host re-enumerated. Apply the tree group; on a SUCCESSFUL
-            // enumeration sync its PTY set (a transient failure shows the error but
-            // keeps attachments — the keep-alive guarantee).
-            let had_err = err.is_some();
+        EventEffect::SyncPollSessions { source, sessions } => {
+            // A poll host's SUCCESSFUL enumeration (the tree group is already applied).
             dbg_log(
                 &env.xmux_dir,
                 &format!(
-                    "poll enum source={source} n={} names={:?} err={:?}",
+                    "poll enum source={source} n={} names={:?}",
                     sessions.len(),
-                    sessions.iter().map(|s| &s.name).collect::<Vec<_>>(),
-                    err
+                    sessions.iter().map(|s| &s.name).collect::<Vec<_>>()
                 ),
             );
-            switcher.apply_source_result(source.clone(), sessions.clone(), err, state);
-            if !had_err {
-                // PerSession psmux: a session whose registry .port disappeared is dead
-                // even if its PTY has not EOF'd. Drop the stale attach so it cannot
-                // show a dead grid.
-                if let Some(h) = hosts.get(&source) {
-                    for s in &sessions {
-                        if !h.psmux_session_live(&s.name) {
-                            let key = match h.mux.select() {
-                                SelectOutcome::SharedSwitch | SelectOutcome::PerSessionReattach => {
-                                    source.clone()
-                                }
-                            };
-                            registry.remove(&key);
-                        }
+            // PerSession psmux: a session whose registry .port disappeared is dead even
+            // if its PTY has not EOF'd. Drop the stale attach so it cannot show a dead grid.
+            if let Some(h) = hosts.get(&source) {
+                for s in &sessions {
+                    if !h.psmux_session_live(&s.name) {
+                        let key = match h.mux.select() {
+                            SelectOutcome::SharedSwitch | SelectOutcome::PerSessionReattach => {
+                                source.clone()
+                            }
+                        };
+                        registry.remove(&key);
                     }
                 }
-                sync_source_terminals(
-                    registry, env, hosts, &source, &sessions, worker, attach_seq, cols, rows,
-                    tree_width,
-                );
             }
-        }
-        HostEvent::Panes { address, panes } => {
-            // A poll host's per-session window/pane subtree resolved. Local psmux has
-            // no `%`-event stream, so window changes inside the displayed session are
-            // only seen on the poll.
-            switcher.apply_panes(address, panes, state);
+            sync_source_terminals(
+                registry, env, hosts, &source, &sessions, worker, attach_seq, cols, rows,
+                tree_width,
+            );
         }
     }
     false
@@ -1276,7 +1317,7 @@ fn clear_display_tty_for_attach(
 /// can be created there), NOT "⚠". Any other never-connected death is a real
 /// transport failure and renders "⚠". Returns `true` only when it marked the host
 /// unreachable.
-fn note_host_exited(
+pub(crate) fn note_host_exited(
     switcher: &mut crate::ui::switcher::Switcher,
     state: &mut crate::state::State,
     connected: &mut HashSet<String>,
@@ -1717,6 +1758,9 @@ fn handle_stdin_bytes(
             detecting,
             ops,
             op_tx,
+            tree_width_natural,
+            auto_hide_tree,
+            width_changed,
             cols,
             body_rows,
             tree_width,
@@ -1796,6 +1840,9 @@ fn handle_stdin_bytes(
                 detecting,
                 ops,
                 op_tx,
+                tree_width_natural,
+                auto_hide_tree,
+                width_changed,
                 cols,
                 body_rows,
                 tree_width,
@@ -2452,12 +2499,19 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         let _ = reply.send(dump);
                     }
                     Cmd::RawKey(k) => {
-                        // A committed input/kill confirm returns its RunOp commands;
-                        // spawn them off-loop (result folds back through op_tx).
-                        for cmd in switcher.handle_key(k, &mut state) {
-                            if let crate::model::Command::RunOp(op) = cmd {
-                                spawn_op(op, &ops, &op_tx);
-                            }
+                        // Route the FULL command batch through the single dispatcher (not
+                        // just RunOp): a switcher key emits only RunOp today, but
+                        // dispatch_commands handles every variant so a future non-RunOp
+                        // command is acted on, never silently dropped (RunOp still spawns
+                        // off-loop, its OpResult folding back through op_tx).
+                        let cmds = switcher.handle_key(k, &mut state);
+                        let (quit_key, wc) = dispatch_commands(cmds, &mut switcher, &mut state, &mut tree_width_natural, &mut auto_hide_tree, &env.xmux_dir, &ops, &op_tx);
+                        if wc {
+                            width_dirty = true;
+                            width_flush_at = Some(std::time::Instant::now() + Duration::from_millis(WIDTH_FLUSH_MS));
+                        }
+                        if quit_key {
+                            break;
                         }
                         ensure_current_host(&mut mgr, &env, &hosts, &switcher, cols, body_rows, tree_width);
                         if sync_selection_from_switcher(&mut state, &switcher) {
