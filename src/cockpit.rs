@@ -266,6 +266,20 @@ impl Selection {
     }
 }
 
+fn sync_selection_from_switcher(
+    state: &mut crate::state::State,
+    switcher: &crate::ui::switcher::Switcher,
+    deadline: std::time::Instant,
+) -> bool {
+    let new_sel = Selection::from_target(&switcher.terminal_view_target());
+    if new_sel == state.selection {
+        return false;
+    }
+    state.selection = new_sel;
+    state.attach_deadline = Some(deadline);
+    true
+}
+
 /// The size to give a PTY attachment: the terminal-view pane (right of the tree +
 /// divider), NOT the whole terminal. Sizing a session to the full terminal makes
 /// the remote wrap at a width wider than the visible pane, so a line overflows the
@@ -450,23 +464,21 @@ fn select_attach(
         SelectOutcome::PerSessionReattach => {
             registry.remove(&key);
             host.display.clear(&key);
-            if !host.display.in_flight.contains_key(&key) {
-                let mux_argv = host.mux.attach_plan(&sel.session, None);
-                let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
-                let mut argv = vec![cmd];
-                argv.extend(args);
-                request_attach(
-                    registry,
-                    worker,
-                    &mut host.display,
-                    attach_seq,
-                    &key,
-                    argv,
-                    cols,
-                    rows,
-                );
-                host.display.set_shows(&key, &sel.session);
-            }
+            let mux_argv = host.mux.attach_plan(&sel.session, None);
+            let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
+            let mut argv = vec![cmd];
+            argv.extend(args);
+            request_attach(
+                registry,
+                worker,
+                &mut host.display,
+                attach_seq,
+                &key,
+                argv,
+                cols,
+                rows,
+            );
+            host.display.set_shows(&key, &sel.session);
         }
     }
 
@@ -2005,13 +2017,13 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         if app.is_terminal_focused() {
             switcher.select_active_window();
         }
-        let new_sel = Selection::from_target(&switcher.terminal_view_target());
-        if new_sel != state.selection {
-            state.selection = new_sel;
+        if sync_selection_from_switcher(
+            &mut state,
+            &switcher,
+            std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS),
+        ) {
             // Arm the debounce — do NOT attach yet. Rapid navigation keeps pushing the
             // deadline, so only the settled selection attaches (one switch, not a storm).
-            state.attach_deadline =
-                Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
             dirty = true; // the cursor moved → the tree needs a redraw
         }
         // Apply the debounced attach once the selection has settled. The frame timer
@@ -2226,6 +2238,14 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     DisplayEvent::Ready { seq, key, attachment } => {
                         let hid = host_of_key(&key).to_string();
                         if let Some(h) = hosts.get_mut(&hid) {
+                            dbg_log(
+                                &env.xmux_dir,
+                                &format!(
+                                    "attach ready key={key} seq={seq} current={:?} id={}",
+                                    h.display.in_flight.get(&key),
+                                    attachment.id()
+                                ),
+                            );
                             if h.display.reaped_ids.remove(&attachment.id()) {
                                 // Exited raced ahead of this Ready: the child already died and its
                                 // pump (one Exited at EOF) has ended. Inserting now would leave a
@@ -2299,6 +2319,9 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         // A Switch/Focus may need the cursor's host connected + its rescan kick consumed.
                         dispatch_pending_op(&mut switcher, &ops, &op_tx);
                         ensure_current_host(&mut mgr, &env, &hosts, &switcher, cols, body_rows, tree_width);
+                        if sync_selection_from_switcher(&mut state, &switcher, std::time::Instant::now()) {
+                            dirty = true;
+                        }
                     }
                     Cmd::Status(reply) => { let _ = reply.send(status_line(&switcher, app.pane_is_tree())); }
                     Cmd::Dump(reply) => {
@@ -2321,6 +2344,9 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         switcher.handle_key(k);
                         dispatch_pending_op(&mut switcher, &ops, &op_tx);
                         ensure_current_host(&mut mgr, &env, &hosts, &switcher, cols, body_rows, tree_width);
+                        if sync_selection_from_switcher(&mut state, &switcher, std::time::Instant::now()) {
+                            dirty = true;
+                        }
                     }
                     Cmd::RawBytes(bytes) => {
                         if !bytes.is_empty() {
@@ -3645,6 +3671,51 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn psmux_select_attach_supersedes_in_flight_attach() {
+        let mut hosts = crate::model::Hosts::default();
+        hosts.insert(crate::model::Host::new(
+            crate::model::Transport::Local { socket: None },
+            crate::backend::for_binary("psmux"),
+        ));
+        hosts
+            .get_mut("local")
+            .unwrap()
+            .display
+            .in_flight
+            .insert("local".into(), 7);
+
+        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
+        let worker = crate::display::DisplayWorker::with_spawner(
+            ptx,
+            Box::new(|_argv, _cols, _rows, id, _events| Ok(crate::proxy::run::fake_attachment(id))),
+        );
+        let mut registry = AttachRegistry::new();
+        let mut attach_seq = 7u64;
+        let mgr = empty_manager();
+
+        let sel = Selection {
+            source: "local".into(),
+            session: "target".into(),
+            window: None,
+        };
+
+        assert!(select_attach(
+            &mut registry,
+            &mut hosts,
+            &sel,
+            &worker,
+            &mut attach_seq,
+            80,
+            24,
+            crate::ui::switcher::TREE_WIDTH,
+            &mgr
+        ));
+
+        let h = hosts.get("local").unwrap();
+        assert_eq!(h.display.in_flight.get("local"), Some(&8));
+    }
+
     #[test]
     fn local_tmux_shared_second_session_lowers_to_a_local_switch_client_argv() {
         use crate::model::{LoweredSwitch, Transport};
@@ -4016,6 +4087,66 @@ mod tests {
         let sw = Switcher::new(scan);
         assert_eq!(status_line(&sw, true), "focus=tree target=api");
         assert_eq!(status_line(&sw, false), "focus=terminal target=api");
+    }
+
+    #[test]
+    fn ctl_switch_syncs_canonical_selection_immediately() {
+        use crate::model::Operation;
+        use crate::session::Session;
+        use crate::ui::switcher::{Scan, Switcher};
+        use crate::ui::tree::Group;
+
+        let scan = Scan {
+            groups: vec![Group {
+                source: "jup".into(),
+                err: None,
+                sessions: vec![
+                    Session {
+                        source: "jup".into(),
+                        name: "api".into(),
+                        windows: 1,
+                        attached: false,
+                        last_attached: 1,
+                    },
+                    Session {
+                        source: "jup".into(),
+                        name: "db".into(),
+                        windows: 1,
+                        attached: false,
+                        last_attached: 2,
+                    },
+                ],
+            }],
+            panes: Default::default(),
+        };
+        let mut sw = Switcher::new(scan);
+        let mut app = crate::proxy::app::App::new();
+        let mut natural = 48u16;
+        let mut hide = false;
+        let dir = std::env::temp_dir().join(format!("xmux-ctl-switch-sync-{}", std::process::id()));
+        let ops = crate::ui::switcher::tests_support::noop_ops();
+        let (op_tx, _op_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut state = crate::state::State::default();
+
+        sync_selection_from_switcher(&mut state, &sw, std::time::Instant::now());
+        apply_operation(
+            Operation::Switch {
+                address: "jup/db".into(),
+            },
+            &mut sw,
+            &mut app,
+            &mut natural,
+            &mut hide,
+            &dir,
+            &ops,
+            &op_tx,
+        );
+
+        let deadline = std::time::Instant::now();
+        assert!(sync_selection_from_switcher(&mut state, &sw, deadline));
+        assert_eq!(state.selection.source, "jup");
+        assert_eq!(state.selection.session, "db");
+        assert_eq!(state.attach_deadline, Some(deadline));
     }
 
     #[test]
