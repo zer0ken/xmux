@@ -11,8 +11,14 @@ pub enum ServerModel {
 }
 
 impl ServerModel {
-    /// The `AttachRegistry` key for `address` under this model. `Shared` ⇒ the host
-    /// id (one PTY per host); `PerSession` ⇒ the full `source/session` address.
+    /// The model-layer ideal `AttachRegistry` key for `address`: `Shared` ⇒ the host id
+    /// (one PTY per host); `PerSession` ⇒ the full `source/session` address (one PTY per
+    /// session). This is the OWNERSHIP-INVERSION target (one attachment per session for
+    /// psmux), used by `Host::sync`. The LIVE display path keys differently — psmux is
+    /// shown through ONE per-host PTY that is reattached/switched, so the live authority
+    /// is `cockpit::host_selection_key` (host id for BOTH models). The two agree for
+    /// `Shared`; they diverge for `PerSession`, where this per-session form has no live
+    /// caller yet (the driver owns the live key).
     pub fn display_key(self, host_id: &str, address: &str) -> String {
         match self {
             ServerModel::Shared => host_id.to_string(),

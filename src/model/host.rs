@@ -106,8 +106,12 @@ impl Host {
         self.transport.host_id()
     }
 
-    /// The `AttachRegistry` key for `address` under this host's model — the SINGLE
-    /// definition, replacing the free `display_key` fn (cockpit.rs:245).
+    /// The model-layer ideal `AttachRegistry` key for `address` (per-session for psmux —
+    /// the ownership-inversion target used by `Host::sync`). The LIVE display path keys
+    /// psmux per-HOST instead (`cockpit::host_selection_key`), because it shows ONE
+    /// per-host PTY that is reattached/switched; the two agree for a `Shared` host and
+    /// diverge only for psmux, where this per-session form drives `Host::sync` (no live
+    /// caller yet) — see `ServerModel::display_key`.
     pub fn display_key(&self, address: &str) -> String {
         self.mux.server_model().display_key(self.id(), address)
     }
@@ -238,11 +242,14 @@ pub enum SyncAction {
 }
 
 impl Host {
-    /// The attach/reap plan that reconciles this host's display set with its
-    /// inventory under its `ServerModel`. Pure over `&self`: `Shared` keeps ONE
+    /// The model-layer ideal attach/reap plan that reconciles this host's display set
+    /// with its inventory under its `ServerModel`. Pure over `&self`: `Shared` keeps ONE
     /// attachment (host key) warmed on the first session and reaps it when empty;
-    /// `PerSession` keeps one per session (address key) and reaps closed ones.
-    /// Folds the per-host half of `sync_source_terminals` (cockpit.rs:384).
+    /// `PerSession` keeps one per session (address key) and reaps closed ones — the
+    /// ownership-inversion target (one attachment per psmux session). The LIVE warm/reap
+    /// is owned by the per-mux `MuxDriver::sync` (driven by `sync_source_terminals`),
+    /// which displays psmux through ONE per-host PTY; this per-session plan has no live
+    /// caller yet and is exercised by tests as the future shape.
     pub fn sync(&self) -> Vec<SyncAction> {
         match self.mux.server_model() {
             ServerModel::Shared => {
