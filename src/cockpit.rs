@@ -2106,6 +2106,10 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     // the state dir per keystroke during a held autorepeat.
     let mut width_dirty = false;
     let mut width_flush_at: Option<std::time::Instant> = None;
+    // The mux DRIVER: the supervisor passes the selection as INTENT; the driver owns
+    // how it lands on screen. SeamDriver delegates to the existing free functions, so
+    // routing through it changes no behavior.
+    let mut driver: Box<dyn crate::driver::MuxDriver> = Box::new(crate::driver::SeamDriver);
 
     loop {
         // Advance the spinner from wall-clock so it animates regardless of which arm
@@ -2193,17 +2197,18 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     }
                     crate::model::Command::Attach(sel) => {
                         let t = std::time::Instant::now();
-                        if select_attach(
-                            &mut registry,
-                            &mut hosts,
-                            &sel,
-                            &worker,
-                            &mut attach_seq,
+                        let mut ctx = crate::driver::DriverCtx {
+                            registry: &mut registry,
+                            hosts: &mut hosts,
+                            worker: &worker,
+                            mgr: &mgr,
+                            attach_seq: &mut attach_seq,
                             cols,
                             body_rows,
                             tree_width,
-                            &mgr,
-                        ) {
+                        };
+                        let shown = driver.show(&sel, &mut ctx);
+                        if shown {
                             // A synchronous path (switch-client / select-window / already
                             // attached) leaves a live grid for the key right now → the
                             // selection is on screen. An async path (first-attach /
@@ -2622,10 +2627,17 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         .map(|h| h.display.in_flight.contains_key(&key))
                         .unwrap_or(false);
                     if !registry.contains(&key) && !in_flight_for_key {
-                        select_attach(
-                            &mut registry, &mut hosts, &state.selection, &worker,
-                            &mut attach_seq, cols, body_rows, tree_width, &mgr,
-                        );
+                        let mut ctx = crate::driver::DriverCtx {
+                            registry: &mut registry,
+                            hosts: &mut hosts,
+                            worker: &worker,
+                            mgr: &mgr,
+                            attach_seq: &mut attach_seq,
+                            cols,
+                            body_rows,
+                            tree_width,
+                        };
+                        driver.show(&state.selection, &mut ctx);
                     }
                 }
             }
