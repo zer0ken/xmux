@@ -202,18 +202,31 @@ pub enum SelectOutcome {
 
 **green-gate:** build/test(그린 유지)/clippy0/fmt. **라이브 시각 게이트(사람 — 무인 검증 불가):** tmux 호스트 세션 간 전환=switch-client in-place(잔상 없음), psmux 세션 간 전환=remove+reattach(새 그리드), window-row 전환=select-window 추적. `xmux-cockpit-local-attach-headless-untestable`로 local attach 헤드리스 위험 → 신선/대화형 세션에서 실행 권장.
 
-## Phase 5 — Component 분해 + State가 display 소유
+## Phase 5 — Ideal architecture: 단방향 흐름 (Store + Action + Command + flat Components)
 
-**실행 순서: correctness-first (사용자 확정).** 각 Task는 cargo test·clippy·fmt 그린 + 커밋. 라이브 시각 게이트(psmux/tmux 세션·윈도우 전환)는 사람이 수행.
+**목표 (사용자 확정: 수정 난이도보다 이상적 코드가 더 큰 가치):** 상태 변경 경로를 하나로 강제하는 단방향 데이터 흐름. 컴포넌트는 `&State`를 *읽기만* 하고 입력을 `Action`으로 방출, `State::apply(Action) -> Vec<Command>`가 유일한 변경 지점, `app.rs`가 Command를 Backend에 디스패치, `BackendEvent`는 `State::apply_event`로 흡수. 이로써 결함 A류 동기화 버그가 구조적으로 불가능.
 
-- [x] **Task 5.1 — State가 표시중 진실 단일 소유 (결함 A).** `State.last_attached_sel` → `State.displayed`(화면에 확정된 주소; 동기 switch/select-window 또는 DisplayReady에서만 set). render(라이브 draw + 헤드리스 Dump)는 `display_matches_selection`일 때만 그리드 표시 → reattach 중 stale 세션 대신 "(attaching…)". attach 트리거는 `should_attach`(선택≠표시중 또는 PTY 소실 시 발사, 단 in-flight 중엔 무발사로 폭주 방지). 두 헬퍼 순수·단위테스트. `attach_deadline` 디바운스는 보존. 커밋 `b2ec18e`.
-- [ ] **Task 5.2 — `ui/status.rs` 추출.** footer·divider·spinner·host-info 렌더(switcher.rs의 가장 자기완결적·저결합 부분)를 분리. 컴포넌트가 읽는 상태 필드는 함께 정리.
-- [ ] **Task 5.3 — `ui/popup.rs` 추출.** 모달(help/input/kill-confirm) + context menu + 팝업 드래그/위치.
-- [ ] **Task 5.4 — `ui/terminal.rs` 추출.** 그리드 렌더 + 마우스 라우팅(focus×위치).
-- [ ] **Task 5.5 — `switcher.rs` → `ui/tree.rs` 정리.** 트리 모델·네비·선택·필터를 Tree 컴포넌트로.
-- [ ] **Task 5.6 — `app.rs` 얇은 배선 추출.** `run_cockpit`의 이벤트 루프·입력 라우팅·채널 배선만 남겨 `src/app.rs`로. draw 게이팅 보존.
+> **spec §4/§6 모순 정정:** spec §6은 "Tree가 직접 `state.selection`을 바꾸고 `backend.select()` 호출"이라 했으나 이는 §4("변경은 `apply(action)`로")와 충돌하고 결함 A류의 재발 자리다. **이상적 해소: 컴포넌트는 State를 직접 mutate하지 않는다 — 자기 뷰상태(커서/스크롤)만 바꾸고 도메인 변경은 Action으로 요청.** 부수효과는 `Command`(intent와 분리)로 반환해 app.rs가 실행.
 
-> 5.2~5.6는 의도·범위만. exact 단계는 직전 Task가 코드를 재편한 *후* 그 시점 기준으로 상세화(없는 타입 추측 금지). 5.2~5.6은 동작 0 변경(순수 구조 이동) — 5.1만 사용자 가시 동작 변경(stale→"(attaching…)") 포함.
+**이상적 Component 시그니처** (spec의 `&mut State`+`&dyn Backend`보다 한 단계 순수):
+```rust
+trait Component {
+    fn handle_event(&mut self, ev: &Event, state: &State) -> Vec<Action>;  // &State 읽기만
+    fn render(&self, frame: &mut Frame, area: Rect, state: &State);
+}
+```
+
+각 Task는 cargo test·clippy·fmt 그린 + 커밋. 라이브 시각 게이트(psmux/tmux 세션·윈도우 전환)는 사람이 수행.
+
+- [x] **Task 5.1 — State가 표시중 진실 단일 소유 (결함 A).** `last_attached_sel`→`displayed`(확정 주소), render는 `display_matches_selection`일 때만 그리드, attach 트리거 `should_attach`(in-flight 무발사). 순수 헬퍼 단위테스트, `attach_deadline` 보존. 커밋 `b2ec18e`.
+- [x] **Task 5.2 — inventory+filter → State (분해 백본).** groups/panes/scanning/panes_loaded/filter를 State로, `from_scan`/`from_sources`가 시딩, Switcher 메서드가 `&State`/`&mut State` 받음. 커밋 `47ed323`.
+- [x] **Task 5.3 — `ui/status.rs` 추출.** divider/footer/host-info + view-local 상태(flash/spinner/colors/…)를 `Status` 구조체로, `&State` 읽음. 커밋 `636a485`.
+- [ ] **Task 5.4 — `Action`+`Command` + `State::apply` (단방향 키스톤).** 현 `Operation`(ctl)과 `PendingOp`(create/rename/kill 큐) 두 intent 경로를 **하나의 `Action` enum**으로 통일. `State::apply(Action) -> Vec<Command>`(유일 변경 지점) + `State::apply_event(BackendEvent)`. State가 `focus`·`popup`(모달)·`dirty` 흡수. 입력→Action, 부수효과→Command→Backend 디스패치로 재배선. **가장 큰 회귀 위험 — TDD + 어드버사리얼 리뷰 + 라이브 게이트 필수.**
+- [ ] **Task 5.5 — `Component` trait + `ui/tree.rs`.** trait 정의(위 시그니처). switcher→Tree 컴포넌트: rows/커서/필터-뷰는 자기 소유, `handle_event`가 Action 방출(직접 mutate 0), `render`는 `&State`. 우클릭→Tree가 rows로 대상 해석→`Action::OpenMenu` (popup이 tree 내부 접근 0).
+- [ ] **Task 5.6 — `Popup`·`Terminal` 컴포넌트 + `Status` 적합.** Popup은 `state.popup`/`state.selection`만 읽고 Action 방출(menu/input/kill의 tree 결합 소멸). Terminal은 그리드 렌더+마우스. Status를 trait에 맞춤.
+- [ ] **Task 5.7 — `app.rs` 얇은 배선.** `run_cockpit`을 `src/app.rs`로: 루프+focus/popup 기반 입력 라우팅+Action 수집→`apply`→Command 디스패치+`apply_event`+dirty 게이트 draw만. 도메인 로직은 전부 State/Component로 이주 → cockpit god-object 소멸.
+
+> 5.5~5.7의 exact 단계는 직전 Task가 코드를 재편한 *후* 상세화(없는 타입 추측 금지). 5.4~5.7은 단순 파일분할이 아니라 **데이터 흐름의 단방향 재배선** — 결합을 우회가 아니라 제거한다. 동작은 보존(5.1의 stale→"(attaching…)" 외 사용자 가시 변경 없음 목표).
 
 ## Self-Review (Phase 1)
 
