@@ -1086,6 +1086,14 @@ fn run_event_effect(
                 rows, tree_width,
             );
         }
+        EventEffect::RecordDisplayTty { host, tty } => {
+            // The -CC `list-clients` probe resolved xmux's display-client tty. Record it
+            // on the Host so a session switch is an in-place `switch-client -c <tty>`;
+            // `None` (only the control client attached so far) clears any stale tty.
+            if let Some(h) = hosts.get_mut(&host) {
+                h.record_display_tty(tty);
+            }
+        }
     }
     false
 }
@@ -2592,6 +2600,25 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         &mut registry, &env, &mut hosts, &src.alias, &inventory, &worker, &mgr,
                         &driver_pty_tx, &mut attach_seq, cols, body_rows, tree_width,
                     );
+                }
+                // Capture the display-client tty for any shared host (one with a control
+                // client) whose display attach is live but whose tty is not yet known.
+                // The in-band attach-shell marker is consumed by a Windows ConPTY, so a
+                // remote host's tty is learned via this -CC `list-clients` probe instead —
+                // retried each sweep until the display client registers. With the tty
+                // known, a session switch is an in-place `switch-client -c <tty>`.
+                for src in &env.srcs {
+                    let Some(h) = hosts.get(&src.alias) else {
+                        continue;
+                    };
+                    if h.display_tty.0.is_some() {
+                        continue;
+                    }
+                    if registry.contains(&host_selection_key(h)) {
+                        if let Some(client) = mgr.get(&src.alias) {
+                            client.capture_display_tty();
+                        }
+                    }
                 }
                 // Re-attach the selected session's display terminal if it dropped.
                 if !state.selection.is_empty() {

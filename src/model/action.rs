@@ -202,6 +202,10 @@ pub enum EventEffect {
         source: String,
         sessions: Vec<Session>,
     },
+    /// `DisplayTty`: record `host`'s display-client tty (probed over the -CC connection
+    /// by `list-clients`) on the Host, behind the loop's reach. With the tty known, a
+    /// session switch is an in-place `switch-client -c <tty>`. `None` clears a stale tty.
+    RecordDisplayTty { host: String, tty: Option<String> },
 }
 
 // Hand-written: `Box<dyn Backend>` is not `Debug`, so `DispatchScanned` cannot derive
@@ -236,6 +240,11 @@ impl std::fmt::Debug for EventEffect {
                 .debug_struct("SyncPollSessions")
                 .field("source", source)
                 .field("sessions", sessions)
+                .finish(),
+            EventEffect::RecordDisplayTty { host, tty } => f
+                .debug_struct("RecordDisplayTty")
+                .field("host", host)
+                .field("tty", tty)
                 .finish(),
         }
     }

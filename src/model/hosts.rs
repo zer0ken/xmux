@@ -121,6 +121,14 @@ impl Hosts {
             // owns the registry + the recover-from-detach rearm); the Hosts map holds no
             // per-attach state to fold here.
             ClientDetached { .. } => {}
+            // The -CC `list-clients` probe resolved xmux's display-client tty (or None if
+            // the display attach has not registered yet). Record it so a session switch is
+            // an in-place `switch-client -c <tty>`; None clears any stale tty.
+            DisplayTty { host, tty } => {
+                if let Some(h) = self.get_mut(host) {
+                    h.record_display_tty(tty.clone());
+                }
+            }
             // Poll-host data carriers (enumeration results) + the detection probe. Their
             // sessions/backend are applied by the caller (apply_source_result /
             // apply_scan_result); they fold no Host-owned liveness here.

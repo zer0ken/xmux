@@ -320,6 +320,11 @@ impl State {
                 // reap are loop-owned; forward the descriptor, mutate no State.
                 vec![EventEffect::ReapDisplayAttach { host, client }]
             }
+            HostEvent::DisplayTty { host, tty } => {
+                // The tty lives on the Host (behind the loop's reach), so the state
+                // layer forwards it as an effect for the loop to record.
+                vec![EventEffect::RecordDisplayTty { host, tty }]
+            }
             HostEvent::Scanned { source, detected } => {
                 vec![EventEffect::DispatchScanned { source, detected }]
             }
