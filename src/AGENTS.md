@@ -90,9 +90,11 @@ the live split view.
   than garbling the alt-screen.
 - `display_show`, `attach_created`, `tty_probe`, `display_inventory` (emitted by
   `driver.rs`) and `display_grid_changed` (emitted by `cockpit.rs`) are the
-  diagnostic surface for whether a session switch actually landed: a
-  `display_show decision=switch` not followed by `display_grid_changed` means
-  the transition occurred but the grid content did not change.
+  diagnostic surface for whether a session switch actually landed. The first
+  grid change after the displayed session changes is INFO; steady-state repaints
+  of the same session (htop, build logs, clocks) are TRACE. A `display_show
+  decision=switch` not followed by an INFO `display_grid_changed` means the
+  switch did not change the screen.
 
 ## Before Editing
 

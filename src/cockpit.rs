@@ -1948,11 +1948,12 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         tree_width,
     );
 
-    // The last rendered fingerprint per display key. Used to detect when a display
-    // transition actually changed the visible screen content — a `display_show
-    // decision=switch` not followed by a `display_grid_changed` event means the
-    // switch had no visible effect (the payoff observable for psmux swap diagnosis).
-    let mut grid_fingerprints: HashMap<String, u64> = HashMap::new();
+    // The last rendered (fingerprint, session) per display key. Used to detect when
+    // a display transition actually changed the visible screen content. The session
+    // field distinguishes the FIRST paint after a session change (INFO) from a
+    // steady-state repaint of the same session (TRACE) — so animated full-screen
+    // apps (htop, build logs) do not flood the default xmux=info log.
+    let mut grid_fingerprints: HashMap<String, (u64, String)> = HashMap::new();
 
     let spinner_start = std::time::Instant::now();
     let mut tick = tokio::time::interval(Duration::from_millis(SPINNER_FRAME_MS));
@@ -2176,11 +2177,26 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     // unchanged (the psmux swap failure signal).
                     if let Some(grid) = guard.as_deref() {
                         let addr = display_key(&hosts, &state.selection);
+                        let session = &state.selection.session;
                         let fp = grid.fingerprint();
-                        if grid_fingerprints.get(&addr) != Some(&fp) {
-                            let session = &state.selection.session;
-                            tracing::info!(addr = %addr, session = %session, fp, "display_grid_changed");
-                            grid_fingerprints.insert(addr, fp);
+                        match grid_fingerprints.get(&addr) {
+                            Some((last_fp, _)) if last_fp == &fp => {
+                                // Fingerprint unchanged — screen content did not change.
+                            }
+                            Some((_, last_session)) if last_session == session => {
+                                // Fingerprint changed, same session — steady-state repaint
+                                // (htop / build logs / clock). TRACE to avoid flooding the
+                                // default xmux=info log with per-frame events.
+                                tracing::trace!(addr = %addr, session = %session, fp, "display_grid_changed");
+                                grid_fingerprints.insert(addr, (fp, session.clone()));
+                            }
+                            _ => {
+                                // Fingerprint changed AND session differs (or first paint for
+                                // this key) — the transition's first frame landed. INFO so the
+                                // switch is observable without raising the log level.
+                                tracing::info!(addr = %addr, session = %session, fp, "display_grid_changed");
+                                grid_fingerprints.insert(addr, (fp, session.clone()));
+                            }
                         }
                     }
                     term.draw(|f| {
