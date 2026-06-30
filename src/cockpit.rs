@@ -1105,6 +1105,10 @@ fn record_display_tty(
             tracing::debug!(id, addr, tty, "tty_recorded");
             h.display_tty = crate::model::DisplayTty(Some(tty));
         }
+    } else {
+        // The marker fired but no registry entry has this id yet — diagnostic for a
+        // capture that arrives before the attach is recorded (would silently drop).
+        tracing::debug!(id, tty, "tty_record_missed_no_addr");
     }
 }
 

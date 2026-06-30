@@ -324,9 +324,17 @@ pub fn spawn_attachment(
                     qtail.drain(0..cut);
                     pump_connecting.store(false, Ordering::Release);
                     if !marker_done {
+                        // Diagnostic: does the display-tty marker sentinel even reach our
+                        // read? If a remote attach emits it but the marker never appears
+                        // here, the ConPTY consumed the OSC; if `tty_marker_seen` fires but
+                        // capture yields an empty tty, the remote `$(tty)` was empty.
+                        if buf[..n].windows(16).any(|w| w == b"XMUX-DISPLAY-TTY") {
+                            tracing::debug!(id, "tty_marker_seen");
+                        }
                         let mut captured = None;
                         scan_marker_once(&mut marker_acc, &mut captured, &buf[..n]);
                         if let Some(tty) = captured {
+                            tracing::debug!(id, tty = %tty, "tty_marker_captured");
                             marker_done = true;
                             let _ = events.send(PtyEvent::DisplayTty { id, tty });
                         }
