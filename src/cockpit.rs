@@ -2519,6 +2519,12 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         registry.resize_all(vc, vr);
                         mgr.resize_all(vc, vr);
                         let _ = term.autoresize();
+                        // A console resize reflows the existing cells; a diff-only redraw
+                        // (the next output tick) would leave that reflowed garbage on
+                        // screen. Force a full repaint: clear the physical screen and mark
+                        // dirty so the loop redraws the whole UI fresh at the new size.
+                        let _ = term.clear();
+                        dirty = true;
                     }
                 }
                 // Spinner set = the selected session if its PTY is still connecting.
