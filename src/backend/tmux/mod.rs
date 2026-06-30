@@ -16,6 +16,25 @@ fn mux_control_argv(bin: &str) -> Vec<String> {
     vec![bin.to_string(), "-CC".to_string(), "attach".to_string()]
 }
 
+/// The per-host file where tmux's display client records its own tty: one file per
+/// shared host so a switch reads back THIS client's tty and moves only it. Under
+/// `/tmp` (present + writable on every POSIX host). `host_key` is sanitized to a safe
+/// filename token so a host id with shell metacharacters cannot break out of the path
+/// when the record prefix is embedded in a remote shell command.
+fn display_tty_path(host_key: &str) -> String {
+    let safe: String = host_key
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("/tmp/.xmux-cli-{safe}")
+}
+
 /// tmux: one aggregate server (`ServerModel::Shared`), a `-CC` control stream, and
 /// a `switch-client` move of one host attachment.
 pub struct Tmux {
@@ -67,6 +86,28 @@ impl Backend for Tmux {
             "-t".to_string(),
             mux::quote_target(session),
         ]
+    }
+
+    fn display_tty_record_prefix(&self, host_key: &str) -> Option<String> {
+        // The attach shell writes its OWN controlling tty to the per-host file before
+        // exec'ing the attach, so a later `switch-client -c <tty>` moves THIS client —
+        // never the user's own attached client (which `list-clients` cannot tell apart).
+        // A file (not the pty stream) survives the Windows ConPTY, which consumes an
+        // in-band OSC marker before the pump reads it.
+        Some(format!("tty >{} 2>/dev/null; ", display_tty_path(host_key)))
+    }
+
+    fn switch_via_recorded_tty_cmd(&self, host_key: &str, session: &str) -> Option<String> {
+        // Read the tty THIS host's display attach recorded to its file, then move ONLY
+        // that client — guarded on a non-empty value so a missing/empty file never runs
+        // `switch-client -c ""` (which would move an arbitrary client). The follow-up
+        // `refresh-client` forces the new session to repaint the whole screen.
+        let path = display_tty_path(host_key);
+        let b = &self.bin;
+        let s = mux::quote_target(session);
+        Some(format!(
+            "c=$(cat {path} 2>/dev/null); [ -n \"$c\" ] && {{ {b} switch-client -c \"$c\" -t {s}; {b} refresh-client -t \"$c\"; }}"
+        ))
     }
 
     fn control_argv(&self) -> Option<Vec<String>> {
@@ -237,5 +278,76 @@ mod control_tests {
     #[test]
     fn size_line_uses_x_form() {
         assert_eq!(TmuxControl.size_line(80, 24), "refresh-client -C 80x24\n"); // x-form, NOT comma
+    }
+}
+
+#[cfg(test)]
+mod display_identity_tests {
+    use super::*;
+    use crate::backend::psmux::Psmux;
+
+    /// tmux's display client records its OWN tty to a per-host file before exec'ing the
+    /// attach; a later switch READS that file so it targets THAT client — never the
+    /// user's own attached client (the bug the `-CC` "first non-control client" heuristic
+    /// caused). The record prefix and the switch command MUST name the SAME per-host file,
+    /// and the switch must guard on a non-empty value (never `switch-client -c ""`).
+    #[test]
+    fn tmux_records_and_switches_its_own_display_tty_via_one_per_host_file() {
+        let t = Tmux { bin: "tmux".into() };
+        let prefix = t
+            .display_tty_record_prefix("jup")
+            .expect("a shared mux records its display tty to a file");
+        assert!(
+            prefix.contains("tty >"),
+            "writes $(tty) to a file: {prefix}"
+        );
+        assert!(
+            prefix.contains("jup"),
+            "the file is keyed per host: {prefix}"
+        );
+        assert!(
+            prefix.trim_end().ends_with(';'),
+            "a prefix the attach argv appends `exec …` to: {prefix}"
+        );
+
+        let switch = t
+            .switch_via_recorded_tty_cmd("jup", "test2")
+            .expect("a shared mux switches via its recorded tty");
+        assert!(
+            switch.contains("cat ") && switch.contains("jup"),
+            "the switch READS the same per-host file: {switch}"
+        );
+        assert!(
+            switch.contains("switch-client -c") && switch.contains("test2"),
+            "and moves that client to the session: {switch}"
+        );
+        assert!(
+            switch.contains("[ -n"),
+            "guarded so an empty file never runs switch-client -c \"\": {switch}"
+        );
+    }
+
+    /// A host key with shell metacharacters cannot break out of the recorded path
+    /// (the prefix is embedded in a remote shell command). The path stays a single
+    /// safe filename token.
+    #[test]
+    fn record_prefix_sanitizes_the_host_key_into_a_safe_path() {
+        let t = Tmux { bin: "tmux".into() };
+        let prefix = t.display_tty_record_prefix("a; rm -rf /").unwrap();
+        assert!(
+            !prefix.contains("rm -rf /"),
+            "the key is sanitized, not injected: {prefix}"
+        );
+    }
+
+    /// psmux identifies its display client by the session it shows (one server per
+    /// session), not by a recorded-tty file — so it uses no file-record strategy.
+    #[test]
+    fn psmux_does_not_use_the_file_record_strategy() {
+        let p = Psmux {
+            bin: "psmux".into(),
+        };
+        assert!(p.display_tty_record_prefix("local").is_none());
+        assert!(p.switch_via_recorded_tty_cmd("local", "work").is_none());
     }
 }

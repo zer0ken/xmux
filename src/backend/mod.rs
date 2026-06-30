@@ -129,6 +129,33 @@ pub trait Backend: Send + Sync {
     /// decide local-vs-ssh.
     fn switch_client_argv(&self, display_tty: &str, session: &str) -> Vec<String>;
 
+    /// The shell prefix the mux's display attach prepends to its remote command so the
+    /// attach shell records its OWN controlling tty before exec'ing the attach — the
+    /// value a later `switch-client -c <tty>` targets, provably xmux's own display
+    /// client and never the user's own attached client. A shared mux (tmux) writes it
+    /// to a per-host file (`tty >FILE`); the read-back side is [`display_tty_read_argv`].
+    /// Out-of-band (a file, not the pty stream) so the Windows ConPTY cannot consume it.
+    /// `None` for a mux that identifies its display client another way (psmux correlates
+    /// by the session the client shows).
+    ///
+    /// [`display_tty_read_argv`]: Backend::display_tty_read_argv
+    fn display_tty_record_prefix(&self, _host_key: &str) -> Option<String> {
+        None
+    }
+
+    /// A self-contained shell command that moves the mux's display client to `session`
+    /// by READING the tty it recorded via [`display_tty_record_prefix`] — so the switch
+    /// targets xmux's OWN display client and never the user's own attached client (the
+    /// failure of identifying the client by `list-clients`, where both look alike). Reads
+    /// the file in-shell at switch time, so the value is always the live attach's current
+    /// tty (no stale capture). Run as a remote raw command; `None` for a mux that uses no
+    /// recorded-tty strategy.
+    ///
+    /// [`display_tty_record_prefix`]: Backend::display_tty_record_prefix
+    fn switch_via_recorded_tty_cmd(&self, _host_key: &str, _session: &str) -> Option<String> {
+        None
+    }
+
     /// The control argv for a `-CC` metadata channel. `None` for a mux with no
     /// host-level control stream (it is polled).
     fn control_argv(&self) -> Option<Vec<String>>;

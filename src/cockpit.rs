@@ -478,7 +478,13 @@ pub(crate) fn run_lowered(lowered: crate::model::LoweredSwitch) {
     }
     let (name, args) = (argv[0].clone(), argv[1..].to_vec());
     tokio::spawn(async move {
-        let _ = crate::source::ExecRunner.run(&name, &args).await;
+        // Log the exact spawned command + its result: a silent switch is invisible, so a
+        // session-switch that does not land is diagnosed from the program's real output.
+        tracing::debug!(cmd = %name, ?args, "lowered_run");
+        match crate::source::ExecRunner.run(&name, &args).await {
+            Ok(out) => tracing::debug!(cmd = %name, out_bytes = out.len(), "lowered_ok"),
+            Err(e) => tracing::debug!(cmd = %name, error = %e, "lowered_err"),
+        }
     });
 }
 
@@ -1120,47 +1126,6 @@ fn record_display_tty(
         // The marker fired but no registry entry has this id yet — diagnostic for a
         // capture that arrives before the attach is recorded (would silently drop).
         tracing::debug!(id, tty, "tty_record_missed_no_addr");
-    }
-}
-
-/// The remote attach argv with the display-tty marker prepended to its remote
-/// command, so the attach shell self-reports its own tty (xmux's display client)
-/// over the pump before exec. Every remote display-attach spawn routes through
-/// this; a spawn site that built the argv directly would leave the host's
-/// display_tty empty and the %client-detached reap unable to match.
-fn marked_remote_attach_argv(
-    src: &crate::source::Source,
-    session: &str,
-    window: Option<i64>,
-) -> Vec<String> {
-    let mut argv = src.attach_command(session, window);
-    if let Some(last) = argv.last_mut() {
-        *last = format!(
-            "{}{}",
-            crate::model::death::display_tty_marker_prefix(),
-            last
-        );
-    }
-    argv
-}
-
-/// The display-attach argv for a SHARED host's one kept PTY. A REMOTE attach carries
-/// the marker so the attach shell self-reports its tty (which a later `switch-client
-/// -c <tty>` and the `%client-detached` reap both need); a LOCAL attach has no shell
-/// to run the marker snippet, so it stays bare — prepending the snippet would corrupt
-/// the local argv's session-name argument. Every shared warm routes through this so
-/// the marker decision matches `select_attach` (marker iff `transport.is_remote()`)
-/// and cannot drift between spawn sites.
-pub(crate) fn shared_display_attach_argv(
-    remote: bool,
-    src: &crate::source::Source,
-    session: &str,
-    window: Option<i64>,
-) -> Vec<String> {
-    if remote {
-        marked_remote_attach_argv(src, session, window)
-    } else {
-        src.attach_command(session, window)
     }
 }
 
@@ -4122,66 +4087,6 @@ mod tests {
         assert!(
             hosts.get("jup").unwrap().display_tty.0.is_none(),
             "the dead client's tty is forgotten so no later switch-client targets it"
-        );
-    }
-
-    #[test]
-    fn marked_remote_attach_argv_prepends_marker_to_last_element() {
-        let src = Source {
-            remote: true,
-            ..fake_source("jup")
-        };
-        let bare = src.attach_command("mysession", None);
-        let bare_last = bare.last().cloned().unwrap_or_default();
-
-        let marked = marked_remote_attach_argv(&src, "mysession", None);
-        let marked_last = marked.last().cloned().unwrap_or_default();
-
-        let prefix = crate::model::death::display_tty_marker_prefix();
-        assert!(
-            marked_last.starts_with(prefix),
-            "last argv element must start with the display-tty marker prefix"
-        );
-        assert!(
-            marked_last.ends_with(&bare_last),
-            "the rest of the last element after the prefix is the original attach command"
-        );
-        assert_eq!(
-            marked.len(),
-            bare.len(),
-            "marked_remote_attach_argv must not change argv length"
-        );
-    }
-
-    #[test]
-    fn shared_display_attach_argv_marks_remote_and_leaves_local_bare() {
-        let prefix = crate::model::death::display_tty_marker_prefix();
-        // Remote shared warm: carries the marker so the attach shell self-reports its
-        // tty — without it the host's display_tty stays empty and switch-client fails.
-        let remote_src = Source {
-            remote: true,
-            ..fake_source("jup")
-        };
-        let marked = shared_display_attach_argv(true, &remote_src, "sess", None);
-        assert!(
-            marked.last().unwrap().starts_with(prefix),
-            "a remote shared attach must carry the display-tty marker: {marked:?}"
-        );
-        // Local shared warm: bare attach_command. Prepending the shell snippet would
-        // corrupt the session-name argument (a local argv has no shell to run it).
-        let local_src = Source {
-            remote: false,
-            ..fake_source("local")
-        };
-        let bare = shared_display_attach_argv(false, &local_src, "sess", None);
-        assert_eq!(
-            bare,
-            local_src.attach_command("sess", None),
-            "a local shared attach must be the bare, uncorrupted attach command"
-        );
-        assert!(
-            !bare.last().unwrap().starts_with(prefix),
-            "a local shared attach must NOT carry the marker: {bare:?}"
         );
     }
 

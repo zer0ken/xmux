@@ -142,17 +142,10 @@ impl MuxDriver for TmuxDriver {
                 let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
                 let mut argv = vec![cmd];
                 argv.extend(args);
-                if host.transport.is_remote() {
-                    // Marker is a remote-shell mechanism: prefix the last element so the
-                    // display-tty capture fires before exec'ing the attach command.
-                    if let Some(last) = argv.last_mut() {
-                        *last = format!(
-                            "{}{}",
-                            crate::model::death::display_tty_marker_prefix(),
-                            last
-                        );
-                    }
-                }
+                // A remote shared attach records its own tty before exec (for a later
+                // in-place switch); the record snippet is a remote-shell mechanism, so a
+                // local attach stays bare.
+                argv = with_display_tty_record(argv, host, &key);
                 let id = request_attach(
                     ctx.registry,
                     ctx.worker,
@@ -167,46 +160,41 @@ impl MuxDriver for TmuxDriver {
                 host.display.set_shows(&key, &sel.session);
             }
         } else if host.display.shows(&key) != Some(sel.session.as_str()) {
-            let tty = host.display_tty.0.clone().filter(|t| !t.is_empty());
-            if let Some(tty) = tty {
-                // Move the host PTY's client to the selected session with a LOWERED
-                // `ssh … tmux switch-client -c <tty>` subprocess + a lowered refresh —
-                // NOT over the -CC connection. Verified against live tmux: a fresh
-                // `switch-client -c <tty> -t S` moves the display client, but the same
-                // command sent over the persistent -CC control connection does NOT
-                // (c3324b5 routed it over -CC to save the Windows-ssh handshake and
-                // silently broke the switch). The grid is NOT pre-cleared: the switch's
-                // full redraw replaces it, so the prior session stays on screen until the
-                // new content lands (stale-while-revalidate) — no blank frame.
-                tracing::info!(
-                    host = %sel.source,
-                    model = "shared",
-                    decision = "switch",
-                    reason = "live+tty",
-                    session = %sel.session,
-                    "display_show"
-                );
-                let plan = host.mux.switch_plan(&sel.session);
-                let lowered = {
-                    let builder = |session: &str| host.mux.switch_client_argv(&tty, session);
-                    host.transport.lower_switch(&plan, &builder)
-                };
-                if let Some(lowered) = lowered {
-                    run_lowered(lowered);
-                }
-                run_lowered(refresh_client_lowered(host, &tty));
+            // IN-PLACE SWITCH: move the live display client to the selected session by
+            // reading, in-shell on the host, the tty the attach recorded to its per-host
+            // file — so `switch-client -c <that tty>` moves xmux's OWN client and never
+            // the user's own attached client (which `list-clients` cannot tell apart, the
+            // class of bug a "first non-control client" capture caused). The grid is NOT
+            // pre-cleared: the switch's repaint replaces it, so the prior session stays on
+            // screen until the new content lands (stale-while-revalidate) — no blank frame.
+            let switched = host
+                .mux
+                .switch_via_recorded_tty_cmd(&key, &sel.session)
+                .and_then(|cmd| host.transport.raw_ssh_argv(&cmd))
+                .map(|argv| {
+                    tracing::info!(
+                        host = %sel.source,
+                        model = "shared",
+                        decision = "switch",
+                        reason = "recorded-tty",
+                        session = %sel.session,
+                        "display_show"
+                    );
+                    run_lowered(crate::model::LoweredSwitch::RawSsh(argv));
+                })
+                .is_some();
+            if switched {
                 host.display.set_shows(&key, &sel.session);
             } else if !host.display.in_flight.contains_key(&key) {
-                // The display-client tty is not captured yet (the -CC list-clients probe
-                // has not landed). Reattach the host PTY to the new session instead of
-                // `switch-client -c ""` (an empty target hits an arbitrary client).
-                // Reattach needs no tty and repaints fully; the held grid stays on screen
-                // until DisplayReady swaps it. Once the tty lands, switches go in-place.
+                // No in-place switch (a LOCAL shared host has no remote shell to record /
+                // read the tty, or the mux uses no recorded-tty strategy): reattach the
+                // host PTY to the new session. Reattach needs no tty and repaints fully;
+                // the held grid stays on screen until DisplayReady swaps it.
                 tracing::info!(
                     host = %sel.source,
                     model = "shared",
                     decision = "reattach",
-                    reason = "no-tty",
+                    reason = "no-switch",
                     session = %sel.session,
                     "display_show"
                 );
@@ -214,15 +202,7 @@ impl MuxDriver for TmuxDriver {
                 let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
                 let mut argv = vec![cmd];
                 argv.extend(args);
-                if host.transport.is_remote() {
-                    if let Some(last) = argv.last_mut() {
-                        *last = format!(
-                            "{}{}",
-                            crate::model::death::display_tty_marker_prefix(),
-                            last
-                        );
-                    }
-                }
+                argv = with_display_tty_record(argv, host, &key);
                 let id = request_attach(
                     ctx.registry,
                     ctx.worker,
@@ -300,19 +280,22 @@ impl MuxDriver for TmuxDriver {
         let Some(host) = ctx.hosts.get_mut(source) else {
             return;
         };
-        let remote = host.transport.is_remote();
         match sessions.first() {
             Some(first)
                 if !ctx.registry.contains(source)
                     && !host.display.in_flight.contains_key(source) =>
             {
+                // A remote shared attach records its own tty before exec (for a later
+                // in-place switch); local attaches and non-recording muxes stay bare.
+                let argv =
+                    with_display_tty_record(src.attach_command(&first.name, None), host, source);
                 request_attach(
                     ctx.registry,
                     ctx.worker,
                     &mut host.display,
                     ctx.attach_seq,
                     source,
-                    crate::cockpit::shared_display_attach_argv(remote, src, &first.name, None),
+                    argv,
                     cols,
                     rows,
                 );
@@ -591,6 +574,22 @@ fn refresh_client_lowered(host: &Host, tty: &str) -> crate::model::LoweredSwitch
     crate::model::LoweredSwitch::Local(v)
 }
 
+/// Folds the mux's display-tty record prefix into a REMOTE shared attach's command
+/// (the last argv element), so the attach shell records its OWN tty before exec'ing
+/// the attach — the value a later in-place `switch-client -c <tty>` targets (xmux's
+/// own display client, never the user's own attached client). A LOCAL attach (no shell
+/// to run the snippet) or a mux with no record strategy is returned unchanged.
+fn with_display_tty_record(mut argv: Vec<String>, host: &Host, host_key: &str) -> Vec<String> {
+    if host.transport.is_remote() {
+        if let Some(prefix) = host.mux.display_tty_record_prefix(host_key) {
+            if let Some(last) = argv.last_mut() {
+                *last = format!("{prefix}{last}");
+            }
+        }
+    }
+    argv
+}
+
 /// The tty of the psmux client currently showing `session`, parsed from `list-clients`
 /// output. psmux prints one client per line as `<tty>: <session>: <cmd> [<size>] …`
 /// (its `-F` is unreliable, so the default format is parsed). The FIRST line whose
@@ -655,6 +654,51 @@ fn spawn_local_psmux_tty_capture(
 mod tests {
     use super::*;
     use crate::cockpit::Selection;
+
+    /// A REMOTE shared attach gets the mux's record prefix folded into its remote
+    /// command (the last argv element), so the attach shell records its OWN tty for a
+    /// later in-place switch — identifying xmux's display client and not the user's.
+    #[test]
+    fn remote_shared_attach_records_its_display_tty() {
+        let host = crate::model::Host::new(
+            crate::model::Transport::Ssh {
+                alias: "jup".into(),
+                control_path: String::new(),
+                os: "linux".into(),
+            },
+            crate::backend::for_binary("tmux"),
+        );
+        let argv = vec![
+            "ssh".to_string(),
+            "jup".to_string(),
+            "tmux attach -t api".to_string(),
+        ];
+        let out = with_display_tty_record(argv, &host, "jup");
+        let last = out.last().unwrap();
+        assert!(last.starts_with("tty >"), "records its tty first: {out:?}");
+        assert!(
+            last.contains("tmux attach -t api"),
+            "then runs the attach: {out:?}"
+        );
+    }
+
+    /// A LOCAL attach has no shell to run the record snippet, so it is left bare —
+    /// prepending the snippet would corrupt the local argv's session-name argument.
+    #[test]
+    fn local_shared_attach_is_not_prefixed() {
+        let host = crate::model::Host::new(
+            crate::model::Transport::Local { socket: None },
+            crate::backend::for_binary("tmux"),
+        );
+        let argv = vec![
+            "tmux".to_string(),
+            "attach".to_string(),
+            "-t".to_string(),
+            "api".to_string(),
+        ];
+        let out = with_display_tty_record(argv.clone(), &host, "local");
+        assert_eq!(out, argv, "local attach is untouched");
+    }
 
     /// A minimal `Env` whose `by_alias` carries one source per alias, so a driver that
     /// builds a shared warm argv (`shared_display_attach_argv` via `ctx.env`) finds the
