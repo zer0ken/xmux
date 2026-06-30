@@ -117,6 +117,7 @@ impl MuxDriver for TmuxDriver {
             return false;
         };
         let key = host_selection_key(host);
+        let pre_mismatch = host.display.shows(&key) != Some(sel.session.as_str());
         let already = ctx.registry.contains(&key);
         let first_attach = !already && !host.display.in_flight.contains_key(&key);
 
@@ -215,13 +216,17 @@ impl MuxDriver for TmuxDriver {
             }
         }
         {
-            let mismatch = host.display.shows(&key) != Some(sel.session.as_str());
             let attached: Vec<String> = ctx
                 .registry
                 .addresses()
                 .into_iter()
                 .map(|addr| {
-                    let shown = host.display.shows(&addr).unwrap_or("?");
+                    let host_id = addr.split_once('/').map_or(addr.as_str(), |(h, _)| h);
+                    let shown = ctx
+                        .hosts
+                        .get(host_id)
+                        .and_then(|h| h.display.shows(&addr))
+                        .unwrap_or("?");
                     format!("{}={}", addr, shown)
                 })
                 .collect();
@@ -229,7 +234,7 @@ impl MuxDriver for TmuxDriver {
                 count = ctx.registry.len(),
                 attached = %attached.join(","),
                 displayed = %sel.session,
-                mismatch,
+                mismatch = pre_mismatch,
                 "display_inventory"
             );
         }
@@ -306,6 +311,7 @@ impl MuxDriver for PsmuxDriver {
         let key = host_selection_key(host);
         let live = ctx.registry.contains(&key);
         let already_on = host.display.shows(&key) == Some(sel.session.as_str());
+        let pre_mismatch = !already_on;
         // The captured tty of xmux's OWN display client (the linchpin for an in-place
         // switch). Empty/absent ⇒ fall back to reattach so 4a5f053 never regresses.
         let tty = host.display_tty.0.clone().filter(|t| !t.is_empty());
@@ -325,14 +331,21 @@ impl MuxDriver for PsmuxDriver {
                     session = %sel.session,
                     "display_show"
                 );
+                if let Some(win) = sel.window {
+                    lower_select_window(host, control, &sel.session, win);
+                }
                 {
-                    let mismatch = host.display.shows(&key) != Some(sel.session.as_str());
                     let attached: Vec<String> = ctx
                         .registry
                         .addresses()
                         .into_iter()
                         .map(|addr| {
-                            let shown = host.display.shows(&addr).unwrap_or("?");
+                            let host_id = addr.split_once('/').map_or(addr.as_str(), |(h, _)| h);
+                            let shown = ctx
+                                .hosts
+                                .get(host_id)
+                                .and_then(|h| h.display.shows(&addr))
+                                .unwrap_or("?");
                             format!("{}={}", addr, shown)
                         })
                         .collect();
@@ -340,12 +353,9 @@ impl MuxDriver for PsmuxDriver {
                         count = ctx.registry.len(),
                         attached = %attached.join(","),
                         displayed = %sel.session,
-                        mismatch,
+                        mismatch = pre_mismatch,
                         "display_inventory"
                     );
-                }
-                if let Some(win) = sel.window {
-                    lower_select_window(host, control, &sel.session, win);
                 }
                 return true;
             }
@@ -373,13 +383,17 @@ impl MuxDriver for PsmuxDriver {
                 lower_select_window(host, control, &sel.session, win);
             }
             {
-                let mismatch = host.display.shows(&key) != Some(sel.session.as_str());
                 let attached: Vec<String> = ctx
                     .registry
                     .addresses()
                     .into_iter()
                     .map(|addr| {
-                        let shown = host.display.shows(&addr).unwrap_or("?");
+                        let host_id = addr.split_once('/').map_or(addr.as_str(), |(h, _)| h);
+                        let shown = ctx
+                            .hosts
+                            .get(host_id)
+                            .and_then(|h| h.display.shows(&addr))
+                            .unwrap_or("?");
                         format!("{}={}", addr, shown)
                     })
                     .collect();
@@ -387,7 +401,7 @@ impl MuxDriver for PsmuxDriver {
                     count = ctx.registry.len(),
                     attached = %attached.join(","),
                     displayed = %sel.session,
-                    mismatch,
+                    mismatch = pre_mismatch,
                     "display_inventory"
                 );
             }
@@ -445,13 +459,17 @@ impl MuxDriver for PsmuxDriver {
             lower_select_window(host, control, &sel.session, win);
         }
         {
-            let mismatch = host.display.shows(&key) != Some(sel.session.as_str());
             let attached: Vec<String> = ctx
                 .registry
                 .addresses()
                 .into_iter()
                 .map(|addr| {
-                    let shown = host.display.shows(&addr).unwrap_or("?");
+                    let host_id = addr.split_once('/').map_or(addr.as_str(), |(h, _)| h);
+                    let shown = ctx
+                        .hosts
+                        .get(host_id)
+                        .and_then(|h| h.display.shows(&addr))
+                        .unwrap_or("?");
                     format!("{}={}", addr, shown)
                 })
                 .collect();
@@ -459,7 +477,7 @@ impl MuxDriver for PsmuxDriver {
                 count = ctx.registry.len(),
                 attached = %attached.join(","),
                 displayed = %sel.session,
-                mismatch,
+                mismatch = pre_mismatch,
                 "display_inventory"
             );
         }
