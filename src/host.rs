@@ -569,7 +569,6 @@ async fn run_poll(
     mux_kind: String,
     mux_bin: String,
     interval_ms: u64,
-    xmux_dir: std::path::PathBuf,
     events: tokio::sync::mpsc::UnboundedSender<HostEvent>,
 ) {
     let mux = crate::backend::for_kind(&mux_kind, &mux_bin);
@@ -578,6 +577,10 @@ async fn run_poll(
     // ran long, so a slow probe paces the loop instead of piling up overlapping sweeps.
     let mut ticker = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Per-source last-known name set: suppress INFO when the enumeration is identical to
+    // the previous sweep (reduces log noise for idle polls while keeping change visibility).
+    let mut last_names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut first_poll = true;
     loop {
         ticker.tick().await;
         // `poll_once` (the mux-blind sweep) hands each event back here. The cockpit's
@@ -585,25 +588,30 @@ async fn run_poll(
         // so a failed send latches `gone` and the loop returns after this sweep.
         let mut gone = false;
         mux.poll_once(&source, &transport, &crate::source::ExecRunner, &mut |ev| {
-            // Log every poll enumeration UNCONDITIONALLY (success AND error) at the
-            // producer, where `err` is in hand: `apply_event` drops the error path
-            // before the cockpit's success-only log, so a transient poll failure is
-            // otherwise invisible in debug.log. `XMUX_DEBUG`-gated, single line.
+            // Log enumeration at the producer (where `err` is in hand): on success emit
+            // INFO when the set changed, TRACE when unchanged; on error emit WARN. This
+            // keeps the log quiet for idle polls while making changes and failures visible.
             if let HostEvent::Sessions {
-                source,
-                sessions,
-                err,
-            } = &ev
+                source: ref host,
+                ref sessions,
+                ref err,
+            } = ev
             {
-                crate::cockpit::dbg_log(
-                    &xmux_dir,
-                    &format!(
-                        "poll enum source={source} n={} names={:?} err={:?}",
-                        sessions.len(),
-                        sessions.iter().map(|s| &s.name).collect::<Vec<_>>(),
-                        err
-                    ),
-                );
+                let n = sessions.len();
+                if let Some(error) = err {
+                    tracing::warn!(host, error, "enumeration_failed");
+                } else {
+                    let names: std::collections::BTreeSet<String> =
+                        sessions.iter().map(|s| s.name.clone()).collect();
+                    if first_poll || names != last_names {
+                        let names_list: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+                        tracing::info!(host, n, names = ?names_list, "sessions_enumerated");
+                        last_names = names;
+                        first_poll = false;
+                    } else {
+                        tracing::trace!(host, n, "sessions_enumerated_unchanged");
+                    }
+                }
             }
             if events.send(ev).is_err() {
                 gone = true;
@@ -624,10 +632,6 @@ pub struct HostManager {
     clients: HashMap<String, HostClient>,
     polls: HashMap<String, tokio::task::JoinHandle<()>>,
     events: tokio::sync::mpsc::UnboundedSender<HostEvent>,
-    /// Where a poll task writes its `XMUX_DEBUG`-gated `debug.log` enum line. Defaults
-    /// to the cwd; the cockpit sets the real `~/.xmux` once at startup. Inert under test
-    /// (no `XMUX_DEBUG`), so the default never writes.
-    xmux_dir: std::path::PathBuf,
 }
 
 impl HostManager {
@@ -636,14 +640,7 @@ impl HostManager {
             clients: HashMap::new(),
             polls: HashMap::new(),
             events,
-            xmux_dir: std::path::PathBuf::from("."),
         }
-    }
-
-    /// Sets the debug-log directory for poll tasks (the cockpit's `~/.xmux`). Called
-    /// once at startup, before any host is ensured.
-    pub fn set_xmux_dir(&mut self, dir: std::path::PathBuf) {
-        self.xmux_dir = dir;
     }
 
     /// A clone of the shared event-bus sender, for the fire-and-forget detection task
@@ -699,7 +696,6 @@ impl HostManager {
                     host.mux.kind().to_string(),
                     host.mux.bin().to_string(),
                     interval_ms,
-                    self.xmux_dir.clone(),
                     self.events.clone(),
                 ));
                 self.polls.insert(id.to_string(), handle);

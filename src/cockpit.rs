@@ -228,36 +228,12 @@ fn reconciled_tree_width(terminal_focused: bool, auto_hide_tree: bool, natural: 
     }
 }
 
-/// Appends a diagnostic line to `<xmux_dir>/debug.log` when `XMUX_DEBUG` is set in
-/// the environment. A no-op otherwise, so it costs nothing in normal runs. Used to
-/// trace the live attach/selection/inventory flow that headless tests cannot reach.
-pub(crate) fn dbg_log(dir: &std::path::Path, msg: &str) {
-    if std::env::var_os("XMUX_DEBUG").is_none() {
-        return;
-    }
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join("debug.log"))
-    {
-        let _ = writeln!(f, "{msg}");
-    }
-}
-
-/// Formats one slow-step debug line: `SLOW <label> <ms>ms`. Kept separate from
-/// [`dbg_ms`] so the line format is unit-testable without timing or filesystem I/O.
-fn slow_log_line(label: &str, ms: u128) -> String {
-    format!("SLOW {label} {ms}ms")
-}
-
-/// Logs `label` to the debug log when a synchronous step took at least 10ms — used
-/// to locate what stalls the single-threaded event loop during rapid navigation
-/// (a no-op unless `XMUX_DEBUG` is set, like [`dbg_log`]).
-fn dbg_ms(dir: &std::path::Path, label: &str, start: std::time::Instant) {
+/// Emits a `slow_step` DEBUG event when a synchronous step took at least 10ms — used
+/// to locate what stalls the single-threaded event loop during rapid navigation.
+fn log_slow_step(label: &str, start: std::time::Instant) {
     let ms = start.elapsed().as_millis();
     if ms >= 10 {
-        dbg_log(dir, &slow_log_line(label, ms));
+        tracing::debug!(label, ms, "slow_step");
     }
 }
 
@@ -1031,14 +1007,9 @@ fn run_event_effect(
                     inv.sessions.clone()
                 };
                 request_session_panes(client, &sessions, panes_requested);
-                dbg_log(
-                    &env.xmux_dir,
-                    &format!(
-                        "host event host={host} n={} names={:?}",
-                        sessions.len(),
-                        sessions.iter().map(|s| &s.name).collect::<Vec<_>>()
-                    ),
-                );
+                let n = sessions.len();
+                let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
+                tracing::info!(host, n, ?names, "sessions_applied");
                 // Sync this host's display terminal(s) (per-host for remote tmux).
                 sync_source_terminals(
                     registry, env, hosts, &host, &sessions, worker, mgr, pty_tx, attach_seq, cols,
@@ -1131,6 +1102,7 @@ fn record_display_tty(
     if let Some(addr) = registry.address_of_id(id) {
         let host_id = addr.split('/').next().unwrap_or(&addr).to_string();
         if let Some(h) = hosts.get_mut(&host_id) {
+            tracing::debug!(id, addr, tty, "tty_recorded");
             h.display_tty = crate::model::DisplayTty(Some(tty));
         }
     }
@@ -1849,7 +1821,6 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
     // The control-mode metadata clients: one per remote host.
     let (host_tx, mut host_rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
     let mut mgr = HostManager::new(host_tx);
-    mgr.set_xmux_dir(env.xmux_dir.clone());
 
     // The live PTY attachments: one real attached mux client per session.
     let (pty_tx, mut pty_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
@@ -2117,16 +2088,11 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                 state.displayed = sel.clone();
                             }
                         }
-                        dbg_ms(&env.xmux_dir, "select_attach", t);
+                        log_slow_step("select_attach", t);
                         dirty = true;
-                        dbg_log(
-                            &env.xmux_dir,
-                            &format!(
-                                "state.selection -> key={} sess={}",
-                                display_key(&hosts, &sel),
-                                sel.session
-                            ),
-                        );
+                        let key = display_key(&hosts, &sel);
+                        let session = &sel.session;
+                        tracing::debug!(key, session, "selection");
                     }
                     // The settled-selection Tick never returns the synchronous
                     // key/ctl-only commands or a session-lifecycle RunOp.
@@ -2190,26 +2156,25 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
             // flush. On Windows the flush (writing changed cells to the console) is
             // the suspected dominant stall during a remote repaint flood — the split
             // tells render-cost from flush-cost so the off-loop-draw fix targets the
-            // right half (#2). XMUX_DEBUG-gated like the other probes.
-            let xmux_dir = env.xmux_dir.clone();
+            // right half (#2).
             let _ = match &grid_arc {
                 Some(g) => {
                     let t_lock = std::time::Instant::now();
                     let guard = g.lock().ok();
-                    dbg_ms(&env.xmux_dir, "grid_lock", t_lock);
+                    log_slow_step("grid_lock", t_lock);
                     term.draw(|f| {
                         let t_render = std::time::Instant::now();
                         switcher.render(f, guard.as_deref(), terminal_focused, tree_width, &state);
-                        dbg_ms(&xmux_dir, "render", t_render);
+                        log_slow_step("render", t_render);
                     })
                 }
                 None => term.draw(|f| {
                     let t_render = std::time::Instant::now();
                     switcher.render(f, None, terminal_focused, tree_width, &state);
-                    dbg_ms(&xmux_dir, "render", t_render);
+                    log_slow_step("render", t_render);
                 }),
             };
-            dbg_ms(&env.xmux_dir, "draw", t_draw);
+            log_slow_step("draw", t_draw);
             // The grids are now on screen — clear every attachment's output-coalescing
             // flag so each pump may signal its next chunk (bounds the PTY event channel).
             registry.clear_all_pending();
@@ -2245,7 +2210,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         Err(_) => break,
                     }
                 }
-                dbg_ms(&env.xmux_dir, "host_drain", t);
+                log_slow_step("host_drain", t);
             }
             Some(ev) = pty_rx.recv() => {
                 // A kept attachment's pump fed its grid (Output → redraw on the next
@@ -2317,14 +2282,8 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     DisplayEvent::Ready { seq, key, attachment } => {
                         let hid = host_of_key(&key).to_string();
                         if let Some(h) = hosts.get_mut(&hid) {
-                            dbg_log(
-                                &env.xmux_dir,
-                                &format!(
-                                    "attach ready key={key} seq={seq} current={:?} id={}",
-                                    h.display.in_flight.get(&key),
-                                    attachment.id()
-                                ),
-                            );
+                            let id = attachment.id();
+                            tracing::info!(key, seq, id, "attach_ready");
                             if h.display.reaped_ids.remove(&attachment.id()) {
                                 // Exited raced ahead of this Ready: the child already died and its
                                 // pump (one Exited at EOF) has ended. Inserting now would leave a
@@ -2368,7 +2327,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                 h.display.pending.retain(|_, k| k != &key);
                             }
                         }
-                        dbg_log(&env.xmux_dir, &format!("attach failed key={key}: {message}"));
+                        tracing::warn!(key, error = %message, "attach_failed");
                     }
                 }
             }
@@ -2897,12 +2856,6 @@ mod tests {
             ui_prefix: "C-g".into(),
             xmux_dir: std::path::PathBuf::from("."),
         }
-    }
-
-    #[test]
-    fn slow_log_line_includes_label_and_elapsed_ms() {
-        let line = slow_log_line("registry.ensure", 42);
-        assert_eq!(line, "SLOW registry.ensure 42ms");
     }
 
     #[test]
