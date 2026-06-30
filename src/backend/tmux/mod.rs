@@ -220,6 +220,10 @@ impl ControlProtocol for TmuxControl {
         )
     }
 
+    fn refresh_client_line(&self, display_tty: &str) -> String {
+        format!("refresh-client -t {}\n", display_tty)
+    }
+
     fn size_line(&self, cols: u16, rows: u16) -> String {
         // `refresh-client -C WxH` — the `x`-form is correct for 3.3.x (`[research §7]`).
         format!("refresh-client -C {cols}x{rows}\n")

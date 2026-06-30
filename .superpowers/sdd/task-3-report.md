@@ -95,3 +95,42 @@ cargo test         → 556 passed; 0 failed; 6 ignored
 cargo clippy --all-targets → Finished (0 warnings)
 cargo fmt --check  → clean (no output)
 ```
+
+---
+
+## Review fix: I-A — `display_grid_changed` INFO flood on steady-state repaints
+
+### Problem
+`display_grid_changed` was emitted at INFO on every fingerprint change, regardless
+of whether the displayed session had changed. For animated full-screen panes (htop,
+build logs, clocks) this fires ~30 times/sec at the default `xmux=info` log level,
+re-introducing the exact flood the redesign exists to prevent.
+
+### Branch logic
+The map value type changed from `HashMap<String, u64>` (last fingerprint only) to
+`HashMap<String, (u64, String)>` (last fingerprint + session shown when it was
+recorded). The draw-path match now has three arms:
+
+1. `fp == last_fp` — content unchanged; emit nothing (as before).
+2. `fp != last_fp` AND `last_session == session` — same session, steady-state repaint;
+   emit `tracing::trace!(…, "display_grid_changed")`. Does not appear in the default log.
+3. `fp != last_fp` AND session differs (or no entry yet) — first paint after a session
+   change landed; emit `tracing::info!(…, "display_grid_changed")`. Visible in the
+   default log exactly once per transition.
+
+Event name and field names (`addr`, `session`, `fp`) are unchanged; key derivation
+is unchanged.
+
+### Files changed
+- `src/cockpit.rs`: map declaration + match block (two sites).
+- `src/AGENTS.md`: Common Pitfalls bullet updated to describe current INFO/TRACE behavior.
+
+### Commands and output
+```
+cargo test         → 556 passed; 0 failed; 6 ignored
+cargo clippy --all-targets → Finished (0 warnings)
+cargo fmt --check  → clean (no output)
+```
+
+### Commit
+`eaa8364` — fix(logging): gate display_grid_changed INFO on session transition, TRACE for steady-state repaints

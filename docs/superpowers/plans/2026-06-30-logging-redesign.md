@@ -146,3 +146,34 @@ Acceptance: real-toolchain build + clippy 0 + fmt clean; a unit test for
 `Grid::fingerprint` (same contents → same hash; fed different content → different
 hash); existing tests pass. (Whether the live events reveal the psmux swap
 failure is the human live gate, not this task's acceptance.)
+
+## Task 4: AGENTS.md coherence for the logging subsystem
+
+No `src/**/AGENTS.md` currently mentions logging at all, so this is additive
+coherence, not stale-fixing: the working notes must describe the logging
+subsystem the redesign introduces. Delegate the writing to Codex; verify AS-IS
+compliance + scope afterward. Run this AFTER Task 3 lands so it reflects final
+code (logging.rs, the events, Grid::fingerprint).
+
+- `src/AGENTS.md`: add `logging.rs` to Module Seams — the `tracing` subscriber
+  (file sink `<xmux_dir>/xmux.log`, `XMUX_LOG` env filter, non-blocking
+  appender, module-path targets, levels). Add a Common Pitfall: logging never
+  writes to stdout/stderr (ratatui owns the terminal — a stray write corrupts
+  the alt-screen); events go to the file sink; the panic hook restores the
+  terminal before printing. Note the display-lifecycle events
+  (`display_show`/`display_inventory`/`display_grid_changed`) as the surface for
+  diagnosing whether the displayed terminal actually swapped. Update
+  Verification to mention `XMUX_LOG=xmux::driver=debug` for inspecting a switch.
+- `src/proxy/AGENTS.md`: if it describes `Grid`, note `fingerprint()` (the
+  content hash that `display_grid_changed` compares). Light touch, only if it
+  improves coherence.
+- Confirm no other `src/**/AGENTS.md` makes a now-inaccurate logging claim.
+
+Constraints: touch ONLY `src/**/AGENTS.md` (not code, not `legacy-go/`, not
+`docs/`). AS-IS only — describe what IS, no change-narration ("now", "added",
+arrows) in added lines. Match the working-notes voice/structure. Verify every
+symbol/path named exists in the code.
+
+Acceptance: the named AGENTS.md files describe the logging subsystem accurately
+and AS-IS; scope = `src/**/AGENTS.md` only; `git show --stat` confirms no code /
+legacy-go / docs files touched.

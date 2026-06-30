@@ -526,6 +526,16 @@ impl HostClient {
         ));
     }
 
+    /// Force a full redraw of xmux's display client (`refresh-client -t <tty>`) over THIS
+    /// control connection, issued right after a `switch-client`. A switch moves the client
+    /// but does not always repaint a locally-cleared grid; a fresh attach repaints fully,
+    /// and this gives the in-place switch the same full repaint so the new session shows.
+    pub fn refresh_client_on(&self, display_tty: &str) {
+        let _ = self
+            .cmd_tx
+            .send(HostCmd::Send(self.proto.refresh_client_line(display_tty)));
+    }
+
     /// Tell the child its new client size (the metadata client's size; the PTY
     /// attachments are sized independently by the cockpit).
     pub fn resize(&mut self, cols: u16, rows: u16) {

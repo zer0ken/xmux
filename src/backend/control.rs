@@ -50,6 +50,11 @@ pub trait ControlProtocol: Send + Sync {
     /// `switch-client -c <display_tty> -t <session>` — moves the named display client.
     fn switch_client_line(&self, display_tty: &str, session: &str) -> String;
 
+    /// `refresh-client -t <display_tty>` — forces a full redraw of the named client. A
+    /// `switch-client` moves the client but need not repaint a locally-cleared grid; a
+    /// fresh attach repaints fully, and this gives an in-place switch the same full repaint.
+    fn refresh_client_line(&self, display_tty: &str) -> String;
+
     /// `refresh-client -C <cols>x<rows>` — the client-size formatter.
     fn size_line(&self, cols: u16, rows: u16) -> String;
 }

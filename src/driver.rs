@@ -184,8 +184,11 @@ impl MuxDriver for TmuxDriver {
             ctx.registry.clear_grid(&key);
             let tty = host.display_tty.0.clone().unwrap_or_default();
             if let Some(client) = control {
-                // Over the open -CC connection — no fresh ssh handshake.
+                // Over the open -CC connection — no fresh ssh handshake. Force a full
+                // redraw after the switch: a `switch-client` moves the client but need not
+                // repaint the cleared grid, so the new session would otherwise stay blank.
                 client.switch_client_on(&tty, &sel.session);
+                client.refresh_client_on(&tty);
             } else {
                 let plan = host.mux.switch_plan(&sel.session);
                 let lowered = {
@@ -195,6 +198,7 @@ impl MuxDriver for TmuxDriver {
                 if let Some(lowered) = lowered {
                     run_lowered(lowered);
                 }
+                run_lowered(refresh_client_lowered(host, &tty));
             }
             host.display.set_shows(&key, &sel.session);
         } else {
@@ -378,6 +382,10 @@ impl MuxDriver for PsmuxDriver {
             let mut v = vec![cmd];
             v.extend(args);
             run_lowered(crate::model::LoweredSwitch::Local(v));
+            // Force a full repaint after the switch so the new session's content fills the
+            // cleared grid (a switch-client alone may leave it blank; a reattach repaints
+            // fully, and this gives the in-place switch the same).
+            run_lowered(refresh_client_lowered(host, &tty));
             host.display.set_shows(&key, &sel.session);
             if let Some(win) = sel.window {
                 lower_select_window(host, control, &sel.session, win);
@@ -525,6 +533,24 @@ fn lower_select_window(
         argv.extend(args);
         run_lowered(crate::model::LoweredSwitch::Local(argv));
     }
+}
+
+/// A lowered `refresh-client -t <tty>` for the per-host display client, run right after a
+/// lowered `switch-client` so the new session repaints the whole screen. A switch moves
+/// the client but need not refill the cleared grid; a fresh attach repaints fully, and
+/// this gives the in-place switch the same full repaint. The transport prepends ssh for a
+/// remote host; psmux is tmux-compatible so the `refresh-client` verb is the same.
+fn refresh_client_lowered(host: &Host, tty: &str) -> crate::model::LoweredSwitch {
+    let argv = vec![
+        host.mux.bin().to_string(),
+        "refresh-client".to_string(),
+        "-t".to_string(),
+        tty.to_string(),
+    ];
+    let (cmd, args) = host.transport.exec_argv(false, &argv);
+    let mut v = vec![cmd];
+    v.extend(args);
+    crate::model::LoweredSwitch::Local(v)
 }
 
 /// The tty of the psmux client currently showing `session`, parsed from `list-clients`
