@@ -1639,7 +1639,10 @@ fn handle_stdin_bytes(
         // TermInput intercepts the prefix (→ tree / quit / help / resize / literal).
         for action in term_input.feed(&non_mouse) {
             match action {
-                Action::Forward(f) => registry.input(&display_key(hosts, selection), f),
+                // Forward keystrokes to the VISIBLE session (`displayed`), not the
+                // selection: until the new session is ready the prior one is on screen,
+                // so input must reach what the user actually sees (no blind typing).
+                Action::Forward(f) => registry.input(&display_key(hosts, &state.displayed), f),
                 Action::FocusTree(rest) => {
                     *focus_tree = true;
                     *tree_replay = rest;
@@ -2085,12 +2088,14 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             &mgr,
                         );
                         if shown {
-                            // A synchronous path (switch-client / select-window / already
-                            // attached) leaves a live grid for the key right now → the
-                            // selection is on screen. An async path (first-attach /
-                            // per-session reattach) removed or never had the key → the grid
-                            // is "(attaching…)" until DisplayReady confirms it (which sets
-                            // state.displayed then). Probing the registry tells them apart.
+                            // Advance the display truth synchronously ONLY when a live grid
+                            // for the key already exists (an in-place switch-client /
+                            // select-window / already-attached path): the on-screen grid
+                            // morphs to the new session in place. An async path (first
+                            // attach / reattach) has no grid for the key yet, so `displayed`
+                            // stays on the prior session — which remains on screen until
+                            // DisplayReady advances it (stale-while-revalidate). Probing the
+                            // registry tells them apart.
                             if registry.contains(&display_key(&hosts, &sel)) {
                                 state.displayed = sel.clone();
                             }
@@ -2129,15 +2134,15 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         // with full-screen repaints and stall the loop. The display key is the HOST
         // for remote tmux (one PTY per host) or `source/session` for local psmux.
         if dirty && last_draw.elapsed() >= Duration::from_millis(FRAME_MS) {
-            // Show the grid only when the confirmed display truth matches the selection
-            // (defect A): a stale attachment mid-reattach renders "(attaching…)", never
-            // the previous session.
-            let show_grid = state.display_matches_selection();
+            // Render the CONFIRMED display truth (`displayed`), not the selection: on a
+            // session switch the prior session stays on screen until the new one is
+            // ready (stale-while-revalidate), and `displayed` only advances at
+            // confirmation. An empty `displayed` (first launch) yields no grid → blank.
             let driver = hosts
-                .get(&state.selection.source)
+                .get(&state.displayed.source)
                 .map(crate::driver::driver_for);
-            let grid_arc = match (show_grid, driver) {
-                (true, Some(driver)) => {
+            let grid_arc = match driver {
+                Some(driver) => {
                     let ctx = crate::driver::DriverCtx {
                         registry: &mut registry,
                         hosts: &mut hosts,
@@ -2150,9 +2155,9 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         body_rows,
                         tree_width,
                     };
-                    driver.grid(&state.selection, &ctx)
+                    driver.grid(&state.displayed, &ctx)
                 }
-                _ => None,
+                None => None,
             };
             let terminal_focused = state.focus.is_terminal_focused();
             // The divider glyph reflects auto-hide-tree mode (║ on, │ off).
@@ -2176,8 +2181,8 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     // not followed by display_grid_changed means the switch left the screen
                     // unchanged (the psmux swap failure signal).
                     if let Some(grid) = guard.as_deref() {
-                        let addr = display_key(&hosts, &state.selection);
-                        let session = &state.selection.session;
+                        let addr = display_key(&hosts, &state.displayed);
+                        let session = &state.displayed.session;
                         let fp = grid.fingerprint();
                         match grid_fingerprints.get(&addr) {
                             Some((last_fp, _)) if last_fp == &fp => {
@@ -2413,12 +2418,11 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         let sz = term
                             .size()
                             .unwrap_or(ratatui::layout::Size { width: 80, height: 24 });
-                        let show_grid = state.display_matches_selection();
                         let driver = hosts
-                            .get(&state.selection.source)
+                            .get(&state.displayed.source)
                             .map(crate::driver::driver_for);
-                        let grid_arc = match (show_grid, driver) {
-                            (true, Some(driver)) => {
+                        let grid_arc = match driver {
+                            Some(driver) => {
                                 let ctx = crate::driver::DriverCtx {
                                     registry: &mut registry,
                                     hosts: &mut hosts,
@@ -2431,9 +2435,9 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                     body_rows,
                                     tree_width,
                                 };
-                                driver.grid(&state.selection, &ctx)
+                                driver.grid(&state.displayed, &ctx)
                             }
-                            _ => None,
+                            None => None,
                         };
                         let dump = match &grid_arc {
                             Some(g) => {
@@ -2466,7 +2470,10 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     }
                     Cmd::RawBytes(bytes) => {
                         if !bytes.is_empty() {
-                            if let Some(host) = hosts.get(&state.selection.source) {
+                            // Inject into the VISIBLE session (`displayed`), matching the
+                            // interactive keystroke path: the prior session is on screen
+                            // until the next is ready, so bytes reach what is shown.
+                            if let Some(host) = hosts.get(&state.displayed.source) {
                                 let mut driver = crate::driver::driver_for(host);
                                 let ctx = crate::driver::DriverCtx {
                                     registry: &mut registry,
@@ -2480,7 +2487,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                     body_rows,
                                     tree_width,
                                 };
-                                driver.input(&state.selection, bytes, &ctx);
+                                driver.input(&state.displayed, bytes, &ctx);
                             }
                         }
                     }
@@ -3825,49 +3832,6 @@ mod tests {
             !registry.contains("local"),
             "psmux select_attach must replace the host PTY even when bookkeeping is stale"
         );
-    }
-
-    #[test]
-    fn display_matches_selection_gates_grid_on_confirmed_session() {
-        let sel = Selection {
-            source: "h".into(),
-            session: "api".into(),
-            window: None,
-        };
-        let with = |displayed: Selection, selection: Selection| {
-            let s = crate::state::State {
-                displayed,
-                selection,
-                ..crate::state::State::default()
-            };
-            s.display_matches_selection()
-        };
-        // Nothing selected → never a grid.
-        assert!(!with(Selection::default(), Selection::default()));
-        // Confirmed truth names the same host+session → show the grid.
-        assert!(with(sel.clone(), sel.clone()));
-        // A different session (mid-reattach) → "(attaching…)", not the old session.
-        let other_session = Selection {
-            session: "db".into(),
-            ..sel.clone()
-        };
-        assert!(!with(other_session, sel.clone()));
-        // A different host → "(attaching…)".
-        let other_host = Selection {
-            source: "h2".into(),
-            ..sel.clone()
-        };
-        assert!(!with(other_host, sel.clone()));
-        // Same session, different window → still shown: one PTY renders the active window.
-        let displayed_w = Selection {
-            window: Some(1),
-            ..sel.clone()
-        };
-        let selection_w = Selection {
-            window: Some(3),
-            ..sel.clone()
-        };
-        assert!(with(displayed_w, selection_w));
     }
 
     #[test]

@@ -27,9 +27,11 @@ moved selection and marks `attach_pending`; the trailing `Tick` (re)arms
 `attach_deadline = now + 90ms` — re-armed on every pending Select so rapid
 navigation coalesces into one trailing attach — and, once the deadline elapses
 and the `should_attach` gate holds, returns `Command::Attach` (plus
-`Command::PersistLastSession` on an address change). `should_attach` and
-`display_matches_selection` are the pure gate methods that read `selection` /
-`displayed`. The session-lifecycle intents (`CreateSession` / `NewWindow` /
+`Command::PersistLastSession` on an address change). `should_attach` is the pure
+gate method that reads `selection` / `displayed`; the terminal view renders and
+routes input to `displayed` (the confirmed session), which lags `selection`
+until the new attach is confirmed (stale-while-revalidate). The
+session-lifecycle intents (`CreateSession` / `NewWindow` /
 `SplitWindow` / `RenameSession` / `KillSession` / `KillWindow` / `RenameWindow`)
 are pure effect emitters: `apply` mutates no domain state and returns a single
 `Command::RunOp(MuxOp)` the run loop runs off-loop (the inventory change arrives
@@ -74,9 +76,10 @@ the transient popup geometry (drag offset / drawn rect).
 
 - `selection` is the source/session/window the display SHOULD show.
 - `displayed` is the address whose content is confirmed live on screen; it is set
-  only at confirmation (a synchronous switch/select-window, or `DisplayReady`).
-  The grid renders only while `displayed` matches `selection`'s session, so a
-  stale attachment shows "(attaching…)" rather than the previous session.
+  only at confirmation (a synchronous in-place switch/select-window, or
+  `DisplayReady`). The terminal view always renders `displayed`'s grid, so on a
+  switch the prior session stays on screen until the new one is confirmed
+  (stale-while-revalidate); there is no transitional placeholder.
 - `focus` is the single source of truth for which pane owns keys and which modal
   (if any) is open; a modal carries the pane it restores to.
 - `popup` is the single source of truth for WHICH modal is open and its content;

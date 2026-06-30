@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
@@ -1964,7 +1964,11 @@ impl Switcher {
                 g.render_into(buf, area);
             }
             None => {
-                frame.render_widget(Paragraph::new("  (attaching…)").dim(), area);
+                // No confirmed grid yet (only at first launch). Blank, never a
+                // placeholder: a session switch keeps the prior grid until the new
+                // one is ready (stale-while-revalidate), so nothing transitional is
+                // ever shown here.
+                frame.render_widget(Clear, area);
             }
         }
     }
@@ -4313,6 +4317,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn render_terminal_view_none_grid_is_blank_not_attaching() {
+        // The "(attaching…)" placeholder is removed entirely. A None grid (only at
+        // first launch, before any session is confirmed on screen) renders blank —
+        // never the placeholder. The display keeps the last confirmed session until
+        // the next is ready (stale-while-revalidate), so a transitional placeholder
+        // has no purpose.
+        let mut state = crate::state::State::from_sources(vec!["local".into(), "jupiter06".into()]);
+        let mut sw = Switcher::from_sources(&mut state);
+        let mut term = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        term.draw(|f| sw.render(f, None, true, 0, &state)).unwrap();
+        let out = buffer_text(term.backend().buffer());
+        assert!(
+            !out.contains("attaching"),
+            "no attaching placeholder when grid is None:\n{out}"
+        );
+    }
+
     // --- j/k nav, select=attach, spinner, footer/help, title --------
 
     fn cur_row_label(h: &Harness) -> String {
@@ -5184,14 +5206,19 @@ mod tests {
 
     #[test]
     fn render_tree_width_zero_gives_terminal_full_width() {
-        // A two-source skeleton is enough; grid None renders the "(attaching…)"
-        // placeholder across the whole width when the tree is hidden.
+        use crate::proxy::screen::Grid;
+        // A two-source skeleton is enough. With tree_width == 0 the tree column and
+        // its divider are gone, so the terminal view owns the left edge (x=0): the
+        // live grid's content begins at column 0.
         let mut state = crate::state::State::from_sources(vec!["local".into(), "jupiter06".into()]);
         let mut sw = Switcher::from_sources(&mut state);
         let mut term = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        let mut g = Grid::new(10, 40);
+        g.feed(b"EDGE-CONTENT");
 
         // tree_width == 0 → no tree column, no divider: the terminal view starts at x=0.
-        term.draw(|f| sw.render(f, None, true, 0, &state)).unwrap();
+        term.draw(|f| sw.render(f, Some(&g), true, 0, &state))
+            .unwrap();
         let buf = term.backend().buffer().clone();
         // Column 0 row 0 must NOT be the divider rule '│' (the divider is gone).
         assert_ne!(
@@ -5199,16 +5226,16 @@ mod tests {
             "│",
             "divider must be absent when tree hidden"
         );
-        // The attaching placeholder text "(attaching…)" begins near x=0 (after its
-        // two leading spaces), proving the terminal view owns the left edge.
+        // The live grid content begins at x=0, proving the terminal view owns the left edge.
         let row0: String = (0..40).map(|x| buf[(x, 0)].symbol().to_string()).collect();
         assert!(
-            row0.contains("(attaching…)"),
-            "terminal view fills row 0: {row0:?}"
+            row0.starts_with("EDGE-CONTENT"),
+            "terminal view fills row 0 from x=0: {row0:?}"
         );
 
         // Sanity: with a normal width the divider rule IS present at the tree edge.
-        term.draw(|f| sw.render(f, None, true, 20, &state)).unwrap();
+        term.draw(|f| sw.render(f, Some(&g), true, 20, &state))
+            .unwrap();
         let buf = term.backend().buffer().clone();
         assert_eq!(
             buf[(20, 0)].symbol(),

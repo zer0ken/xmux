@@ -25,10 +25,11 @@ pub struct State {
     /// What the tree cursor points at — the session/window to show.
     pub selection: Selection,
     /// The address whose content is confirmed live in the on-screen terminal view —
-    /// the single display truth. The grid is shown only when this matches the
-    /// selection's session, so a stale attachment (mid-reattach) renders
-    /// "(attaching…)" rather than the previous session: displayed == selected holds
-    /// structurally. Set only at confirmation (a synchronous switch, or DisplayReady).
+    /// the single display truth, and the target of both rendering and input. The
+    /// terminal view always shows THIS session's grid; on a switch it stays on the
+    /// prior session until the new one is confirmed (stale-while-revalidate), then
+    /// advances. Set only at confirmation (a synchronous in-place switch, or
+    /// DisplayReady). Empty before the first confirmation → the view is blank.
     pub displayed: Selection,
     /// When set, a settled selection is attached once this instant passes.
     pub attach_deadline: Option<Instant>,
@@ -353,18 +354,6 @@ impl State {
     /// data on the Tick, never read here directly.
     pub(crate) fn should_attach(&self, key_live: bool, in_flight: bool) -> bool {
         (self.selection != self.displayed || !key_live) && !in_flight
-    }
-
-    /// Whether the on-screen grid may be shown: the confirmed display truth must name
-    /// the same host+session as the current selection. Window is ignored — the same
-    /// session's PTY renders whatever window the mux has active, so a window step needs
-    /// no "(attaching…)". A mismatch (mid-reattach, or selection moved off the displayed
-    /// session) renders "(attaching…)" instead of the previous session — defect A:
-    /// displayed == selected, structurally.
-    pub fn display_matches_selection(&self) -> bool {
-        !self.selection.is_empty()
-            && self.displayed.source == self.selection.source
-            && self.displayed.session == self.selection.session
     }
 }
 
