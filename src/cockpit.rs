@@ -1794,8 +1794,14 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 let _ = execute!(std::io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
                 eprintln!("xmux: internal error — {info}");
                 eprintln!("xmux: full detail logged to {}", log.display());
+                // Only the main-thread crash reaches the default hook (stderr/backtrace)
+                // — the terminal is restored above, so the print is safe and useful.
+                prev_hook(info);
             }
-            prev_hook(info);
+            // A worker-thread panic (a PTY pump's vt100 edge case) is caught and
+            // recovered by Grid::feed; it is already in the log + panic.log above. Do
+            // NOT forward it to the default hook — its stderr print lands on the live
+            // TUI's terminal and corrupts the screen (the panic-spam bug).
         }));
     }
 
