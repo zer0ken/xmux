@@ -54,6 +54,16 @@ enum Command {
 }
 
 pub async fn run() -> i32 {
+    // Initialise the file-based tracing subscriber before any terminal or mux
+    // setup so log records from every subsequent code path are captured. The
+    // guard must outlive `run` (i.e. live until the process exits); binding it
+    // here keeps it alive for the full call. The directory mirrors what
+    // `env::build_env` resolves so the log lands next to the other xmux files.
+    let xmux_dir = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".xmux");
+    let _log_guard = crate::logging::init(&xmux_dir);
+
     let cli = Cli::parse();
     match cli.command {
         None => match interactive_env() {

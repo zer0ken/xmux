@@ -1783,17 +1783,21 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         }
     };
 
-    // On a panic, log the full detail to a file (from any thread — partial writes
-    // never corrupt the alternate screen), and on the MAIN thread (which owns the
-    // terminal) ALSO restore the screen and print a one-line pointer to stderr, so the
-    // user sees that xmux crashed and where the detail is rather than a bare exit code.
-    // The restore is main-thread-only: worker threads (PTY pumps) catch+recover their
-    // own panics (see Grid::feed); a stray worker panic must not tear the screen down
-    // under a still-running cockpit. TermGuard's Drop also restores on the main-thread
-    // unwind — idempotent with this.
+    // On a panic, restore the terminal (main thread only) and emit the detail to
+    // both the structured log (tracing) and a raw append-only file (`panic.log`).
+    // The restore is main-thread-only: worker threads (PTY pumps) catch+recover
+    // their own panics (see Grid::feed); a stray worker panic must not tear the
+    // screen down under a still-running cockpit. TermGuard's Drop also restores on
+    // the main-thread unwind — idempotent with this.
     {
         let log = env.xmux_dir.join("panic.log");
+        let prev_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
+            // Emit to the structured log first: the non-blocking writer flushes on
+            // WorkerGuard drop, which happens after main unwinds, so this record is
+            // not lost even though the subscriber may not have flushed yet.
+            tracing::error!("panic: {info}");
+            // Append to the raw file as a fallback readable without a log viewer.
             use std::io::Write;
             if let Ok(mut f) = std::fs::OpenOptions::new()
                 .create(true)
@@ -1812,6 +1816,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                 eprintln!("xmux: internal error — {info}");
                 eprintln!("xmux: full detail logged to {}", log.display());
             }
+            prev_hook(info);
         }));
     }
 

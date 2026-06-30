@@ -39,6 +39,9 @@ serde_ignored = "0.1.14"
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["rt", "rt-multi-thread", "macros", "process", "time", "io-util", "net", "sync", "fs"] }
 toml = "1.1.2"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 vt100 = "0.16"
 portable-pty = "0.9"
 unicode-width = "0.2"
