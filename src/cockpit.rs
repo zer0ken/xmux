@@ -15,7 +15,7 @@
 //! (tree focused) and Focus::Terminal (terminal focused) differ only in the divider
 //! colour and where keys go, so toggling focus needs no screen clear.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -1948,6 +1948,12 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         tree_width,
     );
 
+    // The last rendered fingerprint per display key. Used to detect when a display
+    // transition actually changed the visible screen content — a `display_show
+    // decision=switch` not followed by a `display_grid_changed` event means the
+    // switch had no visible effect (the payoff observable for psmux swap diagnosis).
+    let mut grid_fingerprints: HashMap<String, u64> = HashMap::new();
+
     let spinner_start = std::time::Instant::now();
     let mut tick = tokio::time::interval(Duration::from_millis(SPINNER_FRAME_MS));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -2162,6 +2168,21 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                     let t_lock = std::time::Instant::now();
                     let guard = g.lock().ok();
                     log_slow_step("grid_lock", t_lock);
+                    // Compute the grid fingerprint under the same lock used for rendering.
+                    // Emit display_grid_changed only when the content actually changed — the
+                    // map comparison guarantees at-most-one event per content change, never
+                    // per frame. This is the EFFECT signal: a display_show decision=switch
+                    // not followed by display_grid_changed means the switch left the screen
+                    // unchanged (the psmux swap failure signal).
+                    if let Some(grid) = guard.as_deref() {
+                        let addr = display_key(&hosts, &state.selection);
+                        let fp = grid.fingerprint();
+                        if grid_fingerprints.get(&addr) != Some(&fp) {
+                            let session = &state.selection.session;
+                            tracing::info!(addr = %addr, session = %session, fp, "display_grid_changed");
+                            grid_fingerprints.insert(addr, fp);
+                        }
+                    }
                     term.draw(|f| {
                         let t_render = std::time::Instant::now();
                         switcher.render(f, guard.as_deref(), terminal_focused, tree_width, &state);

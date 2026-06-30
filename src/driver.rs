@@ -128,6 +128,14 @@ impl MuxDriver for TmuxDriver {
             // it here would make the switch-client guard think the PTY is already on the new
             // session.
             if !host.display.in_flight.contains_key(&key) {
+                tracing::info!(
+                    host = %sel.source,
+                    model = "shared",
+                    decision = "reattach",
+                    reason = "no-live-client",
+                    session = %sel.session,
+                    "display_show"
+                );
                 // Build the argv (immutable mux/transport reads) BEFORE taking &mut display.
                 let mux_argv = host.mux.attach_plan(&sel.session, sel.window);
                 let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
@@ -144,7 +152,7 @@ impl MuxDriver for TmuxDriver {
                         );
                     }
                 }
-                request_attach(
+                let id = request_attach(
                     ctx.registry,
                     ctx.worker,
                     &mut host.display,
@@ -154,6 +162,7 @@ impl MuxDriver for TmuxDriver {
                     cols,
                     rows,
                 );
+                tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
                 host.display.set_shows(&key, &sel.session);
             }
         } else if host.display.shows(&key) != Some(sel.session.as_str()) {
@@ -163,6 +172,14 @@ impl MuxDriver for TmuxDriver {
             // cleared grid with the new session's content (a brief blank, not stale
             // colours/glyphs). The per-host PTY reuses ONE grid across sessions, so
             // without this the old session's uncovered cells stay on screen.
+            tracing::info!(
+                host = %sel.source,
+                model = "shared",
+                decision = "switch",
+                reason = "live+tty",
+                session = %sel.session,
+                "display_show"
+            );
             ctx.registry.clear_grid(&key);
             let tty = host.display_tty.0.clone().unwrap_or_default();
             if let Some(client) = control {
@@ -179,6 +196,15 @@ impl MuxDriver for TmuxDriver {
                 }
             }
             host.display.set_shows(&key, &sel.session);
+        } else {
+            tracing::info!(
+                host = %sel.source,
+                model = "shared",
+                decision = "warm",
+                reason = "already-on",
+                session = %sel.session,
+                "display_show"
+            );
         }
 
         // Window-row selection → move the session's active window. A fresh first attach
@@ -187,6 +213,25 @@ impl MuxDriver for TmuxDriver {
             if !first_attach {
                 lower_select_window(host, control, &sel.session, win);
             }
+        }
+        {
+            let mismatch = host.display.shows(&key) != Some(sel.session.as_str());
+            let attached: Vec<String> = ctx
+                .registry
+                .addresses()
+                .into_iter()
+                .map(|addr| {
+                    let shown = host.display.shows(&addr).unwrap_or("?");
+                    format!("{}={}", addr, shown)
+                })
+                .collect();
+            tracing::debug!(
+                count = ctx.registry.len(),
+                attached = %attached.join(","),
+                displayed = %sel.session,
+                mismatch,
+                "display_inventory"
+            );
         }
         true
     }
@@ -272,6 +317,33 @@ impl MuxDriver for PsmuxDriver {
             if already_on {
                 // The live client already shows this session — only a window row needs
                 // moving (no teardown, no switch).
+                tracing::info!(
+                    host = %sel.source,
+                    model = "per-session",
+                    decision = "warm",
+                    reason = "already-on",
+                    session = %sel.session,
+                    "display_show"
+                );
+                {
+                    let mismatch = host.display.shows(&key) != Some(sel.session.as_str());
+                    let attached: Vec<String> = ctx
+                        .registry
+                        .addresses()
+                        .into_iter()
+                        .map(|addr| {
+                            let shown = host.display.shows(&addr).unwrap_or("?");
+                            format!("{}={}", addr, shown)
+                        })
+                        .collect();
+                    tracing::debug!(
+                        count = ctx.registry.len(),
+                        attached = %attached.join(","),
+                        displayed = %sel.session,
+                        mismatch,
+                        "display_inventory"
+                    );
+                }
                 if let Some(win) = sel.window {
                     lower_select_window(host, control, &sel.session, win);
                 }
@@ -282,6 +354,14 @@ impl MuxDriver for PsmuxDriver {
             // per-session servers on the default socket (verified), with NO teardown — so
             // no "(attaching…)". Wipe the grid first so the previous session's cells do
             // not linger behind the switch's full client redraw.
+            tracing::info!(
+                host = %sel.source,
+                model = "per-session",
+                decision = "switch",
+                reason = "live+tty",
+                session = %sel.session,
+                "display_show"
+            );
             ctx.registry.clear_grid(&key);
             let argv = host.mux.switch_client_argv(&tty, &sel.session);
             let (cmd, args) = host.transport.exec_argv(false, &argv);
@@ -292,11 +372,39 @@ impl MuxDriver for PsmuxDriver {
             if let Some(win) = sel.window {
                 lower_select_window(host, control, &sel.session, win);
             }
+            {
+                let mismatch = host.display.shows(&key) != Some(sel.session.as_str());
+                let attached: Vec<String> = ctx
+                    .registry
+                    .addresses()
+                    .into_iter()
+                    .map(|addr| {
+                        let shown = host.display.shows(&addr).unwrap_or("?");
+                        format!("{}={}", addr, shown)
+                    })
+                    .collect();
+                tracing::debug!(
+                    count = ctx.registry.len(),
+                    attached = %attached.join(","),
+                    displayed = %sel.session,
+                    mismatch,
+                    "display_inventory"
+                );
+            }
             return true;
         }
 
         // REATTACH (first display / no captured tty / fallback): drop the stale attach
         // and bring the selected session live on its own per-session server.
+        let reason = if !live { "no-live-client" } else { "no-tty" };
+        tracing::info!(
+            host = %sel.source,
+            model = "per-session",
+            decision = "reattach",
+            reason,
+            session = %sel.session,
+            "display_show"
+        );
         ctx.registry.remove(&key);
         host.display.clear(&key);
         let mux_argv = host.mux.attach_plan(&sel.session, None);
@@ -314,6 +422,7 @@ impl MuxDriver for PsmuxDriver {
             cols,
             rows,
         );
+        tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
         host.display.set_shows(&key, &sel.session);
 
         // Capture xmux's display-client tty off-loop so the NEXT switch is in-place. A
@@ -334,6 +443,25 @@ impl MuxDriver for PsmuxDriver {
 
         if let Some(win) = sel.window {
             lower_select_window(host, control, &sel.session, win);
+        }
+        {
+            let mismatch = host.display.shows(&key) != Some(sel.session.as_str());
+            let attached: Vec<String> = ctx
+                .registry
+                .addresses()
+                .into_iter()
+                .map(|addr| {
+                    let shown = host.display.shows(&addr).unwrap_or("?");
+                    format!("{}={}", addr, shown)
+                })
+                .collect();
+            tracing::debug!(
+                count = ctx.registry.len(),
+                attached = %attached.join(","),
+                displayed = %sel.session,
+                mismatch,
+                "display_inventory"
+            );
         }
         true
     }
@@ -410,6 +538,8 @@ fn spawn_local_psmux_tty_capture(
     pty_tx: tokio::sync::mpsc::UnboundedSender<crate::proxy::run::PtyEvent>,
 ) {
     use crate::source::Runner;
+    // The addr string used for tty_probe events is the list-clients command target.
+    let addr = format!("local/{}", session);
     tokio::spawn(async move {
         // The list-clients argv against the default socket; the client showing `session`
         // is on that session's own server, which the default socket coordinates.
@@ -418,10 +548,18 @@ fn spawn_local_psmux_tty_capture(
             // Let the attach register a client before the first probe, then back off.
             tokio::time::sleep(std::time::Duration::from_millis(120 * (attempt as u64 + 1))).await;
             let Ok(out) = crate::source::ExecRunner.run(&argv[0], &argv[1..]).await else {
+                tracing::debug!(addr = %addr, attempt, result = "none", "tty_probe");
                 continue;
             };
             let text = String::from_utf8_lossy(&out);
-            if let Some(tty) = parse_psmux_client_tty(&text, &session) {
+            let result = parse_psmux_client_tty(&text, &session);
+            tracing::debug!(
+                addr = %addr,
+                attempt,
+                result = result.as_deref().unwrap_or("none"),
+                "tty_probe"
+            );
+            if let Some(tty) = result {
                 let _ = pty_tx.send(crate::proxy::run::PtyEvent::DisplayTty { id, tty });
                 return;
             }

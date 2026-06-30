@@ -1,6 +1,8 @@
 //! A one-pane vt100 grid the proxy tees child output into, used ONLY to repaint
 //! the live pane after a transient overlay. Not a multiplexer: one grid, no
 //! layouts, no input routing.
+use std::hash::{Hash, Hasher};
+
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color as RColor, Modifier, Style};
@@ -65,6 +67,16 @@ impl Grid {
     /// attachment whose PTY child has not produced output yet.
     pub fn is_blank(&self) -> bool {
         self.parser.screen().contents().trim().is_empty()
+    }
+
+    /// A cheap, stable hash of the visible cell contents. Changes if and only if the
+    /// rendered text changes — used to detect whether a display transition actually
+    /// produced a different screen, so a `display_show decision=switch` not followed
+    /// by a `display_grid_changed` event indicates the mux switch had no visible effect.
+    pub fn fingerprint(&self) -> u64 {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.parser.screen().contents().hash(&mut h);
+        h.finish()
     }
 
     /// Writes a top-left clip of the grid into `area` of `buf`, mapping each
@@ -248,5 +260,33 @@ mod tests {
         let mut g = Grid::new(24, 80);
         g.feed(b"abc"); // cursor advances to col 3, row 0
         assert_eq!(g.cursor(), (3, 0), "cursor is (col, row)");
+    }
+
+    #[test]
+    fn fingerprint_same_contents_same_hash() {
+        // Two grids fed the same bytes must produce the same fingerprint — the hash
+        // is a function of visible content only, not parser identity or call count.
+        let mut a = Grid::new(24, 80);
+        let mut b = Grid::new(24, 80);
+        a.feed(b"hello world");
+        b.feed(b"hello world");
+        assert_eq!(
+            a.fingerprint(),
+            b.fingerprint(),
+            "identical content yields identical fingerprint"
+        );
+    }
+
+    #[test]
+    fn fingerprint_different_contents_different_hash() {
+        // A grid whose visible content changed must produce a different fingerprint so
+        // display_grid_changed fires only when the screen actually changed.
+        let mut g = Grid::new(24, 80);
+        g.feed(b"session-a output");
+        let fp_a = g.fingerprint();
+        g.clear();
+        g.feed(b"session-b output");
+        let fp_b = g.fingerprint();
+        assert_ne!(fp_a, fp_b, "different content yields different fingerprint");
     }
 }
