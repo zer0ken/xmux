@@ -40,6 +40,15 @@ the live split view.
   (`run_event_effect`) against the host clients, registry, and display worker.
 - `source.rs` and `env.rs` are compatibility and config assembly plumbing for
   source definitions and command construction.
+- `logging.rs` sets up the `tracing` subscriber for the process. `logging::init(xmux_dir)`
+  attaches a daily rolling file appender (`tracing_appender`) writing to
+  `<xmux_dir>/xmux.log`, wrapped in a non-blocking worker. ANSI codes are
+  disabled (`with_ansi(false)`); target strings are emitted (`with_target(true)`);
+  span lifetimes are recorded (`FmtSpan::NEW | FmtSpan::CLOSE`). The filter reads
+  the `XMUX_LOG` env var and falls back to `xmux=info` when absent or invalid.
+  `init` returns a `WorkerGuard`; `cli.rs::run()` binds the guard for the process
+  lifetime so the background writer stays alive.
+
 
 ## Invariants
 
@@ -72,6 +81,19 @@ the live split view.
   and `driver.rs` (`MuxDriver` impls) for per-host display orchestration and
   the concrete switch/reattach decision.
 
+- All structured log output goes to `<xmux_dir>/xmux.log` (the non-blocking file
+  sink). Logging macros (`tracing::info!`, `tracing::debug!`, etc.) must never
+  write to stdout or stderr: ratatui owns the terminal in alt-screen mode, and
+  a stray byte to stdout or stderr corrupts the display.
+- The panic hook in `cockpit.rs` restores the terminal before printing the panic
+  message. This is what makes a runtime panic appear on the real screen rather
+  than garbling the alt-screen.
+- `display_show`, `attach_created`, `tty_probe`, `display_inventory` (emitted by
+  `driver.rs`) and `display_grid_changed` (emitted by `cockpit.rs`) are the
+  diagnostic surface for whether a session switch actually landed: a
+  `display_show decision=switch` not followed by `display_grid_changed` means
+  the transition occurred but the grid content did not change.
+
 ## Before Editing
 
 - For ctl changes, add a `model::Action` variant (and its `Command`/`apply` arm)
@@ -87,3 +109,7 @@ the live split view.
   submodule.
 - Exercise ctl parser tests when adding or renaming control verbs.
 - Check redraw and blocking behavior when moving work into the cockpit loop.
+- Set `XMUX_LOG=xmux::driver=debug` to emit `display_show`, `tty_probe`, and
+  `display_inventory` events at debug verbosity; useful for tracing whether a
+  session-switch request reaches the driver and which decision branch it takes.
+  The log file is at `<xmux_dir>/xmux.log` (daily-rolling suffix).

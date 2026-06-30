@@ -18,7 +18,10 @@ operations.
 - `run.rs` spawns and manages one PTY attachment.
 - `registry.rs` maps display keys to live attachments and exposes grid/input/
   resize/reap operations.
-- `screen.rs` owns the vt-style grid.
+- `screen.rs` owns the vt-style grid. `Grid::fingerprint() -> u64` computes a
+  content hash over all cell bytes; `cockpit.rs` compares successive fingerprints
+  to determine whether a display transition actually changed the visible screen
+  content (`display_grid_changed` is emitted only on a hash change).
 - `input.rs`, `decode.rs`, `dispatch.rs`, and `mouse.rs` turn terminal input into
   routing decisions or UI events.
 - `app.rs` tracks focus and modal routing state.
