@@ -167,29 +167,25 @@ impl MuxDriver for TmuxDriver {
                 host.display.set_shows(&key, &sel.session);
             }
         } else if host.display.shows(&key) != Some(sel.session.as_str()) {
-            // The host's PTY is on a different session — lower a SwitchPlan to move it.
-            // Wipe the grid first so the previous session's cells do not linger as
-            // residue: switch-client triggers a FULL client redraw, which refills the
-            // cleared grid with the new session's content (a brief blank, not stale
-            // colours/glyphs). The per-host PTY reuses ONE grid across sessions, so
-            // without this the old session's uncovered cells stay on screen.
-            tracing::info!(
-                host = %sel.source,
-                model = "shared",
-                decision = "switch",
-                reason = "live+tty",
-                session = %sel.session,
-                "display_show"
-            );
-            ctx.registry.clear_grid(&key);
-            let tty = host.display_tty.0.clone().unwrap_or_default();
-            if let Some(client) = control {
-                // Over the open -CC connection — no fresh ssh handshake. Force a full
-                // redraw after the switch: a `switch-client` moves the client but need not
-                // repaint the cleared grid, so the new session would otherwise stay blank.
-                client.switch_client_on(&tty, &sel.session);
-                client.refresh_client_on(&tty);
-            } else {
+            let tty = host.display_tty.0.clone().filter(|t| !t.is_empty());
+            if let Some(tty) = tty {
+                // Move the host PTY's client to the selected session with a LOWERED
+                // `ssh … tmux switch-client -c <tty>` subprocess + a lowered refresh —
+                // NOT over the -CC connection. Verified against live tmux: a fresh
+                // `switch-client -c <tty> -t S` moves the display client, but the same
+                // command sent over the persistent -CC control connection does NOT
+                // (c3324b5 routed it over -CC to save the Windows-ssh handshake and
+                // silently broke the switch). The grid is NOT pre-cleared: the switch's
+                // full redraw replaces it, so the prior session stays on screen until the
+                // new content lands (stale-while-revalidate) — no blank frame.
+                tracing::info!(
+                    host = %sel.source,
+                    model = "shared",
+                    decision = "switch",
+                    reason = "live+tty",
+                    session = %sel.session,
+                    "display_show"
+                );
                 let plan = host.mux.switch_plan(&sel.session);
                 let lowered = {
                     let builder = |session: &str| host.mux.switch_client_argv(&tty, session);
@@ -199,8 +195,47 @@ impl MuxDriver for TmuxDriver {
                     run_lowered(lowered);
                 }
                 run_lowered(refresh_client_lowered(host, &tty));
+                host.display.set_shows(&key, &sel.session);
+            } else if !host.display.in_flight.contains_key(&key) {
+                // The display-client tty is not captured yet (the -CC list-clients probe
+                // has not landed). Reattach the host PTY to the new session instead of
+                // `switch-client -c ""` (an empty target hits an arbitrary client).
+                // Reattach needs no tty and repaints fully; the held grid stays on screen
+                // until DisplayReady swaps it. Once the tty lands, switches go in-place.
+                tracing::info!(
+                    host = %sel.source,
+                    model = "shared",
+                    decision = "reattach",
+                    reason = "no-tty",
+                    session = %sel.session,
+                    "display_show"
+                );
+                let mux_argv = host.mux.attach_plan(&sel.session, sel.window);
+                let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
+                let mut argv = vec![cmd];
+                argv.extend(args);
+                if host.transport.is_remote() {
+                    if let Some(last) = argv.last_mut() {
+                        *last = format!(
+                            "{}{}",
+                            crate::model::death::display_tty_marker_prefix(),
+                            last
+                        );
+                    }
+                }
+                let id = request_attach(
+                    ctx.registry,
+                    ctx.worker,
+                    &mut host.display,
+                    ctx.attach_seq,
+                    &key,
+                    argv,
+                    cols,
+                    rows,
+                );
+                tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
+                host.display.set_shows(&key, &sel.session);
             }
-            host.display.set_shows(&key, &sel.session);
         } else {
             tracing::info!(
                 host = %sel.source,
