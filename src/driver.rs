@@ -365,9 +365,10 @@ impl MuxDriver for PsmuxDriver {
             }
             // IN-PLACE SWITCH (the user's core want): switch the live client to a
             // DIFFERENT session. `switch-client -c <tty> -t <session>` crosses psmux's
-            // per-session servers on the default socket (verified), with NO teardown — so
-            // no "(attaching…)". Wipe the grid first so the previous session's cells do
-            // not linger behind the switch's full client redraw.
+            // per-session servers on the default socket (verified), with NO teardown. The
+            // grid is NOT wiped: the previous session's content stays on screen until the
+            // forced full repaint below fills it with the new session — no blank frame
+            // between the two (stale-while-revalidate).
             tracing::info!(
                 host = %sel.source,
                 model = "per-session",
@@ -376,7 +377,6 @@ impl MuxDriver for PsmuxDriver {
                 session = %sel.session,
                 "display_show"
             );
-            ctx.registry.clear_grid(&key);
             let argv = host.mux.switch_client_argv(&tty, &sel.session);
             let (cmd, args) = host.transport.exec_argv(false, &argv);
             let mut v = vec![cmd];
@@ -416,8 +416,12 @@ impl MuxDriver for PsmuxDriver {
             return true;
         }
 
-        // REATTACH (first display / no captured tty / fallback): drop the stale attach
-        // and bring the selected session live on its own per-session server.
+        // REATTACH (first display / no captured tty / fallback): request a fresh attach
+        // for the selected session on its own per-session server. The stale attachment is
+        // KEPT in the registry (not removed) so its grid stays on screen until the new
+        // attach is confirmed — DisplayReady swaps it in and tears the stale one down
+        // (stale-while-revalidate). At first display there is nothing to keep, so the view
+        // is blank until Ready.
         let reason = if !live { "no-live-client" } else { "no-tty" };
         tracing::info!(
             host = %sel.source,
@@ -427,7 +431,6 @@ impl MuxDriver for PsmuxDriver {
             session = %sel.session,
             "display_show"
         );
-        ctx.registry.remove(&key);
         host.display.clear(&key);
         let mux_argv = host.mux.attach_plan(&sel.session, None);
         let remote = host.transport.is_remote();
@@ -762,8 +765,9 @@ mod tests {
             "show requests a fresh per-session reattach"
         );
         assert!(
-            !registry.contains("local"),
-            "the stale display attachment is removed before reattach"
+            registry.contains("local"),
+            "the stale attachment is HELD (kept on screen) while the fresh reattach is \
+             requested; the swap + teardown happens at DisplayReady (stale-while-revalidate)"
         );
     }
 
@@ -898,8 +902,9 @@ mod tests {
             "show requests a fresh per-session reattach"
         );
         assert!(
-            !registry.contains("local"),
-            "the stale display attachment is removed before reattach"
+            registry.contains("local"),
+            "the stale attachment is HELD (kept on screen) while the fresh reattach is \
+             requested; the swap + teardown happens at DisplayReady (stale-while-revalidate)"
         );
     }
 
@@ -1192,8 +1197,9 @@ mod tests {
             assert!(driver.show(&sel, &mut ctx));
         }
         assert!(
-            !registry.contains("local"),
-            "no tty ⇒ the stale attachment is dropped (reattach), exactly like 4a5f053"
+            registry.contains("local"),
+            "no tty ⇒ the stale attachment is HELD on screen while a fresh reattach is \
+             requested (stale-while-revalidate); the swap happens at DisplayReady"
         );
         assert!(
             hosts

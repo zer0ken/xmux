@@ -2088,15 +2088,20 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             &mgr,
                         );
                         if shown {
-                            // Advance the display truth synchronously ONLY when a live grid
-                            // for the key already exists (an in-place switch-client /
-                            // select-window / already-attached path): the on-screen grid
-                            // morphs to the new session in place. An async path (first
-                            // attach / reattach) has no grid for the key yet, so `displayed`
-                            // stays on the prior session — which remains on screen until
-                            // DisplayReady advances it (stale-while-revalidate). Probing the
-                            // registry tells them apart.
-                            if registry.contains(&display_key(&hosts, &sel)) {
+                            // Advance the display truth synchronously ONLY for a confirmed
+                            // in-place path (switch-client / select-window / already-attached):
+                            // a live grid for the key exists AND no reattach is in flight, so
+                            // the on-screen grid morphs to the new session in place. A reattach
+                            // KEEPS the prior session's grid under the key while its fresh
+                            // attach is pending (in_flight) — that held grid also satisfies
+                            // `contains`, so it is excluded here: `displayed` stays on the prior
+                            // session until DisplayReady swaps in the new grid and advances it
+                            // (stale-while-revalidate).
+                            let k = display_key(&hosts, &sel);
+                            let reattach_pending = hosts
+                                .get(&sel.source)
+                                .is_some_and(|h| h.display.in_flight.contains_key(&k));
+                            if registry.contains(&k) && !reattach_pending {
                                 state.displayed = sel.clone();
                             }
                         }
@@ -2345,6 +2350,12 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                 // selection, so the next pass re-runs select_attach to switch
                                 // (Shared) / reattach (PerSession) to where the cursor is.
                                 let shown = h.display.shows(&key).unwrap_or_default().to_string();
+                                // Swap: tear down the stale attachment held under this key
+                                // (the prior session, kept on screen until now) and install
+                                // the fresh one. `insert` alone drops the old Attachment
+                                // without tearing down its PTY/control thread, so remove()
+                                // first (a no-op when there was nothing held — first attach).
+                                registry.remove(&key);
                                 registry.insert(&key, attachment);
                                 state.displayed = Selection {
                                     source: hid.clone(),
@@ -3776,8 +3787,9 @@ mod tests {
         assert_eq!(h.display.shows("local"), Some("test"));
         assert!(h.display.in_flight.contains_key("local"));
         assert!(
-            !registry.contains("local"),
-            "old psmux display attach is removed before reattach"
+            registry.contains("local"),
+            "old psmux display attach is HELD on screen until the reattach is ready \
+             (stale-while-revalidate); DisplayReady swaps it in and tears the old down"
         );
     }
 
@@ -3829,8 +3841,9 @@ mod tests {
         let h = hosts.get("local").unwrap();
         assert!(h.display.in_flight.contains_key("local"));
         assert!(
-            !registry.contains("local"),
-            "psmux select_attach must replace the host PTY even when bookkeeping is stale"
+            registry.contains("local"),
+            "psmux select_attach requests a reattach even when bookkeeping is stale, but \
+             HOLDS the prior grid on screen until DisplayReady swaps in the fresh one"
         );
     }
 
