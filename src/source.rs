@@ -13,10 +13,6 @@ use crate::config::Config;
 use crate::mux;
 use crate::session::{self, Session};
 
-/// Bounds the ssh TCP connect; the per-source scan timeout must exceed it so a
-/// slow-but-alive remote is not cancelled mid-connect.
-const CONNECT_TIMEOUT: &str = "5";
-
 /// A failed command's outcome. Only a real non-zero exit carries stderr (and can
 /// be classified benign); a missing binary or a connection failure surfaces as
 /// [`RunError::Other`] (never benign).
@@ -111,57 +107,6 @@ pub struct Source {
 }
 
 impl Source {
-    /// Builds the ssh options preceding the remote command, ending with
-    /// `-- <alias>` so an alias beginning with `-` is treated as the destination,
-    /// never an option.
-    pub fn ssh_args(&self, tty: bool) -> Vec<String> {
-        let mut a: Vec<String> = Vec::new();
-        if tty {
-            a.push("-t".into()); // request a pty; omit BatchMode so auth can prompt
-        } else {
-            a.push("-o".into());
-            a.push("BatchMode=yes".into()); // listing must never hang on a prompt
-        }
-        a.push("-o".into());
-        a.push(format!("ConnectTimeout={CONNECT_TIMEOUT}"));
-        if self.os != "windows" && !self.control_path.is_empty() {
-            // Windows OpenSSH lacks ControlMaster, so remote probes can't reuse one
-            // ssh connection there; only multiplex elsewhere. On Windows the
-            // cockpit's scan cache (stale-while-revalidate) softens the cost by
-            // showing last-known sessions at once instead of blocking on a fresh
-            // handshake every picker open.
-            a.push("-o".into());
-            a.push("ControlMaster=auto".into());
-            a.push("-o".into());
-            a.push(format!("ControlPath={}", self.control_path));
-            a.push("-o".into());
-            a.push("ControlPersist=60s".into());
-        }
-        a.push("--".into());
-        a.push(self.alias.clone());
-        a
-    }
-
-    /// Turns a full mux argv (`argv[0]` = the mux binary) into the executable
-    /// name and args to run: local runs the mux directly; remote wraps it in ssh.
-    pub fn exec_argv(&self, tty: bool, mux_argv: &[String]) -> (String, Vec<String>) {
-        if !self.remote {
-            let mut args: Vec<String> = Vec::new();
-            if let Some(sock) = self.socket.as_deref().filter(|s| !s.is_empty()) {
-                // Target the exact mux server the user is on (e.g. `tmux -L work`),
-                // not just the default socket — so listing/select agree with the
-                // switch-client (which inherits the same `$TMUX`).
-                args.push("-S".into());
-                args.push(sock.to_string());
-            }
-            args.extend_from_slice(&mux_argv[1..]);
-            return (mux_argv[0].clone(), args);
-        }
-        let mut args = self.ssh_args(tty);
-        args.push(remote_command(mux_argv));
-        ("ssh".into(), args)
-    }
-
     /// The argv that hands the terminal over to attach this source's named
     /// session (over `ssh -t` for a remote).
     ///
@@ -193,30 +138,11 @@ impl Source {
         }
     }
 
-    /// Executes a non-interactive mux command and returns its stdout.
-    pub async fn run(&self, mux_argv: &[String]) -> Result<Vec<u8>, RunError> {
-        let (name, args) = self.exec_argv(false, mux_argv);
-        self.run_with().run(&name, &args).await
-    }
-
-    /// Runs a RAW remote shell command over ssh (the string is passed verbatim to
-    /// the remote login shell, NOT quoted per-arg like [`Source::run`]) — for a
-    /// command that itself needs shell features (`$(...)`, pipes). Remote-only; any
-    /// untrusted value inside `remote_cmd` must already be [`quote`]d by the caller.
-    pub async fn run_raw(&self, remote_cmd: &str) -> Result<Vec<u8>, RunError> {
-        if !self.remote {
-            return Ok(Vec::new());
-        }
-        let mut args = self.ssh_args(false);
-        args.push(remote_cmd.to_string());
-        self.run_with().run("ssh", &args).await
-    }
-
     /// The machine transport this source reaches its mux over. A remote source is an
     /// ssh transport carrying the same alias/control-path/os; a local source is a
-    /// `Local` transport carrying the same `-S` socket. Mirrors the fields
-    /// `Source::exec_argv`/`ssh_args` consume, so `Transport::exec_argv` lowers the
-    /// argv identically.
+    /// `Local` transport carrying the same `-S` socket. `Transport` is the sole owner
+    /// of argv/ssh wrapping (`Transport::exec_argv`), so callers lower this source's
+    /// commands through the transport rather than the source itself.
     pub(crate) fn transport(&self) -> crate::model::Transport {
         if self.remote {
             crate::model::Transport::Ssh {
@@ -394,76 +320,6 @@ mod tests {
     }
 
     #[test]
-    fn ssh_args_non_interactive() {
-        let s = src("prod", "tmux", true, "linux", "/tmp/cm.sock");
-        let a = s.ssh_args(false);
-        let joined = a.join(" ");
-        assert!(joined.contains("BatchMode=yes"), "{a:?}");
-        assert!(joined.contains("ConnectTimeout=5"), "{a:?}");
-        assert!(joined.contains("ControlMaster=auto"), "{a:?}");
-        assert_eq!(a[a.len() - 2], "--");
-        assert_eq!(a[a.len() - 1], "prod");
-    }
-
-    #[test]
-    fn ssh_args_interactive_requests_tty() {
-        let s = src("prod", "tmux", true, "linux", "");
-        let a = s.ssh_args(true);
-        let joined = a.join(" ");
-        assert!(joined.contains("-t"), "{a:?}");
-        assert!(!joined.contains("BatchMode"), "{a:?}");
-    }
-
-    #[test]
-    fn ssh_args_windows_omits_control_master() {
-        let s = src("prod", "tmux", true, "windows", "/tmp/cm.sock");
-        let a = s.ssh_args(false);
-        assert!(!a.join(" ").contains("ControlMaster"), "{a:?}");
-    }
-
-    #[test]
-    fn exec_argv_local() {
-        let s = src("local", "psmux", false, "", "");
-        let argv: Vec<String> = ["psmux", "list-sessions", "-F", "x"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let (name, args) = s.exec_argv(false, &argv);
-        assert_eq!(name, "psmux");
-        assert_eq!(args, vec!["list-sessions", "-F", "x"]);
-    }
-
-    #[test]
-    fn exec_argv_local_with_socket_injects_dash_s() {
-        // A local source on a non-default socket targets it explicitly via -S so
-        // listing/select hit the same server the user's client (switch-client) is on.
-        let mut s = src("local", "tmux", false, "linux", "");
-        s.socket = Some("/tmp/tmux-1000/work".into());
-        let argv: Vec<String> = ["tmux", "list-sessions", "-F", "x"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let (name, args) = s.exec_argv(false, &argv);
-        assert_eq!(name, "tmux");
-        assert_eq!(
-            args,
-            vec!["-S", "/tmp/tmux-1000/work", "list-sessions", "-F", "x"]
-        );
-    }
-
-    #[test]
-    fn exec_argv_remote() {
-        let s = src("prod", "tmux", true, "linux", "");
-        let argv: Vec<String> = ["tmux", "kill-session", "-t", "x"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let (name, args) = s.exec_argv(false, &argv);
-        assert_eq!(name, "ssh");
-        assert_eq!(args.last().unwrap(), "tmux kill-session -t x");
-    }
-
-    #[test]
     fn interactive_attach_local_psmux_routes_to_the_per_session_server() {
         // The bug FIX: local psmux must attach via `new-session -A -s <name>` (routing to
         // that session's OWN server), NOT a bare `attach -t <name>` (which lands on a warm
@@ -607,13 +463,6 @@ mod tests {
         }
         assert!(out.iter().any(|e| e == "PATH=/bin"));
         assert!(out.iter().any(|e| e == "HOME=/h"));
-    }
-
-    #[tokio::test]
-    async fn run_raw_is_noop_for_local() {
-        // run_raw is remote-only (a raw remote shell command); local returns empty.
-        let loc = src("local", "psmux", false, "windows", "");
-        assert!(loc.run_raw("anything").await.unwrap().is_empty());
     }
 
     #[test]

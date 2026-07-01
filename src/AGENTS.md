@@ -42,8 +42,12 @@ the live split view.
   `HostEvent`s route through `State::apply_event` (the event-driven mutation site);
   `handle_host_event` is then a thin executor that runs the returned `EventEffect`s
   (`run_event_effect`) against the host clients, registry, and display worker.
-- `source.rs` and `env.rs` are compatibility and config assembly plumbing for
-  source definitions and command construction.
+- `source.rs` is thin source config/data: the `Source` fields plus delegating
+  accessors (`transport()`, `run_with()`, `list_sessions`, `interactive_attach_command`)
+  and the shared pure shell vocab (`remote_command`/`quote`/`is_shell_safe`) that
+  `model::Transport` calls. It carries no transport-wrapping implementation of its
+  own — the machine axis is solely `model::Transport`. `env.rs` is config assembly
+  plumbing for source definitions and command construction.
 - `logging.rs` sets up the `tracing` subscriber for the process. `logging::init(xmux_dir)`
   attaches a daily rolling file appender (`tracing_appender`) writing to
   `<xmux_dir>/xmux.log`, wrapped in a non-blocking worker. ANSI codes are
