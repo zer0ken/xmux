@@ -35,6 +35,58 @@ project. Temporary files outside the repository may use another language.
 The `docs/superpowers/` tree is not part of the public documentation surface and
 must be excluded before release.
 
+## Architecture — the orthogonal design
+
+Two orthogonal axes describe every connection, and no module conflates them:
+
+- MACHINE — `src/model/transport.rs`. `Transport` (`Local` / `Ssh`) owns where a
+  command runs and how its argv is executed; it knows nothing about the mux.
+- MUX — `src/mux/<kind>/`. Each mux family (`tmux/`, `psmux/`) owns its metadata
+  and command plans in `mod.rs` (behind the `Backend` trait) and its display
+  driver in `display.rs`. A backend builds its OWN driver via `Backend::driver()`,
+  so mux selection lives in the mux family, never a central `match`. Shared mux
+  vocabulary lives in `src/mux/vocab.rs`.
+
+Attach argv is composed from a host's own `mux` + `transport` (the two axes
+together), so the two families are combined without either knowing the other.
+
+The supervisor branches on NOTHING mux-specific. `src/app/` (cockpit runtime +
+focus state), `src/ui/` (switcher/tree/status/ops rendering), and `src/state/`
+(runtime `State` + the `apply` / `apply_event` mutation sites) select display
+through `driver_for(host).show(...)` — i.e. `host.mux.driver()` — and read the
+grid back via `MuxDriver::grid`; per-mux behavior lives behind that seam. These
+layers carry no PTY, grid, or terminal-protocol logic.
+
+The remaining layers each own one concern:
+
+- `src/display/` — the mux- and app-agnostic PTY/grid/input mechanics (attach
+  spawning, the `Grid`, input decode, `term`, `dispatch`, the registry, worker).
+- `src/host/` — host connection management (control-mode reader/writer, poll
+  tasks, live client ownership).
+- `src/model/` — domain types (`Host`, `Hosts`, `Transport`, `Action`,
+  `Command`, `EventEffect`, server model).
+- `src/driver.rs` — the mux-agnostic `MuxDriver` trait + `DriverCtx` (the
+  supervisor capabilities a driver borrows) + the thin `driver_for` wrapper. It
+  names no concrete mux type.
+
+## Adding a module
+
+At creation time, place a new source file by the axis it belongs to:
+
+- Machine-specific (a new transport / execution behavior) → `src/model/transport.rs`.
+- Mux-specific (a new mux family or per-mux behavior) → `src/mux/<kind>/`.
+- PTY / grid / terminal-protocol mechanics → `src/display/`.
+- Orchestration (runtime loop, focus) → `src/app/`.
+- Host connection management → `src/host/`.
+- Domain types → `src/model/`.
+- Switcher / tree / status UI → `src/ui/`.
+- Runtime `State` → `src/state/`.
+
+Then, if the module introduces a new directory, create that directory's
+`AGENTS.md` using the Working Notes Format above (all seven sections). Follow the
+AS-IS rule: describe the current state only, with refactoring direction expressed
+as invariants, seams, and pitfalls — never as change history or phase narrative.
+
 ## Improvement Notes
 
 - `src/ui/switcher.rs` is the current aggregate UI module. It owns row

@@ -42,7 +42,7 @@ the live split view.
   on nothing mux-specific. `TmuxDriver` keeps one PTY per host and moves it with
   `switch-client`; `PsmuxDriver` switches in place via `switch-client -c <tty>`
   when a live client with a captured tty is known, else reattaches. `DriverCtx`
-  injects supervisor-owned capabilities (registry, hosts, worker, mgr, env,
+  injects supervisor-owned capabilities (registry, hosts, worker, mgr,
   pty_tx, attach_seq, view size) so the driver owns the decision without owning
   the infrastructure. The dependency is one-way: `mux/<mux>/display.rs` imports
   the seam from `crate::driver`; driver.rs never imports a concrete backend driver.

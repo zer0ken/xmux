@@ -90,6 +90,10 @@ the transient popup geometry (drag offset / drawn rect).
   Re-arming on every pending Select is the freeze fix — never arm-once.
 - `last_saved_session` prevents rewriting prefs on every window step within the
   same session.
+- This layer branches on nothing mux-specific: `apply` / `apply_event` fold
+  intents and events over `State` without a `match` on tmux vs psmux. Per-mux
+  behavior lives behind the `Backend`/`MuxDriver` seam the run loop reaches; the
+  mux enters here only as domain data (sessions, windows, events).
 
 ## Common Pitfalls
 

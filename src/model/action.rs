@@ -7,7 +7,7 @@
 //! attach, prefs persist, quit) — `apply` itself touches only `State`, so the
 //! intent → state-change → effect flow is one direction with one mutation point.
 //!
-//! `Action` is the DOMAIN vocabulary, distinct from `proxy::dispatch::Action` (the
+//! `Action` is the DOMAIN vocabulary, distinct from `display::dispatch::Action` (the
 //! cockpit's raw-byte input vocabulary, which projects INTO this via `as_action`).
 //! The display/navigation intents (Switch/Focus/Rescan/TreeWidth/ToggleAutoHide/Quit),
 //! the selection/attach-debounce intents (`Select`/`Tick`), and the async

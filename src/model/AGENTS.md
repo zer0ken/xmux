@@ -25,7 +25,7 @@ state mutation and returns the backend follow-ups (refetch / probe / reap / sync
   enums, `FocusTarget`, `MuxOp` (the slow-mux-action descriptor `Command::RunOp`
   carries and `ui::ops::run_op` runs off-loop), and `EventEffect` (the backend
   follow-up `State::apply_event` returns for a `HostEvent`). The cockpit's
-  raw-byte input `Action` (`proxy::dispatch`) projects INTO this via `as_action`;
+  raw-byte input `Action` (`display::dispatch`) projects INTO this via `as_action`;
   the two are distinct types in separate modules. `EventEffect` is not
   `Clone`/`Eq` (its `DispatchScanned` carries a `Box<dyn Backend>`) and has a
   hand-written `Debug`.

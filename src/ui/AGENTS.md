@@ -49,6 +49,9 @@ renders for `dump`.
 - UI actions that become domain intents should resolve to a `model::Action`
   (the cockpit input `Action` projects via `as_action`), applied at
   `State::apply`.
+- This layer branches on nothing mux-specific: the switcher renders a tree and
+  emits domain intents, never a `match` on tmux vs psmux. Per-mux behavior lives
+  behind the `Backend`/`MuxDriver` seam, reached via `Ops`, not decided here.
 
 ## Common Pitfalls
 

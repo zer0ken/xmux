@@ -100,7 +100,7 @@ fn toggle_auto_hide(mode: &mut bool, xmux_dir: &std::path::Path) {
 
 /// Folds ONE domain [`Action`] in at the single mutation site ([`State::apply`]) and
 /// runs the [`Command`]s it returns — the site both a keypress (via
-/// `proxy::dispatch::Action::as_action`) and a ctl command resolve through, so the two
+/// `display::dispatch::Action::as_action`) and a ctl command resolve through, so the two
 /// surfaces can never take divergent effect. Returns `(quit, width_changed)`: `quit`
 /// signals the loop to exit; `width_changed` signals the loop to schedule the debounced
 /// tree-width persist. `Switch` only moves the cursor (a `SelectAddress` command); the
@@ -434,7 +434,6 @@ pub(crate) fn select_attach(
     hosts: &mut crate::model::Hosts,
     sel: &Selection,
     worker: &DisplayWorker,
-    env: &Env,
     pty_tx: &tokio::sync::mpsc::UnboundedSender<PtyEvent>,
     attach_seq: &mut u64,
     cols: u16,
@@ -454,7 +453,6 @@ pub(crate) fn select_attach(
         hosts,
         worker,
         mgr,
-        env,
         pty_tx,
         attach_seq,
         cols,
@@ -496,7 +494,6 @@ pub(crate) fn run_lowered(lowered: crate::model::LoweredSwitch) {
 #[allow(clippy::too_many_arguments)]
 fn sync_source_terminals(
     registry: &mut AttachRegistry,
-    env: &Env,
     hosts: &mut crate::model::Hosts,
     source: &str,
     sessions: &[crate::session::Session],
@@ -517,7 +514,6 @@ fn sync_source_terminals(
         hosts,
         worker,
         mgr,
-        env,
         pty_tx,
         attach_seq,
         cols,
@@ -1017,8 +1013,8 @@ fn run_event_effect(
                 tracing::info!(host, n, ?names, "sessions_applied");
                 // Sync this host's display terminal(s) (per-host for remote tmux).
                 sync_source_terminals(
-                    registry, env, hosts, &host, &sessions, worker, mgr, pty_tx, attach_seq, cols,
-                    rows, tree_width,
+                    registry, hosts, &host, &sessions, worker, mgr, pty_tx, attach_seq, cols, rows,
+                    tree_width,
                 );
             }
         }
@@ -1085,8 +1081,8 @@ fn run_event_effect(
                 }
             }
             sync_source_terminals(
-                registry, env, hosts, &source, &sessions, worker, mgr, pty_tx, attach_seq, cols,
-                rows, tree_width,
+                registry, hosts, &source, &sessions, worker, mgr, pty_tx, attach_seq, cols, rows,
+                tree_width,
             );
         }
         EventEffect::RecordDisplayTty { host, tty } => {
@@ -2062,7 +2058,6 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                             &mut hosts,
                             &sel,
                             &worker,
-                            &env,
                             &driver_pty_tx,
                             &mut attach_seq,
                             cols,
@@ -2136,7 +2131,6 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         hosts: &mut hosts,
                         worker: &worker,
                         mgr: &mgr,
-                        env: &env,
                         pty_tx: &driver_pty_tx,
                         attach_seq: &mut attach_seq,
                         cols,
@@ -2422,7 +2416,6 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                     hosts: &mut hosts,
                                     worker: &worker,
                                     mgr: &mgr,
-                                    env: &env,
                                     pty_tx: &driver_pty_tx,
                                     attach_seq: &mut attach_seq,
                                     cols,
@@ -2474,7 +2467,6 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                                     hosts: &mut hosts,
                                     worker: &worker,
                                     mgr: &mgr,
-                                    env: &env,
                                     pty_tx: &driver_pty_tx,
                                     attach_seq: &mut attach_seq,
                                     cols,
@@ -2562,7 +2554,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         continue;
                     }
                     sync_source_terminals(
-                        &mut registry, &env, &mut hosts, &src.alias, &inventory, &worker, &mgr,
+                        &mut registry, &mut hosts, &src.alias, &inventory, &worker, &mgr,
                         &driver_pty_tx, &mut attach_seq, cols, body_rows, tree_width,
                     );
                 }
@@ -2594,7 +2586,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
                         .unwrap_or(false);
                     if !registry.contains(&key) && !in_flight_for_key {
                         select_attach(
-                            &mut registry, &mut hosts, &state.selection, &worker, &env,
+                            &mut registry, &mut hosts, &state.selection, &worker,
                             &driver_pty_tx, &mut attach_seq, cols, body_rows, tree_width, &mgr,
                         );
                     }
@@ -3650,7 +3642,6 @@ mod tests {
         // path (this test exercises attach/in-flight latching, not the switch transport).
         let (etx, _erx) = tokio::sync::mpsc::unbounded_channel::<crate::host::HostEvent>();
         let mgr = HostManager::new(etx);
-        let env = fake_env_with_sources(&["jup"]);
         let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
 
         let sel_a = Selection {
@@ -3670,7 +3661,6 @@ mod tests {
             &mut hosts,
             &sel_a,
             &worker,
-            &env,
             &pty_tx,
             &mut attach_seq,
             80,
@@ -3696,7 +3686,6 @@ mod tests {
             &mut hosts,
             &sel_b,
             &worker,
-            &env,
             &pty_tx,
             &mut attach_seq,
             80,
@@ -3728,7 +3717,6 @@ mod tests {
         let mut registry = AttachRegistry::new();
         let mut attach_seq = 0u64;
         let mgr = empty_manager();
-        let env = fake_env_with_sources(&["local"]);
         let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
 
         let sel_test2 = Selection {
@@ -3747,7 +3735,6 @@ mod tests {
             &mut hosts,
             &sel_test2,
             &worker,
-            &env,
             &pty_tx,
             &mut attach_seq,
             80,
@@ -3784,7 +3771,6 @@ mod tests {
             &mut hosts,
             &sel_test,
             &worker,
-            &env,
             &pty_tx,
             &mut attach_seq,
             80,
@@ -3827,7 +3813,6 @@ mod tests {
         registry.insert("local", crate::display::attachment::fake_attachment(99));
         let mut attach_seq = 0u64;
         let mgr = empty_manager();
-        let env = fake_env_with_sources(&["local"]);
         let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
 
         let sel = Selection {
@@ -3841,7 +3826,6 @@ mod tests {
             &mut hosts,
             &sel,
             &worker,
-            &env,
             &pty_tx,
             &mut attach_seq,
             80,
@@ -3912,7 +3896,6 @@ mod tests {
         let mut registry = AttachRegistry::new();
         let mut attach_seq = 7u64;
         let mgr = empty_manager();
-        let env = fake_env_with_sources(&["local"]);
         let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
 
         let sel = Selection {
@@ -3926,7 +3909,6 @@ mod tests {
             &mut hosts,
             &sel,
             &worker,
-            &env,
             &pty_tx,
             &mut attach_seq,
             80,
@@ -4086,7 +4068,7 @@ mod tests {
     //    right-click reach the mux (status-bar click, pane select, scroll, context menu).
     //    Backend mouse forwarding requires the mux to have `mouse on` (`set -g mouse on`);
     //    xmux only forwards. (Windows: capture needs ENABLE_VIRTUAL_TERMINAL_INPUT +
-    //    the SGR DECSET that crossterm's WinAPI path omits — see proxy::term.)
+    //    the SGR DECSET that crossterm's WinAPI path omits — see display::term.)
     // =========================================================================
 
     #[test]

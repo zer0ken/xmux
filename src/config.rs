@@ -29,7 +29,7 @@ pub struct LocalConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct UiConfig {
     /// xmux's prefix spec (e.g. `C-g`, `C-Space`), config-only like tmux's
-    /// `set -g prefix`. Parsed by `proxy::term::parse_prefix`.
+    /// `set -g prefix`. Parsed by `display::term::parse_prefix`.
     #[serde(default = "default_prefix")]
     pub prefix: String,
     /// The INITIAL state of the auto-hide-tree mode (toggled live with `prefix t`,

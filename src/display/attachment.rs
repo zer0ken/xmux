@@ -601,7 +601,7 @@ mod tests {
     // an `Output` event was emitted, and `connecting` cleared.
     //
     // `#[ignore]` and MUST be run in a REAL, NON-NESTED terminal:
-    //   cargo test -p xmux proxy::run::tests::spawn_attachment -- --ignored --nocapture
+    //   cargo test -p xmux display::attachment::tests::spawn_attachment -- --ignored --nocapture
     // Run inside a mux pane (nested ConPTY) it FAILS even though the pump pipeline
     // runs (`connecting` still clears) — Windows does not deliver a nested
     // pseudoconsole child's output to the outer master. This is exactly why the

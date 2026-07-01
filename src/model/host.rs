@@ -120,8 +120,7 @@ impl Host {
 
     /// Re-enumerate this host's sessions through the mux, updating `inventory` and
     /// `liveness`. `Ok` (possibly empty) ⇒ `Live`; `Err` ⇒ `Unreachable` (and the
-    /// error propagates). Replaces `Source::list_sessions` + `HostClient::list_sessions`
-    /// + the supervisor `connected` bookkeeping.
+    /// error propagates). The single owner of this host's session list and reachability.
     pub async fn enumerate(&mut self) -> Result<(), crate::source::RunError> {
         self.detect_and_correct(&crate::source::ExecRunner).await;
         match self

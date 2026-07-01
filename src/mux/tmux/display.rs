@@ -322,7 +322,6 @@ mod tests {
         let mut registry = AttachRegistry::new();
         let mut attach_seq = 0u64;
         let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
-        let env = crate::driver::tests::fake_env(&["jup"]);
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let sel = Selection {
@@ -338,7 +337,6 @@ mod tests {
                 hosts: &mut hosts,
                 worker: &worker,
                 mgr: &mgr,
-                env: &env,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
                 cols: 80,
@@ -380,7 +378,6 @@ mod tests {
         let mut registry = AttachRegistry::new();
         let mut attach_seq = 0u64;
         let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
-        let env = crate::driver::tests::fake_env(&["local"]);
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
         let sessions = vec![
             crate::driver::tests::sess("local", "api"),
@@ -394,7 +391,6 @@ mod tests {
                 hosts: &mut hosts,
                 worker: &worker,
                 mgr: &mgr,
-                env: &env,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
                 cols: 80,
@@ -439,7 +435,6 @@ mod tests {
         registry.insert("local", crate::display::attachment::fake_attachment(5));
         let mut attach_seq = 0u64;
         let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
-        let env = crate::driver::tests::fake_env(&["local"]);
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let mut driver = TmuxDriver;
@@ -449,7 +444,6 @@ mod tests {
                 hosts: &mut hosts,
                 worker: &worker,
                 mgr: &mgr,
-                env: &env,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
                 cols: 80,

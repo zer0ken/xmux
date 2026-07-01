@@ -46,17 +46,16 @@ impl Target {
 }
 
 /// The generic capabilities the supervisor injects into a driver call: the off-loop
-/// spawner, the attachment registry it fills, the transport-aware hosts, the source
-/// config, the open control channel (via `mgr`), the view size, and the attach seq.
-/// Attach argv is composed from each host's own `mux`/`transport` (the two axes), so a
-/// driver reads `hosts`, not `env`, to build one. The driver owns the DECISION +
-/// per-host display state; these stay supervisor-owned.
+/// spawner, the attachment registry it fills, the transport-aware hosts, the open
+/// control channel (via `mgr`), the view size, and the attach seq. Attach argv is
+/// composed from each host's own `mux`/`transport` (the two axes), so a driver reads
+/// `hosts` to build one. The driver owns the DECISION + per-host display state; these
+/// stay supervisor-owned.
 pub struct DriverCtx<'a> {
     pub registry: &'a mut AttachRegistry,
     pub hosts: &'a mut Hosts,
     pub worker: &'a DisplayWorker,
     pub mgr: &'a HostManager,
-    pub env: &'a crate::env::Env,
     /// The off-loop event sink (a clone of the loop's `PtyEvent` channel). A driver may
     /// spawn a read-only probe that feeds a `PtyEvent` back to the loop — e.g. the psmux
     /// driver captures its display client's tty with an off-loop `list-clients` probe.
@@ -119,34 +118,6 @@ pub(crate) fn lower_select_window(
 pub(crate) mod tests {
     use super::*;
     use crate::app::cockpit::Selection;
-
-    /// A minimal `Env` with one local `cmd.exe` `Source` per alias (in both `srcs` and
-    /// `by_alias`), used to construct a `DriverCtx` in the driver tests (this module's
-    /// and the per-mux drivers' in `crate::mux::{tmux, psmux}`).
-    pub(crate) fn fake_env(aliases: &[&str]) -> crate::env::Env {
-        let srcs: Vec<crate::source::Source> = aliases
-            .iter()
-            .map(|a| crate::source::Source {
-                alias: (*a).into(),
-                binary: "cmd.exe".into(),
-                remote: false,
-                control_path: String::new(),
-                os: "windows".into(),
-                socket: None,
-                runner: None,
-            })
-            .collect();
-        let by_alias = srcs.iter().map(|s| (s.alias.clone(), s.clone())).collect();
-        crate::env::Env {
-            cfg: crate::config::Config::default(),
-            cfg_warnings: Vec::new(),
-            srcs,
-            by_alias,
-            local_bin: "cmd.exe".into(),
-            ui_prefix: "C-g".into(),
-            xmux_dir: std::path::PathBuf::from("."),
-        }
-    }
 
     pub(crate) fn sess(source: &str, name: &str) -> crate::session::Session {
         crate::session::Session {
@@ -241,7 +212,6 @@ pub(crate) mod tests {
         registry.insert("local", crate::display::attachment::fake_attachment(99));
         let mut attach_seq = 0u64;
         let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
-        let env = fake_env(&["local"]);
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let sel = Selection {
@@ -259,7 +229,6 @@ pub(crate) mod tests {
                 hosts: &mut hosts,
                 worker: &worker,
                 mgr: &mgr,
-                env: &env,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
                 cols: 80,
