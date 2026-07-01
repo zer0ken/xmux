@@ -1,9 +1,11 @@
 //! One mux backend per mux. `Box<dyn Backend>` lives inside a `Host`. The method set is
 //! exactly what the supervisor + control reader + manage layer call — no feature
-//! catalogue, and NO session-level lifecycle (no end-to-end caller in this plan).
-//! The backend owns its binary name and `ServerModel`, so nothing above threads a
-//! `bin: &str` or branches on a `remote` bool to pick the model. Every method is
-//! transport-blind except `enumerate` (which runs a probe).
+//! catalogue. It covers both window operations and session lifecycle (create / kill /
+//! rename), so the manage layer routes every mux argv through the backend rather than
+//! building it off a bare binary name. The backend owns its binary name and
+//! `ServerModel`, so nothing above threads a `bin: &str` or branches on a `remote` bool
+//! to pick the model. Every method is transport-blind except `enumerate` (which runs a
+//! probe).
 
 use async_trait::async_trait;
 
@@ -219,6 +221,15 @@ pub trait Backend: Send + Sync {
     fn select_window_plan(&self, target: &str) -> Vec<String>;
     fn kill_window_plan(&self, target: &str) -> Vec<String>;
     fn rename_window_plan(&self, target: &str, new: &str) -> Vec<String>;
+
+    /// The `new-session` argv that creates-or-attaches a DETACHED session (auto-named
+    /// when `name` is empty) and prints its assigned name. The manage layer runs it via
+    /// the host's `Transport` and reads back the assigned name.
+    fn new_session_plan(&self, name: &str) -> Vec<String>;
+    /// The `kill-session` argv for session `name`.
+    fn kill_session_plan(&self, name: &str) -> Vec<String>;
+    /// The `rename-session` argv moving `old` to `new`.
+    fn rename_session_plan(&self, old: &str, new: &str) -> Vec<String>;
 }
 
 struct MuxKind {
@@ -419,6 +430,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn tmux_session_plans_match_mux_builders() {
+        let m = tmux();
+        assert_eq!(m.new_session_plan("dev"), mux::new_session("tmux", "dev"));
+        assert_eq!(m.new_session_plan(""), mux::new_session("tmux", ""));
+        assert_eq!(m.kill_session_plan("old"), mux::kill_session("tmux", "old"));
+        assert_eq!(
+            m.rename_session_plan("old", "new"),
+            mux::rename_session("tmux", "old", "new")
+        );
+    }
+
     // LIVE: enumerate over a real local tmux server. `#[ignore]` (needs tmux + a
     // server). Run on demand:
     //   cargo test --lib backend::tests::tmux_enumerate_live -- --ignored --nocapture
@@ -498,6 +521,21 @@ mod tests {
         assert_eq!(
             m.new_window_plan("work", "logs"),
             mux::new_window("psmux", "work", "logs")
+        );
+    }
+
+    #[test]
+    fn psmux_session_plans_use_the_psmux_binary() {
+        let m = psmux();
+        assert_eq!(m.new_session_plan("dev"), mux::new_session("psmux", "dev"));
+        assert_eq!(m.new_session_plan(""), mux::new_session("psmux", ""));
+        assert_eq!(
+            m.kill_session_plan("old"),
+            mux::kill_session("psmux", "old")
+        );
+        assert_eq!(
+            m.rename_session_plan("old", "new"),
+            mux::rename_session("psmux", "old", "new")
         );
     }
 

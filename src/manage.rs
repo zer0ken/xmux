@@ -1,63 +1,78 @@
 //! Performs lifecycle operations (create, kill, rename, inspect) directly against
-//! the live mux on a source. Each function builds a mux argv and runs it through
-//! [`Source::run`]; nothing is cached and no state is held.
+//! the live mux on a source. Each function composes the two orthogonal axes: the
+//! MUX axis (`Backend::*_plan`) supplies the mux argv and the MACHINE axis
+//! (`Transport::exec_argv`) lowers it for local-vs-ssh execution, then it runs via
+//! the source's runner — exactly like `backend::enumerate_via_list_sessions`.
+//! Nothing is cached and no state is held.
 
 use crate::mux;
 use crate::session::WindowPanes;
 use crate::source::{RunError, Source};
 
+/// Composes a mux argv (from the source's `Backend`) through the machine
+/// `Transport` and runs it via the source's runner, returning stdout.
+async fn run_plan(s: &Source, mux_argv: &[String]) -> Result<Vec<u8>, RunError> {
+    let (name, args) = s.transport().exec_argv(false, mux_argv);
+    s.run_with().run(&name, &args).await
+}
+
 /// Creates-or-attaches a DETACHED session on the source and returns its assigned
 /// name (the mux prints it; auto-named when `name` is empty). The trailing
 /// whitespace is trimmed.
 pub async fn create(s: &Source, name: &str) -> Result<String, RunError> {
-    let out = s.run(&mux::new_session(&s.binary, name)).await?;
+    let backend = crate::backend::for_binary(&s.binary);
+    let out = run_plan(s, &backend.new_session_plan(name)).await?;
     Ok(String::from_utf8_lossy(&out).trim().to_string())
 }
 
 /// Kills a session by name.
 pub async fn kill(s: &Source, name: &str) -> Result<(), RunError> {
-    s.run(&mux::kill_session(&s.binary, name)).await?;
+    let backend = crate::backend::for_binary(&s.binary);
+    run_plan(s, &backend.kill_session_plan(name)).await?;
     Ok(())
 }
 
 /// Renames a session.
 pub async fn rename(s: &Source, old_name: &str, new_name: &str) -> Result<(), RunError> {
-    s.run(&mux::rename_session(&s.binary, old_name, new_name))
-        .await?;
+    let backend = crate::backend::for_binary(&s.binary);
+    run_plan(s, &backend.rename_session_plan(old_name, new_name)).await?;
     Ok(())
 }
 
 /// Kills a window by `session:window` target.
 pub async fn kill_window(s: &Source, target: &str) -> Result<(), RunError> {
-    s.run(&mux::kill_window(&s.binary, target)).await?;
+    let backend = crate::backend::for_binary(&s.binary);
+    run_plan(s, &backend.kill_window_plan(target)).await?;
     Ok(())
 }
 
 /// Renames a window.
 pub async fn rename_window(s: &Source, target: &str, new_name: &str) -> Result<(), RunError> {
-    s.run(&mux::rename_window(&s.binary, target, new_name))
-        .await?;
+    let backend = crate::backend::for_binary(&s.binary);
+    run_plan(s, &backend.rename_window_plan(target, new_name)).await?;
     Ok(())
 }
 
 /// Returns the source session's windows-with-panes (for the tree's child loading
 /// and active-pane resolution).
 pub async fn panes(s: &Source, name: &str) -> Result<Vec<WindowPanes>, RunError> {
-    let out = s.run(&mux::list_panes(&s.binary, name)).await?;
+    let backend = crate::backend::for_binary(&s.binary);
+    let out = run_plan(s, &backend.list_panes_plan(name)).await?;
     Ok(mux::parse_panes(&String::from_utf8_lossy(&out)))
 }
 
 /// Creates a new window in a session (optionally named).
 pub async fn new_window(s: &Source, session: &str, name: &str) -> Result<(), RunError> {
-    s.run(&mux::new_window(&s.binary, session, name)).await?;
+    let backend = crate::backend::for_binary(&s.binary);
+    run_plan(s, &backend.new_window_plan(session, name)).await?;
     Ok(())
 }
 
 /// Splits a window/session target into a new pane (`vertical` → stacked, else
 /// side-by-side).
 pub async fn split_window(s: &Source, target: &str, vertical: bool) -> Result<(), RunError> {
-    s.run(&mux::split_window(&s.binary, target, vertical))
-        .await?;
+    let backend = crate::backend::for_binary(&s.binary);
+    run_plan(s, &backend.split_window_plan(target, vertical)).await?;
     Ok(())
 }
 
@@ -110,6 +125,21 @@ mod tests {
             alias: "local".into(),
             binary: "psmux".into(),
             remote: false,
+            control_path: String::new(),
+            os: "linux".into(),
+            socket: None,
+            runner: Some(r),
+        }
+    }
+
+    /// A REMOTE tmux source: its ops route through `Backend` (mux argv) x `Transport`
+    /// (ssh wrapping), so the recorded command is `ssh … "<tmux …>"` with the mux argv
+    /// joined per-arg-quoted as the trailing remote command.
+    fn remote_source(r: Arc<dyn Runner>) -> Source {
+        Source {
+            alias: "prod".into(),
+            binary: "tmux".into(),
+            remote: true,
             control_path: String::new(),
             os: "linux".into(),
             socket: None,
@@ -194,5 +224,148 @@ mod tests {
     async fn panes_error_returns_err() {
         let fr = RecordingRunner::new("", true);
         assert!(panes(&local_source(fr), "x").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn new_window_targets_session() {
+        let fr = RecordingRunner::new("", false);
+        new_window(&local_source(fr.clone()), "work", "logs")
+            .await
+            .unwrap();
+        // The trailing `:` on the target keeps a numeric session name unambiguous.
+        assert_eq!(fr.args(), vec!["new-window", "-t", "work:", "-n", "logs"]);
+    }
+
+    #[tokio::test]
+    async fn new_window_auto_name_omits_dash_n() {
+        let fr = RecordingRunner::new("", false);
+        new_window(&local_source(fr.clone()), "0", "")
+            .await
+            .unwrap();
+        assert_eq!(fr.args(), vec!["new-window", "-t", "0:"]);
+    }
+
+    #[tokio::test]
+    async fn split_window_horizontal_and_vertical() {
+        let fr = RecordingRunner::new("", false);
+        split_window(&local_source(fr.clone()), "work:1", false)
+            .await
+            .unwrap();
+        assert_eq!(fr.args(), vec!["split-window", "-h", "-t", "work:1"]);
+
+        let fv = RecordingRunner::new("", false);
+        split_window(&local_source(fv.clone()), "work:1", true)
+            .await
+            .unwrap();
+        assert_eq!(fv.args(), vec!["split-window", "-v", "-t", "work:1"]);
+    }
+
+    #[tokio::test]
+    async fn kill_window_and_rename_window_target() {
+        let fk = RecordingRunner::new("", false);
+        kill_window(&local_source(fk.clone()), "api:2")
+            .await
+            .unwrap();
+        assert_eq!(fk.args(), vec!["kill-window", "-t", "api:2"]);
+
+        let fr = RecordingRunner::new("", false);
+        rename_window(&local_source(fr.clone()), "api:2", "logs")
+            .await
+            .unwrap();
+        assert_eq!(fr.args(), vec!["rename-window", "-t", "api:2", "logs"]);
+    }
+
+    // Each op routes through Backend x Transport: for a REMOTE source the recorded
+    // command is `ssh …` and the trailing arg is the mux argv joined per-arg-quoted,
+    // byte-identical to what `Source::run` produced before the axes were closed.
+    #[tokio::test]
+    async fn create_remote_wraps_new_session_in_ssh() {
+        let fr = RecordingRunner::new("api\n", false);
+        let got = create(&remote_source(fr.clone()), "api").await.unwrap();
+        assert_eq!(got, "api");
+        assert_eq!(fr.name(), "ssh");
+        assert_eq!(
+            fr.args().last().unwrap(),
+            "tmux new-session -A -d -P -F '#{session_name}' -s api"
+        );
+    }
+
+    #[tokio::test]
+    async fn kill_remote_wraps_kill_session_in_ssh() {
+        let fr = RecordingRunner::new("", false);
+        kill(&remote_source(fr.clone()), "old").await.unwrap();
+        assert_eq!(fr.name(), "ssh");
+        assert_eq!(fr.args().last().unwrap(), "tmux kill-session -t old");
+    }
+
+    #[tokio::test]
+    async fn rename_remote_wraps_rename_session_in_ssh() {
+        let fr = RecordingRunner::new("", false);
+        rename(&remote_source(fr.clone()), "old", "new")
+            .await
+            .unwrap();
+        assert_eq!(fr.name(), "ssh");
+        assert_eq!(fr.args().last().unwrap(), "tmux rename-session -t old new");
+    }
+
+    #[tokio::test]
+    async fn panes_remote_wraps_list_panes_in_ssh() {
+        let fr = RecordingRunner::new("0\t1\t0\t1\tbash\twork\n", false);
+        panes(&remote_source(fr.clone()), "work").await.unwrap();
+        assert_eq!(fr.name(), "ssh");
+        assert_eq!(
+            fr.args().last().unwrap(),
+            &format!("tmux list-panes -s -t work -F '{}'", mux::PANE_FORMAT)
+        );
+    }
+
+    #[tokio::test]
+    async fn new_window_remote_wraps_in_ssh() {
+        let fr = RecordingRunner::new("", false);
+        new_window(&remote_source(fr.clone()), "work", "logs")
+            .await
+            .unwrap();
+        assert_eq!(fr.name(), "ssh");
+        // `work:` carries a `:`, not shell-safe, so remote_command single-quotes it.
+        assert_eq!(
+            fr.args().last().unwrap(),
+            "tmux new-window -t 'work:' -n logs"
+        );
+    }
+
+    #[tokio::test]
+    async fn split_window_remote_wraps_in_ssh() {
+        let fr = RecordingRunner::new("", false);
+        split_window(&remote_source(fr.clone()), "work:1", true)
+            .await
+            .unwrap();
+        assert_eq!(fr.name(), "ssh");
+        assert_eq!(
+            fr.args().last().unwrap(),
+            "tmux split-window -v -t 'work:1'"
+        );
+    }
+
+    #[tokio::test]
+    async fn kill_window_remote_wraps_in_ssh() {
+        let fr = RecordingRunner::new("", false);
+        kill_window(&remote_source(fr.clone()), "api:2")
+            .await
+            .unwrap();
+        assert_eq!(fr.name(), "ssh");
+        assert_eq!(fr.args().last().unwrap(), "tmux kill-window -t 'api:2'");
+    }
+
+    #[tokio::test]
+    async fn rename_window_remote_wraps_in_ssh() {
+        let fr = RecordingRunner::new("", false);
+        rename_window(&remote_source(fr.clone()), "api:2", "logs")
+            .await
+            .unwrap();
+        assert_eq!(fr.name(), "ssh");
+        assert_eq!(
+            fr.args().last().unwrap(),
+            "tmux rename-window -t 'api:2' logs"
+        );
     }
 }

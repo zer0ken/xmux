@@ -1578,9 +1578,11 @@ mod tests {
         client.teardown();
     }
 
-    /// A constructible LOCAL `Source` whose `control_argv()` is valid (`cmd.exe`).
-    /// `ensure` on an already-present host returns `Ok(false)` without spawning,
-    /// so this argv is never actually executed in `manager_ensure_is_idempotent`.
+    /// A constructible LOCAL `Source` for the manager tests: its runner defaults to the
+    /// real exec runner and its `cmd.exe` binary is a real local program, so if `ensure`
+    /// ever did spawn it the process would exist rather than fail to launch. In these
+    /// tests it stays dormant — `ensure` on an already-present host returns `Ok(false)`
+    /// and a poll host's task is aborted before its runner is exercised.
     fn fake_source(host: &str) -> crate::source::Source {
         crate::source::Source {
             alias: host.into(),

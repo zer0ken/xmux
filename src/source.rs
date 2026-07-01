@@ -186,7 +186,7 @@ impl Source {
         v
     }
 
-    fn run_with(&self) -> &dyn Runner {
+    pub(crate) fn run_with(&self) -> &dyn Runner {
         match &self.runner {
             Some(r) => r.as_ref(),
             None => &ExecRunner,
@@ -217,7 +217,7 @@ impl Source {
     /// `Local` transport carrying the same `-S` socket. Mirrors the fields
     /// `Source::exec_argv`/`ssh_args` consume, so `Transport::exec_argv` lowers the
     /// argv identically.
-    fn transport(&self) -> crate::model::Transport {
+    pub(crate) fn transport(&self) -> crate::model::Transport {
         if self.remote {
             crate::model::Transport::Ssh {
                 alias: self.alias.clone(),

@@ -305,9 +305,9 @@ mod tests {
     use crate::session::Session;
     use crate::source::{RunError, Runner};
 
-    /// A minimal in-test mux: only `server_model` is exercised in the early tasks. The
-    /// other methods return trivially since these tasks wire no I/O. Shaped to the
-    /// REVISED `Backend` trait (switch_plan/switch_client_argv, ControlNotice, no lifecycle).
+    /// A minimal in-test mux: only `server_model` is exercised in these tests. The other
+    /// methods return trivially since they wire no I/O — including the window and session
+    /// lifecycle plans, which these tests never invoke.
     struct StubMux(ServerModel);
 
     #[async_trait::async_trait]
@@ -362,6 +362,15 @@ mod tests {
             vec![]
         }
         fn rename_window_plan(&self, _t: &str, _n: &str) -> Vec<String> {
+            vec![]
+        }
+        fn new_session_plan(&self, _n: &str) -> Vec<String> {
+            vec![]
+        }
+        fn kill_session_plan(&self, _n: &str) -> Vec<String> {
+            vec![]
+        }
+        fn rename_session_plan(&self, _o: &str, _n: &str) -> Vec<String> {
             vec![]
         }
     }
@@ -570,6 +579,15 @@ mod tests {
             vec![]
         }
         fn rename_window_plan(&self, _t: &str, _n: &str) -> Vec<String> {
+            vec![]
+        }
+        fn new_session_plan(&self, _n: &str) -> Vec<String> {
+            vec![]
+        }
+        fn kill_session_plan(&self, _n: &str) -> Vec<String> {
+            vec![]
+        }
+        fn rename_session_plan(&self, _o: &str, _n: &str) -> Vec<String> {
             vec![]
         }
     }

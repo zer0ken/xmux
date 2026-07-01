@@ -144,6 +144,15 @@ impl Backend for Tmux {
     fn rename_window_plan(&self, target: &str, new: &str) -> Vec<String> {
         mux::rename_window(&self.bin, target, new)
     }
+    fn new_session_plan(&self, name: &str) -> Vec<String> {
+        mux::new_session(&self.bin, name)
+    }
+    fn kill_session_plan(&self, name: &str) -> Vec<String> {
+        mux::kill_session(&self.bin, name)
+    }
+    fn rename_session_plan(&self, old: &str, new: &str) -> Vec<String> {
+        mux::rename_session(&self.bin, old, new)
+    }
 }
 
 /// The shared `'static` tmux control protocol. Stateless (every method is pure over
