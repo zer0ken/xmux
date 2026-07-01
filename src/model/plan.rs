@@ -1,4 +1,4 @@
-//! The leaf value types a `Backend` method returns: how a session's death is
+//! The leaf value types a `Mux` method returns: how a session's death is
 //! detected (`DeathSignal`), where change events come from (`EventSource`), and the
 //! captured display tty (`DisplayTty`). No logic — these are the shapes the supervisor
 //! matches on. `DeathSignal` is defined HERE and nowhere else; Phase 3's death wiring
@@ -29,7 +29,7 @@ pub enum EventSource {
 }
 
 /// xmux's own display-client tty, captured in memory (not a `/tmp` file). Read by
-/// `Backend::switch_client_argv` to build `switch-client -c <tty>`, and filtered against
+/// `Mux::switch_client_argv` to build `switch-client -c <tty>`, and filtered against
 /// by `DeathSignal::ControlNotice`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DisplayTty(pub Option<String>);

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use crate::host::HostInventory;
 use crate::model::{DisplayTty, Transport};
-use crate::mux::Backend;
+use crate::mux::Mux;
 use crate::source::Runner;
 
 /// Connecting / live / unreachable — replaces the loose `connecting` AtomicBool
@@ -72,7 +72,7 @@ impl HostDisplay {
 /// `AttachRegistry`/`DisplayWorker`; `Host` owns only the bookkeeping.
 pub struct Host {
     pub transport: Transport,
-    pub mux: Box<dyn Backend>,
+    pub mux: Box<dyn Mux>,
     /// Live session/window inventory.
     pub inventory: HostInventory,
     /// Which session each display_key shows + what spawn is in flight.
@@ -87,7 +87,7 @@ pub struct Host {
 impl Host {
     /// Builds a host from a transport + mux. Replaces `source::build`'s per-source
     /// construction (source.rs:460), one host at a time.
-    pub fn new(transport: Transport, mux: Box<dyn Backend>) -> Self {
+    pub fn new(transport: Transport, mux: Box<dyn Mux>) -> Self {
         Host {
             transport,
             mux,
@@ -182,7 +182,7 @@ impl Host {
 mod tests {
     use super::*;
     use crate::model::{DeathSignal, EventSource, ServerModel, Transport};
-    use crate::mux::Backend;
+    use crate::mux::Mux;
     use crate::session::Session;
     use crate::source::{RunError, Runner};
 
@@ -192,7 +192,7 @@ mod tests {
     struct StubMux(ServerModel);
 
     #[async_trait::async_trait]
-    impl Backend for StubMux {
+    impl Mux for StubMux {
         fn kind(&self) -> &str {
             "stub"
         }
@@ -416,7 +416,7 @@ mod tests {
         }
     }
     #[async_trait::async_trait]
-    impl Backend for EnumMux {
+    impl Mux for EnumMux {
         fn kind(&self) -> &str {
             "enum"
         }

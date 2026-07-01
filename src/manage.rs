@@ -1,6 +1,6 @@
 //! Performs lifecycle operations (create, kill, rename, inspect) directly against
 //! the live mux on a source. Each function composes the two orthogonal axes: the
-//! MUX axis (`Backend::*_plan`) supplies the mux argv and the MACHINE axis
+//! MUX axis (`Mux::*_plan`) supplies the mux argv and the MACHINE axis
 //! (`Transport::exec_argv`) lowers it for local-vs-ssh execution, then it runs via
 //! the source's runner — exactly like `mux::enumerate_via_list_sessions`.
 //! Nothing is cached and no state is held.
@@ -9,7 +9,7 @@ use crate::mux;
 use crate::session::WindowPanes;
 use crate::source::{RunError, Source};
 
-/// Composes a mux argv (from the source's `Backend`) through the machine
+/// Composes a mux argv (from the source's `Mux`) through the machine
 /// `Transport` and runs it via the source's runner, returning stdout.
 async fn run_plan(s: &Source, mux_argv: &[String]) -> Result<Vec<u8>, RunError> {
     let (name, args) = s.transport().exec_argv(false, mux_argv);
@@ -132,7 +132,7 @@ mod tests {
         }
     }
 
-    /// A REMOTE tmux source: its ops route through `Backend` (mux argv) x `Transport`
+    /// A REMOTE tmux source: its ops route through `Mux` (mux argv) x `Transport`
     /// (ssh wrapping), so the recorded command is `ssh … "<tmux …>"` with the mux argv
     /// joined per-arg-quoted as the trailing remote command.
     fn remote_source(r: Arc<dyn Runner>) -> Source {
@@ -275,7 +275,7 @@ mod tests {
         assert_eq!(fr.args(), vec!["rename-window", "-t", "api:2", "logs"]);
     }
 
-    // Each op composes the Backend plan through the Transport and runs it via the
+    // Each op composes the Mux plan through the Transport and runs it via the
     // source's runner: for a REMOTE source the recorded command is `ssh …` and the
     // trailing arg is the mux argv joined per-arg-quoted.
     #[tokio::test]

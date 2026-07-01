@@ -631,7 +631,7 @@ fn scan_or_dispatch_host(
 fn apply_scan_result(
     hosts: &mut crate::model::Hosts,
     source: &str,
-    detected: Option<Box<dyn crate::mux::Backend>>,
+    detected: Option<Box<dyn crate::mux::Mux>>,
 ) {
     let Some(host) = hosts.get_mut(source) else {
         return;
@@ -3107,9 +3107,9 @@ mod tests {
         // Tree focused (terminal_focused = false): always the natural width.
         assert_eq!(reconciled_tree_width(false, true, 48), 48);
         assert_eq!(reconciled_tree_width(false, false, 48), 48);
-        // Backend focused + setting on: hidden (0).
+        // Mux focused + setting on: hidden (0).
         assert_eq!(reconciled_tree_width(true, true, 48), 0);
-        // Backend focused + setting off: stays shown at natural width.
+        // Mux focused + setting off: stays shown at natural width.
         assert_eq!(reconciled_tree_width(true, false, 48), 48);
     }
 
@@ -4066,7 +4066,7 @@ mod tests {
     //    only — the click is not delivered); right-click never moves focus (it opens the
     //    tree context menu). Once the mux pane is focused, clicks/scroll/
     //    right-click reach the mux (status-bar click, pane select, scroll, context menu).
-    //    Backend mouse forwarding requires the mux to have `mouse on` (`set -g mouse on`);
+    //    Mux mouse forwarding requires the mux to have `mouse on` (`set -g mouse on`);
     //    xmux only forwards. (Windows: capture needs ENABLE_VIRTUAL_TERMINAL_INPUT +
     //    the SGR DECSET that crossterm's WinAPI path omits — see display::term.)
     // =========================================================================

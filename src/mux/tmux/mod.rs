@@ -45,7 +45,7 @@ pub struct Tmux {
 }
 
 #[async_trait]
-impl Backend for Tmux {
+impl Mux for Tmux {
     fn kind(&self) -> &str {
         "tmux"
     }

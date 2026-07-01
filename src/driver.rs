@@ -6,7 +6,7 @@
 //!
 //! The per-mux drivers (`TmuxDriver`, `PsmuxDriver`) live in their mux family
 //! (`crate::mux::{tmux, psmux}`) and OWN the display decision. Each backend
-//! constructs its own driver via [`Backend::driver`](crate::mux::Backend::driver),
+//! constructs its own driver via [`Mux::driver`](crate::mux::Mux::driver),
 //! so [`driver_for`] is a thin mux-agnostic wrapper (`host.mux.driver()`) that names no
 //! concrete mux type. Each driver is zero-sized — the per-host display STATE stays in
 //! `host.display`/`AttachRegistry`, borrowed through `DriverCtx`, so the boundary moved
@@ -84,7 +84,7 @@ pub trait MuxDriver {
     fn sync(&mut self, source: &str, sessions: &[crate::session::Session], ctx: &mut DriverCtx);
 }
 
-/// The host's mux driver — the DECISION is a Backend method (`host.mux.driver()`), not a
+/// The host's mux driver — the DECISION is a Mux method (`host.mux.driver()`), not a
 /// `match` at the call site. Each backend constructs its OWN driver, so mux selection
 /// lives in the mux family (`crate::mux::{tmux, psmux}`), never a central match here.
 /// Drivers are zero-sized, so a fresh value per call is free; the per-host state lives in
@@ -146,7 +146,7 @@ pub(crate) mod tests {
     fn drivers_are_object_safe() {
         // The whole point: a Box<dyn MuxDriver> must compile. If the trait gains a
         // non-dispatchable method this stops compiling. Obtained via the production
-        // path (`Backend::driver()` through `driver_for`) so this seam names no
+        // path (`Mux::driver()` through `driver_for`) so this seam names no
         // concrete driver type — those live in `crate::mux::{tmux, psmux}`.
         let tmux_host = crate::model::Host::new(
             crate::model::Transport::Local { socket: None },
@@ -160,7 +160,7 @@ pub(crate) mod tests {
         let _p: Box<dyn MuxDriver> = driver_for(&psmux_host);
     }
 
-    /// The decision is a Backend method, not a `match` in the cockpit: a Shared host is
+    /// The decision is a Mux method, not a `match` in the cockpit: a Shared host is
     /// driven by the tmux driver, a PerSession host by the psmux driver. This is
     /// `driver_for` delegating to `host.mux.driver()` — each backend builds its own.
     #[test]
@@ -220,7 +220,7 @@ pub(crate) mod tests {
             window: None,
         };
 
-        // Through the Backend dispatch (driver_for → host.mux.driver()) + the concrete
+        // Through the Mux dispatch (driver_for → host.mux.driver()) + the concrete
         // driver — the same path the cockpit takes — so this pins the whole boundary.
         let mut driver = driver_for(hosts.get("local").unwrap());
         let shown = {

@@ -113,7 +113,7 @@ impl Source {
     /// session (over `ssh -t` for a remote).
     ///
     /// Composes the two axes: the MUX supplies the attach argv via
-    /// `Backend::attach_plan` (so local psmux uses `new-session -A -s <name>`, routing to
+    /// `Mux::attach_plan` (so local psmux uses `new-session -A -s <name>`, routing to
     /// the session's OWN server, not a warm clone from a bare `attach -t`), and the
     /// MACHINE wraps it via `Transport::interactive_attach_argv` (local `-S` injection, or
     /// `ssh -t` with `[<select-window> ;] exec <attach>`). `window` is the window index to
@@ -164,7 +164,7 @@ impl Source {
     ///
     /// Enumeration (which mux, its registry-merge vs aggregate-list behaviour, and the
     /// reachable-but-empty classification) lives entirely in `backend`: `for_binary`
-    /// selects the mux from the binary name and `Backend::enumerate` runs the probe
+    /// selects the mux from the binary name and `Mux::enumerate` runs the probe
     /// over this source's [`Source::transport`]. This is a thin shim — the source layer
     /// no longer branches on the mux kind.
     pub async fn list_sessions(&self) -> Result<Vec<Session>, RunError> {
@@ -325,7 +325,7 @@ mod tests {
     fn interactive_attach_local_psmux_routes_to_the_per_session_server() {
         // The bug FIX: local psmux must attach via `new-session -A -s <name>` (routing to
         // that session's OWN server), NOT a bare `attach -t <name>` (which lands on a warm
-        // clone / the wrong session). The mux axis (Backend::attach_plan) supplies this;
+        // clone / the wrong session). The mux axis (Mux::attach_plan) supplies this;
         // the local pre-select is a separate command, so the window is ignored here.
         let loc = src("local", "psmux", false, "", "");
         assert_eq!(
@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn interactive_attach_remote_psmux_uses_attach_plan_over_ssh() {
         // A REMOTE psmux host is enumerated/attached the generic way (its registry lives
-        // on the far side); the attach argv still comes from Backend::attach_plan
+        // on the far side); the attach argv still comes from Mux::attach_plan
         // (`new-session -A -s`) and is `exec`d over `ssh -t`.
         let rem = src("prod", "psmux", true, "linux", "");
         let got = rem.interactive_attach_command("api", None);

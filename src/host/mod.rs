@@ -104,7 +104,7 @@ pub enum HostEvent {
     /// `apply_scan_result`; emitted by the fire-and-forget detection task.
     Scanned {
         source: String,
-        detected: Option<Box<dyn crate::mux::Backend>>,
+        detected: Option<Box<dyn crate::mux::Mux>>,
     },
     /// A POLL host re-enumerated its sessions. A poll host has no host-level control
     /// stream, so its [`HostManager`]-owned poll task emits this onto the same bus.
@@ -706,7 +706,7 @@ async fn run_poll(
 }
 
 /// The `-CC` control child's argv for `host`, composed across the two orthogonal axes:
-/// the MUX supplies the control payload via `Backend::control_argv` (never a hardcoded
+/// the MUX supplies the control payload via `Mux::control_argv` (never a hardcoded
 /// `-CC attach` literal), and the MACHINE wraps it via `Transport::control_argv` (local
 /// `-S` splice, or `ssh -tt … <payload>`). `None` for a mux with no host-level control
 /// stream (it is polled), so a Poll host produces no argv.
@@ -773,7 +773,7 @@ impl HostManager {
                     anyhow::anyhow!("backend has a control event source but no control protocol")
                 })?;
                 // The control argv composes the two orthogonal axes: the mux payload from
-                // Backend::control_argv wrapped by Transport::control_argv (no hardcoded verb,
+                // Mux::control_argv wrapped by Transport::control_argv (no hardcoded verb,
                 // no hand-rolled ssh/-S here). A Control event source guarantees a payload.
                 let argv = control_argv(host).ok_or_else(|| {
                     anyhow::anyhow!("backend has a control event source but no control argv")
@@ -1658,7 +1658,7 @@ mod tests {
 
     #[test]
     fn control_argv_is_the_transport_over_backend_composition() {
-        // The mux payload comes from Backend::control_argv (NOT a hardcoded literal),
+        // The mux payload comes from Mux::control_argv (NOT a hardcoded literal),
         // and the machine wrapping comes from Transport::control_argv — the two compose.
         for host in [
             local_host("tmux", None),

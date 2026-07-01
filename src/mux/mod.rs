@@ -1,4 +1,4 @@
-//! One mux backend per mux. `Box<dyn Backend>` lives inside a `Host`. The method set is
+//! One mux backend per mux. `Box<dyn Mux>` lives inside a `Host`. The method set is
 //! exactly what the supervisor + control reader + manage layer call — no feature
 //! catalogue. It covers both window operations and session lifecycle (create / kill /
 //! rename), so the manage layer routes every mux argv through the backend rather than
@@ -26,7 +26,7 @@ pub use control::{ControlProtocol, Line, Notif};
 pub use psmux::Psmux;
 pub use tmux::{Tmux, TmuxControl};
 // Re-export the pure mux vocabulary at the crate::mux root so `crate::mux::<fn>`
-// call sites resolve unchanged whether the item is the Backend trait/factory or a
+// call sites resolve unchanged whether the item is the Mux trait/factory or a
 // vocab builder/parser.
 pub use vocab::*;
 
@@ -86,7 +86,7 @@ pub(crate) fn reason_is_no_sessions(text: &str) -> bool {
 /// runs a probe (registry read + one list-sessions); the shared model runs one
 /// command. Every other method is transport-blind.
 #[async_trait]
-pub trait Backend: Send + Sync {
+pub trait Mux: Send + Sync {
     /// The canonical mux identity, for backend comparison and diagnostics.
     fn kind(&self) -> &str;
 
@@ -143,7 +143,7 @@ pub trait Backend: Send + Sync {
     /// `None` for a mux that identifies its display client another way (psmux correlates
     /// by the session the client shows).
     ///
-    /// [`display_tty_read_argv`]: Backend::display_tty_read_argv
+    /// [`display_tty_read_argv`]: Mux::display_tty_read_argv
     fn display_tty_record_prefix(&self, _host_key: &str) -> Option<String> {
         None
     }
@@ -156,7 +156,7 @@ pub trait Backend: Send + Sync {
     /// tty (no stale capture). Run as a remote raw command; `None` for a mux that uses no
     /// recorded-tty strategy.
     ///
-    /// [`display_tty_record_prefix`]: Backend::display_tty_record_prefix
+    /// [`display_tty_record_prefix`]: Mux::display_tty_record_prefix
     fn switch_via_recorded_tty_cmd(&self, _host_key: &str, _session: &str) -> Option<String> {
         None
     }
@@ -237,7 +237,7 @@ pub trait Backend: Send + Sync {
 
 struct MuxKind {
     name: &'static str,
-    make: fn(String) -> Box<dyn Backend>,
+    make: fn(String) -> Box<dyn Mux>,
 }
 
 // `name` is the canonical identity, help-output marker, and conventional binary
@@ -251,7 +251,7 @@ fn known_muxes() -> &'static [MuxKind] {
 
 /// Picks a mux backend by conventional binary name. tmux is the fallback, matching
 /// the default in `Config::local_bin` / `host_specs`.
-pub fn for_binary(bin: &str) -> Box<dyn Backend> {
+pub fn for_binary(bin: &str) -> Box<dyn Mux> {
     for k in known_muxes() {
         if k.name == bin {
             return (k.make)(bin.to_string());
@@ -264,7 +264,7 @@ pub fn for_binary(bin: &str) -> Box<dyn Backend> {
 
 /// Builds a backend by canonical identity while preserving the binary used to
 /// reach it.
-pub fn for_kind(kind: &str, bin: &str) -> Box<dyn Backend> {
+pub fn for_kind(kind: &str, bin: &str) -> Box<dyn Mux> {
     for k in known_muxes() {
         if k.name == kind {
             return (k.make)(bin.to_string());
@@ -291,7 +291,7 @@ pub async fn detect_backend(
     transport: &Transport,
     bin: &str,
     runner: &dyn Runner,
-) -> Option<Box<dyn Backend>> {
+) -> Option<Box<dyn Mux>> {
     // psmux identifies itself in `help`; check it first because it lies in `-V`.
     let (name, args) = transport.exec_argv(false, &[bin.to_string(), "help".to_string()]);
     if let Ok(out) = runner.run(&name, &args).await {
@@ -340,9 +340,9 @@ mod tests {
 
     #[test]
     fn tmux_is_object_safe() {
-        // The whole point: a Box<dyn Backend> must compile. If the trait gains a
+        // The whole point: a Box<dyn Mux> must compile. If the trait gains a
         // non-dispatchable method this stops compiling.
-        let _m: Box<dyn Backend> = Box::new(tmux());
+        let _m: Box<dyn Mux> = Box::new(tmux());
     }
 
     #[test]
@@ -431,7 +431,7 @@ mod tests {
 
     #[test]
     fn psmux_is_object_safe() {
-        let _m: Box<dyn Backend> = Box::new(psmux());
+        let _m: Box<dyn Mux> = Box::new(psmux());
     }
 
     #[test]

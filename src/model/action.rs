@@ -168,7 +168,7 @@ pub enum MuxOp {
 /// `apply_event` mutates the tree directly and returns an empty `Vec`. The events
 /// that need a backend handle (a host client's inventory lock, a control-mode probe,
 /// the registry, the detection box) return the matching effect for the loop to run.
-/// Not `Clone`/`Eq` — `DispatchScanned` carries a `Box<dyn Backend>`; tests match
+/// Not `Clone`/`Eq` — `DispatchScanned` carries a `Box<dyn Mux>`; tests match
 /// structurally.
 pub enum EventEffect {
     /// `Connected`/`Inventory`: read `host`'s live inventory (behind the host
@@ -194,7 +194,7 @@ pub enum EventEffect {
     /// `detected`, then dispatch the now-detected host onto its metadata channel.
     DispatchScanned {
         source: String,
-        detected: Option<Box<dyn crate::mux::Backend>>,
+        detected: Option<Box<dyn crate::mux::Mux>>,
     },
     /// `Sessions` (poll host, no enumeration error): drop any stale attach whose
     /// registry `.port` vanished, then sync `source`'s display terminal(s).
@@ -209,7 +209,7 @@ pub enum EventEffect {
     RecordDisplayTty { host: String, tty: Option<String> },
 }
 
-// Hand-written: `Box<dyn Backend>` is not `Debug`, so `DispatchScanned` cannot derive
+// Hand-written: `Box<dyn Mux>` is not `Debug`, so `DispatchScanned` cannot derive
 // it. Print the variant + its string fields (the detection box as a presence flag)
 // so test assertion messages can format `{effects:?}`.
 impl std::fmt::Debug for EventEffect {

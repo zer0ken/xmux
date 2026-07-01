@@ -4,7 +4,7 @@
 //! behind this trait: line framing/classification, the notification→event policy
 //! table, and the control-mode command-line builders. `host.rs` drives the reader
 //! state machine + FIFO correlation but names no tmux protocol specifics directly —
-//! it reaches them only through `Backend::control_protocol`.
+//! it reaches them only through `Mux::control_protocol`.
 
 use crate::host::HostEvent;
 

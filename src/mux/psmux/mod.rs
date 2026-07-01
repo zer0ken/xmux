@@ -20,7 +20,7 @@ pub struct Psmux {
 }
 
 #[async_trait]
-impl Backend for Psmux {
+impl Mux for Psmux {
     fn kind(&self) -> &str {
         "psmux"
     }
