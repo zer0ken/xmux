@@ -181,14 +181,17 @@ impl ControlProtocol for TmuxControl {
                     host: host.to_string(),
                 })
             }
-            Notif::SessionWindowChanged { .. } => {
+            Notif::SessionWindowChanged { session, window } => {
                 // A session's ACTIVE WINDOW switched (e.g. another client did prefix-n).
-                // WindowChanged refetches the markers like Changed AND has the cockpit
-                // probe the displayed session's new active window so the sidebar cursor
-                // follows it (#2). The notification carries only ids ($session @window),
-                // so the cursor target is resolved by the cockpit's probe, not here.
-                Some(HostEvent::WindowChanged {
+                // Carry the notification's SESSION id ($session) + WINDOW id (@window)
+                // through so the cockpit probes THAT SPECIFIC session's new active window
+                // and follows the sidebar cursor to it (#2). Dropping the payload here
+                // would force the cockpit to GUESS the displayed session, which mismatches
+                // when a non-displayed session's active window changes.
+                Some(HostEvent::ActiveWindowChanged {
                     host: host.to_string(),
+                    session_id: session.to_string(),
+                    window_id: window.to_string(),
                 })
             }
             // `%session-changed` (the metadata client's own auto-attached session) and
@@ -240,12 +243,14 @@ impl ControlProtocol for TmuxControl {
         )
     }
 
-    fn active_window_line(&self, session: &str) -> String {
-        // The format braces are escaped (so `#{window_index}` reaches tmux literally)
-        // and a session name with spaces is quoted for the control-mode parser.
+    fn active_window_line(&self, target: &str) -> String {
+        // The format braces are escaped (so `#{session_name}`/`#{window_index}` reach
+        // tmux literally) and a target with spaces is quoted for the control-mode parser.
+        // Both fields come back so the reply resolves the SESSION NAME (the probe targets
+        // a session id) alongside the active window index.
         format!(
-            "display-message -p -t {} '#{{window_index}}'\n",
-            quote_target(session)
+            "display-message -p -t {} '#{{session_name}}\t#{{window_index}}'\n",
+            quote_target(target)
         )
     }
 

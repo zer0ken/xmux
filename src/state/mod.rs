@@ -298,7 +298,19 @@ impl State {
                 vec![EventEffect::ApplyInventory { host }]
             }
             HostEvent::Changed { host } => vec![EventEffect::Refetch { host }],
-            HostEvent::WindowChanged { host } => vec![EventEffect::ProbeActiveWindow { host }],
+            HostEvent::ActiveWindowChanged {
+                host,
+                session_id,
+                window_id: _,
+            } => {
+                // Probe the SPECIFIC session the payload names (its tmux id) — never a
+                // guessed displayed session. The reply resolves the session name + new
+                // active window index and drives the marker for THAT session.
+                vec![EventEffect::ProbeActiveWindow {
+                    host,
+                    session_ref: session_id,
+                }]
+            }
             HostEvent::Focus {
                 host,
                 session,
@@ -1007,17 +1019,28 @@ mod tests {
     }
 
     #[test]
-    fn apply_event_window_changed_emits_probe() {
+    fn apply_event_active_window_changed_probes_the_payload_session() {
+        // The payload-bearing ActiveWindowChanged must forward the notification's session
+        // id INTO the probe effect — probing that SPECIFIC session, never a guessed
+        // displayed one.
         let (mut state, mut sw) = with_switcher(one_session_scan());
         let mut connected = HashSet::new();
         let effects = state.apply_event(
-            HostEvent::WindowChanged { host: "jup".into() },
+            HostEvent::ActiveWindowChanged {
+                host: "jup".into(),
+                session_id: "$7".into(),
+                window_id: "@3".into(),
+            },
             &mut sw,
             &mut connected,
         );
         assert!(
-            matches!(effects.as_slice(), [EventEffect::ProbeActiveWindow { host }] if host == "jup"),
-            "WindowChanged returns one ProbeActiveWindow effect: {effects:?}"
+            matches!(
+                effects.as_slice(),
+                [EventEffect::ProbeActiveWindow { host, session_ref }]
+                    if host == "jup" && session_ref == "$7"
+            ),
+            "ActiveWindowChanged returns one payload-targeted ProbeActiveWindow: {effects:?}"
         );
     }
 

@@ -1028,19 +1028,17 @@ fn run_event_effect(
             // Refetch so the tree, panes, and PTY set resync (#5 sidebar sync).
             refetch_host(mgr, panes_requested, &host);
         }
-        EventEffect::ProbeActiveWindow { host } => {
+        EventEffect::ProbeActiveWindow { host, session_ref } => {
             // A session's ACTIVE WINDOW switched — the structure did NOT change, so do
             // NOT refetch the whole inventory: a full list-sessions + per-session
             // list-panes per change storms the single-threaded loop and freezes the UI
             // during rapid window navigation (each tree step issues select-window,
-            // which echoes back as this notification). Instead probe ONLY the displayed
-            // session's new active window; the reply (Focus) updates the marker and
-            // follows the cursor without any refetch.
-            let displayed = hosts
-                .get(&host)
-                .and_then(|h| h.display.shows(&host).map(str::to_string));
-            if let (Some(client), Some(displayed)) = (mgr.get(&host), displayed) {
-                client.probe_active_window(&displayed);
+            // which echoes back as this notification). Probe ONLY the session the
+            // notification names (its tmux id, `session_ref`) — never a guessed displayed
+            // session; the reply (Focus) resolves the session name + new active window
+            // and updates THAT session's marker without any refetch.
+            if let Some(client) = mgr.get(&host) {
+                client.probe_active_window(&session_ref);
             }
         }
         EventEffect::ReapHost { host } => {

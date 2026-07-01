@@ -63,14 +63,20 @@ pub enum HostEvent {
     /// (re-run list-sessions + re-list panes), since the notification carries only an
     /// id, not the new structure. Resyncs the sidebar tree + active-window markers (#5).
     Changed { host: String },
-    /// `%session-window-changed`: a session's ACTIVE WINDOW switched. Like `Changed`
-    /// the cockpit refetches the markers, but it additionally probes the displayed
-    /// session's new active window so the sidebar cursor follows it (#2).
-    WindowChanged { host: String },
-    /// An active-window probe resolved (`display-message -p '#{window_index}'`): the
-    /// cockpit moves the sidebar cursor to window `window` of `session` (a no-op
-    /// unless the cursor is on a window row of that session — see
-    /// [`crate::ui::switcher::Switcher::select_window`]).
+    /// `%session-window-changed $id @win`: a session's ACTIVE WINDOW switched (e.g.
+    /// another client did prefix-n). Carries the notification's tmux SESSION id
+    /// (`$id`) and WINDOW id (`@win`) so the cockpit probes THAT SPECIFIC session's new
+    /// active window and follows the sidebar cursor to it (#2) — it must NOT guess the
+    /// displayed session, which mismatches when a non-displayed session's window changes.
+    ActiveWindowChanged {
+        host: String,
+        session_id: String,
+        window_id: String,
+    },
+    /// An active-window probe resolved (`display-message -p
+    /// '#{session_name}\t#{window_index}'`): the cockpit moves the sidebar cursor to
+    /// window `window` of the RESOLVED `session` (a no-op unless the cursor is on a
+    /// window row of that session — see [`crate::ui::switcher::Switcher::select_window`]).
     Focus {
         host: String,
         session: String,
@@ -132,11 +138,10 @@ pub enum PendingReply {
     ListPanes {
         address: String,
     },
-    /// An active-window probe for `session`: its block body is the active window
-    /// index, resolved into a [`HostEvent::Focus`].
-    ActiveWindow {
-        session: String,
-    },
+    /// An active-window probe: its block body is `<session_name>\t<window_index>`
+    /// (the probe targeted a session id, so the name is resolved by the reply, not the
+    /// correlator), resolved into a [`HostEvent::Focus`].
+    ActiveWindow,
     /// A `list-clients -F '#{client_tty} #{client_flags}'` probe: the block body's
     /// non-control client tty is xmux's own display attach, resolved into a
     /// [`HostEvent::DisplayTty`].
@@ -294,11 +299,16 @@ fn resolve_block<E: FnMut(HostEvent)>(
                 host: host.to_string(),
             });
         }
-        PendingReply::ActiveWindow { session } => {
-            // `display-message -p '#{window_index}'` prints a single line: the active
-            // window index. Emit Focus so the cockpit follows the cursor (#2). A
-            // missing/garbled body (no parseable index) yields no event.
-            if let Some(window) = body.iter().find_map(|l| l.trim().parse::<i64>().ok()) {
+        PendingReply::ActiveWindow => {
+            // `display-message -p '#{session_name}\t#{window_index}'` prints one line:
+            // `<name>\t<index>`. The probe targeted a session id, so the RESOLVED name
+            // comes back in the reply. Emit Focus for that session so the cockpit follows
+            // the cursor (#2). A missing/garbled body (no `name\tindex`) yields no event.
+            if let Some((session, window)) = body.iter().find_map(|l| {
+                let (name, idx) = l.split_once('\t')?;
+                let idx = idx.trim().parse::<i64>().ok()?;
+                Some((name.to_string(), idx))
+            }) {
                 emit(HostEvent::Focus {
                     host: host.to_string(),
                     session,
@@ -539,15 +549,15 @@ impl HostClient {
         });
     }
 
-    /// Probes `session`'s active window index over this control client. The reply
-    /// resolves to a [`HostEvent::Focus`] so the cockpit follows the sidebar cursor
-    /// to the new active window after an external `%session-window-changed` (#2).
-    pub fn probe_active_window(&self, session: &str) {
+    /// Probes `target`'s active window over this control client. `target` is the tmux
+    /// SESSION id (`$id`) from the `%session-window-changed` payload — probing that
+    /// SPECIFIC session, never a guessed displayed one. The reply carries the resolved
+    /// session name + window index and resolves to a [`HostEvent::Focus`] so the cockpit
+    /// follows the sidebar cursor to the new active window (#2).
+    pub fn probe_active_window(&self, target: &str) {
         let _ = self.cmd_tx.send(HostCmd::Query {
-            line: self.proto.active_window_line(session),
-            reply: PendingReply::ActiveWindow {
-                session: session.to_string(),
-            },
+            line: self.proto.active_window_line(target),
+            reply: PendingReply::ActiveWindow,
         });
     }
 
@@ -1055,12 +1065,13 @@ mod tests {
     }
 
     #[test]
-    fn session_window_changed_emits_window_changed_not_changed() {
+    fn session_window_changed_emits_active_window_changed_with_payload() {
         // A session's ACTIVE WINDOW switched (`%session-window-changed $id @win`):
-        // emit the dedicated WindowChanged so the cockpit not only refetches the
-        // markers but also probes the displayed session's new active window and
-        // follows the sidebar cursor to it (#2). It must NOT collapse to a blanket
-        // Changed (which only refetches and would leave the cursor behind).
+        // emit ActiveWindowChanged CARRYING the notification's session id + window id,
+        // so the cockpit probes THAT SPECIFIC session (not a guessed displayed one)
+        // and follows the sidebar cursor to it (#2). It must NOT collapse to a blanket
+        // Changed (which only refetches and would leave the cursor behind), and it must
+        // NOT drop the payload to a host-only event (which forces the guess).
         let state = test_state(80, 24);
         let in_flight: InFlight = Default::default();
         let mut events = Vec::new();
@@ -1073,10 +1084,12 @@ mod tests {
             |e| events.push(e),
         );
         assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, HostEvent::WindowChanged { host } if host == "jupiter06")),
-            "%session-window-changed must emit WindowChanged"
+            events.iter().any(|e| matches!(
+                e,
+                HostEvent::ActiveWindowChanged { host, session_id, window_id }
+                    if host == "jupiter06" && session_id == "$0" && window_id == "@1"
+            )),
+            "%session-window-changed must emit ActiveWindowChanged with the $id/@win payload"
         );
         assert!(
             !events
@@ -1088,22 +1101,21 @@ mod tests {
 
     #[test]
     fn reader_resolves_active_window_block_into_focus() {
-        // The active-window probe (`display-message -p '#{window_index}'`) returns a
-        // single line: the index. Resolving its block emits Focus carrying the
-        // session (from the correlator) + the parsed window index, so the cockpit
-        // moves the sidebar cursor to that window row.
+        // The active-window probe (`display-message -p '#{session_name}\t#{window_index}'`)
+        // returns a single line: `<name>\t<index>`. Resolving its block emits Focus
+        // carrying the RESOLVED session name + parsed window index (the probe targeted a
+        // session id, so the name comes back in the reply — not the correlator), so the
+        // cockpit moves the sidebar cursor to that window row of the correct session.
         let state = test_state(80, 24);
         let in_flight: InFlight = Default::default();
         in_flight
             .lock()
             .unwrap()
-            .push_back(PendingReply::ActiveWindow {
-                session: "api".into(),
-            });
+            .push_back(PendingReply::ActiveWindow);
         let mut events = Vec::new();
         let lines = vec![
             "%begin 1 5 1".to_string(),
-            "2".to_string(),
+            "api\t2".to_string(),
             "%end 1 5 1".to_string(),
         ]
         .into_iter();
@@ -1127,17 +1139,21 @@ mod tests {
 
     #[test]
     fn active_window_query_line_quotes_and_escapes() {
-        // The probe targets the session and prints its active window index. The
-        // format braces are escaped (so `#{window_index}` reaches tmux literally)
-        // and a session name with spaces is quoted for the control-mode parser.
+        // The probe targets a session (by name or `$id`) and prints its active window's
+        // session name + index so the reply resolves BOTH. The format braces are escaped
+        // (so `#{session_name}`/`#{window_index}` reach tmux literally) and a target with
+        // spaces is quoted for the control-mode parser.
         let proto = test_control_proto();
+        // A session id target (`$0`) is quoted by the control-mode target quoter (the `$`
+        // is outside the bare-safe set); tmux strips the single-quotes and resolves `$0`
+        // as the session id.
         assert_eq!(
-            proto.active_window_line("api"),
-            "display-message -p -t api '#{window_index}'\n"
+            proto.active_window_line("$0"),
+            "display-message -p -t '$0' '#{session_name}\t#{window_index}'\n"
         );
         assert_eq!(
             proto.active_window_line("my proj"),
-            "display-message -p -t 'my proj' '#{window_index}'\n"
+            "display-message -p -t 'my proj' '#{session_name}\t#{window_index}'\n"
         );
     }
 

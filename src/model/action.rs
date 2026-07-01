@@ -179,9 +179,10 @@ pub enum EventEffect {
     /// `Changed`: the server's session/window STRUCTURE changed — refetch `host`'s
     /// inventory (re-run list-sessions + re-list panes).
     Refetch { host: String },
-    /// `WindowChanged`: a session's active window switched — probe the displayed
-    /// session's new active window over `host`'s control connection (no refetch).
-    ProbeActiveWindow { host: String },
+    /// `ActiveWindowChanged`: a session's active window switched — probe `session_ref`
+    /// (the tmux SESSION id from the notification payload) over `host`'s control
+    /// connection (no refetch). Targets THAT SPECIFIC session, not a displayed guess.
+    ProbeActiveWindow { host: String, session_ref: String },
     /// `Exited`: reap `host`'s metadata client. (`apply_event` has already folded the
     /// tree/connected-set state change; this is the backend teardown.)
     ReapHost { host: String },
@@ -219,9 +220,10 @@ impl std::fmt::Debug for EventEffect {
                 .field("host", host)
                 .finish(),
             EventEffect::Refetch { host } => f.debug_struct("Refetch").field("host", host).finish(),
-            EventEffect::ProbeActiveWindow { host } => f
+            EventEffect::ProbeActiveWindow { host, session_ref } => f
                 .debug_struct("ProbeActiveWindow")
                 .field("host", host)
+                .field("session_ref", session_ref)
                 .finish(),
             EventEffect::ReapHost { host } => {
                 f.debug_struct("ReapHost").field("host", host).finish()
