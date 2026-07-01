@@ -49,7 +49,7 @@ pub struct State {
     /// exclusion is structural: opening one drops whatever was open, and two can
     /// never coexist. The switcher owns the modal behavior and the transient popup
     /// geometry (drag offset / drawn rect); this owns which modal is open + its content.
-    pub(crate) popup: Option<crate::ui::switcher::Popup>,
+    pub(crate) modal: Option<crate::ui::switcher::Modal>,
 }
 
 impl State {
@@ -59,22 +59,22 @@ impl State {
     ///
     /// [`ModalKind::Popup`]: crate::app::focus::ModalKind::Popup
     pub fn is_modal_popup_open(&self) -> bool {
-        use crate::ui::switcher::Popup;
+        use crate::ui::switcher::Modal;
         matches!(
-            self.popup,
-            Some(Popup::Help | Popup::Input(_) | Popup::Kill(_))
+            self.modal,
+            Some(Modal::Help | Modal::Input(_) | Modal::Kill(_))
         )
     }
 
     /// True while an inline input (filter / rename / new) is open. The cockpit
     /// routes every key to the switcher then, with no focus-switch hijack.
     pub fn is_inputting(&self) -> bool {
-        matches!(self.popup, Some(crate::ui::switcher::Popup::Input(_)))
+        matches!(self.modal, Some(crate::ui::switcher::Modal::Input(_)))
     }
 
     /// True while the right-click context menu is open.
     pub fn menu_active(&self) -> bool {
-        matches!(self.popup, Some(crate::ui::switcher::Popup::Menu(_)))
+        matches!(self.modal, Some(crate::ui::switcher::Modal::Menu(_)))
     }
 
     /// Which kind of modal is open — the focus machine derives its modal dimension
@@ -84,10 +84,10 @@ impl State {
     /// [`Focus`]: crate::app::focus::Focus
     pub(crate) fn modal_kind(&self) -> Option<crate::app::focus::ModalKind> {
         use crate::app::focus::ModalKind;
-        use crate::ui::switcher::Popup;
-        match self.popup {
-            Some(Popup::Help | Popup::Input(_) | Popup::Kill(_)) => Some(ModalKind::Popup),
-            Some(Popup::Menu(_)) => Some(ModalKind::Menu),
+        use crate::ui::switcher::Modal;
+        match self.modal {
+            Some(Modal::Help | Modal::Input(_) | Modal::Kill(_)) => Some(ModalKind::Popup),
+            Some(Modal::Menu(_)) => Some(ModalKind::Menu),
             None => None,
         }
     }
@@ -400,7 +400,7 @@ mod tests {
         assert!(!s.attach_pending);
         assert_eq!(s.last_saved_session, "");
         assert!(s.focus.is_tree_focused());
-        assert!(s.popup.is_none());
+        assert!(s.modal.is_none());
         assert!(!s.is_modal_popup_open());
         assert!(!s.is_inputting());
         assert!(!s.menu_active());
@@ -858,7 +858,7 @@ mod tests {
             "kill intent leaves selection alone"
         );
         assert!(s.focus.is_tree_focused(), "kill intent leaves focus alone");
-        assert!(s.popup.is_none(), "kill intent leaves the popup alone");
+        assert!(s.modal.is_none(), "kill intent leaves the popup alone");
     }
 
     // --- apply_event(HostEvent) -----------------------------------------------
@@ -1071,7 +1071,7 @@ mod tests {
         // ClientDetached mutates no State (the tree group set is untouched).
         assert_eq!(state.groups.len(), before_groups);
         assert_eq!(state.groups[0].sessions.len(), before_sessions);
-        assert!(state.popup.is_none());
+        assert!(state.modal.is_none());
     }
 
     #[test]

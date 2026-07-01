@@ -40,14 +40,14 @@ pub fn dump_switcher(
     width: u16,
     height: u16,
 ) -> String {
-    dump_overlay(switcher, None, width, height, state)
+    dump_screen(switcher, None, width, height, state)
 }
 
 /// Renders the tree-focus view — the switcher with the cursor host's live `grid` (if
 /// any) in the terminal-view pane — to an off-screen `TestBackend` and flattens
 /// it. So a headless `dump` reflects the same screen the main draw produces,
 /// including the live terminal Grid. Runs without a real terminal.
-pub fn dump_overlay(
+pub fn dump_screen(
     switcher: &mut Switcher,
     grid: Option<&crate::display::grid::Grid>,
     width: u16,
@@ -249,14 +249,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dump_overlay_renders_the_live_grid() {
+    async fn dump_screen_renders_the_live_grid() {
         // A dump with a live grid must include both the tree AND the grid content
         // (the terminal-view pane), so a headless `dump` reflects the live screen.
         let mut state = crate::state::State::from_scan(sample());
         let mut sw = Switcher::new(&mut state);
         let mut grid = crate::display::grid::Grid::new(30, 100);
         grid.feed(b"LIVEGRID");
-        let out = dump_overlay(&mut sw, Some(&grid), 100, 30, &state);
+        let out = dump_screen(&mut sw, Some(&grid), 100, 30, &state);
         assert!(out.contains("editor"), "tree still rendered:\n{out}");
         assert!(
             out.contains("LIVEGRID"),

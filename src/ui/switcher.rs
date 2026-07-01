@@ -310,7 +310,7 @@ pub(crate) struct Input {
 /// hand-maintained "clear the others" invariant cannot drift. Lives on
 /// [`crate::state::State`]; the switcher owns only the behavior and the transient
 /// popup geometry (drag offset / drawn rect).
-pub(crate) enum Popup {
+pub(crate) enum Modal {
     Help,
     Input(Input),
     Kill(PendingKill),
@@ -591,8 +591,8 @@ impl Switcher {
         // actually removed the target invalidates it — routine rebuilds (the local
         // poll, a remote %-event) must NOT silently cancel it, or answering y/n has a
         // surprise time limit. resolve_kill consumes it; set_selected does not touch it.
-        if matches!(&state.popup, Some(Popup::Kill(k)) if !self.kill_target_present(k)) {
-            state.popup = None;
+        if matches!(&state.modal, Some(Modal::Kill(k)) if !self.kill_target_present(k)) {
+            state.modal = None;
         }
         let target = self
             .user_moved
@@ -1005,17 +1005,17 @@ impl Switcher {
     /// `handle_key`); [`toggle_help`] is the focus-independent open/close entry point.
     pub fn show_help(&mut self, state: &mut crate::state::State) {
         self.dismiss_modals(state);
-        state.popup = Some(Popup::Help);
+        state.modal = Some(Modal::Help);
     }
 
     /// Toggle the keys overlay. Driven by `prefix ?` in EITHER focus so help opens
     /// and closes the same way regardless of which pane holds focus.
     pub fn toggle_help(&mut self, state: &mut crate::state::State) {
-        if matches!(state.popup, Some(Popup::Help)) {
-            state.popup = None;
+        if matches!(state.modal, Some(Modal::Help)) {
+            state.modal = None;
         } else {
             self.dismiss_modals(state);
-            state.popup = Some(Popup::Help);
+            state.modal = Some(Modal::Help);
         }
     }
 
@@ -1023,7 +1023,7 @@ impl Switcher {
     /// Option already makes the modals mutually exclusive (opening one drops the rest);
     /// this is the explicit close + drag reset used by every opener and on dismissal.
     fn dismiss_modals(&mut self, state: &mut crate::state::State) {
-        state.popup = None;
+        state.modal = None;
         self.reset_popup_pos();
     }
 
@@ -1089,28 +1089,28 @@ impl Switcher {
     /// owner of help dismissal — the cockpit calls it above the tree/mux split, so the
     /// behavior is identical in both focuses.
     pub fn feed_help_key(&mut self, bytes: &[u8], state: &mut crate::state::State) -> bool {
-        if !matches!(state.popup, Some(Popup::Help)) {
+        if !matches!(state.modal, Some(Modal::Help)) {
             return false;
         }
         // `q`, or a real Esc (a lone ESC, not the ESC `[` that starts an arrow/CSI).
         let esc = bytes.contains(&0x1b) && !bytes.windows(2).any(|w| w == [0x1b, b'[']);
         if bytes.contains(&b'q') || esc {
-            state.popup = None;
+            state.modal = None;
         }
         true
     }
 
     /// Handles one key against the switcher. Navigation/modal-open keys mutate the
-    /// switcher's own view state and `state.popup` directly and return no command;
+    /// switcher's own view state and `state.modal` directly and return no command;
     /// the keys that COMMIT a slow mux action (Enter on an input, `y` on a kill
     /// confirm) return the [`Command`]s `State::apply` produced for the run loop to
     /// dispatch (off-loop `run_op`). The caller dispatches the returned commands; an
     /// empty vec means there was no effect.
     pub fn handle_key(&mut self, ev: KeyEvent, state: &mut crate::state::State) -> Vec<Command> {
-        if matches!(state.popup, Some(Popup::Input(_))) {
+        if matches!(state.modal, Some(Modal::Input(_))) {
             return self.handle_input_key(ev, state);
         }
-        if matches!(state.popup, Some(Popup::Kill(_))) {
+        if matches!(state.modal, Some(Modal::Kill(_))) {
             return self.resolve_kill(ev, state);
         }
         // A flash (error/notice) is transient — it lives only until the next key, like a
@@ -1150,7 +1150,7 @@ impl Switcher {
         self.dismiss_modals(state);
         match mode {
             InputMode::Filter => {
-                state.popup = Some(Popup::Input(Input {
+                state.modal = Some(Modal::Input(Input {
                     mode,
                     label: " filter sessions".into(),
                     buffer: state.filter.clone(),
@@ -1164,7 +1164,7 @@ impl Switcher {
                     self.status.flash = "cannot rename a host".into();
                 }
                 Some(RowRef::Session(sess)) => {
-                    state.popup = Some(Popup::Input(Input {
+                    state.modal = Some(Modal::Input(Input {
                         mode,
                         label: " rename session".into(),
                         buffer: sess.name.clone(),
@@ -1178,7 +1178,7 @@ impl Switcher {
                         .window_name(&sess.address(), window, state)
                         .unwrap_or_default();
                     let target = crate::mux::window_target(&sess.name, window);
-                    state.popup = Some(Popup::Input(Input {
+                    state.modal = Some(Modal::Input(Input {
                         mode,
                         label: " rename window".into(),
                         buffer: win_name,
@@ -1208,8 +1208,8 @@ impl Switcher {
         let Some(reference) = self.current_ref().cloned() else {
             return;
         };
-        state.popup = match reference {
-            RowRef::Host { source, .. } => Some(Popup::Input(Input {
+        state.modal = match reference {
+            RowRef::Host { source, .. } => Some(Modal::Input(Input {
                 mode: InputMode::New,
                 label: " new session name (empty = auto)".into(),
                 buffer: String::new(),
@@ -1217,7 +1217,7 @@ impl Switcher {
                 sess: None,
                 target: None,
             })),
-            RowRef::Session(sess) => Some(Popup::Input(Input {
+            RowRef::Session(sess) => Some(Modal::Input(Input {
                 mode: InputMode::NewWindow,
                 label: format!(" new window in {} (name optional)", sess.name),
                 buffer: String::new(),
@@ -1227,7 +1227,7 @@ impl Switcher {
             })),
             RowRef::Window { sess, window } => {
                 let target = format!("{}:{}", sess.name, window);
-                Some(Popup::Input(Input {
+                Some(Modal::Input(Input {
                     mode: InputMode::SplitWindow,
                     label: " split [v]ertical / [h]orizontal (default v)".into(),
                     buffer: String::new(),
@@ -1241,14 +1241,14 @@ impl Switcher {
     }
 
     fn close_input(&mut self, state: &mut crate::state::State) {
-        state.popup = None;
+        state.modal = None;
     }
 
     fn handle_input_key(&mut self, ev: KeyEvent, state: &mut crate::state::State) -> Vec<Command> {
         match ev.code {
             KeyCode::Enter => {
                 let (mode, val, source, sess, target) = {
-                    let Some(Popup::Input(input)) = &state.popup else {
+                    let Some(Modal::Input(input)) = &state.modal else {
                         return Vec::new();
                     };
                     (
@@ -1285,13 +1285,13 @@ impl Switcher {
                 Vec::new()
             }
             KeyCode::Backspace => {
-                if let Some(Popup::Input(input)) = state.popup.as_mut() {
+                if let Some(Modal::Input(input)) = state.modal.as_mut() {
                     input.buffer.pop();
                 }
                 Vec::new()
             }
             KeyCode::Char(c) => {
-                if let Some(Popup::Input(input)) = state.popup.as_mut() {
+                if let Some(Modal::Input(input)) = state.modal.as_mut() {
                     input.buffer.push(c);
                 }
                 Vec::new()
@@ -1302,7 +1302,7 @@ impl Switcher {
 
     /// Test/host hook: set the active input buffer directly.
     pub fn set_input_text(&mut self, text: &str, state: &mut crate::state::State) {
-        if let Some(Popup::Input(input)) = state.popup.as_mut() {
+        if let Some(Modal::Input(input)) = state.modal.as_mut() {
             input.buffer = text.to_string();
         }
     }
@@ -1504,11 +1504,11 @@ impl Switcher {
                 self.status.flash = "cannot kill a host".into();
             }
             Some(RowRef::Session(sess)) => {
-                state.popup = Some(Popup::Kill(PendingKill::Session(sess)));
+                state.modal = Some(Modal::Kill(PendingKill::Session(sess)));
             }
             Some(RowRef::Window { sess, window }) => {
                 let target = crate::mux::window_target(&sess.name, window);
-                state.popup = Some(Popup::Kill(PendingKill::Window {
+                state.modal = Some(Modal::Kill(PendingKill::Window {
                     source: sess.source.clone(),
                     session: sess.name.clone(),
                     target,
@@ -1522,7 +1522,7 @@ impl Switcher {
         // tmux confirm-before semantics: only y/Y confirms; any other key — n, Esc, or
         // anything else — cancels (the pending confirm is taken either way).
         let confirmed = matches!(ev.code, KeyCode::Char('y') | KeyCode::Char('Y'));
-        let Some(Popup::Kill(armed)) = state.popup.take() else {
+        let Some(Modal::Kill(armed)) = state.modal.take() else {
             return Vec::new();
         };
         if !confirmed {
@@ -1729,7 +1729,7 @@ impl Switcher {
         // No item is pre-highlighted, and the box opens just below the pointer (see
         // menu_rect) — so an accidental right-click that releases without dragging onto
         // an item does nothing. Selecting is a deliberate move down onto an item.
-        state.popup = Some(Popup::Menu(Menu {
+        state.modal = Some(Modal::Menu(Menu {
             target,
             title,
             rect,
@@ -1743,7 +1743,7 @@ impl Switcher {
     /// box but off an item (the title border) keeps the current highlight; only dragging
     /// fully OUTSIDE the box clears it, so releasing there cancels.
     pub fn menu_hover(&mut self, col: u16, row: u16, state: &mut crate::state::State) {
-        if let Some(Popup::Menu(menu)) = state.popup.as_mut() {
+        if let Some(Modal::Menu(menu)) = state.modal.as_mut() {
             if let Some(i) = menu.item_at(col, row) {
                 menu.hovered = Some(i);
             } else if !menu.contains(col, row) {
@@ -1756,7 +1756,7 @@ impl Switcher {
     /// then close the menu. Released off-menu (no hovered item) cancels. The target is
     /// re-found by identity so a rebuild during the hold can't act on a stale node.
     pub fn menu_release(&mut self, state: &mut crate::state::State) -> MenuOutcome {
-        let Some(Popup::Menu(menu)) = state.popup.take() else {
+        let Some(Modal::Menu(menu)) = state.modal.take() else {
             return MenuOutcome::None;
         };
         let Some(i) = menu.hovered else {
@@ -1813,8 +1813,8 @@ impl Switcher {
     /// Close the menu without acting (cockpit watchdog: a keystroke ends the gesture).
     /// Only a menu is cleared — a centered popup, if somehow open, is left intact.
     pub fn menu_cancel(&mut self, state: &mut crate::state::State) {
-        if matches!(state.popup, Some(Popup::Menu(_))) {
-            state.popup = None;
+        if matches!(state.modal, Some(Modal::Menu(_))) {
+            state.modal = None;
         }
     }
 
@@ -2082,10 +2082,10 @@ impl Switcher {
     /// for drag hit-testing. The single `popup` Option makes these mutually
     /// exclusive; the context menu is drawn separately by `render_menu`.
     fn render_modal_popup(&mut self, frame: &mut Frame, area: Rect, state: &crate::state::State) {
-        let (title, lines) = match &state.popup {
-            Some(Popup::Help) => self.help_lines(),
-            Some(Popup::Kill(armed)) => confirm_lines(armed),
-            Some(Popup::Input(input)) => input_lines(input),
+        let (title, lines) = match &state.modal {
+            Some(Modal::Help) => self.help_lines(),
+            Some(Modal::Kill(armed)) => confirm_lines(armed),
+            Some(Modal::Input(input)) => input_lines(input),
             _ => {
                 self.popup_rect = Rect::default();
                 return;
@@ -2105,7 +2105,7 @@ impl Switcher {
     /// name in the title (like tmux's menu title), the hovered item reversed. Shares the
     /// opaque, tmux-edge popup renderer with the help overlay.
     fn render_menu(&self, frame: &mut Frame, state: &crate::state::State) {
-        let Some(Popup::Menu(menu)) = &state.popup else {
+        let Some(Modal::Menu(menu)) = &state.modal else {
             return;
         };
         let rect = menu.rect;
@@ -3502,12 +3502,12 @@ mod tests {
         let mut h = Harness::new(sample()); // a local session ("editor") is preselected
         h.ch('x').await; // arm the kill y/n confirm
         assert!(
-            matches!(h.state.popup, Some(Popup::Kill(_))),
+            matches!(h.state.modal, Some(Modal::Kill(_))),
             "x arms the y/n confirm"
         );
         h.key(KeyCode::Esc).await; // Esc cancels it, like the input prompts
         assert!(
-            !matches!(h.state.popup, Some(Popup::Kill(_))),
+            !matches!(h.state.modal, Some(Modal::Kill(_))),
             "Esc clears the confirm"
         );
         assert!(
@@ -3861,7 +3861,7 @@ mod tests {
         assert!(matches!(h.sw.menu_release(&mut h.state), MenuOutcome::None));
         assert!(!h.state.menu_active(), "menu closes on release");
         assert!(
-            !h.state.is_inputting() && !matches!(h.state.popup, Some(Popup::Kill(_))),
+            !h.state.is_inputting() && !matches!(h.state.modal, Some(Modal::Kill(_))),
             "nothing happened"
         );
     }
@@ -3881,7 +3881,7 @@ mod tests {
         );
         assert!(!h.state.menu_active());
         assert!(
-            !h.state.is_inputting() && !matches!(h.state.popup, Some(Popup::Kill(_))),
+            !h.state.is_inputting() && !matches!(h.state.modal, Some(Modal::Kill(_))),
             "nothing happened"
         );
     }
@@ -3894,7 +3894,7 @@ mod tests {
         let idx = row_index(&h, |r| matches!(r, RowRef::Session(s) if s.name == "build"));
         let (x, y) = row_screen_pos(&h, idx);
         assert!(h.sw.menu_open(x, y, &mut h.state));
-        let Some(Popup::Menu(menu)) = &h.state.popup else {
+        let Some(Modal::Menu(menu)) = &h.state.modal else {
             unreachable!()
         };
         assert_eq!(menu.rect.y, y, "the title row sits on the click row");
@@ -3908,7 +3908,7 @@ mod tests {
         let target = RowRef::Session(s);
         let items = menu_items(&target);
         let focus_at = items.iter().position(|i| *i == MenuItem::Focus).unwrap();
-        h.state.popup = Some(Popup::Menu(Menu {
+        h.state.modal = Some(Modal::Menu(Menu {
             target,
             title: String::new(),
             rect: Rect::new(0, 0, 20, 7),
@@ -3932,7 +3932,7 @@ mod tests {
         let target = RowRef::Session(sess("local", "build", 1, false, 100));
         let items = menu_items(&target);
         let at = items.iter().position(|i| *i == MenuItem::Rename).unwrap();
-        h.state.popup = Some(Popup::Menu(Menu {
+        h.state.modal = Some(Modal::Menu(Menu {
             target,
             title: String::new(),
             rect: Rect::new(0, 0, 20, 7),
@@ -3952,7 +3952,7 @@ mod tests {
         let target = RowRef::Session(sess("local", "build", 1, false, 100));
         let items = menu_items(&target);
         let at = items.iter().position(|i| *i == MenuItem::Kill).unwrap();
-        h.state.popup = Some(Popup::Menu(Menu {
+        h.state.modal = Some(Modal::Menu(Menu {
             target,
             title: String::new(),
             rect: Rect::new(0, 0, 20, 7),
@@ -3964,7 +3964,7 @@ mod tests {
             MenuOutcome::Handled
         ));
         assert!(
-            matches!(h.state.popup, Some(Popup::Kill(_))),
+            matches!(h.state.modal, Some(Modal::Kill(_))),
             "kill arms the y/n confirm"
         );
     }
@@ -3985,7 +3985,7 @@ mod tests {
         let target = RowRef::Session(sess("local", "build", 1, false, 100));
         let items = menu_items(&target);
         let at = items.iter().position(|i| *i == MenuItem::Kill).unwrap();
-        h.state.popup = Some(Popup::Menu(Menu {
+        h.state.modal = Some(Modal::Menu(Menu {
             target,
             title: String::new(),
             rect: Rect::new(0, 0, 20, 7),
@@ -3997,7 +3997,7 @@ mod tests {
             MenuOutcome::Handled
         ));
         assert!(
-            matches!(h.state.popup, Some(Popup::Kill(_))),
+            matches!(h.state.modal, Some(Modal::Kill(_))),
             "kill is armed against the clicked row"
         );
         assert!(
@@ -4014,17 +4014,17 @@ mod tests {
         let build = row_index(&h, |r| matches!(r, RowRef::Session(s) if s.name == "build"));
         h.sw.set_selected(build, &h.state);
         h.sw.arm_kill(&mut h.state);
-        assert!(matches!(h.state.popup, Some(Popup::Kill(_))), "kill armed");
+        assert!(matches!(h.state.modal, Some(Modal::Kill(_))), "kill armed");
         h.sw.rebuild(&mut h.state); // a poll/event rebuild
         assert!(
-            matches!(h.state.popup, Some(Popup::Kill(_))),
+            matches!(h.state.modal, Some(Modal::Kill(_))),
             "confirm survives a routine rebuild — no time limit"
         );
         // But once the target is actually gone, the stale confirm is dropped.
         h.state.groups = crate::ui::tree::remove_session(&h.state.groups, "local/build");
         h.sw.rebuild(&mut h.state);
         assert!(
-            !matches!(h.state.popup, Some(Popup::Kill(_))),
+            !matches!(h.state.modal, Some(Modal::Kill(_))),
             "a vanished target invalidates the confirm"
         );
     }
@@ -4039,7 +4039,7 @@ mod tests {
         let target = RowRef::Window { sess: s, window: 2 };
         let items = menu_items(&target);
         let at = items.iter().position(|i| *i == MenuItem::Focus).unwrap();
-        h.state.popup = Some(Popup::Menu(Menu {
+        h.state.modal = Some(Modal::Menu(Menu {
             target,
             title: String::new(),
             rect: Rect::new(0, 0, 20, 5),
@@ -4075,8 +4075,8 @@ mod tests {
             "menu opens on the host row"
         );
         // Deliberately move onto the first item (no pre-hover), then release.
-        let rect = match &h.state.popup {
-            Some(Popup::Menu(m)) => m.rect,
+        let rect = match &h.state.modal {
+            Some(Modal::Menu(m)) => m.rect,
             _ => unreachable!(),
         };
         h.sw.menu_hover(rect.x + 1, rect.y + 1, &mut h.state);
@@ -4106,7 +4106,7 @@ mod tests {
         let target = RowRef::Window { sess: s, window: 2 };
         let items = menu_items(&target);
         let at = items.iter().position(|i| *i == MenuItem::Focus).unwrap();
-        h.state.popup = Some(Popup::Menu(Menu {
+        h.state.modal = Some(Modal::Menu(Menu {
             target,
             title: String::new(),
             rect: Rect::new(0, 0, 20, 7),
@@ -4147,7 +4147,7 @@ mod tests {
             unreachable: false,
         };
         let items = menu_items(&target);
-        h.state.popup = Some(Popup::Menu(Menu {
+        h.state.modal = Some(Modal::Menu(Menu {
             target,
             title: String::new(),
             rect: Rect::new(0, 0, 20, 4),
@@ -4167,7 +4167,7 @@ mod tests {
         // A target that does not exist in the tree (rebuilt away during the hold).
         let target = RowRef::Session(sess("local", "ghost", 1, false, 0));
         let items = menu_items(&target);
-        h.state.popup = Some(Popup::Menu(Menu {
+        h.state.modal = Some(Modal::Menu(Menu {
             target,
             title: String::new(),
             rect: Rect::new(0, 0, 20, 7),
@@ -4224,7 +4224,7 @@ mod tests {
         let target = RowRef::Session(sess("local", "build", 1, false, 100));
         let items = vec![Focus, Rename, Kill, NewWindow];
         // Box at a known spot; hover the second item (rename).
-        h.state.popup = Some(Popup::Menu(Menu {
+        h.state.modal = Some(Modal::Menu(Menu {
             target,
             title: "build".into(),
             rect: Rect::new(2, 2, 18, 6),
@@ -4775,24 +4775,24 @@ mod tests {
         let mut state = crate::state::State::from_scan(sample());
         let mut sw = Switcher::new(&mut state);
         sw.arm_kill(&mut state);
-        assert!(matches!(state.popup, Some(Popup::Kill(_))));
+        assert!(matches!(state.modal, Some(Modal::Kill(_))));
         sw.open_input(InputMode::Rename, &mut state); // as the menu's Rename would
         assert!(state.is_inputting(), "input opened");
         assert!(
-            !matches!(state.popup, Some(Popup::Kill(_))),
+            !matches!(state.modal, Some(Modal::Kill(_))),
             "arming an input cancels a pending kill"
         );
         sw.show_help(&mut state);
         assert!(
-            matches!(state.popup, Some(Popup::Help))
+            matches!(state.modal, Some(Modal::Help))
                 && !state.is_inputting()
-                && !matches!(state.popup, Some(Popup::Kill(_))),
+                && !matches!(state.modal, Some(Modal::Kill(_))),
             "help closes the input"
         );
         sw.arm_kill(&mut state);
         assert!(
-            matches!(state.popup, Some(Popup::Kill(_)))
-                && !matches!(state.popup, Some(Popup::Help)),
+            matches!(state.modal, Some(Modal::Kill(_)))
+                && !matches!(state.modal, Some(Modal::Help)),
             "arming a kill closes help"
         );
     }
@@ -4858,11 +4858,11 @@ mod tests {
     fn toggle_help_flips_visibility() {
         let mut state = crate::state::State::from_scan(sample());
         let mut sw = Switcher::new(&mut state);
-        assert!(!matches!(state.popup, Some(Popup::Help)));
+        assert!(!matches!(state.modal, Some(Modal::Help)));
         sw.toggle_help(&mut state);
-        assert!(matches!(state.popup, Some(Popup::Help)));
+        assert!(matches!(state.modal, Some(Modal::Help)));
         sw.toggle_help(&mut state);
-        assert!(!matches!(state.popup, Some(Popup::Help)));
+        assert!(!matches!(state.modal, Some(Modal::Help)));
     }
 
     #[test]
@@ -4879,7 +4879,7 @@ mod tests {
         sw.toggle_help(&mut state);
         assert!(sw.feed_help_key(b"j", &mut state), "open → consumed");
         assert!(
-            matches!(state.popup, Some(Popup::Help)),
+            matches!(state.modal, Some(Modal::Help)),
             "a non-close key is swallowed but keeps help open"
         );
         assert!(
@@ -4887,16 +4887,16 @@ mod tests {
             "an arrow (ESC [) is swallowed, not a close"
         );
         assert!(
-            matches!(state.popup, Some(Popup::Help)),
+            matches!(state.modal, Some(Modal::Help)),
             "arrow keeps help open"
         );
 
         assert!(sw.feed_help_key(b"q", &mut state), "q → consumed");
-        assert!(!matches!(state.popup, Some(Popup::Help)), "q closes help");
+        assert!(!matches!(state.modal, Some(Modal::Help)), "q closes help");
 
         sw.toggle_help(&mut state);
         assert!(sw.feed_help_key(b"\x1b", &mut state), "lone Esc → consumed");
-        assert!(!matches!(state.popup, Some(Popup::Help)), "Esc closes help");
+        assert!(!matches!(state.modal, Some(Modal::Help)), "Esc closes help");
     }
 
     #[tokio::test]
@@ -4999,11 +4999,11 @@ mod tests {
             &mut h.state,
         ); // arm kill (raw, not pumped)
         assert!(
-            matches!(h.state.popup, Some(Popup::Kill(PendingKill::Window { .. }))),
+            matches!(h.state.modal, Some(Modal::Kill(PendingKill::Window { .. }))),
             "kill on window row must set a window PendingKill"
         );
-        let target = match &h.state.popup {
-            Some(Popup::Kill(PendingKill::Window { target, .. })) => target.clone(),
+        let target = match &h.state.modal {
+            Some(Modal::Kill(PendingKill::Window { target, .. })) => target.clone(),
             _ => panic!("expected Window variant"),
         };
         assert_eq!(target, "editor:1");
@@ -5033,7 +5033,7 @@ mod tests {
             &mut h.state,
         ); // arm kill (raw)
         assert!(
-            matches!(h.state.popup, Some(Popup::Kill(PendingKill::Window { .. }))),
+            matches!(h.state.modal, Some(Modal::Kill(PendingKill::Window { .. }))),
             "arm_kill must set a window PendingKill"
         );
         // Stream the same panes (a rebuild) — the target window still exists.
@@ -5041,7 +5041,7 @@ mod tests {
         let editor_panes = s.panes["local/editor"].clone();
         h.sw.apply_panes("local/editor".to_string(), editor_panes, &mut h.state);
         assert!(
-            matches!(h.state.popup, Some(Popup::Kill(_))),
+            matches!(h.state.modal, Some(Modal::Kill(_))),
             "the confirm survives a same-tree rebuild — no time limit"
         );
         // 'y' now confirms and queues the kill of the armed window.
@@ -5071,7 +5071,7 @@ mod tests {
             "rename on window row must open input"
         );
         assert!(
-            matches!(&h.state.popup, Some(Popup::Input(i)) if i.target.is_some()),
+            matches!(&h.state.modal, Some(Modal::Input(i)) if i.target.is_some()),
             "rename on window must have a target"
         );
         h.sw.set_input_text("newname", &mut h.state);
@@ -5152,7 +5152,7 @@ mod tests {
             h.sw.status.flash
         );
         assert!(
-            !matches!(h.state.popup, Some(Popup::Kill(_))),
+            !matches!(h.state.modal, Some(Modal::Kill(_))),
             "no kill queued"
         );
     }

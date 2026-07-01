@@ -1709,7 +1709,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
     use crate::display::decode::KeyDecoder;
     use crate::display::input::TermInput;
     use crate::display::term::{parse_prefix, TermGuard};
-    use crate::ui::run::{dump_overlay, serve_control, Cmd};
+    use crate::ui::run::{dump_screen, serve_control, Cmd};
     use crate::ui::switcher::Switcher;
     use std::io::Read;
     use std::time::Duration;
@@ -2429,9 +2429,9 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                         let dump = match &grid_arc {
                             Some(g) => {
                                 let guard = g.lock().ok();
-                                dump_overlay(&mut switcher, guard.as_deref(), sz.width, sz.height, &state)
+                                dump_screen(&mut switcher, guard.as_deref(), sz.width, sz.height, &state)
                             }
-                            None => dump_overlay(&mut switcher, None, sz.width, sz.height, &state),
+                            None => dump_screen(&mut switcher, None, sz.width, sz.height, &state),
                         };
                         let _ = reply.send(dump);
                     }
@@ -3277,7 +3277,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_exited_before_connect_marks_unreachable() {
-        use crate::ui::run::dump_overlay;
+        use crate::ui::run::dump_screen;
         use crate::ui::switcher::Switcher;
         let mut state = crate::state::State::from_sources(vec!["jupiter00".into()]);
         let mut switcher = Switcher::from_sources(&mut state);
@@ -3292,7 +3292,7 @@ mod tests {
             ),
             "a never-connected host is marked unreachable on exit"
         );
-        let out = dump_overlay(&mut switcher, None, 80, 24, &state);
+        let out = dump_screen(&mut switcher, None, 80, 24, &state);
         assert!(
             out.contains("unreachable"),
             "host reads unreachable:\n{out}"
@@ -3305,7 +3305,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_exited_with_no_sessions_marks_empty_not_unreachable() {
-        use crate::ui::run::dump_overlay;
+        use crate::ui::run::dump_screen;
         use crate::ui::switcher::Switcher;
         let mut state = crate::state::State::from_sources(vec!["jupiter06".into()]);
         let mut switcher = Switcher::from_sources(&mut state);
@@ -3321,7 +3321,7 @@ mod tests {
             ),
             "an empty mux is reachable, not unreachable"
         );
-        let out = dump_overlay(&mut switcher, None, 80, 24, &state);
+        let out = dump_screen(&mut switcher, None, 80, 24, &state);
         assert!(out.contains("empty"), "an empty host reads (empty):\n{out}");
         assert!(
             !out.contains("unreachable"),
@@ -3353,7 +3353,7 @@ mod tests {
         // a reconnect that then fails never clears it. After the fix, the first drop keeps
         // the tree (no flash) but clears `connected`; a refresh + a failed reconnect (no
         // sessions) must resolve to "(empty)", not spin.
-        use crate::ui::run::dump_overlay;
+        use crate::ui::run::dump_screen;
         use crate::ui::switcher::Switcher;
         let mut state = crate::state::State::from_sources(vec!["jupiter06".into()]);
         let mut switcher = Switcher::from_sources(&mut state);
@@ -3364,7 +3364,7 @@ mod tests {
         // User hits refresh → the host goes back to a scanning skeleton.
         switcher.request_rescan(&mut state);
         assert!(
-            dump_overlay(&mut switcher, None, 80, 24, &state).contains("scanning"),
+            dump_screen(&mut switcher, None, 80, 24, &state).contains("scanning"),
             "scanning after refresh"
         );
         // The reconnect fails with "no sessions": it must resolve scanning → (empty).
@@ -3375,7 +3375,7 @@ mod tests {
             "jupiter06",
             Some("no sessions".into()),
         );
-        let out = dump_overlay(&mut switcher, None, 80, 24, &state);
+        let out = dump_screen(&mut switcher, None, 80, 24, &state);
         assert!(
             out.contains("empty"),
             "failed reconnect resolves to (empty):\n{out}"
