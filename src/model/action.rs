@@ -194,7 +194,7 @@ pub enum EventEffect {
     /// `detected`, then dispatch the now-detected host onto its metadata channel.
     DispatchScanned {
         source: String,
-        detected: Option<Box<dyn crate::backend::Backend>>,
+        detected: Option<Box<dyn crate::mux::Backend>>,
     },
     /// `Sessions` (poll host, no enumeration error): drop any stale attach whose
     /// registry `.port` vanished, then sync `source`'s display terminal(s).

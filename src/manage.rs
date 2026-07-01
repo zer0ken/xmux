@@ -2,7 +2,7 @@
 //! the live mux on a source. Each function composes the two orthogonal axes: the
 //! MUX axis (`Backend::*_plan`) supplies the mux argv and the MACHINE axis
 //! (`Transport::exec_argv`) lowers it for local-vs-ssh execution, then it runs via
-//! the source's runner — exactly like `backend::enumerate_via_list_sessions`.
+//! the source's runner — exactly like `mux::enumerate_via_list_sessions`.
 //! Nothing is cached and no state is held.
 
 use crate::mux;
@@ -20,35 +20,35 @@ async fn run_plan(s: &Source, mux_argv: &[String]) -> Result<Vec<u8>, RunError> 
 /// name (the mux prints it; auto-named when `name` is empty). The trailing
 /// whitespace is trimmed.
 pub async fn create(s: &Source, name: &str) -> Result<String, RunError> {
-    let backend = crate::backend::for_binary(&s.binary);
+    let backend = crate::mux::for_binary(&s.binary);
     let out = run_plan(s, &backend.new_session_plan(name)).await?;
     Ok(String::from_utf8_lossy(&out).trim().to_string())
 }
 
 /// Kills a session by name.
 pub async fn kill(s: &Source, name: &str) -> Result<(), RunError> {
-    let backend = crate::backend::for_binary(&s.binary);
+    let backend = crate::mux::for_binary(&s.binary);
     run_plan(s, &backend.kill_session_plan(name)).await?;
     Ok(())
 }
 
 /// Renames a session.
 pub async fn rename(s: &Source, old_name: &str, new_name: &str) -> Result<(), RunError> {
-    let backend = crate::backend::for_binary(&s.binary);
+    let backend = crate::mux::for_binary(&s.binary);
     run_plan(s, &backend.rename_session_plan(old_name, new_name)).await?;
     Ok(())
 }
 
 /// Kills a window by `session:window` target.
 pub async fn kill_window(s: &Source, target: &str) -> Result<(), RunError> {
-    let backend = crate::backend::for_binary(&s.binary);
+    let backend = crate::mux::for_binary(&s.binary);
     run_plan(s, &backend.kill_window_plan(target)).await?;
     Ok(())
 }
 
 /// Renames a window.
 pub async fn rename_window(s: &Source, target: &str, new_name: &str) -> Result<(), RunError> {
-    let backend = crate::backend::for_binary(&s.binary);
+    let backend = crate::mux::for_binary(&s.binary);
     run_plan(s, &backend.rename_window_plan(target, new_name)).await?;
     Ok(())
 }
@@ -56,14 +56,14 @@ pub async fn rename_window(s: &Source, target: &str, new_name: &str) -> Result<(
 /// Returns the source session's windows-with-panes (for the tree's child loading
 /// and active-pane resolution).
 pub async fn panes(s: &Source, name: &str) -> Result<Vec<WindowPanes>, RunError> {
-    let backend = crate::backend::for_binary(&s.binary);
+    let backend = crate::mux::for_binary(&s.binary);
     let out = run_plan(s, &backend.list_panes_plan(name)).await?;
     Ok(mux::parse_panes(&String::from_utf8_lossy(&out)))
 }
 
 /// Creates a new window in a session (optionally named).
 pub async fn new_window(s: &Source, session: &str, name: &str) -> Result<(), RunError> {
-    let backend = crate::backend::for_binary(&s.binary);
+    let backend = crate::mux::for_binary(&s.binary);
     run_plan(s, &backend.new_window_plan(session, name)).await?;
     Ok(())
 }
@@ -71,7 +71,7 @@ pub async fn new_window(s: &Source, session: &str, name: &str) -> Result<(), Run
 /// Splits a window/session target into a new pane (`vertical` → stacked, else
 /// side-by-side).
 pub async fn split_window(s: &Source, target: &str, vertical: bool) -> Result<(), RunError> {
-    let backend = crate::backend::for_binary(&s.binary);
+    let backend = crate::mux::for_binary(&s.binary);
     run_plan(s, &backend.split_window_plan(target, vertical)).await?;
     Ok(())
 }

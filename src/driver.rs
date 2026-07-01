@@ -5,8 +5,8 @@
 //! and per-host display STATE while the PTY infrastructure stays in the loop.
 //!
 //! The per-mux drivers (`TmuxDriver`, `PsmuxDriver`) live in their mux family
-//! (`crate::backend::{tmux, psmux}`) and OWN the display decision. Each backend
-//! constructs its own driver via [`Backend::driver`](crate::backend::Backend::driver),
+//! (`crate::mux::{tmux, psmux}`) and OWN the display decision. Each backend
+//! constructs its own driver via [`Backend::driver`](crate::mux::Backend::driver),
 //! so [`driver_for`] is a thin mux-agnostic wrapper (`host.mux.driver()`) that names no
 //! concrete mux type. Each driver is zero-sized — the per-host display STATE stays in
 //! `host.display`/`AttachRegistry`, borrowed through `DriverCtx`, so the boundary moved
@@ -87,7 +87,7 @@ pub trait MuxDriver {
 
 /// The host's mux driver — the DECISION is a Backend method (`host.mux.driver()`), not a
 /// `match` at the call site. Each backend constructs its OWN driver, so mux selection
-/// lives in the mux family (`crate::backend::{tmux, psmux}`), never a central match here.
+/// lives in the mux family (`crate::mux::{tmux, psmux}`), never a central match here.
 /// Drivers are zero-sized, so a fresh value per call is free; the per-host state lives in
 /// `host.display`/`AttachRegistry` (via `DriverCtx`).
 pub fn driver_for(host: &Host) -> Box<dyn MuxDriver> {
@@ -122,7 +122,7 @@ pub(crate) mod tests {
 
     /// A minimal `Env` with one local `cmd.exe` `Source` per alias (in both `srcs` and
     /// `by_alias`), used to construct a `DriverCtx` in the driver tests (this module's
-    /// and the per-mux drivers' in `crate::backend::{tmux, psmux}`).
+    /// and the per-mux drivers' in `crate::mux::{tmux, psmux}`).
     pub(crate) fn fake_env(aliases: &[&str]) -> crate::env::Env {
         let srcs: Vec<crate::source::Source> = aliases
             .iter()
@@ -176,14 +176,14 @@ pub(crate) mod tests {
         // The whole point: a Box<dyn MuxDriver> must compile. If the trait gains a
         // non-dispatchable method this stops compiling. Obtained via the production
         // path (`Backend::driver()` through `driver_for`) so this seam names no
-        // concrete driver type — those live in `crate::backend::{tmux, psmux}`.
+        // concrete driver type — those live in `crate::mux::{tmux, psmux}`.
         let tmux_host = crate::model::Host::new(
             crate::model::Transport::Local { socket: None },
-            crate::backend::for_binary("tmux"),
+            crate::mux::for_binary("tmux"),
         );
         let psmux_host = crate::model::Host::new(
             crate::model::Transport::Local { socket: None },
-            crate::backend::for_binary("psmux"),
+            crate::mux::for_binary("psmux"),
         );
         let _t: Box<dyn MuxDriver> = driver_for(&tmux_host);
         let _p: Box<dyn MuxDriver> = driver_for(&psmux_host);
@@ -200,11 +200,11 @@ pub(crate) mod tests {
                 control_path: String::new(),
                 os: "linux".into(),
             },
-            crate::backend::for_binary("tmux"),
+            crate::mux::for_binary("tmux"),
         );
         let psmux_host = crate::model::Host::new(
             crate::model::Transport::Local { socket: None },
-            crate::backend::for_binary("psmux"),
+            crate::mux::for_binary("psmux"),
         );
         assert_eq!(driver_for(&tmux_host).kind(), "tmux");
         assert_eq!(driver_for(&psmux_host).kind(), "psmux");
@@ -220,7 +220,7 @@ pub(crate) mod tests {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::model::Transport::Local { socket: None },
-            crate::backend::for_binary("psmux"),
+            crate::mux::for_binary("psmux"),
         ));
         // A stale attachment + bookkeeping for a different session: show() must drop it
         // and reattach for the selected session (psmux is one PTY per host, reattached).

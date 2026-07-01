@@ -3,14 +3,14 @@
 
 use super::*;
 
-use crate::backend::ControlProtocol;
 use crate::host::HostEvent;
+use crate::mux::ControlProtocol;
 use crate::mux::{quote_target, PANE_FORMAT, SESSION_FORMAT};
 
 pub mod control_proto;
-pub mod driver;
+pub mod display;
 
-pub use driver::TmuxDriver;
+pub use display::TmuxDriver;
 
 use control_proto::{classify, Line, Notif};
 
@@ -67,7 +67,7 @@ impl Backend for Tmux {
         transport: &Transport,
         runner: &dyn Runner,
     ) -> Result<Vec<Session>, RunError> {
-        crate::backend::enumerate_via_list_sessions(&self.bin, transport, runner).await
+        crate::mux::enumerate_via_list_sessions(&self.bin, transport, runner).await
     }
 
     fn attach_plan(&self, session: &str, _window: Option<i64>) -> Vec<String> {
@@ -284,7 +284,7 @@ mod control_tests {
 #[cfg(test)]
 mod display_identity_tests {
     use super::*;
-    use crate::backend::psmux::Psmux;
+    use crate::mux::psmux::Psmux;
 
     /// tmux's display client records its OWN tty to a per-host file before exec'ing the
     /// attach; a later switch READS that file so it targets THAT client — never the

@@ -13,17 +13,22 @@ use crate::host::HostEvent;
 use crate::model::plan::{DeathSignal, EventSource};
 use crate::model::server_model::ServerModel;
 use crate::model::transport::Transport;
-use crate::mux::{self, parse_panes};
+use crate::mux::vocab as mux;
 use crate::session::Session;
 use crate::source::{RunError, Runner};
 
 mod control;
 mod psmux;
 mod tmux;
+pub mod vocab;
 
 pub use control::{ControlProtocol, Line, Notif};
 pub use psmux::Psmux;
 pub use tmux::{Tmux, TmuxControl};
+// Re-export the pure mux vocabulary at the crate::mux root so `crate::mux::<fn>`
+// call sites resolve unchanged whether the item is the Backend trait/factory or a
+// vocab builder/parser.
+pub use vocab::*;
 
 /// Reports whether `err` means "the mux is reachable but has no sessions" rather
 /// than "the host is unreachable". tmux exits non-zero with a "no server
@@ -207,7 +212,7 @@ pub trait Backend: Send + Sync {
             let argv = self.list_panes_plan(&name);
             let (cmd, args) = transport.exec_argv(false, &argv);
             if let Ok(out) = runner.run(&cmd, &args).await {
-                let panes = parse_panes(&String::from_utf8_lossy(&out));
+                let panes = mux::parse_panes(&String::from_utf8_lossy(&out));
                 emit(HostEvent::Panes { address, panes });
             }
         }
@@ -402,7 +407,7 @@ mod tests {
 
     // LIVE: enumerate over a real local tmux server. `#[ignore]` (needs tmux + a
     // server). Run on demand:
-    //   cargo test --lib backend::tests::tmux_enumerate_live -- --ignored --nocapture
+    //   cargo test --lib mux::tests::tmux_enumerate_live -- --ignored --nocapture
     #[ignore = "live: needs a running local tmux server"]
     #[tokio::test]
     async fn tmux_enumerate_live() {
@@ -577,7 +582,7 @@ mod tests {
 
     // LIVE: probe the REAL detect_backend against the configured hosts. `#[ignore]`
     // (needs ssh jupiter00 + a local psmux). Run on demand:
-    //   cargo test --lib backend::tests::detect_backend_live -- --ignored --nocapture
+    //   cargo test --lib mux::tests::detect_backend_live -- --ignored --nocapture
     #[ignore = "live: needs ssh jupiter00 and local psmux"]
     #[tokio::test]
     async fn detect_backend_live() {

@@ -4,7 +4,7 @@
 
 `src/` contains the runtime application: CLI/config assembly, mux discovery,
 the cockpit event loop, host metadata management, display attachment spawning,
-the control socket, and the UI/proxy/model/backend/state submodules.
+the control socket, and the UI/proxy/model/mux/state submodules.
 
 ## Mental Model
 
@@ -25,8 +25,8 @@ the live split view.
 - `driver.rs` holds ONLY the mux-agnostic display seam: the `MuxDriver` trait,
   `DriverCtx`, `Target`, the shared `lower_select_window` helper, and the thin
   `driver_for(host)` wrapper (`host.mux.driver()`). The concrete drivers live in
-  their mux family (`backend/tmux/driver.rs` = `TmuxDriver`,
-  `backend/psmux/driver.rs` = `PsmuxDriver`); each backend constructs its OWN via
+  their mux family (`mux/tmux/display.rs` = `TmuxDriver`,
+  `mux/psmux/display.rs` = `PsmuxDriver`); each backend constructs its OWN via
   `Backend::driver()`, so driver.rs names no concrete mux type and there is no
   `match server_model()`. `MuxDriver::show` carries per-host display orchestration —
   which PTY to use, whether to `switch-client` or reattach — and is the sole site for
@@ -36,7 +36,7 @@ the live split view.
   when a live client with a captured tty is known, else reattaches. `DriverCtx`
   injects supervisor-owned capabilities (registry, hosts, worker, mgr, env,
   pty_tx, attach_seq, view size) so the driver owns the decision without owning
-  the infrastructure. The dependency is one-way: `backend/<mux>/driver.rs` imports
+  the infrastructure. The dependency is one-way: `mux/<mux>/display.rs` imports
   the seam from `crate::driver`; driver.rs never imports a concrete backend driver.
 - `host.rs` owns control-mode reader/writer machinery, poll task management,
   host inventory, and `HostEvent`s. It is a metadata path only. `HostManager::ensure`
@@ -90,10 +90,10 @@ the live split view.
 - Do not block the cockpit loop on process spawn, PTY close, pipe reads, writes,
   or resize operations.
 - Do not treat `Source` as the preferred place for new execution semantics;
-  prefer `model::Transport` for machine execution, `backend::Backend` for
+  prefer `model::Transport` for machine execution, `mux::Backend` for
   mux vocabulary and classification (attach argv, server model, enumeration),
-  and the per-mux `MuxDriver` impls (`backend/tmux/driver.rs`,
-  `backend/psmux/driver.rs`) for per-host display orchestration and the concrete
+  and the per-mux `MuxDriver` impls (`mux/tmux/display.rs`,
+  `mux/psmux/display.rs`) for per-host display orchestration and the concrete
   switch/reattach decision.
 
 - All structured log output goes to `<xmux_dir>/xmux.log` (the non-blocking file
@@ -104,7 +104,7 @@ the live split view.
   message. This is what makes a runtime panic appear on the real screen rather
   than garbling the alt-screen.
 - `display_show`, `attach_created`, `tty_probe`, `display_inventory` (emitted by
-  the per-mux drivers in `backend/{tmux,psmux}/driver.rs`) and `display_grid_changed`
+  the per-mux drivers in `mux/{tmux,psmux}/display.rs`) and `display_grid_changed`
   (emitted by `cockpit.rs`) are the
   diagnostic surface for whether a session switch actually landed. The first
   grid change after the displayed session changes is INFO; steady-state repaints
@@ -127,7 +127,7 @@ the live split view.
   submodule.
 - Exercise ctl parser tests when adding or renaming control verbs.
 - Check redraw and blocking behavior when moving work into the cockpit loop.
-- Set `XMUX_LOG=xmux::backend=debug` to emit `display_show`, `tty_probe`, and
+- Set `XMUX_LOG=xmux::mux=debug` to emit `display_show`, `tty_probe`, and
   `display_inventory` events at debug verbosity; useful for tracing whether a
   session-switch request reaches the driver and which decision branch it takes.
   The log file is at `<xmux_dir>/xmux.log` (daily-rolling suffix).

@@ -263,7 +263,7 @@ mod tests {
                 control_path: String::new(),
                 os: "linux".into(),
             },
-            crate::backend::for_binary("tmux"),
+            crate::mux::for_binary("tmux"),
         );
         let argv = vec![
             "ssh".to_string(),
@@ -285,7 +285,7 @@ mod tests {
     fn local_shared_attach_is_not_prefixed() {
         let host = crate::model::Host::new(
             crate::model::Transport::Local { socket: None },
-            crate::backend::for_binary("tmux"),
+            crate::mux::for_binary("tmux"),
         );
         let argv = vec![
             "tmux".to_string(),
@@ -309,7 +309,7 @@ mod tests {
                 control_path: String::new(),
                 os: "linux".into(),
             },
-            crate::backend::for_binary("tmux"),
+            crate::mux::for_binary("tmux"),
         ));
 
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
@@ -366,7 +366,7 @@ mod tests {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::model::Transport::Local { socket: None },
-            crate::backend::for_binary("tmux"),
+            crate::mux::for_binary("tmux"),
         ));
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
         let worker = crate::display::DisplayWorker::with_spawner(
@@ -417,7 +417,7 @@ mod tests {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::model::Transport::Local { socket: None },
-            crate::backend::for_binary("tmux"),
+            crate::mux::for_binary("tmux"),
         ));
         hosts
             .get_mut("local")

@@ -6,9 +6,9 @@
 
 use std::collections::HashMap;
 
-use crate::backend::Backend;
 use crate::host::HostInventory;
 use crate::model::{DisplayTty, Transport};
+use crate::mux::Backend;
 use crate::source::Runner;
 
 /// Connecting / live / unreachable — replaces the loose `connecting` AtomicBool
@@ -109,8 +109,7 @@ impl Host {
             return;
         }
         let bin = self.mux.bin().to_string();
-        let Some(backend) = crate::backend::detect_backend(&self.transport, &bin, runner).await
-        else {
+        let Some(backend) = crate::mux::detect_backend(&self.transport, &bin, runner).await else {
             return;
         };
         if backend.kind() != self.mux.kind() {
@@ -183,8 +182,8 @@ impl Host {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::Backend;
     use crate::model::{DeathSignal, EventSource, ServerModel, Transport};
+    use crate::mux::Backend;
     use crate::session::Session;
     use crate::source::{RunError, Runner};
 
@@ -548,7 +547,7 @@ mod tests {
                 control_path: String::new(),
                 os: "linux".into(),
             },
-            crate::backend::for_binary("tmux"), // Shared → DeathSignal::ControlNotice
+            crate::mux::for_binary("tmux"), // Shared → DeathSignal::ControlNotice
         );
         assert!(
             !h.matches_display_tty("/dev/pts/3"),
@@ -570,7 +569,7 @@ mod tests {
         use crate::model::Transport;
         let h = Host::new(
             Transport::Local { socket: None },
-            crate::backend::for_binary("psmux"), // PerSession → DeathSignal::PathStat
+            crate::mux::for_binary("psmux"), // PerSession → DeathSignal::PathStat
         );
         let name = format!("xmux-hostlive-{}", std::process::id());
         let path = crate::model::death::psmux_port_path(&name);
@@ -590,7 +589,7 @@ mod tests {
                 control_path: String::new(),
                 os: "linux".into(),
             },
-            crate::backend::for_binary("tmux"), // Shared → not PathStat
+            crate::mux::for_binary("tmux"), // Shared → not PathStat
         );
         // A Shared host never dies by a .port file — liveness here is unconditionally true.
         assert!(h.psmux_session_live("anything"));
@@ -640,7 +639,7 @@ mod tests {
     async fn detect_and_correct_replaces_behavior_and_preserves_bin() {
         let mut h = Host::new(
             Transport::Local { socket: None },
-            crate::backend::for_binary("tmux"),
+            crate::mux::for_binary("tmux"),
         );
         let runner = DetectRunner::ok("psmux command help");
         h.detect_and_correct(&runner).await;
@@ -660,7 +659,7 @@ mod tests {
     async fn detect_and_correct_retries_after_inconclusive_probe() {
         let mut h = Host::new(
             Transport::Local { socket: None },
-            crate::backend::for_binary("tmux"),
+            crate::mux::for_binary("tmux"),
         );
         let runner = DetectRunner::err();
         h.detect_and_correct(&runner).await;

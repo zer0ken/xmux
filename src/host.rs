@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use crate::backend::{ControlProtocol, Line, Notif};
 use crate::mux::{parse_panes, parse_sessions};
+use crate::mux::{ControlProtocol, Line, Notif};
 use crate::session::{Session, WindowPanes};
 
 /// One host's session/window inventory, seeded from list-sessions/list-panes and
@@ -104,7 +104,7 @@ pub enum HostEvent {
     /// `apply_scan_result`; emitted by the fire-and-forget detection task.
     Scanned {
         source: String,
-        detected: Option<Box<dyn crate::backend::Backend>>,
+        detected: Option<Box<dyn crate::mux::Backend>>,
     },
     /// A POLL host re-enumerated its sessions. A poll host has no host-level control
     /// stream, so its [`HostManager`]-owned poll task emits this onto the same bus.
@@ -652,7 +652,7 @@ async fn run_poll(
     interval_ms: u64,
     events: tokio::sync::mpsc::UnboundedSender<HostEvent>,
 ) {
-    let mux = crate::backend::for_kind(&mux_kind, &mux_bin);
+    let mux = crate::mux::for_kind(&mux_kind, &mux_bin);
     // Fixed-cadence ticker: the first tick is immediate (enumerate on spawn), then a
     // sweep every `interval_ms` of wall-clock. Skip ticks missed while one enumeration
     // ran long, so a slow probe paces the loop instead of piling up overlapping sweeps.
@@ -855,7 +855,7 @@ impl HostManager {
 /// or spawn a fake control child. Both the `host` and `cockpit` test modules use it.
 #[cfg(test)]
 pub(crate) fn test_control_proto() -> &'static dyn ControlProtocol {
-    crate::backend::for_binary("tmux")
+    crate::mux::for_binary("tmux")
         .control_protocol()
         .expect("tmux has a control protocol")
 }
@@ -973,7 +973,7 @@ mod tests {
                 control_path: String::new(),
                 os: "linux".into(),
             },
-            crate::backend::for_binary("tmux"),
+            crate::mux::for_binary("tmux"),
         );
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
         let mut mgr = HostManager::new(tx);
@@ -1602,7 +1602,7 @@ mod tests {
                 control_path: control_path.into(),
                 os: os.into(),
             },
-            crate::backend::for_binary(bin),
+            crate::mux::for_binary(bin),
         )
     }
 
@@ -1611,7 +1611,7 @@ mod tests {
             crate::model::Transport::Local {
                 socket: socket.map(str::to_string),
             },
-            crate::backend::for_binary(bin),
+            crate::mux::for_binary(bin),
         )
     }
 
@@ -1694,7 +1694,7 @@ mod tests {
         let src = fake_source("jupiter06");
         let host = crate::model::Host::new(
             crate::model::Transport::Local { socket: None },
-            crate::backend::for_binary("psmux"),
+            crate::mux::for_binary("psmux"),
         );
         assert!(!mgr.ensure("jupiter06", &host, &src, 80, 24).unwrap());
     }
@@ -1718,7 +1718,7 @@ mod tests {
         let mut mgr = HostManager::new(tx);
         let host = crate::model::Host::new(
             crate::model::Transport::Local { socket: None },
-            crate::backend::for_kind("psmux", "psmux-no-such-binary"),
+            crate::mux::for_kind("psmux", "psmux-no-such-binary"),
         );
         let src = fake_source("local");
         assert!(

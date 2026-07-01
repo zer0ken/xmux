@@ -122,7 +122,7 @@ impl Source {
     /// interactive auth; a LOCAL source pre-selects it with a separate instant command, so
     /// the transport ignores it here.
     pub fn interactive_attach_command(&self, name: &str, window: Option<i64>) -> Vec<String> {
-        let mux = crate::backend::for_binary(&self.binary);
+        let mux = crate::mux::for_binary(&self.binary);
         let attach = mux.attach_plan(name, window);
         let pre_select = window.map(|w| mux.select_window_plan(&mux::window_target(name, w)));
         let (n, a) = self
@@ -168,16 +168,16 @@ impl Source {
     /// over this source's [`Source::transport`]. This is a thin shim — the source layer
     /// no longer branches on the mux kind.
     pub async fn list_sessions(&self) -> Result<Vec<Session>, RunError> {
-        crate::backend::for_binary(&self.binary)
+        crate::mux::for_binary(&self.binary)
             .enumerate(&self.transport(), self.run_with())
             .await
     }
 }
 
-// The reachable-but-empty classification lives in `backend/`. The cockpit reaches its
+// The reachable-but-empty classification lives in `mux/`. The cockpit reaches its
 // `%exit`/`%error`-reason check through `crate::source::reason_is_no_sessions`, so the
 // name is re-exported here to keep that path resolving.
-pub(crate) use crate::backend::reason_is_no_sessions;
+pub(crate) use crate::mux::reason_is_no_sessions;
 
 /// Renders one argument safe for a POSIX shell. A string of only safe characters
 /// passes through; anything else is single-quoted with embedded single-quotes

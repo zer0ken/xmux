@@ -1,14 +1,14 @@
-# Working Notes: /src/backend/tmux
+# Working Notes: /src/mux/tmux
 
 ## Purpose
 
-`backend/tmux` is the tmux family: everything mux-specific to tmux lives here so no
+`mux/tmux` is the tmux family: everything mux-specific to tmux lives here so no
 tmux code sits at the `src` root. It owns BOTH sides of the mux:
 
 - the metadata backend `Tmux` (`Backend` impl) — binary name, `ServerModel::Shared`,
   aggregate `list-sessions` enumeration, attach argv, the `-CC` control argv, event
   source, death signal, and window/session operation plans;
-- the display driver `TmuxDriver` (`MuxDriver` impl, in `driver.rs`) — the per-host
+- the display driver `TmuxDriver` (`MuxDriver` impl, in `display.rs`) — the per-host
   display orchestration for a shared-server mux.
 
 `Tmux::driver()` constructs `TmuxDriver`, so tmux selection lives in this family and
@@ -33,8 +33,8 @@ machine execution (local `-S` / `ssh -tt`); the tmux family never hardcodes ssh.
 - `mod.rs` — `Tmux` (`Backend`), the per-host display-tty file helpers
   (`display_tty_path`, the record/switch commands via `display_tty_record_prefix` /
   `switch_via_recorded_tty_cmd`), the control argv, and `TmuxControl`.
-- `driver.rs` — `TmuxDriver` (`MuxDriver`) plus the tmux-only attach helper
-  `with_display_tty_record`. Re-exported from `mod.rs` as `crate::backend::tmux::TmuxDriver`.
+- `display.rs` — `TmuxDriver` (`MuxDriver`) plus the tmux-only attach helper
+  `with_display_tty_record`. Re-exported from `mod.rs` as `crate::mux::tmux::TmuxDriver`.
 - `control_proto.rs` — the pure, headlessly-testable `-CC` line classification, the
   notification→event table, and the command-line builders behind `ControlProtocol`.
 - The driver pulls the mux-agnostic seam (`MuxDriver`, `DriverCtx`, `lower_select_window`)
@@ -55,7 +55,7 @@ machine execution (local `-S` / `ssh -tt`); the tmux family never hardcodes ssh.
 
 ## Common Pitfalls
 
-- Do not name `TmuxDriver` outside `crate::backend::**`; the supervisor selects it via
+- Do not name `TmuxDriver` outside `crate::mux::**`; the supervisor selects it via
   `Backend::driver()` (through `driver_for`), never a `match server_model()`.
 - Do not fold the display-tty record prefix into a LOCAL attach (there is no shell to run
   it — it would corrupt the argv's session-name argument).
@@ -72,8 +72,8 @@ machine execution (local `-S` / `ssh -tt`); the tmux family never hardcodes ssh.
 
 ## Verification
 
-- Run backend and driver tests (`cargo test --lib backend::tmux`) for plan, control, and
+- Run backend and driver tests (`cargo test --lib mux::tmux`) for plan, control, and
   driver changes.
 - Run cockpit/host tests when the event source, death signal, or display decision changes.
-- Set `XMUX_LOG=xmux::backend::tmux=debug` to trace the driver's `display_show` /
+- Set `XMUX_LOG=xmux::mux::tmux=debug` to trace the driver's `display_show` /
   `display_inventory` / `attach_created` decisions.

@@ -1,32 +1,36 @@
-# Working Notes: /src/backend
+# Working Notes: /src/mux
 
 ## Purpose
 
-`backend` defines mux-specific behavior behind the `Backend` trait. A backend
-knows the mux binary, server model, enumeration behavior, attach command shape,
-control-channel availability, event source, death signal, and window/session
+`mux` is the mux family home. It defines mux-specific behavior behind the `Backend`
+trait AND holds the pure shared vocabulary every backend argv is built from. A
+backend knows the mux binary, server model, enumeration behavior, attach command
+shape, control-channel availability, event source, death signal, and window/session
 operation plans.
 
-One mux is one directory. `mod.rs` holds the cross-mux surface: the `Backend`
-trait, identity detection (`detect_backend`), the factory
-functions (`for_binary`, `for_kind`), and — via `control.rs` — the
-`ControlProtocol` trait that hides a mux's control-mode (`-CC`) wire details
-(line framing/classification, the notification→event table, the size formatter)
-from `host.rs`. Each concrete mux lives in its own sub-directory (owning BOTH its
-metadata backend AND its display driver) and is re-exported from `mod.rs`:
+`mod.rs` holds the cross-mux surface: the `Backend` trait, identity detection
+(`detect_backend`), the factory functions (`for_binary`, `for_kind`), and — via
+`control.rs` — the `ControlProtocol` trait that hides a mux's control-mode (`-CC`)
+wire details (line framing/classification, the notification→event table, the size
+formatter) from `host.rs`. `vocab.rs` is the pure shared vocabulary (the
+`SESSION_FORMAT`/`PANE_FORMAT` templates, the argv builders, the row parsers, and
+the address utilities); `mod.rs` re-exports it (`pub use vocab::*;`) so
+`crate::mux::<fn>` names a vocab builder and the `Backend` factory alike. Each
+concrete mux lives in its own sub-directory (owning BOTH its metadata backend AND
+its display driver) and is re-exported from `mod.rs`:
 
 - `tmux/mod.rs` — `Tmux` and its `Backend` impl, plus the display-tty file helpers
-  and `mux_control_argv`; `tmux/driver.rs` — `TmuxDriver` (`MuxDriver` impl) and its
+  and `mux_control_argv`; `tmux/display.rs` — `TmuxDriver` (`MuxDriver` impl) and its
   attach helper; `tmux/control_proto.rs` holds its pure, headlessly-testable `-CC`
   wire functions behind `ControlProtocol`. See `tmux/AGENTS.md`.
 - `psmux/mod.rs` — `Psmux` and its `Backend` impl, plus its poll cadence constant
-  (`PSMUX_POLL_MS`) and `switch_client_argv`; `psmux/driver.rs` — `PsmuxDriver`
+  (`PSMUX_POLL_MS`) and `switch_client_argv`; `psmux/display.rs` — `PsmuxDriver`
   (`MuxDriver` impl) and its tty-capture/refresh helpers; `psmux/registry.rs` is the
   `~/.psmux` per-machine session registry that backs psmux `enumerate` (one server per
   session, no aggregate `list-sessions`). See `psmux/AGENTS.md`.
 
 Sub-modules pull the shared trait, value types, and imports from the parent via
-`use super::*;`. `crate::backend::{Tmux, Psmux}` resolve through the re-exports; a
+`use super::*;`. `crate::mux::{Tmux, Psmux}` resolve through the re-exports; a
 mux's driver is constructed via `Backend::driver()`, so no caller names the concrete
 `TmuxDriver`/`PsmuxDriver` type.
 
@@ -49,8 +53,9 @@ supply a per-session attach plan.
   (`new_session_plan`, `kill_session_plan`, `rename_session_plan`), so `manage`
   builds every mux argv from a `Backend` and lowers it via `Transport`, never off
   a bare binary name.
-- Generic `mux::*` command builders are called ONLY inside `backend/**` (each
-  `*_plan` wraps one); the pure address vocabulary (`mux::window_target`,
+- Generic `mux::*` command builders (from `vocab.rs`) are called ONLY inside the
+  per-mux dirs (`tmux/**`, `psmux/**`) and the shared enumeration helper in `mod.rs`
+  (each `*_plan` wraps one); the pure address vocabulary (`mux::window_target`,
   `parse_panes`, `quote_target`) is callable anywhere.
 - `ServerModel`, `EventSource`, and `DeathSignal` are the classification values
   callers use instead of branching on backend names. `Backend::driver()` constructs
@@ -73,7 +78,7 @@ supply a per-session attach plan.
 - Do not add a broad capability catalog when only one caller needs a concrete
   plan.
 - Do not thread `remote` booleans through backend methods.
-- Do not duplicate psmux registry behavior outside the backend/source boundary
+- Do not duplicate psmux registry behavior outside the mux/source boundary
   without deciding which module owns it.
 
 ## Before Editing
@@ -85,6 +90,6 @@ supply a per-session attach plan.
 
 ## Verification
 
-- Run backend and model tests for plan/lowering changes.
+- Run mux and model tests for plan/lowering changes.
 - Run host or cockpit tests when event source, death signal, or selection outcome
   changes.

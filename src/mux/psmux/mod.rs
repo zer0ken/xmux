@@ -3,10 +3,10 @@
 
 use super::*;
 
-pub mod driver;
+pub mod display;
 mod registry;
 
-pub use driver::PsmuxDriver;
+pub use display::PsmuxDriver;
 
 /// The local-psmux poll cadence (psmux is one-server-per-session with no event
 /// push, so changes are discovered by re-enumeration). Mirrors the supervisor's
@@ -49,7 +49,7 @@ impl Backend for Psmux {
         // the local registry into a remote host would inject local session names as
         // phantoms and (worse) swallow an ssh failure into a fake empty/populated list.
         let Transport::Local { .. } = transport else {
-            return crate::backend::enumerate_via_list_sessions(&self.bin, transport, runner).await;
+            return crate::mux::enumerate_via_list_sessions(&self.bin, transport, runner).await;
         };
         // Local psmux: the registry (`~/.psmux/<name>.port`) is the authoritative
         // existence set; one list-sessions supplies display detail (empty on a

@@ -583,7 +583,7 @@ fn spawn_host_detection(
     let transport = transport_for_source(&src);
     let bin = src.binary.clone();
     tokio::spawn(async move {
-        let mut host = crate::model::Host::new(transport, crate::backend::for_binary(&bin));
+        let mut host = crate::model::Host::new(transport, crate::mux::for_binary(&bin));
         host.detect_and_correct(&crate::source::ExecRunner).await;
         let detected = host.detected.then_some(host.mux);
         let _ = tx.send(HostEvent::Scanned { source, detected });
@@ -635,7 +635,7 @@ fn scan_or_dispatch_host(
 fn apply_scan_result(
     hosts: &mut crate::model::Hosts,
     source: &str,
-    detected: Option<Box<dyn crate::backend::Backend>>,
+    detected: Option<Box<dyn crate::mux::Backend>>,
 ) {
     let Some(host) = hosts.get_mut(source) else {
         return;
@@ -2978,11 +2978,11 @@ mod tests {
                 control_path: String::new(),
                 os: "linux".into(),
             },
-            crate::backend::for_binary("tmux"), // Shared
+            crate::mux::for_binary("tmux"), // Shared
         ));
         hosts.insert(crate::model::Host::new(
             crate::model::Transport::Local { socket: None }, // host id == "local"
-            crate::backend::for_binary("psmux"),             // PerSession
+            crate::mux::for_binary("psmux"),                 // PerSession
         ));
         let rsel = Selection {
             source: "jup".into(),
@@ -3007,13 +3007,13 @@ mod tests {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::model::Transport::Local { socket: None },
-            crate::backend::for_binary("tmux"),
+            crate::mux::for_binary("tmux"),
         ));
 
         apply_scan_result(
             &mut hosts,
             "local",
-            Some(crate::backend::for_kind("psmux", "tmux")),
+            Some(crate::mux::for_kind("psmux", "tmux")),
         );
 
         let host = hosts.get("local").unwrap();
@@ -3031,13 +3031,13 @@ mod tests {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::model::Transport::Local { socket: None },
-            crate::backend::for_binary("psmux"),
+            crate::mux::for_binary("psmux"),
         ));
 
         apply_scan_result(
             &mut hosts,
             "local",
-            Some(crate::backend::for_kind("tmux", "psmux")),
+            Some(crate::mux::for_kind("tmux", "psmux")),
         );
 
         let host = hosts.get("local").unwrap();
@@ -3079,7 +3079,7 @@ mod tests {
                 control_path: String::new(),
                 os: "linux".into(),
             },
-            crate::backend::for_binary("tmux"), // Control event source
+            crate::mux::for_binary("tmux"), // Control event source
         );
         host.detected = true;
         hosts.insert(host);
@@ -3640,7 +3640,7 @@ mod tests {
                 control_path: String::new(),
                 os: "linux".into(),
             },
-            crate::backend::for_binary("tmux"),
+            crate::mux::for_binary("tmux"),
         ));
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
         let worker = crate::display::DisplayWorker::new(ptx);
@@ -3716,7 +3716,7 @@ mod tests {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::model::Transport::Local { socket: None },
-            crate::backend::for_binary("psmux"),
+            crate::mux::for_binary("psmux"),
         ));
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
         let mut worker = crate::display::DisplayWorker::with_spawner(
@@ -3806,7 +3806,7 @@ mod tests {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::model::Transport::Local { socket: None },
-            crate::backend::for_binary("psmux"),
+            crate::mux::for_binary("psmux"),
         ));
         hosts
             .get_mut("local")
@@ -3889,7 +3889,7 @@ mod tests {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::model::Transport::Local { socket: None },
-            crate::backend::for_binary("psmux"),
+            crate::mux::for_binary("psmux"),
         ));
         hosts
             .get_mut("local")
@@ -3945,7 +3945,7 @@ mod tests {
                 control_path: String::new(),
                 os: "linux".into(),
             },
-            crate::backend::for_binary("tmux"),
+            crate::mux::for_binary("tmux"),
         ));
         hosts
     }
@@ -4507,7 +4507,7 @@ mod tests {
             let mut hosts = crate::model::Hosts::default();
             hosts.insert(crate::model::Host::new(
                 crate::model::Transport::Local { socket: None },
-                crate::backend::for_binary("psmux"),
+                crate::mux::for_binary("psmux"),
             ));
             let selection = Selection {
                 source: "local".into(),

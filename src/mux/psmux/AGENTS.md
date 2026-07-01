@@ -1,15 +1,15 @@
-# Working Notes: /src/backend/psmux
+# Working Notes: /src/mux/psmux
 
 ## Purpose
 
-`backend/psmux` is the psmux family: everything mux-specific to psmux lives here so no
+`mux/psmux` is the psmux family: everything mux-specific to psmux lives here so no
 psmux code sits at the `src` root. It owns BOTH sides of the mux:
 
 - the metadata backend `Psmux` (`Backend` impl) — binary name,
   `ServerModel::PerSession`, registry-merge enumeration for a LOCAL host (list-sessions
   over ssh for a REMOTE one), attach argv, poll cadence, death signal, and window/session
   operation plans;
-- the display driver `PsmuxDriver` (`MuxDriver` impl, in `driver.rs`) — the per-host
+- the display driver `PsmuxDriver` (`MuxDriver` impl, in `display.rs`) — the per-host
   display orchestration for a per-session mux.
 
 `Psmux::driver()` constructs `PsmuxDriver`, so psmux selection lives in this family and
@@ -40,9 +40,9 @@ and owns the concrete switch/reattach decision. `Transport` lowers the machine e
 
 - `mod.rs` — `Psmux` (`Backend`), the poll cadence constant (`PSMUX_POLL_MS`), and the
   `switch_client_argv` the driver's in-place switch calls.
-- `driver.rs` — `PsmuxDriver` (`MuxDriver`) plus the psmux-only helpers
+- `display.rs` — `PsmuxDriver` (`MuxDriver`) plus the psmux-only helpers
   `refresh_client_lowered`, `parse_psmux_client_tty`, and `spawn_local_psmux_tty_capture`.
-  Re-exported from `mod.rs` as `crate::backend::psmux::PsmuxDriver`.
+  Re-exported from `mod.rs` as `crate::mux::psmux::PsmuxDriver`.
 - `registry.rs` — the `~/.psmux` per-machine session registry that backs local
   `enumerate` (existence set) and the merge with one list-sessions detail row.
 - The driver pulls the mux-agnostic seam (`MuxDriver`, `DriverCtx`, `lower_select_window`)
@@ -66,7 +66,7 @@ and owns the concrete switch/reattach decision. `Transport` lowers the machine e
 
 ## Common Pitfalls
 
-- Do not name `PsmuxDriver` outside `crate::backend::**`; the supervisor selects it via
+- Do not name `PsmuxDriver` outside `crate::mux::**`; the supervisor selects it via
   `Backend::driver()` (through `driver_for`), never a `match server_model()`.
 - Do not run `switch-client -c ""` — the tty capture is guarded; an empty/absent tty must
   fall back to reattach.
@@ -83,8 +83,8 @@ and owns the concrete switch/reattach decision. `Transport` lowers the machine e
 
 ## Verification
 
-- Run backend and driver tests (`cargo test --lib backend::psmux`) for plan, registry,
+- Run backend and driver tests (`cargo test --lib mux::psmux`) for plan, registry,
   and driver changes.
 - Run cockpit/host tests when the event source, death signal, or display decision changes.
-- Set `XMUX_LOG=xmux::backend::psmux=debug` to trace the driver's `display_show` /
+- Set `XMUX_LOG=xmux::mux::psmux=debug` to trace the driver's `display_show` /
   `tty_probe` / `display_inventory` decisions.

@@ -4,9 +4,9 @@
 
 use std::collections::HashMap;
 
-use crate::backend::for_binary;
 use crate::config::Config;
 use crate::model::{Host, Liveness, Transport};
+use crate::mux::for_binary;
 use crate::session::LOCAL_SOURCE;
 
 /// Every host, keyed by host id, in display order (local first). The one owner —

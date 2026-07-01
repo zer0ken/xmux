@@ -8,7 +8,7 @@
 
 use crate::host::HostEvent;
 
-pub use crate::backend::tmux::control_proto::{Line, Notif};
+pub use crate::mux::tmux::control_proto::{Line, Notif};
 
 /// The tmux-flavored control-mode protocol. Stateless: every method is a pure
 /// function of its arguments, so the implementor is a unit struct shared `'static`.
