@@ -8,7 +8,7 @@ control-channel availability, event source, death signal, and window/session
 operation plans.
 
 One mux is one directory. `mod.rs` holds the cross-mux surface: the `Backend`
-trait, `SelectOutcome`, identity detection (`detect_backend`), the factory
+trait, identity detection (`detect_backend`), the factory
 functions (`for_binary`, `for_kind`), and — via `control.rs` — the
 `ControlProtocol` trait that hides a mux's control-mode (`-CC`) wire details
 (line framing/classification, the notification→event table, the size formatter)
@@ -47,11 +47,11 @@ as psmux enumerate differently and supply a per-session attach plan.
 - Generic `mux::*` command builders are called ONLY inside `backend/**` (each
   `*_plan` wraps one); the pure address vocabulary (`mux::window_target`,
   `parse_panes`, `quote_target`) is callable anywhere.
-- `SelectOutcome`, `ServerModel`, `EventSource`, and `DeathSignal` are the
-  classification values callers use instead of branching on backend names.
-  `SelectOutcome` classifies the attach pattern a backend implies; the `MuxDriver`
-  in `src/driver.rs` acts on that classification (one PTY per host for
-  `SharedSwitch`; in-place client switch or reattach for `PerSessionReattach`).
+- `ServerModel`, `EventSource`, and `DeathSignal` are the classification values
+  callers use instead of branching on backend names. `driver_for(host)` in
+  `src/driver.rs` dispatches on `server_model()` to pick the host's `MuxDriver`
+  (`TmuxDriver` = one PTY per host with an in-place `switch-client`; `PsmuxDriver`
+  = in-place client switch or reattach per session).
 
 ## Invariants
 

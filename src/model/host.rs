@@ -77,8 +77,8 @@ pub struct Host {
     pub inventory: HostInventory,
     /// Which session each display_key shows + what spawn is in flight.
     pub display: HostDisplay,
-    /// xmux's own display-client tty, captured in memory. Read by the supervisor to
-    /// build `mux.switch_client_argv(tty, session)` for `Transport::lower_switch`.
+    /// xmux's own display-client tty, captured in memory. Read by the driver's in-place
+    /// switch to build `mux.switch_client_argv(tty, session)`.
     pub display_tty: DisplayTty,
     pub liveness: Liveness,
     pub(crate) detected: bool,
@@ -301,7 +301,7 @@ impl Host {
 mod tests {
     use super::*;
     use crate::backend::Backend;
-    use crate::model::{DeathSignal, EventSource, ServerModel, SwitchPlan, Transport};
+    use crate::model::{DeathSignal, EventSource, ServerModel, Transport};
     use crate::session::Session;
     use crate::source::{RunError, Runner};
 
@@ -329,12 +329,6 @@ mod tests {
             Ok(vec![])
         }
         fn attach_plan(&self, _s: &str, _w: Option<i64>) -> Vec<String> {
-            vec![]
-        }
-        fn switch_plan(&self, _s: &str) -> SwitchPlan {
-            SwitchPlan::PerSessionNoOp
-        }
-        fn switch_client_argv(&self, _tty: &str, _s: &str) -> Vec<String> {
             vec![]
         }
         fn control_argv(&self) -> Option<Vec<String>> {
@@ -546,12 +540,6 @@ mod tests {
             self.result.lock().unwrap().take().unwrap_or(Ok(vec![]))
         }
         fn attach_plan(&self, _s: &str, _w: Option<i64>) -> Vec<String> {
-            vec![]
-        }
-        fn switch_plan(&self, _s: &str) -> SwitchPlan {
-            SwitchPlan::PerSessionNoOp
-        }
-        fn switch_client_argv(&self, _tty: &str, _s: &str) -> Vec<String> {
             vec![]
         }
         fn control_argv(&self) -> Option<Vec<String>> {

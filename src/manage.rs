@@ -275,9 +275,9 @@ mod tests {
         assert_eq!(fr.args(), vec!["rename-window", "-t", "api:2", "logs"]);
     }
 
-    // Each op routes through Backend x Transport: for a REMOTE source the recorded
-    // command is `ssh …` and the trailing arg is the mux argv joined per-arg-quoted,
-    // byte-identical to what `Source::run` produced before the axes were closed.
+    // Each op composes the Backend plan through the Transport and runs it via the
+    // source's runner: for a REMOTE source the recorded command is `ssh …` and the
+    // trailing arg is the mux argv joined per-arg-quoted.
     #[tokio::test]
     async fn create_remote_wraps_new_session_in_ssh() {
         let fr = RecordingRunner::new("api\n", false);

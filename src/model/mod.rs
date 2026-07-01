@@ -1,8 +1,7 @@
 //! The host model: the machine boundary (`Transport`), the mux backend (`Backend`)
 //! and its server model (`ServerModel`), and the plan/value types they exchange.
 //! A `Host` (built in a later phase) is `Transport × Box<dyn Backend>`. The mux layer
-//! is transport-blind: `Backend::switch_plan` returns intent; `Transport::lower_switch`
-//! lowers it to a runnable command.
+//! is transport-blind: it supplies mux argv and the `Transport` decides how to run it.
 
 pub mod action;
 pub mod death;
@@ -19,6 +18,6 @@ pub use death::{
 };
 pub use host::{Host, HostDisplay, Liveness, SyncAction};
 pub use hosts::Hosts;
-pub use plan::{DeathSignal, DisplayTty, EventSource, SwitchPlan};
+pub use plan::{DeathSignal, DisplayTty, EventSource};
 pub use server_model::ServerModel;
 pub use transport::{LoweredSwitch, Transport};

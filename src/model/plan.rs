@@ -1,22 +1,8 @@
-//! The leaf value types a `Backend` method (or `Transport::lower_switch`) returns:
-//! the transport-blind intent for moving a shared attachment (`SwitchPlan`), how a
-//! session's death is detected (`DeathSignal`), where change events come from
-//! (`EventSource`), and the captured display tty (`DisplayTty`). No logic — these
-//! are the shapes the supervisor matches on. `DeathSignal` is defined HERE and
-//! nowhere else; Phase 3's death wiring adds free helpers over this one enum.
-
-/// TRANSPORT-BLIND intent: how (or whether) to move a host's ONE shared display
-/// attachment onto a session. Produced by `Backend::switch_plan`; lowered to a runnable
-/// command by `Transport::lower_switch`. Carries NO transport detail and NO tty.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SwitchPlan {
-    /// Move the host's single shared client onto `session` (a `switch-client`).
-    /// Shared (tmux), local OR remote — the `Transport` decides how to run it.
-    Switch { session: String },
-    /// This mux keeps one attachment PER SESSION — there is nothing to switch; the
-    /// caller spawns/uses the per-session attachment directly. PerSession (psmux).
-    PerSessionNoOp,
-}
+//! The leaf value types a `Backend` method returns: how a session's death is
+//! detected (`DeathSignal`), where change events come from (`EventSource`), and the
+//! captured display tty (`DisplayTty`). No logic — these are the shapes the supervisor
+//! matches on. `DeathSignal` is defined HERE and nowhere else; Phase 3's death wiring
+//! adds free helpers over this one enum.
 
 /// How a Host detects that a displayed session/attachment died, so a `switch-client`
 /// is never aimed at a detached/dead tty (the blank-pane class). One PUSH per mux.
@@ -51,24 +37,6 @@ pub struct DisplayTty(pub Option<String>);
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn switch_plan_variants_are_distinct_and_carry_session() {
-        assert_eq!(
-            SwitchPlan::Switch {
-                session: "api".into()
-            },
-            SwitchPlan::Switch {
-                session: "api".into()
-            }
-        );
-        assert_ne!(
-            SwitchPlan::PerSessionNoOp,
-            SwitchPlan::Switch {
-                session: "api".into()
-            }
-        );
-    }
 
     #[test]
     fn death_signal_variants_are_distinct() {

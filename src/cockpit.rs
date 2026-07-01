@@ -3934,38 +3934,6 @@ mod tests {
         assert_eq!(h.display.in_flight.get("local"), Some(&8));
     }
 
-    #[test]
-    fn local_tmux_shared_second_session_lowers_to_a_local_switch_client_argv() {
-        use crate::model::{LoweredSwitch, Transport};
-        let host = crate::model::Host::new(
-            Transport::Local { socket: None },
-            crate::backend::for_binary("tmux"),
-        );
-        let plan = host.mux.switch_plan("b");
-        let tty = "/dev/pts/7";
-        let builder = |session: &str| host.mux.switch_client_argv(tty, session);
-        let got = host.transport.lower_switch(&plan, &builder);
-        let LoweredSwitch::Local(argv) = got.expect("local tmux must lower to Local") else {
-            panic!("expected LoweredSwitch::Local");
-        };
-        assert!(
-            argv.iter().any(|a| a == "tmux"),
-            "argv contains tmux binary"
-        );
-        assert!(
-            argv.iter().any(|a| a == "switch-client"),
-            "argv contains switch-client"
-        );
-        assert!(
-            argv.iter().any(|a| a == tty),
-            "argv contains the display tty"
-        );
-        assert!(
-            argv.iter().any(|a| a == "b"),
-            "argv contains the session name"
-        );
-    }
-
     fn empty_manager() -> HostManager {
         HostManager::new(tokio::sync::mpsc::unbounded_channel().0)
     }

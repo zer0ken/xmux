@@ -55,10 +55,6 @@ impl Backend for Tmux {
         ServerModel::Shared
     }
 
-    fn select(&self) -> SelectOutcome {
-        SelectOutcome::SharedSwitch
-    }
-
     async fn enumerate(
         &self,
         transport: &Transport,
@@ -69,23 +65,6 @@ impl Backend for Tmux {
 
     fn attach_plan(&self, session: &str, _window: Option<i64>) -> Vec<String> {
         mux::attach(&self.bin, session)
-    }
-
-    fn switch_plan(&self, session: &str) -> SwitchPlan {
-        SwitchPlan::Switch {
-            session: session.to_string(),
-        }
-    }
-
-    fn switch_client_argv(&self, display_tty: &str, session: &str) -> Vec<String> {
-        vec![
-            self.bin.clone(),
-            "switch-client".to_string(),
-            "-c".to_string(),
-            display_tty.to_string(),
-            "-t".to_string(),
-            mux::quote_target(session),
-        ]
     }
 
     fn display_tty_record_prefix(&self, host_key: &str) -> Option<String> {

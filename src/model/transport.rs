@@ -3,7 +3,6 @@
 //! argv in an ssh connection with the right tty/batch options. This owns argv
 //! assembly only — it never decides a server model.
 
-use crate::model::plan::SwitchPlan;
 use crate::session::LOCAL_SOURCE;
 
 /// Bounds the ssh TCP connect; the per-host scan timeout must exceed it so a
@@ -25,9 +24,9 @@ pub enum Transport {
     },
 }
 
-/// The concrete, runnable result of lowering a `SwitchPlan` — what the supervisor
-/// hands to the runner. Lives on the TRANSPORT side (it is the execution shape),
-/// not in the mux's intent vocabulary. The mux never names these variants.
+/// The concrete, runnable shape of a display-client switch — what the driver hands to
+/// `run_lowered`. Lives on the TRANSPORT side (it is the execution shape), not in the
+/// mux's intent vocabulary. The mux never names these variants.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoweredSwitch {
     /// A local mux argv (`argv[0]` = binary) — run non-interactively.
@@ -181,37 +180,11 @@ impl Transport {
             }
         }
     }
-
-    /// Lowers a transport-blind `SwitchPlan` (a mux intent) into a runnable command.
-    /// The single boundary where "switch the shared client to this session" becomes
-    /// either a LOCAL `switch-client` argv or a REMOTE guarded raw command. The mux
-    /// supplies `mux_switch_argv` (closed over the captured display tty); the transport
-    /// decides only HOW to run it. `PerSessionNoOp` ⇒ `None` (nothing to switch).
-    /// Resolves the mux/transport boundary: neither variant of `LoweredSwitch`
-    /// leaks into the mux layer.
-    pub fn lower_switch(
-        &self,
-        plan: &SwitchPlan,
-        mux_switch_argv: &dyn Fn(&str) -> Vec<String>,
-    ) -> Option<LoweredSwitch> {
-        let SwitchPlan::Switch { session } = plan else {
-            return None;
-        };
-        let argv = mux_switch_argv(session);
-        match self {
-            Transport::Local { .. } => Some(LoweredSwitch::Local(argv)),
-            Transport::Ssh { .. } => {
-                let raw = crate::source::remote_command(&argv);
-                self.raw_ssh_argv(&raw).map(LoweredSwitch::RawSsh)
-            }
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::plan::SwitchPlan;
 
     fn ssh(alias: &str, os: &str, cp: &str) -> Transport {
         Transport::Ssh {
@@ -385,71 +358,6 @@ mod tests {
         assert_eq!(
             a.last().unwrap(),
             "tmux select-window -t 'api:2' ; exec tmux attach -t api"
-        );
-    }
-
-    // The closure the supervisor supplies, closed over the captured display tty.
-    // Here a fixed tty stands in. Matches the shape Backend::switch_client_argv builds.
-    fn switch_argv_for(tty: &str) -> impl Fn(&str) -> Vec<String> + '_ {
-        move |session: &str| argv(&["tmux", "switch-client", "-c", tty, "-t", session])
-    }
-
-    #[test]
-    fn lower_switch_no_op_for_per_session() {
-        // PerSession has nothing to switch — lowering yields None on any transport.
-        assert!(local(None)
-            .lower_switch(&SwitchPlan::PerSessionNoOp, &switch_argv_for("/dev/pts/3"))
-            .is_none());
-        assert!(ssh("prod", "linux", "")
-            .lower_switch(&SwitchPlan::PerSessionNoOp, &switch_argv_for("/dev/pts/3"))
-            .is_none());
-    }
-
-    #[test]
-    fn lower_switch_local_is_a_direct_mux_argv() {
-        // A Shared LOCAL host (tmux) switches its one shared client with a direct
-        // local switch-client argv — NOT an ssh raw command (the M2 correctness hole).
-        let got = local(None)
-            .lower_switch(
-                &SwitchPlan::Switch {
-                    session: "api".into(),
-                },
-                &switch_argv_for("/dev/pts/3"),
-            )
-            .expect("Shared local lowers to a switch");
-        assert_eq!(
-            got,
-            LoweredSwitch::Local(argv(&[
-                "tmux",
-                "switch-client",
-                "-c",
-                "/dev/pts/3",
-                "-t",
-                "api"
-            ]))
-        );
-    }
-
-    #[test]
-    fn lower_switch_remote_is_a_guarded_ssh_raw_command() {
-        // A Shared REMOTE host (tmux over ssh) switches via run_raw: the argv is
-        // joined per-arg-quoted and wrapped behind the ssh options.
-        let got = ssh("prod", "linux", "")
-            .lower_switch(
-                &SwitchPlan::Switch {
-                    session: "api".into(),
-                },
-                &switch_argv_for("/dev/pts/3"),
-            )
-            .expect("Shared remote lowers to a switch");
-        let LoweredSwitch::RawSsh(v) = got else {
-            panic!("remote lowers to RawSsh: {got:?}")
-        };
-        assert_eq!(v[0], "ssh");
-        assert_eq!(v.last().unwrap(), "tmux switch-client -c /dev/pts/3 -t api");
-        assert!(
-            v.iter().any(|s: &String| s.contains("BatchMode=yes")),
-            "{v:?}"
         );
     }
 }

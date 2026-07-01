@@ -30,10 +30,6 @@ impl Backend for Psmux {
         ServerModel::PerSession
     }
 
-    fn select(&self) -> SelectOutcome {
-        SelectOutcome::PerSessionReattach
-    }
-
     async fn enumerate(
         &self,
         transport: &Transport,
@@ -82,14 +78,10 @@ impl Backend for Psmux {
         ]
     }
 
-    fn switch_plan(&self, _session: &str) -> SwitchPlan {
-        SwitchPlan::PerSessionNoOp
-    }
-
     fn switch_client_argv(&self, display_tty: &str, session: &str) -> Vec<String> {
-        // PerSession never lowers a switch (switch_plan is PerSessionNoOp, so
-        // lower_switch returns None before this is reached). The trait is total, so
-        // the argv is defined for completeness and uses the psmux binary.
+        // The psmux driver's in-place switch (`PsmuxDriver::show`) calls this to move
+        // xmux's own display client across per-session servers on the default socket
+        // (`switch-client -c <tty> -t <session>`). Uses the psmux binary.
         vec![
             self.bin.clone(),
             "switch-client".to_string(),

@@ -10,7 +10,7 @@
 use async_trait::async_trait;
 
 use crate::host::HostEvent;
-use crate::model::plan::{DeathSignal, EventSource, SwitchPlan};
+use crate::model::plan::{DeathSignal, EventSource};
 use crate::model::server_model::ServerModel;
 use crate::model::transport::Transport;
 use crate::mux::{self, parse_panes};
@@ -76,17 +76,10 @@ pub(crate) fn reason_is_no_sessions(text: &str) -> bool {
     })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SelectOutcome {
-    SharedSwitch,
-    PerSessionReattach,
-}
-
 /// One mux backend. Methods are the EXACT set the supervisor + control reader +
 /// manage layer call. `enumerate` takes `&Transport` because the per-session model
 /// runs a probe (registry read + one list-sessions); the shared model runs one
-/// command. Every other method is transport-blind: `switch_plan` returns intent,
-/// the `Transport` lowers it.
+/// command. Every other method is transport-blind.
 #[async_trait]
 pub trait Backend: Send + Sync {
     /// The canonical mux identity, for backend comparison and diagnostics.
@@ -97,14 +90,6 @@ pub trait Backend: Send + Sync {
 
     /// Per-session vs shared. The supervisor reads this instead of `remote`.
     fn server_model(&self) -> ServerModel;
-
-    /// How selecting a session should update the visible display attach.
-    fn select(&self) -> SelectOutcome {
-        match self.server_model() {
-            ServerModel::Shared => SelectOutcome::SharedSwitch,
-            ServerModel::PerSession => SelectOutcome::PerSessionReattach,
-        }
-    }
 
     /// Lists this host's sessions over `transport`, executing its probe via
     /// `runner` (the real [`ExecRunner`] in production; an injected fake under test).
@@ -120,16 +105,21 @@ pub trait Backend: Send + Sync {
     /// attach when composing the final connection.
     fn attach_plan(&self, session: &str, window: Option<i64>) -> Vec<String>;
 
-    /// TRANSPORT-BLIND intent: how (or whether) to move the host's ONE shared
-    /// attachment to `session`. `Shared` => `Switch { session }`; `PerSession` =>
-    /// `PerSessionNoOp`. Names NO transport — the `Transport` lowers it.
-    fn switch_plan(&self, session: &str) -> SwitchPlan;
-
     /// The mux's own `switch-client` argv given the captured display tty + target.
-    /// The supervisor closes over the host's display tty and hands this to
-    /// `Transport::lower_switch`. The ONLY mux method that names the tty; it does NOT
-    /// decide local-vs-ssh.
-    fn switch_client_argv(&self, display_tty: &str, session: &str) -> Vec<String>;
+    /// The driver closes over the host's display tty to move xmux's own display client
+    /// to `session` (the psmux in-place switch). The ONLY mux method that names the tty;
+    /// it does NOT decide local-vs-ssh. The default builds the standard
+    /// `switch-client -c <tty> -t <session>` form; a mux with a divergent verb overrides it.
+    fn switch_client_argv(&self, display_tty: &str, session: &str) -> Vec<String> {
+        vec![
+            self.bin().to_string(),
+            "switch-client".to_string(),
+            "-c".to_string(),
+            display_tty.to_string(),
+            "-t".to_string(),
+            mux::quote_target(session),
+        ]
+    }
 
     /// The shell prefix the mux's display attach prepends to its remote command so the
     /// attach shell records its OWN controlling tty before exec'ing the attach — the
@@ -336,11 +326,6 @@ mod tests {
     }
 
     #[test]
-    fn tmux_selects_by_shared_switch() {
-        assert_eq!(tmux().select(), SelectOutcome::SharedSwitch);
-    }
-
-    #[test]
     fn tmux_is_object_safe() {
         // The whole point: a Box<dyn Backend> must compile. If the trait gains a
         // non-dispatchable method this stops compiling.
@@ -358,41 +343,6 @@ mod tests {
         assert_eq!(
             m.attach_plan("api", Some(2)),
             argv(&["tmux", "attach", "-t", "api"])
-        );
-    }
-
-    #[test]
-    fn tmux_switch_plan_is_transport_blind_intent() {
-        // Shared => Switch{session}. It names NO transport (codex C2): the Transport
-        // lowers it. A psmux-style NotShared is impossible to produce here.
-        assert_eq!(
-            tmux().switch_plan("api"),
-            SwitchPlan::Switch {
-                session: "api".into()
-            }
-        );
-    }
-
-    #[test]
-    fn tmux_switch_client_argv_targets_the_captured_tty() {
-        // The argv the supervisor closes over (with the captured DisplayTty) and
-        // hands to Transport::lower_switch. It names the tty + session, never ssh.
-        let m = tmux();
-        assert_eq!(
-            m.switch_client_argv("/dev/pts/3", "api"),
-            argv(&["tmux", "switch-client", "-c", "/dev/pts/3", "-t", "api"])
-        );
-        // A session with control-mode metacharacters is quote_target-safe.
-        assert_eq!(
-            m.switch_client_argv("/dev/pts/3", "my proj"),
-            argv(&[
-                "tmux",
-                "switch-client",
-                "-c",
-                "/dev/pts/3",
-                "-t",
-                "'my proj'"
-            ])
         );
     }
 
@@ -459,8 +409,6 @@ mod tests {
         );
     }
 
-    use crate::model::plan::SwitchPlan;
-
     #[test]
     fn psmux_is_per_session_and_named() {
         let m = psmux();
@@ -469,19 +417,8 @@ mod tests {
     }
 
     #[test]
-    fn psmux_selects_by_reattach() {
-        assert_eq!(psmux().select(), SelectOutcome::PerSessionReattach);
-    }
-
-    #[test]
     fn psmux_is_object_safe() {
         let _m: Box<dyn Backend> = Box::new(psmux());
-    }
-
-    #[test]
-    fn psmux_has_no_shared_attachment_to_switch() {
-        // PerSession keeps one attachment PER SESSION — there is nothing to switch.
-        assert_eq!(psmux().switch_plan("work"), SwitchPlan::PerSessionNoOp);
     }
 
     #[test]

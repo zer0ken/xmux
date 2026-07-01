@@ -96,8 +96,7 @@ pub fn driver_for(host: &Host) -> Box<dyn MuxDriver> {
 }
 
 /// Shared-server mux (tmux): ONE PTY per host, warmed on the first session and moved to
-/// another session with `switch-client`. Owns the shared-switch arm of the old
-/// `SelectOutcome` match.
+/// another session with `switch-client`. The driver `driver_for` picks for a `Shared` host.
 pub struct TmuxDriver;
 
 impl MuxDriver for TmuxDriver {
@@ -316,8 +315,8 @@ impl MuxDriver for TmuxDriver {
 
 /// Per-session mux (psmux): one server per session, displayed through ONE per-host PTY
 /// that is REATTACHED whenever the selected session changes (`new-session -A -s <name>`
-/// routes to that session's own server — the 4a5f053 correctness fix). Owns the
-/// per-session-reattach arm of the old `SelectOutcome` match.
+/// routes to that session's own server — the 4a5f053 correctness fix). The driver
+/// `driver_for` picks for a `PerSession` host.
 pub struct PsmuxDriver;
 
 impl MuxDriver for PsmuxDriver {
@@ -764,7 +763,7 @@ mod tests {
 
     /// The decision is the driver's TYPE, not a `match` in the cockpit: a Shared host
     /// is driven by the tmux driver, a PerSession host by the psmux driver. This is the
-    /// factory that replaces `match host.mux.select()` at the call sites.
+    /// factory `driver_for` dispatching on `server_model()`.
     #[test]
     fn driver_for_picks_the_mux_specific_driver_by_server_model() {
         let tmux_host = crate::model::Host::new(
@@ -785,8 +784,8 @@ mod tests {
 
     /// The psmux driver owns the per-session reattach decision: `show()` REPLACES the
     /// single host-keyed display attachment (drop the stale one, request a fresh attach
-    /// for the selected session). This is the 4a5f053 behavior, now owned by the driver
-    /// type rather than a `SelectOutcome` match. Headless: a fake spawner, no live psmux.
+    /// for the selected session). This is the 4a5f053 behavior, owned by the driver
+    /// type. Headless: a fake spawner, no live psmux.
     #[tokio::test(flavor = "current_thread")]
     async fn psmux_driver_show_replaces_the_display_attachment() {
         let mut hosts = crate::model::Hosts::default();

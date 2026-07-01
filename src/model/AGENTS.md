@@ -34,8 +34,9 @@ state mutation and returns the backend follow-ups (refetch / probe / reap / sync
   lowers a non-interactive command; `interactive_attach_argv` lowers an attach into the
   terminal handover (local `-S` injection, or `ssh -t` running `[<select-window> ;] exec
   <attach>` — the `exec`/window-fold is here, never in the mux or caller); `control_argv`
-  lowers a `-CC` child; `lower_switch`/`raw_ssh_argv` lower a switch. The mux argv comes
-  from a `Backend::*_plan` method; the transport only decides HOW to run it.
+  lowers a `-CC` child; `raw_ssh_argv` wraps a raw remote command (the driver's remote
+  in-place switch). The mux argv comes from a `Backend::*_plan` method; the transport only
+  decides HOW to run it.
 - `host.rs` and `hosts.rs` store per-host domain state and collections.
 - `death.rs`, `plan.rs`, and `server_model.rs` provide value types used by
   cockpit, backend, and host management.
