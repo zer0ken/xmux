@@ -1,6 +1,6 @@
 //! The interactive session switcher: a two-pane navigator (a unified
 //! Host·Session·Window·Pane tree on the left, a live preview on the right) with a
-//! hidden input row and a footer. ratatui is immediate-mode, so this owns its
+//! hidden input row and a hint_bar. ratatui is immediate-mode, so this owns its
 //! state machine, a flattened row model, key/mouse handling, and a render pass
 //! that draws to either the live terminal or a headless `TestBackend` (the
 //! control channel's `dump`).
@@ -347,7 +347,7 @@ pub struct Switcher {
     /// The whole frame area, captured each render so the menu box can be clamped to
     /// the screen at open time (mouse events arrive between renders).
     screen_area: Rect,
-    /// The status surface (divider, footer, host-info) and its view-local state
+    /// The status surface (divider, hint_bar, host-info) and its view-local state
     /// (flash, spinner, auto-hide/hover cues, divider colours, ssh-config, prefix).
     status: Status,
     /// Drag offset (cells) applied to a modal popup's centered position. Reset
@@ -1115,7 +1115,7 @@ impl Switcher {
         }
         // A flash (error/notice) is transient — it lives only until the next key, like a
         // status toast. Clear it here so navigation (or any key) restores the normal help
-        // footer; actions below may set a fresh one, which survives because this runs first.
+        // hint_bar; actions below may set a fresh one, which survives because this runs first.
         self.status.flash.clear();
         match ev.code {
             KeyCode::Enter => {}
@@ -1839,7 +1839,7 @@ impl Switcher {
         // so static content writes nothing (no flicker).
         frame.render_widget(Clear, area);
         // tree_width == 0 is the "tree hidden" sentinel (mux focused + auto-hide-tree):
-        // the terminal view owns the whole area — no tree, no input/footer, no divider.
+        // the terminal view owns the whole area — no tree, no input/hint_bar, no divider.
         if tree_width == 0 {
             self.tree_inner = Rect::default();
             self.render_terminal_view(frame, area, grid);
@@ -1858,17 +1858,17 @@ impl Switcher {
             Constraint::Min(0),
         ])
         .split(area);
-        // Tree column: the tree plus its footer/help line. The footer is normally one
-        // line, but a long flash wraps across several — size the footer to the wrapped
+        // Tree column: the tree plus its hint_bar/help line. The hint_bar is normally one
+        // line, but a long flash wraps across several — size the hint_bar to the wrapped
         // line count so it is never clipped.
-        let footer_h = self.status.footer_lines(tree_width, state).len().max(1) as u16;
+        let hint_bar_h = self.status.hint_bar_lines(tree_width, state).len().max(1) as u16;
         let left = Layout::vertical([
-            Constraint::Min(0),           // tree
-            Constraint::Length(footer_h), // footer (help / status / wrapped flash)
+            Constraint::Min(0),             // tree
+            Constraint::Length(hint_bar_h), // hint_bar (help / status / wrapped flash)
         ])
         .split(cols[0]);
         self.render_tree(frame, left[0]);
-        self.status.render_footer(frame, left[1], state);
+        self.status.render_hint_bar(frame, left[1], state);
         // The tree|mux divider marks focus between those two panes.
         self.status.render_divider(frame, cols[1], terminal_focused);
         let term_area = cols[2];
@@ -2506,7 +2506,7 @@ mod tests {
             h
         }
 
-        fn footer_text(&self) -> String {
+        fn hint_bar_text(&self) -> String {
             let buf = self.buf();
             let y = buf.area.height - 1;
             let mut line = String::new();
@@ -3383,33 +3383,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn footer_shows_scanning_progress_then_clears() {
+    async fn hint_bar_shows_scanning_progress_then_clears() {
         let mut h = Harness::from_sources(&["local", "jupiter00"]);
-        let footer = h.footer_text();
+        let hint_bar = h.hint_bar_text();
         assert!(
-            footer.contains("scanning"),
-            "footer shows a global scanning indicator:\n{footer:?}"
+            hint_bar.contains("scanning"),
+            "hint_bar shows a global scanning indicator:\n{hint_bar:?}"
         );
         assert!(
-            footer.contains("/2"),
-            "footer shows the host progress fraction:\n{footer:?}"
+            hint_bar.contains("/2"),
+            "hint_bar shows the host progress fraction:\n{hint_bar:?}"
         );
         h.sw.apply_source_result("local".into(), vec![], None, &mut h.state);
         h.sw.apply_source_result("jupiter00".into(), vec![], None, &mut h.state);
         h.draw();
-        let footer = h.footer_text();
+        let hint_bar = h.hint_bar_text();
         assert!(
-            !footer.contains("scanning"),
-            "the scanning indicator clears once all hosts settle:\n{footer:?}"
+            !hint_bar.contains("scanning"),
+            "the scanning indicator clears once all hosts settle:\n{hint_bar:?}"
         );
         assert!(
-            footer.contains("filter") || footer.contains("help") || footer.contains("quit"),
-            "the footer returns to the help line:\n{footer:?}"
+            hint_bar.contains("filter") || hint_bar.contains("help") || hint_bar.contains("quit"),
+            "the hint_bar returns to the help line:\n{hint_bar:?}"
         );
     }
 
     #[tokio::test]
-    async fn footer_fits_narrow_width() {
+    async fn hint_bar_fits_narrow_width() {
         let mut state = crate::state::State::from_scan(sample());
         let mut sw = Switcher::new(&mut state);
         let mut term = Terminal::new(TestBackend::new(30, 30)).unwrap();
@@ -3417,32 +3417,32 @@ mod tests {
             .unwrap();
         let buf = term.backend().buffer();
         let y = buf.area.height - 1;
-        let mut footer = String::new();
+        let mut hint_bar = String::new();
         for x in 0..buf.area.width {
-            footer.push_str(buf[(x, y)].symbol());
+            hint_bar.push_str(buf[(x, y)].symbol());
         }
-        let footer = footer.trim_end().to_string();
+        let hint_bar = hint_bar.trim_end().to_string();
         assert!(
-            footer.chars().count() <= 30,
-            "footer fits a 30-column terminal:\n{footer:?}"
+            hint_bar.chars().count() <= 30,
+            "hint_bar fits a 30-column terminal:\n{hint_bar:?}"
         );
         assert!(
-            footer.contains("help") || footer.contains("quit"),
-            "footer still offers help/quit hints:\n{footer:?}"
+            hint_bar.contains("help") || hint_bar.contains("quit"),
+            "hint_bar still offers help/quit hints:\n{hint_bar:?}"
         );
     }
 
     #[test]
-    fn footer_text_reflects_configured_prefix() {
-        // The footer always-visible key-hints must show the active prefix, not a
+    fn hint_bar_text_reflects_configured_prefix() {
+        // The hint_bar always-visible key-hints must show the active prefix, not a
         // hardcoded "C-g", so a user who sets a different binding sees the right hint.
         let state = crate::state::State::default();
         let mut sw = Switcher::blank();
         sw.set_ui_prefix("C-Space".into());
-        let text = sw.status.footer_text(200, &state);
+        let text = sw.status.hint_bar_text(200, &state);
         assert!(
             text.contains("C-Space"),
-            "custom prefix must appear in footer:\n{text:?}"
+            "custom prefix must appear in hint_bar:\n{text:?}"
         );
         assert!(
             !text.contains("C-g"),
@@ -3451,10 +3451,10 @@ mod tests {
 
         // Default prefix (no setter) must still show C-g.
         let sw_default = Switcher::blank();
-        let text_default = sw_default.status.footer_text(200, &state);
+        let text_default = sw_default.status.hint_bar_text(200, &state);
         assert!(
             text_default.contains("C-g"),
-            "default prefix C-g must appear in footer:\n{text_default:?}"
+            "default prefix C-g must appear in hint_bar:\n{text_default:?}"
         );
     }
 
@@ -4335,7 +4335,7 @@ mod tests {
         );
     }
 
-    // --- j/k nav, select=attach, spinner, footer/help, title --------
+    // --- j/k nav, select=attach, spinner, hint_bar/help, title --------
 
     fn cur_row_label(h: &Harness) -> String {
         h.sw.rows
@@ -4409,13 +4409,13 @@ mod tests {
     }
 
     #[test]
-    fn long_flash_wraps_in_narrow_footer_instead_of_clipping() {
-        // The footer lives in the tree column; a long flash must wrap across lines rather
+    fn long_flash_wraps_in_narrow_hint_bar_instead_of_clipping() {
+        // The hint_bar lives in the tree column; a long flash must wrap across lines rather
         // than clip at the column edge (a narrow tree would otherwise hide most of it).
         let mut state = crate::state::State::from_scan(sample());
         let mut sw = Switcher::new(&mut state);
         sw.status.flash = "host unreachable — cannot create here".into();
-        let lines = sw.status.footer_lines(20, &state);
+        let lines = sw.status.hint_bar_lines(20, &state);
         assert!(
             lines.len() > 1,
             "long flash wraps across lines, got {lines:?}"
@@ -4432,9 +4432,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn flash_clears_on_next_key_restoring_the_footer() {
+    async fn flash_clears_on_next_key_restoring_the_hint_bar() {
         // A flash (e.g. "host unreachable — cannot create here") is transient: any key
-        // dismisses it so the normal help/status footer returns. Regression: it persisted
+        // dismisses it so the normal help/status hint_bar returns. Regression: it persisted
         // because only the input-opening actions cleared it, so navigation never did.
         let mut h = Harness::new(sample());
         h.sw.status.flash = "host unreachable — cannot create here".into();
@@ -4447,16 +4447,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn footer_and_help_reflect_new_model() {
+    async fn hint_bar_and_help_reflect_new_model() {
         let mut h = Harness::new(sample());
-        let footer = h.footer_text();
+        let hint_bar = h.hint_bar_text();
         assert!(
-            !footer.to_lowercase().contains("enter attach"),
-            "Enter is a no-op now:\n{footer}"
+            !hint_bar.to_lowercase().contains("enter attach"),
+            "Enter is a no-op now:\n{hint_bar}"
         );
         assert!(
-            footer.contains("focus"),
-            "footer mentions focusing the terminal pane:\n{footer}"
+            hint_bar.contains("focus"),
+            "hint_bar mentions focusing the terminal pane:\n{hint_bar}"
         );
         h.sw.show_help(&mut h.state); // driven by the cockpit's `prefix ?`
         h.draw();
@@ -4963,7 +4963,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn kill_confirm_is_a_centered_red_popup_not_the_footer() {
+    async fn kill_confirm_is_a_centered_red_popup_not_the_hint_bar() {
         let mut h = Harness::new(sample());
         let build = row_index(&h, |r| matches!(r, RowRef::Session(s) if s.name == "build"));
         h.sw.set_selected(build, &h.state);
@@ -4971,20 +4971,20 @@ mod tests {
         h.key(KeyCode::Char('x')).await; // arm the confirm
         let buf = h.buf();
         let last = buf.area.height - 1;
-        let footer: String = (0..buf.area.width)
+        let hint_bar: String = (0..buf.area.width)
             .map(|x| buf[(x, last)].symbol())
             .collect();
         assert!(
-            !footer.contains("[y]es"),
-            "confirm must not be in the footer:\n{footer}"
+            !hint_bar.contains("[y]es"),
+            "confirm must not be in the hint_bar:\n{hint_bar}"
         );
-        // A red "kill" cell exists in a centered box (not the footer row).
+        // A red "kill" cell exists in a centered box (not the hint_bar row).
         let red_kill = (0..last)
             .flat_map(|y| (0..buf.area.width).map(move |x| (x, y)))
             .any(|(x, y)| buf[(x, y)].symbol() == "k" && buf[(x, y)].fg == Color::Red);
         assert!(
             red_kill,
-            "the confirm popup shows red 'kill' text above the footer"
+            "the confirm popup shows red 'kill' text above the hint_bar"
         );
     }
 

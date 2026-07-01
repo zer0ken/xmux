@@ -243,9 +243,9 @@ mod tests {
         let mut sw = Switcher::new(&mut state);
         let out = dump_switcher(&mut sw, &state, 100, 30);
         assert!(out.contains("editor"));
-        // The dump renders the full overlay (tree + footer); the footer's nav hint
+        // The dump renders the full overlay (tree + hint_bar); the hint_bar's nav hint
         // is always present (the overlay carries no chrome titles).
-        assert!(out.contains("quit"), "footer hint present:\n{out}");
+        assert!(out.contains("quit"), "hint_bar hint present:\n{out}");
     }
 
     #[tokio::test]

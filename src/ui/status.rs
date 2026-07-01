@@ -1,4 +1,4 @@
-//! The switcher's status surface: the tree|mux divider, the tree-column footer
+//! The switcher's status surface: the tree|mux divider, the tree-column hint_bar
 //! (help / status / wrapped flash), and the unreachable-host info panel. These
 //! own the view-local presentation state ([`Status`]) and read the runtime
 //! inventory from `State`; the [`Switcher`](crate::ui::switcher::Switcher) holds a
@@ -35,7 +35,7 @@ impl Default for DividerColors {
     }
 }
 
-/// The switcher's status-surface view state: the divider/footer/host-info draws and
+/// The switcher's status-surface view state: the divider/hint_bar/host-info draws and
 /// their inputs (flash notice, spinner set + frame, auto-hide + hover cues, divider
 /// colours, the ssh-config text, and the configured prefix string).
 pub struct Status {
@@ -214,11 +214,11 @@ impl Status {
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
     }
 
-    /// The footer's logical text (confirm / flash / scanning / filter / help), fit to
-    /// `width`. A flash is returned raw — it may exceed `width`; [`Self::footer_lines`]
+    /// The hint_bar's logical text (confirm / flash / scanning / filter / help), fit to
+    /// `width`. A flash is returned raw — it may exceed `width`; [`Self::hint_bar_lines`]
     /// wraps it so it never clips.
-    pub(crate) fn footer_text(&self, width: u16, state: &crate::state::State) -> String {
-        // Use the active prefix so the footer matches the user's configured binding.
+    pub(crate) fn hint_bar_text(&self, width: u16, state: &crate::state::State) -> String {
+        // Use the active prefix so the hint_bar matches the user's configured binding.
         let p = &self.ui_prefix;
         if !self.flash.is_empty() {
             format!(" {}", self.flash)
@@ -236,7 +236,7 @@ impl Status {
             )
         } else if !state.filter.is_empty() {
             // The active filter has no border title to live in any more, so it
-            // shows in the footer (with how to clear it).
+            // shows in the hint_bar (with how to clear it).
             fit(
                 &[
                     format!(
@@ -261,11 +261,11 @@ impl Status {
         }
     }
 
-    /// The footer text split into the lines to render. The fit-based text is always one
+    /// The hint_bar text split into the lines to render. The fit-based text is always one
     /// line; only a flash (an arbitrary error/notice) may exceed `width`, so it wraps
-    /// across the narrow tree-column footer rather than clipping.
-    pub(crate) fn footer_lines(&self, width: u16, state: &crate::state::State) -> Vec<String> {
-        let text = self.footer_text(width, state);
+    /// across the narrow tree-column hint_bar rather than clipping.
+    pub(crate) fn hint_bar_lines(&self, width: u16, state: &crate::state::State) -> Vec<String> {
+        let text = self.hint_bar_text(width, state);
         // Only a flash can exceed `width` (the fit-based text is already constrained);
         // wrap it on word boundaries with a consistent left margin.
         if self.flash.is_empty() {
@@ -277,8 +277,13 @@ impl Status {
             .collect()
     }
 
-    pub(crate) fn render_footer(&self, frame: &mut Frame, area: Rect, state: &crate::state::State) {
-        let lines = self.footer_lines(area.width, state);
+    pub(crate) fn render_hint_bar(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        state: &crate::state::State,
+    ) {
+        let lines = self.hint_bar_lines(area.width, state);
         let text = Text::from(lines.into_iter().map(Line::from).collect::<Vec<_>>());
         frame.render_widget(Paragraph::new(text), area);
     }

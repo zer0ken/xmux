@@ -310,7 +310,7 @@ fn sync_selection_from_switcher(
 /// right edge (and a double-width char straddles the clip boundary). The view width
 /// is `cols - tree_width - 1` (tree + the single divider rule), except `tree_width == 0`
 /// (the tree-hidden sentinel) gives the full `cols` with no divider; the view HEIGHT is
-/// the full terminal height (`body_rows + 1`) because the footer and input occupy
+/// the full terminal height (`body_rows + 1`) because the hint_bar and input occupy
 /// the tree column, leaving the terminal column the full height. Both clamp to at least 1.
 pub(crate) fn terminal_view_size(cols: u16, body_rows: u16, tree_width: u16) -> (u16, u16) {
     // tree_width == 0 is the "tree hidden" sentinel: the mux takes the full width
@@ -3206,7 +3206,7 @@ mod tests {
         use crate::ui::switcher::TREE_WIDTH;
         let (vc, vr) = terminal_view_size(143, 39, TREE_WIDTH);
         assert_eq!(vc, 143 - (TREE_WIDTH + 1), "cols minus tree minus divider");
-        // The footer and input live in the tree column, so the terminal column
+        // The hint_bar and input live in the tree column, so the terminal column
         // spans the full terminal height (body_rows + 1).
         assert_eq!(vr, 40, "height is the full terminal height (body_rows + 1)");
     }

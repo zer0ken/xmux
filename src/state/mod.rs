@@ -20,7 +20,7 @@ pub struct State {
     pub scanning: HashSet<String>,
     /// Session addresses whose `list-panes` has resolved (success or failure).
     pub panes_loaded: HashSet<String>,
-    /// Active fuzzy-filter text (drives the visible tree + the footer).
+    /// Active fuzzy-filter text (drives the visible tree + the hint_bar).
     pub filter: String,
     /// What the tree cursor points at — the session/window to show.
     pub selection: Selection,
