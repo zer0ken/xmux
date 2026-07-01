@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use crate::backend::Backend;
 use crate::host::HostInventory;
-use crate::model::{DisplayTty, ServerModel, Transport};
+use crate::model::{DisplayTty, Transport};
 use crate::source::Runner;
 
 /// Connecting / live / unreachable — replaces the loose `connecting` AtomicBool
@@ -82,7 +82,6 @@ pub struct Host {
     pub display_tty: DisplayTty,
     pub liveness: Liveness,
     pub(crate) detected: bool,
-    control: Option<crate::host::HostClient>,
 }
 
 impl Host {
@@ -97,23 +96,12 @@ impl Host {
             display_tty: DisplayTty::default(),
             liveness: Liveness::Connecting,
             detected: false,
-            control: None,
         }
     }
 
     /// The stable host id (`transport.host_id()`).
     pub fn id(&self) -> &str {
         self.transport.host_id()
-    }
-
-    /// The model-layer ideal `AttachRegistry` key for `address` (per-session for psmux —
-    /// the ownership-inversion target used by `Host::sync`). The LIVE display path keys
-    /// psmux per-HOST instead (`cockpit::host_selection_key`), because it shows ONE
-    /// per-host PTY that is reattached/switched; the two agree for a `Shared` host and
-    /// diverge only for psmux, where this per-session form drives `Host::sync` (no live
-    /// caller yet) — see `ServerModel::display_key`.
-    pub fn display_key(&self, address: &str) -> String {
-        self.mux.server_model().display_key(self.id(), address)
     }
 
     pub(crate) async fn detect_and_correct(&mut self, runner: &dyn Runner) {
@@ -188,111 +176,6 @@ impl Host {
                 dir_is_psmux_registry: true,
             } => crate::model::death::psmux_session_is_live(session),
             _ => true,
-        }
-    }
-
-    /// Ensures this host's `-CC` control client exists, spawning + owning it lazily.
-    /// `Ok(true)` on a fresh spawn; `Ok(false)` if already present or if this host's
-    /// `event_source()` is `Poll` (psmux has no host-level control stream). Builds the
-    /// argv via the same `transport.control_argv(&mux.control_argv())` composition the
-    /// live path in `HostManager::ensure` uses. Not on the live path: the supervisor
-    /// stores control clients in `HostManager.clients` (keyed by host id, with the
-    /// dedup/reap/rescan there), so this per-`Host.control` form has only test callers
-    /// and is retained pending a later stage that reconciles client ownership onto `Host`.
-    pub fn ensure_control_client(
-        &mut self,
-        cols: u16,
-        rows: u16,
-        events: &tokio::sync::mpsc::UnboundedSender<crate::host::HostEvent>,
-    ) -> anyhow::Result<bool> {
-        if !matches!(self.mux.event_source(), crate::model::EventSource::Control) {
-            return Ok(false);
-        }
-        if self.control.is_some() {
-            return Ok(false);
-        }
-        let Some(mux_control) = self.mux.control_argv() else {
-            return Ok(false);
-        };
-        // A Control event source guarantees a control protocol (both come from the same
-        // backend): tmux is the only backend that reports either.
-        let proto = self.mux.control_protocol().ok_or_else(|| {
-            anyhow::anyhow!("backend has a control event source but no control protocol")
-        })?;
-        let argv = self.transport.control_argv(&mux_control);
-        let client = crate::host::HostClient::spawn(
-            self.id(),
-            proto,
-            &argv,
-            cols,
-            rows,
-            events.clone(),
-            &[],
-        )?;
-        self.control = Some(client);
-        Ok(true)
-    }
-}
-
-/// One reconciliation step the supervisor executes through the KEPT DisplayWorker /
-/// AttachRegistry. `Host::sync` returns these instead of the supervisor branching on
-/// `remote` to fan out attaches/reaps (cockpit.rs:401/420).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SyncAction {
-    /// Spawn (or warm) the attachment for `key`, landing on `session`.
-    Attach { key: String, session: String },
-    /// Tear down `key`'s attachment (its session/host closed).
-    Reap { key: String },
-}
-
-impl Host {
-    /// The model-layer ideal attach/reap plan that reconciles this host's display set
-    /// with its inventory under its `ServerModel`. Pure over `&self`: `Shared` keeps ONE
-    /// attachment (host key) warmed on the first session and reaps it when empty;
-    /// `PerSession` keeps one per session (address key) and reaps closed ones — the
-    /// ownership-inversion target (one attachment per psmux session). The LIVE warm/reap
-    /// is owned by the per-mux `MuxDriver::sync` (driven by `sync_source_terminals`),
-    /// which displays psmux through ONE per-host PTY; this per-session plan has no live
-    /// caller yet and is exercised by tests as the future shape.
-    pub fn sync(&self) -> Vec<SyncAction> {
-        match self.mux.server_model() {
-            ServerModel::Shared => {
-                let key = self.id().to_string();
-                match self.inventory.sessions.first() {
-                    Some(first) if self.display.shows(&key).is_none() => {
-                        vec![SyncAction::Attach {
-                            key,
-                            session: first.name.clone(),
-                        }]
-                    }
-                    None if self.display.shows(&key).is_some() => {
-                        vec![SyncAction::Reap { key }]
-                    }
-                    _ => Vec::new(),
-                }
-            }
-            ServerModel::PerSession => {
-                let mut actions = Vec::new();
-                let mut desired = std::collections::HashSet::new();
-                for s in &self.inventory.sessions {
-                    let key = self.display_key(&s.address());
-                    desired.insert(key.clone());
-                    if self.display.shows(&key).is_none() {
-                        actions.push(SyncAction::Attach {
-                            key,
-                            session: s.name.clone(),
-                        });
-                    }
-                }
-                for key in self.display.current.keys() {
-                    if !desired.contains(key) {
-                        actions.push(SyncAction::Reap { key: key.clone() });
-                    }
-                }
-                // ponytail: reap order is non-deterministic (HashMap iteration); tests
-                // assert a single reap so this is fine. Sort if multi-reap order matters.
-                actions
-            }
         }
     }
 }
@@ -385,34 +268,6 @@ mod tests {
             Box::new(StubMux(ServerModel::Shared)),
         );
         assert_eq!(r.id(), "jup");
-    }
-
-    #[test]
-    fn display_key_shape_comes_from_the_mux_model_not_a_remote_bool() {
-        // Shared (tmux) -> one PTY per HOST: key = host id, ignoring the address.
-        let shared = Host::new(
-            Transport::Ssh {
-                alias: "jup".into(),
-                control_path: String::new(),
-                os: "linux".into(),
-            },
-            Box::new(StubMux(ServerModel::Shared)),
-        );
-        assert_eq!(
-            shared.display_key("jup/api"),
-            "jup",
-            "shared -> per-host key"
-        );
-        // PerSession (psmux) -> one PTY per SESSION: key = the address.
-        let per = Host::new(
-            Transport::Local { socket: None },
-            Box::new(StubMux(ServerModel::PerSession)),
-        );
-        assert_eq!(
-            per.display_key("local/work"),
-            "local/work",
-            "per-session -> per-session key"
-        );
     }
 
     #[test]
@@ -637,113 +492,6 @@ mod tests {
         assert!(
             h.display_tty.0.is_none(),
             "clear forgets the dead client's tty"
-        );
-    }
-
-    #[tokio::test]
-    async fn ensure_control_client_is_a_noop_for_a_poll_host() {
-        // A PerSession host has event_source() == Poll, so there is no -CC client to
-        // ensure: ensure_control_client returns Ok(false) and spawns nothing.
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::host::HostEvent>();
-        let mut h = Host::new(
-            Transport::Local { socket: None },
-            Box::new(StubMux(ServerModel::PerSession)), // StubMux::event_source == Poll
-        );
-        assert!(!h.ensure_control_client(80, 24, &tx).unwrap());
-    }
-
-    fn sess(name: &str) -> Session {
-        Session {
-            source: "h".into(),
-            name: name.into(),
-            windows: 1,
-            attached: false,
-            last_attached: 0,
-        }
-    }
-
-    #[test]
-    fn sync_shared_attaches_the_first_session_once_then_nothing() {
-        // Shared (tmux): ONE attachment per host, keyed by host id, warmed on the first
-        // session. With nothing attached yet, sync asks to attach the first session.
-        let mut h = Host::new(
-            Transport::Ssh {
-                alias: "jup".into(),
-                control_path: String::new(),
-                os: "linux".into(),
-            },
-            Box::new(StubMux(ServerModel::Shared)),
-        );
-        h.inventory.sessions = vec![sess("api"), sess("build")];
-        assert_eq!(
-            h.sync(),
-            vec![SyncAction::Attach {
-                key: "jup".into(),
-                session: "api".into()
-            }],
-            "shared: warm one PTY (host key) on the first session"
-        );
-        // Once the host key is shown, sync asks for nothing more (selection-driven
-        // switch-client is the supervisor's job, not sync's keep-alive).
-        h.display.set_shows("jup", "api");
-        assert!(h.sync().is_empty(), "shared: already warmed -> no action");
-    }
-
-    #[test]
-    fn sync_shared_with_no_sessions_reaps_the_host_pty() {
-        let mut h = Host::new(
-            Transport::Ssh {
-                alias: "jup".into(),
-                control_path: String::new(),
-                os: "linux".into(),
-            },
-            Box::new(StubMux(ServerModel::Shared)),
-        );
-        h.display.set_shows("jup", "api"); // a PTY is warm
-        h.inventory.sessions = vec![]; // host went empty
-        assert_eq!(h.sync(), vec![SyncAction::Reap { key: "jup".into() }]);
-    }
-
-    #[test]
-    fn sync_per_session_attaches_each_missing_and_reaps_closed() {
-        // PerSession (psmux): one attachment per session, keyed by address. The stub
-        // sessions have source "h", so their addresses are "h/work" etc.; the local host
-        // id is "local" but display_key for PerSession uses the address, so keys are
-        // "h/work"/"h/build".
-        let mut h = Host::new(
-            Transport::Local { socket: None },
-            Box::new(StubMux(ServerModel::PerSession)),
-        );
-        h.inventory.sessions = vec![sess("work"), sess("build")];
-        h.display.set_shows("h/build", "build"); // build already attached
-        let got = h.sync();
-        assert_eq!(
-            got,
-            vec![SyncAction::Attach {
-                key: "h/work".into(),
-                session: "work".into()
-            }],
-            "per-session: attach the missing one only"
-        );
-        // A session that closed (shown but no longer in inventory) is reaped.
-        let mut h2 = Host::new(
-            Transport::Local { socket: None },
-            Box::new(StubMux(ServerModel::PerSession)),
-        );
-        h2.inventory.sessions = vec![sess("work")];
-        h2.display.set_shows("h/build", "build");
-        h2.display.set_shows("h/work", "work");
-        let reaps: Vec<_> = h2
-            .sync()
-            .into_iter()
-            .filter(|a| matches!(a, SyncAction::Reap { .. }))
-            .collect();
-        assert_eq!(
-            reaps,
-            vec![SyncAction::Reap {
-                key: "h/build".into()
-            }],
-            "per-session: reap the closed session"
         );
     }
 

@@ -37,9 +37,15 @@ state mutation and returns the backend follow-ups (refetch / probe / reap / sync
   lowers a `-CC` child; `raw_ssh_argv` wraps a raw remote command (the driver's remote
   in-place switch). The mux argv comes from a `Backend::*_plan` method; the transport only
   decides HOW to run it.
-- `host.rs` and `hosts.rs` store per-host domain state and collections.
+- `host.rs` and `hosts.rs` store per-host domain state and collections. A `Host`
+  carries no control client, no display-key derivation, and no attach/reap plan:
+  the live control client is owned by `HostManager`, the live warm/reap by
+  `MuxDriver::sync`, and the live display-key authority is
+  `cockpit::host_selection_key` (the host id for BOTH server models).
 - `death.rs`, `plan.rs`, and `server_model.rs` provide value types used by
-  cockpit, backend, and host management.
+  cockpit, backend, and host management. `server_model.rs` is just the
+  `Shared`/`PerSession` discriminant the supervisor reads to shape the attach
+  fan-out.
 
 ## Invariants
 

@@ -16,7 +16,7 @@ pub use death::{
     display_tty_marker_prefix, matches_display_tty, parse_display_tty_marker, psmux_port_path,
     psmux_session_is_live,
 };
-pub use host::{Host, HostDisplay, Liveness, SyncAction};
+pub use host::{Host, HostDisplay, Liveness};
 pub use hosts::Hosts;
 pub use plan::{DeathSignal, DisplayTty, EventSource};
 pub use server_model::ServerModel;

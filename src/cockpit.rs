@@ -349,8 +349,7 @@ pub(crate) fn display_key(hosts: &crate::model::Hosts, sel: &Selection) -> Strin
 /// HOST id: tmux keeps one PTY per host (shared, moved by switch-client), and psmux —
 /// though one-server-per-session — is displayed through ONE per-host PTY that is
 /// reattached on every session change. This is the supervisor/driver authority for the
-/// live attach path; it deliberately differs from `ServerModel::display_key` (which
-/// keys psmux per-session and has no live caller).
+/// live attach path — the sole keying authority for both models.
 pub(crate) fn host_selection_key(host: &crate::model::Host) -> String {
     host.id().to_string()
 }
@@ -1054,7 +1053,7 @@ fn run_event_effect(
             if !h.matches_display_tty(&client) {
                 return false;
             }
-            let key = h.display_key(&host); // Shared ⇒ key == host id
+            let key = host_selection_key(h); // Shared ⇒ key == host id
             registry.remove(&key);
             if let Some(h) = hosts.get_mut(&host) {
                 h.display.clear(&key); // forget the shown session + any in-flight spawn

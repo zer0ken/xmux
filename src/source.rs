@@ -1,8 +1,10 @@
 //! Abstracts a mux server reachable from this machine: the local mux, or a
-//! remote one over ssh. It owns the machine boundary — argv assembly, ssh
-//! transport with connect-timeout and injection-safe quoting, and the
-//! reachable-but-empty vs unreachable distinction — so the layers above speak in
-//! sessions, not transports.
+//! remote one over ssh. It carries the per-source config/data (alias, mux binary,
+//! socket, control path, os) plus the mux-env quoting vocab (`is_mux_var` /
+//! `mux_clean_env`) and the reachable-but-empty vs unreachable distinction. The
+//! machine boundary itself — argv assembly and the ssh transport (connect-timeout,
+//! injection-safe quoting) — lives in `Transport`; this source delegates to it
+//! (`transport()`), so the layers above speak in sessions, not transports.
 
 use std::path::Path;
 use std::sync::Arc;
