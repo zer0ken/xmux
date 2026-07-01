@@ -33,6 +33,11 @@ operations.
   unbounded redraw events.
 - The metadata control path does not supply display pixels.
 - Teardown must signal child/control resources without blocking the runtime.
+- `Grid::render_into` marks each wide (CJK) glyph's trailing cell
+  `CellDiffOption::AlwaysUpdate` so ratatui's incremental diff repaints it on a
+  wide→narrow transition; ratatui otherwise skips that trailing cell and the
+  terminal keeps the old glyph's right half as background residue. This is a
+  paint-layer fix — never a full-screen clear (which would flash on every switch).
 
 ## Common Pitfalls
 

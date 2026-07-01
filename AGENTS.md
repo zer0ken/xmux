@@ -12,15 +12,20 @@ There are two mux-facing paths:
 
 - Metadata path: `host.rs` runs control-mode or poll enumeration, tracks
   inventory, and emits `HostEvent`s.
-- Display path: `proxy/` runs real PTY attachments, feeds grids, and keeps input
-  and resize work off the async runtime.
+- Display path: `proxy/` runs real PTY attachments and feeds grids; `driver.rs`
+  (`MuxDriver`) owns the per-host display decision — which PTY to use and whether
+  to `switch-client` or reattach — and keeps input and resize work off the async
+  runtime.
 
-The cockpit ties those paths together. Domain actions should converge on
-`model::Operation`; raw key/text injection is an unstable low-level surface.
+The cockpit ties those paths together. Domain intent converges on `model::Action`
+applied at `State::apply`; raw key/text injection is an unstable low-level surface.
 
 ## Module Seams
 
 - `src/backend/` defines mux behavior.
+- `src/driver.rs` defines the `MuxDriver` trait and owns per-host display
+  orchestration (which PTY, `switch-client` vs reattach); `cockpit.rs` branches on
+  nothing mux-specific for display.
 - `src/model/` defines runtime domain values exchanged by backend, transport,
   host, control, and cockpit code.
 - `src/proxy/` owns PTY attachment, grid, terminal input, and low-level input

@@ -4,7 +4,7 @@
 
 `src/` contains the runtime application: CLI/config assembly, mux discovery,
 the cockpit event loop, host metadata management, display attachment spawning,
-the control socket, and the UI/proxy/model submodules.
+the control socket, and the UI/proxy/model/backend/state submodules.
 
 ## Mental Model
 

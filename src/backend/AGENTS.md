@@ -8,14 +8,20 @@ control-channel availability, event source, death signal, and window/session
 operation plans.
 
 One mux is one directory. `mod.rs` holds the cross-mux surface: the `Backend`
-trait, `SelectOutcome`, identity detection (`detect_backend`), and the factory
-functions (`for_binary`, `for_kind`). Each concrete mux lives in its own
-sub-directory and is re-exported from `mod.rs`:
+trait, `SelectOutcome`, identity detection (`detect_backend`), the factory
+functions (`for_binary`, `for_kind`), and — via `control.rs` — the
+`ControlProtocol` trait that hides a mux's control-mode (`-CC`) wire details
+(line framing/classification, the notification→event table, the size formatter)
+from `host.rs`. Each concrete mux lives in its own sub-directory and is
+re-exported from `mod.rs`:
 
 - `tmux/mod.rs` — `Tmux` and its `Backend` impl, plus the helpers used only by it
-  (`benign_empty`, `mux_control_argv`).
+  (`benign_empty`, `mux_control_argv`); `tmux/control_proto.rs` holds its pure,
+  headlessly-testable `-CC` wire functions behind `ControlProtocol`.
 - `psmux/mod.rs` — `Psmux` and its `Backend` impl, plus its poll cadence constant
-  (`PSMUX_POLL_MS`).
+  (`PSMUX_POLL_MS`); `psmux/registry.rs` is the `~/.psmux` per-machine session
+  registry that backs psmux `enumerate` (one server per session, no aggregate
+  `list-sessions`).
 
 Sub-modules pull the shared trait, value types, and imports from the parent via
 `use super::*;`. `crate::backend::{Tmux, Psmux}` resolve through the re-exports.

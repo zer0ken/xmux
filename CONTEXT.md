@@ -37,10 +37,6 @@ must be excluded before release.
 
 ## Improvement Notes
 
-- `src/backend/mod.rs` still contains the shared `Backend` interface and the
-  concrete tmux/psmux implementations in one file. This is unfinished
-  rearchitecture work. The intended shape is one mux backend per submodule or
-  directory, with shared interface/factory code kept in `backend/mod.rs`.
 - `src/ui/switcher.rs` is the current aggregate UI module. It owns row
   flattening, cursor state, modal/menu/input state, key and mouse handling, op
   result application, and rendering. This is unfinished rearchitecture work. The
@@ -76,9 +72,9 @@ must be excluded before release.
   the published repository state or replace any still-useful content with
   current English documentation elsewhere.
 - The control socket has a useful module seam: public ctl verbs parse to
-  `model::Operation`, while raw key and text injection stays behind the
+  `model::Action`, while raw key and text injection stays behind the
   unstable `raw:` namespace. Working Notes should tell agents to add
-  user-facing automation through semantic operations first, and reserve raw
+  user-facing automation through semantic actions first, and reserve raw
   input for tests or low-level compatibility.
 - Some Rust module comments still contain planning-only language.
   Durable comments and docs should describe current behavior and invariants
