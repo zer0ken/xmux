@@ -6,16 +6,16 @@
 spawn and lifecycle, the off-runtime attach worker, the attachment registry, the
 vt/grid state, terminal input decoding, mouse parsing, and terminal setup. It is
 mux-agnostic (it names no tmux/psmux verb) and application-agnostic (it holds no
-cockpit UI state — the focus/modal state machine lives in `app/focus.rs`).
+app UI state — the focus/modal state machine lives in `app/focus.rs`).
 
 ## Mental Model
 
 The display path runs real attached mux clients. `spawn_attachment` opens a
-ConPTY-backed `attach` child; an output pump feeds a `Grid`; the cockpit renders
+ConPTY-backed `attach` child; an output pump feeds a `Grid`; the app renders
 the selected grid. Input and resize commands are queued to per-attachment control
 threads so the async runtime never blocks on PTY operations. The worker moves the
 blocking ConPTY open+spawn off the runtime thread and hands finished attachments
-back to the cockpit, which owns the registry.
+back to the app, which owns the registry.
 
 ## Module Seams
 
@@ -26,7 +26,7 @@ back to the cockpit, which owns the registry.
 - `registry.rs` maps display keys to live attachments and exposes grid/input/
   resize/reap operations (`AttachRegistry`).
 - `grid.rs` owns the vt-style grid (`Grid`). `Grid::fingerprint() -> u64` computes
-  a content hash over all cell bytes; `cockpit.rs` compares successive fingerprints
+  a content hash over all cell bytes; `runtime.rs` compares successive fingerprints
   to determine whether a display transition actually changed the visible screen
   content (`display_grid_changed` is emitted only on a hash change).
 - `input.rs`, `decode.rs`, `dispatch.rs`, and `mouse.rs` turn terminal input into
@@ -41,7 +41,7 @@ back to the cockpit, which owns the registry.
 - The metadata control path does not supply display pixels.
 - Teardown must signal child/control resources without blocking the runtime.
 - The pump answers the child's terminal QUERIES (DSR/DA) itself, since there is no
-  real terminal behind the PTY; otherwise the child stalls on startup (empty pane).
+  real terminal behind the PTY; otherwise the child stalls on startup (empty terminal view).
 - `Grid::render_into` marks each wide (CJK) glyph's trailing cell
   `CellDiffOption::AlwaysUpdate` so ratatui's incremental diff repaints it on a
   wide→narrow transition; ratatui otherwise skips that trailing cell and the
@@ -51,9 +51,9 @@ back to the cockpit, which owns the registry.
 ## Common Pitfalls
 
 - Do not bypass `AttachRegistry` for input, resize, grid lookup, or reap.
-- Do not write directly to a PTY from cockpit or UI code.
+- Do not write directly to a PTY from app or UI code.
 - Do not treat raw stdout passthrough as compatible with ratatui owning stdout.
-- Do not name a mux verb or a cockpit UI-state type here; this layer is
+- Do not name a mux verb or a app UI-state type here; this layer is
   mux-agnostic and app-agnostic.
 
 ## Before Editing
@@ -67,5 +67,5 @@ back to the cockpit, which owns the registry.
 
 - Run display module tests for registry, input decoding, grid, attachment helper
   behavior, and the worker's off-loop responsiveness.
-- Run cockpit tests when changing focus routing, modal routing, or event
+- Run app tests when changing focus routing, modal routing, or event
   coalescing.

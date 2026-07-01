@@ -1,4 +1,4 @@
-//! A one-pane vt100 grid the proxy tees child output into, used ONLY to repaint
+//! A one-pane vt100 grid the display layer tees child output into, used ONLY to repaint
 //! the live pane after a transient modal. Not a multiplexer: one grid, no
 //! layouts, no input routing.
 use std::hash::{Hash, Hasher};

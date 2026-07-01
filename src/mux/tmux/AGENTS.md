@@ -5,7 +5,7 @@
 `mux/tmux` is the tmux family: everything mux-specific to tmux lives here so no
 tmux code sits at the `src` root. It owns BOTH sides of the mux:
 
-- the metadata backend `Tmux` (`Backend` impl) — binary name, `ServerModel::Shared`,
+- the metadata mux `Tmux` (`Mux` impl) — binary name, `ServerModel::Shared`,
   aggregate `list-sessions` enumeration, attach argv, the `-CC` control argv, event
   source, death signal, and window/session operation plans;
 - the display driver `TmuxDriver` (`MuxDriver` impl, in `display.rs`) — the per-host
@@ -24,13 +24,13 @@ OWN controlling tty to a per-host file before exec so a later `switch-client -c 
 targets xmux's own display client, never the user's own attached client. A LOCAL shared
 host has no remote shell to record/read the tty, so it reattaches instead.
 
-The backend supplies mux vocabulary (argv, model, enumeration, control payload); the
+The mux supplies mux vocabulary (argv, model, enumeration, control payload); the
 driver consumes it and owns the concrete attach/switch decision. `Transport` lowers the
 machine execution (local `-S` / `ssh -tt`); the tmux family never hardcodes ssh.
 
 ## Module Seams
 
-- `mod.rs` — `Tmux` (`Backend`), the per-host display-tty file helpers
+- `mod.rs` — `Tmux` (`Mux`), the per-host display-tty file helpers
   (`display_tty_path`, the record/switch commands via `display_tty_record_prefix` /
   `switch_via_recorded_tty_cmd`), the control argv, and `TmuxControl`.
 - `display.rs` — `TmuxDriver` (`MuxDriver`) plus the tmux-only attach helper
@@ -39,7 +39,7 @@ machine execution (local `-S` / `ssh -tt`); the tmux family never hardcodes ssh.
   notification→event table, and the command-line builders behind `ControlProtocol`.
 - The driver pulls the mux-agnostic seam (`MuxDriver`, `DriverCtx`, `lower_select_window`)
   from `crate::driver`, and the supervisor capabilities (`request_attach`, `run_lowered`,
-  `host_selection_key`, `terminal_view_size`, `display_key`) from `crate::app::cockpit`.
+  `host_selection_key`, `terminal_view_size`, `display_key`) from `crate::app::app`.
   `crate::driver` does NOT import `TmuxDriver`; the dependency is one-way (no cycle).
 
 ## Invariants
@@ -56,11 +56,11 @@ machine execution (local `-S` / `ssh -tt`); the tmux family never hardcodes ssh.
 ## Common Pitfalls
 
 - Do not name `TmuxDriver` outside `crate::mux::**`; the supervisor selects it via
-  `Backend::driver()` (through `driver_for`), never a `match server_model()`.
+  `Mux::driver()` (through `driver_for`), never a `match server_model()`.
 - Do not fold the display-tty record prefix into a LOCAL attach (there is no shell to run
   it — it would corrupt the argv's session-name argument).
-- Do not thread a `remote` bool through the backend; the driver reads
-  `host.transport.is_remote()` and the backend stays transport-blind.
+- Do not thread a `remote` bool through the mux; the driver reads
+  `host.transport.is_remote()` and the mux stays transport-blind.
 
 ## Before Editing
 
@@ -68,12 +68,12 @@ machine execution (local `-S` / `ssh -tt`); the tmux family never hardcodes ssh.
   (`TmuxDriver`), or `-CC` wire protocol (`TmuxControl`).
 - Keep the driver's behavior byte-identical unless the change is explicitly a behavior
   change; the display decision is the highest-risk surface.
-- Check psmux for parity when changing the shared `MuxDriver`/`Backend` trait shape.
+- Check psmux for parity when changing the shared `MuxDriver`/`Mux` trait shape.
 
 ## Verification
 
-- Run backend and driver tests (`cargo test --lib mux::tmux`) for plan, control, and
+- Run mux and driver tests (`cargo test --lib mux::tmux`) for plan, control, and
   driver changes.
-- Run cockpit/host tests when the event source, death signal, or display decision changes.
+- Run app/host tests when the event source, death signal, or display decision changes.
 - Set `XMUX_LOG=xmux::mux::tmux=debug` to trace the driver's `display_show` /
   `display_inventory` / `attach_created` decisions.

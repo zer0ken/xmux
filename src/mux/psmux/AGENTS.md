@@ -5,7 +5,7 @@
 `mux/psmux` is the psmux family: everything mux-specific to psmux lives here so no
 psmux code sits at the `src` root. It owns BOTH sides of the mux:
 
-- the metadata backend `Psmux` (`Backend` impl) — binary name,
+- the metadata mux `Psmux` (`Mux` impl) — binary name,
   `ServerModel::PerSession`, registry-merge enumeration for a LOCAL host (list-sessions
   over ssh for a REMOTE one), attach argv, poll cadence, death signal, and window/session
   operation plans;
@@ -33,12 +33,12 @@ by the session it shows (one server per session ⇒ the client showing session S
 own server). A remote psmux host is enumerated/displayed the generic way; the local probe
 is skipped there.
 
-The backend supplies mux vocabulary (argv, model, enumeration); the driver consumes it
+The mux supplies mux vocabulary (argv, model, enumeration); the driver consumes it
 and owns the concrete switch/reattach decision. `Transport` lowers the machine execution.
 
 ## Module Seams
 
-- `mod.rs` — `Psmux` (`Backend`), the poll cadence constant (`PSMUX_POLL_MS`), and the
+- `mod.rs` — `Psmux` (`Mux`), the poll cadence constant (`PSMUX_POLL_MS`), and the
   `switch_client_argv` the driver's in-place switch calls.
 - `display.rs` — `PsmuxDriver` (`MuxDriver`) plus the psmux-only helpers
   `refresh_client_lowered`, `parse_psmux_client_tty`, and `spawn_local_psmux_tty_capture`.
@@ -47,7 +47,7 @@ and owns the concrete switch/reattach decision. `Transport` lowers the machine e
   `enumerate` (existence set) and the merge with one list-sessions detail row.
 - The driver pulls the mux-agnostic seam (`MuxDriver`, `DriverCtx`, `lower_select_window`)
   from `crate::driver`, and the supervisor capabilities (`request_attach`, `run_lowered`,
-  `host_selection_key`, `terminal_view_size`, `display_key`) from `crate::app::cockpit`.
+  `host_selection_key`, `terminal_view_size`, `display_key`) from `crate::app::app`.
   `crate::driver` does NOT import `PsmuxDriver`; the dependency is one-way (no cycle).
 
 ## Invariants
@@ -67,7 +67,7 @@ and owns the concrete switch/reattach decision. `Transport` lowers the machine e
 ## Common Pitfalls
 
 - Do not name `PsmuxDriver` outside `crate::mux::**`; the supervisor selects it via
-  `Backend::driver()` (through `driver_for`), never a `match server_model()`.
+  `Mux::driver()` (through `driver_for`), never a `match server_model()`.
 - Do not run `switch-client -c ""` — the tty capture is guarded; an empty/absent tty must
   fall back to reattach.
 - Do not fold the local registry into a REMOTE host (it would inject local session names
@@ -79,12 +79,12 @@ and owns the concrete switch/reattach decision. `Transport` lowers the machine e
   (`PsmuxDriver`), or registry enumeration (`registry.rs`).
 - Keep the driver's behavior byte-identical unless the change is explicitly a behavior
   change; the switch/reattach decision is the highest-risk surface.
-- Check tmux for parity when changing the shared `MuxDriver`/`Backend` trait shape.
+- Check tmux for parity when changing the shared `MuxDriver`/`Mux` trait shape.
 
 ## Verification
 
-- Run backend and driver tests (`cargo test --lib mux::psmux`) for plan, registry,
+- Run mux and driver tests (`cargo test --lib mux::psmux`) for plan, registry,
   and driver changes.
-- Run cockpit/host tests when the event source, death signal, or display decision changes.
+- Run app/host tests when the event source, death signal, or display decision changes.
 - Set `XMUX_LOG=xmux::mux::psmux=debug` to trace the driver's `display_show` /
   `tty_probe` / `display_inventory` decisions.

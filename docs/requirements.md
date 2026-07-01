@@ -62,42 +62,42 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
 - **FR-C1** — A same-server pick switches in place via `switch-client` (instant),
   pre-selecting the chosen window. **Tests:** `popup_decision_table` (SwitchClient),
   `switch_client_argv`, `select_window_argv`.
-- **FR-C2** — A cross-server pick from the local cockpit signals the cockpit over
-  its socket (`switch <window|-> <addr>`) then detaches; the cockpit re-attaches the
-  target with **no picker between**. **Tests:** `popup_decision_table` (SignalCockpit),
-  `signal_cockpit_switch_acks_and_sets_pending`, `cockpit_socket_switch_sets_pending`,
+- **FR-C2** — A cross-server pick from the local app signals the app over
+  its socket (`switch <window|-> <addr>`) then detaches; the app re-attaches the
+  target with **no picker between**. **Tests:** `popup_decision_table` (SignalApp),
+  `signal_app_switch_acks_and_sets_pending`, `app_socket_switch_sets_pending`,
   `loop_reattaches_on_pending_then_picks_on_bare_exit`,
   `dispatch_switch_ping_and_errors`. **Live-verified** (real psmux + ssh).
-- **FR-C3** — A cross-server pick from inside a remote (no reachable cockpit
+- **FR-C3** — A cross-server pick from inside a remote (no reachable app
   socket) degrades to a clear message + native detach→picker — never a silent loss.
-  **Tests:** `popup_decision_table` (NoCockpit); the message/exit is in `main.rs`.
+  **Tests:** `popup_decision_table` (NoApp); the message/exit is in `main.rs`.
 - **FR-C4** — A switch lands on the picked window for both same-server and
   cross-host paths. **Tests:** `dispatch_switch_carries_window`,
   `interactive_attach_remote_folds_pre_select_into_one_connection`.
-- **FR-C5** — No silent loss: no live cockpit → clear message + non-zero exit + stale
-  pointer cleared; a failed attach (e.g. ssh 255) is logged to `~/.xmux/cockpit.log`,
+- **FR-C5** — No silent loss: no live app → clear message + non-zero exit + stale
+  pointer cleared; a failed attach (e.g. ssh 255) is logged to `~/.xmux/xmux.log`,
   not swallowed. **Tests:** `popup_decision_table`, `pointer_removed_only_if_ours`;
   attach-failure logging is in `RealAttacher` (live-verified). The switch is
   direction-agnostic (`loop_switches_local_remote_both_directions`).
 
-## D. Cockpit lifecycle
+## D. App lifecycle
 
 - **FR-D1** — `xmux` (no subcommand) is a persistent supervisor that owns the
-  terminal and runs one mux-client child at a time. **Tests:** `cockpit_loop` tests.
-- **FR-D2** — The cockpit serves its control socket concurrently while blocked on
-  the attach child (async child). **Tests:** `cockpit_socket_switch_sets_pending`
+  terminal and runs one mux-client child at a time. **Tests:** `app_loop` tests.
+- **FR-D2** — The app serves its control socket concurrently while blocked on
+  the attach child (async child). **Tests:** `app_socket_switch_sets_pending`
   (socket served independent of the loop). **Live-verified** (ping→pong while attached).
-- **FR-D3** — Running the cockpit inside a mux is refused (exit 2 with guidance),
+- **FR-D3** — Running the app inside a mux is refused (exit 2 with guidance),
   not warned — nested, every attach is refused, leaving a doomed picker loop.
   **Tests:** `nest_guard_inside`, `nest_guard_outside` (the decision primitive);
-  `run_cockpit` wiring is in `main.rs`. **Live-verified** (exit 2).
+  `run_app` wiring is in `main.rs`. **Live-verified** (exit 2).
 - **FR-D4** — Pointer hygiene: the pointer is written on start, removed on exit only
-  if it still names this cockpit; a queued switch older than a freshness window
+  if it still names this app; a queued switch older than a freshness window
   (15s) is discarded so an abandoned switch cannot teleport later.
   **Tests:** `pointer_round_trip_and_absent`, `pointer_removed_only_if_ours`,
   `switch_freshness_window`, `loop_discards_stale_pending`.
 - **FR-D5** — First launch with no target shows the picker; quitting the picker
-  exits the cockpit. **Tests:** `loop_runs_picker_first_when_no_initial_target`.
+  exits the app. **Tests:** `loop_runs_picker_first_when_no_initial_target`.
 
 ## E. Session management
 
@@ -118,14 +118,14 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
 - **FR-F1** — A per-pid local socket drives the running switcher headlessly:
   `ping`/`dump`/`key <name>`/`text <chars>`. **Tests:** `control_end_to_end`,
   `parse_key_*`, `parse_request_cases`, `frame_round_trip`.
-- **FR-F2** — The cockpit socket speaks `switch <window|-> <addr>` and `ping`.
+- **FR-F2** — The app socket speaks `switch <window|-> <addr>` and `ping`.
   **Tests:** `dispatch_switch_ping_and_errors`, `dispatch_switch_carries_window`.
-- **FR-F3** — Socket discovery: newest `ctl-*.sock` by mtime then pid; the cockpit
-  pointer names the live cockpit socket. **Tests:** `discover_newest_then_higher_pid`,
-  `discover_tie_break_higher_pid`, `read_cockpit_pointer`.
+- **FR-F3** — Socket discovery: newest `ctl-*.sock` by mtime then pid; the app
+  pointer names the live app socket. **Tests:** `discover_newest_then_higher_pid`,
+  `discover_tie_break_higher_pid`, `read_app_pointer`.
 - **FR-F4** — Length-framed messages with a bounded read; endpoint naming works for
-  both `ctl-*` and `cockpit-*` on every platform. **Tests:** `read_frame_oversized`,
-  `frame_round_trip`, `endpoint_name_accepts_cockpit_socket`, `socket_path_format`.
+  `ctl-*.sock` on every platform. **Tests:** `read_frame_oversized`,
+  `frame_round_trip`, `socket_path_format`.
 
 ## G. Transport & safety
 
@@ -159,24 +159,24 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
 - **UC-4 — Find one session among many, then go.** Filter to narrow, Enter on the
   match. *(FR-B4, FR-B6)* — Tests: the FR-B6 set.
 - **UC-5 — The remote is down — don't leave me in the dark.** Unreachable host shows
-  `⚠ unreachable`; a failed attach is logged, the cockpit returns to the picker.
-  *(FR-A2, FR-B7, FR-C5)* — **live-verified** (cockpit.log entry).
+  `⚠ unreachable`; a failed attach is logged, the app returns to the picker.
+  *(FR-A2, FR-B7, FR-C5)* — **live-verified** (xmux.log entry).
 - **UC-6 — Deep in a remote, get back home.** Native detach (`prefix d`) → the
-  cockpit's picker → pick local or another host. *(FR-C3, FR-D5)*
+  app's picker → pick local or another host. *(FR-C3, FR-D5)*
 - **UC-7 — Spin up a throwaway on a remote and switch to it.** Create on a source,
   then switch to it. *(FR-E1, FR-C2)*
 - **UC-8 — Survey what's running everywhere before deciding.** Tree shows hosts,
   sessions, windows, per-pane commands, plus a live preview. *(FR-B1, FR-B3, FR-B8)*
 - **UC-9 — Rename / kill a session from the switcher.** *(FR-E2, FR-E3)*
 - **UC-10 — Drive xmux from a script.** Control channel: dump, inject keys, signal a
-  switch. *(FR-F1, FR-F2)* — Tests: `control_end_to_end`, the cockpit socket set.
-- **UC-11 — Switch in either direction, local↔remote↔local.** The cockpit re-attaches
+  switch. *(FR-F1, FR-F2)* — Tests: `control_end_to_end`, the app socket set.
+- **UC-11 — Switch in either direction, local↔remote↔local.** The app re-attaches
   whatever the next target is, local or remote, with no picker between, in any order.
   *(FR-C5, FR-D1)* — Test: `loop_switches_local_remote_both_directions` (added).
 
 ## Coverage added this round
 
-- `loop_switches_local_remote_both_directions` (cockpit) — UC-11 / FR-C5: a
+- `loop_switches_local_remote_both_directions` (app) — UC-11 / FR-C5: a
   fake-attacher loop attaches `local → remote → local → remote` via queued
   switches, asserting both directions re-attach with no picker between.
 - `event_loop_cancel_leaves_no_choice` (ui/run) — UC-3 / FR-B5: quitting the live
@@ -187,7 +187,7 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
 
 ## Out of scope (documented elsewhere)
 
-- The seamless-cross-host-switch design, accepted limitations (single-cockpit,
+- The seamless-cross-host-switch design, accepted limitations (single-app,
   inter-client flash, Windows ssh latency), and future escalations (reverse-tunnel,
   PTY-multiplexer): `docs/superpowers/specs/2026-06-17-seamless-cross-host-switch-design.md`
-  and `docs/solutions/architecture-patterns/cockpit-cross-host-switch.md`.
+  and `docs/solutions/architecture-patterns/app-cross-host-switch.md`.

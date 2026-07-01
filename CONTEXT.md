@@ -14,6 +14,46 @@ and titled as `Working Notes: <path>`.
 The place where a module's interface lives: what callers may rely on, what the
 module hides, and which dependencies are allowed to cross into it.
 
+### Vocabulary
+
+One concept, one word. The two axes and the runtime:
+
+- `Transport` (MACHINE axis) — local vs ssh execution; knows nothing about the
+  mux.
+- `Mux` (MUX axis) — the per-mux behavior trait (impls `Tmux` / `Psmux`); a
+  host's `mux` field is `Box<dyn Mux>`. "mux" is the family/concept; `Mux` is
+  the trait.
+- `MuxDriver` — a mux's display driver, built by `Mux::driver()`.
+- the app — the runtime that owns the terminal (`crate::app`; loop in
+  `app/runtime.rs`, entry `run_app`). There is no `App`/`Cockpit` struct yet:
+  the app is the module and its run function until the runtime is decomposed.
+- `ViewFocus` — which screen region holds focus (`Tree` / `Terminal`).
+- `Modal` — the mutually-exclusive focus-grabbing UI (`Help`, an input dialog,
+  a kill confirm, a context `Menu`). `ModalKind::{Popup, Menu}` are its two
+  focus sub-kinds: popup = a draggable centered dialog, menu = the context menu.
+
+UI elements a user perceives as distinct things:
+
+- split view — the whole two-region layout.
+- tree view — the left region (the host / session / window / pane tree).
+- terminal view — the right region (the selected session's live grid).
+- divider — the vertical rule between the views; carries the focus, auto-hide,
+  and hover cues.
+- status surface — the `Status`-owned chrome (divider + hint bar + host info).
+- hint bar — the bottom line of the tree column (key hints, flash, scanning,
+  filter text). Scoped to the tree column, so not a full-width status bar.
+- grid — the live terminal content drawn in the terminal view.
+- host info — the unreachable-host detail shown in the terminal-view region.
+- row — one tree line (host / session / window / pane / loading row).
+- hint — a row's trailing state annotation (`scanning…` / `(empty)` /
+  `⚠ unreachable`).
+- spinner — the braille activity glyph on a connecting session row.
+- filter — the type-to-filter input over the tree.
+
+`pane` is reserved for a mux window's terminal split (a tmux / psmux pane); it
+is never a screen region — screen regions are "views". The switcher's rendered
+screen is the "switcher screen" (`dump_screen`), never an "overlay".
+
 ## Working Notes Format
 
 Working Notes use these sections:
@@ -42,15 +82,15 @@ Two orthogonal axes describe every connection, and no module conflates them:
 - MACHINE — `src/model/transport.rs`. `Transport` (`Local` / `Ssh`) owns where a
   command runs and how its argv is executed; it knows nothing about the mux.
 - MUX — `src/mux/<kind>/`. Each mux family (`tmux/`, `psmux/`) owns its metadata
-  and command plans in `mod.rs` (behind the `Backend` trait) and its display
-  driver in `display.rs`. A backend builds its OWN driver via `Backend::driver()`,
+  and command plans in `mod.rs` (behind the `Mux` trait) and its display
+  driver in `display.rs`. A mux builds its OWN driver via `Mux::driver()`,
   so mux selection lives in the mux family, never a central `match`. Shared mux
   vocabulary lives in `src/mux/vocab.rs`.
 
 Attach argv is composed from a host's own `mux` + `transport` (the two axes
 together), so the two families are combined without either knowing the other.
 
-The supervisor branches on NOTHING mux-specific. `src/app/` (cockpit runtime +
+The supervisor branches on NOTHING mux-specific. `src/app/` (runtime +
 focus state), `src/ui/` (switcher/tree/status/ops rendering), and `src/state/`
 (runtime `State` + the `apply` / `apply_event` mutation sites) select display
 through `driver_for(host).show(...)` — i.e. `host.mux.driver()` — and read the
@@ -103,21 +143,21 @@ as invariants, seams, and pitfalls — never as change history or phase narrativ
   registry.
 - The migration boundary between `Env`/`Source` and `Hosts`/`Host` is not fully
   specified. `Hosts` is intended to become the per-machine owner, but `Env` and
-  `Source` still drive CLI commands, discovery, `Ops`, and cockpit source lookup.
+  `Source` still drive CLI commands, discovery, `Ops`, and app source lookup.
   Before moving source or host logic, decide whether `Env` remains a CLI/config
   assembly layer or whether `Hosts` also becomes the runtime source registry.
 - Preferred direction: keep `Env` as the config and CLI assembly layer, make
   `Hosts` the runtime source registry, keep live process and task ownership out
   of `model::Host`, and let `host::HostManager` own metadata mechanisms until it
   is renamed or reshaped as a runtime manager. `Source` should shrink toward a
-  compatibility adapter as `Backend + Transport` cover its command-building and
+  compatibility adapter as `Mux + Transport` cover its command-building and
   execution roles.
 - `Source` and `model::Transport` currently duplicate machine-execution
   responsibilities. Treat `Source` as live compatibility plumbing, not the
   preferred home for new execution semantics. New local/ssh execution behavior
-  belongs in `Transport`; new mux behavior belongs in `Backend`. A future
+  belongs in `Transport`; new mux behavior belongs in `Mux`. A future
   source-compatibility-shrink phase should move psmux registry helpers into
-  `backend/psmux`, port `manage` and `EnvOps` toward `Host + Backend +
+  `mux/psmux`, port `manage` and `EnvOps` toward `Host + Mux +
   Transport`, and then remove or minimize `Source`.
 - `docs/superpowers/` contains working planning material and is not intended for
   the public open source documentation surface. Before release, remove it from

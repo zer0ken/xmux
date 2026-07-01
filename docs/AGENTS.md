@@ -16,7 +16,7 @@ surface.
 ## Module Seams
 
 - `requirements.md` records functional requirements and their test coverage.
-- `keybind.md` documents cockpit prefix behavior for users.
+- `keybind.md` documents app prefix behavior for users.
 - `adr/` records accepted documentation and architecture decisions.
 - `superpowers/` stores working plans and specs used during development.
 

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`state` is the cockpit's single source of truth: the reachable inventory plus the
+`state` is the app's single source of truth: the reachable inventory plus the
 selection/display runtime fields that need stable ownership outside the main
 loop's local variables, and `State::apply` / `State::apply_event` — the two
 domain-mutation sites (intent-driven and event-driven). UI components read
@@ -10,10 +10,10 @@ domain-mutation sites (intent-driven and event-driven). UI components read
 
 ## Mental Model
 
-`State` is the cockpit's durable runtime state bag. It owns the inventory
+`State` is the app's durable runtime state bag. It owns the inventory
 (`groups`/`panes`/`scanning`/`panes_loaded`) and the active `filter`, the
 canonical `selection`, the confirmed `displayed` address, the `focus` state
-machine (which pane keys go to; whether a modal is open), the open modal
+machine (which view keys go to; whether a modal is open), the open modal
 `popup`, the debounced `attach_deadline` + `attach_pending` flag, and the last
 session address persisted to prefs. `from_scan` / `from_sources` seed the
 inventory.
@@ -41,7 +41,7 @@ later as the op's result).
 is the inbound mirror of `apply`: the single event-driven mutation site. It folds
 the arms whose data is SELF-CONTAINED in the event (the `Focus` active-window
 marker, a `Panes` subtree, a `Sessions` poll enumeration, the `Exited`
-unreachable mark) into `State` through the switcher, and returns the backend
+unreachable mark) into `State` through the switcher, and returns the mux
 follow-ups it cannot perform itself as `EventEffect`s for the run loop to run
 (`ApplyInventory` / `Refetch` / `ProbeActiveWindow` / `ReapHost` /
 `ReapDisplayAttach` / `DispatchScanned` / `SyncPollSessions`). The `connected`
@@ -59,7 +59,7 @@ the transient popup geometry (drag offset / drawn rect).
 
 ## Module Seams
 
-- `State` depends on `app::cockpit::Selection` for selected source/session/window,
+- `State` depends on `app::app::Selection` for selected source/session/window,
   `ui::tree::Group` + `session::WindowPanes` for the inventory,
   `app::focus::Focus` for the focus state machine, `ui::switcher::Popup` for the
   open modal, `model::{Action, Command}` for the `apply` vocabulary, and
@@ -68,7 +68,7 @@ the transient popup geometry (drag offset / drawn rect).
 - It stores state facts + the two mutation sites (`apply` / `apply_event`); the
   run loop owns effect dispatch — for `apply` the synchronous `Command`s (switcher
   cursor move, attach, prefs IO, quit) and for `apply_event` the `EventEffect`
-  backend follow-ups (inventory lock apply, refetch, probe, reap, sync,
+  mux follow-ups (inventory lock apply, refetch, probe, reap, sync,
   scan-dispatch) — and feeds back the runtime attach facts on `Tick`. No
   IO/spawning/channel sends happen here.
 
@@ -80,8 +80,8 @@ the transient popup geometry (drag offset / drawn rect).
   `DisplayReady`). The terminal view always renders `displayed`'s grid, so on a
   switch the prior session stays on screen until the new one is confirmed
   (stale-while-revalidate); there is no transitional placeholder.
-- `focus` is the single source of truth for which pane owns keys and which modal
-  (if any) is open; a modal carries the pane it restores to.
+- `focus` is the single source of truth for which view owns keys and which modal
+  (if any) is open; a modal carries the view it restores to.
 - `popup` is the single source of truth for WHICH modal is open and its content;
   `focus`'s modal dimension is reconciled from it each loop-top via `modal_kind`.
   At most one modal can be open because it is one Option, not four fields.
@@ -92,7 +92,7 @@ the transient popup geometry (drag offset / drawn rect).
   same session.
 - This layer branches on nothing mux-specific: `apply` / `apply_event` fold
   intents and events over `State` without a `match` on tmux vs psmux. Per-mux
-  behavior lives behind the `Backend`/`MuxDriver` seam the run loop reaches; the
+  behavior lives behind the `Mux`/`MuxDriver` seam the run loop reaches; the
   mux enters here only as domain data (sessions, windows, events).
 
 ## Common Pitfalls
@@ -106,10 +106,10 @@ the transient popup geometry (drag offset / drawn rect).
 
 ## Before Editing
 
-- Check every cockpit site that reads or writes the field.
+- Check every app site that reads or writes the field.
 - Define when the field changes and which event source owns that transition.
 
 ## Verification
 
-- Run `state` tests and the cockpit tests that exercise selection sync and attach
+- Run `state` tests and the app tests that exercise selection sync and attach
   debounce.

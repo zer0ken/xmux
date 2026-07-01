@@ -20,10 +20,12 @@ The first pass will cover only the core architecture seams:
 
 - repository root
 - `src/`
-- `src/backend/`
+- `src/app/`
+- `src/mux/`
+- `src/host/`
+- `src/display/`
 - `src/state/`
 - `src/ui/`
-- `src/proxy/`
 - `src/model/`
 - `legacy-go/`
 - `docs/`

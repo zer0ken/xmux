@@ -49,7 +49,7 @@ Pane — with the live preview of the focused node's pane on the right.
 | `x` | kill the focused session (inline `y`/`n` confirm) |
 | `/` | fuzzy filter `<source>/<name>` |
 | `r` | re-scan every host |
-| `C-g ?` | toggle the keybinding help overlay |
+| `C-g ?` | toggle the keybinding help modal |
 | `q` / `Esc` | quit |
 
 The mouse works too: click selects, double-click attaches, the wheel scrolls.
@@ -63,9 +63,9 @@ selectable.
 
 ## Keybind
 
-Inside the cockpit (run `xmux`), a built-in prefix hotkey opens the
-cross-environment picker as a fast overlay over your current pane — from any
-session, local or remote, with nothing installed on the remote. The default
+Inside the app (run `xmux`), a built-in prefix hotkey opens the
+cross-environment picker over your current session — from any session, local or
+remote, with nothing installed on the remote. The default
 prefix is `Ctrl-g`; press `Ctrl-g s` to open the picker, `Ctrl-g g` to send a
 literal `Ctrl-g` through. See [docs/keybind.md](docs/keybind.md). Set
 `XMUX_PREFIX` (e.g. `C-Space`) to change the prefix.
