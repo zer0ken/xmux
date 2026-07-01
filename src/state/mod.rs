@@ -148,12 +148,12 @@ impl State {
             Action::Switch { address } => vec![Command::SelectAddress(address)],
             Action::Focus(FocusTarget::Terminal) => {
                 self.focus
-                    .set_pane_focus(crate::app::focus::PaneFocus::Terminal);
+                    .set_view_focus(crate::app::focus::ViewFocus::Terminal);
                 Vec::new()
             }
             Action::Focus(FocusTarget::Tree) => {
                 self.focus
-                    .set_pane_focus(crate::app::focus::PaneFocus::Tree);
+                    .set_view_focus(crate::app::focus::ViewFocus::Tree);
                 Vec::new()
             }
             Action::Rescan => vec![Command::Rescan],

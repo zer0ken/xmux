@@ -1263,7 +1263,7 @@ fn handle_mouse_event(
                     // so closing the menu (next loop-top sync_modal(None)) lands on it.
                     state
                         .focus
-                        .set_pane_focus(crate::app::focus::PaneFocus::Terminal);
+                        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
                 }
                 crate::ui::switcher::MenuOutcome::Handled => {
                     // A menu item only OPENS the next modal (input / kill confirm) — the
@@ -1647,7 +1647,7 @@ fn handle_stdin_bytes(
     if *focus_terminal {
         state
             .focus
-            .set_pane_focus(crate::app::focus::PaneFocus::Terminal);
+            .set_view_focus(crate::app::focus::ViewFocus::Terminal);
         // No term.clear(): both states draw the SAME split layout (only the
         // divider colour changes), so clearing would blank the screen and
         // force a full repaint for nothing.
@@ -1655,7 +1655,7 @@ fn handle_stdin_bytes(
     if *focus_tree {
         state
             .focus
-            .set_pane_focus(crate::app::focus::PaneFocus::Tree);
+            .set_view_focus(crate::app::focus::ViewFocus::Tree);
         if !tree_replay.is_empty() {
             let (ft, q, wd, th) = handle_tree_bytes(
                 tree_replay,
@@ -1680,7 +1680,7 @@ fn handle_stdin_bytes(
             if ft {
                 state
                     .focus
-                    .set_pane_focus(crate::app::focus::PaneFocus::Terminal);
+                    .set_view_focus(crate::app::focus::ViewFocus::Terminal);
             }
             *quit = *quit || q;
             if wd != 0 {
@@ -4330,7 +4330,7 @@ mod tests {
         // it instead of resolving to FocusMux — so a confirm can neither quit the cockpit
         // nor focus the mux out from under itself. (The first swallowed key cancels the
         // confirm, tmux confirm-before style; the point is the key does not quit/focus.)
-        use crate::app::focus::{Focus, PaneFocus};
+        use crate::app::focus::{Focus, ViewFocus};
         use crate::session::Session;
         use crate::ui::switcher::{Scan, Switcher};
         use crate::ui::tree::Group;
@@ -4406,7 +4406,7 @@ mod tests {
         assert_eq!(
             state.focus,
             Focus::Popup {
-                prior: PaneFocus::Tree
+                prior: ViewFocus::Tree
             }
         );
         // prefix q with the confirm armed: routed to the switcher, NOT a quit.
@@ -4418,7 +4418,7 @@ mod tests {
         assert_eq!(
             state.focus,
             Focus::Popup {
-                prior: PaneFocus::Tree
+                prior: ViewFocus::Tree
             },
             "pane focus unchanged"
         );
@@ -4431,7 +4431,7 @@ mod tests {
         assert_eq!(
             state.focus,
             Focus::Popup {
-                prior: PaneFocus::Tree
+                prior: ViewFocus::Tree
             },
             "confirm re-armed"
         );
@@ -4440,7 +4440,7 @@ mod tests {
         assert_eq!(
             state.focus,
             Focus::Popup {
-                prior: PaneFocus::Tree
+                prior: ViewFocus::Tree
             },
             "Enter did not focus the mux"
         );
@@ -4448,7 +4448,7 @@ mod tests {
 
     #[test]
     fn menu_keyboard_input_is_consumed_without_changing_restore_pane_or_writing_pty() {
-        use crate::app::focus::{Focus, PaneFocus};
+        use crate::app::focus::{Focus, ViewFocus};
         use crate::session::Session;
         use crate::ui::switcher::{Scan, Switcher};
         use crate::ui::tree::Group;
@@ -4484,7 +4484,7 @@ mod tests {
             assert_eq!(
                 state.focus,
                 Focus::Menu {
-                    prior: PaneFocus::Tree
+                    prior: ViewFocus::Tree
                 }
             );
 
@@ -4557,7 +4557,7 @@ mod tests {
             assert_eq!(
                 during,
                 Focus::Menu {
-                    prior: PaneFocus::Tree
+                    prior: ViewFocus::Tree
                 },
                 "{label} preserves the menu restore pane"
             );

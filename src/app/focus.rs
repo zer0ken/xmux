@@ -11,7 +11,7 @@
 
 /// The two real panes — the only targets a modal can restore to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PaneFocus {
+pub enum ViewFocus {
     Tree,
     Terminal,
 }
@@ -25,9 +25,9 @@ pub enum Focus {
     Terminal,
     /// A centered modal popup (help / inline input / kill-confirm) owns keys;
     /// `prior` is the pane to restore when it closes.
-    Popup { prior: PaneFocus },
+    Popup { prior: ViewFocus },
     /// The right-click context menu owns input; `prior` is the pane to restore.
-    Menu { prior: PaneFocus },
+    Menu { prior: ViewFocus },
 }
 
 /// Which kind of modal the switcher currently has open — the loop-top hand-off the
@@ -63,10 +63,10 @@ impl Focus {
             self,
             Focus::Tree
                 | Focus::Popup {
-                    prior: PaneFocus::Tree
+                    prior: ViewFocus::Tree
                 }
                 | Focus::Menu {
-                    prior: PaneFocus::Tree
+                    prior: ViewFocus::Tree
                 }
         )
     }
@@ -75,9 +75,9 @@ impl Focus {
     /// modal it flips the carried `prior` so the modal stays open and restores onto
     /// the flipped pane.
     pub fn toggle(&mut self) {
-        let flip = |p: PaneFocus| match p {
-            PaneFocus::Tree => PaneFocus::Terminal,
-            PaneFocus::Terminal => PaneFocus::Tree,
+        let flip = |p: ViewFocus| match p {
+            ViewFocus::Tree => ViewFocus::Terminal,
+            ViewFocus::Terminal => ViewFocus::Tree,
         };
         *self = match *self {
             Focus::Tree => Focus::Terminal,
@@ -90,11 +90,11 @@ impl Focus {
     /// Sets the PANE dimension to `p`. Not modal → becomes that pane. Modal → sets the
     /// carried `prior`, so a focus request during/closing a modal lands on `p` after
     /// restore (the context-menu "focus mux" path).
-    pub fn set_pane_focus(&mut self, p: PaneFocus) {
+    pub fn set_view_focus(&mut self, p: ViewFocus) {
         *self = match *self {
             Focus::Tree | Focus::Terminal => match p {
-                PaneFocus::Tree => Focus::Tree,
-                PaneFocus::Terminal => Focus::Terminal,
+                ViewFocus::Tree => Focus::Tree,
+                ViewFocus::Terminal => Focus::Terminal,
             },
             Focus::Popup { .. } => Focus::Popup { prior: p },
             Focus::Menu { .. } => Focus::Menu { prior: p },
@@ -109,16 +109,16 @@ impl Focus {
     pub fn sync_modal(&mut self, kind: Option<ModalKind>) {
         let current_pane = || {
             if self.pane_is_tree() {
-                PaneFocus::Tree
+                ViewFocus::Tree
             } else {
-                PaneFocus::Terminal
+                ViewFocus::Terminal
             }
         };
         *self = match (kind, *self) {
             // No modal: collapse any open modal back onto its prior pane.
             (None, Focus::Popup { prior }) | (None, Focus::Menu { prior }) => match prior {
-                PaneFocus::Tree => Focus::Tree,
-                PaneFocus::Terminal => Focus::Terminal,
+                ViewFocus::Tree => Focus::Tree,
+                ViewFocus::Terminal => Focus::Terminal,
             },
             (None, s @ (Focus::Tree | Focus::Terminal)) => s,
             // Already the requested kind: no-op (preserve a mid-modal toggle of prior).
@@ -162,7 +162,7 @@ mod tests {
         assert_eq!(
             focus,
             Focus::Popup {
-                prior: PaneFocus::Terminal
+                prior: ViewFocus::Terminal
             }
         );
         focus.sync_modal(None);
@@ -180,7 +180,7 @@ mod tests {
         assert_eq!(
             focus,
             Focus::Popup {
-                prior: PaneFocus::Tree
+                prior: ViewFocus::Tree
             }
         );
         focus.sync_modal(None);
@@ -194,7 +194,7 @@ mod tests {
         assert_eq!(
             focus,
             Focus::Menu {
-                prior: PaneFocus::Tree
+                prior: ViewFocus::Tree
             }
         );
         focus.sync_modal(None);
@@ -209,7 +209,7 @@ mod tests {
         assert_eq!(
             focus,
             Focus::Popup {
-                prior: PaneFocus::Terminal
+                prior: ViewFocus::Terminal
             },
             "toggle flips the carried prior, the modal stays open",
         );
@@ -226,7 +226,7 @@ mod tests {
         assert_eq!(
             focus,
             Focus::Popup {
-                prior: PaneFocus::Terminal
+                prior: ViewFocus::Terminal
             },
             "re-sync of the same kind must not re-capture prior over a mid-modal toggle",
         );
@@ -235,29 +235,29 @@ mod tests {
     #[test]
     fn kind_switch_keeps_prior() {
         let mut focus = Focus::Menu {
-            prior: PaneFocus::Terminal,
+            prior: ViewFocus::Terminal,
         };
         focus.sync_modal(Some(ModalKind::Popup));
         assert_eq!(
             focus,
             Focus::Popup {
-                prior: PaneFocus::Terminal
+                prior: ViewFocus::Terminal
             },
             "switching menu->popup keeps prior, does not re-capture",
         );
     }
 
     #[test]
-    fn set_pane_focus_during_a_menu_targets_the_restore_pane() {
+    fn set_view_focus_during_a_menu_targets_the_restore_pane() {
         // The menu "focus mux" path: state is Menu{prior:Tree}, focus-mux requested.
         let mut focus = Focus::Menu {
-            prior: PaneFocus::Tree,
+            prior: ViewFocus::Tree,
         };
-        focus.set_pane_focus(PaneFocus::Terminal);
+        focus.set_view_focus(ViewFocus::Terminal);
         assert_eq!(
             focus,
             Focus::Menu {
-                prior: PaneFocus::Terminal
+                prior: ViewFocus::Terminal
             }
         );
         focus.sync_modal(None);
@@ -265,11 +265,11 @@ mod tests {
     }
 
     #[test]
-    fn set_pane_focus_when_not_modal_sets_the_state() {
+    fn set_view_focus_when_not_modal_sets_the_state() {
         let mut focus = Focus::default(); // Tree
-        focus.set_pane_focus(PaneFocus::Terminal);
+        focus.set_view_focus(ViewFocus::Terminal);
         assert_eq!(focus, Focus::Terminal);
-        focus.set_pane_focus(PaneFocus::Tree);
+        focus.set_view_focus(ViewFocus::Tree);
         assert_eq!(focus, Focus::Tree);
     }
 
@@ -279,16 +279,16 @@ mod tests {
             Focus::Tree,
             Focus::Terminal,
             Focus::Popup {
-                prior: PaneFocus::Tree,
+                prior: ViewFocus::Tree,
             },
             Focus::Popup {
-                prior: PaneFocus::Terminal,
+                prior: ViewFocus::Terminal,
             },
             Focus::Menu {
-                prior: PaneFocus::Tree,
+                prior: ViewFocus::Tree,
             },
             Focus::Menu {
-                prior: PaneFocus::Terminal,
+                prior: ViewFocus::Terminal,
             },
         ] {
             let n = [
@@ -307,11 +307,11 @@ mod tests {
         assert!(Focus::Tree.is_tree_focused());
         assert!(Focus::Terminal.is_terminal_focused());
         assert!(Focus::Popup {
-            prior: PaneFocus::Tree
+            prior: ViewFocus::Tree
         }
         .is_modal());
         assert!(Focus::Menu {
-            prior: PaneFocus::Terminal
+            prior: ViewFocus::Terminal
         }
         .is_modal());
     }
@@ -320,20 +320,20 @@ mod tests {
     fn pane_is_tree_reports_the_effective_pane() {
         assert!(Focus::Tree.pane_is_tree());
         assert!(Focus::Popup {
-            prior: PaneFocus::Tree
+            prior: ViewFocus::Tree
         }
         .pane_is_tree());
         assert!(Focus::Menu {
-            prior: PaneFocus::Tree
+            prior: ViewFocus::Tree
         }
         .pane_is_tree());
         assert!(!Focus::Terminal.pane_is_tree());
         assert!(!Focus::Popup {
-            prior: PaneFocus::Terminal
+            prior: ViewFocus::Terminal
         }
         .pane_is_tree());
         assert!(!Focus::Menu {
-            prior: PaneFocus::Terminal
+            prior: ViewFocus::Terminal
         }
         .pane_is_tree());
     }
