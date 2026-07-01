@@ -5,7 +5,7 @@ use crossterm::terminal::{
 };
 
 // SGR mouse tracking: button press/release (1000h) + drag (1002h) + any-motion
-// (1003h) + SGR encoding (1006h). 1003h is on so the cockpit sees idle moves for the
+// (1003h) + SGR encoding (1006h). 1003h is on so the app sees idle moves for the
 // divider hover cue; it CONSUMES idle motion (never forwards it to the mux), so the
 // flood 1003h would otherwise push onto the child / a remote link does not happen.
 #[cfg(windows)]
@@ -13,7 +13,7 @@ const SGR_MOUSE_ON: &[u8] = b"\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
 #[cfg(windows)]
 const SGR_MOUSE_OFF: &[u8] = b"\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 
-/// RAII guard owning the terminal for the cockpit's lifetime: enables raw mode,
+/// RAII guard owning the terminal for the app's lifetime: enables raw mode,
 /// enters the alternate screen, and enables SGR mouse capture on construction, then
 /// on drop disables mouse capture, leaves the alternate screen, and disables raw mode.
 /// Restores the user's pre-launch screen on normal return AND on a panic (release
@@ -61,10 +61,10 @@ impl Drop for TermGuard {
     }
 }
 
-/// Windows mouse setup the cockpit needs but crossterm doesn't provide. crossterm's
+/// Windows mouse setup the app needs but crossterm doesn't provide. crossterm's
 /// `EnableMouseCapture` takes the WinAPI path on Windows (its `is_ansi_code_supported`
 /// is false): it sets the legacy `ENABLE_MOUSE_INPUT` console flag but neither enables
-/// virtual-terminal input nor emits the SGR mouse-tracking DECSET. The cockpit reads
+/// virtual-terminal input nor emits the SGR mouse-tracking DECSET. The app reads
 /// raw stdin and parses SGR mouse sequences, so without VT input ConPTY delivers mouse
 /// as legacy INPUT_RECORDs (a `read()` never sees them), and without the DECSET the
 /// terminal keeps its native drag-to-select. This adds both.
@@ -126,7 +126,7 @@ pub fn conin_mode() -> u32 {
 /// Re-applies the mouse-capture console mode + SGR tracking if the console has lost
 /// `ENABLE_MOUSE_INPUT`. Spawning a `portable-pty` child (ConPTY) clears that bit on the
 /// PARENT's CONIN, silently killing mouse capture mid-session (VT-input survives, so the
-/// keyboard keeps working — only the mouse dies). The cockpit calls this each loop
+/// keyboard keeps working — only the mouse dies). The app calls this each loop
 /// iteration; it is a cheap mode read and re-applies only on drift. No-op off Windows.
 #[cfg(windows)]
 pub fn ensure_mouse_capture() {

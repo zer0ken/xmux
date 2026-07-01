@@ -3,12 +3,12 @@
 //! Every input surface — keys, the `xmux ctl` socket, the loop-top selection
 //! derive — resolves to an `Action`. `State::apply(Action) -> Vec<Command>` is the
 //! single site that mutates domain state, and it returns the side effects to run as
-//! `Command`s. The cockpit run loop dispatches each `Command` (switcher cursor move,
+//! `Command`s. The app run loop dispatches each `Command` (switcher cursor move,
 //! attach, prefs persist, quit) — `apply` itself touches only `State`, so the
 //! intent → state-change → effect flow is one direction with one mutation point.
 //!
 //! `Action` is the DOMAIN vocabulary, distinct from `display::dispatch::Action` (the
-//! cockpit's raw-byte input vocabulary, which projects INTO this via `as_action`).
+//! app's raw-byte input vocabulary, which projects INTO this via `as_action`).
 //! The display/navigation intents (Switch/Focus/Rescan/TreeWidth/ToggleAutoHide/Quit),
 //! the selection/attach-debounce intents (`Select`/`Tick`), and the async
 //! session-lifecycle intents (`CreateSession`/`NewWindow`/`SplitWindow`/`RenameSession`/
@@ -37,7 +37,7 @@ pub enum Action {
     TreeWidth(i32),
     /// Toggle auto-hide-tree mode.
     ToggleAutoHide,
-    /// Quit the cockpit.
+    /// Quit the app.
     Quit,
     /// The settled cursor target. Updates `state.selection` and arms the attach
     /// debounce; emits NO attach `Command` — the trailing `Tick` fires the attach
@@ -107,7 +107,7 @@ pub enum Command {
     PersistLastSession(String),
     /// Attach (or switch to) the selected session — the settled-selection effect.
     Attach(Selection),
-    /// Exit the cockpit run loop.
+    /// Exit the app run loop.
     Quit,
     /// Run a slow (network) mux action off the event loop. The run loop spawns
     /// [`run_op`](crate::ui::switcher::run_op) on a detached task and folds its
@@ -156,24 +156,24 @@ pub enum MuxOp {
     },
 }
 
-/// A backend follow-up a [`HostEvent`](crate::host::HostEvent) requires after
+/// A mux follow-up a [`HostEvent`](crate::host::HostEvent) requires after
 /// [`State::apply_event`](crate::state::State::apply_event) has folded the event's
 /// self-contained state mutation. `apply_event` owns the domain-state changes (tree
-/// rebuild, marker move, unreachable mark); these effects carry the backend I/O the
+/// rebuild, marker move, unreachable mark); these effects carry the mux I/O the
 /// state layer must not perform itself (the AGENTS rule: no IO/registry mutation in
-/// `state`). The cockpit run loop is the sole executor — it holds the host clients,
+/// `state`). The app run loop is the sole executor — it holds the host clients,
 /// the attach registry, and the display worker the effects act on.
 ///
 /// The events whose payload is self-contained (`Focus`/`Panes`) produce NO effect —
 /// `apply_event` mutates the tree directly and returns an empty `Vec`. The events
-/// that need a backend handle (a host client's inventory lock, a control-mode probe,
+/// that need a mux handle (a host client's inventory lock, a control-mode probe,
 /// the registry, the detection box) return the matching effect for the loop to run.
 /// Not `Clone`/`Eq` — `DispatchScanned` carries a `Box<dyn Mux>`; tests match
 /// structurally.
 pub enum EventEffect {
     /// `Connected`/`Inventory`: read `host`'s live inventory (behind the host
     /// client's lock), apply it to the tree, request each session's panes, and sync
-    /// the host's display terminal(s). The data lives behind a backend lock the state
+    /// the host's display terminal(s). The data lives behind a mux lock the state
     /// layer cannot reach, so the apply itself is the loop's job here.
     ApplyInventory { host: String },
     /// `Changed`: the server's session/window STRUCTURE changed — refetch `host`'s
@@ -184,13 +184,13 @@ pub enum EventEffect {
     /// connection (no refetch). Targets THAT SPECIFIC session, not a displayed guess.
     ProbeActiveWindow { host: String, session_ref: String },
     /// `Exited`: reap `host`'s metadata client. (`apply_event` has already folded the
-    /// tree/connected-set state change; this is the backend teardown.)
+    /// tree/connected-set state change; this is the mux teardown.)
     ReapHost { host: String },
     /// `ClientDetached`: reap xmux's own display attach on `host` IFF the detaching
     /// `client` tty matches the host's recorded display tty. The loop owns the
     /// registry + the recover-from-detach rearm, so the match + reap run there.
     ReapDisplayAttach { host: String, client: String },
-    /// `Scanned`: a detection probe resolved — (re)identify `source`'s backend with
+    /// `Scanned`: a detection probe resolved — (re)identify `source`'s mux with
     /// `detected`, then dispatch the now-detected host onto its metadata channel.
     DispatchScanned {
         source: String,
@@ -262,7 +262,7 @@ pub enum FocusTarget {
 
 impl FocusTarget {
     /// Parses the ctl `focus` argument. `mux` is accepted as a render-side alias
-    /// for `terminal` (the mux pane IS the terminal pane in the cockpit's vocab).
+    /// for `terminal` (the mux pane IS the terminal pane in the app's vocab).
     #[allow(clippy::should_implement_trait)] // intentionally not FromStr: returns Option, not Result
     pub fn from_str(s: &str) -> Option<FocusTarget> {
         match s.trim() {

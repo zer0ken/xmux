@@ -155,7 +155,7 @@ impl ControlProtocol for TmuxControl {
         classify(line)
     }
 
-    /// Maps one notification to the cockpit event it triggers (the metadata client
+    /// Maps one notification to the app event it triggers (the metadata client
     /// holds no per-session display state, so notifications emit events, not mutate it).
     fn notif_event(
         &self,
@@ -168,7 +168,7 @@ impl ControlProtocol for TmuxControl {
             | Notif::WindowAdd { .. }
             | Notif::WindowClose { .. }
             | Notif::WindowRenamed { .. } => {
-                // The server's session/window STRUCTURE changed; the cockpit refetches
+                // The server's session/window STRUCTURE changed; the app refetches
                 // (list-sessions + re-list every session's panes), so the sidebar's
                 // session list AND per-session active-window markers resync (#5). The
                 // notification carries only an id, so a blanket refetch is simplest.
@@ -179,9 +179,9 @@ impl ControlProtocol for TmuxControl {
             Notif::SessionWindowChanged { session, window } => {
                 // A session's ACTIVE WINDOW switched (e.g. another client did prefix-n).
                 // Carry the notification's SESSION id ($session) + WINDOW id (@window)
-                // through so the cockpit probes THAT SPECIFIC session's new active window
+                // through so the app probes THAT SPECIFIC session's new active window
                 // and follows the sidebar cursor to it (#2). Dropping the payload here
-                // would force the cockpit to GUESS the displayed session, which mismatches
+                // would force the app to GUESS the displayed session, which mismatches
                 // when a non-displayed session's active window changes.
                 Some(HostEvent::ActiveWindowChanged {
                     host: host.to_string(),

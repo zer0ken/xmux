@@ -1,8 +1,8 @@
-//! One mux backend per mux. `Box<dyn Mux>` lives inside a `Host`. The method set is
+//! One mux mux per mux. `Box<dyn Mux>` lives inside a `Host`. The method set is
 //! exactly what the supervisor + control reader + manage layer call — no feature
 //! catalogue. It covers both window operations and session lifecycle (create / kill /
-//! rename), so the manage layer routes every mux argv through the backend rather than
-//! building it off a bare binary name. The backend owns its binary name and
+//! rename), so the manage layer routes every mux argv through the mux rather than
+//! building it off a bare binary name. The mux owns its binary name and
 //! `ServerModel`, so nothing above threads a `bin: &str` or branches on a `remote` bool
 //! to pick the model. Every method is transport-blind except `enumerate` (which runs a
 //! probe).
@@ -81,13 +81,13 @@ pub(crate) fn reason_is_no_sessions(text: &str) -> bool {
     })
 }
 
-/// One mux backend. Methods are the EXACT set the supervisor + control reader +
+/// One mux mux. Methods are the EXACT set the supervisor + control reader +
 /// manage layer call. `enumerate` takes `&Transport` because the per-session model
 /// runs a probe (registry read + one list-sessions); the shared model runs one
 /// command. Every other method is transport-blind.
 #[async_trait]
 pub trait Mux: Send + Sync {
-    /// The canonical mux identity, for backend comparison and diagnostics.
+    /// The canonical mux identity, for mux comparison and diagnostics.
     fn kind(&self) -> &str;
 
     /// The binary name to invoke on this host.
@@ -98,7 +98,7 @@ pub trait Mux: Send + Sync {
 
     /// The mux's own display driver — the per-host orchestration of which PTY to
     /// attach and whether to `switch-client` or reattach on a session change. Each
-    /// backend constructs ITS OWN driver, so mux selection lives in the mux family
+    /// mux constructs ITS OWN driver, so mux selection lives in the mux family
     /// (never a central `match server_model()`). The driver is zero-sized; the per-host
     /// display state lives on `host.display`/`AttachRegistry`, borrowed through
     /// `DriverCtx`, so a fresh value per call is free.
@@ -249,7 +249,7 @@ fn known_muxes() -> &'static [MuxKind] {
     }]
 }
 
-/// Picks a mux backend by conventional binary name. tmux is the fallback, matching
+/// Picks a mux mux by conventional binary name. tmux is the fallback, matching
 /// the default in `Config::local_bin` / `host_specs`.
 pub fn for_binary(bin: &str) -> Box<dyn Mux> {
     for k in known_muxes() {
@@ -262,7 +262,7 @@ pub fn for_binary(bin: &str) -> Box<dyn Mux> {
     })
 }
 
-/// Builds a backend by canonical identity while preserving the binary used to
+/// Builds a mux by canonical identity while preserving the binary used to
 /// reach it.
 pub fn for_kind(kind: &str, bin: &str) -> Box<dyn Mux> {
     for k in known_muxes() {
@@ -284,8 +284,8 @@ pub fn for_kind(kind: &str, bin: &str) -> Box<dyn Mux> {
 /// 2. `<bin> -V` — reached only when stage 1 carried no marker. A working `-V` is a
 ///    real tmux; psmux never reaches here because its `help` already matched.
 ///
-/// `Some(backend)` means a probe was conclusive. `None` means BOTH probes failed
-/// (unreachable host / missing binary), so the caller keeps its current backend and
+/// `Some(mux)` means a probe was conclusive. `None` means BOTH probes failed
+/// (unreachable host / missing binary), so the caller keeps its current mux and
 /// retries on a later scan.
 pub async fn detect_backend(
     transport: &Transport,

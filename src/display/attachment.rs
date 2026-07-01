@@ -1,6 +1,6 @@
 //! PTY attachment infrastructure: spawn a ConPTY-backed mux client (a real
-//! `tmux attach` / `psmux attach`), tee its output into a `Grid` for the cockpit's
-//! terminal view, route input from the cockpit through a dedicated control thread,
+//! `tmux attach` / `psmux attach`), tee its output into a `Grid` for the app's
+//! terminal view, route input from the app through a dedicated control thread,
 //! and tear down without blocking the async runtime.
 //!
 //! This is the DISPLAY path: the mux is actually USED inside xmux — a real attached
@@ -15,9 +15,9 @@ use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 
 use crate::display::grid::Grid;
 
-/// An event a kept attachment's pump emits to the cockpit's `select!` loop.
+/// An event a kept attachment's pump emits to the app's `select!` loop.
 pub enum PtyEvent {
-    /// The pump fed `id`'s grid with a chunk of child output — the cockpit redraws
+    /// The pump fed `id`'s grid with a chunk of child output — the app redraws
     /// (coalescing a burst into one redraw, like the control-mode `%output` drain).
     Output { id: u64 },
     /// The child's PTY master hit EOF (the attach exited / the connection dropped) —
@@ -169,11 +169,11 @@ impl PtySink for MasterSink {
 
 /// One kept live attach: a ConPTY + attach child + dedicated control thread (owns
 /// writer+master) + an output pump + a shared `Grid`. The pump always feeds the
-/// grid; the cockpit renders the grid of whichever attachment the selection points
+/// grid; the app renders the grid of whichever attachment the selection points
 /// at. There is no raw-stdout passthrough here — ratatui owns stdout and renders
 /// every grid as a ratatui clip.
 pub struct Attachment {
-    /// The vt100 grid the pump feeds; the cockpit renders it when selected.
+    /// The vt100 grid the pump feeds; the app renders it when selected.
     pub grid: Arc<Mutex<Grid>>,
     /// Queue commands (input/resize) to the control thread (off the loop).
     pub control_tx: std::sync::mpsc::Sender<PtyCmd>,
@@ -183,7 +183,7 @@ pub struct Attachment {
     /// "(attaching…)" spinner). Cleared by the pump on the first read.
     pub connecting: Arc<AtomicBool>,
     /// Coalesces output wakeups: the pump sends a single `Output` event then sets
-    /// this, and skips further sends until the cockpit clears it after a redraw. A
+    /// this, and skips further sends until the app clears it after a redraw. A
     /// busy unselected session thus enqueues at most ONE pending event between
     /// draws, so the event channel cannot grow unbounded under an output flood.
     pending: Arc<AtomicBool>,
@@ -236,7 +236,7 @@ impl Attachment {
 /// Opens a PTY at `cols×rows`, spawns `argv` (a real `attach` argv from
 /// [`crate::source::Source::interactive_attach_command`]) with mux nesting-guard env cleared,
 /// starts the control thread (owns writer+master) and the output pump. The pump
-/// always feeds the grid, emits [`PtyEvent::Output`] per chunk (the cockpit
+/// always feeds the grid, emits [`PtyEvent::Output`] per chunk (the app
 /// coalesces), clears `connecting` on the first read, and emits
 /// [`PtyEvent::Exited`] at master EOF so the registry can reap it.
 pub fn spawn_attachment(
@@ -340,13 +340,13 @@ pub fn spawn_attachment(
                         }
                     }
                     // Coalesce: signal a redraw only if no Output is already pending
-                    // for this attachment (the cockpit clears it after the next
+                    // for this attachment (the app clears it after the next
                     // draw). Bounds the channel to ≤1 pending event per attachment,
                     // so a busy unselected session cannot flood the loop.
                     if !pump_pending.swap(true, Ordering::AcqRel)
                         && events.send(PtyEvent::Output { id }).is_err()
                     {
-                        break; // the cockpit is gone — stop pumping
+                        break; // the app is gone — stop pumping
                     }
                 }
                 Err(_) => break,
@@ -605,7 +605,7 @@ mod tests {
     // Run inside a mux pane (nested ConPTY) it FAILS even though the pump pipeline
     // runs (`connecting` still clears) — Windows does not deliver a nested
     // pseudoconsole child's output to the outer master. This is exactly why the
-    // cockpit refuses to run inside a mux (`attach::nest_guard`): xmux must own the
+    // app refuses to run inside a mux (`attach::nest_guard`): xmux must own the
     // terminal directly. So this smoke is a real-terminal gate, not a CI test.
     #[ignore = "spawns a real ConPTY child; run only in a non-nested real terminal"]
     #[test]

@@ -1,6 +1,6 @@
 //! The off-loop operation boundary: the slow (network) mux actions a keypress
 //! requests (the [`MuxOp`] carried by [`Command::RunOp`](crate::model::Command)),
-//! their outcomes (`OpResult`), the `Ops` trait the cockpit implements over the live
+//! their outcomes (`OpResult`), the `Ops` trait the app implements over the live
 //! mux, and `run_op` which executes one `MuxOp` against `Ops` in a detached task.
 //! Pure over `Ops` — no switcher state — so it never touches the event loop.
 

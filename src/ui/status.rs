@@ -40,24 +40,24 @@ impl Default for DividerColors {
 /// colours, the ssh-config text, and the configured prefix string).
 pub struct Status {
     pub(crate) flash: String,
-    /// Auto-hide-tree mode (set by the cockpit each frame). Drives the divider glyph:
+    /// Auto-hide-tree mode (set by the app each frame). Drives the divider glyph:
     /// ║ (double) when on, │ (single) when off — the only on-screen cue, since while
     /// the mode is on but the tree is focused the tree still shows.
     pub(crate) auto_hide: bool,
-    /// True while the mouse is hovering the divider rule — the cockpit sets this from
+    /// True while the mouse is hovering the divider rule — the app sets this from
     /// idle motion so the divider highlights as a grab cue for drag-resize.
     pub(crate) divider_hovered: bool,
     /// Session addresses currently connecting / awaiting first output — a braille
     /// spinner glyph renders right of their name in the tree.
     pub(crate) spinner: HashSet<String>,
     pub(crate) spinner_frame: usize,
-    /// Raw `~/.ssh/config` text (set once by the cockpit). The right-pane info panel
+    /// Raw `~/.ssh/config` text (set once by the app). The right-pane info panel
     /// shows the matching Host/Match stanza for a selected unreachable host. Empty in tests.
     pub(crate) ssh_config_text: String,
     /// The human-readable prefix string (e.g. `"C-g"`, `"C-Space"`) — set once by
-    /// the cockpit from config so the help overlay reflects the active binding.
+    /// the app from config so the help modal reflects the active binding.
     pub(crate) ui_prefix: String,
-    /// The tree|mux divider colours (set once by the cockpit from config; tmux defaults
+    /// The tree|mux divider colours (set once by the app from config; tmux defaults
     /// otherwise). See [`DividerColors`].
     pub(crate) colors: DividerColors,
 }
@@ -85,33 +85,33 @@ impl Status {
         self.spinner = addresses;
     }
 
-    /// Sets the braille spinner frame index. The cockpit derives it from elapsed
+    /// Sets the braille spinner frame index. The app derives it from elapsed
     /// wall-clock time, so the spinner animates on every render rather than once
     /// per animation tick (which can starve under a `%output` flood).
     pub(crate) fn set_spinner_frame(&mut self, frame: usize) {
         self.spinner_frame = frame;
     }
 
-    /// Sets auto-hide-tree mode (the cockpit owns it; the divider glyph reflects it).
+    /// Sets auto-hide-tree mode (the app owns it; the divider glyph reflects it).
     pub(crate) fn set_auto_hide(&mut self, on: bool) {
         self.auto_hide = on;
     }
 
-    /// Sets whether the mouse is hovering the divider (the cockpit derives it from
+    /// Sets whether the mouse is hovering the divider (the app derives it from
     /// idle motion); when set, the divider highlights as a drag-resize grab cue.
     pub(crate) fn set_divider_hovered(&mut self, on: bool) {
         self.divider_hovered = on;
     }
 
-    /// Sets the tree|mux divider colours. The cockpit calls this once at startup with
+    /// Sets the tree|mux divider colours. The app calls this once at startup with
     /// the colours parsed from config's `pane-*-border-style` options; tmux defaults
     /// apply otherwise.
     pub(crate) fn set_divider_colors(&mut self, colors: DividerColors) {
         self.colors = colors;
     }
 
-    /// Sets the prefix string shown in the help overlay. The cockpit calls this once
-    /// at startup so the overlay reflects the binding from config's `[ui] prefix`.
+    /// Sets the prefix string shown in the help modal. The app calls this once
+    /// at startup so the help modal reflects the binding from config's `[ui] prefix`.
     pub(crate) fn set_ui_prefix(&mut self, prefix: String) {
         self.ui_prefix = prefix;
     }
@@ -122,7 +122,7 @@ impl Status {
     }
 
     /// The vertical rule between the tree (left) and terminal (right). It splits into
-    /// a top and bottom half: the accent (green) half marks WHICH pane holds focus —
+    /// a top and bottom half: the accent (green) half marks WHICH view holds focus —
     /// top = tree (left), bottom = mux (right) — and the other half stays dim. A single
     /// vertical rule cannot lean left/right, so the accent half's position carries the
     /// signal (adapting tmux's active-pane border). Replaces the per-pane box borders.
@@ -172,7 +172,7 @@ impl Status {
 
     /// The right-pane info panel for a selected unreachable host: the failure reason
     /// and the host's `~/.ssh/config` stanza, so the user can see WHY the control
-    /// connection failed without leaving the cockpit.
+    /// connection failed without leaving the app.
     pub(crate) fn render_host_info(
         &self,
         frame: &mut Frame,

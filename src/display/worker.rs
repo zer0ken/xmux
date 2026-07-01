@@ -1,8 +1,8 @@
 use crate::display::attachment::{spawn_attachment, Attachment, PtyEvent};
 
 /// A request to attach a session's display PTY off the runtime thread. `id` is issued
-/// by the cockpit via `AttachRegistry::alloc_id` so the resulting attachment's id lines
-/// up with `reap`. `seq` lets the cockpit drop a stale reply after rapid navigation.
+/// by the app via `AttachRegistry::alloc_id` so the resulting attachment's id lines
+/// up with `reap`. `seq` lets the app drop a stale reply after rapid navigation.
 pub struct DisplayEnsure {
     pub seq: u64,
     pub key: String,
@@ -12,7 +12,7 @@ pub struct DisplayEnsure {
     pub id: u64,
 }
 
-/// The worker's reply. `Ready` carries the finished `Attachment` for the cockpit to
+/// The worker's reply. `Ready` carries the finished `Attachment` for the app to
 /// insert into the registry it owns (the worker never owns the registry).
 pub enum DisplayEvent {
     Ready {
@@ -43,9 +43,9 @@ type AttachmentSpawner = Box<
 >;
 
 /// Runs `spawn_attachment` on a dedicated OS thread so the 10–94ms ConPTY open+spawn
-/// never blocks the runtime. The cockpit sends `DisplayEnsure` and receives
-/// `DisplayEvent`; the worker is handed the cockpit's `pty_tx`, so each spawned
-/// attachment's pump feeds the cockpit's grid (the worker keeps no registry of its own).
+/// never blocks the runtime. The app sends `DisplayEnsure` and receives
+/// `DisplayEvent`; the worker is handed the app's `pty_tx`, so each spawned
+/// attachment's pump feeds the app's grid (the worker keeps no registry of its own).
 pub struct DisplayWorker {
     tx: std::sync::mpsc::Sender<DisplayEnsure>,
     rx: tokio::sync::mpsc::UnboundedReceiver<DisplayEvent>,
@@ -77,7 +77,7 @@ impl DisplayWorker {
                     },
                 };
                 if event_tx.send(event).is_err() {
-                    break; // the cockpit is gone
+                    break; // the app is gone
                 }
             }
         });
@@ -150,7 +150,7 @@ mod tests {
                 assert_eq!(
                     attachment.id(),
                     42,
-                    "the attachment carries the cockpit-issued id"
+                    "the attachment carries the app-issued id"
                 );
             }
             DisplayEvent::Failed { .. } => panic!("expected Ready"),

@@ -1,4 +1,4 @@
-//! The cockpit's raw-byte INPUT vocabulary. Each input surface RESOLVES raw bytes
+//! The app's raw-byte INPUT vocabulary. Each input surface RESOLVES raw bytes
 //! into a list of these `Action`s, so resolution stays pure (side-effect free,
 //! unit-testable). The semantic ones project to the DOMAIN [`crate::model::Action`]
 //! via [`Action::as_action`], which `State::apply` folds in; the byte-carrying and
@@ -24,9 +24,9 @@ pub enum Action {
     FocusMux,
     /// A tree key to hand to `Switcher::handle_key` (navigation / input row / kill).
     TreeKey(KeyEvent),
-    /// `prefix` then `q` — quit the cockpit.
+    /// `prefix` then `q` — quit the app.
     Quit,
-    /// `prefix ?` — toggle the keys help overlay. Focus stays on the mux pane.
+    /// `prefix ?` — toggle the keys help modal. Focus stays on the mux pane.
     ShowHelp,
     /// `prefix h`/`l` or `prefix Ctrl+←/→` — adjust the tree width by this signed delta.
     Width(i32),

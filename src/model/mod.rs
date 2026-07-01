@@ -1,4 +1,4 @@
-//! The host model: the machine boundary (`Transport`), the mux backend (`Mux`)
+//! The host model: the machine boundary (`Transport`), the mux mux (`Mux`)
 //! and its server model (`ServerModel`), and the plan/value types they exchange.
 //! A `Host` (built in a later phase) is `Transport × Box<dyn Mux>`. The mux layer
 //! is transport-blind: it supplies mux argv and the `Transport` decides how to run it.

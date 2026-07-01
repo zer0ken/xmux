@@ -48,7 +48,7 @@ impl Runner for ExecRunner {
         // Isolate stdin: these are non-interactive mux/ssh commands (list-sessions,
         // switch-client, …) that read no input. Without this, ssh inherits the parent
         // console tty and resets its mode (raw → canonical) for its own escape handling,
-        // wrecking the cockpit's raw mode until ssh exits — the terminal then echoes keys
+        // wrecking the app's raw mode until ssh exits — the terminal then echoes keys
         // and only flushes input on Enter.
         cmd.stdin(std::process::Stdio::null());
         cmd.kill_on_drop(true); // a cancelled (timed-out) scan kills the child
@@ -163,7 +163,7 @@ impl Source {
     /// empty vec; an unreachable source returns an error.
     ///
     /// Enumeration (which mux, its registry-merge vs aggregate-list behaviour, and the
-    /// reachable-but-empty classification) lives entirely in `backend`: `for_binary`
+    /// reachable-but-empty classification) lives entirely in `mux`: `for_binary`
     /// selects the mux from the binary name and `Mux::enumerate` runs the probe
     /// over this source's [`Source::transport`]. This is a thin shim — the source layer
     /// no longer branches on the mux kind.
@@ -174,7 +174,7 @@ impl Source {
     }
 }
 
-// The reachable-but-empty classification lives in `mux/`. The cockpit reaches its
+// The reachable-but-empty classification lives in `mux/`. The app reaches its
 // `%exit`/`%error`-reason check through `crate::source::reason_is_no_sessions`, so the
 // name is re-exported here to keep that path resolving.
 pub(crate) use crate::mux::reason_is_no_sessions;

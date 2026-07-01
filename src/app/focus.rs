@@ -1,15 +1,15 @@
-//! The cockpit's focus state machine. Every state draws the SAME split (tree on
+//! The app's focus state machine. Every state draws the SAME split (tree on
 //! the left, the cursor session's live grid on the right); focus only chooses
 //! where keys go and which divider rule is highlighted. There are four states
 //! along two dimensions: the PANE dimension (`Tree` ⇄ `Terminal`, toggled by
 //! `prefix Tab`) and a MODAL dimension layered on top (`Popup` for help / inline
 //! input / kill-confirm, `Menu` for the right-click context menu). A modal is a
-//! first-class focus state that CARRIES the pane it was opened from, so closing it
-//! restores that pane structurally — no external "saved focus" variable. "Is a
-//! modal open?" is therefore a `match` on `Focus`, and the modal/pane state cannot
+//! first-class focus state that CARRIES the view it was opened from, so closing it
+//! restores that view structurally — no external "saved focus" variable. "Is a
+//! modal open?" is therefore a `match` on `Focus`, and the modal/view state cannot
 //! desync from the switcher because the loop derives it each pass via `sync_modal`.
 
-/// The two real panes — the only targets a modal can restore to.
+/// The two real views — the only targets a modal can restore to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewFocus {
     Tree,
@@ -18,15 +18,15 @@ pub enum ViewFocus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Focus {
-    /// Tree pane focused — keys navigate the host/session tree.
+    /// Tree view focused — keys navigate the host/session tree.
     #[default]
     Tree,
-    /// Terminal pane focused — keys forward to the selected session's active pane.
+    /// Terminal view focused — keys forward to the selected session's active pane.
     Terminal,
     /// A centered modal popup (help / inline input / kill-confirm) owns keys;
-    /// `prior` is the pane to restore when it closes.
+    /// `prior` is the view to restore when it closes.
     Popup { prior: ViewFocus },
-    /// The right-click context menu owns input; `prior` is the pane to restore.
+    /// The right-click context menu owns input; `prior` is the view to restore.
     Menu { prior: ViewFocus },
 }
 
@@ -39,14 +39,14 @@ pub enum ModalKind {
 }
 
 impl Focus {
-    /// True only in the bare `Tree` pane state — false during any modal, even one
-    /// opened from the tree. Gates set-pane / mux-active decisions; key-routing
+    /// True only in the bare `Tree` view state — false during any modal, even one
+    /// opened from the tree. Gates set-view / mux-active decisions; key-routing
     /// sites add `|| is_modal()` so a modal still receives keys.
     pub fn is_tree_focused(&self) -> bool {
         matches!(self, Focus::Tree)
     }
 
-    /// True only in the bare `Terminal` pane state — false during any modal.
+    /// True only in the bare `Terminal` view state — false during any modal.
     pub fn is_terminal_focused(&self) -> bool {
         matches!(self, Focus::Terminal)
     }
@@ -56,9 +56,9 @@ impl Focus {
         matches!(self, Focus::Popup { .. } | Focus::Menu { .. })
     }
 
-    /// The EFFECTIVE pane focus: the active pane, or — during a modal — the pane it
-    /// was opened from. Lets `status` report the pane behind a modal as the focus.
-    pub fn pane_is_tree(&self) -> bool {
+    /// The EFFECTIVE view focus: the active view, or — during a modal — the view it
+    /// was opened from. Lets `status` report the view behind a modal as the focus.
+    pub fn view_is_tree(&self) -> bool {
         matches!(
             self,
             Focus::Tree
@@ -73,7 +73,7 @@ impl Focus {
 
     /// Flips the PANE dimension (Tree ⇄ Terminal) — the `prefix Tab` toggle. During a
     /// modal it flips the carried `prior` so the modal stays open and restores onto
-    /// the flipped pane.
+    /// the flipped view.
     pub fn toggle(&mut self) {
         let flip = |p: ViewFocus| match p {
             ViewFocus::Tree => ViewFocus::Terminal,
@@ -87,7 +87,7 @@ impl Focus {
         };
     }
 
-    /// Sets the PANE dimension to `p`. Not modal → becomes that pane. Modal → sets the
+    /// Sets the PANE dimension to `p`. Not modal → becomes that view. Modal → sets the
     /// carried `prior`, so a focus request during/closing a modal lands on `p` after
     /// restore (the context-menu "focus mux" path).
     pub fn set_view_focus(&mut self, p: ViewFocus) {
@@ -103,19 +103,19 @@ impl Focus {
 
     /// The loop-top reconciler: derives the modal dimension of `Focus` from the
     /// switcher's authoritative open-modal `kind`. Opening a modal captures the
-    /// current pane as `prior`; closing restores it; a kind-switch keeps `prior`; a
+    /// current view as `prior`; closing restores it; a kind-switch keeps `prior`; a
     /// re-sync of the already-open kind is a no-op (it must not re-capture over a
     /// mid-modal `toggle`).
     pub fn sync_modal(&mut self, kind: Option<ModalKind>) {
-        let current_pane = || {
-            if self.pane_is_tree() {
+        let current_view = || {
+            if self.view_is_tree() {
                 ViewFocus::Tree
             } else {
                 ViewFocus::Terminal
             }
         };
         *self = match (kind, *self) {
-            // No modal: collapse any open modal back onto its prior pane.
+            // No modal: collapse any open modal back onto its prior view.
             (None, Focus::Popup { prior }) | (None, Focus::Menu { prior }) => match prior {
                 ViewFocus::Tree => Focus::Tree,
                 ViewFocus::Terminal => Focus::Terminal,
@@ -127,12 +127,12 @@ impl Focus {
             // Kind switch between modals: keep prior, swap the variant.
             (Some(ModalKind::Popup), Focus::Menu { prior }) => Focus::Popup { prior },
             (Some(ModalKind::Menu), Focus::Popup { prior }) => Focus::Menu { prior },
-            // Opening from a pane: capture the current pane as prior.
+            // Opening from a view: capture the current view as prior.
             (Some(ModalKind::Popup), Focus::Tree | Focus::Terminal) => Focus::Popup {
-                prior: current_pane(),
+                prior: current_view(),
             },
             (Some(ModalKind::Menu), Focus::Tree | Focus::Terminal) => Focus::Menu {
-                prior: current_pane(),
+                prior: current_view(),
             },
         };
     }
@@ -169,7 +169,7 @@ mod tests {
         assert_eq!(
             focus,
             Focus::Terminal,
-            "restored to the pane it opened from"
+            "restored to the view it opened from"
         );
     }
 
@@ -214,7 +214,7 @@ mod tests {
             "toggle flips the carried prior, the modal stays open",
         );
         focus.sync_modal(None);
-        assert_eq!(focus, Focus::Terminal, "restored to the flipped pane");
+        assert_eq!(focus, Focus::Terminal, "restored to the flipped view");
     }
 
     #[test]
@@ -248,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn set_view_focus_during_a_menu_targets_the_restore_pane() {
+    fn set_view_focus_during_a_menu_targets_the_restore_view() {
         // The menu "focus mux" path: state is Menu{prior:Tree}, focus-mux requested.
         let mut focus = Focus::Menu {
             prior: ViewFocus::Tree,
@@ -317,24 +317,24 @@ mod tests {
     }
 
     #[test]
-    fn pane_is_tree_reports_the_effective_pane() {
-        assert!(Focus::Tree.pane_is_tree());
+    fn view_is_tree_reports_the_effective_view() {
+        assert!(Focus::Tree.view_is_tree());
         assert!(Focus::Popup {
             prior: ViewFocus::Tree
         }
-        .pane_is_tree());
+        .view_is_tree());
         assert!(Focus::Menu {
             prior: ViewFocus::Tree
         }
-        .pane_is_tree());
-        assert!(!Focus::Terminal.pane_is_tree());
+        .view_is_tree());
+        assert!(!Focus::Terminal.view_is_tree());
         assert!(!Focus::Popup {
             prior: ViewFocus::Terminal
         }
-        .pane_is_tree());
+        .view_is_tree());
         assert!(!Focus::Menu {
             prior: ViewFocus::Terminal
         }
-        .pane_is_tree());
+        .view_is_tree());
     }
 }

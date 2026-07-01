@@ -1,4 +1,4 @@
-//! The control-mode (`-CC`) protocol surface a backend exposes to the host reader.
+//! The control-mode (`-CC`) protocol surface a mux exposes to the host reader.
 //!
 //! A mux with a host-level control stream (tmux) hides ALL its `-CC` wire details
 //! behind this trait: line framing/classification, the notification→event policy
@@ -18,7 +18,7 @@ pub trait ControlProtocol: Send + Sync {
     /// each shape; this only determines the shape.
     fn classify<'a>(&self, line: &'a str) -> Line<'a>;
 
-    /// Maps one notification to the cockpit event it triggers, or `None` for an inert
+    /// Maps one notification to the app event it triggers, or `None` for an inert
     /// notification (the metadata client holds no per-session display state). This is
     /// the protocol's notification→event POLICY. `host` is echoed into the event;
     /// `last_error` is the last `%error` block's text, folded into a reasonless `%exit`.

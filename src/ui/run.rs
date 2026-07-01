@@ -1,6 +1,6 @@
 //! The picker control socket: a per-pid local socket the headless driver dials to
 //! inject keys/text and dump the rendered switcher screen. Each request line is
-//! dispatched into the cockpit's command channel; the cockpit's `select!` loop
+//! dispatched into the app's command channel; the app's `select!` loop
 //! folds the [`Cmd`]s in. The `dump_switcher` helper flattens a switcher render to
 //! text for the control channel's `dump` reply.
 
@@ -18,9 +18,9 @@ use tokio::sync::{mpsc, oneshot};
 use crate::control;
 use crate::ui::switcher::Switcher;
 
-/// A unit of work the cockpit loop processes, from the control socket.
+/// A unit of work the app loop processes, from the control socket.
 pub enum Cmd {
-    /// A resolved domain action — folded in at the cockpit's single `State::apply` site.
+    /// A resolved domain action — folded in at the app's single `State::apply` site.
     Op(crate::model::Action),
     /// A control-channel `status` request: reply with the focus + selection line.
     Status(oneshot::Sender<String>),
@@ -104,7 +104,7 @@ pub fn serve_control(path: PathBuf, cmd_tx: mpsc::Sender<Cmd>) -> Option<Control
     let _ = std::fs::remove_file(&path); // remove a stale socket so the bind succeeds
     let name = control::endpoint_name(&path).ok()?;
     let listener = ListenerOptions::new().name(name).create_tokio().ok()?;
-    // The ctl socket injects keystrokes into the live cockpit, so it must be
+    // The ctl socket injects keystrokes into the live app, so it must be
     // owner-only. On unix the bind created a filesystem socket; tighten it to 0600.
     #[cfg(unix)]
     {
@@ -243,8 +243,8 @@ mod tests {
         let mut sw = Switcher::new(&mut state);
         let out = dump_switcher(&mut sw, &state, 100, 30);
         assert!(out.contains("editor"));
-        // The dump renders the full overlay (tree + hint_bar); the hint_bar's nav hint
-        // is always present (the overlay carries no chrome titles).
+        // The dump renders the full screen (tree + hint_bar); the hint_bar's nav hint
+        // is always present (the screen carries no chrome titles).
         assert!(out.contains("quit"), "hint_bar hint present:\n{out}");
     }
 
@@ -292,7 +292,7 @@ mod tests {
         let handle = serve_control(sock.clone(), tx.clone()).expect("bind control socket");
 
         // A minimal in-test consumer drives the switcher directly off the channel,
-        // standing in for the cockpit loop: it answers `dump` and applies keys. It
+        // standing in for the app loop: it answers `dump` and applies keys. It
         // exits when the channel closes (all senders dropped).
         let mut state = crate::state::State::from_scan(sample());
         let mut sw = Switcher::new(&mut state);

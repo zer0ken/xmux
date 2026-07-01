@@ -1,4 +1,4 @@
-//! The cockpit: a persistent supervisor that owns the terminal for the whole
+//! The app: a persistent supervisor that owns the terminal for the whole
 //! session. It keeps ONE real attached mux client per session — a `tmux attach` /
 //! `psmux attach` running inside a `portable-pty` PTY ([`AttachRegistry`]) — alive
 //! across selections, and renders the SELECTED session's live `Grid` on the right.
@@ -238,7 +238,7 @@ fn log_slow_step(label: &str, start: std::time::Instant) {
 }
 
 /// The canonical selection — the single source of truth the display reads. The
-/// `Switcher` owns the tree + cursor; the cockpit commits the cursor's target into
+/// `Switcher` owns the tree + cursor; the app commits the cursor's target into
 /// this struct, and the render, input routing, and spinner all key off it. `window`
 /// is `Some` only for a window-row selection.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -387,7 +387,7 @@ fn selection_attach_facts(
 
 /// Issues an OFF-LOOP attach for `key`: allocates the attachment id, records the request's
 /// seq in the owning host's `display.in_flight` + the id→key in `display.pending`, and asks
-/// the worker to spawn. The worker's `Ready` reply (handled in the cockpit loop) inserts the
+/// the worker to spawn. The worker's `Ready` reply (handled in the app loop) inserts the
 /// finished attachment into the registry. `display` MUST be the host that owns `key`. Returns
 /// the allocated attachment id so a caller can correlate a follow-up probe to it.
 #[allow(clippy::too_many_arguments)]
@@ -537,7 +537,7 @@ fn attach_reply_is_current(
 /// Connects the host the cursor is on (if not already + detected), so its metadata
 /// channel streams that host's tree in. The manager picks the channel (control client
 /// vs poll task) from the host's `event_source`; an undetected host is skipped until a
-/// detection probe resolves its backend.
+/// detection probe resolves its mux.
 fn ensure_current_host(
     mgr: &mut HostManager,
     env: &Env,
@@ -636,9 +636,9 @@ fn apply_scan_result(
     let Some(host) = hosts.get_mut(source) else {
         return;
     };
-    if let Some(backend) = detected {
-        if backend.kind() != host.mux.kind() {
-            host.mux = backend;
+    if let Some(mux) = detected {
+        if mux.kind() != host.mux.kind() {
+            host.mux = mux;
         }
         host.detected = true;
     }
@@ -768,7 +768,7 @@ fn resolve_mouse_chain(
 }
 
 /// Pure resolution of ONE TREE-focus key into an [`Action`] (or none, when the key
-/// only arms the prefix or is an unrecognized armed command). Touches no cockpit or
+/// only arms the prefix or is an unrecognized armed command). Touches no app or
 /// switcher state, so it is unit-testable in isolation (mirrors how `TermInput::feed`
 /// resolves the mux-focus path). `is_inputting` suppresses prefix arming and the Enter
 /// focus-switch so the input row receives those keys verbatim. Resolved per key — not
@@ -916,7 +916,7 @@ fn refetch_host(mgr: &HostManager, panes_requested: &mut HashSet<String>, host: 
     }
 }
 
-/// Applies one [`HostEvent`] to the cockpit state (tree, connected set, PTY sync,
+/// Applies one [`HostEvent`] to the app state (tree, connected set, PTY sync,
 /// reap). Extracted so a burst of events can be drained in one loop iteration.
 /// Returns `true` when the caller should rearm `attach_deadline` + mark `dirty`
 /// (the `ClientDetached` reap path).
@@ -941,7 +941,7 @@ fn handle_host_event(
 ) -> bool {
     // State owns the event-driven mutations: apply_event folds the self-contained
     // arms (Focus marker, Panes subtree, Sessions enumeration, Exited unreachable
-    // mark) into State and returns the backend follow-ups it cannot perform itself.
+    // mark) into State and returns the mux follow-ups it cannot perform itself.
     // This loop is the sole executor of those effects — it holds the host clients,
     // the registry, and the display worker the state layer must not reach.
     let mut rearm = false;
@@ -970,7 +970,7 @@ fn handle_host_event(
 }
 
 /// Carries out one [`EventEffect`](crate::model::EventEffect) `State::apply_event`
-/// returned — the backend I/O the state layer cannot perform (a host client's
+/// returned — the mux I/O the state layer cannot perform (a host client's
 /// inventory lock, a control-mode probe, the attach registry, the detection
 /// dispatch). Returns `true` only for the matched-client display-attach reap, which
 /// asks the caller to rearm `attach_deadline` + mark `dirty` (the recover-from-detach
@@ -1058,7 +1058,7 @@ fn run_event_effect(
             return true; // rearm recovery
         }
         EventEffect::DispatchScanned { source, detected } => {
-            // A detection probe resolved: (re)identify the backend, then dispatch the
+            // A detection probe resolved: (re)identify the mux, then dispatch the
             // now-detected host onto its metadata channel (control client or poll task).
             detecting.remove(&source);
             apply_scan_result(hosts, &source, detected);
@@ -1347,7 +1347,7 @@ fn handle_mouse_event(
     // while the mux is focused (or over the mux pane) does not open it
     // and does not move focus. The menu's keyboard actions (rename input,
     // kill confirm) thus always run in tree focus, so a confirmed kill
-    // can't quit the cockpit out from under the mux.
+    // can't quit the app out from under the mux.
     let is_right_press = is_press && (ev.cb & 0x03) == 2;
     if tree_menu_may_open(
         is_right_press,
@@ -1562,7 +1562,7 @@ fn handle_stdin_bytes(
         }
     }
     if !consumed_by_repeat && !non_mouse.is_empty() && switcher.feed_help_key(&non_mouse, state) {
-        // The help overlay is modal (tmux view-mode style): while open it
+        // The help modal is modal (tmux view-mode style): while open it
         // captures every key in EITHER focus — q/Esc closes it, the rest are
         // swallowed — so nothing leaks to the tree or the mux pane. Above the
         // tree/mux split so the behavior is identical regardless of focus.
@@ -1701,7 +1701,7 @@ fn handle_stdin_bytes(
     outcome
 }
 
-/// The `xmux` (no subcommand) entry: the persistent cockpit. Keeps one real attached
+/// The `xmux` (no subcommand) entry: the persistent app. Keeps one real attached
 /// mux client per session alive and renders the selected one, with a control-mode
 /// client per remote host for inventory/events/window-switch. It serves a picker
 /// control socket so a headless driver can inject keys/text and dump the screen.
@@ -1714,11 +1714,11 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
     use std::io::Read;
     use std::time::Duration;
 
-    // The cockpit owns the terminal and attaches mux clients as PTY children; nested
+    // The app owns the terminal and attaches mux clients as PTY children; nested
     // inside a mux every attach is refused. So running it inside a mux is refused.
     if let Err(e) = attach::nest_guard(attach::in_mux()) {
         eprintln!("xmux: {e}");
-        eprintln!("xmux: the cockpit must be your terminal entry, not run inside a mux.");
+        eprintln!("xmux: the app must be your terminal entry, not run inside a mux.");
         return 2;
     }
     let _ = std::fs::create_dir_all(&env.xmux_dir);
@@ -1735,7 +1735,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
     // both the structured log (tracing) and a raw append-only file (`panic.log`).
     // The restore is main-thread-only: worker threads (PTY pumps) catch+recover
     // their own panics (see Grid::feed); a stray worker panic must not tear the
-    // screen down under a still-running cockpit. TermGuard's Drop also restores on
+    // screen down under a still-running app. TermGuard's Drop also restores on
     // the main-thread unwind — idempotent with this.
     {
         let log = env.xmux_dir.join("panic.log");
@@ -1841,7 +1841,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
         local_socket_opt,
     );
 
-    // The cockpit's runtime state (single source of truth): the inventory the
+    // The app's runtime state (single source of truth): the inventory the
     // components read, the canonical selection committed from the switcher's cursor at
     // the loop top, the attach debounce latch (last selection actually attached/switched
     // to) + its deadline, and the last session address persisted as the user's
@@ -1862,7 +1862,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
         inactive: crate::ui::switcher::map_color(&env.cfg.ui.pane_border_style),
         hover: crate::ui::switcher::map_color(&env.cfg.ui.pane_border_hover_style),
     });
-    // The help overlay must show the prefix the user configured, not a literal.
+    // The help modal must show the prefix the user configured, not a literal.
     switcher.set_ui_prefix(env.ui_prefix.clone());
     // Restore the session the user last had selected (persisted across runs), so the
     // preselect lands there once its host streams in instead of guessing from the
@@ -1870,7 +1870,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
     switcher.set_preferred(crate::prefs::load_last_session(&env.xmux_dir));
 
     // Off-loop attach sequence. The in-flight set + reaped-ids + which session each display
-    // shows now live on each `host.display` (HostDisplay), so the cockpit holds no free
+    // shows now live on each `host.display` (HostDisplay), so the app holds no free
     // host_session/in_flight/reaped_ids side-maps.
     let mut attach_seq: u64 = 0;
 
@@ -2401,7 +2401,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                             dirty = true;
                         }
                     }
-                    Cmd::Status(reply) => { let _ = reply.send(status_line(&switcher, state.focus.pane_is_tree())); }
+                    Cmd::Status(reply) => { let _ = reply.send(status_line(&switcher, state.focus.view_is_tree())); }
                     Cmd::Dump(reply) => {
                         let sz = term
                             .size()
@@ -2541,7 +2541,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                 // sync reaps when given an EMPTY inventory, so the empty case is skipped
                 // here — only a non-empty inventory is handed in. psmux sync is a no-op for
                 // a non-empty inventory (its attaches are selected on demand), so this stays
-                // a shared-host re-warm without the cockpit naming the mux kind.
+                // a shared-host re-warm without the app naming the mux kind.
                 for src in &env.srcs {
                     if hosts.get(&src.alias).is_none() {
                         continue;
@@ -2633,7 +2633,7 @@ fn spawn_op(
     });
 }
 
-/// The braille-spinner frame index for `elapsed` since the cockpit started.
+/// The braille-spinner frame index for `elapsed` since the app started.
 fn spinner_frame_at(elapsed: std::time::Duration) -> usize {
     (elapsed.as_millis() / SPINNER_FRAME_MS as u128) as usize
 }
@@ -4061,7 +4061,7 @@ mod tests {
     // 6. C-g then `q` — clean quit, terminal restored.
     // 7. NEVER attach the session that owns xmux (xmux refuses to run inside a mux,
     //    so in normal use no session mirrors the UI).
-    // 8. Mouse: dragging never selects native terminal text (the cockpit captures the
+    // 8. Mouse: dragging never selects native terminal text (the app captures the
     //    mouse). A LEFT-button press in the UNFOCUSED pane switches focus to it (focus
     //    only — the click is not delivered); right-click never moves focus (it opens the
     //    tree context menu). Once the mux pane is focused, clicks/scroll/
@@ -4327,7 +4327,7 @@ mod tests {
         // A kill-confirm is a modal popup, so it OWNS every key. With the resolver gated
         // on is_modal_popup_open (true for a confirm, where is_inputting is false),
         // `prefix q` reaches the switcher instead of arming the prefix, and Enter reaches
-        // it instead of resolving to FocusMux — so a confirm can neither quit the cockpit
+        // it instead of resolving to FocusMux — so a confirm can neither quit the app
         // nor focus the mux out from under itself. (The first swallowed key cancels the
         // confirm, tmux confirm-before style; the point is the key does not quit/focus.)
         use crate::app::focus::{Focus, ViewFocus};

@@ -1,4 +1,4 @@
-//! Per-host data types shared between the reader thread, writer thread, and cockpit.
+//! Per-host data types shared between the reader thread, writer thread, and app.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
@@ -12,7 +12,7 @@ use crate::mux::{ControlProtocol, Line, Notif};
 use crate::session::{Session, WindowPanes};
 
 /// One host's session/window inventory, seeded from list-sessions/list-panes and
-/// kept live by notifications. The cockpit reads it to (re)build the tree. This is
+/// kept live by notifications. The app reads it to (re)build the tree. This is
 /// a METADATA channel only — the per-session PTY attachments own the pixels.
 pub struct HostInventory {
     pub sessions: Vec<Session>,
@@ -52,20 +52,20 @@ pub enum HostCmd {
     Shutdown,
 }
 
-/// A parsed event the reader emits to the cockpit's `select!` loop.
+/// A parsed event the reader emits to the app's `select!` loop.
 pub enum HostEvent {
     /// First list-sessions returned.
     Connected { host: String },
     /// A list-sessions / list-panes reply resolved — re-apply the inventory.
     Inventory { host: String },
     /// A `%`-notification reports the server's session/window STRUCTURE CHANGED
-    /// (added, closed, renamed, or the set of sessions) — the cockpit must REFETCH
+    /// (added, closed, renamed, or the set of sessions) — the app must REFETCH
     /// (re-run list-sessions + re-list panes), since the notification carries only an
     /// id, not the new structure. Resyncs the sidebar tree + active-window markers (#5).
     Changed { host: String },
     /// `%session-window-changed $id @win`: a session's ACTIVE WINDOW switched (e.g.
     /// another client did prefix-n). Carries the notification's tmux SESSION id
-    /// (`$id`) and WINDOW id (`@win`) so the cockpit probes THAT SPECIFIC session's new
+    /// (`$id`) and WINDOW id (`@win`) so the app probes THAT SPECIFIC session's new
     /// active window and follows the sidebar cursor to it (#2) — it must NOT guess the
     /// displayed session, which mismatches when a non-displayed session's window changes.
     ActiveWindowChanged {
@@ -74,7 +74,7 @@ pub enum HostEvent {
         window_id: String,
     },
     /// An active-window probe resolved (`display-message -p
-    /// '#{session_name}\t#{window_index}'`): the cockpit moves the sidebar cursor to
+    /// '#{session_name}\t#{window_index}'`): the app moves the sidebar cursor to
     /// window `window` of the RESOLVED `session` (a no-op unless the cursor is on a
     /// window row of that session — see [`crate::ui::switcher::Switcher::select_window`]).
     Focus {
@@ -99,7 +99,7 @@ pub enum HostEvent {
     /// ConPTY consumes the marker's OSC before the pump can read it). Recorded on
     /// `Host.display_tty` so a later `switch-client -c <tty>` targets xmux's own client.
     DisplayTty { host: String, tty: Option<String> },
-    /// A detection probe resolved (`detect_and_correct`): the host's backend was
+    /// A detection probe resolved (`detect_and_correct`): the host's mux was
     /// (re)identified. `None` = still undetected / unreachable. Folded back via
     /// `apply_scan_result`; emitted by the fire-and-forget detection task.
     Scanned {
@@ -123,7 +123,7 @@ pub enum HostEvent {
     },
 }
 
-/// The reader's shared state the cockpit also reads.
+/// The reader's shared state the app also reads.
 pub struct ReaderState {
     pub inventory: Arc<Mutex<HostInventory>>,
     pub connecting: Arc<AtomicBool>,
@@ -189,7 +189,7 @@ pub fn run_reader<E: FnMut(HostEvent)>(
                 let (_, kind, body) = block.take().unwrap();
                 // Remember an error block's text ("no sessions" / "no server running"
                 // / …) so a control client that dies before connecting carries it —
-                // the cockpit then tells a reachable-but-empty mux from a dead host.
+                // the app then tells a reachable-but-empty mux from a dead host.
                 if is_err {
                     let t = body.join(" ").trim().to_string();
                     if !t.is_empty() {
@@ -302,7 +302,7 @@ fn resolve_block<E: FnMut(HostEvent)>(
         PendingReply::ActiveWindow => {
             // `display-message -p '#{session_name}\t#{window_index}'` prints one line:
             // `<name>\t<index>`. The probe targeted a session id, so the RESOLVED name
-            // comes back in the reply. Emit Focus for that session so the cockpit follows
+            // comes back in the reply. Emit Focus for that session so the app follows
             // the cursor (#2). A missing/garbled body (no `name\tindex`) yields no event.
             if let Some((session, window)) = body.iter().find_map(|l| {
                 let (name, idx) = l.split_once('\t')?;
@@ -328,8 +328,8 @@ fn resolve_block<E: FnMut(HostEvent)>(
     }
 }
 
-/// Maps one notification to the cockpit event it triggers and emits it. The policy
-/// table lives behind the backend's [`ControlProtocol::notif_event`] (a tmux protocol
+/// Maps one notification to the app event it triggers and emits it. The policy
+/// table lives behind the mux's [`ControlProtocol::notif_event`] (a tmux protocol
 /// detail); this thin wrapper just forwards the event when there is one.
 fn dispatch_notif<E: FnMut(HostEvent)>(
     host: &str,
@@ -389,7 +389,7 @@ pub fn run_writer<W: Write>(
 }
 
 /// One control-mode (`-CC`) host process: a piped child plus its reader and writer
-/// OS threads. The cockpit holds the `cmd_tx` to drive it and reads `inventory`/
+/// OS threads. The app holds the `cmd_tx` to drive it and reads `inventory`/
 /// `connecting` for the sidebar tree. This is a METADATA / change-event /
 /// `select-window` channel only — the per-session PTY attachments own the pixels.
 pub struct HostClient {
@@ -401,7 +401,7 @@ pub struct HostClient {
     pub connecting: Arc<AtomicBool>,
     /// Current client size; updated by `resize`.
     pub size: (u16, u16),
-    /// The backend's control-mode protocol — builds every command line this client
+    /// The mux's control-mode protocol — builds every command line this client
     /// sends. Shared `'static` (the impl is stateless), so the reader/writer threads
     /// borrow it without owning a clone.
     proto: &'static dyn ControlProtocol,
@@ -418,7 +418,7 @@ pub struct HostClient {
 impl HostClient {
     /// Spawns `argv` as a piped control-mode child at `cols×rows`, starts the
     /// reader + writer OS threads, and queues the connect sequence (resize →
-    /// flow-control pause → list-sessions). `events` is the cockpit's loop sink.
+    /// flow-control pause → list-sessions). `events` is the app's loop sink.
     pub fn spawn(
         host: impl Into<String>,
         proto: &'static dyn ControlProtocol,
@@ -501,7 +501,7 @@ impl HostClient {
             run_writer(cmd_rx, proto, &mut stdin, &writer_in_flight);
         });
 
-        // Connect sequence: size the client, then run the backend's connect preamble
+        // Connect sequence: size the client, then run the mux's connect preamble
         // (it SUPPRESSES %output — this control connection is a metadata / change-event /
         // `select-window` channel ONLY; the per-session PTY attaches own the pixels), then
         // list sessions (the correlated query whose block resolves the inventory).
@@ -552,7 +552,7 @@ impl HostClient {
     /// Probes `target`'s active window over this control client. `target` is the tmux
     /// SESSION id (`$id`) from the `%session-window-changed` payload — probing that
     /// SPECIFIC session, never a guessed displayed one. The reply carries the resolved
-    /// session name + window index and resolves to a [`HostEvent::Focus`] so the cockpit
+    /// session name + window index and resolves to a [`HostEvent::Focus`] so the app
     /// follows the sidebar cursor to the new active window (#2).
     pub fn probe_active_window(&self, target: &str) {
         let _ = self.cmd_tx.send(HostCmd::Query {
@@ -608,7 +608,7 @@ impl HostClient {
     }
 
     /// Tell the child its new client size (the metadata client's size; the PTY
-    /// attachments are sized independently by the cockpit).
+    /// attachments are sized independently by the app).
     pub fn resize(&mut self, cols: u16, rows: u16) {
         self.size = (cols, rows);
         let _ = self.cmd_tx.send(HostCmd::Resize { cols, rows });
@@ -641,9 +641,9 @@ impl HostClient {
 
 /// A POLL host's self-looping enumeration task. A poll host has no host-level control
 /// stream, so the [`HostManager`] owns this task to re-enumerate sessions + panes on
-/// the backend's cadence and emit them as [`HostEvent`]s onto the same bus the control
+/// the mux's cadence and emit them as [`HostEvent`]s onto the same bus the control
 /// clients use. Runs until aborted (reap / teardown) or the event receiver is dropped
-/// (cockpit exit). Mirrors a control client's connect-then-stream role for poll muxes.
+/// (app exit). Mirrors a control client's connect-then-stream role for poll muxes.
 async fn run_poll(
     source: String,
     transport: crate::model::Transport,
@@ -664,7 +664,7 @@ async fn run_poll(
     let mut first_poll = true;
     loop {
         ticker.tick().await;
-        // `poll_once` (the mux-blind sweep) hands each event back here. The cockpit's
+        // `poll_once` (the mux-blind sweep) hands each event back here. The app's
         // receiver dropping (its exit) is the loop's other stop condition besides abort,
         // so a failed send latches `gone` and the loop returns after this sweep.
         let mut gone = false;
@@ -718,7 +718,7 @@ fn control_argv(host: &crate::model::Host) -> Option<Vec<String>> {
 /// Owns each host's metadata channel, spawned lazily on first use and reaped on
 /// `%exit`/EOF (control) or abort (poll). A CONTROL host gets one `-CC` [`HostClient`];
 /// a POLL host gets one [`run_poll`] task. The bound is the host count: at most one of
-/// either per host. Both emit onto the one shared `events` sink the cockpit's loop drains.
+/// either per host. Both emit onto the one shared `events` sink the app's loop drains.
 pub struct HostManager {
     clients: HashMap<String, HostClient>,
     polls: HashMap<String, tokio::task::JoinHandle<()>>,
@@ -743,12 +743,12 @@ impl HostManager {
     /// Ensures `id`'s metadata channel is live, picking the channel from the host's
     /// `event_source()` — the ONE place that reads it. CONTROL → spawn a `-CC` client
     /// (connect sequence queued by `HostClient::spawn`); POLL → spawn a self-looping
-    /// poll task at the backend's interval. A no-op (`Ok(false)`) if already live.
+    /// poll task at the mux's interval. A no-op (`Ok(false)`) if already live.
     pub fn ensure(
         &mut self,
         id: &str,
         host: &crate::model::Host,
-        // The control argv is now composed from `host` (transport × backend); the source is
+        // The control argv is now composed from `host` (transport × mux); the source is
         // no longer read here. It stays in the signature because `rescan` forwards it and the
         // callers hand it in; a later stage retires the source-threading entirely.
         _src: &crate::source::Source,
@@ -768,15 +768,15 @@ impl HostManager {
         match host.mux.event_source() {
             crate::model::EventSource::Control => {
                 // A Control event source guarantees a control protocol (both come from
-                // the same backend): tmux is the only backend that reports either.
+                // the same mux): tmux is the only mux that reports either.
                 let proto = host.mux.control_protocol().ok_or_else(|| {
-                    anyhow::anyhow!("backend has a control event source but no control protocol")
+                    anyhow::anyhow!("mux has a control event source but no control protocol")
                 })?;
                 // The control argv composes the two orthogonal axes: the mux payload from
                 // Mux::control_argv wrapped by Transport::control_argv (no hardcoded verb,
                 // no hand-rolled ssh/-S here). A Control event source guarantees a payload.
                 let argv = control_argv(host).ok_or_else(|| {
-                    anyhow::anyhow!("backend has a control event source but no control argv")
+                    anyhow::anyhow!("mux has a control event source but no control argv")
                 })?;
                 let client =
                     HostClient::spawn(id, proto, &argv, cols, rows, self.events.clone(), &[])?;
@@ -823,7 +823,7 @@ impl HostManager {
         }
     }
 
-    /// `%exit`/EOF (control) or explicit drop (poll): tear down the channel. The cockpit
+    /// `%exit`/EOF (control) or explicit drop (poll): tear down the channel. The app
     /// keeps the last-known tree in its switcher state, so the inventory is not refetched.
     pub fn reap(&mut self, host: &str) {
         if let Some(c) = self.clients.remove(host) {
@@ -852,7 +852,7 @@ impl HostManager {
 }
 
 /// The shared `'static` tmux control protocol, for tests that drive the reader/writer
-/// or spawn a fake control child. Both the `host` and `cockpit` test modules use it.
+/// or spawn a fake control child. Both the `host` and `app` test modules use it.
 #[cfg(test)]
 pub(crate) fn test_control_proto() -> &'static dyn ControlProtocol {
     crate::mux::for_binary("tmux")
@@ -865,7 +865,7 @@ impl HostManager {
     /// Inserts a real no-op control child keyed by `host`, proving the map insert
     /// without a live `-CC` server. `cmd.exe /c rem` spawns and exits immediately,
     /// so its stdout EOFs at once and `teardown`'s joins return. Shared by the
-    /// `host` and `cockpit` test modules.
+    /// `host` and `app` test modules.
     pub(crate) fn insert_fake(&mut self, host: &str) {
         let argv: Vec<String> = ["cmd.exe", "/c", "rem"]
             .iter()
@@ -1015,7 +1015,7 @@ mod tests {
     fn reader_structure_notifications_emit_changed() {
         // A `%`-notification that the server's session/window STRUCTURE changed
         // (added, closed, renamed, or the set of sessions) must emit Changed: it
-        // carries only an id, so the cockpit refetches (re-list-sessions +
+        // carries only an id, so the app refetches (re-list-sessions +
         // re-list-panes) to resync the tree + active-window markers (#5).
         for line in [
             "%window-add @4",
@@ -1050,7 +1050,7 @@ mod tests {
         // `%window-*` form only for the client's current session). The displayed
         // session is usually NOT the control client's session, so without handling
         // these the sidebar misses real-time window add/delete there. They must emit
-        // Changed exactly like their linked counterparts so the cockpit refetches.
+        // Changed exactly like their linked counterparts so the app refetches.
         for line in [
             "%unlinked-window-add @4",
             "%unlinked-window-close @4",
@@ -1080,7 +1080,7 @@ mod tests {
     fn session_window_changed_emits_active_window_changed_with_payload() {
         // A session's ACTIVE WINDOW switched (`%session-window-changed $id @win`):
         // emit ActiveWindowChanged CARRYING the notification's session id + window id,
-        // so the cockpit probes THAT SPECIFIC session (not a guessed displayed one)
+        // so the app probes THAT SPECIFIC session (not a guessed displayed one)
         // and follows the sidebar cursor to it (#2). It must NOT collapse to a blanket
         // Changed (which only refetches and would leave the cursor behind), and it must
         // NOT drop the payload to a host-only event (which forces the guess).
@@ -1117,7 +1117,7 @@ mod tests {
         // returns a single line: `<name>\t<index>`. Resolving its block emits Focus
         // carrying the RESOLVED session name + parsed window index (the probe targeted a
         // session id, so the name comes back in the reply — not the correlator), so the
-        // cockpit moves the sidebar cursor to that window row of the correct session.
+        // app moves the sidebar cursor to that window row of the correct session.
         let state = test_state(80, 24);
         let in_flight: InFlight = Default::default();
         in_flight
@@ -1383,7 +1383,7 @@ mod tests {
     fn reader_no_sessions_error_makes_exit_carry_the_reason() {
         // An empty / no-server mux: `tmux -CC attach` emits a "no sessions" %error
         // block then a bare %exit. The reader must fold the error body into the Exited
-        // reason so the cockpit can tell "reachable but empty" from "dead host".
+        // reason so the app can tell "reachable but empty" from "dead host".
         let state = test_state(80, 24);
         let in_flight: InFlight = Default::default();
         let mut events = Vec::new();
@@ -1672,7 +1672,7 @@ mod tests {
             assert_eq!(
                 control_argv(&host),
                 Some(host.transport.control_argv(&mux_payload)),
-                "control argv must equal transport.control_argv(&backend.control_argv())"
+                "control argv must equal transport.control_argv(&mux.control_argv())"
             );
         }
     }

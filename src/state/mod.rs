@@ -1,5 +1,5 @@
 //! Runtime domain state: the single source of truth the new architecture's
-//! components read from. Carries the cockpit loop's inventory, selection,
+//! components read from. Carries the app loop's inventory, selection,
 //! display-truth, focus, and the open modal popup.
 use crate::app::runtime::Selection;
 use crate::session::WindowPanes;
@@ -7,7 +7,7 @@ use crate::ui::tree::Group;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-/// The cockpit's canonical runtime state.
+/// The app's canonical runtime state.
 #[derive(Default)]
 pub struct State {
     /// Inventory — hosts → sessions → windows → panes (all reachable). The single
@@ -41,7 +41,7 @@ pub struct State {
     /// The session address last persisted as the user's last-selected, so it is
     /// not rewritten on every window step within the same session.
     pub last_saved_session: String,
-    /// The cockpit's focus state machine — which pane keys go to and whether a
+    /// The app's focus state machine — which pane keys go to and whether a
     /// modal is open. The single source of truth for focus.
     pub focus: crate::app::focus::Focus,
     /// The single open modal, if any (help / inline input / kill confirm / context
@@ -66,7 +66,7 @@ impl State {
         )
     }
 
-    /// True while an inline input (filter / rename / new) is open. The cockpit
+    /// True while an inline input (filter / rename / new) is open. The app
     /// routes every key to the switcher then, with no focus-switch hijack.
     pub fn is_inputting(&self) -> bool {
         matches!(self.modal, Some(crate::ui::switcher::Modal::Input(_)))
@@ -262,16 +262,16 @@ impl State {
         }
     }
 
-    /// The single event-driven mutation site: folds one backend [`HostEvent`] into the
-    /// domain state and returns the backend follow-ups as [`EventEffect`]s. The mirror
-    /// of [`apply`](State::apply) for the inbound (backend → state) direction — every
+    /// The single event-driven mutation site: folds one mux [`HostEvent`] into the
+    /// domain state and returns the mux follow-ups as [`EventEffect`]s. The mirror
+    /// of [`apply`](State::apply) for the inbound (mux → state) direction — every
     /// `%`-notification, metadata reply, poll result, and reap routes through here, so
     /// State owns the event-driven mutations just as `apply` owns the intent-driven ones.
     ///
     /// `apply_event` performs only the mutations whose data is SELF-CONTAINED in the
     /// event (the active-window marker, a pane subtree, a poll enumeration, the
     /// unreachable mark) — driven through the switcher, which rebuilds the tree against
-    /// `&mut State`. The follow-ups that need a backend handle the state layer must not
+    /// `&mut State`. The follow-ups that need a mux handle the state layer must not
     /// hold (a host client's inventory lock, a control-mode probe, the attach registry,
     /// the detection dispatch) are returned as [`EventEffect`]s for the run loop — the
     /// sole executor — to carry out (the AGENTS rule: no IO/registry mutation here).
@@ -379,7 +379,7 @@ impl State {
 /// makes the remote mux send a full-screen repaint, and a storm of repaints floods
 /// the draw — the single-threaded loop then spends all its time redrawing, which IS
 /// the freeze. Deferring the attach until the cursor settles keeps per-step redraws
-/// to a cheap tree-only diff. The single source of this value; the cockpit's
+/// to a cheap tree-only diff. The single source of this value; the app's
 /// host-event re-arm paths reference it so the two can never drift.
 pub(crate) const ATTACH_DEBOUNCE_MS: u64 = 90;
 
@@ -864,7 +864,7 @@ mod tests {
     // --- apply_event(HostEvent) -----------------------------------------------
     // State owns the EVENT-DRIVEN mutations: apply_event folds the self-contained
     // arms (Focus marker, Panes subtree, Sessions enumeration, Exited unreachable
-    // mark) into State directly, and returns the backend follow-ups (refetch /
+    // mark) into State directly, and returns the mux follow-ups (refetch /
     // probe / reap / sync / scan-dispatch) as EventEffects for the run loop to run.
     use crate::host::HostEvent;
     use crate::model::EventEffect;
@@ -925,7 +925,7 @@ mod tests {
     #[test]
     fn apply_event_focus_moves_marker_and_emits_no_effect() {
         // Focus is self-contained (host/session/window in the payload): apply_event
-        // flips the active-window marker in State and produces no backend effect.
+        // flips the active-window marker in State and produces no mux effect.
         let (mut state, mut sw) = with_switcher(one_session_scan());
         let mut connected = HashSet::new();
         // window 0 is active in the scan; move the marker to window 1.
@@ -940,7 +940,7 @@ mod tests {
         );
         assert!(
             effects.is_empty(),
-            "Focus is a pure state mutation — no backend effect"
+            "Focus is a pure state mutation — no mux effect"
         );
         let windows = state.panes.get("jup/api").unwrap();
         assert!(windows.iter().find(|w| w.index == 1).unwrap().active);

@@ -1,7 +1,7 @@
 //! psmux's per-machine session registry: the filesystem substrate psmux itself
 //! discovers sessions with. psmux is one-server-per-session over localhost TCP
 //! with no aggregate server, so this directory — not a `list-sessions` — is the
-//! authoritative existence set for the local psmux backend's `enumerate`.
+//! authoritative existence set for the local psmux mux's `enumerate`.
 
 use std::path::{Path, PathBuf};
 

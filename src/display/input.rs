@@ -31,7 +31,7 @@ impl TermInput {
         }
     }
 
-    /// Whether a prefix is armed awaiting its command key. The cockpit checks this so
+    /// Whether a prefix is armed awaiting its command key. The app checks this so
     /// its resize-repeat intercept does not skip a read while a prefix sequence is mid-flight
     /// (which would leave the prefix armed and mis-read the following key as a command).
     pub fn is_armed(&self) -> bool {

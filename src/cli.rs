@@ -1,5 +1,5 @@
 //! The `xmux` CLI: argument parsing and command dispatch (`ls`/`attach`/
-//! `doctor`/`ctl`/`version` and the default interactive cockpit). `run` is the
+//! `doctor`/`ctl`/`version` and the default interactive app). `run` is the
 //! single entry the binary shim calls.
 
 use std::path::PathBuf;

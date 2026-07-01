@@ -43,7 +43,7 @@ impl AttachRegistry {
         self.map.get(addr)
     }
 
-    /// The grid Arc for `addr`'s attachment, so the cockpit can render it.
+    /// The grid Arc for `addr`'s attachment, so the app can render it.
     pub fn grid(&self, addr: &str) -> Option<Arc<Mutex<Grid>>> {
         self.map.get(addr).map(|a| a.grid.clone())
     }
@@ -90,7 +90,7 @@ impl AttachRegistry {
     }
 
     /// Issues the next attachment id WITHOUT spawning — for the off-loop path where the
-    /// worker spawns and the cockpit inserts the finished attachment under this id.
+    /// worker spawns and the app inserts the finished attachment under this id.
     pub fn alloc_id(&mut self) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
@@ -98,7 +98,7 @@ impl AttachRegistry {
     }
 
     /// Inserts a finished attachment under its address key (the off-loop handoff: the
-    /// worker spawned it on its OS thread, the cockpit stores it here so `grid`/`input`/
+    /// worker spawned it on its OS thread, the app stores it here so `grid`/`input`/
     /// `reap` reach it). Overwrites any prior attachment at `addr`.
     pub fn insert(&mut self, addr: &str, att: Attachment) {
         self.map.insert(addr.to_string(), att);

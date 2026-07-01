@@ -148,9 +148,9 @@ impl MenuItem {
     }
 }
 
-/// What the cockpit must do after a menu release. Most items are handled inside the
+/// What the app must do after a menu release. Most items are handled inside the
 /// switcher (they open an input or arm a kill); `FocusTerminal` is the one outcome the
-/// cockpit owns (the "focus" item moves focus to the mux pane).
+/// app owns (the "focus" item moves focus to the mux pane).
 pub enum MenuOutcome {
     None,
     Handled,
@@ -624,7 +624,7 @@ impl Switcher {
     }
 
     fn session_label(&self, sess: &Session) -> String {
-        // No "attached" dot: the cockpit pre-attaches EVERY session (a PTY client per
+        // No "attached" dot: the app pre-attaches EVERY session (a PTY client per
         // session), so `session_attached` is true for ~all of them — the marker would
         // be noise. The active window/pane is shown BOLD instead.
         let pad = self
@@ -827,7 +827,7 @@ impl Switcher {
         };
     }
 
-    /// The session/window the cursor is currently on, used by the cockpit to
+    /// The session/window the cursor is currently on, used by the app to
     /// `switch-client` on every cursor move (`select = attach`). Returns `Some`
     /// only for session, window, or host-with-session rows; `None` for pane,
     /// loading, and empty-host rows.
@@ -842,7 +842,7 @@ impl Switcher {
     }
 
     /// The host (source alias) the cursor is on, or `None` on a pane/loading row.
-    /// The cockpit ensures this host's control-mode client is connected on every
+    /// The app ensures this host's control-mode client is connected on every
     /// cursor move, so the host's `list-sessions` populates the tree even before
     /// any session is selected (a control-mode client is the only session source).
     pub fn current_host(&self) -> Option<String> {
@@ -852,7 +852,7 @@ impl Switcher {
     /// Moves the sidebar cursor to window `window` of `source`/`session` when the
     /// cursor is currently within THAT session's subtree — on its session row OR any
     /// of its window rows. Used to follow the displayed session's active-window
-    /// change; the cockpit gates this on TERMINAL focus, where the user is no longer
+    /// change; the app gates this on TERMINAL focus, where the user is no longer
     /// driving the tree cursor (stdin goes to the PTY), so following from the session
     /// row mirrors the mux without yanking a tree-navigating user. A no-op when the
     /// cursor is on a different host/session. Returns whether it moved.
@@ -968,47 +968,47 @@ impl Switcher {
         self.status.set_spinner(addresses);
     }
 
-    /// Sets the braille spinner frame index. The cockpit derives it from elapsed
+    /// Sets the braille spinner frame index. The app derives it from elapsed
     /// wall-clock time, so the spinner animates on every render rather than once
     /// per animation tick (which can starve under a `%output` flood).
     pub fn set_spinner_frame(&mut self, frame: usize) {
         self.status.set_spinner_frame(frame);
     }
 
-    /// Sets auto-hide-tree mode (the cockpit owns it; the divider glyph reflects it).
+    /// Sets auto-hide-tree mode (the app owns it; the divider glyph reflects it).
     pub fn set_auto_hide(&mut self, on: bool) {
         self.status.set_auto_hide(on);
     }
 
-    /// Sets whether the mouse is hovering the divider (the cockpit derives it from
+    /// Sets whether the mouse is hovering the divider (the app derives it from
     /// idle motion); when set, the divider highlights as a drag-resize grab cue.
     pub fn set_divider_hovered(&mut self, on: bool) {
         self.status.set_divider_hovered(on);
     }
 
-    /// Sets the tree|mux divider colours. The cockpit calls this once at startup with
+    /// Sets the tree|mux divider colours. The app calls this once at startup with
     /// the colours parsed from config's `pane-*-border-style` options; tmux defaults
     /// apply otherwise.
     pub fn set_divider_colors(&mut self, colors: DividerColors) {
         self.status.set_divider_colors(colors);
     }
 
-    /// Sets the prefix string shown in the help overlay. The cockpit calls this once
-    /// at startup so the overlay reflects the binding from config's `[ui] prefix`.
+    /// Sets the prefix string shown in the help modal. The app calls this once
+    /// at startup so the help modal reflects the binding from config's `[ui] prefix`.
     pub fn set_ui_prefix(&mut self, prefix: String) {
         self.status.set_ui_prefix(prefix);
     }
 
     // --- key handling -------------------------------------------------------
 
-    /// Open the modal keys overlay. In tree focus any key then dismisses it (see
+    /// Open the modal keys help modal. In tree focus any key then dismisses it (see
     /// `handle_key`); [`toggle_help`] is the focus-independent open/close entry point.
     pub fn show_help(&mut self, state: &mut crate::state::State) {
         self.dismiss_modals(state);
         state.modal = Some(Modal::Help);
     }
 
-    /// Toggle the keys overlay. Driven by `prefix ?` in EITHER focus so help opens
+    /// Toggle the keys help modal. Driven by `prefix ?` in EITHER focus so help opens
     /// and closes the same way regardless of which pane holds focus.
     pub fn toggle_help(&mut self, state: &mut crate::state::State) {
         if matches!(state.modal, Some(Modal::Help)) {
@@ -1027,14 +1027,14 @@ impl Switcher {
         self.reset_popup_pos();
     }
 
-    /// True while a modal popup is being border-dragged; the cockpit routes every
+    /// True while a modal popup is being border-dragged; the app routes every
     /// mouse event here until release, like the divider drag / menu hold.
     pub fn popup_drag_active(&self) -> bool {
         self.popup_drag.is_some()
     }
 
     /// A left press on the active modal popup's border begins a move-drag. Returns
-    /// true iff it grabbed (so the cockpit consumes the event).
+    /// true iff it grabbed (so the app consumes the event).
     pub fn begin_popup_drag(&mut self, col: u16, row: u16, state: &crate::state::State) -> bool {
         // `popup_rect` is only refreshed on render (frame-gated), so a popup closed by a
         // keystroke can leave a stale rect; gate on the live modal state so a press can't
@@ -1082,11 +1082,11 @@ impl Switcher {
         self.popup_drag = None;
     }
 
-    /// Modal help input, tmux view-mode style. While the overlay is open it captures
+    /// Modal help input, tmux view-mode style. While the modal is open it captures
     /// the whole key read (returns true ⇒ consumed — nothing reaches the tree or the
     /// mux pane); `q` or Esc closes it, every other key is swallowed. Returns false
     /// when help is closed, so the read falls through to normal routing. The single
-    /// owner of help dismissal — the cockpit calls it above the tree/mux split, so the
+    /// owner of help dismissal — the app calls it above the tree/mux split, so the
     /// behavior is identical in both focuses.
     pub fn feed_help_key(&mut self, bytes: &[u8], state: &mut crate::state::State) -> bool {
         if !matches!(state.modal, Some(Modal::Help)) {
@@ -1705,7 +1705,7 @@ impl Switcher {
     /// Right-button press at 0-based screen (col,row): opens that tree row's menu if
     /// it lands on a selectable row that has items. Does NOT move the tree cursor —
     /// the gesture only remembers the target, so no background attach fires mid-hold.
-    /// Returns true iff a menu opened (so the cockpit knows to consume the event).
+    /// Returns true iff a menu opened (so the app knows to consume the event).
     pub fn menu_open(&mut self, col: u16, row: u16, state: &mut crate::state::State) -> bool {
         if !self.in_tree(col, row) {
             return false;
@@ -1810,7 +1810,7 @@ impl Switcher {
         }
     }
 
-    /// Close the menu without acting (cockpit watchdog: a keystroke ends the gesture).
+    /// Close the menu without acting (app watchdog: a keystroke ends the gesture).
     /// Only a menu is cleared — a centered popup, if somehow open, is left intact.
     pub fn menu_cancel(&mut self, state: &mut crate::state::State) {
         if matches!(state.modal, Some(Modal::Menu(_))) {
@@ -1978,7 +1978,7 @@ impl Switcher {
         self.status.set_ssh_config_text(text);
     }
 
-    /// The help overlay's `(title, lines)`, built once and rendered through the
+    /// The help modal's `(title, lines)`, built once and rendered through the
     /// shared modal-popup path.
     fn help_lines(&self) -> (String, Vec<Line<'static>>) {
         // tmux mode-tree style: a right-aligned, bold key column, a `│` rule, then
@@ -1986,7 +1986,7 @@ impl Switcher {
         // `Note` is a description-only row (the mux state has no keys of its own).
         //
         // The tree and mux sections have no configurable keys so they are static.
-        // The focus section uses `self.status.ui_prefix` so the overlay matches the
+        // The focus section uses `self.status.ui_prefix` so the help modal matches the
         // active binding from config.
         enum HelpRow {
             Head(String),
@@ -2103,7 +2103,7 @@ impl Switcher {
 
     /// Draws the open context menu as a bordered popup at its anchored rect: the target's
     /// name in the title (like tmux's menu title), the hovered item reversed. Shares the
-    /// opaque, tmux-edge popup renderer with the help overlay.
+    /// opaque, tmux-edge popup renderer with the help modal.
     fn render_menu(&self, frame: &mut Frame, state: &crate::state::State) {
         let Some(Modal::Menu(menu)) = &state.modal else {
             return;
@@ -2919,7 +2919,7 @@ mod tests {
     #[test]
     fn select_window_follows_from_a_session_row() {
         // When the terminal pane has focus the user is no longer driving the tree
-        // cursor (stdin goes to the PTY), so the cockpit only calls select_window
+        // cursor (stdin goes to the PTY), so the app only calls select_window
         // then. An active-window change must move the cursor to that window even from
         // the SESSION row — this is how focus→mux and in-mux window navigation keep
         // the sidebar mirroring the displayed window (#3).
@@ -4263,12 +4263,15 @@ mod tests {
     async fn help_overlay_renders_and_closes_on_q() {
         let mut h = Harness::new(sample());
         assert!(!h.text().contains("keys"), "help hidden initially");
-        h.sw.show_help(&mut h.state); // driven by the cockpit's `prefix ?`
+        h.sw.show_help(&mut h.state); // driven by the app's `prefix ?`
         h.draw();
         let out = h.text();
-        assert!(out.contains("keys"), "show_help opens the overlay:\n{out}");
+        assert!(
+            out.contains("keys"),
+            "show_help opens the help modal:\n{out}"
+        );
         assert!(out.contains("fuzzy filter"), "help should list keybindings");
-        // Modal dismissal (tmux view-mode): the cockpit routes keys to feed_help_key
+        // Modal dismissal (tmux view-mode): the app routes keys to feed_help_key
         // above the tree/mux split — q closes it; other keys are swallowed (no nav).
         assert!(
             h.sw.feed_help_key(b"q", &mut h.state),
@@ -4277,7 +4280,7 @@ mod tests {
         h.draw();
         assert!(
             !h.text().contains("fuzzy filter"),
-            "q closes the help overlay"
+            "q closes the help modal"
         );
     }
 
@@ -4357,8 +4360,8 @@ mod tests {
 
     #[tokio::test]
     async fn enter_and_bare_q_are_noops() {
-        // Enter is consumed by the cockpit (focus the mux), not the switcher; bare q does
-        // nothing — quit is `prefix q` at the cockpit level. Neither moves the cursor or
+        // Enter is consumed by the app (focus the mux), not the switcher; bare q does
+        // nothing — quit is `prefix q` at the app level. Neither moves the cursor or
         // opens an input here.
         let mut h = Harness::new(sample());
         let before = cur_row_label(&h);
@@ -4384,7 +4387,7 @@ mod tests {
 
     #[tokio::test]
     async fn current_host_tracks_cursor_source() {
-        // The cockpit ensures this host on every move; a host row yields its source
+        // The app ensures this host on every move; a host row yields its source
         // even when no session is selected, so the host's tree can be fetched.
         let mut h = Harness::new(sample()); // editor preselected (local)
         assert_eq!(h.sw.current_host().as_deref(), Some("local"));
@@ -4458,7 +4461,7 @@ mod tests {
             hint_bar.contains("focus"),
             "hint_bar mentions focusing the terminal pane:\n{hint_bar}"
         );
-        h.sw.show_help(&mut h.state); // driven by the cockpit's `prefix ?`
+        h.sw.show_help(&mut h.state); // driven by the app's `prefix ?`
         h.draw();
         let help = h.text();
         assert!(
@@ -5416,7 +5419,7 @@ pub(crate) mod tests_support {
     use std::sync::Arc;
     /// A do-nothing [`Ops`] for apply-site tests. `Switch`/`Focus`/`Width`/`Quit`
     /// never call into `Ops`, so its methods are never reached; constructing it is
-    /// all a cockpit action-dispatch effect test needs.
+    /// all a app action-dispatch effect test needs.
     struct NoopOps;
     #[async_trait::async_trait]
     impl Ops for NoopOps {

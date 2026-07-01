@@ -151,7 +151,7 @@ pub fn endpoint_name(path: &Path) -> std::io::Result<Name<'static>> {
     #[cfg(windows)]
     {
         // Local sockets are named pipes on Windows; derive the namespaced name
-        // from the file stem so both `ctl-<pid>` and `cockpit-<pid>` map cleanly.
+        // from the file stem so `ctl-<pid>` maps cleanly.
         let stem = path.file_stem().and_then(|s| s.to_str()).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
@@ -499,14 +499,6 @@ mod tests {
             socket_path(Path::new("/some/dir"), 1234),
             Path::new("/some/dir").join("ctl-1234.sock")
         );
-    }
-
-    #[test]
-    fn endpoint_name_accepts_cockpit_socket() {
-        // A cockpit-<pid>.sock must build a valid endpoint (no panic / error) on
-        // every platform, just like ctl-<pid>.sock.
-        let p = Path::new("/some/dir/cockpit-1234.sock");
-        assert!(endpoint_name(p).is_ok());
     }
 
     #[test]

@@ -12,7 +12,7 @@ use crate::mux::Mux;
 use crate::source::Runner;
 
 /// Connecting / live / unreachable — replaces the loose `connecting` AtomicBool
-/// (host.rs:334) and the supervisor's `connected: HashSet` tracking (cockpit.rs:1048).
+/// (host.rs:334) and the supervisor's `connected: HashSet` tracking (app.rs:1048).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Liveness {
     Connecting,
@@ -109,11 +109,11 @@ impl Host {
             return;
         }
         let bin = self.mux.bin().to_string();
-        let Some(backend) = crate::mux::detect_backend(&self.transport, &bin, runner).await else {
+        let Some(mux) = crate::mux::detect_backend(&self.transport, &bin, runner).await else {
             return;
         };
-        if backend.kind() != self.mux.kind() {
-            self.mux = backend;
+        if mux.kind() != self.mux.kind() {
+            self.mux = mux;
         }
         self.detected = true;
     }
