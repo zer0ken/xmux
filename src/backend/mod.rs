@@ -91,6 +91,14 @@ pub trait Backend: Send + Sync {
     /// Per-session vs shared. The supervisor reads this instead of `remote`.
     fn server_model(&self) -> ServerModel;
 
+    /// The mux's own display driver — the per-host orchestration of which PTY to
+    /// attach and whether to `switch-client` or reattach on a session change. Each
+    /// backend constructs ITS OWN driver, so mux selection lives in the mux family
+    /// (never a central `match server_model()`). The driver is zero-sized; the per-host
+    /// display state lives on `host.display`/`AttachRegistry`, borrowed through
+    /// `DriverCtx`, so a fresh value per call is free.
+    fn driver(&self) -> Box<dyn crate::driver::MuxDriver>;
+
     /// Lists this host's sessions over `transport`, executing its probe via
     /// `runner` (the real [`ExecRunner`] in production; an injected fake under test).
     /// A reachable empty mux => `Ok(vec![])`; unreachable => `Err`.

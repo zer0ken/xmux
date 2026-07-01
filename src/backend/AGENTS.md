@@ -12,28 +12,33 @@ trait, identity detection (`detect_backend`), the factory
 functions (`for_binary`, `for_kind`), and — via `control.rs` — the
 `ControlProtocol` trait that hides a mux's control-mode (`-CC`) wire details
 (line framing/classification, the notification→event table, the size formatter)
-from `host.rs`. Each concrete mux lives in its own sub-directory and is
-re-exported from `mod.rs`:
+from `host.rs`. Each concrete mux lives in its own sub-directory (owning BOTH its
+metadata backend AND its display driver) and is re-exported from `mod.rs`:
 
-- `tmux/mod.rs` — `Tmux` and its `Backend` impl, plus the helpers used only by it
-  (`benign_empty`, `mux_control_argv`); `tmux/control_proto.rs` holds its pure,
-  headlessly-testable `-CC` wire functions behind `ControlProtocol`.
+- `tmux/mod.rs` — `Tmux` and its `Backend` impl, plus the display-tty file helpers
+  and `mux_control_argv`; `tmux/driver.rs` — `TmuxDriver` (`MuxDriver` impl) and its
+  attach helper; `tmux/control_proto.rs` holds its pure, headlessly-testable `-CC`
+  wire functions behind `ControlProtocol`. See `tmux/AGENTS.md`.
 - `psmux/mod.rs` — `Psmux` and its `Backend` impl, plus its poll cadence constant
-  (`PSMUX_POLL_MS`); `psmux/registry.rs` is the `~/.psmux` per-machine session
-  registry that backs psmux `enumerate` (one server per session, no aggregate
-  `list-sessions`).
+  (`PSMUX_POLL_MS`) and `switch_client_argv`; `psmux/driver.rs` — `PsmuxDriver`
+  (`MuxDriver` impl) and its tty-capture/refresh helpers; `psmux/registry.rs` is the
+  `~/.psmux` per-machine session registry that backs psmux `enumerate` (one server per
+  session, no aggregate `list-sessions`). See `psmux/AGENTS.md`.
 
 Sub-modules pull the shared trait, value types, and imports from the parent via
-`use super::*;`. `crate::backend::{Tmux, Psmux}` resolve through the re-exports.
+`use super::*;`. `crate::backend::{Tmux, Psmux}` resolve through the re-exports; a
+mux's driver is constructed via `Backend::driver()`, so no caller names the concrete
+`TmuxDriver`/`PsmuxDriver` type.
 
 ## Mental Model
 
 Backends describe mux vocabulary and classification. `Transport` lowers machine
-execution. The `MuxDriver` trait (`src/driver.rs`) owns per-host display
-orchestration and the concrete attach decision; backends supply the argv, server
-model, and enumeration behavior that drivers consume. Shared muxes such as tmux
-use one aggregate server and a host-level control stream. Per-session muxes such
-as psmux enumerate differently and supply a per-session attach plan.
+execution. The `MuxDriver` trait (`src/driver.rs`) is the mux-agnostic display seam;
+each mux's concrete driver lives in its own family directory and is constructed by
+`Backend::driver()`, so a backend owns BOTH its argv/server-model/enumeration AND its
+display orchestration. Shared muxes such as tmux use one aggregate server and a
+host-level control stream. Per-session muxes such as psmux enumerate differently and
+supply a per-session attach plan.
 
 ## Module Seams
 
@@ -48,10 +53,12 @@ as psmux enumerate differently and supply a per-session attach plan.
   `*_plan` wraps one); the pure address vocabulary (`mux::window_target`,
   `parse_panes`, `quote_target`) is callable anywhere.
 - `ServerModel`, `EventSource`, and `DeathSignal` are the classification values
-  callers use instead of branching on backend names. `driver_for(host)` in
-  `src/driver.rs` dispatches on `server_model()` to pick the host's `MuxDriver`
-  (`TmuxDriver` = one PTY per host with an in-place `switch-client`; `PsmuxDriver`
-  = in-place client switch or reattach per session).
+  callers use instead of branching on backend names. `Backend::driver()` constructs
+  the host's `MuxDriver` (each backend builds its OWN — mux selection lives in the mux
+  family, never a central `match server_model()`); the thin wrapper `driver_for(host)`
+  in `src/driver.rs` is just `host.mux.driver()`. `TmuxDriver` = one PTY per host with
+  an in-place `switch-client`; `PsmuxDriver` = in-place client switch or reattach per
+  session.
 
 ## Invariants
 

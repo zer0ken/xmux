@@ -204,6 +204,9 @@ mod tests {
         fn server_model(&self) -> ServerModel {
             self.0
         }
+        fn driver(&self) -> Box<dyn crate::driver::MuxDriver> {
+            Box::new(StubDriver)
+        }
         async fn enumerate(
             &self,
             _t: &Transport,
@@ -249,6 +252,44 @@ mod tests {
         }
         fn rename_session_plan(&self, _o: &str, _n: &str) -> Vec<String> {
             vec![]
+        }
+    }
+
+    /// A no-op display driver for `StubMux`: these tests exercise only host domain
+    /// state, never display orchestration, so every method wires no I/O.
+    struct StubDriver;
+
+    impl crate::driver::MuxDriver for StubDriver {
+        fn kind(&self) -> &str {
+            "stub"
+        }
+        fn show(
+            &mut self,
+            _sel: &crate::cockpit::Selection,
+            _ctx: &mut crate::driver::DriverCtx,
+        ) -> bool {
+            false
+        }
+        fn grid(
+            &self,
+            _sel: &crate::cockpit::Selection,
+            _ctx: &crate::driver::DriverCtx,
+        ) -> Option<std::sync::Arc<std::sync::Mutex<crate::proxy::screen::Grid>>> {
+            None
+        }
+        fn input(
+            &mut self,
+            _sel: &crate::cockpit::Selection,
+            _bytes: Vec<u8>,
+            _ctx: &crate::driver::DriverCtx,
+        ) {
+        }
+        fn sync(
+            &mut self,
+            _source: &str,
+            _sessions: &[crate::session::Session],
+            _ctx: &mut crate::driver::DriverCtx,
+        ) {
         }
     }
 
@@ -386,6 +427,9 @@ mod tests {
         }
         fn server_model(&self) -> ServerModel {
             self.model
+        }
+        fn driver(&self) -> Box<dyn crate::driver::MuxDriver> {
+            Box::new(StubDriver)
         }
         async fn enumerate(
             &self,

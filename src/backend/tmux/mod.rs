@@ -8,6 +8,9 @@ use crate::host::HostEvent;
 use crate::mux::{quote_target, PANE_FORMAT, SESSION_FORMAT};
 
 pub mod control_proto;
+pub mod driver;
+
+pub use driver::TmuxDriver;
 
 use control_proto::{classify, Line, Notif};
 
@@ -53,6 +56,10 @@ impl Backend for Tmux {
 
     fn server_model(&self) -> ServerModel {
         ServerModel::Shared
+    }
+
+    fn driver(&self) -> Box<dyn crate::driver::MuxDriver> {
+        Box::new(TmuxDriver)
     }
 
     async fn enumerate(

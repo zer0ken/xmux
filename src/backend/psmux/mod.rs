@@ -3,7 +3,10 @@
 
 use super::*;
 
+pub mod driver;
 mod registry;
+
+pub use driver::PsmuxDriver;
 
 /// The local-psmux poll cadence (psmux is one-server-per-session with no event
 /// push, so changes are discovered by re-enumeration). Mirrors the supervisor's
@@ -28,6 +31,10 @@ impl Backend for Psmux {
 
     fn server_model(&self) -> ServerModel {
         ServerModel::PerSession
+    }
+
+    fn driver(&self) -> Box<dyn crate::driver::MuxDriver> {
+        Box::new(PsmuxDriver)
     }
 
     async fn enumerate(
