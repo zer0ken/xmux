@@ -186,39 +186,6 @@ impl Source {
         v
     }
 
-    /// The argv that spawns this source's control-mode (`-CC`) child. Control mode
-    /// is a text protocol over pipes, so the remote form uses no `ssh -t`
-    /// (`ssh_args(false)` keeps `BatchMode=yes` and `ConnectTimeout`). The local
-    /// form injects `-S <socket>` exactly as [`Source::exec_argv`] does when xmux
-    /// targets a non-default mux server.
-    pub fn control_argv(&self) -> Vec<String> {
-        if !self.remote {
-            let mut v = vec![self.binary.clone()];
-            if let Some(sock) = self.socket.as_deref().filter(|s| !s.is_empty()) {
-                v.push("-S".into());
-                v.push(sock.to_string());
-            }
-            v.push("-CC".into());
-            v.push("attach".into());
-            return v;
-        }
-        // Force a remote pty (`-tt`): `tmux -CC attach` does a `tcgetattr` on its
-        // stdin and exits immediately when stdin is not a tty, so a pipe-only ssh
-        // (no `-t`) dies before emitting any control-mode output. xmux drives ssh's
-        // stdin/stdout as pipes, so a plain `-t` would not allocate a pty either —
-        // `-tt` forces one. BatchMode/ConnectTimeout still come from ssh_args(false).
-        let mut args = vec!["-tt".to_string()];
-        args.extend(self.ssh_args(false));
-        args.push(remote_command(&[
-            self.binary.clone(),
-            "-CC".into(),
-            "attach".into(),
-        ]));
-        let mut v = vec!["ssh".to_string()];
-        v.extend(args);
-        v
-    }
-
     fn run_with(&self) -> &dyn Runner {
         match &self.runner {
             Some(r) => r.as_ref(),
@@ -640,37 +607,6 @@ mod tests {
         }
         assert!(out.iter().any(|e| e == "PATH=/bin"));
         assert!(out.iter().any(|e| e == "HOME=/h"));
-    }
-
-    #[test]
-    fn control_argv_local_plain_and_socket() {
-        let loc = src("local", "psmux", false, "", "");
-        assert_eq!(loc.control_argv(), vec!["psmux", "-CC", "attach"]);
-        // A local source on a non-default socket injects -S before -CC.
-        let mut s = src("local", "tmux", false, "linux", "");
-        s.socket = Some("/tmp/tmux-1000/work".into());
-        assert_eq!(
-            s.control_argv(),
-            vec!["tmux", "-S", "/tmp/tmux-1000/work", "-CC", "attach"]
-        );
-    }
-
-    #[test]
-    fn control_argv_remote_forces_pty() {
-        let rem = src("prod", "tmux", true, "linux", "");
-        let got = rem.control_argv();
-        assert_eq!(got[0], "ssh");
-        // `tmux -CC attach` does a tcgetattr and exits without a tty, and xmux
-        // drives ssh over pipes, so the control connection forces a remote pty.
-        assert!(
-            got.iter().any(|s| s == "-tt"),
-            "control-mode ssh forces a pty with -tt: {got:?}"
-        );
-        assert!(
-            got.iter().any(|s: &String| s.contains("BatchMode=yes")),
-            "the control connection must never hang on a prompt: {got:?}"
-        );
-        assert_eq!(got.last().unwrap(), "tmux -CC attach");
     }
 
     #[tokio::test]

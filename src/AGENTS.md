@@ -33,7 +33,11 @@ the live split view.
   pty_tx, attach_seq, view size) so the driver owns the decision without owning
   the infrastructure.
 - `host.rs` owns control-mode reader/writer machinery, poll task management,
-  host inventory, and `HostEvent`s. It is a metadata path only.
+  host inventory, and `HostEvent`s. It is a metadata path only. `HostManager::ensure`
+  spawns the `-CC` control child with an argv composed across the two orthogonal axes
+  — `Transport::control_argv(&Backend::control_argv())` (the mux supplies the control
+  payload, the transport wraps it for local `-S`/`ssh -tt`); it never hardcodes a mux
+  verb or hand-rolls ssh here.
 - `cockpit.rs` coordinates these modules and owns the main event loop. Inbound
   `HostEvent`s route through `State::apply_event` (the event-driven mutation site);
   `handle_host_event` is then a thin executor that runs the returned `EventEffect`s

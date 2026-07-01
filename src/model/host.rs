@@ -193,8 +193,12 @@ impl Host {
 
     /// Ensures this host's `-CC` control client exists, spawning + owning it lazily.
     /// `Ok(true)` on a fresh spawn; `Ok(false)` if already present or if this host's
-    /// `event_source()` is `Poll` (psmux has no host-level control stream). Moves the
-    /// mechanism `HostManager::ensure` (host.rs:570) held onto the Host.
+    /// `event_source()` is `Poll` (psmux has no host-level control stream). Builds the
+    /// argv via the same `transport.control_argv(&mux.control_argv())` composition the
+    /// live path in `HostManager::ensure` uses. Not on the live path: the supervisor
+    /// stores control clients in `HostManager.clients` (keyed by host id, with the
+    /// dedup/reap/rescan there), so this per-`Host.control` form has only test callers
+    /// and is retained pending a later stage that reconciles client ownership onto `Host`.
     pub fn ensure_control_client(
         &mut self,
         cols: u16,

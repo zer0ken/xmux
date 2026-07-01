@@ -704,9 +704,8 @@ mod tests {
         assert_eq!(out, argv, "local attach is untouched");
     }
 
-    /// A minimal `Env` whose `by_alias` carries one source per alias, so a driver that
-    /// builds a shared warm argv (`shared_display_attach_argv` via `ctx.env`) finds the
-    /// source. Sources are local `cmd.exe` (the warm argv is then the bare attach).
+    /// A minimal `Env` with one local `cmd.exe` `Source` per alias (in both `srcs` and
+    /// `by_alias`), used to construct a `DriverCtx` in these driver tests.
     fn fake_env(aliases: &[&str]) -> crate::env::Env {
         let srcs: Vec<crate::source::Source> = aliases
             .iter()

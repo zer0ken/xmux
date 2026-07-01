@@ -705,6 +705,16 @@ async fn run_poll(
     }
 }
 
+/// The `-CC` control child's argv for `host`, composed across the two orthogonal axes:
+/// the MUX supplies the control payload via `Backend::control_argv` (never a hardcoded
+/// `-CC attach` literal), and the MACHINE wraps it via `Transport::control_argv` (local
+/// `-S` splice, or `ssh -tt … <payload>`). `None` for a mux with no host-level control
+/// stream (it is polled), so a Poll host produces no argv.
+fn control_argv(host: &crate::model::Host) -> Option<Vec<String>> {
+    let mux_control = host.mux.control_argv()?;
+    Some(host.transport.control_argv(&mux_control))
+}
+
 /// Owns each host's metadata channel, spawned lazily on first use and reaped on
 /// `%exit`/EOF (control) or abort (poll). A CONTROL host gets one `-CC` [`HostClient`];
 /// a POLL host gets one [`run_poll`] task. The bound is the host count: at most one of
@@ -738,7 +748,10 @@ impl HostManager {
         &mut self,
         id: &str,
         host: &crate::model::Host,
-        src: &crate::source::Source,
+        // The control argv is now composed from `host` (transport × backend); the source is
+        // no longer read here. It stays in the signature because `rescan` forwards it and the
+        // callers hand it in; a later stage retires the source-threading entirely.
+        _src: &crate::source::Source,
         cols: u16,
         rows: u16,
     ) -> anyhow::Result<bool> {
@@ -759,15 +772,14 @@ impl HostManager {
                 let proto = host.mux.control_protocol().ok_or_else(|| {
                     anyhow::anyhow!("backend has a control event source but no control protocol")
                 })?;
-                let client = HostClient::spawn(
-                    id,
-                    proto,
-                    &src.control_argv(),
-                    cols,
-                    rows,
-                    self.events.clone(),
-                    &[],
-                )?;
+                // The control argv composes the two orthogonal axes: the mux payload from
+                // Backend::control_argv wrapped by Transport::control_argv (no hardcoded verb,
+                // no hand-rolled ssh/-S here). A Control event source guarantees a payload.
+                let argv = control_argv(host).ok_or_else(|| {
+                    anyhow::anyhow!("backend has a control event source but no control argv")
+                })?;
+                let client =
+                    HostClient::spawn(id, proto, &argv, cols, rows, self.events.clone(), &[])?;
                 self.clients.insert(id.to_string(), client);
             }
             crate::model::EventSource::Poll { interval_ms } => {
@@ -1579,6 +1591,95 @@ mod tests {
             socket: None,
             runner: None,
         }
+    }
+
+    fn ssh_host(alias: &str, bin: &str, os: &str, control_path: &str) -> crate::model::Host {
+        crate::model::Host::new(
+            crate::model::Transport::Ssh {
+                alias: alias.into(),
+                control_path: control_path.into(),
+                os: os.into(),
+            },
+            crate::backend::for_binary(bin),
+        )
+    }
+
+    fn local_host(bin: &str, socket: Option<&str>) -> crate::model::Host {
+        crate::model::Host::new(
+            crate::model::Transport::Local {
+                socket: socket.map(str::to_string),
+            },
+            crate::backend::for_binary(bin),
+        )
+    }
+
+    #[test]
+    fn control_argv_local_default_socket_is_bare_cc_attach() {
+        // A local Control host (tmux, default socket) spawns `[bin, -CC, attach]`.
+        let host = local_host("tmux", None);
+        assert_eq!(
+            control_argv(&host),
+            Some(vec!["tmux".to_string(), "-CC".into(), "attach".into()])
+        );
+    }
+
+    #[test]
+    fn control_argv_local_non_default_socket_injects_dash_s() {
+        // A local Control host on a non-default socket splices `-S <sock>` after the binary.
+        let host = local_host("tmux", Some("/tmp/tmux-1000/work"));
+        assert_eq!(
+            control_argv(&host),
+            Some(vec![
+                "tmux".to_string(),
+                "-S".into(),
+                "/tmp/tmux-1000/work".into(),
+                "-CC".into(),
+                "attach".into()
+            ])
+        );
+    }
+
+    #[test]
+    fn control_argv_remote_forces_pty_over_batch_ssh() {
+        // A remote Control host forces a pty (`-tt`) and runs `<bin> -CC attach` over
+        // a BatchMode ssh connection.
+        let host = ssh_host("prod", "tmux", "linux", "");
+        let got = control_argv(&host).expect("a Control host has a control argv");
+        assert_eq!(got[0], "ssh");
+        assert!(got.iter().any(|s| s == "-tt"), "{got:?}");
+        assert!(
+            got.iter().any(|s: &String| s.contains("BatchMode=yes")),
+            "{got:?}"
+        );
+        assert_eq!(got.last().unwrap(), "tmux -CC attach");
+    }
+
+    #[test]
+    fn control_argv_is_the_transport_over_backend_composition() {
+        // The mux payload comes from Backend::control_argv (NOT a hardcoded literal),
+        // and the machine wrapping comes from Transport::control_argv — the two compose.
+        for host in [
+            local_host("tmux", None),
+            local_host("tmux", Some("/tmp/tmux-1000/work")),
+            ssh_host("prod", "tmux", "linux", ""),
+        ] {
+            let mux_payload = host
+                .mux
+                .control_argv()
+                .expect("tmux supplies a control argv");
+            assert_eq!(
+                control_argv(&host),
+                Some(host.transport.control_argv(&mux_payload)),
+                "control argv must equal transport.control_argv(&backend.control_argv())"
+            );
+        }
+    }
+
+    #[test]
+    fn control_argv_is_none_for_a_poll_backend() {
+        // A psmux (Poll) host has no host-level control stream, so no control argv.
+        let host = local_host("psmux", None);
+        assert_eq!(control_argv(&host), None);
     }
 
     #[test]
