@@ -105,6 +105,17 @@ impl Grid {
                     cell.set_symbol(" ");
                 }
                 cell.set_style(vt_cell_style(vcell));
+                if vcell.is_wide_continuation() {
+                    // ratatui's incremental diff skips the trailing cell of a
+                    // standard wide (CJK) glyph, so a wide→narrow transition leaves
+                    // the old glyph's right half as background residue on the
+                    // terminal. Marking the trailing cell AlwaysUpdate makes it
+                    // differ from any later narrow cell at this column, forcing the
+                    // diff to repaint it on transition — no full-screen clear, so no
+                    // flash. While the wide glyph is stable the diff skips this cell
+                    // via the leading cell's width, so it never redraws needlessly.
+                    cell.set_diff_option(ratatui::buffer::CellDiffOption::AlwaysUpdate);
+                }
             }
         }
     }
@@ -253,6 +264,61 @@ mod tests {
         g.render_into(&mut buf, Rect::new(0, 0, 4, 1));
         assert_eq!(buf[(0, 0)].symbol(), "한");
         assert_eq!(buf[(2, 0)].symbol(), "국", "fully-inside wide char is kept");
+    }
+
+    #[test]
+    fn render_into_repaints_wide_char_trailing_cell_on_transition() {
+        // ratatui 0.30.1's incremental diff skips the trailing cell of a standard
+        // wide (CJK) glyph, assuming the terminal clears it when the wide glyph is
+        // printed. On a wide→narrow transition the terminal keeps the old glyph's
+        // right half as background residue. render_into must make the diff repaint
+        // that trailing cell so no residue survives.
+        let area = Rect::new(0, 0, 4, 1);
+
+        // Frame 1: a wide glyph at col 0 (occupies cols 0-1; col 1 is its trailing).
+        let mut g_prev = Grid::new(1, 4);
+        g_prev.feed("가".as_bytes());
+        let mut prev = Buffer::empty(area);
+        g_prev.render_into(&mut prev, area);
+
+        // Frame 2: col 0 is now a narrow char; col 1 falls back to a blank space
+        // whose symbol matches the old trailing cell — the residue-producing case.
+        let mut g_next = Grid::new(1, 4);
+        g_next.feed(b"a");
+        let mut next = Buffer::empty(area);
+        g_next.render_into(&mut next, area);
+
+        // The diff ratatui flushes must include the trailing cell (1,0) so the old
+        // glyph's right half is overwritten on the real terminal.
+        let diff = prev.diff(&next);
+        assert!(
+            diff.iter().any(|&(x, y, _)| x == 1 && y == 0),
+            "wide-char trailing cell must be repainted on transition, got diff {diff:?}"
+        );
+    }
+
+    #[test]
+    fn render_into_does_not_redraw_stable_wide_char() {
+        // The trailing-cell repaint must fire only on a transition, never while the
+        // wide glyph is unchanged — otherwise every frame would redraw and flash.
+        // Two identical wide-char frames must produce an empty diff.
+        let area = Rect::new(0, 0, 4, 1);
+
+        let mut g1 = Grid::new(1, 4);
+        g1.feed("가".as_bytes());
+        let mut a = Buffer::empty(area);
+        g1.render_into(&mut a, area);
+
+        let mut g2 = Grid::new(1, 4);
+        g2.feed("가".as_bytes());
+        let mut b = Buffer::empty(area);
+        g2.render_into(&mut b, area);
+
+        assert!(
+            a.diff(&b).is_empty(),
+            "an unchanged wide-char frame must not redraw, got diff {:?}",
+            a.diff(&b)
+        );
     }
 
     #[test]
