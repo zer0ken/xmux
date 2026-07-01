@@ -4,7 +4,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::app::cockpit::{
+use crate::app::runtime::{
     host_selection_key, request_attach, run_lowered, terminal_view_size, Selection,
 };
 use crate::display::grid::Grid;
@@ -178,12 +178,12 @@ impl MuxDriver for TmuxDriver {
 
     fn grid(&self, sel: &Selection, ctx: &DriverCtx) -> Option<Arc<Mutex<Grid>>> {
         ctx.registry
-            .grid(&crate::app::cockpit::display_key(ctx.hosts, sel))
+            .grid(&crate::app::runtime::display_key(ctx.hosts, sel))
     }
 
     fn input(&mut self, sel: &Selection, bytes: Vec<u8>, ctx: &DriverCtx) {
         ctx.registry
-            .input(&crate::app::cockpit::display_key(ctx.hosts, sel), bytes);
+            .input(&crate::app::runtime::display_key(ctx.hosts, sel), bytes);
     }
 
     fn sync(&mut self, source: &str, sessions: &[crate::session::Session], ctx: &mut DriverCtx) {
@@ -248,7 +248,7 @@ fn with_display_tty_record(mut argv: Vec<String>, host: &Host, host_key: &str) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::cockpit::Selection;
+    use crate::app::runtime::Selection;
     use crate::display::registry::AttachRegistry;
     use crate::host::HostManager;
 

@@ -14,7 +14,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::app::cockpit::{run_lowered, Selection};
+use crate::app::runtime::{run_lowered, Selection};
 use crate::display::grid::Grid;
 use crate::display::registry::AttachRegistry;
 use crate::display::DisplayWorker;
@@ -117,7 +117,7 @@ pub(crate) fn lower_select_window(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::app::cockpit::Selection;
+    use crate::app::runtime::Selection;
 
     pub(crate) fn sess(source: &str, name: &str) -> crate::session::Session {
         crate::session::Session {

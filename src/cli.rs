@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 
-use crate::app::cockpit;
+use crate::app::runtime;
 use crate::attach::{self, OsExecer};
 use crate::control;
 use crate::env::{self, ls_lines, Env};
@@ -67,7 +67,7 @@ pub async fn run() -> i32 {
     let cli = Cli::parse();
     match cli.command {
         None => match interactive_env() {
-            Ok(env) => cockpit::run_cockpit(Arc::new(env)).await,
+            Ok(env) => runtime::run_app(Arc::new(env)).await,
             Err(code) => code,
         },
         Some(Command::Ls) => match interactive_env() {

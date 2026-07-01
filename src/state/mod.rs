@@ -1,7 +1,7 @@
 //! Runtime domain state: the single source of truth the new architecture's
 //! components read from. Carries the cockpit loop's inventory, selection,
 //! display-truth, focus, and the open modal popup.
-use crate::app::cockpit::Selection;
+use crate::app::runtime::Selection;
 use crate::session::WindowPanes;
 use crate::ui::tree::Group;
 use std::collections::{HashMap, HashSet};
@@ -324,7 +324,7 @@ impl State {
             HostEvent::Exited { host, reason } => {
                 // Mark the host unreachable in the tree (unless a transient drop of a
                 // once-connected host), then reap its dead client.
-                crate::app::cockpit::note_host_exited(switcher, self, connected, &host, reason);
+                crate::app::runtime::note_host_exited(switcher, self, connected, &host, reason);
                 vec![EventEffect::ReapHost { host }]
             }
             HostEvent::ClientDetached { host, client } => {
@@ -386,8 +386,8 @@ pub(crate) const ATTACH_DEBOUNCE_MS: u64 = 90;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::cockpit::Selection;
     use crate::app::focus::Focus;
+    use crate::app::runtime::Selection;
     use crate::model::{Action, Command, FocusTarget};
     use std::time::Duration;
 

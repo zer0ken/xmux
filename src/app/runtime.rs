@@ -1173,7 +1173,7 @@ pub(crate) fn note_host_exited(
 
 /// The per-event mouse-gesture/input state the `stdin_rx` arm carries across reads,
 /// bundled so the extracted handlers stay behavior-preserving (the gesture latches
-/// must persist across reads). Field-for-field the loop locals `run_cockpit` held.
+/// must persist across reads). Field-for-field the loop locals `run_app` held.
 #[derive(Default)]
 struct MouseState {
     /// True while the left button is dragging the tree/mux divider rule to resize.
@@ -1705,7 +1705,7 @@ fn handle_stdin_bytes(
 /// mux client per session alive and renders the selected one, with a control-mode
 /// client per remote host for inventory/events/window-switch. It serves a picker
 /// control socket so a headless driver can inject keys/text and dump the screen.
-pub async fn run_cockpit(env: Arc<Env>) -> i32 {
+pub async fn run_app(env: Arc<Env>) -> i32 {
     use crate::display::decode::KeyDecoder;
     use crate::display::input::TermInput;
     use crate::display::term::{parse_prefix, TermGuard};
