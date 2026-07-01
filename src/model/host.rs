@@ -264,21 +264,21 @@ mod tests {
         }
         fn show(
             &mut self,
-            _sel: &crate::cockpit::Selection,
+            _sel: &crate::app::cockpit::Selection,
             _ctx: &mut crate::driver::DriverCtx,
         ) -> bool {
             false
         }
         fn grid(
             &self,
-            _sel: &crate::cockpit::Selection,
+            _sel: &crate::app::cockpit::Selection,
             _ctx: &crate::driver::DriverCtx,
         ) -> Option<std::sync::Arc<std::sync::Mutex<crate::display::grid::Grid>>> {
             None
         }
         fn input(
             &mut self,
-            _sel: &crate::cockpit::Selection,
+            _sel: &crate::app::cockpit::Selection,
             _bytes: Vec<u8>,
             _ctx: &crate::driver::DriverCtx,
         ) {

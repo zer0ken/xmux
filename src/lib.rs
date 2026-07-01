@@ -5,9 +5,9 @@
 //! This is a binary-internal crate. The layers below `cli` are crate-internal;
 //! `cli::run` is the sole public entry called by the binary shim in `main.rs`.
 
+pub mod app;
 pub mod attach;
 pub mod cli;
-pub mod cockpit;
 pub mod config;
 pub mod control;
 pub mod discovery;
@@ -20,7 +20,6 @@ pub mod manage;
 pub mod model;
 pub mod mux;
 pub mod prefs;
-pub mod proxy;
 pub mod session;
 pub mod source;
 pub mod state;

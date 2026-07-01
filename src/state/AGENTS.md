@@ -59,9 +59,9 @@ the transient popup geometry (drag offset / drawn rect).
 
 ## Module Seams
 
-- `State` depends on `cockpit::Selection` for selected source/session/window,
+- `State` depends on `app::cockpit::Selection` for selected source/session/window,
   `ui::tree::Group` + `session::WindowPanes` for the inventory,
-  `proxy::app::Focus` for the focus state machine, `ui::switcher::Popup` for the
+  `app::focus::Focus` for the focus state machine, `ui::switcher::Popup` for the
   open modal, `model::{Action, Command}` for the `apply` vocabulary, and
   `host::HostEvent` + `model::EventEffect` + `&mut ui::switcher::Switcher` for
   `apply_event` (the switcher rebuilds the tree against `&mut State`).

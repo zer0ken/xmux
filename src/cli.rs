@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 
+use crate::app::cockpit;
 use crate::attach::{self, OsExecer};
-use crate::cockpit;
 use crate::control;
 use crate::env::{self, ls_lines, Env};
 use crate::session;

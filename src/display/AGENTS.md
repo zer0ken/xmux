@@ -6,7 +6,7 @@
 spawn and lifecycle, the off-runtime attach worker, the attachment registry, the
 vt/grid state, terminal input decoding, mouse parsing, and terminal setup. It is
 mux-agnostic (it names no tmux/psmux verb) and application-agnostic (it holds no
-cockpit UI state — the focus/modal state machine lives in `proxy/app.rs`).
+cockpit UI state — the focus/modal state machine lives in `app/focus.rs`).
 
 ## Mental Model
 

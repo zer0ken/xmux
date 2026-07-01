@@ -4,7 +4,7 @@
 
 `src/` contains the runtime application: CLI/config assembly, mux discovery,
 the cockpit event loop, host metadata management, display attachment spawning,
-the control socket, and the UI/proxy/model/mux/state submodules.
+the control socket, and the app/ui/model/mux/state submodules.
 
 ## Mental Model
 
@@ -26,9 +26,10 @@ the live split view.
   it never owns the registry), `registry.rs` (`AttachRegistry`), `grid.rs` (the
   vt-style `Grid`), and the terminal input mechanics (`input.rs`, `decode.rs`,
   `dispatch.rs`, `mouse.rs`, `term.rs`).
-- `proxy/` holds the application UI-state layer: `app.rs`, the focus/modal
-  routing state machine (`Focus`, `PaneFocus`, `ModalKind`). It is UI state, not
-  display mechanics.
+- `app/` holds the application orchestration layer: `cockpit.rs` (the persistent
+  supervisor and main event loop, which also owns `Selection`) and `focus.rs`, the
+  focus/modal routing state machine (`Focus`, `PaneFocus`, `ModalKind`). `focus.rs`
+  is UI state, not display mechanics.
 - `driver.rs` holds ONLY the mux-agnostic display seam: the `MuxDriver` trait,
   `DriverCtx`, `Target`, the shared `lower_select_window` helper, and the thin
   `driver_for(host)` wrapper (`host.mux.driver()`). The concrete drivers live in
@@ -45,13 +46,13 @@ the live split view.
   pty_tx, attach_seq, view size) so the driver owns the decision without owning
   the infrastructure. The dependency is one-way: `mux/<mux>/display.rs` imports
   the seam from `crate::driver`; driver.rs never imports a concrete backend driver.
-- `host.rs` owns control-mode reader/writer machinery, poll task management,
+- `host/` owns control-mode reader/writer machinery, poll task management,
   host inventory, and `HostEvent`s. It is a metadata path only. `HostManager::ensure`
   spawns the `-CC` control child with an argv composed across the two orthogonal axes
   — `Transport::control_argv(&Backend::control_argv())` (the mux supplies the control
   payload, the transport wraps it for local `-S`/`ssh -tt`); it never hardcodes a mux
   verb or hand-rolls ssh here.
-- `cockpit.rs` coordinates these modules and owns the main event loop. Inbound
+- `app/cockpit.rs` coordinates these modules and owns the main event loop. Inbound
   `HostEvent`s route through `State::apply_event` (the event-driven mutation site);
   `handle_host_event` is then a thin executor that runs the returned `EventEffect`s
   (`run_event_effect`) against the host clients, registry, and display worker.

@@ -1267,7 +1267,7 @@ fn handle_mouse_event(
                     // so closing the menu (next loop-top sync_modal(None)) lands on it.
                     state
                         .focus
-                        .set_pane_focus(crate::proxy::app::PaneFocus::Terminal);
+                        .set_pane_focus(crate::app::focus::PaneFocus::Terminal);
                 }
                 crate::ui::switcher::MenuOutcome::Handled => {
                     // A menu item only OPENS the next modal (input / kill confirm) — the
@@ -1651,7 +1651,7 @@ fn handle_stdin_bytes(
     if *focus_terminal {
         state
             .focus
-            .set_pane_focus(crate::proxy::app::PaneFocus::Terminal);
+            .set_pane_focus(crate::app::focus::PaneFocus::Terminal);
         // No term.clear(): both states draw the SAME split layout (only the
         // divider colour changes), so clearing would blank the screen and
         // force a full repaint for nothing.
@@ -1659,7 +1659,7 @@ fn handle_stdin_bytes(
     if *focus_tree {
         state
             .focus
-            .set_pane_focus(crate::proxy::app::PaneFocus::Tree);
+            .set_pane_focus(crate::app::focus::PaneFocus::Tree);
         if !tree_replay.is_empty() {
             let (ft, q, wd, th) = handle_tree_bytes(
                 tree_replay,
@@ -1684,7 +1684,7 @@ fn handle_stdin_bytes(
             if ft {
                 state
                     .focus
-                    .set_pane_focus(crate::proxy::app::PaneFocus::Terminal);
+                    .set_pane_focus(crate::app::focus::PaneFocus::Terminal);
             }
             *quit = *quit || q;
             if wd != 0 {
@@ -3603,7 +3603,7 @@ mod tests {
 
     #[test]
     fn prefix_s_toggles_state() {
-        use crate::proxy::app::Focus;
+        use crate::app::focus::Focus;
         let mut focus = Focus::default();
         assert!(focus.is_tree_focused());
         focus.toggle();
@@ -4091,8 +4091,8 @@ mod tests {
 
     #[test]
     fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
+        use crate::app::focus::Focus;
         use crate::model::{Action, FocusTarget};
-        use crate::proxy::app::Focus;
         use crate::session::Session;
         use crate::ui::switcher::{Scan, Switcher};
         use crate::ui::tree::Group;
@@ -4348,7 +4348,7 @@ mod tests {
         // it instead of resolving to FocusMux — so a confirm can neither quit the cockpit
         // nor focus the mux out from under itself. (The first swallowed key cancels the
         // confirm, tmux confirm-before style; the point is the key does not quit/focus.)
-        use crate::proxy::app::{Focus, PaneFocus};
+        use crate::app::focus::{Focus, PaneFocus};
         use crate::session::Session;
         use crate::ui::switcher::{Scan, Switcher};
         use crate::ui::tree::Group;
@@ -4466,7 +4466,7 @@ mod tests {
 
     #[test]
     fn menu_keyboard_input_is_consumed_without_changing_restore_pane_or_writing_pty() {
-        use crate::proxy::app::{Focus, PaneFocus};
+        use crate::app::focus::{Focus, PaneFocus};
         use crate::session::Session;
         use crate::ui::switcher::{Scan, Switcher};
         use crate::ui::tree::Group;

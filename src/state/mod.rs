@@ -1,7 +1,7 @@
 //! Runtime domain state: the single source of truth the new architecture's
 //! components read from. Carries the cockpit loop's inventory, selection,
 //! display-truth, focus, and the open modal popup.
-use crate::cockpit::Selection;
+use crate::app::cockpit::Selection;
 use crate::session::WindowPanes;
 use crate::ui::tree::Group;
 use std::collections::{HashMap, HashSet};
@@ -43,7 +43,7 @@ pub struct State {
     pub last_saved_session: String,
     /// The cockpit's focus state machine — which pane keys go to and whether a
     /// modal is open. The single source of truth for focus.
-    pub focus: crate::proxy::app::Focus,
+    pub focus: crate::app::focus::Focus,
     /// The single open modal, if any (help / inline input / kill confirm / context
     /// menu). One Option — not four independent fields — so the modals' mutual
     /// exclusion is structural: opening one drops whatever was open, and two can
@@ -57,7 +57,7 @@ impl State {
     /// open. These three are draggable and drive [`ModalKind::Popup`]; the context
     /// menu is separate (pointer-anchored).
     ///
-    /// [`ModalKind::Popup`]: crate::proxy::app::ModalKind::Popup
+    /// [`ModalKind::Popup`]: crate::app::focus::ModalKind::Popup
     pub fn is_modal_popup_open(&self) -> bool {
         use crate::ui::switcher::Popup;
         matches!(
@@ -81,9 +81,9 @@ impl State {
     /// from this each loop-top, so [`Focus`] can never mirror-and-desync from the
     /// open popup. A centered popup and the context menu are mutually exclusive.
     ///
-    /// [`Focus`]: crate::proxy::app::Focus
-    pub(crate) fn modal_kind(&self) -> Option<crate::proxy::app::ModalKind> {
-        use crate::proxy::app::ModalKind;
+    /// [`Focus`]: crate::app::focus::Focus
+    pub(crate) fn modal_kind(&self) -> Option<crate::app::focus::ModalKind> {
+        use crate::app::focus::ModalKind;
         use crate::ui::switcher::Popup;
         match self.popup {
             Some(Popup::Help | Popup::Input(_) | Popup::Kill(_)) => Some(ModalKind::Popup),
@@ -148,12 +148,12 @@ impl State {
             Action::Switch { address } => vec![Command::SelectAddress(address)],
             Action::Focus(FocusTarget::Terminal) => {
                 self.focus
-                    .set_pane_focus(crate::proxy::app::PaneFocus::Terminal);
+                    .set_pane_focus(crate::app::focus::PaneFocus::Terminal);
                 Vec::new()
             }
             Action::Focus(FocusTarget::Tree) => {
                 self.focus
-                    .set_pane_focus(crate::proxy::app::PaneFocus::Tree);
+                    .set_pane_focus(crate::app::focus::PaneFocus::Tree);
                 Vec::new()
             }
             Action::Rescan => vec![Command::Rescan],
@@ -324,7 +324,7 @@ impl State {
             HostEvent::Exited { host, reason } => {
                 // Mark the host unreachable in the tree (unless a transient drop of a
                 // once-connected host), then reap its dead client.
-                crate::cockpit::note_host_exited(switcher, self, connected, &host, reason);
+                crate::app::cockpit::note_host_exited(switcher, self, connected, &host, reason);
                 vec![EventEffect::ReapHost { host }]
             }
             HostEvent::ClientDetached { host, client } => {
@@ -386,9 +386,9 @@ pub(crate) const ATTACH_DEBOUNCE_MS: u64 = 90;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cockpit::Selection;
+    use crate::app::cockpit::Selection;
+    use crate::app::focus::Focus;
     use crate::model::{Action, Command, FocusTarget};
-    use crate::proxy::app::Focus;
     use std::time::Duration;
 
     #[test]

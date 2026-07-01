@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::cockpit::{
+use crate::app::cockpit::{
     host_selection_key, request_attach, run_lowered, terminal_view_size, Selection,
 };
 use crate::display::grid::Grid;
@@ -217,12 +217,12 @@ impl MuxDriver for PsmuxDriver {
 
     fn grid(&self, sel: &Selection, ctx: &DriverCtx) -> Option<Arc<Mutex<Grid>>> {
         ctx.registry
-            .grid(&crate::cockpit::display_key(ctx.hosts, sel))
+            .grid(&crate::app::cockpit::display_key(ctx.hosts, sel))
     }
 
     fn input(&mut self, sel: &Selection, bytes: Vec<u8>, ctx: &DriverCtx) {
         ctx.registry
-            .input(&crate::cockpit::display_key(ctx.hosts, sel), bytes);
+            .input(&crate::app::cockpit::display_key(ctx.hosts, sel), bytes);
     }
 
     fn sync(&mut self, source: &str, sessions: &[crate::session::Session], ctx: &mut DriverCtx) {
@@ -318,7 +318,7 @@ fn spawn_local_psmux_tty_capture(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cockpit::Selection;
+    use crate::app::cockpit::Selection;
     use crate::display::registry::AttachRegistry;
     use crate::host::HostManager;
 
