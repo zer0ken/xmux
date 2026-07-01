@@ -273,7 +273,7 @@ mod tests {
             &self,
             _sel: &crate::cockpit::Selection,
             _ctx: &crate::driver::DriverCtx,
-        ) -> Option<std::sync::Arc<std::sync::Mutex<crate::proxy::screen::Grid>>> {
+        ) -> Option<std::sync::Arc<std::sync::Mutex<crate::display::grid::Grid>>> {
             None
         }
         fn input(

@@ -9,7 +9,7 @@
 //! command behaves identically regardless of which pane holds focus. The prefix is a C0
 //! control byte, so it cannot collide with a UTF-8 continuation byte or appear mid-CSI;
 //! bracketed paste is respected so a prefix pasted as data is never intercepted.
-use crate::proxy::dispatch::Action;
+use crate::display::dispatch::Action;
 
 pub struct TermInput {
     prefix: u8,

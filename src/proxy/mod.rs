@@ -1,9 +1,1 @@
 pub mod app;
-pub mod decode;
-pub mod dispatch;
-pub mod input;
-pub mod mouse;
-pub mod registry;
-pub mod run;
-pub mod screen;
-pub mod term;

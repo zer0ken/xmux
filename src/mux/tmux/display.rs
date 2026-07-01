@@ -7,9 +7,9 @@ use std::sync::{Arc, Mutex};
 use crate::cockpit::{
     host_selection_key, request_attach, run_lowered, terminal_view_size, Selection,
 };
+use crate::display::grid::Grid;
 use crate::driver::{lower_select_window, DriverCtx, MuxDriver};
 use crate::model::Host;
-use crate::proxy::screen::Grid;
 
 /// Shared-server mux (tmux): ONE PTY per host, warmed on the first session and moved to
 /// another session with `switch-client`. `Tmux::driver` constructs it for a `Shared` host.
@@ -249,8 +249,8 @@ fn with_display_tty_record(mut argv: Vec<String>, host: &Host, host_key: &str) -
 mod tests {
     use super::*;
     use crate::cockpit::Selection;
+    use crate::display::registry::AttachRegistry;
     use crate::host::HostManager;
-    use crate::proxy::registry::AttachRegistry;
 
     /// A REMOTE shared attach gets the mux's record prefix folded into its remote
     /// command (the last argv element), so the attach shell records its OWN tty for a
@@ -315,7 +315,9 @@ mod tests {
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
         let worker = crate::display::DisplayWorker::with_spawner(
             ptx,
-            Box::new(|_argv, _cols, _rows, id, _events| Ok(crate::proxy::run::fake_attachment(id))),
+            Box::new(|_argv, _cols, _rows, id, _events| {
+                Ok(crate::display::attachment::fake_attachment(id))
+            }),
         );
         let mut registry = AttachRegistry::new();
         let mut attach_seq = 0u64;
@@ -371,7 +373,9 @@ mod tests {
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
         let worker = crate::display::DisplayWorker::with_spawner(
             ptx,
-            Box::new(|_argv, _cols, _rows, id, _events| Ok(crate::proxy::run::fake_attachment(id))),
+            Box::new(|_argv, _cols, _rows, id, _events| {
+                Ok(crate::display::attachment::fake_attachment(id))
+            }),
         );
         let mut registry = AttachRegistry::new();
         let mut attach_seq = 0u64;
@@ -427,10 +431,12 @@ mod tests {
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
         let worker = crate::display::DisplayWorker::with_spawner(
             ptx,
-            Box::new(|_argv, _cols, _rows, id, _events| Ok(crate::proxy::run::fake_attachment(id))),
+            Box::new(|_argv, _cols, _rows, id, _events| {
+                Ok(crate::display::attachment::fake_attachment(id))
+            }),
         );
         let mut registry = AttachRegistry::new();
-        registry.insert("local", crate::proxy::run::fake_attachment(5));
+        registry.insert("local", crate::display::attachment::fake_attachment(5));
         let mut attach_seq = 0u64;
         let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let env = crate::driver::tests::fake_env(&["local"]);

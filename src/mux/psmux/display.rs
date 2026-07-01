@@ -8,9 +8,9 @@ use std::sync::{Arc, Mutex};
 use crate::cockpit::{
     host_selection_key, request_attach, run_lowered, terminal_view_size, Selection,
 };
+use crate::display::grid::Grid;
 use crate::driver::{lower_select_window, DriverCtx, MuxDriver};
 use crate::model::Host;
-use crate::proxy::screen::Grid;
 
 /// Per-session mux (psmux): one server per session, displayed through ONE per-host PTY
 /// that is REATTACHED whenever the selected session changes (`new-session -A -s <name>`
@@ -281,7 +281,7 @@ fn spawn_local_psmux_tty_capture(
     bin: String,
     session: String,
     id: u64,
-    pty_tx: tokio::sync::mpsc::UnboundedSender<crate::proxy::run::PtyEvent>,
+    pty_tx: tokio::sync::mpsc::UnboundedSender<crate::display::attachment::PtyEvent>,
 ) {
     use crate::source::Runner;
     // The addr string used for tty_probe events is the list-clients command target.
@@ -306,7 +306,7 @@ fn spawn_local_psmux_tty_capture(
                 "tty_probe"
             );
             if let Some(tty) = result {
-                let _ = pty_tx.send(crate::proxy::run::PtyEvent::DisplayTty { id, tty });
+                let _ = pty_tx.send(crate::display::attachment::PtyEvent::DisplayTty { id, tty });
                 return;
             }
         }
@@ -319,8 +319,8 @@ fn spawn_local_psmux_tty_capture(
 mod tests {
     use super::*;
     use crate::cockpit::Selection;
+    use crate::display::registry::AttachRegistry;
     use crate::host::HostManager;
-    use crate::proxy::registry::AttachRegistry;
 
     /// The psmux driver owns the per-session reattach decision: `show()` REPLACES the
     /// single host-keyed display attachment (drop the stale one, request a fresh attach
@@ -342,10 +342,12 @@ mod tests {
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
         let worker = crate::display::DisplayWorker::with_spawner(
             ptx,
-            Box::new(|_argv, _cols, _rows, id, _events| Ok(crate::proxy::run::fake_attachment(id))),
+            Box::new(|_argv, _cols, _rows, id, _events| {
+                Ok(crate::display::attachment::fake_attachment(id))
+            }),
         );
         let mut registry = AttachRegistry::new();
-        registry.insert("local", crate::proxy::run::fake_attachment(99));
+        registry.insert("local", crate::display::attachment::fake_attachment(99));
         let mut attach_seq = 0u64;
         let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let env = crate::driver::tests::fake_env(&["local"]);
@@ -410,10 +412,12 @@ mod tests {
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
         let worker = crate::display::DisplayWorker::with_spawner(
             ptx,
-            Box::new(|_argv, _cols, _rows, id, _events| Ok(crate::proxy::run::fake_attachment(id))),
+            Box::new(|_argv, _cols, _rows, id, _events| {
+                Ok(crate::display::attachment::fake_attachment(id))
+            }),
         );
         let mut registry = AttachRegistry::new();
-        registry.insert("local", crate::proxy::run::fake_attachment(7));
+        registry.insert("local", crate::display::attachment::fake_attachment(7));
         let mut attach_seq = 0u64;
         let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let env = crate::driver::tests::fake_env(&["local"]);
@@ -489,10 +493,12 @@ mod tests {
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
         let worker = crate::display::DisplayWorker::with_spawner(
             ptx,
-            Box::new(|_argv, _cols, _rows, id, _events| Ok(crate::proxy::run::fake_attachment(id))),
+            Box::new(|_argv, _cols, _rows, id, _events| {
+                Ok(crate::display::attachment::fake_attachment(id))
+            }),
         );
         let mut registry = AttachRegistry::new();
-        registry.insert("local", crate::proxy::run::fake_attachment(42)); // the live client
+        registry.insert("local", crate::display::attachment::fake_attachment(42)); // the live client
         let mut attach_seq = 0u64;
         let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let env = crate::driver::tests::fake_env(&["local"]);
@@ -553,10 +559,12 @@ mod tests {
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
         let worker = crate::display::DisplayWorker::with_spawner(
             ptx,
-            Box::new(|_argv, _cols, _rows, id, _events| Ok(crate::proxy::run::fake_attachment(id))),
+            Box::new(|_argv, _cols, _rows, id, _events| {
+                Ok(crate::display::attachment::fake_attachment(id))
+            }),
         );
         let mut registry = AttachRegistry::new();
-        registry.insert("local", crate::proxy::run::fake_attachment(42));
+        registry.insert("local", crate::display::attachment::fake_attachment(42));
         let mut attach_seq = 0u64;
         let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let env = crate::driver::tests::fake_env(&["local"]);

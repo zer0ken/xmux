@@ -22,12 +22,12 @@ use std::sync::Arc;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::attach;
+use crate::display::attachment::PtyEvent;
+use crate::display::dispatch::Action;
+use crate::display::registry::AttachRegistry;
 use crate::display::{DisplayEnsure, DisplayEvent, DisplayWorker};
 use crate::env::Env;
 use crate::host::{HostEvent, HostManager};
-use crate::proxy::dispatch::Action;
-use crate::proxy::registry::AttachRegistry;
-use crate::proxy::run::PtyEvent;
 /// The settled-attach debounce (the freeze fix). Owned by `state` (the `apply(Tick)`
 /// re-arm uses it); the host-event re-arm paths reference the same constant so the
 /// value can never drift between the two.
@@ -825,7 +825,7 @@ fn resolve_tree_key(
 #[allow(clippy::too_many_arguments)]
 fn handle_tree_bytes(
     bytes: &[u8],
-    tree_decoder: &mut crate::proxy::decode::KeyDecoder,
+    tree_decoder: &mut crate::display::decode::KeyDecoder,
     tree_armed: &mut bool,
     prefix: u8,
     switcher: &mut crate::ui::switcher::Switcher,
@@ -1217,7 +1217,7 @@ struct StdinOutcome {
 /// needed for this event.
 #[allow(clippy::too_many_arguments)]
 fn handle_mouse_event(
-    ev: &crate::proxy::mouse::MouseEvent,
+    ev: &crate::display::mouse::MouseEvent,
     st: &mut MouseState,
     switcher: &mut crate::ui::switcher::Switcher,
     state: &mut crate::state::State,
@@ -1404,7 +1404,7 @@ fn handle_mouse_event(
             if let Some((gc, gr)) = in_mux {
                 registry.input(
                     &display_key(hosts, selection),
-                    crate::proxy::mouse::encode_sgr_mouse(ev, gc, gr),
+                    crate::display::mouse::encode_sgr_mouse(ev, gc, gr),
                 );
             }
         }
@@ -1430,8 +1430,8 @@ fn handle_stdin_bytes(
     hosts: &mut crate::model::Hosts,
     detecting: &mut HashSet<String>,
     selection: &Selection,
-    term_input: &mut crate::proxy::input::TermInput,
-    tree_decoder: &mut crate::proxy::decode::KeyDecoder,
+    term_input: &mut crate::display::input::TermInput,
+    tree_decoder: &mut crate::display::decode::KeyDecoder,
     ops: &Arc<dyn crate::ui::switcher::Ops>,
     op_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
     tree_width_natural: &mut u16,
@@ -1466,7 +1466,7 @@ fn handle_stdin_bytes(
     {
         let mut i = 0;
         while i < bytes.len() {
-            if let Some((ev, len)) = crate::proxy::mouse::parse_sgr_mouse(&bytes[i..]) {
+            if let Some((ev, len)) = crate::display::mouse::parse_sgr_mouse(&bytes[i..]) {
                 if handle_mouse_event(
                     &ev,
                     mouse,
@@ -1710,9 +1710,9 @@ fn handle_stdin_bytes(
 /// client per remote host for inventory/events/window-switch. It serves a picker
 /// control socket so a headless driver can inject keys/text and dump the screen.
 pub async fn run_cockpit(env: Arc<Env>) -> i32 {
-    use crate::proxy::decode::KeyDecoder;
-    use crate::proxy::input::TermInput;
-    use crate::proxy::term::{parse_prefix, TermGuard};
+    use crate::display::decode::KeyDecoder;
+    use crate::display::input::TermInput;
+    use crate::display::term::{parse_prefix, TermGuard};
     use crate::ui::run::{dump_overlay, serve_control, Cmd};
     use crate::ui::switcher::Switcher;
     use std::io::Read;
@@ -2011,7 +2011,7 @@ pub async fn run_cockpit(env: Arc<Env>) -> i32 {
         }
         // A portable-pty child spawn clears ENABLE_MOUSE_INPUT on the parent CONIN,
         // killing mouse capture; re-assert it whenever it drifts off.
-        crate::proxy::term::ensure_mouse_capture();
+        crate::display::term::ensure_mouse_capture();
         // An `r` re-scan also re-attaches the CURRENT display: tear the (possibly
         // detached / dead) attachment down and clear its switch latch so the attach
         // below re-creates a fresh client for the viewed session. Keeps the per-host
@@ -2669,7 +2669,7 @@ mod tests {
     /// Resolve one read at the default prefix (C-g = 0x07), fresh decoder/armed,
     /// folding the per-key resolver over the decoded keys.
     fn rt(bytes: &[u8], is_inputting: bool) -> Vec<Action> {
-        let mut dec = crate::proxy::decode::KeyDecoder::new();
+        let mut dec = crate::display::decode::KeyDecoder::new();
         let mut armed = false;
         dec.feed(bytes)
             .into_iter()
@@ -2873,7 +2873,7 @@ mod tests {
 
     #[test]
     fn resolve_tree_arming_persists_across_reads() {
-        let mut dec = crate::proxy::decode::KeyDecoder::new();
+        let mut dec = crate::display::decode::KeyDecoder::new();
         let mut armed = false;
         let r1: Vec<Action> = dec
             .feed(b"\x07")
@@ -3721,7 +3721,9 @@ mod tests {
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
         let mut worker = crate::display::DisplayWorker::with_spawner(
             ptx,
-            Box::new(|_argv, _cols, _rows, id, _events| Ok(crate::proxy::run::fake_attachment(id))),
+            Box::new(|_argv, _cols, _rows, id, _events| {
+                Ok(crate::display::attachment::fake_attachment(id))
+            }),
         );
         let mut registry = AttachRegistry::new();
         let mut attach_seq = 0u64;
@@ -3817,10 +3819,12 @@ mod tests {
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
         let worker = crate::display::DisplayWorker::with_spawner(
             ptx,
-            Box::new(|_argv, _cols, _rows, id, _events| Ok(crate::proxy::run::fake_attachment(id))),
+            Box::new(|_argv, _cols, _rows, id, _events| {
+                Ok(crate::display::attachment::fake_attachment(id))
+            }),
         );
         let mut registry = AttachRegistry::new();
-        registry.insert("local", crate::proxy::run::fake_attachment(99));
+        registry.insert("local", crate::display::attachment::fake_attachment(99));
         let mut attach_seq = 0u64;
         let mgr = empty_manager();
         let env = fake_env_with_sources(&["local"]);
@@ -3901,7 +3905,9 @@ mod tests {
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
         let worker = crate::display::DisplayWorker::with_spawner(
             ptx,
-            Box::new(|_argv, _cols, _rows, id, _events| Ok(crate::proxy::run::fake_attachment(id))),
+            Box::new(|_argv, _cols, _rows, id, _events| {
+                Ok(crate::display::attachment::fake_attachment(id))
+            }),
         );
         let mut registry = AttachRegistry::new();
         let mut attach_seq = 7u64;
@@ -4300,8 +4306,8 @@ mod tests {
         let mut mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let mut hosts = crate::model::Hosts::default();
         let mut mouse = MouseState::default();
-        let mut term_input = crate::proxy::input::TermInput::new(0x07);
-        let mut tree_decoder = crate::proxy::decode::KeyDecoder::new();
+        let mut term_input = crate::display::input::TermInput::new(0x07);
+        let mut tree_decoder = crate::display::decode::KeyDecoder::new();
         let ops = crate::ui::switcher::tests_support::noop_ops();
         let (op_tx, _r) = tokio::sync::mpsc::unbounded_channel();
         let sel = Selection::default();
@@ -4366,8 +4372,8 @@ mod tests {
         let mut mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let mut hosts = crate::model::Hosts::default();
         let mut mouse = MouseState::default();
-        let mut term_input = crate::proxy::input::TermInput::new(0x07);
-        let mut tree_decoder = crate::proxy::decode::KeyDecoder::new();
+        let mut term_input = crate::display::input::TermInput::new(0x07);
+        let mut tree_decoder = crate::display::decode::KeyDecoder::new();
         let ops = crate::ui::switcher::tests_support::noop_ops();
         let (op_tx, _r) = tokio::sync::mpsc::unbounded_channel();
         let env = fake_env_with_sources(&["jup"]);
@@ -4501,7 +4507,7 @@ mod tests {
             );
 
             let mut registry = AttachRegistry::new();
-            let (att, input_log) = crate::proxy::run::fake_attachment_with_input_log(1);
+            let (att, input_log) = crate::display::attachment::fake_attachment_with_input_log(1);
             registry.insert("local/api", att);
             let mut mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
             let mut hosts = crate::model::Hosts::default();
@@ -4515,8 +4521,8 @@ mod tests {
                 window: None,
             };
             let mut mouse = MouseState::default();
-            let mut term_input = crate::proxy::input::TermInput::new(0x07);
-            let mut tree_decoder = crate::proxy::decode::KeyDecoder::new();
+            let mut term_input = crate::display::input::TermInput::new(0x07);
+            let mut tree_decoder = crate::display::decode::KeyDecoder::new();
             let ops = crate::ui::switcher::tests_support::noop_ops();
             let (op_tx, _r) = tokio::sync::mpsc::unbounded_channel();
             let env = fake_env_with_sources(&["local"]);
@@ -4603,7 +4609,7 @@ mod tests {
         // 0-based col0 = ev.col - 1 must equal tree_width to grab the divider rule.
         let divider_col = tree_width + 1; // 1-based SGR column of the divider
                                           // cb=0 → left button, press, no wheel/motion → is_left_press is true.
-        let ev = crate::proxy::mouse::MouseEvent {
+        let ev = crate::display::mouse::MouseEvent {
             cb: 0,
             col: divider_col,
             row: 3,

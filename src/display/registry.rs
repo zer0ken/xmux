@@ -9,8 +9,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::proxy::run::Attachment;
-use crate::proxy::screen::Grid;
+use crate::display::attachment::Attachment;
+use crate::display::grid::Grid;
 
 pub struct AttachRegistry {
     /// Keyed by `Session::address()` (`source/session`).
@@ -167,8 +167,10 @@ impl AttachRegistry {
     /// Test-only: insert a fake entry without a real PTY, to exercise membership /
     /// removal / reap in isolation. `spawn_attachment` is live-only (human gate).
     pub(crate) fn insert_fake(&mut self, addr: &str, id: u64) {
-        self.map
-            .insert(addr.to_string(), crate::proxy::run::fake_attachment(id));
+        self.map.insert(
+            addr.to_string(),
+            crate::display::attachment::fake_attachment(id),
+        );
     }
 }
 
@@ -278,7 +280,7 @@ mod tests {
         let id0 = reg.alloc_id();
         let id1 = reg.alloc_id();
         assert_eq!((id0, id1), (1, 2), "ids are issued sequentially from 1");
-        reg.insert("local/a", crate::proxy::run::fake_attachment(id0));
+        reg.insert("local/a", crate::display::attachment::fake_attachment(id0));
         assert!(reg.contains("local/a"));
         assert!(
             reg.grid("local/a").is_some(),

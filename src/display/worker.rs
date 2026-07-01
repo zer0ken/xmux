@@ -1,4 +1,4 @@
-use crate::proxy::run::{spawn_attachment, Attachment, PtyEvent};
+use crate::display::attachment::{spawn_attachment, Attachment, PtyEvent};
 
 /// A request to attach a session's display PTY off the runtime thread. `id` is issued
 /// by the cockpit via `AttachRegistry::alloc_id` so the resulting attachment's id lines
@@ -114,7 +114,7 @@ mod tests {
             Box::new(move |_argv, _cols, _rows, id, _events| {
                 calls_for_spawner.fetch_add(1, Ordering::SeqCst);
                 std::thread::sleep(Duration::from_millis(100));
-                Ok(crate::proxy::run::fake_attachment(id))
+                Ok(crate::display::attachment::fake_attachment(id))
             }),
         );
 

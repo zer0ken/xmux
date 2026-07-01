@@ -2,59 +2,40 @@
 
 ## Purpose
 
-`proxy` owns the terminal-facing display path and low-level input plumbing:
-PTY attachments, vt/grid state, input decoding, mouse parsing, focus routing,
-attachment registry, and terminal setup helpers.
+`proxy` owns the application UI-state layer: the cockpit's focus and modal
+routing state machine. The PTY/grid/input display mechanics live in `src/display`;
+this directory holds only `app.rs`.
 
 ## Mental Model
 
-The proxy display path runs real attached mux clients. Output pumps feed
-`Grid`s; the cockpit renders the selected grid. Input and resize commands are
-queued to attachment control threads so the async runtime does not block on PTY
-operations.
+`app.rs` tracks which pane holds focus (tree vs terminal) and which modal is open,
+and exposes the transitions the cockpit and `State` fold through. It is UI state,
+not display mechanics: it decides where input is routed, not how a PTY is pumped or
+a grid is rendered.
 
 ## Module Seams
 
-- `run.rs` spawns and manages one PTY attachment.
-- `registry.rs` maps display keys to live attachments and exposes grid/input/
-  resize/reap operations.
-- `screen.rs` owns the vt-style grid. `Grid::fingerprint() -> u64` computes a
-  content hash over all cell bytes; `cockpit.rs` compares successive fingerprints
-  to determine whether a display transition actually changed the visible screen
-  content (`display_grid_changed` is emitted only on a hash change).
-- `input.rs`, `decode.rs`, `dispatch.rs`, and `mouse.rs` turn terminal input into
-  routing decisions or UI events.
-- `app.rs` tracks focus and modal routing state.
+- `app.rs` holds the focus/modal state (`Focus`, `PaneFocus`, `ModalKind`) and the
+  focus-transition helpers. `state::State` embeds a `Focus`; the cockpit reads and
+  mutates it through these types.
 
 ## Invariants
 
-- Registry methods must not perform blocking PTY work on the event loop.
-- Each attachment coalesces output wakeups so busy sessions cannot enqueue
-  unbounded redraw events.
-- The metadata control path does not supply display pixels.
-- Teardown must signal child/control resources without blocking the runtime.
-- `Grid::render_into` marks each wide (CJK) glyph's trailing cell
-  `CellDiffOption::AlwaysUpdate` so ratatui's incremental diff repaints it on a
-  wide→narrow transition; ratatui otherwise skips that trailing cell and the
-  terminal keeps the old glyph's right half as background residue. This is a
-  paint-layer fix — never a full-screen clear (which would flash on every switch).
+- Focus and modal transitions stay in `app.rs`; the cockpit and `State` call into
+  them rather than open-coding pane/modal bookkeeping.
+- This layer carries no PTY, grid, or terminal-protocol logic (that is `display`).
 
 ## Common Pitfalls
 
-- Do not bypass `AttachRegistry` for input, resize, grid lookup, or reap.
-- Do not write directly to a PTY from cockpit or UI code.
-- Do not treat raw stdout passthrough as compatible with ratatui owning stdout.
+- Do not reintroduce display mechanics here; PTY/grid/input belongs in `display`.
+- Do not scatter pane-focus or modal-kind decisions across the cockpit; route them
+  through `app.rs`.
 
 ## Before Editing
 
-- Identify whether the change concerns attachment lifecycle, grid rendering,
-  input routing, or terminal protocol parsing.
-- Keep blocking OS calls on dedicated threads or behind existing channels.
-- Preserve id/address correlation for `PtyEvent`s.
+- Identify whether the change is a focus/modal state transition (here) or a display
+  mechanic (`src/display`).
 
 ## Verification
 
-- Run proxy module tests for registry, input decoding, screen, and attachment
-  helper behavior.
-- Run cockpit tests when changing focus routing, modal routing, or event
-  coalescing.
+- Run cockpit and state tests when changing focus routing or modal routing.

@@ -1823,7 +1823,7 @@ impl Switcher {
     pub fn render(
         &mut self,
         frame: &mut Frame,
-        grid: Option<&crate::proxy::screen::Grid>,
+        grid: Option<&crate::display::grid::Grid>,
         terminal_focused: bool,
         tree_width: u16,
         state: &crate::state::State,
@@ -1954,7 +1954,7 @@ impl Switcher {
         &self,
         frame: &mut Frame,
         area: Rect,
-        grid: Option<&crate::proxy::screen::Grid>,
+        grid: Option<&crate::display::grid::Grid>,
     ) {
         // No border box: the live grid fills the area; render_divider draws the
         // separating rule.
@@ -4300,7 +4300,7 @@ mod tests {
 
     #[tokio::test]
     async fn render_terminal_view_draws_live_grid() {
-        use crate::proxy::screen::Grid;
+        use crate::display::grid::Grid;
         let mut h = Harness::new(sample());
         h.key(KeyCode::Down).await; // a normal non-xmux pane
         let mut g = Grid::new(28, 50);
@@ -4665,8 +4665,8 @@ mod tests {
         // A grid filled with a blue background; each popup type drawn over it must leave
         // zero interior cells showing the grid's background (the shared render_popup is
         // opaque — this locks it in across help / input / confirm).
-        fn blue_grid() -> crate::proxy::screen::Grid {
-            let mut g = crate::proxy::screen::Grid::new(30, 100);
+        fn blue_grid() -> crate::display::grid::Grid {
+            let mut g = crate::display::grid::Grid::new(30, 100);
             let mut fill = Vec::from(&b"\x1b[44m"[..]);
             for r in 0..30u16 {
                 fill.extend(format!("\x1b[{};1H", r + 1).bytes());
@@ -5206,7 +5206,7 @@ mod tests {
 
     #[test]
     fn render_tree_width_zero_gives_terminal_full_width() {
-        use crate::proxy::screen::Grid;
+        use crate::display::grid::Grid;
         // A two-source skeleton is enough. With tree_width == 0 the tree column and
         // its divider are gone, so the terminal view owns the left edge (x=0): the
         // live grid's content begins at column 0.

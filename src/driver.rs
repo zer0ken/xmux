@@ -15,11 +15,11 @@
 use std::sync::{Arc, Mutex};
 
 use crate::cockpit::{run_lowered, Selection};
+use crate::display::grid::Grid;
+use crate::display::registry::AttachRegistry;
 use crate::display::DisplayWorker;
 use crate::host::HostManager;
 use crate::model::{Host, Hosts};
-use crate::proxy::registry::AttachRegistry;
-use crate::proxy::screen::Grid;
 
 /// A supervisor INTENT: show this session (and optionally land on a window). The
 /// generic shape the supervisor knows; the driver maps it onto mux mechanics.
@@ -60,7 +60,7 @@ pub struct DriverCtx<'a> {
     /// The off-loop event sink (a clone of the loop's `PtyEvent` channel). A driver may
     /// spawn a read-only probe that feeds a `PtyEvent` back to the loop — e.g. the psmux
     /// driver captures its display client's tty with an off-loop `list-clients` probe.
-    pub pty_tx: &'a tokio::sync::mpsc::UnboundedSender<crate::proxy::run::PtyEvent>,
+    pub pty_tx: &'a tokio::sync::mpsc::UnboundedSender<crate::display::attachment::PtyEvent>,
     pub attach_seq: &'a mut u64,
     pub cols: u16,
     pub body_rows: u16,
@@ -233,10 +233,12 @@ pub(crate) mod tests {
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
         let worker = crate::display::DisplayWorker::with_spawner(
             ptx,
-            Box::new(|_argv, _cols, _rows, id, _events| Ok(crate::proxy::run::fake_attachment(id))),
+            Box::new(|_argv, _cols, _rows, id, _events| {
+                Ok(crate::display::attachment::fake_attachment(id))
+            }),
         );
         let mut registry = AttachRegistry::new();
-        registry.insert("local", crate::proxy::run::fake_attachment(99));
+        registry.insert("local", crate::display::attachment::fake_attachment(99));
         let mut attach_seq = 0u64;
         let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let env = fake_env(&["local"]);

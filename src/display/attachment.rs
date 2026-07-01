@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 
-use crate::proxy::screen::Grid;
+use crate::display::grid::Grid;
 
 /// An event a kept attachment's pump emits to the cockpit's `select!` loop.
 pub enum PtyEvent {

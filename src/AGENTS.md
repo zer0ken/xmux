@@ -20,8 +20,15 @@ the live split view.
 - `control.rs` owns ctl wire parsing, framing, endpoint naming, and the ctl
   client. Semantic ctl verbs parse to a domain `model::Action`; `raw:` verbs are
   low-level injection.
-- `display.rs` owns the off-runtime worker that spawns PTY attachments and
-  returns `DisplayEvent`s. It never owns the registry.
+- `display/` is the shared PTY/grid/input display-mechanics layer (mux-agnostic,
+  app-agnostic): `attachment.rs` (PTY attach spawn/lifecycle), `worker.rs` (the
+  off-runtime `DisplayWorker` that spawns attachments and returns `DisplayEvent`s;
+  it never owns the registry), `registry.rs` (`AttachRegistry`), `grid.rs` (the
+  vt-style `Grid`), and the terminal input mechanics (`input.rs`, `decode.rs`,
+  `dispatch.rs`, `mouse.rs`, `term.rs`).
+- `proxy/` holds the application UI-state layer: `app.rs`, the focus/modal
+  routing state machine (`Focus`, `PaneFocus`, `ModalKind`). It is UI state, not
+  display mechanics.
 - `driver.rs` holds ONLY the mux-agnostic display seam: the `MuxDriver` trait,
   `DriverCtx`, `Target`, the shared `lower_select_window` helper, and the thin
   `driver_for(host)` wrapper (`host.mux.driver()`). The concrete drivers live in
@@ -123,8 +130,8 @@ the live split view.
 
 ## Verification
 
-- Run module tests for `control`, `host`, `display`, `cockpit`, and any touched
-  submodule.
+- Run module tests for `control`, `host`, `display` (worker/attachment/registry/
+  grid/input), `cockpit`, and any touched submodule.
 - Exercise ctl parser tests when adding or renaming control verbs.
 - Check redraw and blocking behavior when moving work into the cockpit loop.
 - Set `XMUX_LOG=xmux::mux=debug` to emit `display_show`, `tty_probe`, and

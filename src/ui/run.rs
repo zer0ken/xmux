@@ -49,7 +49,7 @@ pub fn dump_switcher(
 /// including the live terminal Grid. Runs without a real terminal.
 pub fn dump_overlay(
     switcher: &mut Switcher,
-    grid: Option<&crate::proxy::screen::Grid>,
+    grid: Option<&crate::display::grid::Grid>,
     width: u16,
     height: u16,
     state: &crate::state::State,
@@ -254,7 +254,7 @@ mod tests {
         // (the terminal-view pane), so a headless `dump` reflects the live screen.
         let mut state = crate::state::State::from_scan(sample());
         let mut sw = Switcher::new(&mut state);
-        let mut grid = crate::proxy::screen::Grid::new(30, 100);
+        let mut grid = crate::display::grid::Grid::new(30, 100);
         grid.feed(b"LIVEGRID");
         let out = dump_overlay(&mut sw, Some(&grid), 100, 30, &state);
         assert!(out.contains("editor"), "tree still rendered:\n{out}");
