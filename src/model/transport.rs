@@ -110,6 +110,37 @@ impl Transport {
         }
     }
 
+    /// Lowers a mux attach argv into the interactive terminal-handover (cmd, args). This is
+    /// the SOLE owner of the `exec`/window-fold/ssh-tty machinery. Local hands the terminal
+    /// to the bare attach argv (with `-S <socket>` injection) and IGNORES `pre_select` — a
+    /// local source pre-selects the window with a separate instant command. Ssh requests a
+    /// pty (`-t`, no BatchMode) and runs `[<pre_select> ; ] exec <attach>`: the `exec`
+    /// replaces the ssh login shell so the connection closes cleanly on detach, and folding
+    /// `pre_select` into the SAME connection means no second connection to hang on a stalled
+    /// remote or lose the selection to interactive auth. Untrusted argv elements are
+    /// per-arg-quoted by [`remote_command`](crate::source::remote_command).
+    pub fn interactive_attach_argv(
+        &self,
+        mux_attach_argv: &[String],
+        pre_select: Option<&[String]>,
+    ) -> (String, Vec<String>) {
+        match self {
+            Transport::Local { .. } => self.exec_argv(true, mux_attach_argv),
+            Transport::Ssh { .. } => {
+                let attach = crate::source::remote_command(mux_attach_argv);
+                let remote_cmd = match pre_select {
+                    Some(sel) => {
+                        format!("{} ; exec {}", crate::source::remote_command(sel), attach)
+                    }
+                    None => format!("exec {attach}"),
+                };
+                let mut args = self.ssh_opts(true);
+                args.push(remote_cmd);
+                ("ssh".into(), args)
+            }
+        }
+    }
+
     /// The argv for a `-CC` control-mode child given the mux's control argv. Local
     /// splices `-S <socket>` after the binary; remote forces a pty with `-tt` (a
     /// pipe-only ssh dies before emitting control-mode output) and runs over
@@ -301,6 +332,59 @@ mod tests {
         assert!(
             got.iter().any(|s: &String| s.contains("BatchMode=yes")),
             "{got:?}"
+        );
+    }
+
+    #[test]
+    fn interactive_attach_local_ignores_pre_select_and_injects_socket() {
+        // A LOCAL interactive attach hands the terminal to a bare mux attach argv (the
+        // window is pre-selected by a separate instant local command, so the pre-select
+        // is ignored here). A non-default socket is injected via -S, exactly as exec_argv.
+        let mux_attach = argv(&["psmux", "new-session", "-A", "-s", "dev"]);
+        let (n, a) = local(None).interactive_attach_argv(&mux_attach, None);
+        assert_eq!(n, "psmux");
+        assert_eq!(a, argv(&["new-session", "-A", "-s", "dev"]));
+        // A pre-select is ignored for local (it happens via a separate command).
+        let (n, a) = local(None).interactive_attach_argv(&mux_attach, Some(&argv(&["psmux", "x"])));
+        assert_eq!(n, "psmux");
+        assert_eq!(a, argv(&["new-session", "-A", "-s", "dev"]));
+        // Non-default socket is injected before the attach args.
+        let (n, a) = local(Some("/tmp/tmux-1000/work"))
+            .interactive_attach_argv(&argv(&["tmux", "attach", "-t", "api"]), None);
+        assert_eq!(n, "tmux");
+        assert_eq!(
+            a,
+            argv(&["-S", "/tmp/tmux-1000/work", "attach", "-t", "api"])
+        );
+    }
+
+    #[test]
+    fn interactive_attach_remote_without_pre_select_execs_over_ssh_tty() {
+        // A REMOTE interactive attach requests a pty (`ssh -t`, no BatchMode) and `exec`s
+        // the attach so the ssh login shell is replaced and the connection closes cleanly
+        // on detach.
+        let (n, a) = ssh("prod", "linux", "")
+            .interactive_attach_argv(&argv(&["tmux", "attach", "-t", "api"]), None);
+        assert_eq!(n, "ssh");
+        assert!(a.iter().any(|s| s == "-t"), "{a:?}");
+        assert!(!a.join(" ").contains("BatchMode"), "{a:?}");
+        assert_eq!(a.last().unwrap(), "exec tmux attach -t api");
+    }
+
+    #[test]
+    fn interactive_attach_remote_folds_pre_select_into_one_connection() {
+        // The window pre-selection and the attach run over a SINGLE `ssh -t`, so there is
+        // no second connection to hang on a stalled remote or to lose the selection to
+        // interactive auth. The remote command is `<select-window> ; exec <attach>`.
+        let (n, a) = ssh("prod", "linux", "").interactive_attach_argv(
+            &argv(&["tmux", "attach", "-t", "api"]),
+            Some(&argv(&["tmux", "select-window", "-t", "api:2"])),
+        );
+        assert_eq!(n, "ssh");
+        assert!(a.iter().any(|s| s == "-t"), "{a:?}");
+        assert_eq!(
+            a.last().unwrap(),
+            "tmux select-window -t 'api:2' ; exec tmux attach -t api"
         );
     }
 

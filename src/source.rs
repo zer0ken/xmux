@@ -165,34 +165,24 @@ impl Source {
     /// The argv that hands the terminal over to attach this source's named
     /// session (over `ssh -t` for a remote).
     ///
-    /// `window` is the window index to land on. For a LOCAL source the caller
-    /// pre-selects it with a separate, instant local command, so it is ignored
-    /// here. For a REMOTE source the selection is folded into the SAME `ssh -t`
-    /// connection (`select-window ; exec attach`) so there is no second
-    /// connection that could hang on a stalled remote or be silently skipped by
-    /// interactive auth, and the chosen window is preserved.
-    pub fn attach_command(&self, name: &str, window: Option<i64>) -> Vec<String> {
-        if !self.remote {
-            let (n, a) = self.exec_argv(true, &mux::attach(&self.binary, name));
-            let mut v = vec![n];
-            v.extend(a);
-            return v;
-        }
-        let remote_cmd = match window {
-            Some(w) => format!(
-                "{} ; exec {}",
-                remote_command(&mux::select_window(
-                    &self.binary,
-                    &mux::window_target(name, w),
-                )),
-                remote_command(&mux::attach(&self.binary, name)),
-            ),
-            None => format!("exec {}", remote_command(&mux::attach(&self.binary, name))),
-        };
-        let mut args = self.ssh_args(true);
-        args.push(remote_cmd);
-        let mut v = vec!["ssh".to_string()];
-        v.extend(args);
+    /// Composes the two axes: the MUX supplies the attach argv via
+    /// `Backend::attach_plan` (so local psmux uses `new-session -A -s <name>`, routing to
+    /// the session's OWN server, not a warm clone from a bare `attach -t`), and the
+    /// MACHINE wraps it via `Transport::interactive_attach_argv` (local `-S` injection, or
+    /// `ssh -t` with `[<select-window> ;] exec <attach>`). `window` is the window index to
+    /// land on: for a REMOTE source the selection is folded into the SAME `ssh -t`
+    /// connection so there is no second connection that could hang or be lost to
+    /// interactive auth; a LOCAL source pre-selects it with a separate instant command, so
+    /// the transport ignores it here.
+    pub fn interactive_attach_command(&self, name: &str, window: Option<i64>) -> Vec<String> {
+        let mux = crate::backend::for_binary(&self.binary);
+        let attach = mux.attach_plan(name, window);
+        let pre_select = window.map(|w| mux.select_window_plan(&mux::window_target(name, w)));
+        let (n, a) = self
+            .transport()
+            .interactive_attach_argv(&attach, pre_select.as_deref());
+        let mut v = vec![n];
+        v.extend(a);
         v
     }
 
@@ -507,42 +497,66 @@ mod tests {
     }
 
     #[test]
-    fn attach_command_local_ignores_window() {
-        // Local pre-selects the window with a separate (instant) local command;
-        // attach_command itself just attaches, with or without a window.
+    fn interactive_attach_local_psmux_routes_to_the_per_session_server() {
+        // The bug FIX: local psmux must attach via `new-session -A -s <name>` (routing to
+        // that session's OWN server), NOT a bare `attach -t <name>` (which lands on a warm
+        // clone / the wrong session). The mux axis (Backend::attach_plan) supplies this;
+        // the local pre-select is a separate command, so the window is ignored here.
         let loc = src("local", "psmux", false, "", "");
         assert_eq!(
-            loc.attach_command("dev", None),
-            vec!["psmux", "attach", "-t", "dev"]
+            loc.interactive_attach_command("dev", None),
+            vec!["psmux", "new-session", "-A", "-s", "dev"]
         );
         assert_eq!(
-            loc.attach_command("dev", Some(3)),
-            vec!["psmux", "attach", "-t", "dev"]
+            loc.interactive_attach_command("dev", Some(3)),
+            vec!["psmux", "new-session", "-A", "-s", "dev"]
         );
     }
 
     #[test]
-    fn attach_command_remote_without_window() {
+    fn interactive_attach_local_tmux_is_a_plain_attach() {
+        // A LOCAL tmux (Shared) attach stays `attach -t <name>` (unchanged).
+        let loc = src("local", "tmux", false, "", "");
+        assert_eq!(
+            loc.interactive_attach_command("dev", None),
+            vec!["tmux", "attach", "-t", "dev"]
+        );
+    }
+
+    #[test]
+    fn interactive_attach_remote_tmux_without_window() {
         let rem = src("prod", "tmux", true, "linux", "");
-        let got = rem.attach_command("api", None);
+        let got = rem.interactive_attach_command("api", None);
         assert_eq!(got[0], "ssh");
         assert!(got.iter().any(|s| s == "-t"), "{got:?}");
         assert_eq!(got.last().unwrap(), "exec tmux attach -t api");
     }
 
     #[test]
-    fn attach_command_remote_folds_window_into_one_connection() {
+    fn interactive_attach_remote_tmux_folds_window_into_one_connection() {
         // The window pre-selection and the attach run over a SINGLE `ssh -t`, so
         // there is no second connection to hang on a stalled remote or to lose the
         // selection to interactive auth.
         let rem = src("prod", "tmux", true, "linux", "");
-        let got = rem.attach_command("api", Some(2));
+        let got = rem.interactive_attach_command("api", Some(2));
         assert_eq!(got[0], "ssh");
         assert!(got.iter().any(|s| s == "-t"), "{got:?}");
         assert_eq!(
             got.last().unwrap(),
             "tmux select-window -t 'api:2' ; exec tmux attach -t api"
         );
+    }
+
+    #[test]
+    fn interactive_attach_remote_psmux_uses_attach_plan_over_ssh() {
+        // A REMOTE psmux host is enumerated/attached the generic way (its registry lives
+        // on the far side); the attach argv still comes from Backend::attach_plan
+        // (`new-session -A -s`) and is `exec`d over `ssh -t`.
+        let rem = src("prod", "psmux", true, "linux", "");
+        let got = rem.interactive_attach_command("api", None);
+        assert_eq!(got[0], "ssh");
+        assert!(got.iter().any(|s| s == "-t"), "{got:?}");
+        assert_eq!(got.last().unwrap(), "exec psmux new-session -A -s api");
     }
 
     #[tokio::test]

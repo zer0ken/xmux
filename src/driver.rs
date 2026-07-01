@@ -47,8 +47,9 @@ impl Target {
 
 /// The generic capabilities the supervisor injects into a driver call: the off-loop
 /// spawner, the attachment registry it fills, the transport-aware hosts, the source
-/// config (for a shared warm's source-built attach argv), the open control channel
-/// (via `mgr`), the view size, and the attach seq. The driver owns the DECISION +
+/// config, the open control channel (via `mgr`), the view size, and the attach seq.
+/// Attach argv is composed from each host's own `mux`/`transport` (the two axes), so a
+/// driver reads `hosts`, not `env`, to build one. The driver owns the DECISION +
 /// per-host display state; these stay supervisor-owned.
 pub struct DriverCtx<'a> {
     pub registry: &'a mut AttachRegistry,
@@ -273,9 +274,6 @@ impl MuxDriver for TmuxDriver {
     fn sync(&mut self, source: &str, sessions: &[crate::session::Session], ctx: &mut DriverCtx) {
         // One PTY per host. Warm it on the first session if not yet attached; reap it
         // (and forget its session) when the host has no sessions.
-        let Some(src) = ctx.env.by_alias.get(source) else {
-            return;
-        };
         let (cols, rows) = terminal_view_size(ctx.cols, ctx.body_rows, ctx.tree_width);
         let Some(host) = ctx.hosts.get_mut(source) else {
             return;
@@ -285,10 +283,16 @@ impl MuxDriver for TmuxDriver {
                 if !ctx.registry.contains(source)
                     && !host.display.in_flight.contains_key(source) =>
             {
-                // A remote shared attach records its own tty before exec (for a later
-                // in-place switch); local attaches and non-recording muxes stay bare.
-                let argv =
-                    with_display_tty_record(src.attach_command(&first.name, None), host, source);
+                // Compose the two axes: the MUX supplies the attach argv (attach_plan),
+                // the MACHINE lowers it (ssh -t + exec / local -S) — the same composition
+                // `show()` uses. A remote shared attach records its own tty before exec
+                // (for a later in-place switch); local attaches and non-recording muxes
+                // stay bare. (Immutable host reads before the &mut host.display below.)
+                let mux_argv = host.mux.attach_plan(&first.name, None);
+                let (cmd, args) = host.transport.interactive_attach_argv(&mux_argv, None);
+                let mut argv = vec![cmd];
+                argv.extend(args);
+                let argv = with_display_tty_record(argv, host, source);
                 request_attach(
                     ctx.registry,
                     ctx.worker,

@@ -73,7 +73,7 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   **Tests:** `popup_decision_table` (NoCockpit); the message/exit is in `main.rs`.
 - **FR-C4** — A switch lands on the picked window for both same-server and
   cross-host paths. **Tests:** `dispatch_switch_carries_window`,
-  `attach_command_remote_folds_window_into_one_connection`.
+  `interactive_attach_remote_folds_pre_select_into_one_connection`.
 - **FR-C5** — No silent loss: no live cockpit → clear message + non-zero exit + stale
   pointer cleared; a failed attach (e.g. ssh 255) is logged to `~/.xmux/cockpit.log`,
   not swallowed. **Tests:** `popup_decision_table`, `pointer_removed_only_if_ours`;
@@ -139,9 +139,11 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   run from inside a mux is not refused as nesting; lookalikes survive. **Tests:**
   `is_mux_var_is_precise`, `mux_clean_env_*`.
 - **FR-G4** — A remote attach folds the window pre-selection into the single
-  `ssh -t` connection (no second connection to hang or lose). **Tests:**
-  `attach_command_remote_folds_window_into_one_connection`,
-  `attach_command_remote_without_window`, `attach_command_local_ignores_window`.
+  `ssh -t` connection (no second connection to hang or lose), and the mux axis supplies
+  the attach argv (local psmux routes to its per-session server). **Tests:**
+  `interactive_attach_remote_folds_pre_select_into_one_connection`,
+  `interactive_attach_remote_without_pre_select_execs_over_ssh_tty`,
+  `interactive_attach_local_psmux_routes_to_the_per_session_server`.
 
 ---
 

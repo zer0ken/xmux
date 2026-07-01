@@ -234,7 +234,7 @@ impl Attachment {
 }
 
 /// Opens a PTY at `cols×rows`, spawns `argv` (a real `attach` argv from
-/// [`crate::source::Source::attach_command`]) with mux nesting-guard env cleared,
+/// [`crate::source::Source::interactive_attach_command`]) with mux nesting-guard env cleared,
 /// starts the control thread (owns writer+master) and the output pump. The pump
 /// always feeds the grid, emits [`PtyEvent::Output`] per chunk (the cockpit
 /// coalesces), clears `connecting` on the first read, and emits
