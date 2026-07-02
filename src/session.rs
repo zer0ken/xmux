@@ -21,8 +21,21 @@ pub struct Session {
 impl Session {
     /// The cross-environment target string, `"<source>/<name>"`.
     pub fn address(&self) -> String {
-        format!("{}/{}", self.source, self.name)
+        address_of(&self.source, &self.name)
     }
+}
+
+/// Joins a source and session name into a `"<source>/<name>"` address — the single
+/// spelling of the address grammar (the inverse of [`source_of`] / [`parse_target`]).
+pub fn address_of(source: &str, name: &str) -> String {
+    format!("{source}/{name}")
+}
+
+/// The source half of a `"<source>/<name>"` address: everything before the first
+/// `/` (the same split rule as [`parse_target`]). A string with no `/` is returned
+/// whole. Does not validate — use [`parse_target`] when both halves are required.
+pub fn source_of(addr: &str) -> &str {
+    addr.split('/').next().unwrap_or(addr)
 }
 
 /// One pane within a window.
@@ -105,5 +118,22 @@ mod tests {
     #[test]
     fn local_source_const() {
         assert_eq!(LOCAL_SOURCE, "local");
+    }
+
+    #[test]
+    fn source_of_returns_the_source_half() {
+        // The source is everything before the first `/` (same split rule as
+        // parse_target), so a session name containing `/` keeps its source.
+        assert_eq!(source_of("jup/api"), "jup");
+        assert_eq!(source_of("local/a/b"), "local");
+        // No `/`: the whole string is the source (mirrors split's fallback).
+        assert_eq!(source_of("noslash"), "noslash");
+    }
+
+    #[test]
+    fn address_of_joins_source_and_name() {
+        assert_eq!(address_of("jup", "api"), "jup/api");
+        // Round-trips with source_of on the source half.
+        assert_eq!(source_of(&address_of("jup", "api")), "jup");
     }
 }

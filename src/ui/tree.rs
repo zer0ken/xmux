@@ -315,9 +315,10 @@ pub(crate) fn target_for(reference: &RowRef, groups: &[Group], filter: &str) -> 
             None => (String::new(), String::new()),
         },
         RowRef::Session(s) => (s.source.clone(), s.name.clone()),
-        RowRef::Window { sess, window } => {
-            (sess.source.clone(), format!("{}:{}", sess.name, window))
-        }
+        RowRef::Window { sess, window } => (
+            sess.source.clone(),
+            crate::mux::window_target(&sess.name, *window),
+        ),
         RowRef::Pane | RowRef::Loading => (String::new(), String::new()),
     }
 }

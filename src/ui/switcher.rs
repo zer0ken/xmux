@@ -127,7 +127,7 @@ fn menu_title(target: &RowRef) -> String {
     match target {
         RowRef::Host { source, .. } => source.clone(),
         RowRef::Session(s) => s.name.clone(),
-        RowRef::Window { sess, window } => format!("{}:{}", sess.name, window),
+        RowRef::Window { sess, window } => crate::mux::window_target(&sess.name, *window),
         RowRef::Pane | RowRef::Loading => String::new(),
     }
 }
@@ -703,7 +703,7 @@ impl Switcher {
         window: i64,
         state: &mut crate::state::State,
     ) -> bool {
-        let addr = format!("{source}/{session}");
+        let addr = crate::session::address_of(source, session);
         let Some(windows) = state.panes.get_mut(&addr) else {
             return false;
         };
@@ -988,7 +988,7 @@ impl Switcher {
                 target: None,
             })),
             RowRef::Window { sess, window } => {
-                let target = format!("{}:{}", sess.name, window);
+                let target = crate::mux::window_target(&sess.name, window);
                 Some(Modal::Input(Input {
                     mode: InputMode::SplitWindow,
                     label: " split [v]ertical / [h]orizontal (default v)".into(),
@@ -1429,7 +1429,7 @@ impl Switcher {
         if let Some(addr) = self.rescan_reselect.clone() {
             let parked = match prior.reference.as_ref() {
                 Some(RowRef::Host { source, .. }) => {
-                    addr.split('/').next() == Some(source.as_str())
+                    crate::session::source_of(&addr) == source.as_str()
                 }
                 Some(RowRef::Session(s)) => s.address() == addr,
                 Some(RowRef::Window { sess, .. }) => sess.address() == addr,
