@@ -1,7 +1,7 @@
 //! Abstracts a mux server reachable from this machine: the local mux, or a
 //! remote one over ssh. It carries the per-source config/data (alias, mux binary,
-//! socket, control path, os) plus the mux-env quoting vocab (`is_mux_var` /
-//! `mux_clean_env`) and the reachable-but-empty vs unreachable distinction. The
+//! socket, control path, os) and the reachable-but-empty vs unreachable distinction.
+//! The mux-env vocabulary (which vars mark a mux session) lives in `mux::vocab`. The
 //! machine boundary itself — argv assembly and the ssh transport (connect-timeout,
 //! injection-safe quoting) — lives in `Transport`; this source delegates to it
 //! (`transport()`), so the layers above speak in sessions, not transports.
@@ -55,7 +55,7 @@ impl Runner for ExecRunner {
         cmd.kill_on_drop(true); // a cancelled (timed-out) scan kills the child
         cmd.env_clear();
         for (k, v) in std::env::vars() {
-            if !is_mux_var(&k) {
+            if !crate::mux::vocab::is_mux_var(&k) {
                 cmd.env(k, v);
             }
         }
@@ -72,21 +72,6 @@ impl Runner for ExecRunner {
             })
         }
     }
-}
-
-pub fn is_mux_var(key: &str) -> bool {
-    // Exactly tmux's session markers and any psmux var; NOT a blanket `TMUX`
-    // prefix, which would also drop unrelated vars like `TMUX_TMPDIR` (selects
-    // the socket dir) or `TMUXP_*` (the separate tmuxp tool).
-    matches!(key, "TMUX" | "TMUX_PANE") || key.starts_with("PSMUX")
-}
-
-/// Returns env entries (`K=V`) with every mux session variable removed.
-pub fn mux_clean_env(env: &[String]) -> Vec<String> {
-    env.iter()
-        .filter(|e| !is_mux_var(e.split('=').next().unwrap_or(e)))
-        .cloned()
-        .collect()
 }
 
 /// One mux server. Remote sources run their mux over ssh.
@@ -357,53 +342,6 @@ mod tests {
             "ssh: connect to host prod port 22: Connection timed out".into(),
         )));
         assert!(s.list_sessions().await.is_err());
-    }
-
-    #[test]
-    fn is_mux_var_is_precise() {
-        // Strips exactly tmux's session markers and psmux vars.
-        assert!(is_mux_var("TMUX"));
-        assert!(is_mux_var("TMUX_PANE"));
-        assert!(is_mux_var("PSMUX_SESSION"));
-        // Keeps unrelated vars that merely share the TMUX prefix.
-        assert!(!is_mux_var("TMUXP_LAYOUT")); // tmuxp, a different tool
-        assert!(!is_mux_var("TMUX_TMPDIR")); // selects the socket dir — must survive
-        assert!(!is_mux_var("PATH"));
-    }
-
-    #[test]
-    fn mux_clean_env_keeps_lookalike_vars() {
-        let input: Vec<String> = ["TMUX=/x,1,0", "TMUXP_LAYOUT=tiled", "TMUX_TMPDIR=/tmp/t"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let out = mux_clean_env(&input);
-        assert!(!out.iter().any(|e| e.starts_with("TMUX=")), "{out:?}");
-        assert!(out.iter().any(|e| e == "TMUXP_LAYOUT=tiled"), "{out:?}");
-        assert!(out.iter().any(|e| e == "TMUX_TMPDIR=/tmp/t"), "{out:?}");
-    }
-
-    #[test]
-    fn mux_clean_env_strips_mux_vars() {
-        let input: Vec<String> = [
-            "PATH=/bin",
-            "TMUX=/x,1,0",
-            "TMUX_PANE=%1",
-            "PSMUX_SESSION=dev",
-            "HOME=/h",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-        let out = mux_clean_env(&input);
-        for e in &out {
-            assert!(
-                !e.starts_with("TMUX") && !e.starts_with("PSMUX"),
-                "leaked {e:?}"
-            );
-        }
-        assert!(out.iter().any(|e| e == "PATH=/bin"));
-        assert!(out.iter().any(|e| e == "HOME=/h"));
     }
 
     #[test]

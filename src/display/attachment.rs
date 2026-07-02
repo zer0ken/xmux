@@ -271,9 +271,9 @@ pub fn spawn_attachment(
     }
     // Strip EVERY mux session var (all PSMUX*, TMUX, TMUX_PANE) so the attach child
     // does not inherit stale routing state that could mis-target the server — the
-    // same precise strip the control-mode child uses (see source::is_mux_var).
+    // same precise strip the control-mode child uses (see mux::vocab::is_mux_var).
     for (k, _) in std::env::vars() {
-        if crate::source::is_mux_var(&k) {
+        if crate::mux::vocab::is_mux_var(&k) {
             cmd.env_remove(&k);
         }
     }
