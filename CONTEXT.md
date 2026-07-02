@@ -140,12 +140,13 @@ Two orthogonal axes describe every connection, and no module conflates them:
 Attach argv is composed from a host's own `mux` + `transport` (the two axes
 together), so the two families are combined without either knowing the other.
 
-The supervisor branches on NOTHING mux-specific. `src/app/` (runtime +
-focus state), `src/ui/` (switcher/tree/status/ops rendering), and `src/state/`
-(runtime `State` + the `apply` / `apply_event` mutation sites) select display
-through `driver_for(host).show(...)` — i.e. `host.mux.driver()` — and read the
-grid back via `MuxDriver::grid`; per-mux behavior lives behind that seam. These
-layers carry no PTY, grid, or terminal-protocol logic.
+The supervisor branches on NOTHING mux-specific. `src/app/` (runtime loop,
+focus, input routing), `src/ui/` (switcher / tree / chrome / modal / ops
+rendering), and `src/state/` (runtime `State` + the `apply` / `apply_event`
+mutation sites) select display through `driver_for(host).show(...)` — i.e.
+`host.mux.driver()` — and read the grid back via `MuxDriver::grid`; per-mux
+behavior lives behind that seam. These layers carry no PTY, grid, or
+terminal-protocol logic.
 
 The remaining layers each own one concern:
 
@@ -155,8 +156,8 @@ The remaining layers each own one concern:
   tasks, live client ownership).
 - `src/machine/` — the machine axis: the `Transport` trait, the `Local`/`Ssh`
   families, and the shared shell vocab (`vocab.rs`).
-- `src/model/` — domain types (`Host`, `Hosts`, `Action`, `Command`,
-  `EventEffect`, server model).
+- `src/model/` — domain types (`Host`, `Hosts`, `Selection`, `Action`,
+  `Command`, `EventEffect`, server model).
 - `src/driver.rs` — the mux-agnostic `MuxDriver` trait + `DriverCtx` (the
   supervisor capabilities a driver borrows) + the thin `driver_for` wrapper. It
   names no concrete mux type.
@@ -183,12 +184,6 @@ as invariants, seams, and pitfalls — never as change history or phase narrativ
 
 ## Improvement Notes
 
-- `src/ui/switcher.rs` is the current aggregate UI module. It owns row
-  flattening, cursor state, modal/menu/input state, key and mouse handling, op
-  result application, and rendering. This is unfinished rearchitecture work. The
-  intended shape keeps pure tree transforms in `ui/tree.rs`, slow side-effecting
-  operations in `ui/ops.rs`, and moves smaller UI surfaces behind clearer module
-  seams as the TUI is decomposed.
 - Per-host session/window inventory has a single owner: `model::Host.inventory`.
   Both metadata paths feed it through `HostEvent`s — the control reader carries
   its parsed sessions on `Connected`/`Inventory` and pane subtrees on `Panes`, and
@@ -196,24 +191,17 @@ as invariants, seams, and pitfalls — never as change history or phase narrativ
   the tree from it. `host::HostManager` owns the live mechanisms (control clients
   and poll tasks). Keep live process/task ownership out of `model::Host`, and do
   not add a third per-host registry.
-- The migration boundary between `Env`/`Source` and `Hosts`/`Host` is not fully
-  specified. `Hosts` is intended to become the per-machine owner, but `Env` and
-  `Source` still drive CLI commands, discovery, `Ops`, and app source lookup.
-  Before moving source or host logic, decide whether `Env` remains a CLI/config
-  assembly layer or whether `Hosts` also becomes the runtime source registry.
-- Preferred direction: keep `Env` as the config and CLI assembly layer, make
-  `Hosts` the runtime source registry, keep live process and task ownership out
-  of `model::Host`, and let `host::HostManager` own metadata mechanisms until it
-  is renamed or reshaped as a runtime manager. `Source` should shrink toward a
-  compatibility adapter as `Mux + Transport` cover its command-building and
-  execution roles.
-- `Source` and `machine::Transport` currently duplicate machine-execution
-  responsibilities. Treat `Source` as live compatibility plumbing, not the
-  preferred home for new execution semantics. New local/ssh execution behavior
-  belongs in `Transport`; new mux behavior belongs in `Mux`. A future
-  source-compatibility-shrink phase should move psmux registry helpers into
-  `mux/psmux`, port `manage` and `EnvOps` toward `Host + Mux +
-  Transport`, and then remove or minimize `Source`.
+- `Source` is thin per-source config/data. The CLI, the `ls` scan, and the
+  off-loop `Ops`/`manage` paths assemble a value `Host` from it (`Source::host`)
+  and drive enumerate/manage/attach through the `Host`/`Mux`/`Transport` APIs; the
+  machine boundary (argv assembly, ssh transport) lives entirely in `Transport`,
+  and the psmux registry helpers live in `mux/psmux`. `Hosts` is the app loop's
+  runtime host registry (every `Host` keyed by id, in display order); `Env` keeps
+  the source list + `by_alias` for the CLI, the scan, and `EnvOps`. The remaining
+  direction: shrink `Source` further by folding its `Host` assembly into `Host`
+  construction and backing the off-loop `Ops` with `Hosts` too, then reshape
+  `host::HostManager` as a runtime manager if it outgrows its metadata-client role.
+  New local/ssh execution belongs in `Transport`, new mux behavior in `Mux`.
 - `docs/superpowers/` contains working planning material and is not intended for
   the public open source documentation surface. Before release, remove it from
   the published repository state or replace any still-useful content with
@@ -223,6 +211,3 @@ as invariants, seams, and pitfalls — never as change history or phase narrativ
   unstable `raw:` namespace. Working Notes should tell agents to add
   user-facing automation through semantic actions first, and reserve raw
   input for tests or low-level compatibility.
-- Some Rust module comments still contain planning-only language.
-  Durable comments and docs should describe current behavior and invariants
-  only, with refactoring direction kept in Working Notes or improvement notes.
