@@ -21,6 +21,20 @@ pub enum Liveness {
     Unreachable,
 }
 
+impl Liveness {
+    /// Projects a scan/ls outcome's optional error into reachability: `Some` ⇒
+    /// `Unreachable`, `None` ⇒ `Live`. The scan path has no "connecting" state, so
+    /// this is a two-way projection; the failure message itself is kept alongside
+    /// (`Liveness` is `Copy` and holds none).
+    pub fn from_scan_err(err: &Option<String>) -> Liveness {
+        if err.is_some() {
+            Liveness::Unreachable
+        } else {
+            Liveness::Live
+        }
+    }
+}
+
 /// The per-host display BOOKKEEPING. The
 /// `AttachRegistry`/`Attachment`/`DisplayWorker` PTY MECHANISM OWNS the PTYs; this is
 /// only the record of WHICH session each display_key currently shows and what spawn

@@ -25,6 +25,14 @@ pub struct ScanResult {
     pub err: Option<String>,
 }
 
+impl ScanResult {
+    /// This source's reachability in the single [`Liveness`](crate::model::Liveness)
+    /// vocabulary. The message stays in `err`.
+    pub fn liveness(&self) -> crate::model::Liveness {
+        crate::model::Liveness::from_scan_err(&self.err)
+    }
+}
+
 /// Probes every source concurrently and returns one [`ScanResult`] per source,
 /// in input order. At most `max_concurrent` probes run at once; each probe is
 /// bounded by `timeout`. One unreachable source never blocks or fails the others.
@@ -129,6 +137,23 @@ mod tests {
             out: line.as_bytes().to_vec(),
             err_msg: None,
         })
+    }
+
+    #[test]
+    fn scan_result_projects_liveness() {
+        use crate::model::Liveness;
+        let live = ScanResult {
+            source: "a".into(),
+            sessions: Vec::new(),
+            err: None,
+        };
+        assert_eq!(live.liveness(), Liveness::Live);
+        let dead = ScanResult {
+            source: "a".into(),
+            sessions: Vec::new(),
+            err: Some("boom".into()),
+        };
+        assert_eq!(dead.liveness(), Liveness::Unreachable);
     }
 
     #[tokio::test]
