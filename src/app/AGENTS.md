@@ -29,10 +29,15 @@ pumped or a grid is rendered.
 
 ## Module Seams
 
-- `runtime.rs` coordinates the runtime modules and owns the main event loop. It
-  calls `driver_for(host).show(sel, ctx)` for display and reads back the grid via
-  `driver.grid`; it branches on nothing mux-specific. `Selection` (the canonical
-  `source`/`session`/`window`) lives here and is the value the display reads.
+- `runtime.rs` owns the main event loop as a `Runtime` struct: `run_app` builds it,
+  keeps the `select!` receivers/timers and the ratatui terminal as loop-locals, and
+  drives a `select!` where each arm is one `&mut self` method. It calls
+  `driver_for(host).show(sel, ctx)` for display and reads back the grid via
+  `driver.grid`; it branches on nothing mux-specific. The canonical `Selection`
+  (`source`/`session`/`window`) it reads lives in `src/model`.
+- `input.rs` holds the pure, stateless input-routing core (`resolve_tree_key`,
+  `resolve_mouse_chain`, the predicates, `MouseState`/`StdinOutcome`); the stateful
+  handlers are `Runtime` methods that call into it.
 - `focus.rs` holds the focus/modal state (`Focus`, `ViewFocus`, `ModalKind`) and
   the focus-transition helpers. `state::State` embeds a `Focus`; the app reads
   and mutates it through these types.
@@ -43,10 +48,11 @@ pumped or a grid is rendered.
 
 ## Invariants
 
-- The app does not decompose into components here: `run_app` is the whole
-  runtime; splitting it into a thin runtime plus components is out of scope.
-- `Selection` is the canonical selected source/session/window value consumed by
-  display selection and rendering.
+- `run_app` is a thin entry point: the `Runtime` struct owns the loop's world state,
+  and every `select!` arm plus every stateful helper is a `&mut self` method, so each
+  takes a small argument list rather than a large loose-parameter bundle.
+- `Selection` (defined in `src/model`) is the canonical selected
+  source/session/window value consumed by display selection and rendering.
 - The per-mux display decision lives in the `MuxDriver` implementation, never in
   `runtime.rs`.
 - `focus` is the single source of truth for which view owns keys and which modal
