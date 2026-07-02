@@ -1,88 +1,173 @@
 # xmux
 
-Cross-environment mux session switcher — one terminal that sees and moves
-between every reachable tmux/psmux session, local and over ssh, regardless of
-OS or mux kind. Pick a session and attach; detach returns you to the tree.
+*A cross-host terminal-multiplexer switcher — tmux's `prefix + s` / `switch-client`, but reaching every machine.*
 
-xmux keeps no state of its own: sessions, recency, and reachability are scanned
-from the mux servers each time. The servers are the source of truth.
+xmux is a persistent, terminal-owning supervisor written in Rust. It owns the
+terminal you launch it in, keeps live mux display attachments alive, and renders
+a split view: a **tree** of every reachable session on the left, and the
+selected session's **live screen** on the right. Move through the tree and the
+right pane switches to that session in place — a local psmux session, a tmux
+session over ssh, whatever — with no detach dance and no picker round-trip.
+
+The goal is the `switch-client` experience you already know from tmux, extended
+across hosts: instant, in-place switching between any configured machine's mux
+sessions from one terminal.
+
+## Features
+
+- **One tree over every host.** Hosts → sessions → windows → panes, local and
+  over ssh, in a single view. Hosts are auto-discovered from your
+  `~/.ssh/config`.
+- **In-place cross-host switching.** Selecting a session on another machine
+  re-attaches to it within the same terminal window; selecting another session
+  on the current server switches the client in place. No manual detach, and
+  nothing to install on the remote.
+- **Live screens, not previews.** The right pane is a real per-session PTY
+  attachment, so what you see is the session's actual screen, kept alive as you
+  navigate.
+- **Two orthogonal axes.** A `Mux` axis (**tmux** and **psmux**) and a
+  `Transport` axis (**local** and **ssh**) compose freely — any mux over any
+  transport — without either knowing about the other.
+- **Metadata without polling where it counts.** tmux hosts are tracked over
+  control mode (`-CC`); psmux hosts are polled. Either way the tree reflects the
+  servers, which remain the source of truth.
+- **Mouse and keyboard.** Navigate, filter, create, rename, and kill sessions
+  from the keyboard; click, scroll, and right-click work too.
+- **A control socket.** A local socket exposes semantic verbs for scripting and
+  headless driving (see [Control socket](#control-socket)).
 
 ## Install
 
-xmux is written in Rust. From source:
+xmux is a Cargo project. Build the release binary:
 
-    cargo build --release        # binary at target/release/xmux
+```sh
+cargo build --release        # binary at target/release/xmux
+```
 
-Or install into `~/.cargo/bin`:
+Or install it onto your `PATH`:
 
-    cargo install --path .
+```sh
+cargo install --path .
+```
 
-(The previous Go implementation is preserved under `legacy-go/` for reference.)
+It runs on Windows and on unix-likes. You need `ssh` on the machine running
+xmux for remote hosts, and a supported mux on each machine you target —
+`tmux` on unix, `psmux` on Windows (both speak the same command language, and
+xmux drives either).
 
-## Requirements
+## Usage
 
-- `ssh` on the machine running xmux (for remote sources).
-- `tmux` or `psmux` on each machine you target (`psmux` on Windows, `tmux`
-  elsewhere). Both speak the same command language; xmux drives either.
+Run xmux with no arguments to open the interactive split view:
 
-## Use
+```sh
+xmux                          # the interactive tree + live-screen app
+xmux ls                       # list every reachable session (scriptable)
+xmux attach <source>/<name>   # attach one session directly, e.g. xmux attach prod/api
+xmux doctor                   # check config and per-host reachability
+xmux ctl <command…>           # drive a running instance over its control socket
+xmux version
+```
 
-    xmux                         # full-screen cross-environment tree
-    xmux ls                      # list every reachable session (scriptable)
-    xmux attach <source>/<name>  # attach one session directly, e.g. xmux attach prod/api
-    xmux doctor                  # check config and per-source reachability
-    xmux ctl <command…>          # drive a running switcher over its control socket
-    xmux version
+### In the app
 
-### In the tree
+The left pane is the tree; the right pane shows the selected session's live
+screen. Keyboard focus is on one region at a time.
 
-The left pane is one tree over every environment — Host → Session → Window →
-Pane — with the live preview of the focused node's pane on the right.
+**Tree navigation:**
 
 | Key | Action |
 |---|---|
-| `↑` / `↓` | move (panes are shown but skipped; the preview follows) |
-| `Home` / `End` | jump to the first / last node |
-| `Enter` | attach — on a host: its most-recent session; on a session: that session; on a window: that window |
-| `n` | new session on the focused host |
-| `R` | rename the focused session |
-| `x` | kill the focused session (inline `y`/`n` confirm) |
-| `/` | fuzzy filter `<source>/<name>` |
+| `↑` / `↓` (or `k` / `j`) | move between siblings at the current level |
+| `→` / `←` (or `l` / `h`) | descend into children / ascend to the parent |
+| `Home` / `End` | jump to the first / last row |
+| `PageUp` / `PageDown` | jump ten rows |
+| `Enter` | move focus into the selected session's live screen |
+| `n` | create (session / window / split, depending on the selected level) |
+| `R` | rename the selected session or window |
+| `x` | kill the selected session (with a confirm prompt) |
+| `/` | fuzzy-filter the tree |
 | `r` | re-scan every host |
-| `C-g ?` | toggle the keybinding help modal |
-| `q` / `Esc` | quit |
 
-The mouse works too: click selects, double-click attaches, the wheel scrolls.
+The mouse works too: click a row to select it, click the right pane to focus it,
+scroll the wheel over the tree, and right-click a row for a context menu.
 
-The right pane is a **live preview**: it polls and shows the screen of the pane
-that attaching here would land on — a host previews its most-recent session's
-active window, a session its active window, a window its active pane. A host
-that cannot be reached shows `⚠ unreachable`; a reachable host with no sessions
-is still a valid create target. Panes are shown for context but are not
-selectable.
+**Prefix keys.** xmux has its own prefix, like tmux's `set -g prefix` — the
+default is `Ctrl-g`, configurable via `[ui] prefix` (see below). Press the
+prefix, then:
 
-## Keybind
+| Chord | Action |
+|---|---|
+| `prefix q` | quit xmux |
+| `prefix ?` | toggle the keybinding help |
+| `prefix t` | toggle auto-hide-tree (focusing the screen gives it full width) |
+| `prefix h` / `prefix l` (or `prefix Ctrl-←/→`) | narrow / widen the tree |
+| `prefix Tab` / arrow / `Esc` | move focus between the tree and the screen |
+| `prefix prefix` | send one literal prefix byte to the focused session |
 
-Inside the app (run `xmux`), a built-in prefix hotkey opens the
-cross-environment picker over your current session — from any session, local or
-remote, with nothing installed on the remote. The default
-prefix is `Ctrl-g`; press `Ctrl-g s` to open the picker, `Ctrl-g g` to send a
-literal `Ctrl-g` through. See [docs/keybind.md](docs/keybind.md). Set
-`XMUX_PREFIX` (e.g. `C-Space`) to change the prefix.
+See [`docs/keybind.md`](docs/keybind.md) for more on the prefix.
 
-## Configure
+## Configuration
 
-`~/.config/xmux/config.toml`, all optional (zero-config is the default):
+Configuration is entirely optional — zero-config is the default. xmux reads
+`~/.config/xmux/config.toml`:
 
-    [local]
-    mux = "auto"        # auto: psmux on Windows, tmux elsewhere
+```toml
+# The mux used on the local machine.
+[local]
+mux = "auto"          # "auto" (default): psmux on Windows, tmux elsewhere
 
-    [[hosts]]
-    ssh = "prod"        # an ssh-config alias; mux defaults to tmux
-    mux = "tmux"
+# Override the mux for a discovered ssh host, or add a host ssh-config
+# discovery did not surface.
+[[hosts]]
+ssh = "prod"          # an ssh-config alias
+mux = "tmux"          # defaults to "tmux" when omitted
 
-    exclude = ["bastion"]
+# Hide these ssh aliases from the tree.
+exclude = ["bastion"]
 
-Hosts are auto-derived from `~/.ssh/config`; connection details (user, port,
-key, jump host) come from there. Config augments that discovery — it never
-replaces it.
+[ui]
+prefix = "C-g"                        # xmux's prefix (e.g. C-g, C-Space, C-b)
+auto-hide-tree = false                # initial auto-hide-tree state
+view-active-border-style = "green"    # focused view-border colour (tmux colour vocabulary)
+view-border-style = "default"         # unfocused view-border colour
+view-border-hover-style = "yellow"    # drag-to-resize hover cue
+```
+
+Hosts come from `~/.ssh/config` first — connection details (user, port, key,
+jump host) are taken from there. The config file augments that discovery; it
+never replaces it. Run `xmux doctor` to see the resolved local mux, ssh
+availability, and per-host reachability. Persistent state (last selected
+session, the live auto-hide-tree toggle, logs, and control sockets) lives under
+`~/.xmux/`.
+
+## Control socket
+
+A running xmux instance listens on a local socket (`~/.xmux/ctl-<pid>.sock`) that
+speaks semantic verbs — `ping`, `status`, `dump`, `rescan`, `switch <addr>`,
+`focus <target>`, `width <n>`, `toggle-auto-hide`, `quit` — with an unstable
+`raw:` namespace reserved for low-level key/byte injection. Drive it with:
+
+```sh
+xmux ctl status
+xmux ctl switch prod/api
+```
+
+By default `xmux ctl` targets the newest instance; use `--pid` or `--sock` to
+pick one.
+
+## Architecture
+
+xmux is built around two orthogonal axes — `Mux` (per-mux behavior) and
+`Transport` (per-machine execution) — so that mux families and machine families
+compose without conflating. The metadata path and the display path are kept
+separate, and the supervisor branches on nothing mux-specific.
+
+The canonical guidance lives in the per-directory Working Notes
+([`AGENTS.md`](AGENTS.md) files) and in [`CONTEXT.md`](CONTEXT.md), which holds
+the vocabulary and the orthogonal-design overview. Architecture decisions are
+recorded under [`docs/adr/`](docs/adr/), and behavior requirements in
+[`docs/requirements.md`](docs/requirements.md).
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
