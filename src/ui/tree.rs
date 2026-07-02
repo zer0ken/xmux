@@ -3,7 +3,11 @@
 //! are side-effect-free transforms over that model; the interactive ratatui
 //! rendering is layered on top separately.
 
-use crate::session::Session;
+use std::collections::{HashMap, HashSet};
+
+use unicode_width::UnicodeWidthStr;
+
+use crate::session::{Pane, Session, WindowPanes};
 
 /// The sessions of one source. A non-`None` `err` means the host was
 /// unreachable, in which case `sessions` carries no meaning.
@@ -194,6 +198,250 @@ pub fn rename_session(groups: &[Group], address: &str, new_name: &str) -> Vec<Gr
         }
     }
     out
+}
+
+/// What a tree row references. Hosts, sessions, and windows are selectable; panes
+/// and loading placeholders are shown for context but never selectable, so the
+/// selection skips them.
+#[derive(Clone)]
+pub(crate) enum RowRef {
+    Host {
+        source: String,
+        unreachable: bool,
+    },
+    Session(Session),
+    Window {
+        sess: Session,
+        window: i64,
+    },
+    Pane,
+    /// A "panes loading…" placeholder under a session whose detail is in flight.
+    Loading,
+}
+
+/// One flattened tree row. Colour is not carried here — it is a pure function of the
+/// row's level ([`RowRef`] variant) derived at render time, so this model stays
+/// terminal-free (no `ratatui` dependency) and unit-testable without a backend.
+pub(crate) struct Row {
+    pub(crate) label: String,
+    /// A trailing dim annotation (scanning…, (empty), ⚠ unreachable: …) — kept
+    /// apart from `label` so the name stays in its level colour and the state
+    /// reads dim.
+    pub(crate) status: Option<String>,
+    pub(crate) indent: usize,
+    pub(crate) reference: RowRef,
+    /// The active window / active pane of its session — rendered bold+italic (replaces a
+    /// trailing "(active)" text marker).
+    pub(crate) active: bool,
+}
+
+impl Row {
+    pub(crate) fn selectable(&self) -> bool {
+        !matches!(self.reference, RowRef::Pane | RowRef::Loading)
+    }
+}
+
+/// The groups to render, in `groups` order — that order is authoritative (established
+/// by recency at scan time via [`order_groups`], then frozen so a routine poll never
+/// reshuffles the tree). An empty filter returns the input unchanged. A non-matching
+/// filter must not be a dead end (XM-01): it falls back to header-only groups (every
+/// source, no sessions) so the hosts stay visible. Inputs are not mutated.
+pub(crate) fn visible_groups(groups: &[Group], filter: &str) -> Vec<Group> {
+    if filter.is_empty() {
+        groups.to_vec()
+    } else {
+        let filtered = filter_groups(groups, filter);
+        if filtered.is_empty() {
+            groups
+                .iter()
+                .map(|g| Group {
+                    source: g.source.clone(),
+                    err: g.err.clone(),
+                    sessions: Vec::new(),
+                })
+                .collect()
+        } else {
+            filtered
+        }
+    }
+}
+
+/// The group's first VISIBLE session under `filter`: the first session when the filter
+/// is empty or the source itself matches (all sessions are kept), otherwise the first
+/// session whose address matches. An unreachable group (`err` set) yields `None`, since
+/// its sessions carry no meaning. Mirrors [`filter_groups`] for a single group without
+/// cloning every host's sessions — used on the navigation hot path.
+pub(crate) fn first_visible_session(group: &Group, filter: &str) -> Option<Session> {
+    if group.err.is_some() {
+        return None;
+    }
+    if filter.is_empty() || fuzzy_match(filter, &group.source) {
+        group.sessions.first().cloned()
+    } else {
+        group
+            .sessions
+            .iter()
+            .find(|s| fuzzy_match(filter, &s.address()))
+            .cloned()
+    }
+}
+
+/// The dim trailing annotation for a host row: its scan state when it has no sessions
+/// to show — scanning…, ⚠ (unreachable; the reason is shown in the terminal-view info
+/// panel when the host row is selected), or (empty).
+pub(crate) fn host_status(g: &Group, scanning: bool) -> Option<String> {
+    if scanning {
+        Some("scanning…".into())
+    } else if g.err.is_some() {
+        Some("⚠".into())
+    } else if g.sessions.is_empty() {
+        Some("(empty)".into())
+    } else {
+        None
+    }
+}
+
+/// The (source, target) an active-pane attach on `reference` would land on. `target`
+/// empty ⇒ no terminal view (a pane or loading row, or a host with no visible session).
+/// A window target uses the `session:window` grammar. Pure over the inventory.
+pub(crate) fn target_for(reference: &RowRef, groups: &[Group], filter: &str) -> (String, String) {
+    match reference {
+        RowRef::Host { source, .. } => match groups
+            .iter()
+            .find(|g| &g.source == source)
+            .and_then(|g| first_visible_session(g, filter))
+        {
+            Some(sess) => (sess.source, sess.name),
+            None => (String::new(), String::new()),
+        },
+        RowRef::Session(s) => (s.source.clone(), s.name.clone()),
+        RowRef::Window { sess, window } => {
+            (sess.source.clone(), format!("{}:{}", sess.name, window))
+        }
+        RowRef::Pane | RowRef::Loading => (String::new(), String::new()),
+    }
+}
+
+fn plural(n: i64) -> String {
+    if n == 1 {
+        "1 window".to_string()
+    } else {
+        format!("{n} windows")
+    }
+}
+
+/// A session row's label: the name left-padded to `name_col_width` display columns so
+/// the trailing window count aligns down the column. No "attached" marker — the app
+/// pre-attaches every session, so it would be noise; the active window/pane is shown
+/// bold+italic instead.
+pub(crate) fn session_label(sess: &Session, name_col_width: usize) -> String {
+    let pad = name_col_width.saturating_sub(UnicodeWidthStr::width(sess.name.as_str()));
+    format!(
+        "{}{}   {}",
+        sess.name,
+        " ".repeat(pad),
+        plural(sess.windows)
+    )
+}
+
+// The active window / pane is shown bold+italic (the `Row::active` flag), not with a
+// trailing "(active)" text marker.
+pub(crate) fn window_label(w: &WindowPanes) -> String {
+    format!("window {}: {}", w.index, w.name)
+}
+
+pub(crate) fn pane_label(p: &Pane) -> String {
+    format!("pane {}  {}", p.index, p.command)
+}
+
+/// Flattens the inventory into display rows: one Host row per visible group, then
+/// (unless the host is scanning or unreachable) a Session row per session, and under
+/// each loaded session its Window and Pane rows — or a single Loading placeholder while
+/// its panes are still in flight. Session labels are padded to the widest visible name's
+/// display width so their window counts align. Colour is derived at render time from
+/// each row's [`RowRef`] level, so this stays terminal-free. Inputs are not mutated.
+pub(crate) fn flatten(
+    groups: &[Group],
+    panes: &HashMap<String, Vec<WindowPanes>>,
+    panes_loaded: &HashSet<String>,
+    scanning: &HashSet<String>,
+    filter: &str,
+) -> Vec<Row> {
+    let groups = visible_groups(groups, filter);
+
+    let mut name_col_width = 0;
+    for g in &groups {
+        if g.err.is_some() {
+            continue;
+        }
+        for sess in &g.sessions {
+            name_col_width = name_col_width.max(UnicodeWidthStr::width(sess.name.as_str()));
+        }
+    }
+
+    let mut rows = Vec::new();
+    for g in &groups {
+        let is_scanning = scanning.contains(&g.source);
+        let unreachable = g.err.is_some();
+        rows.push(Row {
+            label: g.source.clone(),
+            status: host_status(g, is_scanning),
+            indent: 0,
+            reference: RowRef::Host {
+                source: g.source.clone(),
+                unreachable,
+            },
+            active: false,
+        });
+        if is_scanning || unreachable {
+            continue;
+        }
+        for sess in &g.sessions {
+            rows.push(Row {
+                label: session_label(sess, name_col_width),
+                status: None,
+                indent: 2,
+                reference: RowRef::Session(sess.clone()),
+                active: false,
+            });
+            if panes_loaded.contains(&sess.address()) {
+                if let Some(windows) = panes.get(&sess.address()) {
+                    for w in windows {
+                        rows.push(Row {
+                            label: window_label(w),
+                            status: None,
+                            indent: 4,
+                            reference: RowRef::Window {
+                                sess: sess.clone(),
+                                window: w.index,
+                            },
+                            active: w.active,
+                        });
+                        for p in &w.panes {
+                            rows.push(Row {
+                                label: pane_label(p),
+                                status: None,
+                                indent: 6,
+                                reference: RowRef::Pane,
+                                active: p.active,
+                            });
+                        }
+                    }
+                }
+            } else {
+                // Panes still in flight for this session — a dim placeholder stands
+                // where its windows will appear.
+                rows.push(Row {
+                    label: "loading…".into(),
+                    status: None,
+                    indent: 4,
+                    reference: RowRef::Loading,
+                    active: false,
+                });
+            }
+        }
+    }
+    rows
 }
 
 #[cfg(test)]
@@ -577,5 +825,209 @@ mod tests {
         let first = groups[0].source.clone();
         let _ = order_groups(&groups);
         assert_eq!(groups[0].source, first);
+    }
+
+    fn kind(r: &RowRef) -> &'static str {
+        match r {
+            RowRef::Host { .. } => "host",
+            RowRef::Session(_) => "session",
+            RowRef::Window { .. } => "window",
+            RowRef::Pane => "pane",
+            RowRef::Loading => "loading",
+        }
+    }
+
+    fn win(index: i64, name: &str, active: bool, panes: Vec<Pane>) -> WindowPanes {
+        WindowPanes {
+            index,
+            name: name.into(),
+            active,
+            panes,
+        }
+    }
+
+    fn pane(index: i64, active: bool, command: &str) -> Pane {
+        Pane {
+            index,
+            active,
+            command: command.into(),
+        }
+    }
+
+    /// One group with one loaded session `jup/api` carrying two windows, each one pane.
+    fn loaded_fixture() -> (
+        Vec<Group>,
+        HashMap<String, Vec<WindowPanes>>,
+        HashSet<String>,
+    ) {
+        let groups = vec![Group {
+            source: "jup".into(),
+            err: None,
+            sessions: vec![sess("jup", "api", 0)],
+        }];
+        let mut panes = HashMap::new();
+        panes.insert(
+            "jup/api".to_string(),
+            vec![
+                win(0, "w0", true, vec![pane(0, true, "bash")]),
+                win(1, "w1", false, vec![pane(0, false, "vim")]),
+            ],
+        );
+        let mut loaded = HashSet::new();
+        loaded.insert("jup/api".to_string());
+        (groups, panes, loaded)
+    }
+
+    #[test]
+    fn flatten_builds_host_session_window_pane_rows() {
+        let (groups, panes, loaded) = loaded_fixture();
+        let rows = flatten(&groups, &panes, &loaded, &HashSet::new(), "");
+        let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
+        assert_eq!(
+            kinds,
+            vec!["host", "session", "window", "pane", "window", "pane"]
+        );
+        let indents: Vec<usize> = rows.iter().map(|r| r.indent).collect();
+        assert_eq!(indents, vec![0, 2, 4, 6, 4, 6]);
+    }
+
+    #[test]
+    fn flatten_marks_active_window_and_pane() {
+        let (groups, panes, loaded) = loaded_fixture();
+        let rows = flatten(&groups, &panes, &loaded, &HashSet::new(), "");
+        // window 0 (+its pane) is active; window 1 (+its pane) is not.
+        let active: Vec<bool> = rows.iter().map(|r| r.active).collect();
+        //             host   session w0     p0     w1     p1
+        assert_eq!(active, vec![false, false, true, true, false, false]);
+    }
+
+    #[test]
+    fn flatten_shows_loading_placeholder_when_panes_unloaded() {
+        let groups = vec![Group {
+            source: "jup".into(),
+            err: None,
+            sessions: vec![sess("jup", "api", 0)],
+        }];
+        // panes_loaded does not contain the address → a single Loading row under the session.
+        let rows = flatten(
+            &groups,
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            "",
+        );
+        let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
+        assert_eq!(kinds, vec!["host", "session", "loading"]);
+        assert_eq!(rows[2].indent, 4);
+    }
+
+    #[test]
+    fn flatten_skips_session_rows_while_scanning() {
+        let groups = vec![Group {
+            source: "jup".into(),
+            err: None,
+            sessions: vec![sess("jup", "api", 0)],
+        }];
+        let mut scanning = HashSet::new();
+        scanning.insert("jup".to_string());
+        let rows = flatten(&groups, &HashMap::new(), &HashSet::new(), &scanning, "");
+        // A scanning host shows only its host row; sessions are not expanded.
+        let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
+        assert_eq!(kinds, vec!["host"]);
+        assert_eq!(rows[0].status.as_deref(), Some("scanning…"));
+    }
+
+    #[test]
+    fn first_visible_session_respects_filter() {
+        let g = Group {
+            source: "jup".into(),
+            err: None,
+            sessions: vec![sess("jup", "api", 0), sess("jup", "web", 0)],
+        };
+        // Empty filter → the first session.
+        assert_eq!(first_visible_session(&g, "").unwrap().name, "api");
+        // Source match → the first session (all sessions kept).
+        assert_eq!(first_visible_session(&g, "jup").unwrap().name, "api");
+        // Session-only match → the first matching session.
+        assert_eq!(first_visible_session(&g, "web").unwrap().name, "web");
+        // Unreachable host → None (its sessions carry no meaning).
+        let dead = Group {
+            source: "jup".into(),
+            err: Some("refused".into()),
+            sessions: vec![sess("jup", "api", 0)],
+        };
+        assert!(first_visible_session(&dead, "").is_none());
+    }
+
+    #[test]
+    fn host_status_reports_scanning_unreachable_empty() {
+        let g = Group {
+            source: "jup".into(),
+            err: None,
+            sessions: vec![sess("jup", "api", 0)],
+        };
+        assert_eq!(host_status(&g, true).as_deref(), Some("scanning…"));
+        let dead = Group {
+            source: "jup".into(),
+            err: Some("refused".into()),
+            sessions: vec![],
+        };
+        assert_eq!(host_status(&dead, false).as_deref(), Some("⚠"));
+        let empty = Group {
+            source: "jup".into(),
+            err: None,
+            sessions: vec![],
+        };
+        assert_eq!(host_status(&empty, false).as_deref(), Some("(empty)"));
+        assert_eq!(host_status(&g, false), None);
+    }
+
+    #[test]
+    fn session_label_pads_by_display_width_not_char_count() {
+        // "한국" is 2 chars but display width 4; "api" is width 3. The name column
+        // sizes to the WIDER display width (4), so both labels occupy equal width and
+        // their trailing window counts align.
+        let cjk = Session {
+            source: "jup".into(),
+            name: "한국".into(),
+            windows: 2,
+            ..Default::default()
+        };
+        let api = Session {
+            source: "jup".into(),
+            name: "api".into(),
+            windows: 2,
+            ..Default::default()
+        };
+        // Direct: padded to the same column width.
+        assert_eq!(
+            UnicodeWidthStr::width(session_label(&api, 4).as_str()),
+            UnicodeWidthStr::width(session_label(&cjk, 4).as_str()),
+            "both labels occupy the same display width at column width 4"
+        );
+        // Via flatten: it computes the column width from the widest name, so the two
+        // session rows come out equal-width without any explicit width argument.
+        let groups = vec![Group {
+            source: "jup".into(),
+            err: None,
+            sessions: vec![cjk.clone(), api.clone()],
+        }];
+        let rows = flatten(
+            &groups,
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            "",
+        );
+        let labels: Vec<u16> = rows
+            .iter()
+            .filter(|r| matches!(r.reference, RowRef::Session(_)))
+            .map(|r| UnicodeWidthStr::width(r.label.as_str()) as u16)
+            .collect();
+        assert_eq!(labels.len(), 2);
+        assert_eq!(
+            labels[0], labels[1],
+            "flatten pads session labels to a common display width"
+        );
     }
 }

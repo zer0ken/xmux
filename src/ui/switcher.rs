@@ -16,9 +16,9 @@ use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::model::{Action, Command};
-use crate::session::{Pane, Session, WindowPanes};
+use crate::session::{Session, WindowPanes};
 use crate::ui::chrome::Chrome;
-use crate::ui::tree::{self, Group};
+use crate::ui::tree::{self, Group, Row, RowRef};
 
 pub use crate::ui::ops::{run_op, OpResult, Ops};
 
@@ -53,25 +53,6 @@ pub(crate) enum PendingKill {
         session: String,
         target: String,
     },
-}
-
-/// What a tree row references. Hosts, sessions, and windows are selectable; panes
-/// and loading placeholders are shown for context but never selectable, so the
-/// selection skips them.
-#[derive(Clone)]
-enum RowRef {
-    Host {
-        source: String,
-        unreachable: bool,
-    },
-    Session(Session),
-    Window {
-        sess: Session,
-        window: i64,
-    },
-    Pane,
-    /// A "panes loading…" placeholder under a session whose detail is in flight.
-    Loading,
 }
 
 /// One context-menu entry. The variant drives the action taken on release; the
@@ -196,26 +177,6 @@ pub(crate) fn wrap_text(text: &str, width: u16) -> Vec<String> {
     lines
 }
 
-struct Row {
-    label: String,
-    /// A trailing dim annotation (scanning…, (empty), ⚠ unreachable: …) — kept
-    /// apart from `label` so the name stays in its level colour and the state
-    /// reads dim.
-    status: Option<String>,
-    indent: usize,
-    color: Color,
-    reference: RowRef,
-    /// The active window / active pane of its session — rendered bold+italic (replaces a
-    /// trailing "(active)" text marker).
-    active: bool,
-}
-
-impl Row {
-    fn selectable(&self) -> bool {
-        !matches!(self.reference, RowRef::Pane | RowRef::Loading)
-    }
-}
-
 /// Snapshot of the selection taken before a rebuild so `restore_focus` can
 /// recover or gracefully redirect it afterward.
 struct PriorFocus {
@@ -282,7 +243,6 @@ pub struct Switcher {
 
     rows: Vec<Row>,
     selected: usize,
-    name_col_width: usize,
 
     terminal_view_target: TerminalViewTarget,
 
@@ -324,7 +284,6 @@ impl Switcher {
             reattach_kick: false,
             rows: Vec::new(),
             selected: 0,
-            name_col_width: 0,
             terminal_view_target: TerminalViewTarget::default(),
             list_state: ListState::default(),
             tree_inner: Rect::default(),
@@ -386,32 +345,6 @@ impl Switcher {
 
     // --- tree model ---------------------------------------------------------
 
-    /// The groups to render, in `state.groups` order. That order is authoritative:
-    /// it is established by recency at scan time (`apply_source_result` materialises
-    /// [`tree::order_groups`] on a scan-driven result) and then frozen, so a routine
-    /// poll never reshuffles the tree. Filtering preserves the order.
-    fn visible_groups(&self, state: &crate::state::State) -> Vec<Group> {
-        if state.filter.is_empty() {
-            state.groups.clone()
-        } else {
-            let filtered = tree::filter_groups(&state.groups, &state.filter);
-            if filtered.is_empty() {
-                // XM-01: a non-matching filter must not be a dead end.
-                state
-                    .groups
-                    .iter()
-                    .map(|g| Group {
-                        source: g.source.clone(),
-                        err: g.err.clone(),
-                        sessions: Vec::new(),
-                    })
-                    .collect()
-            } else {
-                filtered
-            }
-        }
-    }
-
     /// Whether the node an armed kill targets still exists in the current rows,
     /// matched by identity (session address / window source+target) rather than row
     /// position. Lets [`Switcher::rebuild`] keep the confirm alive across routine tree
@@ -445,101 +378,34 @@ impl Switcher {
                 RowRef::Session(_) | RowRef::Window { .. } => Some(r.reference.clone()),
                 _ => None,
             });
-        let groups = self.visible_groups(state);
 
-        self.name_col_width = 0;
-        for g in &groups {
-            if g.err.is_some() {
-                continue;
-            }
-            for sess in &g.sessions {
-                self.name_col_width = self
-                    .name_col_width
-                    .max(UnicodeWidthStr::width(sess.name.as_str()));
-            }
-        }
+        // Pure row generation lives in `tree::flatten`; rebuild orchestrates
+        // capture → flatten → preselect → restore around it.
+        let rows = tree::flatten(
+            &state.groups,
+            &state.panes,
+            &state.panes_loaded,
+            &state.scanning,
+            &state.filter,
+        );
 
-        let mut rows = Vec::new();
         // Preselect priority: the persisted last-selected session (restored on
         // launch) wins; otherwise the FIRST session row — which order_groups pins to
         // the LOCAL source's most-recent session — so an untouched selection never jumps
         // to a remote on a global-recency tiebreak (#1). `session_last_attached` is
         // not a reliable cross-host "most recent" signal (xmux's own pre-attaching and
         // clock skew corrupt it), so the preselect uses the persisted last-selected
-        // session, falling back to the local-first first session.
+        // session, falling back to the local-first first session. Derived by scanning
+        // the flattened rows, not built inline, now that flatten owns row generation.
         let mut preferred_row: Option<usize> = None;
         let mut first_session_row: Option<usize> = None;
-
-        for g in &groups {
-            let scanning = state.scanning.contains(&g.source);
-            let unreachable = g.err.is_some();
-            rows.push(Row {
-                label: g.source.clone(),
-                status: self.host_status(g, scanning),
-                indent: 0,
-                color: COLOR_HOST,
-                reference: RowRef::Host {
-                    source: g.source.clone(),
-                    unreachable,
-                },
-                active: false,
-            });
-            if scanning || unreachable {
-                continue;
-            }
-            for sess in &g.sessions {
-                let row_idx = rows.len();
+        for (i, r) in rows.iter().enumerate() {
+            if let RowRef::Session(s) = &r.reference {
                 if first_session_row.is_none() {
-                    first_session_row = Some(row_idx);
+                    first_session_row = Some(i);
                 }
-                if self.preferred.as_deref() == Some(sess.address().as_str()) {
-                    preferred_row = Some(row_idx);
-                }
-                rows.push(Row {
-                    label: self.session_label(sess),
-                    status: None,
-                    indent: 2,
-                    color: COLOR_SESSION,
-                    reference: RowRef::Session(sess.clone()),
-                    active: false,
-                });
-                if state.panes_loaded.contains(&sess.address()) {
-                    if let Some(windows) = state.panes.get(&sess.address()) {
-                        for w in windows {
-                            rows.push(Row {
-                                label: window_label(w),
-                                status: None,
-                                indent: 4,
-                                color: COLOR_WINDOW,
-                                reference: RowRef::Window {
-                                    sess: sess.clone(),
-                                    window: w.index,
-                                },
-                                active: w.active,
-                            });
-                            for p in &w.panes {
-                                rows.push(Row {
-                                    label: pane_label(p),
-                                    status: None,
-                                    indent: 6,
-                                    color: COLOR_PANE,
-                                    reference: RowRef::Pane,
-                                    active: p.active,
-                                });
-                            }
-                        }
-                    }
-                } else {
-                    // Panes still in flight for this session — a dim placeholder
-                    // stands where its windows will appear.
-                    rows.push(Row {
-                        label: "loading…".into(),
-                        status: None,
-                        indent: 4,
-                        color: COLOR_HINT,
-                        reference: RowRef::Loading,
-                        active: false,
-                    });
+                if self.preferred.as_deref() == Some(s.address().as_str()) {
+                    preferred_row = Some(i);
                 }
             }
         }
@@ -565,36 +431,6 @@ impl Switcher {
             .or_else(|| self.rows.iter().position(Row::selectable))
             .unwrap_or(0);
         self.set_selected(target, state);
-    }
-
-    /// The dim trailing annotation for a host row: its scan state when it has no
-    /// sessions to show — scanning…, ⚠ (unreachable; the reason is shown in the
-    /// terminal-view info panel when the host row is selected), or (empty).
-    fn host_status(&self, g: &Group, scanning: bool) -> Option<String> {
-        if scanning {
-            Some("scanning…".into())
-        } else if g.err.is_some() {
-            Some("⚠".into())
-        } else if g.sessions.is_empty() {
-            Some("(empty)".into())
-        } else {
-            None
-        }
-    }
-
-    fn session_label(&self, sess: &Session) -> String {
-        // No "attached" dot: the app pre-attaches EVERY session (a PTY client per
-        // session), so `session_attached` is true for ~all of them — the marker would
-        // be noise. The active window/pane is shown bold+italic instead.
-        let pad = self
-            .name_col_width
-            .saturating_sub(UnicodeWidthStr::width(sess.name.as_str()));
-        format!(
-            "{}{}   {}",
-            sess.name,
-            " ".repeat(pad),
-            plural(sess.windows)
-        )
     }
 
     // --- selection / navigation --------------------------------------------
@@ -728,7 +564,11 @@ impl Switcher {
         match self.current_ref()? {
             RowRef::Session(s) => Some(s.clone()),
             RowRef::Window { sess, .. } => Some(sess.clone()),
-            RowRef::Host { source, .. } => self.first_session_of(source, state),
+            RowRef::Host { source, .. } => state
+                .groups
+                .iter()
+                .find(|g| &g.source == source)
+                .and_then(|g| tree::first_visible_session(g, &state.filter)),
             _ => None,
         }
     }
@@ -739,49 +579,12 @@ impl Switcher {
 
     // --- preview ------------------------------------------------------------
 
-    fn first_session_of(&self, source: &str, state: &crate::state::State) -> Option<Session> {
-        // The source's first VISIBLE session (its sessions are kept recency-sorted),
-        // mirroring `filter_groups` for just this one group — NOT cloning every host's
-        // sessions via `visible_groups`, since this runs on every selection move onto a
-        // host row (the navigation hot path).
-        let g = state.groups.iter().find(|g| g.source == source)?;
-        if g.err.is_some() {
-            return None; // unreachable host: its sessions carry no meaning
-        }
-        if state.filter.is_empty() || tree::fuzzy_match(&state.filter, &g.source) {
-            g.sessions.first().cloned()
-        } else {
-            g.sessions
-                .iter()
-                .find(|s| tree::fuzzy_match(&state.filter, &s.address()))
-                .cloned()
-        }
-    }
-
-    fn target_for(&self, reference: &RowRef, state: &crate::state::State) -> TerminalViewTarget {
-        match reference {
-            RowRef::Host { source, .. } => match self.first_session_of(source, state) {
-                Some(sess) => TerminalViewTarget {
-                    source: sess.source,
-                    target: sess.name,
-                },
-                None => TerminalViewTarget::default(),
-            },
-            RowRef::Session(s) => TerminalViewTarget {
-                source: s.source.clone(),
-                target: s.name.clone(),
-            },
-            RowRef::Window { sess, window } => TerminalViewTarget {
-                source: sess.source.clone(),
-                target: format!("{}:{}", sess.name, window),
-            },
-            RowRef::Pane | RowRef::Loading => TerminalViewTarget::default(),
-        }
-    }
-
     fn on_focus_changed(&mut self, state: &crate::state::State) {
         self.terminal_view_target = match self.current_ref() {
-            Some(r) => self.target_for(r, state),
+            Some(r) => {
+                let (source, target) = tree::target_for(r, &state.groups, &state.filter);
+                TerminalViewTarget { source, target }
+            }
             None => TerminalViewTarget::default(),
         };
     }
@@ -792,11 +595,11 @@ impl Switcher {
     /// loading, and empty-host rows.
     pub fn current_attach_target(&self, state: &crate::state::State) -> Option<TerminalViewTarget> {
         let r = self.current_ref()?;
-        let tgt = self.target_for(r, state);
-        if tgt.target.is_empty() {
+        let (source, target) = tree::target_for(r, &state.groups, &state.filter);
+        if target.is_empty() {
             None
         } else {
-            Some(tgt)
+            Some(TerminalViewTarget { source, target })
         }
     }
 
@@ -1941,7 +1744,16 @@ impl Switcher {
                     ]));
                 }
                 let selected = i == self.selected;
-                let mut style = Style::default().fg(row.color);
+                // Colour is a pure function of the row's level, derived here so the
+                // tree model (`tree::Row`) stays terminal-free. Loading returns above.
+                let color = match &row.reference {
+                    RowRef::Host { .. } => COLOR_HOST,
+                    RowRef::Session(_) => COLOR_SESSION,
+                    RowRef::Window { .. } => COLOR_WINDOW,
+                    RowRef::Pane => COLOR_PANE,
+                    RowRef::Loading => COLOR_HINT,
+                };
+                let mut style = Style::default().fg(color);
                 if selected {
                     style = style.add_modifier(Modifier::REVERSED);
                 }
@@ -2208,14 +2020,6 @@ fn render_popup(frame: &mut Frame, area: Rect, rect: Rect, title: &str, lines: V
     }
 }
 
-fn plural(n: i64) -> String {
-    if n == 1 {
-        "1 window".to_string()
-    } else {
-        format!("{n} windows")
-    }
-}
-
 /// Picks the first (longest) candidate whose width fits `width`, falling back
 /// to the last (shortest) when even that does not fit.
 pub(crate) fn fit(candidates: &[String], width: u16) -> String {
@@ -2225,16 +2029,6 @@ pub(crate) fn fit(candidates: &[String], width: u16) -> String {
         .find(|c| UnicodeWidthStr::width(c.as_str()) <= w)
         .cloned()
         .unwrap_or_else(|| candidates.last().cloned().unwrap_or_default())
-}
-
-// The active window / pane is shown bold+italic (the `Row::active` flag), not with a
-// trailing "(active)" text marker.
-fn window_label(w: &WindowPanes) -> String {
-    format!("window {}: {}", w.index, w.name)
-}
-
-fn pane_label(p: &Pane) -> String {
-    format!("pane {}  {}", p.index, p.command)
 }
 
 /// Adds a space each side so the reverse-video selection has breathing room.
@@ -2364,6 +2158,7 @@ fn input_title(mode: InputMode) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::Pane;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -2907,12 +2702,12 @@ mod tests {
         // The active window/pane is shown bold+italic (Row::active), not with "(active)" text.
         let w = win(2, "logs", true, vec![pane(1, true, "tail")]);
         assert_eq!(
-            window_label(&w),
+            tree::window_label(&w),
             "window 2: logs",
             "no (active) text on the window label"
         );
         assert_eq!(
-            pane_label(&w.panes[0]),
+            tree::pane_label(&w.panes[0]),
             "pane 1  tail",
             "no (active) text on the pane label"
         );
@@ -5588,66 +5383,6 @@ mod tests {
             sw.terminal_view_target().target,
             "db",
             "selection unchanged on a miss"
-        );
-    }
-
-    #[test]
-    fn session_label_pads_by_display_width_not_char_count() {
-        use unicode_width::UnicodeWidthStr;
-        // Two sessions, one ASCII ("api", width 3) and one CJK ("한국", 2 chars but
-        // width 4). The name column must size to the WIDER display width (4), so the
-        // ASCII label is padded to align the trailing window count.
-        let scan = Scan {
-            groups: vec![Group {
-                source: "jup".into(),
-                err: None,
-                sessions: vec![
-                    Session {
-                        source: "jup".into(),
-                        name: "한국".into(),
-                        windows: 2,
-                        attached: false,
-                        last_attached: 200,
-                    },
-                    Session {
-                        source: "jup".into(),
-                        name: "api".into(),
-                        windows: 2,
-                        attached: false,
-                        last_attached: 100,
-                    },
-                ],
-            }],
-            panes: Default::default(),
-        };
-        let mut state = crate::state::State::from_scan(scan);
-        let sw = Switcher::new(&mut state); // new() calls rebuild(), which computes name_col_width
-                                            // name_col_width is a DISPLAY width: max(width("한국")=4, width("api")=3) = 4.
-        assert_eq!(
-            sw.name_col_width, 4,
-            "column width is the display width of the widest name"
-        );
-        // The "api" label pads to width 4 (one space), so the "   <count>" suffix
-        // starts at the same display column as it does for "한국".
-        // Both sessions have the same window count so suffix lengths are equal.
-        let api = sw.session_label(&Session {
-            source: "jup".into(),
-            name: "api".into(),
-            windows: 2,
-            attached: false,
-            last_attached: 100,
-        });
-        let cjk = sw.session_label(&Session {
-            source: "jup".into(),
-            name: "한국".into(),
-            windows: 2,
-            attached: false,
-            last_attached: 200,
-        });
-        assert_eq!(
-            UnicodeWidthStr::width(api.as_str()),
-            UnicodeWidthStr::width(cjk.as_str()),
-            "both labels occupy the same display width"
         );
     }
 
