@@ -63,6 +63,15 @@ pub enum Action {
     /// Blank the display truth — the `r` reattach-kick tears the current display
     /// down, so nothing is confirmed until the fresh attach lands.
     ClearDisplay,
+    /// Re-arm the attach debounce one interval out from `now` — the recovery rearm
+    /// (a matched-client detach-reap, or the viewed session's PTY exiting). Carries
+    /// the same debounce arithmetic `apply(Tick)` owns, so the two arming paths
+    /// cannot drift. `now` is injected (apply never reads the clock itself).
+    RearmAttach { now: Instant },
+    /// Arm the attach deadline at `now` itself (already elapsed) so the trailing
+    /// `Tick` re-attaches immediately — the `r` reattach-kick, which re-attaches the
+    /// current display with no debounce.
+    RearmAttachNow { now: Instant },
     /// Create a new session named `name` (empty = mux auto-name) on `source`.
     CreateSession { source: String, name: String },
     /// Create a new window named `name` (empty = mux auto-name) in `session` on `source`.

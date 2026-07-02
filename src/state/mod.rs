@@ -161,6 +161,14 @@ impl State {
                 self.displayed = Selection::default();
                 Vec::new()
             }
+            Action::RearmAttach { now } => {
+                self.attach_deadline = Some(now + Duration::from_millis(ATTACH_DEBOUNCE_MS));
+                Vec::new()
+            }
+            Action::RearmAttachNow { now } => {
+                self.attach_deadline = Some(now);
+                Vec::new()
+            }
             Action::Rescan => vec![Command::Rescan],
             Action::TreeWidth(d) => vec![Command::AdjustTreeWidth(d)],
             Action::ToggleAutoHide => vec![Command::ToggleAutoHide],
@@ -450,8 +458,9 @@ impl State {
 /// makes the remote mux send a full-screen repaint, and a storm of repaints floods
 /// the draw — the single-threaded loop then spends all its time redrawing, which IS
 /// the freeze. Deferring the attach until the selection settles keeps per-step redraws
-/// to a cheap tree-only diff. The single source of this value; the app's
-/// host-event re-arm paths reference it so the two can never drift.
+/// to a cheap tree-only diff. The single source of this value: both `apply`'s `Tick`
+/// re-arm and its [`Action::RearmAttach`](crate::model::Action::RearmAttach) recovery
+/// re-arm read it, so the two arming paths can never drift.
 pub(crate) const ATTACH_DEBOUNCE_MS: u64 = 90;
 
 #[cfg(test)]
@@ -726,6 +735,36 @@ mod tests {
         });
         assert!(cmds.is_empty(), "empty selection never attaches");
         assert!(s.attach_deadline.is_none());
+    }
+
+    #[test]
+    fn apply_rearm_attach_arms_the_debounce_deadline() {
+        // The recovery re-arm (host-event detach-reap, pty-detach recover): apply owns
+        // the debounce arithmetic that Tick owns, so the two arming paths cannot drift.
+        let mut s = State::default();
+        let t0 = Instant::now();
+        let cmds = s.apply(Action::RearmAttach { now: t0 });
+        assert_eq!(
+            s.attach_deadline,
+            Some(t0 + Duration::from_millis(90)),
+            "RearmAttach arms the deadline one debounce out"
+        );
+        assert!(cmds.is_empty(), "RearmAttach emits no command");
+    }
+
+    #[test]
+    fn apply_rearm_attach_now_arms_an_immediate_deadline() {
+        // The `r` reattach-kick fires ASAP: it sets the deadline to `now` so the SAME
+        // loop iteration's trailing Tick sees it elapsed and re-attaches immediately.
+        let mut s = State::default();
+        let t0 = Instant::now();
+        let cmds = s.apply(Action::RearmAttachNow { now: t0 });
+        assert_eq!(
+            s.attach_deadline,
+            Some(t0),
+            "RearmAttachNow arms an already-elapsed (immediate) deadline"
+        );
+        assert!(cmds.is_empty(), "RearmAttachNow emits no command");
     }
 
     #[test]

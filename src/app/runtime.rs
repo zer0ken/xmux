@@ -31,10 +31,6 @@ use crate::display::{DisplayEnsure, DisplayEvent, DisplayWorker};
 use crate::env::Env;
 use crate::host::{HostEvent, HostManager};
 use crate::model::Selection;
-/// The settled-attach debounce (the freeze fix). Owned by `state` (the `apply(Tick)`
-/// re-arm uses it); the host-event re-arm paths reference the same constant so the
-/// value can never drift between the two.
-use crate::state::ATTACH_DEBOUNCE_MS;
 use crate::ui::switcher::TerminalViewTarget;
 
 /// Milliseconds per braille-spinner frame. The frame index is derived from
@@ -1890,7 +1886,9 @@ impl Runtime {
                 h.display.clear(&key); // drop the prior latch so the re-attach is fresh
             }
             self.state.apply(crate::model::Action::ClearDisplay); // nothing confirmed → blank view
-            self.state.attach_deadline = Some(std::time::Instant::now());
+            self.state.apply(crate::model::Action::RearmAttachNow {
+                now: std::time::Instant::now(),
+            });
         }
         // In terminal focus the tree selection tracks the displayed session's active
         // window (idempotent, so calling it each iteration is cheap).
@@ -2062,11 +2060,11 @@ impl Runtime {
         ev: HostEvent,
         host_rx: &mut tokio::sync::mpsc::UnboundedReceiver<HostEvent>,
     ) {
-        use std::time::Duration;
         let t = std::time::Instant::now();
         if self.handle_host_event(ev) {
-            self.state.attach_deadline =
-                Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
+            self.state.apply(crate::model::Action::RearmAttach {
+                now: std::time::Instant::now(),
+            });
             self.dirty = true;
         }
         let mut budget = EVENT_DRAIN_BUDGET;
@@ -2074,9 +2072,9 @@ impl Runtime {
             match host_rx.try_recv() {
                 Ok(ev) => {
                     if self.handle_host_event(ev) {
-                        self.state.attach_deadline = Some(
-                            std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS),
-                        );
+                        self.state.apply(crate::model::Action::RearmAttach {
+                            now: std::time::Instant::now(),
+                        });
                         self.dirty = true;
                     }
                     budget -= 1;
@@ -2094,7 +2092,6 @@ impl Runtime {
         ev: PtyEvent,
         pty_rx: &mut tokio::sync::mpsc::UnboundedReceiver<PtyEvent>,
     ) {
-        use std::time::Duration;
         // Capture the viewed attach id BEFORE any reap removes it; a background session
         // dropping (tree focus, or a non-displayed attach) is just reaped.
         let displayed_attach_id = (self.state.focus.is_terminal_focused()
@@ -2153,8 +2150,9 @@ impl Runtime {
         if detached {
             // The viewed session's client detached/exited — recover by re-attaching it
             // (reaped above, so the loop-top attach re-fires once its PTY is gone).
-            self.state.attach_deadline =
-                Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
+            self.state.apply(crate::model::Action::RearmAttach {
+                now: std::time::Instant::now(),
+            });
             self.dirty = true;
         }
     }
