@@ -218,21 +218,42 @@ pub trait Mux: Send + Sync {
         }
     }
 
-    fn list_panes_plan(&self, session: &str) -> Vec<String>;
-    fn new_window_plan(&self, session: &str, name: &str) -> Vec<String>;
-    fn split_window_plan(&self, target: &str, vertical: bool) -> Vec<String>;
-    fn select_window_plan(&self, target: &str) -> Vec<String>;
-    fn kill_window_plan(&self, target: &str) -> Vec<String>;
-    fn rename_window_plan(&self, target: &str, new: &str) -> Vec<String>;
+    // The 9 command-plan verbs are tmux-compatible argv builders over `self.bin()`, so
+    // every tmux-compatible mux inherits them for free (the north-star additivity). A mux
+    // whose argv diverges overrides only the verb it differs on.
+    fn list_panes_plan(&self, session: &str) -> Vec<String> {
+        mux::list_panes(self.bin(), session)
+    }
+    fn new_window_plan(&self, session: &str, name: &str) -> Vec<String> {
+        mux::new_window(self.bin(), session, name)
+    }
+    fn split_window_plan(&self, target: &str, vertical: bool) -> Vec<String> {
+        mux::split_window(self.bin(), target, vertical)
+    }
+    fn select_window_plan(&self, target: &str) -> Vec<String> {
+        mux::select_window(self.bin(), target)
+    }
+    fn kill_window_plan(&self, target: &str) -> Vec<String> {
+        mux::kill_window(self.bin(), target)
+    }
+    fn rename_window_plan(&self, target: &str, new: &str) -> Vec<String> {
+        mux::rename_window(self.bin(), target, new)
+    }
 
     /// The `new-session` argv that creates-or-attaches a DETACHED session (auto-named
     /// when `name` is empty) and prints its assigned name. The manage layer runs it via
     /// the host's `Transport` and reads back the assigned name.
-    fn new_session_plan(&self, name: &str) -> Vec<String>;
+    fn new_session_plan(&self, name: &str) -> Vec<String> {
+        mux::new_session(self.bin(), name)
+    }
     /// The `kill-session` argv for session `name`.
-    fn kill_session_plan(&self, name: &str) -> Vec<String>;
+    fn kill_session_plan(&self, name: &str) -> Vec<String> {
+        mux::kill_session(self.bin(), name)
+    }
     /// The `rename-session` argv moving `old` to `new`.
-    fn rename_session_plan(&self, old: &str, new: &str) -> Vec<String>;
+    fn rename_session_plan(&self, old: &str, new: &str) -> Vec<String> {
+        mux::rename_session(self.bin(), old, new)
+    }
 }
 
 struct MuxKind {
@@ -412,6 +433,58 @@ mod tests {
             m.rename_session_plan("old", "new"),
             mux::rename_session("tmux", "old", "new")
         );
+    }
+
+    /// A minimal tmux-compatible mux that implements ONLY the required `Mux` methods
+    /// — none of the 9 command-plan verbs. It must still compile and get every command
+    /// plan for free from the trait defaults (the north-star additivity: a new
+    /// tmux-compatible mux = identity + a few methods, the verbs are free).
+    struct BareMux {
+        bin: String,
+    }
+
+    #[async_trait]
+    impl Mux for BareMux {
+        fn kind(&self) -> &str {
+            "bare"
+        }
+        fn bin(&self) -> &str {
+            &self.bin
+        }
+        fn server_model(&self) -> ServerModel {
+            ServerModel::Shared
+        }
+        fn driver(&self) -> Box<dyn crate::driver::MuxDriver> {
+            Box::new(crate::mux::tmux::TmuxDriver)
+        }
+        async fn enumerate(
+            &self,
+            transport: &dyn Transport,
+            runner: &dyn Runner,
+        ) -> Result<Vec<Session>, RunError> {
+            enumerate_via_list_sessions(&self.bin, transport, runner).await
+        }
+        fn attach_plan(&self, session: &str, _window: Option<i64>) -> Vec<String> {
+            mux::attach(&self.bin, session)
+        }
+        fn control_argv(&self) -> Option<Vec<String>> {
+            None
+        }
+        fn death_signal(&self) -> DeathSignal {
+            DeathSignal::ControlNotice
+        }
+        fn event_source(&self) -> EventSource {
+            EventSource::Control
+        }
+    }
+
+    #[test]
+    fn bare_tmux_compatible_mux_gets_command_plans_for_free() {
+        // The 9 command-plan verbs are trait defaults over `self.bin()`, so a bare
+        // tmux-compatible mux inherits byte-identical plans without overriding them.
+        let m = BareMux { bin: "tmux".into() };
+        assert_eq!(m.list_panes_plan("work"), mux::list_panes("tmux", "work"));
+        assert_eq!(m.new_session_plan("dev"), mux::new_session("tmux", "dev"));
     }
 
     // LIVE: enumerate over a real local tmux server. `#[ignore]` (needs tmux + a

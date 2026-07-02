@@ -114,34 +114,6 @@ impl Mux for Psmux {
             interval_ms: PSMUX_POLL_MS,
         }
     }
-
-    fn list_panes_plan(&self, session: &str) -> Vec<String> {
-        mux::list_panes(&self.bin, session)
-    }
-    fn new_window_plan(&self, session: &str, name: &str) -> Vec<String> {
-        mux::new_window(&self.bin, session, name)
-    }
-    fn split_window_plan(&self, target: &str, vertical: bool) -> Vec<String> {
-        mux::split_window(&self.bin, target, vertical)
-    }
-    fn select_window_plan(&self, target: &str) -> Vec<String> {
-        mux::select_window(&self.bin, target)
-    }
-    fn kill_window_plan(&self, target: &str) -> Vec<String> {
-        mux::kill_window(&self.bin, target)
-    }
-    fn rename_window_plan(&self, target: &str, new: &str) -> Vec<String> {
-        mux::rename_window(&self.bin, target, new)
-    }
-    fn new_session_plan(&self, name: &str) -> Vec<String> {
-        mux::new_session(&self.bin, name)
-    }
-    fn kill_session_plan(&self, name: &str) -> Vec<String> {
-        mux::kill_session(&self.bin, name)
-    }
-    fn rename_session_plan(&self, old: &str, new: &str) -> Vec<String> {
-        mux::rename_session(&self.bin, old, new)
-    }
 }
 
 #[cfg(test)]
