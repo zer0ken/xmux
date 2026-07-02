@@ -28,6 +28,7 @@ use crate::display::registry::AttachRegistry;
 use crate::display::{DisplayEnsure, DisplayEvent, DisplayWorker};
 use crate::env::Env;
 use crate::host::{HostEvent, HostManager};
+use crate::model::Selection;
 /// The settled-attach debounce (the freeze fix). Owned by `state` (the `apply(Tick)`
 /// re-arm uses it); the host-event re-arm paths reference the same constant so the
 /// value can never drift between the two.
@@ -281,46 +282,24 @@ impl DrawObserver {
     }
 }
 
-/// The canonical selection — the single source of truth the display reads. The
-/// `Switcher` owns the tree + selection; the app commits the selection's target into
-/// this struct, and the render, input routing, and spinner all key off it. `window`
-/// is `Some` only for a window-row selection.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Selection {
-    pub source: String,
-    /// Empty ⇒ no terminal view (selection on a host/loading row).
-    pub session: String,
-    pub window: Option<i64>,
-}
-
-impl Selection {
-    /// Derives the selection from the switcher's current terminal-view target. The
-    /// target is either `session` or `session:window`; the session part keys the
-    /// PTY attachment, the optional window part drives `select-window`.
-    fn from_target(t: &TerminalViewTarget) -> Self {
-        if t.target.is_empty() {
-            return Selection::default();
-        }
-        let session = crate::mux::session_name(&t.target).to_string();
-        let window = t
-            .target
-            .split(':')
-            .nth(1)
-            .and_then(|w| w.parse::<i64>().ok());
-        Selection {
-            source: t.source.clone(),
-            session,
-            window,
-        }
+/// Derives a [`Selection`] from the switcher's current terminal-view target. The target
+/// is either `session` or `session:window`; the session part keys the PTY attachment, the
+/// optional window part drives `select-window`. Stays in `app` because it depends on the
+/// ui [`TerminalViewTarget`] — the [`Selection`] value itself is a pure `model` type.
+fn selection_from_target(t: &TerminalViewTarget) -> Selection {
+    if t.target.is_empty() {
+        return Selection::default();
     }
-
-    /// The `AttachRegistry` key — `source/session`, matching `Session::address()`.
-    pub fn address(&self) -> String {
-        format!("{}/{}", self.source, self.session)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.session.is_empty()
+    let session = crate::mux::session_name(&t.target).to_string();
+    let window = t
+        .target
+        .split(':')
+        .nth(1)
+        .and_then(|w| w.parse::<i64>().ok());
+    Selection {
+        source: t.source.clone(),
+        session,
+        window,
     }
 }
 
@@ -340,7 +319,7 @@ fn sync_selection_from_switcher(
     state: &mut crate::state::State,
     switcher: &crate::ui::switcher::Switcher,
 ) -> bool {
-    let new_sel = Selection::from_target(&switcher.terminal_view_target());
+    let new_sel = selection_from_target(&switcher.terminal_view_target());
     if new_sel == state.selection {
         return false;
     }
@@ -3022,7 +3001,7 @@ mod tests {
             source: "jupiter06".into(),
             target: "api".into(),
         };
-        let sel = Selection::from_target(&t);
+        let sel = selection_from_target(&t);
         assert_eq!(sel.source, "jupiter06");
         assert_eq!(sel.session, "api");
         assert_eq!(sel.window, None);
@@ -3038,7 +3017,7 @@ mod tests {
             source: "jupiter06".into(),
             target: "api:2".into(),
         };
-        let sel = Selection::from_target(&t);
+        let sel = selection_from_target(&t);
         assert_eq!(sel.session, "api");
         assert_eq!(sel.window, Some(2));
         assert_eq!(
@@ -3050,7 +3029,7 @@ mod tests {
 
     #[test]
     fn selection_from_empty_target_is_empty() {
-        let sel = Selection::from_target(&TerminalViewTarget::default());
+        let sel = selection_from_target(&TerminalViewTarget::default());
         assert!(sel.is_empty());
         assert_eq!(sel.window, None);
     }

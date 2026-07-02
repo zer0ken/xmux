@@ -1,7 +1,7 @@
 //! Runtime domain state: the single source of truth the new architecture's
 //! components read from. Carries the app loop's inventory, selection,
 //! display-truth, focus, and the open modal popup.
-use crate::app::runtime::Selection;
+use crate::model::Selection;
 use crate::session::WindowPanes;
 use crate::ui::tree::Group;
 use std::collections::{HashMap, HashSet};
@@ -450,8 +450,7 @@ pub(crate) const ATTACH_DEBOUNCE_MS: u64 = 90;
 mod tests {
     use super::*;
     use crate::app::focus::Focus;
-    use crate::app::runtime::Selection;
-    use crate::model::{Action, Command, FocusTarget};
+    use crate::model::{Action, Command, FocusTarget, Selection};
     use std::time::Duration;
 
     #[test]

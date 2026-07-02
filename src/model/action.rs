@@ -16,7 +16,7 @@
 //! into a [`Command::RunOp`] carrying the [`MuxOp`] descriptor the run loop runs
 //! off-loop against the live mux.
 
-use crate::app::runtime::Selection;
+use crate::model::Selection;
 use crate::session::Session;
 use std::time::Instant;
 

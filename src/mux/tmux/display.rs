@@ -4,10 +4,11 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::app::runtime::{host_selection_key, request_attach, terminal_view_size, Selection};
+use crate::app::runtime::{host_selection_key, request_attach, terminal_view_size};
 use crate::display::grid::Grid;
 use crate::driver::{lower_select_window, DriverCtx, MuxDriver};
 use crate::model::Host;
+use crate::model::Selection;
 
 /// Shared-server mux (tmux): ONE PTY per host, warmed on the first session and moved to
 /// another session with `switch-client`. `Tmux::driver` constructs it for a `Shared` host.
@@ -242,9 +243,9 @@ fn with_display_tty_record(mut argv: Vec<String>, host: &Host, host_key: &str) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::runtime::Selection;
     use crate::display::registry::AttachRegistry;
     use crate::host::HostManager;
+    use crate::model::Selection;
 
     /// A REMOTE shared attach gets the mux's record prefix folded into its remote
     /// command (the last argv element), so the attach shell records its OWN tty for a

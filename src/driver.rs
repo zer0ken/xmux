@@ -14,11 +14,12 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::app::runtime::{run_lowered, Selection};
+use crate::app::runtime::run_lowered;
 use crate::display::grid::Grid;
 use crate::display::registry::AttachRegistry;
 use crate::display::DisplayWorker;
 use crate::host::HostManager;
+use crate::model::Selection;
 use crate::model::{Host, Hosts};
 
 /// A supervisor INTENT: show this session (and optionally land on a window). The
@@ -117,7 +118,7 @@ pub(crate) fn lower_select_window(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::app::runtime::Selection;
+    use crate::model::Selection;
 
     pub(crate) fn sess(source: &str, name: &str) -> crate::session::Session {
         crate::session::Session {

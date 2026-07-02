@@ -5,9 +5,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::app::runtime::{host_selection_key, request_attach, terminal_view_size, Selection};
+use crate::app::runtime::{host_selection_key, request_attach, terminal_view_size};
 use crate::display::grid::Grid;
 use crate::driver::{lower_select_window, DriverCtx, MuxDriver};
+use crate::model::Selection;
 
 /// Per-session mux (psmux): one server per session, displayed through ONE per-host PTY
 /// that is REATTACHED whenever the selected session changes (`new-session -A -s <name>`
@@ -296,9 +297,9 @@ fn spawn_local_psmux_tty_capture(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::runtime::Selection;
     use crate::display::registry::AttachRegistry;
     use crate::host::HostManager;
+    use crate::model::Selection;
 
     /// The psmux driver owns the per-session reattach decision: `show()` REPLACES the
     /// single host-keyed display attachment (drop the stale one, request a fresh attach

@@ -9,6 +9,7 @@ pub mod death;
 pub mod host;
 pub mod hosts;
 pub mod plan;
+pub mod selection;
 pub mod server_model;
 
 pub use action::{Action, Command, EventEffect, FocusTarget, MuxOp};
@@ -19,4 +20,5 @@ pub use death::{
 pub use host::{Host, HostDisplay, Liveness};
 pub use hosts::Hosts;
 pub use plan::{DeathSignal, DisplayTty, EventSource};
+pub use selection::Selection;
 pub use server_model::ServerModel;
