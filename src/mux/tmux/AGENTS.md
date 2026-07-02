@@ -59,8 +59,9 @@ machine execution (local `-S` / `ssh -tt`); the tmux family never hardcodes ssh.
   `Mux::driver()` (through `driver_for`), never a `match server_model()`.
 - Do not fold the display-tty record prefix into a LOCAL attach (there is no shell to run
   it — it would corrupt the argv's session-name argument).
-- Do not thread a `remote` bool through the mux; the driver reads
-  `host.transport.is_remote()` and the mux stays transport-blind.
+- Do not thread a `remote` bool through the mux; the driver reads the transport's
+  capability predicate (`host.transport.runs_through_shell()` gates the tty record) and
+  the mux stays transport-blind.
 
 ## Before Editing
 

@@ -150,7 +150,6 @@ impl MuxDriver for PsmuxDriver {
         );
         host.display.clear(&key);
         let mux_argv = host.mux.attach_plan(&sel.session);
-        let remote = host.transport.is_remote();
         let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
         let mut argv = vec![cmd];
         argv.extend(args);
@@ -171,10 +170,10 @@ impl MuxDriver for PsmuxDriver {
         // LOCAL psmux attach runs the binary directly (no shell), so the remote shell
         // marker never fires; instead probe `list-clients` (read-only) and correlate the
         // client by the session it shows. If the probe finds nothing the tty stays unset
-        // and the next switch simply reattaches again — no regression. A REMOTE psmux
-        // host has its registry on the far side and is enumerated/displayed the generic
-        // way; skip the local probe there.
-        if !remote {
+        // and the next switch simply reattaches again — no regression. The probe reads
+        // THIS box's default socket, so it runs only where the local registry is
+        // authoritative; a host whose registry is on the far side skips it.
+        if host.transport.local_registry_scope() {
             spawn_local_psmux_tty_capture(
                 host.mux.bin().to_string(),
                 sel.session.clone(),

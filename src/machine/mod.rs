@@ -22,9 +22,26 @@ pub trait Transport: Send + Sync {
     /// `"local"` or the ssh alias — the stable host id and `Hosts` map key.
     fn host_id(&self) -> &str;
 
-    /// True for a remote (ssh) machine. The ONLY query of transport kind — no `Mux`
-    /// or supervisor code reads this to decide a server MODEL (that is `ServerModel`).
+    /// True for a remote (ssh) machine. Used only to SHAPE ssh options — not to decide a
+    /// server MODEL (that is `ServerModel`) nor the two capability predicates below.
     fn is_remote(&self) -> bool {
+        false
+    }
+
+    /// True when a display attach on this machine runs THROUGH a host shell (so an attach
+    /// can prepend a `tty >file` record snippet, and a `SwitchPlan::Shell` can run). A
+    /// machine that spawns the mux binary directly is `false` (the default). NOT derived
+    /// from `is_remote`: a local-but-shell family (WSL) sets this `true` while staying
+    /// non-remote.
+    fn runs_through_shell(&self) -> bool {
+        false
+    }
+
+    /// True when THIS box's local mux registry (`~/.psmux`) is the authority for this
+    /// host's sessions — enabling the registry-merge enumeration and the local
+    /// `list-clients` tty probe. `false` (the default) for a machine whose sessions live
+    /// on the far side. NOT derived from `is_remote`.
+    fn local_registry_scope(&self) -> bool {
         false
     }
 
@@ -69,6 +86,12 @@ impl Transport for Box<dyn Transport> {
     }
     fn is_remote(&self) -> bool {
         (**self).is_remote()
+    }
+    fn runs_through_shell(&self) -> bool {
+        (**self).runs_through_shell()
+    }
+    fn local_registry_scope(&self) -> bool {
+        (**self).local_registry_scope()
     }
     fn exec_argv(&self, tty: bool, mux_argv: &[String]) -> (String, Vec<String>) {
         (**self).exec_argv(tty, mux_argv)
@@ -205,5 +228,20 @@ mod tests {
         .transport();
         assert_eq!(ssh.host_id(), "prod");
         assert!(ssh.is_remote());
+    }
+
+    #[test]
+    fn capability_predicates_split_shell_from_registry_scope() {
+        // The two capability predicates split the meanings `is_remote` conflated: local
+        // psmux is the authority for THIS box's registry (registry scope) yet attaches
+        // without a shell; ssh attaches THROUGH a shell yet has no local-registry
+        // authority here. They are NOT derived from `is_remote`, so a future local-but-
+        // shell family (WSL) can override a new combination.
+        let local = local(None);
+        assert!(local.local_registry_scope());
+        assert!(!local.runs_through_shell());
+        let ssh = ssh("prod".into(), String::new(), "linux".into());
+        assert!(ssh.runs_through_shell());
+        assert!(!ssh.local_registry_scope());
     }
 }

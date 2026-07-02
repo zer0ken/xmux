@@ -49,12 +49,12 @@ impl Mux for Psmux {
         runner: &dyn Runner,
     ) -> Result<Vec<Session>, RunError> {
         // The local-registry merge is a LOCAL-psmux behavior: `~/.psmux` is THIS
-        // machine's registry, with no remote awareness. A REMOTE psmux host has its
-        // own registry on the far side, unreachable here, so it must enumerate the
-        // generic way (list-sessions over ssh) — identical to a remote tmux. Folding
-        // the local registry into a remote host would inject local session names as
-        // phantoms and (worse) swallow an ssh failure into a fake empty/populated list.
-        if transport.is_remote() {
+        // machine's registry, with no remote awareness. A machine whose registry is NOT
+        // authoritative here (a remote psmux host has its own on the far side) must
+        // enumerate the generic way (list-sessions over ssh) — identical to a remote tmux.
+        // Folding the local registry into it would inject local session names as phantoms
+        // and (worse) swallow an ssh failure into a fake empty/populated list.
+        if !transport.local_registry_scope() {
             return crate::mux::enumerate_via_list_sessions(&self.bin, transport, runner).await;
         }
         // Local psmux: the registry (`~/.psmux/<name>.port`) is the authoritative

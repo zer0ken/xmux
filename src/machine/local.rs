@@ -17,6 +17,13 @@ impl Transport for Local {
         LOCAL_SOURCE
     }
 
+    /// This box's local mux registry is authoritative for a local host (registry-merge
+    /// enumeration + a local `list-clients` tty probe). A local attach spawns the mux
+    /// binary directly, so `runs_through_shell` stays the default `false`.
+    fn local_registry_scope(&self) -> bool {
+        true
+    }
+
     fn exec_argv(&self, _tty: bool, mux_argv: &[String]) -> (String, Vec<String>) {
         let mut args: Vec<String> = Vec::new();
         if let Some(sock) = self.socket.as_deref().filter(|s| !s.is_empty()) {

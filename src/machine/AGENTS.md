@@ -17,8 +17,9 @@ to `machine/` what `Mux` is to `mux/`.
 
 ## Module Seams
 
-- `mod.rs` holds the `Transport` trait, the `machine::local()` / `machine::ssh()`
-  factories (a host builds a transport by calling one, never by matching a kind),
+- `mod.rs` holds the `Transport` trait, the `MachineKind` enum + its `transport()`
+  method (the single construction-time match that maps a kind to a concrete transport),
+  the `machine::local()` / `machine::ssh()` factory functions `transport()` delegates to,
   the `LoweredSwitch` execution-shape enum, the `Clone for Box<dyn Transport>`
   impl (via `clone_box`), and the blanket `impl Transport for Box<dyn Transport>`
   (so a stored box passes where `&dyn Transport` is expected).
@@ -35,11 +36,15 @@ imports a mux type or a `Source`.
 
 ## Invariants
 
-- `Transport` names no mux and no server model. `is_remote()` is the ONLY query of
-  transport kind, and no `Mux` or supervisor code reads it to pick a server model
-  (that is `ServerModel`).
-- Machine selection lives at construction (`machine::local` / `machine::ssh`),
-  never a central `match` on kind — the trait object carries the choice.
+- `Transport` names no mux and no server model. `is_remote()` shapes ssh options only;
+  the capability predicates `runs_through_shell()` (a display attach runs through a host
+  shell — the tty-record gate) and `local_registry_scope()` (this box's mux registry is
+  authoritative — the registry-merge / local `list-clients` gate) express what the mux
+  sites need. None of the three derives from another, and no code reads them to pick a
+  server model (that is `ServerModel`).
+- Machine selection is a single construction-time match — `MachineKind::transport()` maps
+  a kind to a concrete transport (via the `machine::local` / `machine::ssh` factories),
+  never a match scattered across call sites. The trait object then carries the choice.
 - `exec_argv` lowers a non-interactive command; `interactive_attach_argv` lowers an
   attach into the terminal handover (local `-S` injection, or `ssh -t` running
   `[<select-window> ;] exec <attach>` — the `exec`/window-fold lives here, never in
@@ -64,8 +69,11 @@ imports a mux type or a `Source`.
 ## Before Editing
 
 - Adding a machine family (e.g. wsl): add `src/machine/<kind>.rs` with a struct
-  implementing `Transport`, add a `machine::<kind>()` factory in `mod.rs`, and
-  construct it at the source/host build sites. No central `match` changes.
+  implementing `Transport` — override the capability predicates for its combination
+  (WSL is `runs_through_shell() = true`, `local_registry_scope() = false`) rather than
+  deriving from `is_remote` — add a `machine::<kind>()` factory, and add a
+  `MachineKind::<Kind>` variant plus one arm in `MachineKind::transport()` (the single
+  selection site). No other `match`/`if` on kind changes.
 - Adding per-machine execution behavior to an existing family: edit `local.rs` /
   `ssh.rs`; keep the shared shell vocab in `vocab.rs`.
 

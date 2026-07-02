@@ -58,6 +58,13 @@ impl Transport for Ssh {
         true
     }
 
+    /// A remote attach runs through the ssh login shell, so an attach can record its tty
+    /// and a `SwitchPlan::Shell` can execute. Its sessions live on the far side, so
+    /// `local_registry_scope` stays the default `false`.
+    fn runs_through_shell(&self) -> bool {
+        true
+    }
+
     fn exec_argv(&self, tty: bool, mux_argv: &[String]) -> (String, Vec<String>) {
         let mut args = self.ssh_opts(tty);
         args.push(remote_command(mux_argv));

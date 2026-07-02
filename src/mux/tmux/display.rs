@@ -224,13 +224,13 @@ impl MuxDriver for TmuxDriver {
     }
 }
 
-/// Folds the tmux record prefix into a REMOTE shared attach's command (the last argv
+/// Folds the tmux record prefix into a shell-based shared attach's command (the last argv
 /// element), so the attach shell records its OWN tty before exec'ing the attach — the
 /// value a later `switch_in_place` reads back to target xmux's own display client, never
-/// the user's own attached client. A LOCAL attach has no shell to run the snippet, so it
-/// is returned unchanged.
+/// the user's own attached client. An attach that does not run through a host shell has
+/// nowhere to run the snippet, so it is returned unchanged.
 fn with_display_tty_record(mut argv: Vec<String>, host: &Host, host_key: &str) -> Vec<String> {
-    if host.transport.is_remote() {
+    if host.transport.runs_through_shell() {
         let prefix = super::record_prefix(host_key);
         if let Some(last) = argv.last_mut() {
             *last = format!("{prefix}{last}");
