@@ -361,7 +361,7 @@ mod tests {
             "show records the newly-selected session on the host key"
         );
         assert!(
-            h.display.in_flight.contains_key("local"),
+            h.display.in_flight_contains("local"),
             "show requests a fresh per-session reattach"
         );
         assert!(
@@ -424,7 +424,7 @@ mod tests {
             "a non-empty psmux inventory does not reap or re-warm the on-demand attach"
         );
         assert!(
-            hosts.get("local").unwrap().display.in_flight.is_empty(),
+            hosts.get("local").unwrap().display.in_flight_is_empty(),
             "psmux sync never requests a warm spawn"
         );
         // Now empty: the host PTY is reaped.
@@ -502,7 +502,7 @@ mod tests {
             "in-place switch keeps the live client (no teardown ⇒ terminal view never blanks)"
         );
         assert!(
-            hosts.get("local").unwrap().display.in_flight.is_empty(),
+            hosts.get("local").unwrap().display.in_flight_is_empty(),
             "in-place switch requests NO reattach"
         );
         assert_eq!(
@@ -571,8 +571,7 @@ mod tests {
                 .get("local")
                 .unwrap()
                 .display
-                .in_flight
-                .contains_key("local"),
+                .in_flight_contains("local"),
             "no tty ⇒ a fresh reattach is requested"
         );
         assert_eq!(

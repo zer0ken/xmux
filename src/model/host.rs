@@ -43,17 +43,33 @@ impl Liveness {
 pub struct HostDisplay {
     /// display_key -> the session it currently shows. `Shared`: one entry keyed by
     /// the host id. `PerSession`: one per `source/session`.
-    pub current: HashMap<String, String>,
+    current: HashMap<String, String>,
     /// display_key -> in-flight spawn seq.
-    pub in_flight: HashMap<String, u64>,
+    in_flight: HashMap<String, u64>,
     /// Spawned attachment ids whose PTY EOF'd BEFORE their off-loop Ready arrived (the
     /// Exited-raced-Ready case). The Ready arm tears the attachment down instead of
     /// inserting a dead pane.
-    pub reaped_ids: std::collections::HashSet<u64>,
+    reaped_ids: std::collections::HashSet<u64>,
     /// In-flight attachment id → its display key, recorded at request time so a
     /// pre-Ready Exited (registry has no id yet) can be attributed to THIS host's
     /// reaped_ids. Cleared when the attachment registers (Ready) or fails.
-    pub pending: std::collections::HashMap<u64, String>,
+    pending: std::collections::HashMap<u64, String>,
+}
+
+/// How a worker `Ready` reply resolves against a host's display bookkeeping — the
+/// pure decision [`HostDisplay::resolve_ready`] makes, which the run loop turns into
+/// the registry install / teardown it alone can perform.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReadyOutcome {
+    /// A pre-Ready `Exited` raced ahead: the child already died, so tear the fresh
+    /// attachment down instead of installing a dead pane.
+    TearDownReaped,
+    /// This reply is the latest in-flight request for its key — install it as the live
+    /// grid. `shown` is the session it displays (the confirmed display truth).
+    Install { shown: String },
+    /// A newer attach superseded this seq — tear it down without touching the key's
+    /// in-flight seq (the newer request owns it).
+    TearDownStale,
 }
 
 impl HostDisplay {
@@ -69,6 +85,12 @@ impl HostDisplay {
     pub fn mark_in_flight(&mut self, key: &str, seq: u64) {
         self.in_flight.insert(key.to_string(), seq);
     }
+    /// Record an in-flight attachment `id` → its display `key`, so a pre-Ready `Exited`
+    /// (the registry has no id yet) can be attributed to this host via
+    /// [`mark_reaped_if_pending`](Self::mark_reaped_if_pending).
+    pub fn mark_pending(&mut self, id: u64, key: &str) {
+        self.pending.insert(id, key.to_string());
+    }
     /// Forget everything about `key` (its attachment closed/reaped), including any
     /// in-flight attach id recorded for it — so a spawn whose `key` is cleared while
     /// still in flight cannot leave a `pending` id that grows the map for the session's
@@ -77,6 +99,76 @@ impl HostDisplay {
         self.current.remove(key);
         self.in_flight.remove(key);
         self.pending.retain(|_, k| k != key);
+    }
+
+    /// True when an attach is in flight for `key` (a spawn requested, its `Ready`/`Failed`
+    /// not yet resolved). Reads the in-flight bookkeeping without exposing the map.
+    pub fn in_flight_contains(&self, key: &str) -> bool {
+        self.in_flight.contains_key(key)
+    }
+
+    /// True when NO attach is in flight for any key.
+    pub fn in_flight_is_empty(&self) -> bool {
+        self.in_flight.is_empty()
+    }
+
+    /// The in-flight spawn seq for `key`, if any.
+    pub fn in_flight_seq(&self, key: &str) -> Option<u64> {
+        self.in_flight.get(key).copied()
+    }
+
+    /// True when a worker `Ready`/`Failed` reply carrying `seq` is still the latest
+    /// in-flight request for `key`. A stale reply (the key was re-requested after a reap,
+    /// so a newer seq is in flight, or the key is no longer in flight) must not
+    /// register or clear state.
+    pub fn reply_is_current(&self, key: &str, seq: u64) -> bool {
+        self.in_flight.get(key) == Some(&seq)
+    }
+
+    /// Resolves a worker `Ready(seq, id)` for `key` against the bookkeeping: a reaped-race
+    /// (its `Exited` arrived first) tears down and clears in-flight + pending; the current
+    /// seq installs (clears in-flight + pending, returns the shown session); a stale seq
+    /// tears down (clears only this id's pending). The run loop performs the registry
+    /// install/teardown the outcome names — this owns only the bookkeeping decision.
+    pub fn resolve_ready(&mut self, key: &str, seq: u64, id: u64) -> ReadyOutcome {
+        if self.reaped_ids.remove(&id) {
+            self.in_flight.remove(key);
+            self.pending.remove(&id);
+            ReadyOutcome::TearDownReaped
+        } else if self.reply_is_current(key, seq) {
+            self.in_flight.remove(key);
+            self.pending.remove(&id);
+            let shown = self.current.get(key).cloned().unwrap_or_default();
+            ReadyOutcome::Install { shown }
+        } else {
+            self.pending.remove(&id);
+            ReadyOutcome::TearDownStale
+        }
+    }
+
+    /// Resolves a worker `Failed(seq)` for `key`: when it is the current in-flight reply,
+    /// clear the in-flight seq + every pending id mapped to the key and return `true`
+    /// (the caller rearms recovery); a stale failure is a no-op returning `false`.
+    pub fn resolve_failed(&mut self, key: &str, seq: u64) -> bool {
+        if self.reply_is_current(key, seq) {
+            self.in_flight.remove(key);
+            self.pending.retain(|_, k| k != key);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Records a pre-Ready `Exited` id in `reaped_ids` IFF this host spawned it (its id is
+    /// in `pending`), so the coming `Ready` tears the dead attachment down. Returns whether
+    /// it was ours — the caller stops scanning hosts once one claims the id.
+    pub fn mark_reaped_if_pending(&mut self, id: u64) -> bool {
+        if self.pending.contains_key(&id) {
+            self.reaped_ids.insert(id);
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -422,6 +514,102 @@ mod tests {
         assert!(
             d.reaped_ids.is_empty() && d.pending.is_empty(),
             "round-trips back to empty"
+        );
+    }
+
+    #[test]
+    fn host_display_reply_is_current_only_for_latest_seq() {
+        let mut d = HostDisplay::default();
+        d.mark_in_flight("k", 5);
+        assert!(d.reply_is_current("k", 5));
+        assert!(!d.reply_is_current("k", 4), "older seq is stale");
+        assert!(
+            !d.reply_is_current("absent", 5),
+            "no in-flight request → stale"
+        );
+    }
+
+    #[test]
+    fn host_display_resolve_ready_reaped_race_tears_down() {
+        let mut d = HostDisplay::default();
+        d.mark_in_flight("local/w", 3);
+        d.pending.insert(42, "local/w".into());
+        d.reaped_ids.insert(42);
+        // Exited raced ahead of Ready: tear the fresh attachment down and clear
+        // the key's in-flight + this id's pending so nothing leaks.
+        assert_eq!(
+            d.resolve_ready("local/w", 3, 42),
+            ReadyOutcome::TearDownReaped
+        );
+        assert!(!d.in_flight_contains("local/w"), "in-flight cleared");
+        assert!(!d.pending.contains_key(&42), "pending id cleared");
+        assert!(!d.reaped_ids.contains(&42), "reaped id consumed");
+    }
+
+    #[test]
+    fn host_display_resolve_ready_current_seq_installs() {
+        let mut d = HostDisplay::default();
+        d.set_shows("local/w", "work");
+        d.mark_in_flight("local/w", 3);
+        d.pending.insert(42, "local/w".into());
+        assert_eq!(
+            d.resolve_ready("local/w", 3, 42),
+            ReadyOutcome::Install {
+                shown: "work".into()
+            }
+        );
+        assert!(
+            !d.in_flight_contains("local/w"),
+            "in-flight cleared on install"
+        );
+        assert!(
+            !d.pending.contains_key(&42),
+            "pending id cleared on install"
+        );
+    }
+
+    #[test]
+    fn host_display_resolve_ready_stale_seq_tears_down() {
+        let mut d = HostDisplay::default();
+        d.mark_in_flight("local/w", 9); // a newer seq is in flight
+        d.pending.insert(42, "local/w".into());
+        assert_eq!(
+            d.resolve_ready("local/w", 3, 42),
+            ReadyOutcome::TearDownStale
+        );
+        assert!(
+            d.in_flight_contains("local/w"),
+            "stale reply must not clear the newer in-flight seq"
+        );
+        assert!(
+            !d.pending.contains_key(&42),
+            "stale reply forgets its pending id"
+        );
+    }
+
+    #[test]
+    fn host_display_resolve_failed_clears_when_current() {
+        let mut d = HostDisplay::default();
+        d.mark_in_flight("local/w", 3);
+        d.pending.insert(42, "local/w".into());
+        assert!(d.resolve_failed("local/w", 3), "current reply clears state");
+        assert!(!d.in_flight_contains("local/w"));
+        assert!(d.pending.is_empty());
+        // A stale Failed (newer seq in flight) leaves state untouched.
+        d.mark_in_flight("local/w", 9);
+        assert!(!d.resolve_failed("local/w", 3));
+        assert!(d.in_flight_contains("local/w"));
+    }
+
+    #[test]
+    fn host_display_mark_reaped_only_when_pending() {
+        let mut d = HostDisplay::default();
+        d.pending.insert(7, "jup".into());
+        assert!(d.mark_reaped_if_pending(7), "an id we spawned is recorded");
+        assert!(d.reaped_ids.contains(&7));
+        assert!(
+            !d.mark_reaped_if_pending(99),
+            "an id we never spawned is not ours"
         );
     }
 

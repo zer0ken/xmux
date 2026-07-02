@@ -368,7 +368,7 @@ fn selection_attach_facts(
     let key_live = registry.contains(&key);
     let in_flight = hosts
         .get(&selection.source)
-        .map(|h| h.display.in_flight.contains_key(&key))
+        .map(|h| h.display.in_flight_contains(&key))
         .unwrap_or(false);
     (key_live, in_flight)
 }
@@ -391,8 +391,8 @@ pub(crate) fn request_attach(
 ) -> u64 {
     let id = registry.alloc_id();
     *attach_seq += 1;
-    display.in_flight.insert(key.to_string(), *attach_seq);
-    display.pending.insert(id, key.to_string());
+    display.mark_in_flight(key, *attach_seq);
+    display.mark_pending(id, key);
     worker.ensure(DisplayEnsure {
         seq: *attach_seq,
         key: key.to_string(),
@@ -578,17 +578,6 @@ fn sync_source_terminals(
         tree_width,
     };
     driver.sync(source, sessions, &mut ctx);
-}
-
-/// True when a worker `Ready`/`Failed` reply is still the latest in-flight request for its
-/// key. A stale reply (the key was re-requested after a reap, so a newer seq is in flight, or
-/// the key is no longer in flight at all) must not register or clear state.
-fn attach_reply_is_current(
-    in_flight: &std::collections::HashMap<String, u64>,
-    key: &str,
-    seq: u64,
-) -> bool {
-    in_flight.get(key) == Some(&seq)
 }
 
 /// Connects the host the selection is on (if not already + detected), so its metadata
@@ -1976,7 +1965,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                             let k = display_key(&hosts, &sel);
                             let reattach_pending = hosts
                                 .get(&sel.source)
-                                .is_some_and(|h| h.display.in_flight.contains_key(&k));
+                                .is_some_and(|h| h.display.in_flight_contains(&k));
                             if registry.contains(&k) && !reattach_pending {
                                 state.displayed = sel.clone();
                             }
@@ -2149,9 +2138,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                             // pre-Ready Exited: registry has no id yet. Attribute to the owning
                             // host via pending so its Ready tears down instead of inserting a
                             // dead pane.
-                            if let Some(h) = hosts.iter_mut().find(|h| h.display.pending.contains_key(&id)) {
-                                h.display.reaped_ids.insert(id);
-                            }
+                            hosts.iter_mut().any(|h| h.display.mark_reaped_if_pending(id));
                         }
                     }
                     PtyEvent::DisplayTty { id, tty } => record_display_tty(&mut hosts, &registry, id, tty),
@@ -2167,9 +2154,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                             clear_display_tty_for_attach(&mut hosts, &registry, id);
                             if !registry.reap(id) {
                                 // pre-Ready Exited: attribute to the owning host's reaped_ids.
-                                if let Some(h) = hosts.iter_mut().find(|h| h.display.pending.contains_key(&id)) {
-                                    h.display.reaped_ids.insert(id);
-                                }
+                                hosts.iter_mut().any(|h| h.display.mark_reaped_if_pending(id));
                             }
                             budget -= 1;
                         }
@@ -2198,42 +2183,38 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                         if let Some(h) = hosts.get_mut(&hid) {
                             let id = attachment.id();
                             tracing::info!(key, seq, id, "attach_ready");
-                            if h.display.reaped_ids.remove(&attachment.id()) {
+                            // HostDisplay owns the reap/install/stale DECISION against its
+                            // bookkeeping; the loop performs the registry install/teardown it
+                            // alone can (the state layer never reaches the registry).
+                            match h.display.resolve_ready(&key, seq, id) {
                                 // Exited raced ahead of this Ready: the child already died and its
                                 // pump (one Exited at EOF) has ended. Inserting now would leave a
                                 // dead, never-reaped pane that contains() refuses to re-attach.
-                                // Tear it down and clear in-flight so the next settle re-requests.
-                                h.display.in_flight.remove(&key);
-                                h.display.pending.remove(&attachment.id());
-                                attachment.teardown();
-                            } else if attach_reply_is_current(&h.display.in_flight, &key, seq) {
-                                h.display.in_flight.remove(&key);
-                                h.display.pending.remove(&attachment.id());
-                                // This attach is now the live grid for the key. Record the
-                                // session it shows as the confirmed display truth, so the
-                                // terminal view switches from blank to its content.
-                                // If the selection moved to another session of the same host
-                                // while this attach was in flight, displayed now differs from
-                                // selection, so the next pass re-runs select_attach to switch
-                                // (Shared) / reattach (PerSession) to where the selection is.
-                                let shown = h.display.shows(&key).unwrap_or_default().to_string();
-                                // Swap: tear down the stale attachment held under this key
-                                // (the prior session, kept on screen until now) and install
-                                // the fresh one. `insert` alone drops the old Attachment
-                                // without tearing down its PTY/control thread, so remove()
-                                // first (a no-op when there was nothing held — first attach).
-                                registry.remove(&key);
-                                registry.insert(&key, attachment);
-                                state.displayed = Selection {
-                                    source: hid.clone(),
-                                    session: shown,
-                                    window: None,
-                                };
-                            } else {
-                                // Stale Ready (a newer attach superseded this seq): forget its
-                                // pending id before teardown so the id->key map cannot grow.
-                                h.display.pending.remove(&attachment.id());
-                                attachment.teardown();
+                                crate::model::ReadyOutcome::TearDownReaped => attachment.teardown(),
+                                // This attach is now the live grid for the key. `shown` is the
+                                // session it displays — the confirmed display truth, so the
+                                // terminal view switches from blank to its content. If the
+                                // selection moved to another session of the same host while this
+                                // attach was in flight, displayed now differs from selection, so
+                                // the next pass re-runs select_attach to switch (Shared) /
+                                // reattach (PerSession) to where the selection is.
+                                crate::model::ReadyOutcome::Install { shown } => {
+                                    // Swap: tear down the stale attachment held under this key
+                                    // (the prior session, kept on screen until now) and install
+                                    // the fresh one. `insert` alone drops the old Attachment
+                                    // without tearing down its PTY/control thread, so remove()
+                                    // first (a no-op when there was nothing held — first attach).
+                                    registry.remove(&key);
+                                    registry.insert(&key, attachment);
+                                    state.displayed = Selection {
+                                        source: hid.clone(),
+                                        session: shown,
+                                        window: None,
+                                    };
+                                }
+                                // Stale Ready (a newer attach superseded this seq): resolve_ready
+                                // already forgot its pending id so the id->key map cannot grow.
+                                crate::model::ReadyOutcome::TearDownStale => attachment.teardown(),
                             }
                         } else {
                             attachment.teardown();
@@ -2242,10 +2223,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                     DisplayEvent::Failed { seq, key, message } => {
                         let hid = host_of_key(&key).to_string();
                         if let Some(h) = hosts.get_mut(&hid) {
-                            if attach_reply_is_current(&h.display.in_flight, &key, seq) {
-                                h.display.in_flight.remove(&key);
-                                h.display.pending.retain(|_, k| k != &key);
-                            }
+                            h.display.resolve_failed(&key, seq);
                         }
                         tracing::warn!(key, error = %message, "attach_failed");
                     }
@@ -2392,7 +2370,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                     let key = display_key(&hosts, &state.selection);
                     let in_flight_for_key = hosts
                         .get(&state.selection.source)
-                        .map(|h| h.display.in_flight.contains_key(&key))
+                        .map(|h| h.display.in_flight_contains(&key))
                         .unwrap_or(false);
                     if in_flight_for_key || registry.connecting(&key) {
                         sp.insert(state.selection.address());
@@ -2472,7 +2450,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                     let key = display_key(&hosts, &state.selection);
                     let in_flight_for_key = hosts
                         .get(&state.selection.source)
-                        .map(|h| h.display.in_flight.contains_key(&key))
+                        .map(|h| h.display.in_flight_contains(&key))
                         .unwrap_or(false);
                     if !registry.contains(&key) && !in_flight_for_key {
                         select_attach(
@@ -3365,18 +3343,6 @@ mod tests {
     }
 
     #[test]
-    fn attach_reply_is_current_only_for_latest_seq() {
-        let mut f = std::collections::HashMap::new();
-        f.insert("k".to_string(), 5u64);
-        assert!(attach_reply_is_current(&f, "k", 5));
-        assert!(!attach_reply_is_current(&f, "k", 4), "older seq is stale");
-        assert!(
-            !attach_reply_is_current(&f, "absent", 5),
-            "no in-flight request → stale"
-        );
-    }
-
-    #[test]
     fn current_grid_returns_none_for_empty_displayed() {
         // An empty `displayed` (source "") misses `hosts.get`, so no driver is
         // built and no grid is produced — the blank-terminal case on first launch.
@@ -3460,12 +3426,7 @@ mod tests {
         ));
         assert_eq!(hosts.get("jup").unwrap().display.shows("jup"), Some("a"));
         assert!(
-            hosts
-                .get("jup")
-                .unwrap()
-                .display
-                .in_flight
-                .contains_key("jup"),
+            hosts.get("jup").unwrap().display.in_flight_contains("jup"),
             "first attach is in flight"
         );
 
@@ -3543,9 +3504,14 @@ mod tests {
         } = ready
         {
             let h = hosts.get_mut("local").unwrap();
-            assert!(attach_reply_is_current(&h.display.in_flight, &key, seq));
-            h.display.in_flight.remove(&key);
-            h.display.pending.remove(&attachment.id());
+            let id = attachment.id();
+            assert!(
+                matches!(
+                    h.display.resolve_ready(&key, seq, id),
+                    crate::model::ReadyOutcome::Install { .. }
+                ),
+                "the current reply installs"
+            );
             registry.insert(&key, attachment);
         } else {
             panic!("expected ready");
@@ -3571,7 +3537,7 @@ mod tests {
 
         let h = hosts.get("local").unwrap();
         assert_eq!(h.display.shows("local"), Some("test"));
-        assert!(h.display.in_flight.contains_key("local"));
+        assert!(h.display.in_flight_contains("local"));
         assert!(
             registry.contains("local"),
             "old psmux display attach is HELD on screen until the reattach is ready \
@@ -3625,7 +3591,7 @@ mod tests {
         ));
 
         let h = hosts.get("local").unwrap();
-        assert!(h.display.in_flight.contains_key("local"));
+        assert!(h.display.in_flight_contains("local"));
         assert!(
             registry.contains("local"),
             "psmux select_attach requests a reattach even when bookkeeping is stale, but \
@@ -3673,8 +3639,7 @@ mod tests {
             .get_mut("local")
             .unwrap()
             .display
-            .in_flight
-            .insert("local".into(), 7);
+            .mark_in_flight("local", 7);
 
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
         let worker = crate::display::DisplayWorker::with_spawner(
@@ -3708,7 +3673,7 @@ mod tests {
         ));
 
         let h = hosts.get("local").unwrap();
-        assert_eq!(h.display.in_flight.get("local"), Some(&8));
+        assert_eq!(h.display.in_flight_seq("local"), Some(8));
     }
 
     fn empty_manager() -> HostManager {

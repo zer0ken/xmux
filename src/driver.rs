@@ -237,7 +237,7 @@ pub(crate) mod tests {
             "show records the newly-selected session on the host key"
         );
         assert!(
-            h.display.in_flight.contains_key("local"),
+            h.display.in_flight_contains("local"),
             "show requests a fresh per-session reattach"
         );
         assert!(

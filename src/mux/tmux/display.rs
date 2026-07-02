@@ -34,7 +34,7 @@ impl MuxDriver for TmuxDriver {
         let key = host_selection_key(host);
         let pre_mismatch = host.display.shows(&key) != Some(sel.session.as_str());
         let already = ctx.registry.contains(&key);
-        let first_attach = !already && !host.display.in_flight.contains_key(&key);
+        let first_attach = !already && !host.display.in_flight_contains(&key);
 
         if !already {
             // Off-loop first-attach: request the spawn ONLY if one is not already in flight.
@@ -43,7 +43,7 @@ impl MuxDriver for TmuxDriver {
             // (see the Ready arm) issues a switch-client to the current selection. Overwriting
             // it here would make the switch-client guard think the PTY is already on the new
             // session.
-            if !host.display.in_flight.contains_key(&key) {
+            if !host.display.in_flight_contains(&key) {
                 tracing::info!(
                     host = %sel.source,
                     model = "shared",
@@ -97,7 +97,7 @@ impl MuxDriver for TmuxDriver {
                     "display_show"
                 );
                 host.display.set_shows(&key, &sel.session);
-            } else if !host.display.in_flight.contains_key(&key) {
+            } else if !host.display.in_flight_contains(&key) {
                 // No in-place switch (a LOCAL shared host has no remote shell to record /
                 // read the tty, or the mux uses no recorded-tty strategy): reattach the
                 // host PTY to the new session. Reattach needs no tty and repaints fully;
@@ -191,8 +191,7 @@ impl MuxDriver for TmuxDriver {
         };
         match sessions.first() {
             Some(first)
-                if !ctx.registry.contains(source)
-                    && !host.display.in_flight.contains_key(source) =>
+                if !ctx.registry.contains(source) && !host.display.in_flight_contains(source) =>
             {
                 // Compose the two axes: the MUX supplies the attach argv (attach_plan),
                 // the MACHINE lowers it (ssh -t + exec / local -S) — the same composition
@@ -339,7 +338,7 @@ mod tests {
             "the shared host PTY is keyed by host id and shows the first session"
         );
         assert!(
-            h.display.in_flight.contains_key("jup"),
+            h.display.in_flight_contains("jup"),
             "the first shared attach is requested off-loop"
         );
     }
@@ -391,7 +390,7 @@ mod tests {
             "shared sync warms the host PTY on the first session"
         );
         assert!(
-            h.display.in_flight.contains_key("local"),
+            h.display.in_flight_contains("local"),
             "the warm is requested off-loop"
         );
     }
