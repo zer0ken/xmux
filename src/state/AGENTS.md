@@ -55,14 +55,16 @@ needs the `hosts` registry the state layer does not hold, so it is the loop's jo
 input / kill confirm / context menu. A single Option (not four independent
 fields) makes the modals' mutual exclusion structural: opening one drops
 whatever was open. The query helpers `is_modal_popup_open` / `is_inputting` /
-`menu_active` / `modal_kind` read it; the switcher owns the modal behavior and
-the transient popup geometry (drag offset / drawn rect).
+`menu_active` / `modal_kind` read it (delegating to `ui::modal`). `ui::modal`
+owns the modal types, classifiers, and self-contained behavior (help feed /
+menu hover / popup-drag geometry); the switcher holds the modal state plus its
+`PopupGeometry` and forwards to `ui::modal`.
 
 ## Module Seams
 
 - `State` depends on `app::app::Selection` for selected source/session/window,
   `ui::tree::Group` + `session::WindowPanes` for the inventory,
-  `app::focus::Focus` for the focus state machine, `ui::switcher::Modal` for the
+  `app::focus::Focus` for the focus state machine, `ui::modal::Modal` for the
   open modal, `model::{Action, Command}` for the `apply` vocabulary, and
   `host::HostEvent` + `model::EventEffect` + `&mut ui::switcher::Switcher` for
   `apply_event` (the switcher rebuilds the tree against `&mut State`).
