@@ -774,37 +774,37 @@ fn refetch_host(mgr: &HostManager, panes_requested: &mut HashSet<String>, host: 
     }
 }
 
-/// Applies one [`HostEvent`] to the app state (tree, connected set, PTY sync,
-/// reap). Extracted so a burst of events can be drained in one loop iteration.
-/// Returns `true` when the caller should rearm `attach_deadline` + mark `dirty`
-/// (the `ClientDetached` reap path).
-#[allow(clippy::too_many_arguments)]
-fn handle_host_event(
-    ev: HostEvent,
-    mgr: &mut HostManager,
-    hosts: &mut crate::model::Hosts,
-    registry: &mut AttachRegistry,
-    switcher: &mut crate::ui::switcher::Switcher,
-    state: &mut crate::state::State,
-    connected: &mut HashSet<String>,
-    panes_requested: &mut HashSet<String>,
-    detecting: &mut HashSet<String>,
-    worker: &DisplayWorker,
-    pty_tx: &tokio::sync::mpsc::UnboundedSender<PtyEvent>,
-    attach_seq: &mut u64,
-    cols: u16,
-    rows: u16,
-    tree_width: u16,
-) -> bool {
-    // State owns the event-driven mutations: apply_event folds the self-contained
-    // arms (Focus marker, Panes subtree, Sessions enumeration, Exited unreachable
-    // mark) into State and returns the mux follow-ups it cannot perform itself.
-    // This loop is the sole executor of those effects — it holds the host clients,
-    // the registry, and the display worker the state layer must not reach.
-    let mut rearm = false;
-    for effect in state.apply_event(ev, switcher, connected) {
-        if run_event_effect(
-            effect,
+impl Runtime {
+    /// Applies one [`HostEvent`]: [`State::apply_event`] folds the self-contained arms
+    /// (Focus marker, Panes subtree, Sessions enumeration, Exited unreachable mark) into
+    /// `State` and returns the mux follow-ups it cannot perform; this executes them (it
+    /// holds the host clients, the registry, and the display worker the state layer must
+    /// not reach). Drained in a burst by `on_host_event`. Returns `true` when the caller
+    /// should rearm `attach_deadline` + mark dirty (the matched-client detach-reap path).
+    fn handle_host_event(&mut self, ev: HostEvent) -> bool {
+        let mut rearm = false;
+        for effect in self
+            .state
+            .apply_event(ev, &mut self.switcher, &mut self.connected)
+        {
+            if self.run_event_effect(effect) {
+                rearm = true;
+            }
+        }
+        rearm
+    }
+
+    /// Carries out one [`EventEffect`](crate::model::EventEffect) `State::apply_event`
+    /// returned — the mux I/O the state layer cannot perform (the single-owner inventory
+    /// fold into `model::Host`, a control-mode probe, the attach registry, the detection
+    /// dispatch). Returns `true` only for the matched-client display-attach reap, which
+    /// asks the caller to rearm `attach_deadline` + mark `dirty` (the recover-from-detach
+    /// path).
+    fn run_event_effect(&mut self, effect: crate::model::EventEffect) -> bool {
+        use crate::model::EventEffect;
+        // Split-borrow the world state into the loose names the arms below use, so this
+        // body stays the loop's imperative effect executor without a per-line `self.`.
+        let Self {
             mgr,
             hosts,
             registry,
@@ -813,160 +813,133 @@ fn handle_host_event(
             panes_requested,
             detecting,
             worker,
-            pty_tx,
+            driver_pty_tx: pty_tx,
             attach_seq,
             cols,
-            rows,
+            body_rows: rows,
             tree_width,
-        ) {
-            rearm = true;
-        }
-    }
-    rearm
-}
-
-/// Carries out one [`EventEffect`](crate::model::EventEffect) `State::apply_event`
-/// returned — the mux I/O the state layer cannot perform (the single-owner inventory
-/// fold into `model::Host`, a control-mode probe, the attach registry, the detection
-/// dispatch). Returns `true` only for the matched-client display-attach reap, which
-/// asks the caller to rearm `attach_deadline` + mark `dirty` (the recover-from-detach
-/// path).
-#[allow(clippy::too_many_arguments)]
-fn run_event_effect(
-    effect: crate::model::EventEffect,
-    mgr: &mut HostManager,
-    hosts: &mut crate::model::Hosts,
-    registry: &mut AttachRegistry,
-    switcher: &mut crate::ui::switcher::Switcher,
-    state: &mut crate::state::State,
-    panes_requested: &mut HashSet<String>,
-    detecting: &mut HashSet<String>,
-    worker: &DisplayWorker,
-    pty_tx: &tokio::sync::mpsc::UnboundedSender<PtyEvent>,
-    attach_seq: &mut u64,
-    cols: u16,
-    rows: u16,
-    tree_width: u16,
-) -> bool {
-    use crate::model::EventEffect;
-    match effect {
-        EventEffect::ApplyInventory { host, sessions } => {
-            // The reader carried the parsed sessions on the event. Fold them into the
-            // single owner (`model::Host.inventory`), apply them to the tree, request
-            // each session's panes, and sync the display PTY(s). Pane subtrees arrive
-            // separately as `HostEvent::Panes` (applied purely by `apply_event`).
-            if let Some(h) = hosts.get_mut(&host) {
-                h.inventory.sessions = sessions.clone();
+            ..
+        } = self;
+        let (cols, rows, tree_width) = (*cols, *rows, *tree_width);
+        match effect {
+            EventEffect::ApplyInventory { host, sessions } => {
+                // The reader carried the parsed sessions on the event. Fold them into the
+                // single owner (`model::Host.inventory`), apply them to the tree, request
+                // each session's panes, and sync the display PTY(s). Pane subtrees arrive
+                // separately as `HostEvent::Panes` (applied purely by `apply_event`).
+                if let Some(h) = hosts.get_mut(&host) {
+                    h.inventory.sessions = sessions.clone();
+                }
+                switcher.apply_source_result(host.clone(), sessions.clone(), None, state);
+                if let Some(client) = mgr.get(&host) {
+                    request_session_panes(client, &sessions, panes_requested);
+                }
+                let n = sessions.len();
+                let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
+                tracing::info!(host, n, ?names, "sessions_applied");
+                // Sync this host's display terminal(s) (per-host for remote tmux).
+                let mut ctx = crate::driver::DriverCtx {
+                    registry: &mut *registry,
+                    hosts: &mut *hosts,
+                    worker,
+                    mgr,
+                    pty_tx,
+                    attach_seq: &mut *attach_seq,
+                    cols,
+                    body_rows: rows,
+                    tree_width,
+                };
+                sync_source_terminals(&host, &sessions, &mut ctx);
             }
-            switcher.apply_source_result(host.clone(), sessions.clone(), None, state);
-            if let Some(client) = mgr.get(&host) {
-                request_session_panes(client, &sessions, panes_requested);
+            EventEffect::Refetch { host } => {
+                // The server's session/window structure changed (a `%`-notification).
+                // Refetch so the tree, panes, and PTY set resync (#5 tree view sync).
+                refetch_host(mgr, panes_requested, &host);
             }
-            let n = sessions.len();
-            let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
-            tracing::info!(host, n, ?names, "sessions_applied");
-            // Sync this host's display terminal(s) (per-host for remote tmux).
-            let mut ctx = crate::driver::DriverCtx {
-                registry: &mut *registry,
-                hosts: &mut *hosts,
-                worker,
-                mgr,
-                pty_tx,
-                attach_seq: &mut *attach_seq,
-                cols,
-                body_rows: rows,
-                tree_width,
-            };
-            sync_source_terminals(&host, &sessions, &mut ctx);
-        }
-        EventEffect::Refetch { host } => {
-            // The server's session/window structure changed (a `%`-notification).
-            // Refetch so the tree, panes, and PTY set resync (#5 tree view sync).
-            refetch_host(mgr, panes_requested, &host);
-        }
-        EventEffect::ProbeActiveWindow { host, session_ref } => {
-            // A session's ACTIVE WINDOW switched — the structure did NOT change, so do
-            // NOT refetch the whole inventory: a full list-sessions + per-session
-            // list-panes per change storms the single-threaded loop and freezes the UI
-            // during rapid window navigation (each tree step issues select-window,
-            // which echoes back as this notification). Probe ONLY the session the
-            // notification names (its tmux id, `session_ref`) — never a guessed displayed
-            // session; the reply (Focus) resolves the session name + new active window
-            // and updates THAT session's marker without any refetch.
-            if let Some(client) = mgr.get(&host) {
-                client.probe_active_window(&session_ref);
+            EventEffect::ProbeActiveWindow { host, session_ref } => {
+                // A session's ACTIVE WINDOW switched — the structure did NOT change, so do
+                // NOT refetch the whole inventory: a full list-sessions + per-session
+                // list-panes per change storms the single-threaded loop and freezes the UI
+                // during rapid window navigation (each tree step issues select-window,
+                // which echoes back as this notification). Probe ONLY the session the
+                // notification names (its tmux id, `session_ref`) — never a guessed displayed
+                // session; the reply (Focus) resolves the session name + new active window
+                // and updates THAT session's marker without any refetch.
+                if let Some(client) = mgr.get(&host) {
+                    client.probe_active_window(&session_ref);
+                }
             }
-        }
-        EventEffect::ReapHost { host } => {
-            mgr.reap(&host);
-        }
-        EventEffect::ReapDisplayAttach { host, client } => {
-            // Reap our display attach ONLY when the detaching client is OUR display client
-            // (matched against the in-memory Host.display_tty). An unrelated client's detach
-            // can never match, so it is structurally inert — no blanket reap.
-            let Some(h) = hosts.get(&host) else {
-                return false;
-            };
-            if !h.matches_display_tty(&client) {
-                return false;
+            EventEffect::ReapHost { host } => {
+                mgr.reap(&host);
             }
-            let key = host_selection_key(h); // Shared ⇒ key == host id
-            registry.remove(&key);
-            if let Some(h) = hosts.get_mut(&host) {
-                h.display.clear(&key); // forget the shown session + any in-flight spawn
-                h.display_tty = crate::model::DisplayTty(None); // the dead client's tty is gone
+            EventEffect::ReapDisplayAttach { host, client } => {
+                // Reap our display attach ONLY when the detaching client is OUR display client
+                // (matched against the in-memory Host.display_tty). An unrelated client's detach
+                // can never match, so it is structurally inert — no blanket reap.
+                let Some(h) = hosts.get(&host) else {
+                    return false;
+                };
+                if !h.matches_display_tty(&client) {
+                    return false;
+                }
+                let key = host_selection_key(h); // Shared ⇒ key == host id
+                registry.remove(&key);
+                if let Some(h) = hosts.get_mut(&host) {
+                    h.display.clear(&key); // forget the shown session + any in-flight spawn
+                    h.display_tty = crate::model::DisplayTty(None); // the dead client's tty is gone
+                }
+                return true; // rearm recovery
             }
-            return true; // rearm recovery
-        }
-        EventEffect::DispatchScanned { source, detected } => {
-            // A detection probe resolved: (re)identify the mux, then dispatch the
-            // now-detected host onto its metadata channel (control client or poll task).
-            detecting.remove(&source);
-            apply_scan_result(hosts, &source, detected);
-            let (vc, vr) = terminal_view_size(cols, rows, tree_width);
-            dispatch_detected_host(mgr, hosts, &source, vc, vr);
-        }
-        EventEffect::SyncPollSessions { source, sessions } => {
-            // A poll host's SUCCESSFUL enumeration (the tree group is already applied).
-            // The `poll enum` debug line is logged UNCONDITIONALLY at the producer
-            // (`run_poll`), where `err` is in hand — `apply_event` drops the error path
-            // before reaching here, so logging here would only ever see successes.
-            // PerSession psmux: a session whose registry .port disappeared is dead even
-            // if its PTY has not EOF'd. Drop the stale attach so it cannot show a dead grid.
-            if let Some(h) = hosts.get(&source) {
-                for s in &sessions {
-                    if !h.session_is_live(&s.name) {
-                        // The host-keyed display attachment (one per-host PTY, reattached).
-                        registry.remove(&host_selection_key(h));
+            EventEffect::DispatchScanned { source, detected } => {
+                // A detection probe resolved: (re)identify the mux, then dispatch the
+                // now-detected host onto its metadata channel (control client or poll task).
+                detecting.remove(&source);
+                apply_scan_result(hosts, &source, detected);
+                let (vc, vr) = terminal_view_size(cols, rows, tree_width);
+                dispatch_detected_host(mgr, hosts, &source, vc, vr);
+            }
+            EventEffect::SyncPollSessions { source, sessions } => {
+                // A poll host's SUCCESSFUL enumeration (the tree group is already applied).
+                // The `poll enum` debug line is logged UNCONDITIONALLY at the producer
+                // (`run_poll`), where `err` is in hand — `apply_event` drops the error path
+                // before reaching here, so logging here would only ever see successes.
+                // PerSession psmux: a session whose registry .port disappeared is dead even
+                // if its PTY has not EOF'd. Drop the stale attach so it cannot show a dead grid.
+                if let Some(h) = hosts.get(&source) {
+                    for s in &sessions {
+                        if !h.session_is_live(&s.name) {
+                            // The host-keyed display attachment (one per-host PTY, reattached).
+                            registry.remove(&host_selection_key(h));
+                        }
                     }
                 }
+                let mut ctx = crate::driver::DriverCtx {
+                    registry: &mut *registry,
+                    hosts: &mut *hosts,
+                    worker,
+                    mgr,
+                    pty_tx,
+                    attach_seq: &mut *attach_seq,
+                    cols,
+                    body_rows: rows,
+                    tree_width,
+                };
+                sync_source_terminals(&source, &sessions, &mut ctx);
             }
-            let mut ctx = crate::driver::DriverCtx {
-                registry: &mut *registry,
-                hosts: &mut *hosts,
-                worker,
-                mgr,
-                pty_tx,
-                attach_seq: &mut *attach_seq,
-                cols,
-                body_rows: rows,
-                tree_width,
-            };
-            sync_source_terminals(&source, &sessions, &mut ctx);
-        }
-        EventEffect::RecordDisplayTty { host, tty } => {
-            // The -CC `list-clients` probe resolved xmux's display-client tty. Record it
-            // on the Host so a session switch is an in-place `switch-client -c <tty>`;
-            // `None` (only the control client attached so far) clears any stale tty.
-            if let Some(h) = hosts.get_mut(&host) {
-                if tty.is_some() {
-                    tracing::debug!(host, ?tty, "display_tty_recorded");
+            EventEffect::RecordDisplayTty { host, tty } => {
+                // The -CC `list-clients` probe resolved xmux's display-client tty. Record it
+                // on the Host so a session switch is an in-place `switch-client -c <tty>`;
+                // `None` (only the control client attached so far) clears any stale tty.
+                if let Some(h) = hosts.get_mut(&host) {
+                    if tty.is_some() {
+                        tracing::debug!(host, ?tty, "display_tty_recorded");
+                    }
+                    h.record_display_tty(tty);
                 }
-                h.record_display_tty(tty);
             }
         }
+        false
     }
-    false
 }
 
 /// Records a pump-self-reported display tty on the host that owns the attach id.
@@ -2126,23 +2099,7 @@ impl Runtime {
     ) {
         use std::time::Duration;
         let t = std::time::Instant::now();
-        if handle_host_event(
-            ev,
-            &mut self.mgr,
-            &mut self.hosts,
-            &mut self.registry,
-            &mut self.switcher,
-            &mut self.state,
-            &mut self.connected,
-            &mut self.panes_requested,
-            &mut self.detecting,
-            &self.worker,
-            &self.driver_pty_tx,
-            &mut self.attach_seq,
-            self.cols,
-            self.body_rows,
-            self.tree_width,
-        ) {
+        if self.handle_host_event(ev) {
             self.state.attach_deadline =
                 Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
             self.dirty = true;
@@ -2151,23 +2108,7 @@ impl Runtime {
         while budget > 0 {
             match host_rx.try_recv() {
                 Ok(ev) => {
-                    if handle_host_event(
-                        ev,
-                        &mut self.mgr,
-                        &mut self.hosts,
-                        &mut self.registry,
-                        &mut self.switcher,
-                        &mut self.state,
-                        &mut self.connected,
-                        &mut self.panes_requested,
-                        &mut self.detecting,
-                        &self.worker,
-                        &self.driver_pty_tx,
-                        &mut self.attach_seq,
-                        self.cols,
-                        self.body_rows,
-                        self.tree_width,
-                    ) {
+                    if self.handle_host_event(ev) {
                         self.state.attach_deadline = Some(
                             std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS),
                         );
@@ -3099,42 +3040,20 @@ mod tests {
             "selection on window 1"
         );
 
-        let (htx, _hrx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
-        let mut mgr = HostManager::new(htx);
-        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
-        let mut registry = AttachRegistry::new();
-        let worker = DisplayWorker::new(ptx);
-        let mut attach_seq = 0u64;
-        let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
-        let mut connected = HashSet::new();
-        let mut panes_requested = HashSet::new();
-        let mut hosts = crate::model::Hosts::default();
         // Focus sets the cached active-window marker (window 0).
-        let _ = handle_host_event(
-            HostEvent::Focus {
-                host: "jup".into(),
-                session: "api".into(),
-                window: 0,
-            },
-            &mut mgr,
-            &mut hosts,
-            &mut registry,
-            &mut switcher,
-            &mut state,
-            &mut connected,
-            &mut panes_requested,
-            &mut HashSet::new(),
-            &worker,
-            &pty_tx,
-            &mut attach_seq,
-            80,
-            24,
-            crate::ui::switcher::TREE_WIDTH,
-        );
+        let mut rt = test_rt(fake_env_with_sources(&[]));
+        rt.hosts = crate::model::Hosts::default();
+        rt.state = state;
+        rt.switcher = switcher;
+        let _ = rt.handle_host_event(HostEvent::Focus {
+            host: "jup".into(),
+            session: "api".into(),
+            window: 0,
+        });
         // The loop-top follow (simulated here) consumes the marker and moves the selection.
-        switcher.select_active_window(&mut state);
+        rt.switcher.select_active_window(&mut rt.state);
         assert_eq!(
-            switcher.terminal_view_target().target,
+            rt.switcher.terminal_view_target().target,
             "api:0",
             "loop-top follow moved selection to active window 0"
         );
@@ -3199,39 +3118,17 @@ mod tests {
         switcher.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut state); // ↓ → window 1
         assert_eq!(switcher.terminal_view_target().target, "api:1");
 
-        let (htx, _hrx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
-        let mut mgr = HostManager::new(htx);
-        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
-        let mut registry = AttachRegistry::new();
-        let worker = DisplayWorker::new(ptx);
-        let mut attach_seq = 0u64;
-        let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
-        let mut connected = HashSet::new();
-        let mut panes_requested = HashSet::new();
-        let mut hosts = crate::model::Hosts::default();
-        let _ = handle_host_event(
-            HostEvent::Focus {
-                host: "jup".into(),
-                session: "api".into(),
-                window: 0,
-            },
-            &mut mgr,
-            &mut hosts,
-            &mut registry,
-            &mut switcher,
-            &mut state,
-            &mut connected,
-            &mut panes_requested,
-            &mut HashSet::new(),
-            &worker,
-            &pty_tx,
-            &mut attach_seq,
-            80,
-            24,
-            crate::ui::switcher::TREE_WIDTH,
-        );
+        let mut rt = test_rt(fake_env_with_sources(&[]));
+        rt.hosts = crate::model::Hosts::default();
+        rt.state = state;
+        rt.switcher = switcher;
+        let _ = rt.handle_host_event(HostEvent::Focus {
+            host: "jup".into(),
+            session: "api".into(),
+            window: 0,
+        });
         assert_eq!(
-            switcher.terminal_view_target().target,
+            rt.switcher.terminal_view_target().target,
             "api:1",
             "handler alone must not move the selection"
         );
@@ -3263,10 +3160,6 @@ mod tests {
         use crate::ui::switcher::{Scan, Switcher};
         use crate::ui::tree::Group;
 
-        let (htx, _hrx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
-        let mut mgr = HostManager::new(htx);
-        mgr.insert_fake("jup"); // a control client so request_session_panes has a sink
-
         let scan = Scan {
             groups: vec![Group {
                 source: "jup".into(),
@@ -3276,51 +3169,40 @@ mod tests {
             panes: Default::default(),
         };
         let mut state = crate::state::State::from_scan(scan);
-        let mut switcher = Switcher::new(&mut state);
+        let switcher = Switcher::new(&mut state);
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::machine::ssh("jup".into(), String::new(), "linux".into()),
             crate::mux::for_binary("tmux"),
         ));
-        let mut registry = AttachRegistry::new();
-        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
-        let worker = DisplayWorker::new(ptx);
-        let (pty_tx, _pty_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
-        let mut panes_requested = HashSet::new();
-        let mut detecting = HashSet::new();
-        let mut attach_seq = 0u64;
+        let mut rt = test_rt(fake_env_with_sources(&[]));
+        rt.mgr.insert_fake("jup"); // a control client so request_session_panes has a sink
+        rt.hosts = hosts;
+        rt.state = state;
+        rt.switcher = switcher;
 
         let sessions = vec![crate::session::Session {
             source: "jup".into(),
             name: "api".into(),
             ..Default::default()
         }];
-        let rearm = run_event_effect(
-            crate::model::EventEffect::ApplyInventory {
-                host: "jup".into(),
-                sessions: sessions.clone(),
-            },
-            &mut mgr,
-            &mut hosts,
-            &mut registry,
-            &mut switcher,
-            &mut state,
-            &mut panes_requested,
-            &mut detecting,
-            &worker,
-            &pty_tx,
-            &mut attach_seq,
-            80,
-            24,
-            crate::ui::switcher::TREE_WIDTH,
-        );
+        let rearm = rt.run_event_effect(crate::model::EventEffect::ApplyInventory {
+            host: "jup".into(),
+            sessions: sessions.clone(),
+        });
         assert!(!rearm, "ApplyInventory does not rearm detach recovery");
         // The single owner now holds the carried sessions — folded by the loop.
-        let owned = &hosts.get("jup").expect("host present").inventory.sessions;
+        let owned = &rt
+            .hosts
+            .get("jup")
+            .expect("host present")
+            .inventory
+            .sessions;
         assert_eq!(owned.len(), 1, "sessions folded into model::Host.inventory");
         assert_eq!(owned[0].name, "api");
         // And the tree group reflects the same sessions.
-        let group = state
+        let group = rt
+            .state
             .groups
             .iter()
             .find(|g| g.source == "jup")
@@ -3371,12 +3253,9 @@ mod tests {
             panes,
         };
         let mut state = crate::state::State::from_scan(scan);
-        let mut switcher = Switcher::new(&mut state);
+        let switcher = Switcher::new(&mut state);
 
         // A detected CONTROL (tmux) host with a live control client sink.
-        let (htx, _hrx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
-        let mut mgr = HostManager::new(htx);
-        mgr.insert_fake("jup");
         let mut hosts = crate::model::Hosts::default();
         let mut host = crate::model::Host::new(
             crate::machine::ssh("jup".into(), String::new(), "linux".into()),
@@ -3385,42 +3264,40 @@ mod tests {
         host.detected = true;
         hosts.insert(host);
 
-        let mut registry = AttachRegistry::new();
-        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
-        let worker = DisplayWorker::new(ptx);
-        let (pty_tx, _pty_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
-        let mut detecting = HashSet::new();
-        let mut attach_seq = 0u64;
+        let mut rt = test_rt(fake_env_with_sources(&[]));
+        rt.mgr.insert_fake("jup");
+        rt.hosts = hosts;
+        rt.state = state;
+        rt.switcher = switcher;
 
         // Panes were already loaded + requested during the initial scan.
-        let mut panes_requested: HashSet<String> = HashSet::new();
-        panes_requested.insert("jup/api".into());
+        rt.panes_requested.insert("jup/api".into());
         assert!(
-            state.panes.contains_key("jup/api"),
+            rt.state.panes.contains_key("jup/api"),
             "precondition: panes are loaded before the re-scan"
         );
 
         // The `r` re-scan resets the tree to its scanning skeleton and clears panes.
-        switcher.request_rescan(&mut state);
+        rt.switcher.request_rescan(&mut rt.state);
         assert!(
-            !state.panes.contains_key("jup/api"),
+            !rt.state.panes.contains_key("jup/api"),
             "request_rescan cleared the loaded panes"
         );
 
         // The loop consumes the kick and re-lists each host.
         kick_rescan(
-            &mut switcher,
-            &hosts,
-            &mut detecting,
-            &mut mgr,
-            &mut panes_requested,
+            &mut rt.switcher,
+            &rt.hosts,
+            &mut rt.detecting,
+            &mut rt.mgr,
+            &mut rt.panes_requested,
             80,
             24,
         );
         // The dedup must no longer block re-requesting this session's panes; otherwise
         // the re-list below silently skips `list-panes` and the subtree stays "loading…".
         assert!(
-            !panes_requested.contains("jup/api"),
+            !rt.panes_requested.contains("jup/api"),
             "kick_rescan must clear the pane-request dedup so control-host panes reload"
         );
 
@@ -3433,27 +3310,12 @@ mod tests {
             attached: false,
             last_attached: 100,
         }];
-        run_event_effect(
-            crate::model::EventEffect::ApplyInventory {
-                host: "jup".into(),
-                sessions,
-            },
-            &mut mgr,
-            &mut hosts,
-            &mut registry,
-            &mut switcher,
-            &mut state,
-            &mut panes_requested,
-            &mut detecting,
-            &worker,
-            &pty_tx,
-            &mut attach_seq,
-            80,
-            24,
-            crate::ui::switcher::TREE_WIDTH,
-        );
+        rt.run_event_effect(crate::model::EventEffect::ApplyInventory {
+            host: "jup".into(),
+            sessions,
+        });
         assert!(
-            panes_requested.contains("jup/api"),
+            rt.panes_requested.contains("jup/api"),
             "ApplyInventory re-requested the session's panes after the re-scan"
         );
     }
@@ -3810,6 +3672,66 @@ mod tests {
         HostManager::new(tokio::sync::mpsc::unbounded_channel().0)
     }
 
+    /// A headless `Runtime` for exercising the `&mut self` arm/effect methods: a fake
+    /// attach worker (no real PTYs), dropped receiver halves, hosts built from `env`.
+    /// A test overrides the fields it cares about (`rt.hosts`, `rt.state`, ...).
+    fn test_rt(env: Env) -> Runtime {
+        let env = std::sync::Arc::new(env);
+        let (host_tx, _host_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mgr = HostManager::new(host_tx);
+        let (wtx, _wrx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
+        let worker = DisplayWorker::with_spawner(
+            wtx,
+            Box::new(|_argv, _cols, _rows, id, _events, _env_clear| {
+                Ok(crate::display::attachment::fake_attachment(id))
+            }),
+        );
+        let (pty_tx, _pty_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
+        let hosts = crate::model::Hosts::build(
+            &env.cfg,
+            &env.ssh_aliases,
+            "windows",
+            &env.xmux_dir,
+            env.local_socket.clone(),
+        );
+        let mut state = crate::state::State::from_sources(hosts.ids().to_vec());
+        let switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
+        let ops = env.ops();
+        let (op_tx, _op_rx) = tokio::sync::mpsc::unbounded_channel();
+        let prefix = crate::display::term::parse_prefix(Some(&env.ui_prefix));
+        Runtime {
+            env,
+            ops,
+            hosts,
+            mgr,
+            registry: AttachRegistry::new(),
+            worker,
+            switcher,
+            state,
+            attach_seq: 0,
+            driver_pty_tx: pty_tx,
+            op_tx,
+            cols: 80,
+            body_rows: 24,
+            tree_width: crate::ui::switcher::TREE_WIDTH,
+            tree_width_natural: crate::ui::switcher::TREE_WIDTH,
+            auto_hide_tree: false,
+            mouse_state: MouseState::default(),
+            term_input: crate::display::input::TermInput::new(prefix),
+            tree_decoder: crate::display::decode::KeyDecoder::new(),
+            prefix,
+            connected: HashSet::new(),
+            panes_requested: HashSet::new(),
+            detecting: HashSet::new(),
+            draw_observer: DrawObserver::default(),
+            spinner_start: std::time::Instant::now(),
+            dirty: true,
+            last_draw: std::time::Instant::now(),
+            width_dirty: false,
+            width_flush_at: None,
+        }
+    }
+
     fn detach_test_hosts(alias: &str) -> crate::model::Hosts {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
@@ -3840,83 +3762,46 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn client_detached_matching_our_tty_reaps_display_and_rearms() {
-        let mut hosts = detach_test_hosts("jup");
-        let mut registry = AttachRegistry::new();
         let mut state = crate::state::State::from_sources(vec!["jup".into()]);
-        let mut switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
-        let mut connected = HashSet::new();
-        let mut panes: HashSet<String> = HashSet::new();
-        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
-        let worker = DisplayWorker::new(ptx);
-        let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
-        let mut seq = 0u64;
-        let mut mgr = empty_manager();
+        let switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
+        let mut rt = test_rt(fake_env_with_sources(&[]));
+        rt.hosts = detach_test_hosts("jup");
+        rt.state = state;
+        rt.switcher = switcher;
 
-        hosts.get_mut("jup").unwrap().display_tty =
+        rt.hosts.get_mut("jup").unwrap().display_tty =
             crate::model::DisplayTty(Some("/dev/pts/3".into()));
-        registry.insert_fake("jup", 7); // live attach under key = host id (Shared)
-        assert!(registry.contains("jup"));
+        rt.registry.insert_fake("jup", 7); // live attach under key = host id (Shared)
+        assert!(rt.registry.contains("jup"));
 
         // An UNRELATED client detaches → inert.
-        let rearm = handle_host_event(
-            HostEvent::ClientDetached {
-                host: "jup".into(),
-                client: "/dev/pts/9".into(),
-            },
-            &mut mgr,
-            &mut hosts,
-            &mut registry,
-            &mut switcher,
-            &mut state,
-            &mut connected,
-            &mut panes,
-            &mut HashSet::new(),
-            &worker,
-            &pty_tx,
-            &mut seq,
-            80,
-            24,
-            30,
-        );
+        let rearm = rt.handle_host_event(HostEvent::ClientDetached {
+            host: "jup".into(),
+            client: "/dev/pts/9".into(),
+        });
         assert!(!rearm, "an unrelated client's detach must not rearm");
         assert!(
-            registry.contains("jup"),
+            rt.registry.contains("jup"),
             "an unrelated client's detach must not reap our attach"
         );
         assert_eq!(
-            hosts.get("jup").unwrap().display_tty.0.as_deref(),
+            rt.hosts.get("jup").unwrap().display_tty.0.as_deref(),
             Some("/dev/pts/3"),
             "an unrelated detach must not clear our captured tty"
         );
 
         // OUR display client (the captured tty) detaches → reap + rearm.
-        let rearm = handle_host_event(
-            HostEvent::ClientDetached {
-                host: "jup".into(),
-                client: "/dev/pts/3".into(),
-            },
-            &mut mgr,
-            &mut hosts,
-            &mut registry,
-            &mut switcher,
-            &mut state,
-            &mut connected,
-            &mut panes,
-            &mut HashSet::new(),
-            &worker,
-            &pty_tx,
-            &mut seq,
-            80,
-            24,
-            30,
-        );
+        let rearm = rt.handle_host_event(HostEvent::ClientDetached {
+            host: "jup".into(),
+            client: "/dev/pts/3".into(),
+        });
         assert!(rearm, "our own client's detach must rearm recovery");
         assert!(
-            !registry.contains("jup"),
+            !rt.registry.contains("jup"),
             "our display attach is reaped so it cannot persist dead"
         );
         assert!(
-            hosts.get("jup").unwrap().display_tty.0.is_none(),
+            rt.hosts.get("jup").unwrap().display_tty.0.is_none(),
             "the dead client's tty is forgotten so no later switch-client targets it"
         );
     }
