@@ -22,7 +22,7 @@ pub struct State {
     pub panes_loaded: HashSet<String>,
     /// Active fuzzy-filter text (drives the visible tree + the hint_bar).
     pub filter: String,
-    /// What the tree cursor points at — the session/window to show.
+    /// What the tree selection points at — the session/window to show.
     pub selection: Selection,
     /// The address whose content is confirmed live in the on-screen terminal view —
     /// the single display truth, and the target of both rendering and input. The
@@ -131,7 +131,7 @@ impl State {
 
     /// The single domain-mutation site. Folds one [`Action`] into the state and
     /// returns the side effects to run as [`Command`]s. `apply` touches only `State`
-    /// — every external effect (switcher cursor move, attach, prefs persist, quit)
+    /// — every external effect (switcher selection move, attach, prefs persist, quit)
     /// is returned for the run loop to dispatch, so the intent → state → effect flow
     /// has exactly one mutation point.
     ///
@@ -193,7 +193,7 @@ impl State {
                 let mut cmds = Vec::new();
                 // Persist the settled session as last-selected — INDEPENDENT of the
                 // attach gate, so it records even when the attach is suppressed (e.g.
-                // an in-flight attach on the same shared host while the cursor moves to
+                // an in-flight attach on the same shared host while the selection moves to
                 // another of its sessions). Only on an address change, so stepping
                 // between windows of one session does not rewrite it.
                 let addr = self.selection.address();
@@ -317,7 +317,7 @@ impl State {
                 window,
             } => {
                 // The active-window probe resolved — flip the bold+italic marker. A pure
-                // state mutation: cursor follow is a loop-top concern, not here.
+                // state mutation: selection follow is a loop-top concern, not here.
                 switcher.set_active_window(&host, &session, window, self);
                 Vec::new()
             }
@@ -365,7 +365,7 @@ impl State {
 
     /// Whether to (re)issue an attach for the settled selection. Fire when the
     /// selection differs from what is confirmed on screen, or when its display PTY is
-    /// gone (`!key_live` — exited / reaped while the cursor was elsewhere) — but never
+    /// gone (`!key_live` — exited / reaped while the selection was elsewhere) — but never
     /// while an attach for the key is already in flight, so the async-attach window
     /// cannot spawn a storm of duplicates. The clock and these runtime facts enter as
     /// data on the Tick, never read here directly.
@@ -374,11 +374,11 @@ impl State {
     }
 }
 
-/// Debounce before a settled cursor move attaches/switches its session+window.
+/// Debounce before a settled selection move attaches/switches its session+window.
 /// Rapid navigation must NOT switch-client / select-window per step: each switch
 /// makes the remote mux send a full-screen repaint, and a storm of repaints floods
 /// the draw — the single-threaded loop then spends all its time redrawing, which IS
-/// the freeze. Deferring the attach until the cursor settles keeps per-step redraws
+/// the freeze. Deferring the attach until the selection settles keeps per-step redraws
 /// to a cheap tree-only diff. The single source of this value; the app's
 /// host-event re-arm paths reference it so the two can never drift.
 pub(crate) const ATTACH_DEBOUNCE_MS: u64 = 90;

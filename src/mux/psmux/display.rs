@@ -471,7 +471,7 @@ mod tests {
 
     /// THE USER'S CORE WANT: when a live psmux client + its captured tty are known,
     /// switching to a DIFFERENT session switches the client IN PLACE — no teardown, so
-    /// no "(attaching…)". Observable headless: the live attachment is NOT removed and NO
+    /// the terminal view never goes blank. Observable headless: the live attachment is NOT removed and NO
     /// new reattach is requested (in_flight stays empty); the shown session updates.
     #[tokio::test(flavor = "current_thread")]
     async fn psmux_driver_show_switches_in_place_when_tty_known() {
@@ -520,7 +520,7 @@ mod tests {
         }
         assert!(
             registry.contains("local"),
-            "in-place switch keeps the live client (no teardown ⇒ no \"(attaching…)\")"
+            "in-place switch keeps the live client (no teardown ⇒ terminal view never blanks)"
         );
         assert!(
             hosts.get("local").unwrap().display.in_flight.is_empty(),

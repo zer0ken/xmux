@@ -9,7 +9,7 @@ use std::path::Path;
 /// The file under the xmux dir holding the last-selected session address.
 const LAST_SESSION_FILE: &str = "last_session";
 
-/// The file under the xmux dir holding the tree (sidebar) width the user last set
+/// The file under the xmux dir holding the tree view width the user last set
 /// with `prefix h`/`l`, so the next launch restores it instead of the default.
 const TREE_WIDTH_FILE: &str = "tree_width";
 

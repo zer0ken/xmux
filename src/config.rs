@@ -34,23 +34,23 @@ pub struct UiConfig {
     pub prefix: String,
     /// The INITIAL state of the auto-hide-tree mode (toggled live with `prefix t`,
     /// then persisted to `~/.xmux/auto_hide_tree`, which wins over this on later
-    /// runs). When the mode is on, focusing the mux hides the tree and gives the mux
+    /// runs). When the mode is on, focusing the terminal view hides the tree and gives it
     /// the full terminal width; the tree returns when focus returns to it. While
     /// hidden the tree has no column to click, so focus returns via the prefix keys
     /// (`prefix Tab`/`←`/`Esc`). Default false keeps the tree shown in both focus states.
     #[serde(rename = "auto-hide-tree", default)]
     pub auto_hide_tree: bool,
-    /// The tree|terminal divider colours, named after tmux's pane-border options so the
-    /// experience matches tmux: the focused side uses `pane-active-border-style`, the
-    /// unfocused side `pane-border-style`, and the drag-hover cue `pane-border-hover-style`.
+    /// The tree|terminal view border colours, named after tmux's pane-border options so the
+    /// experience matches tmux: the focused side uses `view-active-border-style`, the
+    /// unfocused side `view-border-style`, and the drag-hover cue `view-border-hover-style`.
     /// Values use tmux's colour vocabulary (parsed by [`crate::ui::switcher::map_color`]);
     /// the defaults mirror tmux's own (`green` / `default` / `yellow`).
-    #[serde(rename = "pane-active-border-style", default = "default_active_border")]
-    pub pane_active_border_style: String,
-    #[serde(rename = "pane-border-style", default = "default_border")]
-    pub pane_border_style: String,
-    #[serde(rename = "pane-border-hover-style", default = "default_hover_border")]
-    pub pane_border_hover_style: String,
+    #[serde(rename = "view-active-border-style", default = "default_active_border")]
+    pub view_active_border_style: String,
+    #[serde(rename = "view-border-style", default = "default_border")]
+    pub view_border_style: String,
+    #[serde(rename = "view-border-hover-style", default = "default_hover_border")]
+    pub view_border_hover_style: String,
 }
 
 fn default_prefix() -> String {
@@ -72,9 +72,9 @@ impl Default for UiConfig {
         UiConfig {
             prefix: default_prefix(),
             auto_hide_tree: false,
-            pane_active_border_style: default_active_border(),
-            pane_border_style: default_border(),
-            pane_border_hover_style: default_hover_border(),
+            view_active_border_style: default_active_border(),
+            view_border_style: default_border(),
+            view_border_hover_style: default_hover_border(),
         }
     }
 }
@@ -566,27 +566,27 @@ bogus = "nope"
         // Missing file → tmux's own code defaults (green / default / yellow).
         let missing = std::env::temp_dir().join("xmux-border-absent-xyz.toml");
         let cfg = load(&missing).unwrap();
-        assert_eq!(cfg.ui.pane_active_border_style, "green");
-        assert_eq!(cfg.ui.pane_border_style, "default");
-        assert_eq!(cfg.ui.pane_border_hover_style, "yellow");
+        assert_eq!(cfg.ui.view_active_border_style, "green");
+        assert_eq!(cfg.ui.view_border_style, "default");
+        assert_eq!(cfg.ui.view_border_hover_style, "yellow");
 
         // [ui] present but border keys missing → still the defaults.
         let path = write_temp("[ui]\nprefix = \"C-g\"\n", "border-missing.toml");
         let cfg = load(&path).unwrap();
-        assert_eq!(cfg.ui.pane_active_border_style, "green");
-        assert_eq!(cfg.ui.pane_border_style, "default");
+        assert_eq!(cfg.ui.view_active_border_style, "green");
+        assert_eq!(cfg.ui.view_border_style, "default");
     }
 
     #[test]
     fn ui_border_styles_override_via_tmux_option_names() {
         let path = write_temp(
-            "[ui]\npane-active-border-style = \"blue\"\npane-border-style = \"white\"\npane-border-hover-style = \"fg=red\"\n",
+            "[ui]\nview-active-border-style = \"blue\"\nview-border-style = \"white\"\nview-border-hover-style = \"fg=red\"\n",
             "border-override.toml",
         );
         let cfg = load(&path).unwrap();
-        assert_eq!(cfg.ui.pane_active_border_style, "blue");
-        assert_eq!(cfg.ui.pane_border_style, "white");
-        assert_eq!(cfg.ui.pane_border_hover_style, "fg=red");
+        assert_eq!(cfg.ui.view_active_border_style, "blue");
+        assert_eq!(cfg.ui.view_border_style, "white");
+        assert_eq!(cfg.ui.view_border_hover_style, "fg=red");
     }
 
     #[test]

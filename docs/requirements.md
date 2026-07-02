@@ -56,7 +56,7 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   **Tests:** `filter_host_enter_targets_visible_session`,
   `filter_leaves_cursor_on_visible_session`.
 - **FR-B7** — Per-element state hints: `scanning…`, `loading…`, `(empty)`,
-  `⚠ unreachable: <reason>`. **Tests:** `apply_source_result_empty_shows_empty_hint`,
+  `⚠ unreachable: <reason>`. **Tests:** `apply_source_result_empty_shows_empty_status`,
   `apply_source_result_unreachable_marks_tree_and_reason_in_info_pane`.
 - **FR-B8** — A session running xmux is never mirrored into the terminal view.
   This is prevented structurally, not by a runtime check: the nest guard (FR-D3)
@@ -96,7 +96,7 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   a live client is moved server-side by a lowered `select-window`. **Tests:**
   `interactive_attach_remote_folds_pre_select_into_one_connection`,
   `interactive_attach_remote_without_pre_select_execs_over_ssh_tty`,
-  `selection_from_window_row_target`, `active_window_probe_moves_sidebar_cursor`.
+  `selection_from_window_row_target`, `active_window_probe_moves_tree_selection`.
 - **FR-C5** — No silent loss: every lowered switch/select command logs its exact argv
   and result through `tracing`; a failed attach logs `attach_failed` (warn) and returns
   to the tree rather than being swallowed; each driver logs its show decision and the

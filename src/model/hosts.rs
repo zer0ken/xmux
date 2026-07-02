@@ -108,7 +108,7 @@ impl Hosts {
                     h.liveness = Liveness::Unreachable;
                 }
             }
-            // Change/window/focus events drive refetch + cursor follow in the render
+            // Change/window/focus events drive refetch + selection follow in the render
             // projection (later phase); they touch no Host-owned field here.
             Changed { .. } | ActiveWindowChanged { .. } | Focus { .. } => {}
             // The tty-matched reap of xmux's own display attach is the supervisor's job (it

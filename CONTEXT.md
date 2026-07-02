@@ -37,24 +37,68 @@ One concept, one word. The two axes and the runtime:
 UI elements a user perceives as distinct things:
 
 - split view — the whole two-region layout.
-- tree view — the left region (the host / session / window / pane tree).
+- tree view — the left region (the host / session / window / pane tree). Never
+  the "sidebar".
 - terminal view — the right region (the selected session's live grid).
-- divider — the vertical rule between the views; carries the focus, auto-hide,
-  and hover cues.
-- status surface — the `Status`-owned chrome (divider + hint bar + host info).
-- hint bar — the bottom line of the tree column (key hints, flash, scanning,
-  filter text). Scoped to the tree column, so not a full-width status bar.
-- grid — the live terminal content drawn in the terminal view.
+- view border — the vertical line between the two views. Modelled on tmux's pane
+  border, but it borders views (not panes), so it is a `view border`, never a
+  "pane border" or a bare "divider". Its color config keys are `view-border-style`
+  / `view-active-border-style` / `view-border-hover-style`.
+- active view border — the view border half painted the active color to mark which
+  view holds focus (tmux `pane-active-border-style`; the top half is the active
+  color for tree focus, the bottom half for terminal focus).
+- view border lines — the view border's line-drawing style (tmux
+  `pane-border-lines`): `single │` (default), `double ║` (auto-hide-tree on),
+  `heavy ┃` (hover — the drag-resize grab cue).
+- chrome — the furniture around the two views, owned by the `Chrome` type: the
+  view border, the hint bar, and the host info.
+- hint bar — the bottom line of the tree column (key hints, flash, the scan
+  indicator, filter text). Scoped to the tree column, so not a full-width status bar.
 - host info — the unreachable-host detail shown in the terminal-view region.
+- grid — the live terminal content drawn in the terminal view: xmux's in-memory
+  cell mirror of the attached session's screen, fed by the vt100 parser.
+- cursor — the real terminal cursor placed over the grid at the mux's cursor cell
+  while the terminal view is focused. "cursor" always means this text cursor,
+  never the tree selection.
 - row — one tree line (host / session / window / pane / loading row).
-- hint — a row's trailing state annotation (`scanning…` / `(empty)` /
-  `⚠ unreachable`).
+- level color — the fixed per-depth row color: host yellow, session green, window
+  magenta, pane cyan, status / loading grey.
+- selection — the tree's current pick (its row index is `selected`), advanced by
+  navigation; a routine poll or restream never moves it (only launch / rescan
+  re-sorts). `preselect` / `reselect` are the launch and post-rescan selections.
+- selection highlight — the reverse-video rendering of the selected row and its
+  status (ratatui's `highlight_style`); `pad_label` gives it a space of breathing
+  room each side. `selected` + `highlight` follow ratatui's list vocabulary.
+- active marker — the bold + italic styling on the displayed window's row and its
+  active pane.
 - spinner — the braille activity glyph on a connecting session row.
+- loading row — a whole-row spinner standing where a session's not-yet-loaded
+  windows will appear; distinct from the trailing `spinner`, though both use the
+  same glyph set.
+- status — a row's trailing state (host status, session status, …): a `status
+  label` (`scanning…` / `(empty)` / `unreachable`) and a `status icon` (`⚠`). Not
+  to be confused with the hint bar (below) or the `chrome`.
 - filter — the type-to-filter input over the tree.
+- flash — a transient notice or error line shown in the hint bar (e.g. a refused
+  action's reason). Never a "toast" or "notice".
+- scan indicator — the `⟳ scanning hosts n/m…` progress shown in the hint bar
+  while host probes are in flight; distinct from a row's `scanning…` status.
+- popup — the bordered, opaque, centered (draggable) dialog a `ModalKind::Popup`
+  draws, its title in the top border. The help, input dialog, and kill confirm
+  are popups.
+- prompt — the `❯` entry marker on an input dialog's edit line.
+- confirm — the red `[y]es / [n]o` kill-confirmation prompt.
+- menu highlight — the reverse-video context-menu entry under the pointer (the
+  menu's selection highlight).
 
-`pane` is reserved for a mux window's terminal split (a tmux / psmux pane); it
-is never a screen region — screen regions are "views". The switcher's rendered
-screen is the "switcher screen" (`dump_screen`), never an "overlay".
+`pane` is reserved for a mux window's terminal split (a tmux / psmux pane); it is
+never a screen region — screen regions are "views", and the line between them is
+the `view border`. A transient hint-bar message is a `flash`, never a "toast" or
+"notice". A row's trailing state is a `status`, never a "hint". The reverse-video
+selection is the `selection highlight` (tree) or `menu highlight` (menu); `cursor`
+names only the grid's text cursor. The furniture around the views is the `chrome`
+(owned by `Chrome`), never a "status surface". The switcher's rendered screen is
+the "switcher screen" (`dump_screen`), never an "overlay".
 
 ## Working Notes Format
 

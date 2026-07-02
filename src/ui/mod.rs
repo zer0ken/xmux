@@ -2,9 +2,9 @@
 //! ratatui application (`switcher`). The model layer is side-effect-free; the
 //! rendering is layered on top separately.
 
+pub mod chrome;
 pub mod ops;
 pub mod run;
-pub mod status;
 pub mod switcher;
 pub mod tree;
 

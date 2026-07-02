@@ -1,8 +1,8 @@
-//! The switcher's status surface: the tree|terminal divider, the tree-column hint_bar
+//! The switcher's chrome: the tree|terminal view border, the tree-column hint_bar
 //! (help / status / wrapped flash), and the unreachable-host info panel. These
-//! own the view-local presentation state ([`Status`]) and read the runtime
+//! own the view-local presentation state ([`Chrome`]) and read the runtime
 //! inventory from `State`; the [`Switcher`](crate::ui::switcher::Switcher) holds a
-//! [`Status`] and delegates these draws to it.
+//! [`Chrome`] and delegates these draws to it.
 
 use std::collections::HashSet;
 
@@ -14,20 +14,20 @@ use ratatui::Frame;
 
 use crate::ui::switcher::{fit, wrap_text};
 
-/// The tree|terminal divider's three colours, resolved from config (tmux's pane-border
+/// The tree|terminal view border's three colours, resolved from config (tmux's pane-border
 /// options): `active` marks the focused side, `inactive` the unfocused side, and
 /// `hover` the drag-resize grab cue. Defaults mirror tmux's own code defaults —
 /// `green` / terminal-default / `yellow`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DividerColors {
+pub struct ViewBorderColors {
     pub active: Color,
     pub inactive: Color,
     pub hover: Color,
 }
 
-impl Default for DividerColors {
+impl Default for ViewBorderColors {
     fn default() -> Self {
-        DividerColors {
+        ViewBorderColors {
             active: Color::Green,
             inactive: Color::Reset,
             hover: Color::Yellow,
@@ -35,18 +35,18 @@ impl Default for DividerColors {
     }
 }
 
-/// The switcher's status-surface view state: the divider/hint_bar/host-info draws and
-/// their inputs (flash notice, spinner set + frame, auto-hide + hover cues, divider
+/// The switcher's chrome view state: the view border/hint_bar/host-info draws and
+/// their inputs (flash, spinner set + frame, auto-hide + hover cues, view border
 /// colours, the ssh-config text, and the configured prefix string).
-pub struct Status {
+pub struct Chrome {
     pub(crate) flash: String,
-    /// Auto-hide-tree mode (set by the app each frame). Drives the divider glyph:
+    /// Auto-hide-tree mode (set by the app each frame). Drives the view border glyph:
     /// ║ (double) when on, │ (single) when off — the only on-screen cue, since while
     /// the mode is on but the tree is focused the tree still shows.
     pub(crate) auto_hide: bool,
-    /// True while the mouse is hovering the divider rule — the app sets this from
-    /// idle motion so the divider highlights as a grab cue for drag-resize.
-    pub(crate) divider_hovered: bool,
+    /// True while the mouse is hovering the view border rule — the app sets this from
+    /// idle motion so the view border highlights as a grab cue for drag-resize.
+    pub(crate) view_border_hovered: bool,
     /// Session addresses currently connecting / awaiting first output — a braille
     /// spinner glyph renders right of their name in the tree.
     pub(crate) spinner: HashSet<String>,
@@ -57,27 +57,27 @@ pub struct Status {
     /// The human-readable prefix string (e.g. `"C-g"`, `"C-Space"`) — set once by
     /// the app from config so the help modal reflects the active binding.
     pub(crate) ui_prefix: String,
-    /// The tree|terminal divider colours (set once by the app from config; tmux defaults
-    /// otherwise). See [`DividerColors`].
-    pub(crate) colors: DividerColors,
+    /// The tree|terminal view border colours (set once by the app from config; tmux defaults
+    /// otherwise). See [`ViewBorderColors`].
+    pub(crate) colors: ViewBorderColors,
 }
 
-impl Default for Status {
+impl Default for Chrome {
     fn default() -> Self {
-        Status {
+        Chrome {
             flash: String::new(),
             auto_hide: false,
-            divider_hovered: false,
+            view_border_hovered: false,
             spinner: HashSet::new(),
             spinner_frame: 0,
             ssh_config_text: String::new(),
             ui_prefix: "C-g".into(),
-            colors: DividerColors::default(),
+            colors: ViewBorderColors::default(),
         }
     }
 }
 
-impl Status {
+impl Chrome {
     /// Replaces the set of session addresses currently connecting / awaiting
     /// first output. The tree draws a braille spinner right of each matching
     /// session name.
@@ -92,21 +92,21 @@ impl Status {
         self.spinner_frame = frame;
     }
 
-    /// Sets auto-hide-tree mode (the app owns it; the divider glyph reflects it).
+    /// Sets auto-hide-tree mode (the app owns it; the view border glyph reflects it).
     pub(crate) fn set_auto_hide(&mut self, on: bool) {
         self.auto_hide = on;
     }
 
-    /// Sets whether the mouse is hovering the divider (the app derives it from
-    /// idle motion); when set, the divider highlights as a drag-resize grab cue.
-    pub(crate) fn set_divider_hovered(&mut self, on: bool) {
-        self.divider_hovered = on;
+    /// Sets whether the mouse is hovering the view border (the app derives it from
+    /// idle motion); when set, the view border highlights as a drag-resize grab cue.
+    pub(crate) fn set_view_border_hovered(&mut self, on: bool) {
+        self.view_border_hovered = on;
     }
 
-    /// Sets the tree|terminal divider colours. The app calls this once at startup with
-    /// the colours parsed from config's `pane-*-border-style` options; tmux defaults
+    /// Sets the tree|terminal view border colours. The app calls this once at startup with
+    /// the colours parsed from config's `view-*-border-style` options; tmux defaults
     /// apply otherwise.
-    pub(crate) fn set_divider_colors(&mut self, colors: DividerColors) {
+    pub(crate) fn set_view_border_colors(&mut self, colors: ViewBorderColors) {
         self.colors = colors;
     }
 
@@ -128,7 +128,7 @@ impl Status {
     /// signal (adapting tmux's active-pane border). Replaces the per-pane box borders.
     /// The glyph also encodes auto-hide-tree mode: ║ (double) when on, │ when off — so
     /// a visible tree that will vanish on blur is distinguishable from a pinned one.
-    pub(crate) fn render_divider(&self, frame: &mut Frame, area: Rect, terminal_focused: bool) {
+    pub(crate) fn render_view_border(&self, frame: &mut Frame, area: Rect, terminal_focused: bool) {
         let active = self.colors.active;
         let inactive = self.colors.inactive;
         let glyph = if self.auto_hide { "║" } else { "│" };
@@ -137,7 +137,7 @@ impl Status {
         // HEAVY vertical (┃) for a genuinely thicker line and recolour it with the
         // configured hover colour (tmux's `pane-border-hover-style`) — same single rule,
         // just thicker + lit, as the grab cue.
-        if self.divider_hovered {
+        if self.view_border_hovered {
             let style = Style::default().fg(self.colors.hover);
             let bars = Text::from(
                 (0..area.height)
@@ -262,7 +262,7 @@ impl Status {
     }
 
     /// The hint_bar text split into the lines to render. The fit-based text is always one
-    /// line; only a flash (an arbitrary error/notice) may exceed `width`, so it wraps
+    /// line; only a flash (an arbitrary error message) may exceed `width`, so it wraps
     /// across the narrow tree-column hint_bar rather than clipping.
     pub(crate) fn hint_bar_lines(&self, width: u16, state: &crate::state::State) -> Vec<String> {
         let text = self.hint_bar_text(width, state);

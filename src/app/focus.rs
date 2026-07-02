@@ -1,6 +1,6 @@
 //! The app's focus state machine. Every state draws the SAME split (tree on
-//! the left, the cursor session's live grid on the right); focus only chooses
-//! where keys go and which divider rule is highlighted. There are four states
+//! the left, the selection session's live grid on the right); focus only chooses
+//! where keys go and which view border rule is highlighted. There are four states
 //! along two dimensions: the VIEW dimension (`Tree` ⇄ `Terminal`, toggled by
 //! `prefix Tab`) and a MODAL dimension layered on top (`Popup` for help / inline
 //! input / kill-confirm, `Menu` for the right-click context menu). A modal is a
@@ -147,7 +147,7 @@ mod tests {
         let mut focus = Focus::default();
         assert!(
             focus.is_tree_focused(),
-            "starts on the tree (cursor preselected)"
+            "starts on the tree (selection preselected)"
         );
         focus.toggle();
         assert_eq!(focus, Focus::Terminal);
@@ -261,7 +261,7 @@ mod tests {
             }
         );
         focus.sync_modal(None);
-        assert_eq!(focus, Focus::Terminal, "menu closed onto the mux");
+        assert_eq!(focus, Focus::Terminal, "menu closed onto the terminal view");
     }
 
     #[test]

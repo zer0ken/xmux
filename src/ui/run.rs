@@ -43,7 +43,7 @@ pub fn dump_switcher(
     dump_screen(switcher, None, width, height, state)
 }
 
-/// Renders the tree-focus view — the switcher with the cursor host's live `grid` (if
+/// Renders the tree-focus view — the switcher with the selection host's live `grid` (if
 /// any) in the terminal view — to an off-screen `TestBackend` and flattens
 /// it. So a headless `dump` reflects the same screen the main draw produces,
 /// including the live terminal Grid. Runs without a real terminal.

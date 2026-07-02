@@ -17,7 +17,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::model::{Action, Command};
 use crate::session::{Pane, Session, WindowPanes};
-use crate::ui::status::Status;
+use crate::ui::chrome::Chrome;
 use crate::ui::tree::{self, Group};
 
 pub use crate::ui::ops::{run_op, OpResult, Ops};
@@ -30,12 +30,12 @@ const COLOR_HOST: Color = Color::Yellow;
 const COLOR_SESSION: Color = Color::Green;
 const COLOR_WINDOW: Color = Color::Magenta;
 const COLOR_PANE: Color = Color::Cyan;
-/// Transient per-element state hints (scanning…, loading…, (empty), unreachable)
-/// render dim so pending state reads apart from settled content.
+/// Transient per-element status (scanning…, loading…, (empty), unreachable)
+/// renders dim so pending state reads apart from settled content.
 const COLOR_HINT: Color = Color::DarkGray;
 
 /// Parses a tmux-style colour token into a ratatui [`Color`], matching tmux/psmux's
-/// colour vocabulary so the divider colours can be configured exactly like
+/// colour vocabulary so the view border colours can be configured exactly like
 /// `pane-border-style`: the 16 named ANSI colours, their `bright*` variants,
 /// `colourN`/`colorN` (a 0-255 palette index), `#RRGGBB`, and `default` (terminal
 /// default). A leading `fg=` is tolerated so a tmux style string drops in verbatim.
@@ -84,7 +84,7 @@ pub fn map_color(s: &str) -> Color {
     }
 }
 
-pub use crate::ui::status::DividerColors;
+pub use crate::ui::chrome::ViewBorderColors;
 
 /// A fully-populated snapshot of the reachable environment.
 #[derive(Clone, Default)]
@@ -107,7 +107,7 @@ pub(crate) enum PendingKill {
 
 /// What a tree row references. Hosts, sessions, and windows are selectable; panes
 /// and loading placeholders are shown for context but never selectable, so the
-/// cursor skips them.
+/// selection skips them.
 #[derive(Clone)]
 enum RowRef {
     Host {
@@ -251,11 +251,11 @@ struct Row {
     /// A trailing dim annotation (scanning…, (empty), ⚠ unreachable: …) — kept
     /// apart from `label` so the name stays in its level colour and the state
     /// reads dim.
-    hint: Option<String>,
+    status: Option<String>,
     indent: usize,
     color: Color,
     reference: RowRef,
-    /// The active window / active pane of its session — rendered BOLD (replaces a
+    /// The active window / active pane of its session — rendered bold+italic (replaces a
     /// trailing "(active)" text marker).
     active: bool,
 }
@@ -266,7 +266,7 @@ impl Row {
     }
 }
 
-/// Snapshot of the cursor taken before a rebuild so `restore_focus` can
+/// Snapshot of the selection taken before a rebuild so `restore_focus` can
 /// recover or gracefully redirect it afterward.
 struct PriorFocus {
     reference: Option<RowRef>,
@@ -296,7 +296,7 @@ pub(crate) struct Input {
     buffer: String,
     /// The create source / rename target captured when the input opened, so the
     /// action lands on the node the user was on — not wherever streaming results
-    /// moved the cursor by the time they pressed Enter.
+    /// moved the selection by the time they pressed Enter.
     source: Option<String>,
     sess: Option<Session>,
     /// The split target (`session:window`) for [`InputMode::SplitWindow`].
@@ -319,7 +319,7 @@ pub(crate) enum Modal {
 
 /// The switcher state machine.
 pub struct Switcher {
-    /// Set once the user explicitly moves the cursor; while false, streaming
+    /// Set once the user explicitly moves the selection; while false, streaming
     /// results advance the preselect toward the most-recent session.
     user_moved: bool,
     /// Signals the event loop to (re)kick the streaming probes — set on the
@@ -342,19 +342,19 @@ pub struct Switcher {
     /// The persisted last-selected session address (`source/session`) used to
     /// preselect on launch; `None` ⇒ the local-first preselect. Drives only the
     /// initial preselect (while the user has not moved); once `user_moved` is set,
-    /// `restore_focus` keeps the cursor and this is ignored.
+    /// `restore_focus` keeps the selection and this is ignored.
     preferred: Option<String>,
-    /// A pending re-scan reselect: the session address the cursor was on when `r`
+    /// A pending re-scan reselect: the session address the selection was on when `r`
     /// was pressed. A re-scan clears every session, so the row briefly vanishes; this
-    /// returns the cursor to it the instant its host re-streams. Cleared once matched,
+    /// returns the selection to it the instant its host re-streams. Cleared once matched,
     /// or when the user navigates off the parked parent host during the skeleton phase.
     rescan_reselect: Option<String>,
     /// The whole frame area, captured each render so the menu box can be clamped to
     /// the screen at open time (mouse events arrive between renders).
     screen_area: Rect,
-    /// The status surface (divider, hint_bar, host-info) and its view-local state
-    /// (flash, spinner, auto-hide/hover cues, divider colours, ssh-config, prefix).
-    status: Status,
+    /// The chrome (view border, hint_bar, host-info) and its view-local state
+    /// (flash, spinner, auto-hide/hover cues, view border colours, ssh-config, prefix).
+    chrome: Chrome,
     /// Drag offset (cells) applied to a modal popup's centered position. Reset
     /// to (0,0) when a popup opens; updated while its border is dragged.
     popup_offset: (i16, i16),
@@ -381,7 +381,7 @@ impl Switcher {
             preferred: None,
             rescan_reselect: None,
             screen_area: Rect::default(),
-            status: Status::default(),
+            chrome: Chrome::default(),
             popup_offset: (0, 0),
             popup_rect: Rect::default(),
             popup_drag: None,
@@ -482,12 +482,12 @@ impl Switcher {
     }
 
     fn rebuild(&mut self, state: &mut crate::state::State) {
-        // Once the user has moved the cursor, hold their current session/window selection
+        // Once the user has moved the selection, hold their current session/window selection
         // across this rebuild when it survives (matched by identity) — a routine rebuild
-        // (local poll, remote %-event refetch) must NOT snap the cursor back to the recency
+        // (local poll, remote %-event refetch) must NOT snap the selection back to the recency
         // preselect, which would yank the displayed session out from under the user on every
         // poll (the selection thrash). The user_moved gate at the target below preserves the
-        // launch behavior: an untouched cursor still follows the preferred/recency preselect.
+        // launch behavior: an untouched selection still follows the preferred/recency preselect.
         let keep = self
             .rows
             .get(self.selected)
@@ -512,7 +512,7 @@ impl Switcher {
         let mut rows = Vec::new();
         // Preselect priority: the persisted last-selected session (restored on
         // launch) wins; otherwise the FIRST session row — which order_groups pins to
-        // the LOCAL source's most-recent session — so an untouched cursor never jumps
+        // the LOCAL source's most-recent session — so an untouched selection never jumps
         // to a remote on a global-recency tiebreak (#1). `session_last_attached` is
         // not a reliable cross-host "most recent" signal (xmux's own pre-attaching and
         // clock skew corrupt it), so the preselect uses the persisted last-selected
@@ -525,7 +525,7 @@ impl Switcher {
             let unreachable = g.err.is_some();
             rows.push(Row {
                 label: g.source.clone(),
-                hint: self.host_hint(g, scanning),
+                status: self.host_status(g, scanning),
                 indent: 0,
                 color: COLOR_HOST,
                 reference: RowRef::Host {
@@ -547,7 +547,7 @@ impl Switcher {
                 }
                 rows.push(Row {
                     label: self.session_label(sess),
-                    hint: None,
+                    status: None,
                     indent: 2,
                     color: COLOR_SESSION,
                     reference: RowRef::Session(sess.clone()),
@@ -558,7 +558,7 @@ impl Switcher {
                         for w in windows {
                             rows.push(Row {
                                 label: window_label(w),
-                                hint: None,
+                                status: None,
                                 indent: 4,
                                 color: COLOR_WINDOW,
                                 reference: RowRef::Window {
@@ -570,7 +570,7 @@ impl Switcher {
                             for p in &w.panes {
                                 rows.push(Row {
                                     label: pane_label(p),
-                                    hint: None,
+                                    status: None,
                                     indent: 6,
                                     color: COLOR_PANE,
                                     reference: RowRef::Pane,
@@ -584,7 +584,7 @@ impl Switcher {
                     // stands where its windows will appear.
                     rows.push(Row {
                         label: "loading…".into(),
-                        hint: None,
+                        status: None,
                         indent: 4,
                         color: COLOR_HINT,
                         reference: RowRef::Loading,
@@ -620,7 +620,7 @@ impl Switcher {
     /// The dim trailing annotation for a host row: its scan state when it has no
     /// sessions to show — scanning…, ⚠ (unreachable; the reason is shown in the
     /// terminal-view info panel when the host row is selected), or (empty).
-    fn host_hint(&self, g: &Group, scanning: bool) -> Option<String> {
+    fn host_status(&self, g: &Group, scanning: bool) -> Option<String> {
         if scanning {
             Some("scanning…".into())
         } else if g.err.is_some() {
@@ -635,7 +635,7 @@ impl Switcher {
     fn session_label(&self, sess: &Session) -> String {
         // No "attached" dot: the app pre-attaches EVERY session (a PTY client per
         // session), so `session_attached` is true for ~all of them — the marker would
-        // be noise. The active window/pane is shown BOLD instead.
+        // be noise. The active window/pane is shown bold+italic instead.
         let pad = self
             .name_col_width
             .saturating_sub(UnicodeWidthStr::width(sess.name.as_str()));
@@ -771,9 +771,9 @@ impl Switcher {
         }
     }
 
-    /// The session the mux is DISPLAYING for the cursor's row: the cursor's own session
+    /// The session the mux is DISPLAYING for the selection's row: the selection's own session
     /// (session/window row) or, on a host row, the host's recent session — the same
-    /// resolution `target_for` uses. Lets the passthrough follow descend from a host.
+    /// resolution `target_for` uses. Lets the terminal-view follow descend from a host.
     fn displayed_session(&self, state: &crate::state::State) -> Option<Session> {
         match self.current_ref()? {
             RowRef::Session(s) => Some(s.clone()),
@@ -792,7 +792,7 @@ impl Switcher {
     fn first_session_of(&self, source: &str, state: &crate::state::State) -> Option<Session> {
         // The source's first VISIBLE session (its sessions are kept recency-sorted),
         // mirroring `filter_groups` for just this one group — NOT cloning every host's
-        // sessions via `visible_groups`, since this runs on every cursor move onto a
+        // sessions via `visible_groups`, since this runs on every selection move onto a
         // host row (the navigation hot path).
         let g = state.groups.iter().find(|g| g.source == source)?;
         if g.err.is_some() {
@@ -836,8 +836,8 @@ impl Switcher {
         };
     }
 
-    /// The session/window the cursor is currently on, used by the app to
-    /// `switch-client` on every cursor move (`select = attach`). Returns `Some`
+    /// The session/window the selection is currently on, used by the app to
+    /// `switch-client` on every selection move (`select = attach`). Returns `Some`
     /// only for session, window, or host-with-session rows; `None` for pane,
     /// loading, and empty-host rows.
     pub fn current_attach_target(&self, state: &crate::state::State) -> Option<TerminalViewTarget> {
@@ -850,21 +850,21 @@ impl Switcher {
         }
     }
 
-    /// The host (source alias) the cursor is on, or `None` on a pane/loading row.
+    /// The host (source alias) the selection is on, or `None` on a pane/loading row.
     /// The app ensures this host's control-mode client is connected on every
-    /// cursor move, so the host's `list-sessions` populates the tree even before
+    /// selection move, so the host's `list-sessions` populates the tree even before
     /// any session is selected (a control-mode client is the only session source).
     pub fn current_host(&self) -> Option<String> {
         self.current_source()
     }
 
-    /// Moves the sidebar cursor to window `window` of `source`/`session` when the
-    /// cursor is currently within THAT session's subtree — on its session row OR any
+    /// Moves the tree selection to window `window` of `source`/`session` when the
+    /// selection is currently within THAT session's subtree — on its session row OR any
     /// of its window rows. Used to follow the displayed session's active-window
     /// change; the app gates this on TERMINAL focus, where the user is no longer
-    /// driving the tree cursor (stdin goes to the PTY), so following from the session
+    /// driving the tree selection (stdin goes to the PTY), so following from the session
     /// row mirrors the mux without yanking a tree-navigating user. A no-op when the
-    /// cursor is on a different host/session. Returns whether it moved.
+    /// selection is on a different host/session. Returns whether it moved.
     pub fn select_window(
         &mut self,
         source: &str,
@@ -896,11 +896,11 @@ impl Switcher {
         }
     }
 
-    /// Moves the sidebar cursor to the session row whose address (`source/session`)
+    /// Moves the tree selection to the session row whose address (`source/session`)
     /// is `address`. The semantic target of `Action::Switch` — addresses a row by
     /// identity, not a screen position or a relative step, so an agent driving ctl
     /// lands on the right session regardless of how the tree is currently ordered.
-    /// A no-op (returns false) when no such row exists or the cursor is already there.
+    /// A no-op (returns false) when no such row exists or the selection is already there.
     pub fn select_address(&mut self, address: &str, state: &crate::state::State) -> bool {
         let target = self
             .rows
@@ -916,10 +916,10 @@ impl Switcher {
         }
     }
 
-    /// Moves the cursor to the ACTIVE window row of the DISPLAYED session (read from
+    /// Moves the selection to the ACTIVE window row of the DISPLAYED session (read from
     /// cached pane data) — from a session row, a window row, OR a host row (which
     /// descends into the host's recent session). Used when focus moves to the terminal
-    /// so the sidebar mirrors the window the mux is showing (#3). A no-op when the
+    /// so the tree view mirrors the window the mux is showing (#3). A no-op when the
     /// displayed session or its active window is unknown (e.g. panes not yet loaded, or
     /// an unreachable host). Returns whether it moved.
     pub fn select_active_window(&mut self, state: &mut crate::state::State) -> bool {
@@ -974,38 +974,38 @@ impl Switcher {
     /// first output. The tree draws a braille spinner right of each matching
     /// session name.
     pub fn set_spinner(&mut self, addresses: HashSet<String>) {
-        self.status.set_spinner(addresses);
+        self.chrome.set_spinner(addresses);
     }
 
     /// Sets the braille spinner frame index. The app derives it from elapsed
     /// wall-clock time, so the spinner animates on every render rather than once
     /// per animation tick (which can starve under a `%output` flood).
     pub fn set_spinner_frame(&mut self, frame: usize) {
-        self.status.set_spinner_frame(frame);
+        self.chrome.set_spinner_frame(frame);
     }
 
-    /// Sets auto-hide-tree mode (the app owns it; the divider glyph reflects it).
+    /// Sets auto-hide-tree mode (the app owns it; the view border glyph reflects it).
     pub fn set_auto_hide(&mut self, on: bool) {
-        self.status.set_auto_hide(on);
+        self.chrome.set_auto_hide(on);
     }
 
-    /// Sets whether the mouse is hovering the divider (the app derives it from
-    /// idle motion); when set, the divider highlights as a drag-resize grab cue.
-    pub fn set_divider_hovered(&mut self, on: bool) {
-        self.status.set_divider_hovered(on);
+    /// Sets whether the mouse is hovering the view border (the app derives it from
+    /// idle motion); when set, the view border highlights as a drag-resize grab cue.
+    pub fn set_view_border_hovered(&mut self, on: bool) {
+        self.chrome.set_view_border_hovered(on);
     }
 
-    /// Sets the tree|terminal divider colours. The app calls this once at startup with
+    /// Sets the tree|terminal view border colours. The app calls this once at startup with
     /// the colours parsed from config's `pane-*-border-style` options; tmux defaults
     /// apply otherwise.
-    pub fn set_divider_colors(&mut self, colors: DividerColors) {
-        self.status.set_divider_colors(colors);
+    pub fn set_view_border_colors(&mut self, colors: ViewBorderColors) {
+        self.chrome.set_view_border_colors(colors);
     }
 
     /// Sets the prefix string shown in the help modal. The app calls this once
     /// at startup so the help modal reflects the binding from config's `[ui] prefix`.
     pub fn set_ui_prefix(&mut self, prefix: String) {
-        self.status.set_ui_prefix(prefix);
+        self.chrome.set_ui_prefix(prefix);
     }
 
     // --- key handling -------------------------------------------------------
@@ -1037,7 +1037,7 @@ impl Switcher {
     }
 
     /// True while a modal popup is being border-dragged; the app routes every
-    /// mouse event here until release, like the divider drag / menu hold.
+    /// mouse event here until release, like the view border drag / menu hold.
     pub fn popup_drag_active(&self) -> bool {
         self.popup_drag.is_some()
     }
@@ -1068,7 +1068,7 @@ impl Switcher {
         true
     }
 
-    /// Updates `popup_offset` from the cursor while a border-drag is active.
+    /// Updates `popup_offset` from the selection while a border-drag is active.
     pub fn drag_popup(&mut self, col: u16, row: u16) {
         if let Some(d) = self.popup_drag {
             let dx = col as i32 - d.grab.0 as i32;
@@ -1122,10 +1122,10 @@ impl Switcher {
         if matches!(state.modal, Some(Modal::Kill(_))) {
             return self.resolve_kill(ev, state);
         }
-        // A flash (error/notice) is transient — it lives only until the next key, like a
-        // status toast. Clear it here so navigation (or any key) restores the normal help
+        // A flash is a transient error/message — it lives only until the next key. Clear
+        // it here so navigation (or any key) restores the normal help
         // hint_bar; actions below may set a fresh one, which survives because this runs first.
-        self.status.flash.clear();
+        self.chrome.flash.clear();
         match ev.code {
             KeyCode::Enter => {}
             // ↑/↓ (and k/j) move between SIBLINGS at the current tree level (next/prev
@@ -1155,7 +1155,7 @@ impl Switcher {
     // --- input row ----------------------------------------------------------
 
     fn open_input(&mut self, mode: InputMode, state: &mut crate::state::State) {
-        self.status.flash.clear();
+        self.chrome.flash.clear();
         self.dismiss_modals(state);
         match mode {
             InputMode::Filter => {
@@ -1170,7 +1170,7 @@ impl Switcher {
             }
             InputMode::Rename => match self.current_ref().cloned() {
                 Some(RowRef::Host { .. }) => {
-                    self.status.flash = "cannot rename a host".into();
+                    self.chrome.flash = "cannot rename a host".into();
                 }
                 Some(RowRef::Session(sess)) => {
                     state.modal = Some(Modal::Input(Input {
@@ -1205,13 +1205,13 @@ impl Switcher {
 
     /// The level-aware `n` action: a new SESSION on a host row, a new WINDOW on a
     /// session row, or a new PANE (split) on a window row (prompting the split
-    /// direction). The prompt context is captured up front so a streamed cursor
+    /// direction). The prompt context is captured up front so a streamed selection
     /// move cannot retarget it.
     fn open_new(&mut self, state: &mut crate::state::State) {
-        self.status.flash.clear();
+        self.chrome.flash.clear();
         self.dismiss_modals(state);
         if self.current_host_unreachable() {
-            self.status.flash = "host unreachable — cannot create here".into();
+            self.chrome.flash = "host unreachable — cannot create here".into();
             return;
         }
         let Some(reference) = self.current_ref().cloned() else {
@@ -1409,7 +1409,7 @@ impl Switcher {
         }
         if new_name.starts_with('-') {
             // the mux silently no-ops a '-'-leading name (getopt eats it) — refuse.
-            self.status.flash = "rename: name cannot start with '-'".into();
+            self.chrome.flash = "rename: name cannot start with '-'".into();
             return Vec::new();
         }
         state.apply(Action::RenameSession {
@@ -1438,7 +1438,7 @@ impl Switcher {
             return Vec::new();
         }
         if new_name.starts_with('-') {
-            self.status.flash = "rename: name cannot start with '-'".into();
+            self.chrome.flash = "rename: name cannot start with '-'".into();
             return Vec::new();
         }
         state.apply(Action::RenameWindow {
@@ -1489,11 +1489,11 @@ impl Switcher {
             }
             OpResult::PanesRefreshed { address, panes } => {
                 // A new window or split: replace the session's subtree so the new
-                // window/pane shows. apply_panes restores the cursor.
+                // window/pane shows. apply_panes restores the selection.
                 self.apply_panes(address, panes, state);
             }
             OpResult::Failed { message } => {
-                self.status.flash = message;
+                self.chrome.flash = message;
             }
         }
     }
@@ -1510,7 +1510,7 @@ impl Switcher {
         self.dismiss_modals(state);
         match self.current_ref().cloned() {
             Some(RowRef::Host { .. }) => {
-                self.status.flash = "cannot kill a host".into();
+                self.chrome.flash = "cannot kill a host".into();
             }
             Some(RowRef::Session(sess)) => {
                 state.modal = Some(Modal::Kill(PendingKill::Session(sess)));
@@ -1556,7 +1556,7 @@ impl Switcher {
 
     /// Resets every host to its scanning skeleton and signals the event loop to
     /// re-kick the streaming probes (the `r` re-scan) — sessions and panes stream
-    /// back in exactly as on first launch. The selection does not drift: the cursor
+    /// back in exactly as on first launch. The selection does not drift: the selection
     /// parks on the focused node's parent host for the skeleton phase (every session
     /// row just vanished) and `rescan_reselect` returns it to the exact session the
     /// instant that host re-streams.
@@ -1652,7 +1652,7 @@ impl Switcher {
         self.restore_focus(prior, state);
     }
 
-    /// Captures the cursor state needed to restore or gracefully redirect focus
+    /// Captures the selection state needed to restore or gracefully redirect focus
     /// after a rebuild.
     fn capture_focus(&self) -> PriorFocus {
         PriorFocus {
@@ -1663,13 +1663,13 @@ impl Switcher {
     }
 
     /// After a streamed update rebuilds the rows: if the user has driven the
-    /// cursor, keep it on the focused node when it survives; if the node
+    /// selection, keep it on the focused node when it survives; if the node
     /// vanished (killed/removed), land on the previous sibling at the same
-    /// indent or, when there is none, the parent. An untouched cursor follows
+    /// indent or, when there is none, the parent. An untouched selection follows
     /// the rebuild's recency preselect.
     fn restore_focus(&mut self, prior: PriorFocus, state: &crate::state::State) {
-        // A pending re-scan reselect returns the cursor to its session the instant that
-        // session re-streams — but only while the cursor still sits where the re-scan
+        // A pending re-scan reselect returns the selection to its session the instant that
+        // session re-streams — but only while the selection still sits where the re-scan
         // parked it (that session or its parent host). If the user has navigated
         // elsewhere in the skeleton meanwhile, the pending reselect is dropped so it
         // never yanks them back.
@@ -1735,7 +1735,7 @@ impl Switcher {
     }
 
     /// The row index targeting the same node as `focus`, if it survives a
-    /// rebuild — so a re-scan keeps the cursor in place rather than snapping to
+    /// rebuild — so a re-scan keeps the selection in place rather than snapping to
     /// the recency preselect.
     fn row_matching(&self, focus: &RowRef) -> Option<usize> {
         self.rows
@@ -1749,7 +1749,7 @@ impl Switcher {
         self.tree_inner.contains(Position { x: col, y: row })
     }
 
-    /// Single click: move the cursor to the clicked row (select; never attach).
+    /// Single click: move the selection to the clicked row (select; never attach).
     pub fn mouse_select(&mut self, col: u16, row: u16, state: &crate::state::State) {
         if !self.in_tree(col, row) {
             return;
@@ -1763,12 +1763,12 @@ impl Switcher {
     }
 
     /// Double click: selects the clicked row (the preceding single click already
-    /// moved the cursor; with select=attach there is no separate attach action).
+    /// moved the selection; with select=attach there is no separate attach action).
     pub fn mouse_attach(&mut self, col: u16, row: u16, state: &crate::state::State) {
         self.mouse_select(col, row, state);
     }
 
-    /// Scroll wheel: move the cursor (panes skipped) in the given direction.
+    /// Scroll wheel: move the selection (panes skipped) in the given direction.
     pub fn mouse_scroll(&mut self, down: bool, state: &crate::state::State) {
         self.move_selection(if down { 1 } else { -1 }, state);
     }
@@ -1776,7 +1776,7 @@ impl Switcher {
     // --- context menu -------------------------------------------------------
 
     /// Right-button press at 0-based screen (col,row): opens that tree row's menu if
-    /// it lands on a selectable row that has items. Does NOT move the tree cursor —
+    /// it lands on a selectable row that has items. Does NOT move the tree selection —
     /// the gesture only remembers the target, so no background attach fires mid-hold.
     /// Returns true iff a menu opened (so the app knows to consume the event).
     pub fn menu_open(&mut self, col: u16, row: u16, state: &mut crate::state::State) -> bool {
@@ -1812,7 +1812,7 @@ impl Switcher {
         true
     }
 
-    /// Mouse moved while the menu is held: highlight the item under the cursor. Over the
+    /// Mouse moved while the menu is held: highlight the item under the selection. Over the
     /// box but off an item (the title border) keeps the current highlight; only dragging
     /// fully OUTSIDE the box clears it, so releasing there cancels.
     pub fn menu_hover(&mut self, col: u16, row: u16, state: &mut crate::state::State) {
@@ -1843,9 +1843,9 @@ impl Switcher {
         else {
             return MenuOutcome::None;
         };
-        // The delegated methods act on the current cursor, so land it on the target,
+        // The delegated methods act on the current selection, so land it on the target,
         // run the action (which CAPTURES the target by value), then for everything
-        // EXCEPT focus restore the cursor. A lingering cursor move would change the
+        // EXCEPT focus restore the selection. A lingering selection move would change the
         // selection → trigger an attach and the events it spawns → rebuild the tree,
         // which clears an armed kill confirm (pending_kill) before the user can answer
         // y/n, and needlessly switches the displayed session. focus is the one item
@@ -1856,8 +1856,8 @@ impl Switcher {
         match item {
             MenuItem::Focus => {
                 // For a window, optimistically mark it active in the cache. Otherwise the
-                // passthrough cursor-follow (`select_active_window`, run before the attach's
-                // select-window lands) would yank the cursor back to the session's previous
+                // terminal-view selection-follow (`select_active_window`, run before the attach's
+                // select-window lands) would yank the selection back to the session's previous
                 // active window — so focusing a different window of the already-displayed
                 // session did nothing. The real select-window follows from the selection.
                 if let RowRef::Window { sess, window } = &menu.target {
@@ -1905,14 +1905,14 @@ impl Switcher {
         self.screen_area = area;
         // Reset the buffer before painting. The widgets below do not all fill every cell
         // they own — the mux grid only paints its top-left clip (cells past the grid size
-        // are skipped), the divider rule sets fg only, and the tree leaves blank rows — so
+        // are skipped), the view border rule sets fg only, and the tree leaves blank rows — so
         // when the tree width changes (drag / prefix h·l) cells that switched panes would
         // otherwise keep stale content (the residue seen while resizing). Clearing first
         // makes every unpainted cell default; ratatui still diffs against the last frame,
         // so static content writes nothing (no flicker).
         frame.render_widget(Clear, area);
-        // tree_width == 0 is the "tree hidden" sentinel (mux focused + auto-hide-tree):
-        // the terminal view owns the whole area — no tree, no input/hint_bar, no divider.
+        // tree_width == 0 is the "tree hidden" sentinel (terminal view focused + auto-hide-tree):
+        // the terminal view owns the whole area — no tree, no input/hint_bar, no view border.
         if tree_width == 0 {
             self.tree_inner = Rect::default();
             self.render_terminal_view(frame, area, grid);
@@ -1934,27 +1934,28 @@ impl Switcher {
         // Tree column: the tree plus its hint_bar/help line. The hint_bar is normally one
         // line, but a long flash wraps across several — size the hint_bar to the wrapped
         // line count so it is never clipped.
-        let hint_bar_h = self.status.hint_bar_lines(tree_width, state).len().max(1) as u16;
+        let hint_bar_h = self.chrome.hint_bar_lines(tree_width, state).len().max(1) as u16;
         let left = Layout::vertical([
             Constraint::Min(0),             // tree
             Constraint::Length(hint_bar_h), // hint_bar (help / status / wrapped flash)
         ])
         .split(cols[0]);
         self.render_tree(frame, left[0]);
-        self.status.render_hint_bar(frame, left[1], state);
-        // The tree|terminal divider marks focus between those two views.
-        self.status.render_divider(frame, cols[1], terminal_focused);
+        self.chrome.render_hint_bar(frame, left[1], state);
+        // The tree|terminal view border marks focus between those two views.
+        self.chrome
+            .render_view_border(frame, cols[1], terminal_focused);
         let term_area = cols[2];
         // An unreachable host has no live grid; show an info panel (ssh config stanza
-        // + failure reason) in the terminal view instead of the blank (attaching…) grid.
+        // + failure reason) in the terminal view instead of the blank grid.
         if self.current_host_unreachable() {
             let source = self.current_source().unwrap_or_default();
-            self.status
+            self.chrome
                 .render_host_info(frame, term_area, state, &source);
         } else {
             self.render_terminal_view(frame, term_area, grid);
         }
-        // In passthrough, place the real cursor at the grid's cursor so typing in the
+        // In the terminal view, place the real cursor at the grid's cursor so typing in the
         // mux is visible and tracks. Skipped when the child hid its cursor.
         if terminal_focused {
             if let Some(g) = grid {
@@ -1969,11 +1970,11 @@ impl Switcher {
 
     fn render_tree(&mut self, frame: &mut Frame, area: Rect) {
         // No border box: the tree fills its column outright and a single rule
-        // (render_divider) separates it from the terminal view.
+        // (render_view_border) separates it from the terminal view.
         self.tree_inner = area;
 
         const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-        let spinner_glyph = SPINNER[self.status.spinner_frame % SPINNER.len()];
+        let spinner_glyph = SPINNER[self.chrome.spinner_frame % SPINNER.len()];
 
         let items: Vec<ListItem> = self
             .rows
@@ -2004,16 +2005,16 @@ impl Switcher {
                     Span::styled(pad_label(&row.label), style),
                 ];
                 // Spinner glyph: shown right of the session name when connecting.
-                if matches!(&row.reference, RowRef::Session(s) if self.status.spinner.contains(&s.address())) {
+                if matches!(&row.reference, RowRef::Session(s) if self.chrome.spinner.contains(&s.address())) {
                     let sp_style = Style::default().fg(COLOR_HINT);
                     spans.push(Span::styled(spinner_glyph.to_string(), sp_style));
                 }
-                if let Some(hint) = &row.hint {
-                    let mut hint_style = Style::default().fg(COLOR_HINT);
+                if let Some(status) = &row.status {
+                    let mut status_style = Style::default().fg(COLOR_HINT);
                     if selected {
-                        hint_style = hint_style.add_modifier(Modifier::REVERSED);
+                        status_style = status_style.add_modifier(Modifier::REVERSED);
                     }
-                    spans.push(Span::styled(format!("{hint} "), hint_style));
+                    spans.push(Span::styled(format!("{status} "), status_style));
                 }
                 ListItem::new(Line::from(spans))
             })
@@ -2029,7 +2030,7 @@ impl Switcher {
         area: Rect,
         grid: Option<&crate::display::grid::Grid>,
     ) {
-        // No border box: the live grid fills the area; render_divider draws the
+        // No border box: the live grid fills the area; render_view_border draws the
         // separating rule.
         match grid {
             Some(g) => {
@@ -2048,7 +2049,7 @@ impl Switcher {
 
     /// Sets the raw `~/.ssh/config` text the unreachable-host info panel reads.
     pub fn set_ssh_config_text(&mut self, text: String) {
-        self.status.set_ssh_config_text(text);
+        self.chrome.set_ssh_config_text(text);
     }
 
     /// The help modal's `(title, lines)`, built once and rendered through the
@@ -2059,7 +2060,7 @@ impl Switcher {
         // `Note` is a description-only row (the mux state has no keys of its own).
         //
         // The tree and terminal sections have no configurable keys so they are static.
-        // The focus section uses `self.status.ui_prefix` so the help modal matches the
+        // The focus section uses `self.chrome.ui_prefix` so the help modal matches the
         // active binding from config.
         enum HelpRow {
             Head(String),
@@ -2068,7 +2069,7 @@ impl Switcher {
             Gap,
         }
 
-        let p = &self.status.ui_prefix;
+        let p = &self.chrome.ui_prefix;
 
         // Tree section — no configurable keys; keep as literals.
         let rows: Vec<HelpRow> = vec![
@@ -2086,7 +2087,7 @@ impl Switcher {
             HelpRow::Key("/".into(), "fuzzy filter <source>/<name>".into()),
             HelpRow::Key("r".into(), "re-scan every host".into()),
             HelpRow::Gap,
-            // Focus section — prefix rows built from self.status.ui_prefix.
+            // Focus section — prefix rows built from self.chrome.ui_prefix.
             HelpRow::Head(format!("focus ({p} = prefix)")),
             HelpRow::Key(format!("Enter · {p} →"), "focus the terminal".into()),
             HelpRow::Key(
@@ -2100,11 +2101,11 @@ impl Switcher {
             ),
             HelpRow::Key(
                 format!("{p} t"),
-                "toggle auto-hide-tree (║ divider = on)".into(),
+                "toggle auto-hide-tree (║ view border = on)".into(),
             ),
             HelpRow::Key(format!("{p} ?"), "show this help (q / Esc closes)".into()),
             HelpRow::Key("click a view".into(), "focus that view".into()),
-            HelpRow::Key("drag the divider".into(), "resize the tree".into()),
+            HelpRow::Key("drag the view border".into(), "resize the tree".into()),
             HelpRow::Key(
                 "right-click a row".into(),
                 "hold for its menu, release on an item".into(),
@@ -2276,7 +2277,7 @@ pub(crate) fn fit(candidates: &[String], width: u16) -> String {
         .unwrap_or_else(|| candidates.last().cloned().unwrap_or_default())
 }
 
-// The active window / pane is shown BOLD (the `Row::active` flag), not with a
+// The active window / pane is shown bold+italic (the `Row::active` flag), not with a
 // trailing "(active)" text marker.
 fn window_label(w: &WindowPanes) -> String {
     format!("window {}: {}", w.index, w.name)
@@ -2292,7 +2293,7 @@ fn pad_label(s: &str) -> String {
 }
 
 /// Whether two row references target the same selectable node (host by source,
-/// session/window by address), used to keep the cursor across a re-scan.
+/// session/window by address), used to keep the selection across a re-scan.
 fn same_node(a: &RowRef, b: &RowRef) -> bool {
     match (a, b) {
         (RowRef::Host { source: x, .. }, RowRef::Host { source: y, .. }) => x == y,
@@ -2332,7 +2333,7 @@ impl Menu {
     }
 
     /// Whether 0-based screen (col,row) is anywhere inside the box (border included).
-    /// Used to keep the highlight while the cursor is over the title border but off an
+    /// Used to keep the highlight while the selection is over the title border but off an
     /// item — only dragging fully outside the box clears it.
     fn contains(&self, col: u16, row: u16) -> bool {
         col >= self.rect.x
@@ -2873,8 +2874,8 @@ mod tests {
 
     #[test]
     fn select_window_follows_external_change_on_a_window_row() {
-        // Cursor on window 1's row; an external client switches the session's
-        // active window to 0. The sidebar cursor must follow to window 0's row.
+        // Selection on window 1's row; an external client switches the session's
+        // active window to 0. The tree selection must follow to window 0's row.
         let mut state = crate::state::State::from_scan(two_window_scan());
         let mut sw = Switcher::new(&mut state);
         sw.handle_key(
@@ -2990,7 +2991,7 @@ mod tests {
 
     #[test]
     fn active_window_pane_have_no_text_marker() {
-        // The active window/pane is shown BOLD (Row::active), not with "(active)" text.
+        // The active window/pane is shown bold+italic (Row::active), not with "(active)" text.
         let w = win(2, "logs", true, vec![pane(1, true, "tail")]);
         assert_eq!(
             window_label(&w),
@@ -3007,10 +3008,10 @@ mod tests {
     #[test]
     fn select_window_follows_from_a_session_row() {
         // When the terminal view has focus the user is no longer driving the tree
-        // cursor (stdin goes to the PTY), so the app only calls select_window
-        // then. An active-window change must move the cursor to that window even from
-        // the SESSION row — this is how focus→mux and in-mux window navigation keep
-        // the sidebar mirroring the displayed window (#3).
+        // selection (stdin goes to the PTY), so the app only calls select_window
+        // then. An active-window change must move the selection to that window even from
+        // the SESSION row — this is how focus→terminal and in-mux window navigation keep
+        // the tree view mirroring the displayed window (#3).
         let mut state = crate::state::State::from_scan(two_window_scan());
         let mut sw = Switcher::new(&mut state);
         assert!(matches!(sw.current_ref(), Some(RowRef::Session(_))));
@@ -3026,9 +3027,9 @@ mod tests {
 
     #[test]
     fn select_active_window_moves_to_cached_active_window() {
-        // focus→mux: with the cursor on the session row, select_active_window moves
+        // focus→terminal: with the selection on the session row, select_active_window moves
         // it to the session's currently-active window (from cached panes) so the
-        // sidebar mirrors the window the mux is displaying (#3). Window 0 is active.
+        // tree view mirrors the window the mux is displaying (#3). Window 0 is active.
         let mut state = crate::state::State::from_scan(two_window_scan());
         let mut sw = Switcher::new(&mut state);
         assert!(matches!(sw.current_ref(), Some(RowRef::Session(_))));
@@ -3049,14 +3050,14 @@ mod tests {
 
     #[test]
     fn select_active_window_descends_from_a_host_row() {
-        // focus→mux from a HOST row must descend into the host's recent session's active
-        // window (the window the mux displays), not leave the cursor stuck on the host.
+        // focus→terminal from a HOST row must descend into the host's recent session's active
+        // window (the window the mux displays), not leave the selection stuck on the host.
         let mut state = crate::state::State::from_scan(two_window_scan());
         let mut sw = Switcher::new(&mut state);
         sw.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), &mut state); // ascend: session → host
         assert!(
             matches!(sw.current_ref(), Some(RowRef::Host { .. })),
-            "cursor on the host row"
+            "selection on the host row"
         );
         assert!(
             sw.select_active_window(&mut state),
@@ -3070,7 +3071,7 @@ mod tests {
 
     #[test]
     fn select_window_no_move_for_another_session() {
-        // A window change on a session the cursor is NOT on must not move it.
+        // A window change on a session the selection is NOT on must not move it.
         let mut state = crate::state::State::from_scan(two_window_scan());
         let mut sw = Switcher::new(&mut state);
         sw.handle_key(
@@ -3134,14 +3135,14 @@ mod tests {
             matches!(h.sw.current_ref(), Some(RowRef::Window { .. })),
             "→ on a window is a no-op (its panes are not selectable)"
         );
-        // ↓/↑ cycle window siblings; the cursor must never land on a pane.
+        // ↓/↑ cycle window siblings; the selection must never land on a pane.
         let mut saw_window = false;
         for _ in 0..8 {
             let r = h.sw.current_ref();
-            assert!(r.is_some(), "cursor landed on a node");
+            assert!(r.is_some(), "selection landed on a node");
             assert!(
                 !matches!(r, Some(RowRef::Pane)),
-                "cursor must never land on a pane"
+                "selection must never land on a pane"
             );
             if matches!(r, Some(RowRef::Window { .. })) {
                 saw_window = true;
@@ -3185,7 +3186,7 @@ mod tests {
         assert!(out.contains("jupiter00"), "host skeleton present:\n{out}");
         assert!(
             out.contains("scanning"),
-            "each host shows a scanning hint:\n{out}"
+            "each host shows a scanning status:\n{out}"
         );
         assert!(
             !out.contains("window"),
@@ -3211,7 +3212,7 @@ mod tests {
         );
         assert!(
             !out.contains("scanning"),
-            "scanning hint clears once the only host resolves:\n{out}"
+            "scanning status clears once the only host resolves:\n{out}"
         );
         assert!(
             out.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)),
@@ -3375,7 +3376,7 @@ mod tests {
     }
 
     /// Streams the sample three-host tree (local/jupiter00/jupiter06), each with one
-    /// session, and leaves the cursor on the MIDDLE host's session.
+    /// session, and leaves the selection on the MIDDLE host's session.
     async fn three_hosts_cursor_on_middle() -> Harness {
         let mut h = Harness::from_sources(&["local", "jupiter00", "jupiter06"]);
         h.sw.apply_source_result(
@@ -3405,7 +3406,7 @@ mod tests {
     async fn rescan_parks_on_parent_host_not_bottom() {
         let mut h = three_hosts_cursor_on_middle().await;
         h.sw.request_rescan(&mut h.state);
-        // Skeleton phase: every session vanished, so the cursor parks on infer's parent
+        // Skeleton phase: every session vanished, so the selection parks on infer's parent
         // host (jupiter00), NOT the last host a removal-fallback would jump to.
         match h.sw.current_ref() {
             Some(RowRef::Host { source, .. }) => assert_eq!(
@@ -3442,7 +3443,7 @@ mod tests {
         assert_eq!(
             cur_session_name(&h).as_deref(),
             Some("infer"),
-            "a re-scan returns the cursor to the session it was on, not the bottom host"
+            "a re-scan returns the selection to the session it was on, not the bottom host"
         );
     }
 
@@ -3452,7 +3453,7 @@ mod tests {
         h.sw.request_rescan(&mut h.state);
         // The user navigates to the last host during the skeleton phase.
         h.key(KeyCode::End).await;
-        // Sessions re-stream — the cursor must NOT get yanked back to infer.
+        // Sessions re-stream — the selection must NOT get yanked back to infer.
         h.sw.apply_source_result(
             "local".into(),
             vec![sess("local", "web", 1, false, 100)],
@@ -3473,7 +3474,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_source_result_empty_shows_empty_hint() {
+    async fn apply_source_result_empty_shows_empty_status() {
         let mut h = Harness::from_sources(&["local"]);
         h.sw.apply_source_result("local".into(), vec![], None, &mut h.state);
         h.draw();
@@ -3575,10 +3576,10 @@ mod tests {
 
     #[tokio::test]
     async fn streaming_keeps_local_preselect_when_untouched() {
-        // With no persisted last-selected session, an untouched cursor preselects the
+        // With no persisted last-selected session, an untouched selection preselects the
         // LOCAL source's most-recent session, and a later more-recent REMOTE session
-        // streaming in must NOT steal the cursor. This kills the old global-recency
-        // jump (cursor leaping to a remote on first launch — #1). order_groups pins
+        // streaming in must NOT steal the selection. This kills the old global-recency
+        // jump (selection leaping to a remote on first launch — #1). order_groups pins
         // local first, so the local-first fallback is the first session row.
         let mut h = Harness::from_sources(&["local", "jupiter00"]);
         h.sw.apply_source_result(
@@ -3599,7 +3600,7 @@ mod tests {
         assert_eq!(
             cur_session_name(&h).as_deref(),
             Some("editor"),
-            "an untouched cursor stays on the local preselect; a recent remote must not steal it"
+            "an untouched selection stays on the local preselect; a recent remote must not steal it"
         );
     }
 
@@ -3652,7 +3653,7 @@ mod tests {
 
     #[tokio::test]
     async fn rebuild_holds_a_user_moved_session_against_the_preselect() {
-        // The selection thrash: once the user has moved the cursor onto a session, a bare
+        // The selection thrash: once the user has moved the selection onto a session, a bare
         // rebuild (a frequent poll / %-event that does not route through restore_focus)
         // must keep it there, not snap it back to the recency/preferred preselect.
         let mut state = crate::state::State::from_sources(vec!["h".into()]);
@@ -3672,7 +3673,7 @@ mod tests {
             })
             .collect();
         // Pick the session that is NOT the preselect target (the recency-first one), so a
-        // bare rebuild's preselect would move the cursor here if the fix were absent.
+        // bare rebuild's preselect would move the selection here if the fix were absent.
         let other = names[1].clone();
         let idx = sw
             .rows
@@ -3708,7 +3709,7 @@ mod tests {
         // editor preselected (most recent local); move down to build.
         h.key(KeyCode::Down).await;
         assert_eq!(cur_session_name(&h).as_deref(), Some("build"));
-        // A more-recent remote session streams in; the cursor must NOT jump.
+        // A more-recent remote session streams in; the selection must NOT jump.
         h.sw.apply_source_result(
             "jupiter00".into(),
             vec![sess("jupiter00", "infer", 1, false, 300)],
@@ -3719,7 +3720,7 @@ mod tests {
         assert_eq!(
             cur_session_name(&h).as_deref(),
             Some("build"),
-            "once the user has moved, streaming updates keep the cursor put"
+            "once the user has moved, streaming updates keep the selection put"
         );
     }
 
@@ -3780,7 +3781,7 @@ mod tests {
         let state = crate::state::State::default();
         let mut sw = Switcher::blank();
         sw.set_ui_prefix("C-Space".into());
-        let text = sw.status.hint_bar_text(200, &state);
+        let text = sw.chrome.hint_bar_text(200, &state);
         assert!(
             text.contains("C-Space"),
             "custom prefix must appear in hint_bar:\n{text:?}"
@@ -3792,7 +3793,7 @@ mod tests {
 
         // Default prefix (no setter) must still show C-g.
         let sw_default = Switcher::blank();
-        let text_default = sw_default.status.hint_bar_text(200, &state);
+        let text_default = sw_default.chrome.hint_bar_text(200, &state);
         assert!(
             text_default.contains("C-g"),
             "default prefix C-g must appear in hint_bar:\n{text_default:?}"
@@ -3961,7 +3962,7 @@ mod tests {
     #[tokio::test]
     async fn rename_targets_node_captured_at_open_not_enter() {
         // Open rename on alpha/a-sess, then let a more-recent session stream in on
-        // another host (which, with an untouched cursor, moves the preselect). The
+        // another host (which, with an untouched selection, moves the preselect). The
         // rename must still target the session captured when the input opened.
         let mut h = Harness::from_sources(&["alpha", "beta"]);
         h.sw.apply_source_result(
@@ -3983,7 +3984,7 @@ mod tests {
         assert_eq!(
             *renamed,
             vec!["alpha/a-sess->renamed".to_string()],
-            "rename must target the captured node, not where streaming moved the cursor"
+            "rename must target the captured node, not where streaming moved the selection"
         );
     }
 
@@ -4001,7 +4002,7 @@ mod tests {
 
     #[tokio::test]
     async fn filter_leaves_cursor_on_visible_session() {
-        // Filter to a session — cursor must land on it after the filter completes.
+        // Filter to a session — selection must land on it after the filter completes.
         let mut h = Harness::from_sources(&["local"]);
         h.sw.apply_source_result(
             "local".into(),
@@ -4021,7 +4022,7 @@ mod tests {
         assert_eq!(
             t.target.as_str(),
             "xmux-probeL",
-            "cursor on filtered session"
+            "selection on filtered session"
         );
     }
 
@@ -4070,9 +4071,9 @@ mod tests {
         );
         h.ch('n').await;
         assert!(
-            h.sw.status.flash.to_lowercase().contains("unreachable"),
+            h.sw.chrome.flash.to_lowercase().contains("unreachable"),
             "create on unreachable host should flash unreachable, got {:?}",
-            h.sw.status.flash
+            h.sw.chrome.flash
         );
         assert!(h.ops.created.lock().unwrap().is_empty());
     }
@@ -4106,10 +4107,10 @@ mod tests {
     #[tokio::test]
     async fn double_click_selects_node() {
         let mut h = Harness::new(sample());
-        // inference preselected; double-click inside the tree moves the cursor.
+        // inference preselected; double-click inside the tree moves the selection.
         let before = h.sw.selected;
         h.sw.mouse_attach(5, 4, &h.state);
-        // cursor moved (or stayed on the same selectable row — just check no panic
+        // selection moved (or stayed on the same selectable row — just check no panic
         // and current_attach_target is populated).
         assert!(
             h.sw.current_attach_target(&h.state).is_some(),
@@ -4122,7 +4123,7 @@ mod tests {
     async fn single_click_moves_cursor() {
         let mut h = Harness::new(sample());
         h.sw.mouse_select(5, 4, &h.state);
-        // After a single click the cursor is on a selectable row (not pane/loading).
+        // After a single click the selection is on a selectable row (not pane/loading).
         let selectable = h.sw.rows.get(h.sw.selected).is_some_and(Row::selectable);
         assert!(selectable, "single click must land on a selectable row");
     }
@@ -4175,7 +4176,7 @@ mod tests {
         assert!(h.state.menu_active());
         assert_eq!(
             h.sw.selected, before,
-            "opening the menu must not move the tree cursor"
+            "opening the menu must not move the tree selection"
         );
     }
 
@@ -4263,7 +4264,7 @@ mod tests {
         assert_eq!(
             cur_session_name(&h).as_deref(),
             Some("build"),
-            "cursor moved to target"
+            "selection moved to target"
         );
     }
 
@@ -4312,9 +4313,9 @@ mod tests {
 
     #[tokio::test]
     async fn menu_kill_keeps_the_cursor_so_the_confirm_survives() {
-        // Regression: the y/n confirm flashed and vanished because moving the cursor to
+        // Regression: the y/n confirm flashed and vanished because moving the selection to
         // the target changed the selection → attach → events → rebuild, which clears
-        // pending_kill. Acting on a row must NOT move the cursor.
+        // pending_kill. Acting on a row must NOT move the selection.
         let mut h = Harness::new(sample());
         let editor = row_index(
             &h,
@@ -4343,7 +4344,7 @@ mod tests {
         );
         assert!(
             matches!(h.sw.current_ref(), Some(RowRef::Session(s)) if s.name == "editor"),
-            "the cursor stayed put → no selection change to rebuild away the confirm"
+            "the selection stayed put → no selection change to rebuild away the confirm"
         );
     }
 
@@ -4374,7 +4375,7 @@ mod tests {
     async fn menu_focus_window_marks_it_active_so_passthrough_follow_keeps_it() {
         // Regression: focusing a different window of the already-displayed session must
         // move there. Without optimistically marking it active, select_active_window
-        // (the passthrough follow) yanks the cursor back to the old active window.
+        // (the terminal-view follow) yanks the selection back to the old active window.
         let mut h = Harness::new(sample());
         let s = sess("local", "editor", 2, true, 200); // editor: win 1 active, win 2 not
         let target = RowRef::Window { sess: s, window: 2 };
@@ -4393,7 +4394,7 @@ mod tests {
         ));
         assert!(
             matches!(h.sw.current_ref(), Some(RowRef::Window { window, .. }) if *window == 2),
-            "cursor is on the focused window"
+            "selection is on the focused window"
         );
         assert!(
             !h.sw.select_active_window(&mut h.state),
@@ -4694,22 +4695,22 @@ mod tests {
         h.key(KeyCode::Home).await; // local host
         let at_top = cur_row_label(&h);
         h.ch('j').await; // down
-        assert_ne!(cur_row_label(&h), at_top, "j moves the cursor down");
+        assert_ne!(cur_row_label(&h), at_top, "j moves the selection down");
         h.ch('k').await; // back up
-        assert_eq!(cur_row_label(&h), at_top, "k moves the cursor up");
+        assert_eq!(cur_row_label(&h), at_top, "k moves the selection up");
     }
 
     #[tokio::test]
     async fn enter_and_bare_q_are_noops() {
         // Enter is consumed by the app (focus the terminal), not the switcher; bare q does
-        // nothing — quit is `prefix q` at the app level. Neither moves the cursor or
+        // nothing — quit is `prefix q` at the app level. Neither moves the selection or
         // opens an input here.
         let mut h = Harness::new(sample());
         let before = cur_row_label(&h);
         h.key(KeyCode::Enter).await;
         h.ch('q').await;
         assert!(!h.state.is_inputting(), "neither opens an input");
-        assert_eq!(cur_row_label(&h), before, "neither moves the cursor");
+        assert_eq!(cur_row_label(&h), before, "neither moves the selection");
     }
 
     #[tokio::test]
@@ -4758,8 +4759,8 @@ mod tests {
         // than clip at the column edge (a narrow tree would otherwise hide most of it).
         let mut state = crate::state::State::from_scan(sample());
         let mut sw = Switcher::new(&mut state);
-        sw.status.flash = "host unreachable — cannot create here".into();
-        let lines = sw.status.hint_bar_lines(20, &state);
+        sw.chrome.flash = "host unreachable — cannot create here".into();
+        let lines = sw.chrome.hint_bar_lines(20, &state);
         assert!(
             lines.len() > 1,
             "long flash wraps across lines, got {lines:?}"
@@ -4781,12 +4782,12 @@ mod tests {
         // dismisses it so the normal help/status hint_bar returns. Regression: it persisted
         // because only the input-opening actions cleared it, so navigation never did.
         let mut h = Harness::new(sample());
-        h.sw.status.flash = "host unreachable — cannot create here".into();
+        h.sw.chrome.flash = "host unreachable — cannot create here".into();
         h.key(KeyCode::Down).await;
         assert!(
-            h.sw.status.flash.is_empty(),
+            h.sw.chrome.flash.is_empty(),
             "navigation clears the flash, got {:?}",
-            h.sw.status.flash
+            h.sw.chrome.flash
         );
     }
 
@@ -4820,14 +4821,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn divider_uses_configured_colors() {
-        // Colours set from config (pane-*-border-style) drive the divider: active on the
+    async fn view_border_uses_configured_colors() {
+        // Colours set from config (pane-*-border-style) drive the view border: active on the
         // focused half, inactive on the other, hover overrides both while hovered.
         let backend = TestBackend::new(100, 30);
         let mut term = Terminal::new(backend).unwrap();
         let mut state = crate::state::State::from_scan(sample());
         let mut sw = Switcher::new(&mut state);
-        sw.set_divider_colors(DividerColors {
+        sw.set_view_border_colors(ViewBorderColors {
             active: Color::Blue,
             inactive: Color::Gray,
             hover: Color::Red,
@@ -4852,7 +4853,7 @@ mod tests {
         );
 
         // Hovering the rule overrides with the configured hover colour.
-        sw.set_divider_hovered(true);
+        sw.set_view_border_hovered(true);
         term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
             .unwrap();
         let buf = term.backend().buffer().clone();
@@ -4864,7 +4865,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn divider_splits_top_bottom_to_mark_focused_side() {
+    async fn view_border_splits_top_bottom_to_mark_focused_side() {
         // The rule splits into halves: the accent (green) half marks WHICH pane has
         // focus — top = tree (left), bottom = terminal (right) — and the other half is dim.
         let backend = TestBackend::new(100, 30);
@@ -4880,16 +4881,16 @@ mod tests {
         term.draw(|f| sw.render(f, None, true, TREE_WIDTH, &state))
             .unwrap();
         let buf = term.backend().buffer().clone();
-        assert_eq!(buf[(x, top)].symbol(), "│", "divider still drawn");
+        assert_eq!(buf[(x, top)].symbol(), "│", "view border still drawn");
         assert_eq!(
             fg(&buf, bottom),
             Color::Green,
-            "mux focus: bottom half accent"
+            "terminal-view focus: bottom half accent"
         );
         assert_eq!(
             fg(&buf, top),
             Color::Reset,
-            "mux focus: top half inactive (tmux default)"
+            "terminal-view focus: top half inactive (tmux default)"
         );
 
         // Tree focused: accent on the top (tree side), inactive on bottom.
@@ -4905,14 +4906,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn divider_highlights_on_hover() {
+    async fn view_border_highlights_on_hover() {
         // Hover swaps the rule to the HEAVY vertical (┃) — box-drawing has no bold form,
         // so the thicker glyph IS the weight cue — and recolours it brighter. No fill.
         let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
         let mut state = crate::state::State::from_scan(sample());
         let mut sw = Switcher::new(&mut state);
         let x = TREE_WIDTH;
-        sw.set_divider_hovered(true);
+        sw.set_view_border_hovered(true);
         term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
             .unwrap();
         let buf = term.backend().buffer().clone();
@@ -4936,7 +4937,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn divider_glyph_reflects_auto_hide_mode() {
+    async fn view_border_glyph_reflects_auto_hide_mode() {
         // ║ (double) when auto-hide-tree mode is on, │ (single) when off — so a visible
         // tree that will vanish on blur is distinguishable from a pinned one.
         let backend = TestBackend::new(100, 30);
@@ -5479,9 +5480,9 @@ mod tests {
             "leading-dash window rename must be refused"
         );
         assert!(
-            h.sw.status.flash.contains("cannot start with"),
+            h.sw.chrome.flash.contains("cannot start with"),
             "leading-dash window rename must set a flash message, got {:?}",
-            h.sw.status.flash
+            h.sw.chrome.flash
         );
     }
 
@@ -5491,9 +5492,9 @@ mod tests {
         h.key(KeyCode::Home).await; // local host row
         h.ch('x').await;
         assert!(
-            h.sw.status.flash.to_lowercase().contains("cannot kill"),
+            h.sw.chrome.flash.to_lowercase().contains("cannot kill"),
             "kill on host row must flash an error, got {:?}",
-            h.sw.status.flash
+            h.sw.chrome.flash
         );
         assert!(
             !matches!(h.state.modal, Some(Modal::Kill(_))),
@@ -5507,17 +5508,17 @@ mod tests {
         h.key(KeyCode::Home).await; // local host row
         h.ch('R').await;
         assert!(
-            h.sw.status.flash.to_lowercase().contains("cannot rename"),
+            h.sw.chrome.flash.to_lowercase().contains("cannot rename"),
             "rename on host row must flash an error, got {:?}",
-            h.sw.status.flash
+            h.sw.chrome.flash
         );
         assert!(!h.state.is_inputting(), "no input opened");
     }
 
     #[test]
     fn removed_window_selection_falls_to_previous_sibling_then_parent() {
-        // two windows under jup/api; cursor on window 1. Remove window 1 → cursor to
-        // window 0 (previous sibling). Remove window 0 (now the only/topmost) → cursor
+        // two windows under jup/api; selection on window 1. Remove window 1 → selection to
+        // window 0 (previous sibling). Remove window 0 (now the only/topmost) → selection
         // to the session row (parent).
         let mut state = crate::state::State::from_scan(two_window_scan());
         let mut sw = Switcher::new(&mut state);
@@ -5540,7 +5541,7 @@ mod tests {
             matches!(sw.current_ref(), Some(RowRef::Window { window: 0, .. })),
             "removed window → previous sibling"
         );
-        // remove window 0 too (session now has no window rows): cursor to the session.
+        // remove window 0 too (session now has no window rows): selection to the session.
         sw.apply_panes("jup/api".into(), vec![], &mut state);
         assert!(
             matches!(sw.current_ref(), Some(RowRef::Session(s)) if s.name == "api"),
@@ -5552,7 +5553,7 @@ mod tests {
     fn render_tree_width_zero_gives_terminal_full_width() {
         use crate::display::grid::Grid;
         // A two-source skeleton is enough. With tree_width == 0 the tree column and
-        // its divider are gone, so the terminal view owns the left edge (x=0): the
+        // its view border are gone, so the terminal view owns the left edge (x=0): the
         // live grid's content begins at column 0.
         let mut state = crate::state::State::from_sources(vec!["local".into(), "jupiter06".into()]);
         let mut sw = Switcher::from_sources(&mut state);
@@ -5560,15 +5561,15 @@ mod tests {
         let mut g = Grid::new(10, 40);
         g.feed(b"EDGE-CONTENT");
 
-        // tree_width == 0 → no tree column, no divider: the terminal view starts at x=0.
+        // tree_width == 0 → no tree column, no view border: the terminal view starts at x=0.
         term.draw(|f| sw.render(f, Some(&g), true, 0, &state))
             .unwrap();
         let buf = term.backend().buffer().clone();
-        // Column 0 row 0 must NOT be the divider rule '│' (the divider is gone).
+        // Column 0 row 0 must NOT be the view border rule '│' (the view border is gone).
         assert_ne!(
             buf[(0, 0)].symbol(),
             "│",
-            "divider must be absent when tree hidden"
+            "view border must be absent when tree hidden"
         );
         // The live grid content begins at x=0, proving the terminal view owns the left edge.
         let row0: String = (0..40).map(|x| buf[(x, 0)].symbol().to_string()).collect();
@@ -5577,14 +5578,14 @@ mod tests {
             "terminal view fills row 0 from x=0: {row0:?}"
         );
 
-        // Sanity: with a normal width the divider rule IS present at the tree edge.
+        // Sanity: with a normal width the view border rule IS present at the tree edge.
         term.draw(|f| sw.render(f, Some(&g), true, 20, &state))
             .unwrap();
         let buf = term.backend().buffer().clone();
         assert_eq!(
             buf[(20, 0)].symbol(),
             "│",
-            "divider present at x=tree_width when shown"
+            "view border present at x=tree_width when shown"
         );
     }
 
@@ -5661,10 +5662,10 @@ mod tests {
         };
         let mut state = crate::state::State::from_scan(scan);
         let mut sw = Switcher::new(&mut state);
-        // Cursor starts on the most-recent session row (api). Jump to db by address.
+        // Selection starts on the most-recent session row (api). Jump to db by address.
         assert!(sw.select_address("jup/db", &state), "moved to jup/db");
         assert_eq!(sw.terminal_view_target().target, "db");
-        // Already-there → no move; unknown address → no move, cursor unchanged.
+        // Already-there → no move; unknown address → no move, selection unchanged.
         assert!(!sw.select_address("jup/db", &state), "already on jup/db");
         assert!(
             !sw.select_address("jup/ghost", &state),
@@ -5673,7 +5674,7 @@ mod tests {
         assert_eq!(
             sw.terminal_view_target().target,
             "db",
-            "cursor unchanged on a miss"
+            "selection unchanged on a miss"
         );
     }
 

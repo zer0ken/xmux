@@ -180,7 +180,7 @@ pub struct Attachment {
     /// Current PTY size (cols, rows).
     pub size: (u16, u16),
     /// True until the first output chunk proves the attach is live (drives the
-    /// "(attaching…)" spinner). Cleared by the pump on the first read.
+    /// connecting spinner). Cleared by the pump on the first read.
     pub connecting: Arc<AtomicBool>,
     /// Coalesces output wakeups: the pump sends a single `Output` event then sets
     /// this, and skips further sends until the app clears it after a redraw. A

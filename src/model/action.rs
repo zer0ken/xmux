@@ -3,7 +3,7 @@
 //! Every input surface — keys, the `xmux ctl` socket, the loop-top selection
 //! derive — resolves to an `Action`. `State::apply(Action) -> Vec<Command>` is the
 //! single site that mutates domain state, and it returns the side effects to run as
-//! `Command`s. The app run loop dispatches each `Command` (switcher cursor move,
+//! `Command`s. The app run loop dispatches each `Command` (switcher selection move,
 //! attach, prefs persist, quit) — `apply` itself touches only `State`, so the
 //! intent → state-change → effect flow is one direction with one mutation point.
 //!
@@ -26,7 +26,7 @@ use std::time::Instant;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     /// Move the display target to this `source/session[:window]` address (ctl
-    /// `switch`, or a context-menu pick). Moves the cursor; the attach commits on a
+    /// `switch`, or a context-menu pick). Moves the selection; the attach commits on a
     /// later `Tick` once the selection settles.
     Switch { address: String },
     /// Move focus between the tree view and the terminal view.
@@ -39,7 +39,7 @@ pub enum Action {
     ToggleAutoHide,
     /// Quit the app.
     Quit,
-    /// The settled cursor target. Updates `state.selection` and arms the attach
+    /// The settled selection target. Updates `state.selection` and arms the attach
     /// debounce; emits NO attach `Command` — the trailing `Tick` fires the attach
     /// once the selection stops moving.
     Select(Selection),
@@ -94,7 +94,7 @@ pub enum Action {
 /// the single domain-mutation site.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
-    /// Move the switcher cursor to this `source/session[:window]` address.
+    /// Move the switcher selection to this `source/session[:window]` address.
     SelectAddress(String),
     /// Re-enumerate every host (the `r` re-scan), via the switcher.
     Rescan,

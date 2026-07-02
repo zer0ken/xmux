@@ -61,12 +61,12 @@ pub enum HostEvent {
     /// A `%`-notification reports the server's session/window STRUCTURE CHANGED
     /// (added, closed, renamed, or the set of sessions) — the app must REFETCH
     /// (re-run list-sessions + re-list panes), since the notification carries only an
-    /// id, not the new structure. Resyncs the sidebar tree + active-window markers (#5).
+    /// id, not the new structure. Resyncs the tree view + active-window markers (#5).
     Changed { host: String },
     /// `%session-window-changed $id @win`: a session's ACTIVE WINDOW switched (e.g.
     /// another client did prefix-n). Carries the notification's tmux SESSION id
     /// (`$id`) and WINDOW id (`@win`) so the app probes THAT SPECIFIC session's new
-    /// active window and follows the sidebar cursor to it (#2) — it must NOT guess the
+    /// active window and follows the tree selection to it (#2) — it must NOT guess the
     /// displayed session, which mismatches when a non-displayed session's window changes.
     ActiveWindowChanged {
         host: String,
@@ -74,8 +74,8 @@ pub enum HostEvent {
         window_id: String,
     },
     /// An active-window probe resolved (`display-message -p
-    /// '#{session_name}\t#{window_index}'`): the app moves the sidebar cursor to
-    /// window `window` of the RESOLVED `session` (a no-op unless the cursor is on a
+    /// '#{session_name}\t#{window_index}'`): the app moves the tree selection to
+    /// window `window` of the RESOLVED `session` (a no-op unless the selection is on a
     /// window row of that session — see [`crate::ui::switcher::Switcher::select_window`]).
     Focus {
         host: String,
@@ -303,7 +303,7 @@ fn resolve_block<E: FnMut(HostEvent)>(
             // `display-message -p '#{session_name}\t#{window_index}'` prints one line:
             // `<name>\t<index>`. The probe targeted a session id, so the RESOLVED name
             // comes back in the reply. Emit Focus for that session so the app follows
-            // the cursor (#2). A missing/garbled body (no `name\tindex`) yields no event.
+            // the selection (#2). A missing/garbled body (no `name\tindex`) yields no event.
             if let Some((session, window)) = body.iter().find_map(|l| {
                 let (name, idx) = l.split_once('\t')?;
                 let idx = idx.trim().parse::<i64>().ok()?;
@@ -390,7 +390,7 @@ pub fn run_writer<W: Write>(
 
 /// One control-mode (`-CC`) host process: a piped child plus its reader and writer
 /// OS threads. The app holds the `cmd_tx` to drive it and reads `inventory`/
-/// `connecting` for the sidebar tree. This is a METADATA / change-event /
+/// `connecting` for the tree view. This is a METADATA / change-event /
 /// `select-window` channel only — the per-session PTY attachments own the pixels.
 pub struct HostClient {
     /// Stable host id (the source name), echoed back on every `HostEvent`.
@@ -553,7 +553,7 @@ impl HostClient {
     /// SESSION id (`$id`) from the `%session-window-changed` payload — probing that
     /// SPECIFIC session, never a guessed displayed one. The reply carries the resolved
     /// session name + window index and resolves to a [`HostEvent::Focus`] so the app
-    /// follows the sidebar cursor to the new active window (#2).
+    /// follows the tree selection to the new active window (#2).
     pub fn probe_active_window(&self, target: &str) {
         let _ = self.cmd_tx.send(HostCmd::Query {
             line: self.proto.active_window_line(target),
@@ -757,7 +757,7 @@ impl HostManager {
     ) -> anyhow::Result<bool> {
         // A finished poll task leaves a dead JoinHandle in the map (the loop is otherwise
         // infinite, so this only happens if its body panicked). Drop it so this re-ensure
-        // (startup, cursor move, or the reconnect sweep) respawns it instead of treating
+        // (startup, selection move, or the reconnect sweep) respawns it instead of treating
         // the corpse as live — this is what makes the reconnect sweep a real liveness check.
         if self.polls.get(id).is_some_and(|h| h.is_finished()) {
             self.polls.remove(id);
@@ -1045,7 +1045,7 @@ mod tests {
         // OWN attached session arrives as `%unlinked-window-*` (tmux sends the plain
         // `%window-*` form only for the client's current session). The displayed
         // session is usually NOT the control client's session, so without handling
-        // these the sidebar misses real-time window add/delete there. They must emit
+        // these the tree view misses real-time window add/delete there. They must emit
         // Changed exactly like their linked counterparts so the app refetches.
         for line in [
             "%unlinked-window-add @4",
@@ -1077,8 +1077,8 @@ mod tests {
         // A session's ACTIVE WINDOW switched (`%session-window-changed $id @win`):
         // emit ActiveWindowChanged CARRYING the notification's session id + window id,
         // so the app probes THAT SPECIFIC session (not a guessed displayed one)
-        // and follows the sidebar cursor to it (#2). It must NOT collapse to a blanket
-        // Changed (which only refetches and would leave the cursor behind), and it must
+        // and follows the tree selection to it (#2). It must NOT collapse to a blanket
+        // Changed (which only refetches and would leave the selection behind), and it must
         // NOT drop the payload to a host-only event (which forces the guess).
         let state = test_state(80, 24);
         let in_flight: InFlight = Default::default();
@@ -1113,7 +1113,7 @@ mod tests {
         // returns a single line: `<name>\t<index>`. Resolving its block emits Focus
         // carrying the RESOLVED session name + parsed window index (the probe targeted a
         // session id, so the name comes back in the reply — not the correlator), so the
-        // app moves the sidebar cursor to that window row of the correct session.
+        // app moves the tree selection to that window row of the correct session.
         let state = test_state(80, 24);
         let in_flight: InFlight = Default::default();
         in_flight
@@ -1168,7 +1168,7 @@ mod tests {
     #[test]
     fn reader_session_changed_and_pane_changed_are_inert() {
         // `%session-changed` (the metadata client's own attach) and
-        // `%window-pane-changed` do not affect the sidebar tree, so they must NOT
+        // `%window-pane-changed` do not affect the tree view, so they must NOT
         // trigger a Changed refetch. (run_reader always emits a trailing Exited on
         // EOF, so assert specifically that no Changed was emitted.)
         for line in ["%session-changed $1 api", "%window-pane-changed @1 %2"] {

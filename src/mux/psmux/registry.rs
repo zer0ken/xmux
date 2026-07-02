@@ -51,7 +51,7 @@ pub(crate) fn read_psmux_registry_dir(dir: &Path) -> Vec<String> {
 /// `list-sessions` DETAIL rows. A `list-sessions` row wins for a session it covers
 /// (full windows/attached/recency); a registry name it omits is still surfaced with
 /// a minimal placeholder, so a failed/partial `list-sessions` never blanks the
-/// sidebar. Deduped on name (a session in both sources appears once).
+/// tree view. Deduped on name (a session in both sources appears once).
 pub(crate) fn merge_psmux_sessions(
     source: &str,
     names: Vec<String>,
@@ -179,7 +179,7 @@ mod tests {
     #[test]
     fn merge_psmux_sessions_no_detail_surfaces_registry_names() {
         // The reported failure: list-sessions returns nothing even though sessions
-        // exist. The registry names must still surface so the sidebar is not blank.
+        // exist. The registry names must still surface so the tree view is not blank.
         let got = merge_psmux_sessions("local", vec!["a".into(), "b".into()], Vec::new());
         let names: Vec<&str> = got.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["a", "b"]);

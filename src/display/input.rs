@@ -69,7 +69,7 @@ impl TermInput {
                     i += 1;
                     continue;
                 }
-                // prefix ? / h / l keep mux focus (help toggle, tree resize), so the
+                // prefix ? / h / l keep terminal-view focus (help toggle, tree resize), so the
                 // rest of the read still forwards to the pane — flush, emit, continue.
                 if b0 == b'?' {
                     if !fwd.is_empty() {
@@ -87,7 +87,7 @@ impl TermInput {
                     i += 1;
                     continue;
                 }
-                // prefix t → toggle auto-hide-tree; keeps mux focus, so the rest of
+                // prefix t → toggle auto-hide-tree; keeps terminal-view focus, so the rest of
                 // the read still forwards to the pane.
                 if b0 == b't' {
                     if !fwd.is_empty() {
@@ -277,7 +277,7 @@ mod tests {
 
     #[test]
     fn prefix_then_t_toggles_auto_hide() {
-        // Keeps mux focus, so trailing bytes in the same read still forward.
+        // Keeps terminal-view focus, so trailing bytes in the same read still forward.
         let mut t = m();
         assert_eq!(
             t.feed(b"\x07tabc"),
@@ -315,7 +315,7 @@ mod tests {
 
     #[test]
     fn prefix_command_keeps_focus_and_forwards_rest() {
-        // help/resize keep mux focus, so trailing bytes in the same read still forward.
+        // help/resize keep terminal-view focus, so trailing bytes in the same read still forward.
         let mut t = m();
         assert_eq!(
             t.feed(b"\x07?abc"),

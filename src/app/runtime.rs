@@ -3,16 +3,16 @@
 //! `psmux attach` running inside a `portable-pty` PTY ([`AttachRegistry`]) — alive
 //! across selections, and renders the SELECTED session's live `Grid` on the right.
 //! A separate control-mode client per remote host ([`HostManager`]) supplies the
-//! sidebar inventory, mux-side change events, and programmatic `select-window`;
+//! tree view inventory, mux-side change events, and programmatic `select-window`;
 //! local psmux is enumerated/polled with plain commands (it is one-server-per-
 //! session, so a host-level control client cannot see across its sessions).
 //!
 //! State is explicit: [`Selection`] (the canonical `source`/`session`/`window`) is
 //! the single source of truth the display reads — the `Switcher` owns only the tree
-//! and cursor. One `select!` loop interleaves stdin, host events, PTY events, the
+//! and selection. One `select!` loop interleaves stdin, host events, PTY events, the
 //! control socket, terminal resize, and an animation tick. ratatui owns stdout and
 //! draws the SAME split (tree + selected PTY grid) in both focus states — Focus::Tree
-//! (tree focused) and Focus::Terminal (terminal focused) differ only in the divider
+//! (tree focused) and Focus::Terminal (terminal focused) differ only in the view border
 //! colour and where keys go, so toggling focus needs no screen clear.
 
 use std::collections::{HashMap, HashSet};
@@ -91,7 +91,7 @@ fn apply_width_delta(wd: i32, natural: &mut u16) -> bool {
 }
 
 /// Flips the auto-hide-tree mode and persists it, so the next launch restores it.
-/// Shared by the tree- and mux-focus `prefix t` paths. The effective tree width is
+/// Shared by the tree- and terminal-view focus `prefix t` paths. The effective tree width is
 /// reconciled at the next loop top (`reconciled_tree_width`); the caller marks dirty.
 fn toggle_auto_hide(mode: &mut bool, xmux_dir: &std::path::Path) {
     *mode = !*mode;
@@ -103,7 +103,7 @@ fn toggle_auto_hide(mode: &mut bool, xmux_dir: &std::path::Path) {
 /// `display::dispatch::Action::as_action`) and a ctl command resolve through, so the two
 /// surfaces can never take divergent effect. Returns `(quit, width_changed)`: `quit`
 /// signals the loop to exit; `width_changed` signals the loop to schedule the debounced
-/// tree-width persist. `Switch` only moves the cursor (a `SelectAddress` command); the
+/// tree-width persist. `Switch` only moves the selection (a `SelectAddress` command); the
 /// loop-top `Tick`/`select_attach` commits the attach on a later pass.
 ///
 /// Only the synchronous, registry-free commands arise here — `Attach`/
@@ -183,7 +183,7 @@ fn dispatch_commands(
     (quit, width_changed)
 }
 
-/// The `status` verb reply: the current focus side + the cursor's session target.
+/// The `status` verb reply: the current focus side + the selection's session target.
 /// A flat, parseable line an agent reads to confirm a `switch`/`focus` landed.
 fn status_line(switcher: &crate::ui::switcher::Switcher, tree_focused: bool) -> String {
     format!(
@@ -193,9 +193,9 @@ fn status_line(switcher: &crate::ui::switcher::Switcher, tree_focused: bool) -> 
     )
 }
 
-/// The tree width a divider drag to 1-based screen column `col` sets: the dragged
-/// column becomes the divider position (= the tree width), clamped to the allowed range.
-fn divider_drag_width(col: u16) -> u16 {
+/// The tree width a view border drag to 1-based screen column `col` sets: the dragged
+/// column becomes the view border position (= the tree width), clamped to the allowed range.
+fn view_border_drag_width(col: u16) -> u16 {
     col.saturating_sub(1).clamp(TREE_WIDTH_MIN, TREE_WIDTH_MAX)
 }
 
@@ -216,8 +216,8 @@ fn leading_ctrl_arrow(bytes: &[u8]) -> Option<(i32, usize)> {
     None
 }
 
-/// The EFFECTIVE tree width to render and size the mux against. Hidden (0, mux
-/// full width) only while the mux is focused AND auto-hide-tree mode is on;
+/// The EFFECTIVE tree width to render and size the terminal view against. Hidden (0, terminal view
+/// full width) only while the terminal view is focused AND auto-hide-tree mode is on;
 /// otherwise the tree's natural width. Pure so the focus/mode interaction is
 /// unit-testable; the loop owns the natural width and the PTY resize on change.
 fn reconciled_tree_width(terminal_focused: bool, auto_hide_tree: bool, natural: u16) -> u16 {
@@ -238,13 +238,13 @@ fn log_slow_step(label: &str, start: std::time::Instant) {
 }
 
 /// The canonical selection — the single source of truth the display reads. The
-/// `Switcher` owns the tree + cursor; the app commits the cursor's target into
+/// `Switcher` owns the tree + selection; the app commits the selection's target into
 /// this struct, and the render, input routing, and spinner all key off it. `window`
 /// is `Some` only for a window-row selection.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Selection {
     pub source: String,
-    /// Empty ⇒ no terminal view (cursor on a host/loading row).
+    /// Empty ⇒ no terminal view (selection on a host/loading row).
     pub session: String,
     pub window: Option<i64>,
 }
@@ -280,15 +280,15 @@ impl Selection {
     }
 }
 
-/// Derives the selection from the switcher cursor and, if it moved, routes it through
+/// Derives the selection from the switcher selection and, if it moved, routes it through
 /// the single mutation site as [`Action::Select`] — which records the new selection
 /// and marks the attach pending. It arms NO deadline; the trailing [`Action::Tick`]
 /// arms the debounce (re-armed on every move, so rapid navigation coalesces into one
 /// trailing attach). Returns true when the selection changed (the tree needs a redraw).
 ///
-/// In 5.4d-i the switcher cursor is still the selection authority; this only routes
+/// In 5.4d-i the switcher selection is still the selection authority; this only routes
 /// the derived value through `apply` instead of mutating `state` directly. (The
-/// authority inversion — `state.selection` authoritative, cursor following — is 5.5.)
+/// authority inversion — `state.selection` authoritative, selection following — is 5.5.)
 ///
 /// [`Action::Select`]: crate::model::Action::Select
 /// [`Action::Tick`]: crate::model::Action::Tick
@@ -305,16 +305,16 @@ fn sync_selection_from_switcher(
 }
 
 /// The size to give a PTY attachment: the terminal view (right of the tree +
-/// divider), NOT the whole terminal. Sizing a session to the full terminal makes
+/// view border), NOT the whole terminal. Sizing a session to the full terminal makes
 /// the remote wrap at a width wider than the visible view, so a line overflows the
 /// right edge (and a double-width char straddles the clip boundary). The view width
-/// is `cols - tree_width - 1` (tree + the single divider rule), except `tree_width == 0`
-/// (the tree-hidden sentinel) gives the full `cols` with no divider; the view HEIGHT is
+/// is `cols - tree_width - 1` (tree + the single view border rule), except `tree_width == 0`
+/// (the tree-hidden sentinel) gives the full `cols` with no view border; the view HEIGHT is
 /// the full terminal height (`body_rows + 1`) because the hint_bar and input occupy
 /// the tree column, leaving the terminal column the full height. Both clamp to at least 1.
 pub(crate) fn terminal_view_size(cols: u16, body_rows: u16, tree_width: u16) -> (u16, u16) {
-    // tree_width == 0 is the "tree hidden" sentinel: the mux takes the full width
-    // with no divider column. Otherwise subtract the tree column + the 1-col divider.
+    // tree_width == 0 is the "tree hidden" sentinel: the terminal view takes the full width
+    // with no view border column. Otherwise subtract the tree column + the 1-col view border.
     let view_cols = if tree_width == 0 {
         cols.max(1)
     } else {
@@ -534,7 +534,7 @@ fn attach_reply_is_current(
     in_flight.get(key) == Some(&seq)
 }
 
-/// Connects the host the cursor is on (if not already + detected), so its metadata
+/// Connects the host the selection is on (if not already + detected), so its metadata
 /// channel streams that host's tree in. The manager picks the channel (control client
 /// vs poll task) from the host's `event_source`; an undetected host is skipped until a
 /// detection probe resolves its mux.
@@ -666,7 +666,7 @@ fn kick_rescan(
 }
 
 /// Starts each host's first scan at startup, so each host's tree streams in without
-/// waiting for a cursor move. Control hosts connect a `-CC` client; poll hosts start
+/// waiting for a selection move. Control hosts connect a `-CC` client; poll hosts start
 /// their self-looping enumeration task — both owned by the manager. PTYs are attached
 /// as each source's sessions arrive (see [`sync_source_terminals`]).
 fn connect_all_sources(
@@ -692,7 +692,7 @@ fn is_focus_in(code: KeyCode) -> bool {
 
 /// Whether a wheel event should drive the TREE (scroll, or Ctrl-wheel level change).
 /// Only when the tree is focused AND the pointer is over the tree: mouse input acts on
-/// the view under the cursor, and only when that view is focused — the same rule clicks
+/// the view under the selection, and only when that view is focused — the same rule clicks
 /// and motion already follow. A wheel over the terminal view while the tree is focused is not
 /// a tree scroll.
 fn wheel_targets_tree(tree_focused: bool, over_mux: bool) -> bool {
@@ -707,8 +707,8 @@ fn tree_menu_may_open(is_right_press: bool, tree_focused: bool, over_mux: bool) 
     is_right_press && tree_focused && !over_mux
 }
 
-/// What a mouse event resolves to once the modal/gesture gates (menu, divider drag,
-/// idle-divider-hover, menu-open) have declined it — the focus×position routing core.
+/// What a mouse event resolves to once the modal/gesture gates (menu, view border drag,
+/// idle-view border-hover, menu-open) have declined it — the focus×position routing core.
 #[derive(Debug, PartialEq, Eq)]
 enum ChainAction {
     /// Scroll the tree by one row (wheel, tree focus, over tree). `down` = scroll down.
@@ -719,7 +719,7 @@ enum ChainAction {
     FocusTerminal,
     /// Select the clicked tree row (left-click a tree row while the tree is focused).
     SelectRow,
-    /// Toggle focus to the tree (left-click the tree while the mux is focused).
+    /// Toggle focus to the tree (left-click the tree while the terminal view is focused).
     FocusTree,
     /// Forward the event to the focused mux child (terminal focus, over the terminal view).
     ForwardToMux,
@@ -728,7 +728,7 @@ enum ChainAction {
 }
 
 /// Pure focus×position routing for a mouse event that fell through every gate. The one
-/// rule: input acts on the view under the cursor, and only when that view is focused.
+/// rule: input acts on the view under the selection, and only when that view is focused.
 /// A wheel over the terminal view while the tree is focused, or over the tree while the terminal view is
 /// focused, resolves to Nothing — it never crosses to the unfocused view.
 fn resolve_mouse_chain(
@@ -764,7 +764,7 @@ fn resolve_mouse_chain(
 /// Pure resolution of ONE TREE-focus key into an [`Action`] (or none, when the key
 /// only arms the prefix or is an unrecognized armed command). Touches no app or
 /// switcher state, so it is unit-testable in isolation (mirrors how `TermInput::feed`
-/// resolves the mux-focus path). `is_inputting` suppresses prefix arming and the Enter
+/// resolves the terminal-view focus path). `is_inputting` suppresses prefix arming and the Enter
 /// focus-switch so the input row receives those keys verbatim. Resolved per key — not
 /// per read — because `is_inputting` can flip mid-read (a key that opens the input row
 /// changes how the next key in the same read is treated), so the caller re-queries it
@@ -787,7 +787,7 @@ fn resolve_tree_key(
             KeyCode::Char('t') => Some(Action::ToggleAutoHide),
             KeyCode::Char('?') => Some(Action::ShowHelp),
             // prefix Tab cycles focus to the terminal (toggle, mirroring the terminal side's
-            // prefix Tab → tree); prefix → also focuses the mux. The byte decoder yields
+            // prefix Tab → tree); prefix → also focuses the terminal view. The byte decoder yields
             // Char('\t') for Tab, never KeyCode::Tab, so match both. (prefix ←/Esc focus
             // the tree, where we already are — a no-op that resolves to nothing.)
             KeyCode::Right | KeyCode::Tab | KeyCode::Char('\t') => Some(Action::FocusTerminal),
@@ -901,7 +901,7 @@ fn request_session_panes(
 /// Refetches a host's inventory after a `%`-change notification: clears its
 /// pane-request dedup so every session re-lists, then re-runs list-sessions — its
 /// reply (Connected/Inventory) re-applies the tree, re-requests panes, and re-syncs
-/// the PTY set (a new session attaches, a closed one is reaped). #5 sidebar sync.
+/// the PTY set (a new session attaches, a closed one is reaped). #5 tree view sync.
 fn refetch_host(mgr: &HostManager, panes_requested: &mut HashSet<String>, host: &str) {
     if let Some(client) = mgr.get(host) {
         let prefix = format!("{host}/");
@@ -1014,7 +1014,7 @@ fn run_event_effect(
         }
         EventEffect::Refetch { host } => {
             // The server's session/window structure changed (a `%`-notification).
-            // Refetch so the tree, panes, and PTY set resync (#5 sidebar sync).
+            // Refetch so the tree, panes, and PTY set resync (#5 tree view sync).
             refetch_host(mgr, panes_requested, &host);
         }
         EventEffect::ProbeActiveWindow { host, session_ref } => {
@@ -1170,10 +1170,10 @@ pub(crate) fn note_host_exited(
 /// must persist across reads). Field-for-field the loop locals `run_app` held.
 #[derive(Default)]
 struct MouseState {
-    /// True while the left button is dragging the tree/terminal divider rule to resize.
-    dragging_divider: bool,
-    /// True while the mouse hovers the divider rule (no button) — the drag-resize cue.
-    hovered_divider: bool,
+    /// True while the left button is dragging the tree/terminal view border rule to resize.
+    dragging_view_border: bool,
+    /// True while the mouse hovers the view border rule (no button) — the drag-resize cue.
+    hovered_view_border: bool,
     /// The resize-repeat window: a bare Ctrl+←/→ keeps resizing until it lapses.
     repeat_until: Option<std::time::Instant>,
     /// True while a prefix has been pressed in tree focus, awaiting the command key.
@@ -1199,7 +1199,7 @@ struct StdinOutcome {
 
 /// Applies ONE parsed SGR mouse event to the gesture state + tree/registry — the body
 /// of the inline `while i < bytes.len()` mouse branch, lifted verbatim. Runs the modal/
-/// gesture gates (menu, divider drag, popup drag, modal swallow, divider grab, idle
+/// gesture gates (menu, view border drag, popup drag, modal swallow, view border grab, idle
 /// hover, menu open) in the SAME order, then the focus×position routing. Mutates `st`
 /// (the gesture latches), `state.focus` (mid-loop focus toggles — routing re-reads focus
 /// per event, so deferring would change behavior), and the byte-loop accumulators
@@ -1235,7 +1235,7 @@ fn handle_mouse_event(
     let is_press = ev.pressed && (ev.cb & 0x60) == 0;
     // Wheel events carry the 0x40 bit (cb 64=up, 65=down; +16=Ctrl).
     let is_wheel = ev.pressed && (ev.cb & 0x40) != 0;
-    // Divider drag: grab the divider rule (the column at the effective
+    // View border drag: grab the view border rule (the column at the effective
     // tree width, only when the tree is shown) with the left button and
     // drag to resize. Once grabbed it owns every mouse event until the
     // button is released. Sets the NATURAL width; the loop-top reconcile
@@ -1243,7 +1243,7 @@ fn handle_mouse_event(
     let col0 = ev.col.saturating_sub(1); // 1-based SGR → 0-based screen col
                                          // A context menu owns every mouse event until the right
                                          // button is released (press-hold-release), exactly like the
-                                         // divider drag below. Motion sets the hovered item; button-up
+                                         // view border drag below. Motion sets the hovered item; button-up
                                          // acts on it (or cancels if released off-menu).
     if state.menu_active() {
         if !ev.pressed {
@@ -1276,14 +1276,14 @@ fn handle_mouse_event(
         }
         return dirty;
     }
-    if st.dragging_divider {
+    if st.dragging_view_border {
         if !ev.pressed {
             // Button up ends the drag; persist the final width once
             // (motion resizes live but does not write per cell).
-            st.dragging_divider = false;
+            st.dragging_view_border = false;
             crate::prefs::save_tree_width(&env.xmux_dir, *tree_width_natural);
         } else if !is_wheel {
-            let target = divider_drag_width(ev.col);
+            let target = view_border_drag_width(ev.col);
             if target != *tree_width_natural {
                 *tree_width_natural = target;
                 dirty = true;
@@ -1294,7 +1294,7 @@ fn handle_mouse_event(
     let is_left_press = is_press && (ev.cb & 0x03) == 0;
     // A modal popup (help/input/confirm) moves when its border is
     // dragged. Once grabbed it owns every mouse event until release,
-    // like the divider drag / menu hold above.
+    // like the view border drag / menu hold above.
     if switcher.popup_drag_active() {
         if !ev.pressed {
             switcher.end_popup_drag();
@@ -1310,28 +1310,28 @@ fn handle_mouse_event(
     }
     // A modal popup is mouse-modal: while one is open, every mouse
     // event that is not its border-drag (handled above) is swallowed,
-    // so clicks, wheels, divider grabs, and hovers never reach the
-    // tree/terminal/divider behind it.
+    // so clicks, wheels, view border grabs, and hovers never reach the
+    // tree/terminal/view border behind it.
     if state.is_modal_popup_open() {
         return dirty;
     }
     if is_left_press && tree_width > 0 && col0 == tree_width {
-        st.dragging_divider = true; // grabbed the divider
+        st.dragging_view_border = true; // grabbed the view border
         return dirty;
     }
     // Idle motion (motion bit set, no button held) — reported only
-    // because any-motion tracking (1003h) is on. Over the divider it
+    // because any-motion tracking (1003h) is on. Over the view border it
     // lights the hover cue and is consumed (nothing under it to forward).
     // Elsewhere it falls through to the routing below, so a hover over the
     // terminal view IS forwarded to the child (the inner app gets hover); over
     // the tree it is harmlessly dropped.
     if ev.pressed && (ev.cb & 0x23) == 0x23 {
-        let over_divider = tree_width > 0 && col0 == tree_width;
-        if over_divider != st.hovered_divider {
-            st.hovered_divider = over_divider;
+        let over_view_border = tree_width > 0 && col0 == tree_width;
+        if over_view_border != st.hovered_view_border {
+            st.hovered_view_border = over_view_border;
             dirty = true;
         }
-        if over_divider {
+        if over_view_border {
             return dirty;
         }
     }
@@ -1363,7 +1363,7 @@ fn handle_mouse_event(
         in_mux.is_some(),
     ) {
         ChainAction::ScrollTree(down) => {
-            // Plain wheel → scroll the cursor LINEARLY through every row
+            // Plain wheel → scroll the selection LINEARLY through every row
             // (move_selection), like any list. NOT sibling-cycle: arrows do
             // that (move_sibling), but it wraps within a level, so a 2-sibling
             // level just bounces — the "two notches per move" report.
@@ -1383,7 +1383,7 @@ fn handle_mouse_event(
             *mouse_focus_toggle = true;
         }
         ChainAction::SelectRow => {
-            // Left-click a tree row → move the cursor to it (select). The
+            // Left-click a tree row → move the selection to it (select). The
             // loop top commits the new selection (attach); ensure the
             // clicked row's host connects so its subtree streams in.
             switcher.mouse_select(col0, ev.row.saturating_sub(1), state);
@@ -1405,7 +1405,7 @@ fn handle_mouse_event(
 
 /// The whole `stdin_rx` arm body, lifted. Scans the read for SGR mouse sequences
 /// (routed via [`handle_mouse_event`]) vs a non-mouse byte stream, runs the lost-release
-/// watchdogs, the resize-repeat window, and the help-modal / tree-focus / mux-focus
+/// watchdogs, the resize-repeat window, and the help-modal / tree-focus / terminal-view focus
 /// routing — in the SAME order as the inline arm. The final focus toggles (+ replay)
 /// run inside on `state.focus`, so the loop only acts on `dirty`/`quit`. No behavior change.
 #[allow(clippy::too_many_arguments)]
@@ -1486,18 +1486,18 @@ fn handle_stdin_bytes(
             }
         }
     }
-    // Watchdog: a divider drag is normally ended by the button-up event, but a
+    // Watchdog: a view border drag is normally ended by the button-up event, but a
     // release can be lost (split across reads, released off-window, or a terminal
-    // that omits it) — which would strand `dragging_divider` and eat all later
+    // that omits it) — which would strand `dragging_view_border` and eat all later
     // mouse input. Any non-mouse byte (a keystroke, or the split release's own
     // leftover bytes) ends the drag and persists the final width, so the user is
     // never trapped past the next input.
-    if mouse.dragging_divider && !non_mouse.is_empty() {
-        mouse.dragging_divider = false;
+    if mouse.dragging_view_border && !non_mouse.is_empty() {
+        mouse.dragging_view_border = false;
         crate::prefs::save_tree_width(&env.xmux_dir, *tree_width_natural);
     }
     // Watchdog: a keystroke (or any non-mouse byte) during a held menu ends
-    // the gesture without acting — mirrors the divider-drag watchdog, so a
+    // the gesture without acting — mirrors the view border-drag watchdog, so a
     // missed button-up can't strand the menu and eat later input.
     if state.menu_active() && !non_mouse.is_empty() {
         switcher.menu_cancel(state);
@@ -1514,7 +1514,7 @@ fn handle_stdin_bytes(
         *dirty = true;
     }
     if wheel_scrolled {
-        // The plain-wheel scroll moved the cursor; connect the host it landed on
+        // The plain-wheel scroll moved the selection; connect the host it landed on
         // so its subtree streams in (mirrors handle_tree_bytes's ensure step).
         ensure_current_host(mgr, env, hosts, switcher, cols, body_rows, tree_width);
     }
@@ -1632,7 +1632,7 @@ fn handle_stdin_bytes(
                     toggle_auto_hide(auto_hide_tree, &env.xmux_dir);
                     *dirty = true;
                 }
-                // The mux-focus resolver (TermInput) never emits these — they
+                // The terminal-view focus resolver (TermInput) never emits these — they
                 // belong to the tree-focus path (resolve_tree).
                 Action::FocusTerminal | Action::TreeKey(_) => {}
             }
@@ -1643,7 +1643,7 @@ fn handle_stdin_bytes(
             .focus
             .set_view_focus(crate::app::focus::ViewFocus::Terminal);
         // No term.clear(): both states draw the SAME split layout (only the
-        // divider colour changes), so clearing would blank the screen and
+        // view border colour changes), so clearing would blank the screen and
         // force a full repaint for nothing.
     }
     if *focus_tree {
@@ -1788,9 +1788,9 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
     // The per-event mouse-gesture/input state the stdin arm carries across reads:
     //  - repeat_until: the resize-repeat window — set when a prefix-driven resize fires,
     //    it lets a bare Ctrl+←/→ keep resizing (no re-prefix) until it lapses (RESIZE_REPEAT_MS).
-    //  - dragging_divider: true while the left button is dragging the tree/terminal divider rule.
-    //  - hovered_divider: true while the mouse hovers the divider rule (no button) — lights it
-    //    up as a drag-resize grab cue. Fed to the switcher each draw via set_divider_hovered.
+    //  - dragging_view_border: true while the left button is dragging the tree/terminal view border rule.
+    //  - hovered_view_border: true while the mouse hovers the view border rule (no button) — lights it
+    //    up as a drag-resize grab cue. Fed to the switcher each draw via set_view_border_hovered.
     //  - tree_armed: true while a prefix has been pressed in tree focus, awaiting the command key.
     let mut mouse_state = MouseState::default();
 
@@ -1836,7 +1836,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
     );
 
     // The app's runtime state (single source of truth): the inventory the
-    // components read, the canonical selection committed from the switcher's cursor at
+    // components read, the canonical selection committed from the switcher's selection at
     // the loop top, the attach debounce latch (last selection actually attached/switched
     // to) + its deadline, and the last session address persisted as the user's
     // last-selected (#1). Seeded from the source skeletons; events stream the tree in.
@@ -1849,12 +1849,12 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
     switcher.set_ssh_config_text(
         std::fs::read_to_string(crate::env::ssh_config_path()).unwrap_or_default(),
     );
-    // Divider colours from config's tmux-style pane-border options (tmux defaults
+    // View border colours from config's tmux-style pane-border options (tmux defaults
     // otherwise), so the tree|terminal rule matches the user's tmux pane-border experience.
-    switcher.set_divider_colors(crate::ui::switcher::DividerColors {
-        active: crate::ui::switcher::map_color(&env.cfg.ui.pane_active_border_style),
-        inactive: crate::ui::switcher::map_color(&env.cfg.ui.pane_border_style),
-        hover: crate::ui::switcher::map_color(&env.cfg.ui.pane_border_hover_style),
+    switcher.set_view_border_colors(crate::ui::switcher::ViewBorderColors {
+        active: crate::ui::switcher::map_color(&env.cfg.ui.view_active_border_style),
+        inactive: crate::ui::switcher::map_color(&env.cfg.ui.view_border_style),
+        hover: crate::ui::switcher::map_color(&env.cfg.ui.view_border_hover_style),
     });
     // The help modal must show the prefix the user configured, not a literal.
     switcher.set_ui_prefix(env.ui_prefix.clone());
@@ -1937,7 +1937,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
     // Periodic reconnect sweep: re-ensure any died remote control client (so #5
     // metadata sync self-heals) and re-attach the selected session's PTY if it
     // dropped (so a transient remote disconnect does not leave the terminal view stuck
-    // on "(attaching…)"). The sweep interval doubles as the retry backoff.
+    // blank). The sweep interval doubles as the retry backoff.
     let reconnect_start = tokio::time::Instant::now() + Duration::from_millis(RECONNECT_MS);
     let mut reconnect =
         tokio::time::interval_at(reconnect_start, Duration::from_millis(RECONNECT_MS));
@@ -1962,10 +1962,10 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
 
     loop {
         // Advance the spinner from wall-clock so it animates regardless of which arm
-        // fired, then commit the cursor's target into the canonical selection. A
+        // fired, then commit the selection's target into the canonical selection. A
         // changed selection ensures its PTY + (for a window row) switches the window.
         switcher.set_spinner_frame(spinner_frame_at(spinner_start.elapsed()));
-        switcher.set_divider_hovered(mouse_state.hovered_divider);
+        switcher.set_view_border_hovered(mouse_state.hovered_view_border);
         // Derive the modal dimension of focus from the open-modal kind: open a modal →
         // Focus becomes Popup/Menu carrying the current view; close it → restore that
         // view. The single owner of the modal/view reconciliation.
@@ -1985,7 +1985,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
         );
         if want_tree_width != tree_width {
             // Crossing the hidden sentinel (0) flips the column TOPOLOGY: full-width mux
-            // <-> tree+divider+mux. A stale wide-char (CJK) cell at the new tree/divider
+            // <-> tree+view border+terminal view. A stale wide-char (CJK) cell at the new tree/view border
             // boundary can survive ratatui's incremental diff, leaving background residue,
             // so force a full repaint on that transition. A plain h/l resize keeps the
             // same topology and needs no clear (the per-frame Clear widget handles it).
@@ -2012,10 +2012,10 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
             if let Some(h) = hosts.get_mut(&state.selection.source) {
                 h.display.clear(&key); // drop the prior latch so the re-attach is fresh
             }
-            state.displayed = Selection::default(); // nothing confirmed on screen → "(attaching…)"
+            state.displayed = Selection::default(); // nothing confirmed on screen → blank terminal view
             state.attach_deadline = Some(std::time::Instant::now());
         }
-        // In passthrough the user no longer drives the tree cursor (stdin goes to the
+        // In the terminal view the user no longer drives the tree selection (stdin goes to the
         // PTY), so the tree selection tracks the displayed session's active window — always.
         // select_active_window is idempotent (no move when already on the active window or
         // when the session's panes are unknown), so calling it each iteration is cheap.
@@ -2023,7 +2023,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
             switcher.select_active_window(&mut state);
         }
         if sync_selection_from_switcher(&mut state, &switcher) {
-            // The cursor moved → the tree needs a redraw. The attach is NOT issued
+            // The selection moved → the tree needs a redraw. The attach is NOT issued
             // here: the Select above only marks it pending; the Tick below arms the
             // debounce, re-armed on every move so only the settled selection attaches.
             dirty = true;
@@ -2136,7 +2136,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                 None => None,
             };
             let terminal_focused = state.focus.is_terminal_focused();
-            // The divider glyph reflects auto-hide-tree mode (║ on, │ off).
+            // The view border glyph reflects auto-hide-tree mode (║ on, │ off).
             switcher.set_auto_hide(auto_hide_tree);
             let t_draw = std::time::Instant::now();
             // Split the draw cost: `render` is the in-memory buffer build (tree +
@@ -2234,7 +2234,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                 // A kept attachment's pump fed its grid (Output → redraw on the next
                 // loop top) or its master hit EOF (Exited → reap). Coalesce a burst
                 // into one redraw so a busy session cannot monopolize the thread.
-                // Detach-to-recover: if the session the user is VIEWING (mux focused) exits —
+                // Detach-to-recover: if the session the user is VIEWING (terminal view focused) exits —
                 // a `detach`, the user's own client detaching, or a transient drop — re-attach
                 // it instead of quitting (quit is `prefix q` only). Capture its id BEFORE any
                 // reap removes it; a background session dropping (tree focus, or a non-displayed
@@ -2289,7 +2289,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                     // The viewed session's client detached/exited — recover by re-attaching
                     // it (reaped above, so the loop-top attach re-fires once its PTY is gone).
                     // Debounced so a session that is genuinely gone makes only a few attempts
-                    // before the inventory refetch drops its row and the cursor moves on.
+                    // before the inventory refetch drops its row and the selection moves on.
                     state.attach_deadline =
                         Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
                     dirty = true;
@@ -2315,11 +2315,11 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                                 h.display.pending.remove(&attachment.id());
                                 // This attach is now the live grid for the key. Record the
                                 // session it shows as the confirmed display truth, so the
-                                // terminal view switches from "(attaching…)" to its content.
+                                // terminal view switches from blank to its content.
                                 // If the selection moved to another session of the same host
                                 // while this attach was in flight, displayed now differs from
                                 // selection, so the next pass re-runs select_attach to switch
-                                // (Shared) / reattach (PerSession) to where the cursor is.
+                                // (Shared) / reattach (PerSession) to where the selection is.
                                 let shown = h.display.shows(&key).unwrap_or_default().to_string();
                                 // Swap: tear down the stale attachment held under this key
                                 // (the prior session, kept on screen until now) and install
@@ -2389,7 +2389,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                         if quit_op {
                             break;
                         }
-                        // A Switch/Focus may need the cursor's host connected.
+                        // A Switch/Focus may need the selection's host connected.
                         ensure_current_host(&mut mgr, &env, &hosts, &switcher, cols, body_rows, tree_width);
                         if sync_selection_from_switcher(&mut state, &switcher) {
                             dirty = true;
@@ -2765,11 +2765,11 @@ mod tests {
         );
         assert!(
             !wheel_targets_tree(false, false),
-            "mux focus + over tree → not the tree"
+            "terminal-view focus + over tree → not the tree"
         );
         assert!(
             !wheel_targets_tree(false, true),
-            "mux focus + over mux → the mux child, not the tree"
+            "terminal-view focus + over the terminal view → the mux child, not the tree"
         );
     }
 
@@ -2795,12 +2795,12 @@ mod tests {
         assert_eq!(
             resolve_mouse_chain(true, false, true, false, false, true),
             ForwardToMux,
-            "wheel, mux focus, over mux → forward to child"
+            "wheel, terminal-view focus, over the terminal view → forward to child"
         );
         assert_eq!(
             resolve_mouse_chain(true, false, true, false, false, false),
             Nothing,
-            "wheel, mux focus, over tree → nothing"
+            "wheel, terminal-view focus, over tree → nothing"
         );
         // left press: focus-switch on the unfocused view, act on the focused one.
         assert_eq!(
@@ -2816,19 +2816,19 @@ mod tests {
         assert_eq!(
             resolve_mouse_chain(false, false, false, true, false, false),
             FocusTree,
-            "left, mux focus, over tree → focus tree"
+            "left, terminal-view focus, over tree → focus tree"
         );
         assert_eq!(
             resolve_mouse_chain(false, false, false, true, false, true),
             ForwardToMux,
-            "left, mux focus, over mux → forward to child"
+            "left, terminal-view focus, over the terminal view → forward to child"
         );
         // a non-left, non-wheel press (e.g. right-press that the menu gate declined):
-        // forwards to the child only when the mux is focused and the pointer is over it.
+        // forwards to the child only when the terminal view is focused and the pointer is over it.
         assert_eq!(
             resolve_mouse_chain(false, false, false, false, false, true),
             ForwardToMux,
-            "right-press, mux focus, over mux → forward"
+            "right-press, terminal-view focus, over the terminal view → forward"
         );
         assert_eq!(
             resolve_mouse_chain(false, false, false, false, true, false),
@@ -3080,9 +3080,9 @@ mod tests {
 
     #[test]
     fn terminal_view_size_zero_tree_is_full_width() {
-        // Hidden tree (sentinel 0): full cols, no divider subtracted.
+        // Hidden tree (sentinel 0): full cols, no view border subtracted.
         assert_eq!(terminal_view_size(80, 23, 0), (80, 24));
-        // Shown tree: cols - tree_width - 1 (divider), height = body_rows + 1.
+        // Shown tree: cols - tree_width - 1 (view border), height = body_rows + 1.
         assert_eq!(terminal_view_size(80, 23, 48), (31, 24));
         // Degenerate widths clamp to at least 1.
         assert_eq!(terminal_view_size(0, 0, 0), (1, 1));
@@ -3093,9 +3093,9 @@ mod tests {
         // Tree focused (terminal_focused = false): always the natural width.
         assert_eq!(reconciled_tree_width(false, true, 48), 48);
         assert_eq!(reconciled_tree_width(false, false, 48), 48);
-        // Mux focused + setting on: hidden (0).
+        // Terminal view focused + setting on: hidden (0).
         assert_eq!(reconciled_tree_width(true, true, 48), 0);
-        // Mux focused + setting off: stays shown at natural width.
+        // Terminal view focused + setting off: stays shown at natural width.
         assert_eq!(reconciled_tree_width(true, false, 48), 48);
     }
 
@@ -3153,16 +3153,16 @@ mod tests {
     }
 
     #[test]
-    fn divider_drag_width_clamps_to_range() {
+    fn view_border_drag_width_clamps_to_range() {
         // The dragged 1-based column becomes the 0-based tree width, clamped to range.
-        assert_eq!(divider_drag_width(51), 50);
+        assert_eq!(view_border_drag_width(51), 50);
         assert_eq!(
-            divider_drag_width(5),
+            view_border_drag_width(5),
             TREE_WIDTH_MIN,
             "too far left clamps to min"
         );
         assert_eq!(
-            divider_drag_width(500),
+            view_border_drag_width(500),
             TREE_WIDTH_MAX,
             "too far right clamps to max"
         );
@@ -3188,10 +3188,14 @@ mod tests {
     }
 
     #[test]
-    fn terminal_view_size_subtracts_tree_and_divider() {
+    fn terminal_view_size_subtracts_tree_and_view_border() {
         use crate::ui::switcher::TREE_WIDTH;
         let (vc, vr) = terminal_view_size(143, 39, TREE_WIDTH);
-        assert_eq!(vc, 143 - (TREE_WIDTH + 1), "cols minus tree minus divider");
+        assert_eq!(
+            vc,
+            143 - (TREE_WIDTH + 1),
+            "cols minus tree minus view border"
+        );
         // The hint_bar and input live in the tree column, so the terminal column
         // spans the full terminal height (body_rows + 1).
         assert_eq!(vr, 40, "height is the full terminal height (body_rows + 1)");
@@ -3253,7 +3257,7 @@ mod tests {
 
     #[test]
     fn to_grid_local_full_width_area_maps_left_edge() {
-        // Tree hidden (auto-hide-tree): the mux owns the whole screen, so the
+        // Tree hidden (auto-hide-tree): the terminal view owns the whole screen, so the
         // input handler builds term_area at x=0. The top-left cell SGR (1,1) must map
         // to grid-local (1,1) rather than being rejected as it would in the tree column.
         let area = ratatui::layout::Rect::new(0, 0, 80, 24);
@@ -3373,11 +3377,11 @@ mod tests {
     }
 
     #[test]
-    fn active_window_probe_moves_sidebar_cursor() {
+    fn active_window_probe_moves_tree_selection() {
         // A resolved active-window probe (HostEvent::Focus) sets the cached active-window
-        // marker; the loop-top select_active_window then moves the cursor. Cursor starts
+        // marker; the loop-top select_active_window then moves the selection. Selection starts
         // on window 1's row; Focus to window 0 sets the marker, and select_active_window
-        // (simulating the loop-top call) lands the cursor on window 0.
+        // (simulating the loop-top call) lands the selection on window 0.
         use crate::session::{Pane, Session, WindowPanes};
         use crate::ui::switcher::{Scan, Switcher};
         use crate::ui::tree::Group;
@@ -3434,7 +3438,7 @@ mod tests {
         assert_eq!(
             switcher.terminal_view_target().target,
             "api:1",
-            "cursor on window 1"
+            "selection on window 1"
         );
 
         let (htx, _hrx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
@@ -3471,19 +3475,19 @@ mod tests {
             24,
             crate::ui::switcher::TREE_WIDTH,
         );
-        // The loop-top follow (simulated here) consumes the marker and moves the cursor.
+        // The loop-top follow (simulated here) consumes the marker and moves the selection.
         switcher.select_active_window(&mut state);
         assert_eq!(
             switcher.terminal_view_target().target,
             "api:0",
-            "loop-top follow moved cursor to active window 0"
+            "loop-top follow moved selection to active window 0"
         );
     }
 
     #[test]
     fn focus_event_updates_marker_without_moving_cursor() {
         // handle_host_event(Focus) updates the active-window marker but never moves
-        // the cursor — cursor follow is a loop-top concern. The cursor is left wherever
+        // the selection — selection follow is a loop-top concern. The selection is left wherever
         // the caller placed it (here, window 1) regardless of the Focus payload.
         use crate::session::{Pane, Session, WindowPanes};
         use crate::ui::switcher::{Scan, Switcher};
@@ -3575,7 +3579,7 @@ mod tests {
         assert_eq!(
             switcher.terminal_view_target().target,
             "api:1",
-            "handler alone must not move the cursor"
+            "handler alone must not move the selection"
         );
     }
 
@@ -4025,15 +4029,15 @@ mod tests {
     // HUMAN VISUAL-GATE CHECKLIST (run in a REAL terminal — never headless):
     // 1. Launch `xmux`. Confirm it enters the alternate screen cleanly and starts in
     //    Focus::Tree: the Host·Session·Window·Pane tree on the left, the live REAL
-    //    terminal of the cursor's session on the right (a true attached mux client).
-    // 2. Move the cursor between sessions. Confirm the terminal view shows each session's
+    //    terminal of the selection's session on the right (a true attached mux client).
+    // 2. Move the selection between sessions. Confirm the terminal view shows each session's
     //    real attached terminal instantly (it is pre-attached + kept alive), with a
     //    spinner while a session's attach is still establishing.
     // 3. Select a WINDOW row — confirm the attached client switches to that window.
     // 4. Press Enter (or C-g → / C-g Tab) — focus the terminal (Focus::Terminal); the split
-    //    is unchanged (divider turns green) and keystrokes reach the real attached pane.
+    //    is unchanged (view border turns green) and keystrokes reach the real attached pane.
     //    C-g ← / C-g Esc / C-g Tab return focus to the tree. Confirm no blank/flash.
-    // 5. Create / kill a window or session inside a pane — confirm the sidebar tree
+    // 5. Create / kill a window or session inside a pane — confirm the tree view
     //    syncs (remote via control events, local within the poll interval) and the
     //    PTY set follows (new session attaches, killed session's PTY is reaped).
     // 6. C-g then `q` — clean quit, terminal restored.
@@ -4088,7 +4092,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("xmux-apply-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
-        // Switch addr → cursor lands on db; returns (quit=false, width_changed=false).
+        // Switch addr → selection lands on db; returns (quit=false, width_changed=false).
         assert_eq!(
             dispatch_action(
                 Action::Switch {
@@ -4239,7 +4243,7 @@ mod tests {
             &op_tx,
         );
 
-        // The switch moved the cursor to db; the loop-top derive routes it through
+        // The switch moved the selection to db; the loop-top derive routes it through
         // apply(Select) — selection becomes jup/db and the attach is marked pending
         // (the deadline is armed by the next Tick, not here).
         assert!(sync_selection_from_switcher(&mut state, &sw));
@@ -4400,7 +4404,7 @@ mod tests {
             },
             "pane focus unchanged"
         );
-        // Re-arm and feed Enter: routed to the switcher, NOT a mux-focus.
+        // Re-arm and feed Enter: routed to the switcher, NOT a terminal-view focus.
         feed!(b"x");
         {
             let mk = state.modal_kind();
@@ -4530,7 +4534,7 @@ mod tests {
             assert!(!out.quit, "{label} over a menu does not quit");
             assert!(
                 !out.focus_terminal,
-                "{label} over a menu does not request mux focus"
+                "{label} over a menu does not request terminal-view focus"
             );
             assert_eq!(
                 during,
@@ -4549,9 +4553,9 @@ mod tests {
     }
 
     #[test]
-    fn handle_mouse_event_divider_grab_sets_dragging() {
+    fn handle_mouse_event_view_border_grab_sets_dragging() {
         use crate::ui::switcher::{Scan, Switcher};
-        // A left-press exactly on the divider column sets dragging_divider, as the
+        // A left-press exactly on the view border column sets dragging_view_border, as the
         // inline gate did (is_left_press && tree_width > 0 && col0 == tree_width).
         let scan = Scan {
             groups: vec![],
@@ -4566,12 +4570,12 @@ mod tests {
         let mut st = MouseState::default();
         let tree_width = crate::ui::switcher::TREE_WIDTH;
         let mut natural = tree_width;
-        // 0-based col0 = ev.col - 1 must equal tree_width to grab the divider rule.
-        let divider_col = tree_width + 1; // 1-based SGR column of the divider
-                                          // cb=0 → left button, press, no wheel/motion → is_left_press is true.
+        // 0-based col0 = ev.col - 1 must equal tree_width to grab the view border rule.
+        let view_border_col = tree_width + 1; // 1-based SGR column of the view border
+                                              // cb=0 → left button, press, no wheel/motion → is_left_press is true.
         let ev = crate::display::mouse::MouseEvent {
             cb: 0,
-            col: divider_col,
+            col: view_border_col,
             row: 3,
             pressed: true,
         };
@@ -4602,13 +4606,13 @@ mod tests {
             tree_width,
         );
         assert!(
-            st.dragging_divider,
-            "left-press on the divider column grabs it"
+            st.dragging_view_border,
+            "left-press on the view border column grabs it"
         );
     }
 
     // A throwaway Env for the mouse-event test (its handlers never touch the env on
-    // the divider-grab path, but the signature requires one).
+    // the view border-grab path, but the signature requires one).
     fn env_for_mouse_test() -> Env {
         fake_env_with_sources(&["local"])
     }
