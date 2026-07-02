@@ -13,13 +13,13 @@ is the focus/modal routing state it reads and mutates.
 per session (a `tmux attach` / `psmux attach` in a `portable-pty` PTY, via the
 `AttachRegistry`) alive across selections and renders the SELECTED session's live
 `Grid` on the right. A separate control-mode client per remote host
-(`HostManager`) supplies the sidebar inventory, mux-side change events, and
+(`HostManager`) supplies the tree view inventory, mux-side change events, and
 programmatic `select-window`; local psmux is enumerated/polled with plain
 commands. One `select!` loop interleaves stdin, host events, PTY events, the
 control socket, terminal resize, and an animation tick. It folds domain
 `Action`s through `State::apply` and inbound `HostEvent`s through
 `State::apply_event`, dispatches the returned `Command`s/`EventEffect`s, keeps
-`state::State` in sync with the switcher cursor, drives the debounced attach, and
+`state::State` in sync with the switcher selection, drives the debounced attach, and
 draws the split view.
 
 `focus.rs` tracks which view holds focus (tree vs terminal) and which modal is

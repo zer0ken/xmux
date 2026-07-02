@@ -22,7 +22,7 @@ psmux is a PER-SESSION mux: one server per session on its own port
 ONE per-host PTY and, on a session change, either:
 
 - SWITCHES it in place (`switch-client -c <tty> -t <session>`) when a live client AND its
-  captured tty are known — no teardown, so no "(attaching…)"; followed by a
+  captured tty are known — no teardown, so the terminal view never goes blank; followed by a
   `refresh-client` to force a full repaint; or
 - REATTACHES (`new-session -A -s <name>`, which routes to that session's OWN server — the
   4a5f053 correctness fix; a bare `attach -t` lands on a warm clone) when there is no live

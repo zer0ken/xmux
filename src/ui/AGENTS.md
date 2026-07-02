@@ -9,14 +9,14 @@ ratatui rendering.
 ## Mental Model
 
 `tree.rs` is side-effect-free model logic over groups and sessions.
-`switcher.rs` is the aggregate interactive TUI surface: cursor, flattened rows,
+`switcher.rs` is the aggregate interactive TUI surface: selection, flattened rows,
 modal/menu/input BEHAVIOR and rendering, key/mouse handling, operation result
-application, and render state. The open modal itself lives in `State.popup`
+application, and render state. The open modal itself lives in `State.modal`
 (the `Modal` enum is defined here); the switcher reads/writes it and owns only
-the transient popup geometry (drag offset / drawn rect). `status.rs` owns the
-status-bar surface — the divider rule,
+the transient popup geometry (drag offset / drawn rect). `chrome.rs` owns the
+chrome — the view border,
 the hint bar, and the unreachable-host info — plus its view-local state
-(flash, spinner, divider colours, ui prefix), rendering from `&State`. `ops.rs`
+(flash, spinner, view border colours, ui prefix), rendering from `&State`. `ops.rs`
 holds the off-loop mux-action boundary: the `Ops` trait over the live mux, the
 `OpResult` outcomes, and `run_op` which executes one `MuxOp` against `Ops` in a
 detached task. A switcher key that COMMITS a slow action (Enter on an input, `y`
@@ -29,8 +29,8 @@ renders for `dump`.
 ## Module Seams
 
 - Pure row/group transforms belong in `tree.rs`.
-- Status-bar rendering (divider, hint bar, host-info) and its view-local state
-  belong in `status.rs`; it reads inventory from `&State`, not the switcher.
+- Chrome rendering (view border, hint bar, host-info) and its view-local state
+  belong in `chrome.rs`; it reads inventory from `&State`, not the switcher.
 - Slow (network) mux effects belong behind `ops.rs` (`Ops`/`run_op`/`OpResult`);
   a committing key emits `Command::RunOp(MuxOp)` for the run loop to spawn, it
   does not call the mux itself.
@@ -43,8 +43,8 @@ renders for `dump`.
 - Tree transforms do not mutate their inputs unless the function name and
   signature make mutation explicit.
 - `dump` should reflect the same split view the main draw path renders.
-- Modal and menu input owns keys while open; those keys must not leak to mux
-  passthrough or global shortcuts. At most one modal is open: `State.popup` is
+- Modal and menu input owns keys while open; those keys must not leak to the terminal view
+  or global shortcuts. At most one modal is open: `State.modal` is
   one Option, so opening any modal drops whatever was open.
 - UI actions that become domain intents should resolve to a `model::Action`
   (the app input `Action` projects via `as_action`), applied at

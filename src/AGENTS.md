@@ -11,7 +11,7 @@ the control socket, and the app/ui/model/mux/machine/state submodules.
 The app is the coordinator. It receives stdin, control socket commands,
 host metadata events, display worker events, PTY output events, resize events,
 and ticks. It folds domain `Action`s in through `State::apply` and dispatches the
-returned `Command`s, keeps `state::State` in sync with the switcher cursor (via
+returned `Command`s, keeps `state::State` in sync with the switcher selection (via
 `Action::Select`), drives the debounced attach (via `Action::Tick`), and renders
 the live split view.
 

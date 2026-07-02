@@ -14,7 +14,7 @@ domain-mutation sites (intent-driven and event-driven). UI components read
 (`groups`/`panes`/`scanning`/`panes_loaded`) and the active `filter`, the
 canonical `selection`, the confirmed `displayed` address, the `focus` state
 machine (which view keys go to; whether a modal is open), the open modal
-`popup`, the debounced `attach_deadline` + `attach_pending` flag, and the last
+`modal`, the debounced `attach_deadline` + `attach_pending` flag, and the last
 session address persisted to prefs. `from_scan` / `from_sources` seed the
 inventory.
 
@@ -50,7 +50,7 @@ once-connected host is a transient drop that keeps the last-known tree. The
 `Connected`/`Inventory` inventory lives behind the host client's lock the state
 layer cannot reach, so its apply is deferred to the loop as `ApplyInventory`.
 
-`popup` is one `Option<ui::switcher::Popup>` — at most one of help / inline
+`modal` is one `Option<ui::switcher::Modal>` — at most one of help / inline
 input / kill confirm / context menu. A single Option (not four independent
 fields) makes the modals' mutual exclusion structural: opening one drops
 whatever was open. The query helpers `is_modal_popup_open` / `is_inputting` /
@@ -61,13 +61,13 @@ the transient popup geometry (drag offset / drawn rect).
 
 - `State` depends on `app::app::Selection` for selected source/session/window,
   `ui::tree::Group` + `session::WindowPanes` for the inventory,
-  `app::focus::Focus` for the focus state machine, `ui::switcher::Popup` for the
+  `app::focus::Focus` for the focus state machine, `ui::switcher::Modal` for the
   open modal, `model::{Action, Command}` for the `apply` vocabulary, and
   `host::HostEvent` + `model::EventEffect` + `&mut ui::switcher::Switcher` for
   `apply_event` (the switcher rebuilds the tree against `&mut State`).
 - It stores state facts + the two mutation sites (`apply` / `apply_event`); the
   run loop owns effect dispatch — for `apply` the synchronous `Command`s (switcher
-  cursor move, attach, prefs IO, quit) and for `apply_event` the `EventEffect`
+  selection move, attach, prefs IO, quit) and for `apply_event` the `EventEffect`
   mux follow-ups (inventory lock apply, refetch, probe, reap, sync,
   scan-dispatch) — and feeds back the runtime attach facts on `Tick`. No
   IO/spawning/channel sends happen here.
@@ -82,7 +82,7 @@ the transient popup geometry (drag offset / drawn rect).
   (stale-while-revalidate); there is no transitional placeholder.
 - `focus` is the single source of truth for which view owns keys and which modal
   (if any) is open; a modal carries the view it restores to.
-- `popup` is the single source of truth for WHICH modal is open and its content;
+- `modal` is the single source of truth for WHICH modal is open and its content;
   `focus`'s modal dimension is reconciled from it each loop-top via `modal_kind`.
   At most one modal can be open because it is one Option, not four fields.
 - `attach_deadline` is the debounce gate for settled selection attachment;
