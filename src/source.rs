@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use crate::config::Config;
 use crate::machine::MachineKind;
 use crate::mux;
-use crate::session::{self, Session};
+use crate::session;
 
 /// A failed command's outcome. Only a real non-zero exit carries stderr (and can
 /// be classified benign); a missing binary or a connection failure surfaces as
@@ -138,18 +138,16 @@ impl Source {
         }
     }
 
-    /// Returns the source's sessions. A reachable mux with no sessions returns an
-    /// empty vec; an unreachable source returns an error.
-    ///
-    /// Enumeration (which mux, its registry-merge vs aggregate-list behaviour, and the
-    /// reachable-but-empty classification) lives entirely in `mux`: `for_binary`
-    /// selects the mux from the binary name and `Mux::enumerate` runs the probe
-    /// over this source's [`Source::transport`]. This is a thin shim — the source layer
-    /// no longer branches on the mux kind.
-    pub async fn list_sessions(&self) -> Result<Vec<Session>, RunError> {
-        crate::mux::for_binary(&self.binary)
-            .enumerate(&self.transport(), self.run_with())
-            .await
+    /// Assembles a value [`Host`](crate::model::Host) from this source's config —
+    /// transport from [`kind`](Self::kind) at the single `MachineKind::transport` site,
+    /// mux from [`binary`](Self::binary) — for the off-loop `Ops`/CLI paths that cannot
+    /// borrow the event loop's live `&mut Host`. The runner stays with the source
+    /// (`run_with`), injected into the host's enumerate/manage/attach calls.
+    pub(crate) fn host(&self) -> crate::model::Host {
+        crate::model::Host::new(
+            self.kind.clone().transport(),
+            crate::mux::for_binary(&self.binary),
+        )
     }
 }
 
@@ -197,35 +195,6 @@ pub fn build(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Records the last command and returns a canned result.
-    struct FakeRunner {
-        result: std::sync::Mutex<Option<Result<Vec<u8>, RunError>>>,
-    }
-
-    impl FakeRunner {
-        fn ok(out: &str) -> Arc<dyn Runner> {
-            Arc::new(FakeRunner {
-                result: std::sync::Mutex::new(Some(Ok(out.as_bytes().to_vec()))),
-            })
-        }
-        fn err(e: RunError) -> Arc<dyn Runner> {
-            Arc::new(FakeRunner {
-                result: std::sync::Mutex::new(Some(Err(e))),
-            })
-        }
-    }
-
-    #[async_trait]
-    impl Runner for FakeRunner {
-        async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
-            self.result
-                .lock()
-                .unwrap()
-                .take()
-                .unwrap_or_else(|| Ok(Vec::new()))
-        }
-    }
 
     fn src(alias: &str, binary: &str, remote: bool, os: &str, control_path: &str) -> Source {
         let kind = if remote {
@@ -306,42 +275,6 @@ mod tests {
         assert_eq!(got[0], "ssh");
         assert!(got.iter().any(|s| s == "-t"), "{got:?}");
         assert_eq!(got.last().unwrap(), "exec psmux new-session -A -s api");
-    }
-
-    #[tokio::test]
-    async fn list_sessions_parses_output() {
-        // The generic (aggregate-server) path: a single list-sessions returns every
-        // session. Local tmux / any remote mux uses it; local psmux does NOT (it is
-        // one-server-per-session — see the psmux registry tests below).
-        let mut s = src("local", "tmux", false, "", "");
-        s.runner = Some(FakeRunner::ok("3\t1\t1781246739\teditor\n1\t0\t\tbuild\n"));
-        let got = s.list_sessions().await.unwrap();
-        assert_eq!(got.len(), 2);
-        assert_eq!(got[0].name, "editor");
-        assert_eq!(got[0].windows, 3);
-        assert!(got[0].attached);
-        assert_eq!(got[0].source, "local");
-        assert_eq!(got[1].last_attached, 0);
-    }
-
-    #[tokio::test]
-    async fn list_sessions_benign_no_server_is_empty_not_error() {
-        let mut s = src("prod", "tmux", true, "linux", "");
-        s.runner = Some(FakeRunner::err(RunError::Exit {
-            stderr: "no server running on /tmp/tmux-1000/default".into(),
-            code: 1,
-        }));
-        let got = s.list_sessions().await.unwrap();
-        assert!(got.is_empty());
-    }
-
-    #[tokio::test]
-    async fn list_sessions_unreachable_is_error() {
-        let mut s = src("prod", "tmux", true, "linux", "");
-        s.runner = Some(FakeRunner::err(RunError::Other(
-            "ssh: connect to host prod port 22: Connection timed out".into(),
-        )));
-        assert!(s.list_sessions().await.is_err());
     }
 
     #[test]

@@ -53,7 +53,17 @@ pub async fn scan_all(
             // not burn its budget waiting for a free slot.
             let _permit = sem.acquire().await.expect("semaphore not closed");
             let alias = s.alias.clone();
-            let result = match timeout(per_source_timeout, s.list_sessions()).await {
+            // Assemble a value host from this source's config and enumerate it with the
+            // source's runner — the single enumeration path (`Host::enumerate_with`),
+            // reused off the live loop.
+            let probe = async {
+                let mut host = s.host();
+                match host.enumerate_with(s.run_with()).await {
+                    Ok(()) => Ok(host.inventory.sessions),
+                    Err(e) => Err(e),
+                }
+            };
+            let result = match timeout(per_source_timeout, probe).await {
                 Ok(Ok(sessions)) => ScanResult {
                     source: alias,
                     sessions,

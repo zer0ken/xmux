@@ -255,8 +255,14 @@ async fn ctl_one(client: &mut control::Client, line: &str) -> i32 {
 }
 
 async fn probe(s: &Source) -> Result<usize, String> {
-    match tokio::time::timeout(std::time::Duration::from_secs(6), s.list_sessions()).await {
-        Ok(Ok(sessions)) => Ok(sessions.len()),
+    let probe = async {
+        let mut host = s.host();
+        host.enumerate_with(s.run_with())
+            .await
+            .map(|()| host.inventory.sessions.len())
+    };
+    match tokio::time::timeout(std::time::Duration::from_secs(6), probe).await {
+        Ok(Ok(n)) => Ok(n),
         Ok(Err(e)) => Err(e.to_string()),
         Err(_) => Err("timed out".to_string()),
     }

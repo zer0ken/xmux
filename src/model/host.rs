@@ -133,16 +133,17 @@ impl Host {
         self.detected = true;
     }
 
-    /// Re-enumerate this host's sessions through the mux, updating `inventory` and
-    /// `liveness`. `Ok` (possibly empty) ⇒ `Live`; `Err` ⇒ `Unreachable` (and the
-    /// error propagates). The single owner of this host's session list and reachability.
-    pub async fn enumerate(&mut self) -> Result<(), crate::source::RunError> {
-        self.detect_and_correct(&crate::source::ExecRunner).await;
-        match self
-            .mux
-            .enumerate(&self.transport, &crate::source::ExecRunner)
-            .await
-        {
+    /// Re-enumerate this host's sessions through the mux with an injected runner,
+    /// updating `inventory` and `liveness`. `Ok` (possibly empty) ⇒ `Live`; `Err` ⇒
+    /// `Unreachable` (and the error propagates). The single owner of this host's session
+    /// list and reachability; off-loop `Ops`/CLI inject a runner (via a value host they
+    /// assemble from config) so the probe is testable without spawning processes. Mux
+    /// detection is a separate concern (`detect_and_correct`), not folded in here.
+    pub async fn enumerate_with(
+        &mut self,
+        runner: &dyn Runner,
+    ) -> Result<(), crate::source::RunError> {
+        match self.mux.enumerate(&self.transport, runner).await {
             Ok(sessions) => {
                 self.inventory.sessions = sessions;
                 self.liveness = Liveness::Live;
@@ -153,6 +154,11 @@ impl Host {
                 Err(e)
             }
         }
+    }
+
+    /// [`enumerate_with`](Self::enumerate_with) over the real exec runner.
+    pub async fn enumerate(&mut self) -> Result<(), crate::source::RunError> {
+        self.enumerate_with(&crate::source::ExecRunner).await
     }
 
     /// Record xmux's display-client tty for this host, captured in memory from the
@@ -532,6 +538,81 @@ mod tests {
             Box::new(EnumMux::err(ServerModel::Shared)),
         );
         assert!(h.enumerate().await.is_err());
+        assert_eq!(h.liveness, Liveness::Unreachable);
+    }
+
+    /// Returns a single canned result (or empty on a second call), ignoring the
+    /// command — so `enumerate_with`'s runner injection is exercised through a real
+    /// mux (`tmux`), covering the aggregate-list parse and the reachable-vs-unreachable
+    /// classification the mux owns.
+    struct CannedRunner(std::sync::Mutex<Option<Result<Vec<u8>, RunError>>>);
+
+    impl CannedRunner {
+        fn ok(out: &str) -> Self {
+            CannedRunner(std::sync::Mutex::new(Some(Ok(out.as_bytes().to_vec()))))
+        }
+        fn err(e: RunError) -> Self {
+            CannedRunner(std::sync::Mutex::new(Some(Err(e))))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Runner for CannedRunner {
+        async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
+            self.0
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap_or_else(|| Ok(Vec::new()))
+        }
+    }
+
+    #[tokio::test]
+    async fn enumerate_with_runner_parses_sessions_and_goes_live() {
+        // The aggregate-server path: a single list-sessions returns every session,
+        // parsed into the host's inventory, with liveness Live.
+        let mut h = Host::new(crate::machine::local(None), crate::mux::for_binary("tmux"));
+        let r = CannedRunner::ok("3\t1\t1781246739\teditor\n1\t0\t\tbuild\n");
+        h.enumerate_with(&r).await.unwrap();
+        assert_eq!(h.liveness, Liveness::Live);
+        let names: Vec<&str> = h
+            .inventory
+            .sessions
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["editor", "build"]);
+        assert_eq!(h.inventory.sessions[0].windows, 3);
+        assert!(h.inventory.sessions[0].attached);
+        assert_eq!(h.inventory.sessions[0].source, "local");
+    }
+
+    #[tokio::test]
+    async fn enumerate_with_benign_no_server_is_empty_not_error() {
+        // A reachable mux with no server is empty (Live), not an error.
+        let mut h = Host::new(
+            crate::machine::ssh("prod".into(), String::new(), "linux".into()),
+            crate::mux::for_binary("tmux"),
+        );
+        let r = CannedRunner::err(RunError::Exit {
+            stderr: "no server running on /tmp/tmux-1000/default".into(),
+            code: 1,
+        });
+        h.enumerate_with(&r).await.unwrap();
+        assert!(h.inventory.sessions.is_empty());
+        assert_eq!(h.liveness, Liveness::Live);
+    }
+
+    #[tokio::test]
+    async fn enumerate_with_unreachable_is_error() {
+        let mut h = Host::new(
+            crate::machine::ssh("prod".into(), String::new(), "linux".into()),
+            crate::mux::for_binary("tmux"),
+        );
+        let r = CannedRunner::err(RunError::Other(
+            "ssh: connect to host prod port 22: Connection timed out".into(),
+        ));
+        assert!(h.enumerate_with(&r).await.is_err());
         assert_eq!(h.liveness, Liveness::Unreachable);
     }
 

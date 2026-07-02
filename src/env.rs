@@ -222,7 +222,13 @@ impl Ops for EnvOps {
     async fn list_sessions(&self, source: &str) -> anyhow::Result<Vec<Session>> {
         let src = self.source(source)?;
         let _permit = self.sem.acquire().await?;
-        with_timeout(SCAN_TIMEOUT, src.list_sessions()).await
+        with_timeout(SCAN_TIMEOUT, async move {
+            let mut host = src.host();
+            host.enumerate_with(src.run_with())
+                .await
+                .map(|()| host.inventory.sessions)
+        })
+        .await
     }
 
     async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session> {
