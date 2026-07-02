@@ -430,8 +430,12 @@ impl Switcher {
 
     // --- tree model ---------------------------------------------------------
 
+    /// The groups to render, in `state.groups` order. That order is authoritative:
+    /// it is established by recency at scan time (`apply_source_result` materialises
+    /// [`tree::order_groups`] on a scan-driven result) and then frozen, so a routine
+    /// poll never reshuffles the tree. Filtering preserves the order.
     fn visible_groups(&self, state: &crate::state::State) -> Vec<Group> {
-        let groups = if state.filter.is_empty() {
+        if state.filter.is_empty() {
             state.groups.clone()
         } else {
             let filtered = tree::filter_groups(&state.groups, &state.filter);
@@ -449,8 +453,7 @@ impl Switcher {
             } else {
                 filtered
             }
-        };
-        tree::order_groups(&groups)
+        }
     }
 
     /// Whether the node an armed kill targets still exists in the current rows,
@@ -1575,17 +1578,35 @@ impl Switcher {
         state: &mut crate::state::State,
     ) {
         let prior = self.capture_focus();
-        state.scanning.remove(&source);
-        tree::sort_by_recency(&mut sessions);
-        if let Some(g) = state.groups.iter_mut().find(|g| g.source == source) {
-            g.err = err;
-            g.sessions = sessions;
-        } else {
-            state.groups.push(Group {
+        // Recency ordering is applied ONLY to a scan-driven result (launch or the `r`
+        // re-scan — the source is still in `state.scanning`). A routine poll / %-event
+        // refetch preserves the established order instead, so the tree does not
+        // re-sort under the user: xmux pre-attaches every session, which churns the
+        // mux-reported `last_attached`, and re-sorting on it would reshuffle the tree
+        // on every ~1.5s poll.
+        let was_scanning = state.scanning.remove(&source);
+        let existing = state.groups.iter().position(|g| g.source == source);
+        if was_scanning {
+            tree::sort_by_recency(&mut sessions);
+        } else if let Some(i) = existing {
+            sessions = tree::reorder_preserving(sessions, &state.groups[i].sessions);
+        }
+        match existing {
+            Some(i) => {
+                state.groups[i].err = err;
+                state.groups[i].sessions = sessions;
+            }
+            None => state.groups.push(Group {
                 source,
                 err,
                 sessions,
-            });
+            }),
+        }
+        // A scan-driven result also re-establishes the host-group order (local pinned
+        // first, then remotes by recency), materialised into `state.groups`; a routine
+        // poll leaves the group order frozen.
+        if was_scanning {
+            state.groups = tree::order_groups(&state.groups);
         }
         self.rebuild(state);
         self.restore_focus(prior, state);
@@ -2702,6 +2723,21 @@ mod tests {
         }
     }
 
+    /// The session names of one source's group, in `state.groups` (display) order.
+    fn group_session_names(h: &Harness, source: &str) -> Vec<String> {
+        h.state
+            .groups
+            .iter()
+            .find(|g| g.source == source)
+            .map(|g| g.sessions.iter().map(|s| s.name.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// The host-group sources in `state.groups` (display) order.
+    fn group_order(h: &Harness) -> Vec<String> {
+        h.state.groups.iter().map(|g| g.source.clone()).collect()
+    }
+
     /// The single [`MuxOp`](crate::model::MuxOp) a committing key resolved to, pulled
     /// out of the [`Command`]s `handle_key` returned — the off-loop op the run loop
     /// would spawn. `None` when no op was queued (validation refused / cancelled).
@@ -3128,6 +3164,161 @@ mod tests {
         assert!(
             out.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)),
             "the session shows a progress spinner until its panes arrive:\n{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn poll_preserves_session_order_after_scan() {
+        // Scan establishes recency order db(200), web(100). A later poll reports web
+        // freshly attach-bumped (999) — live recency would float it to the top, but a
+        // routine poll must hold the established order.
+        let mut h = Harness::from_sources(&["local"]);
+        h.sw.apply_source_result(
+            "local".into(),
+            vec![
+                sess("local", "web", 1, false, 100),
+                sess("local", "db", 1, false, 200),
+            ],
+            None,
+            &mut h.state,
+        );
+        assert_eq!(
+            group_session_names(&h, "local"),
+            vec!["db", "web"],
+            "the scan applies recency order"
+        );
+        h.sw.apply_source_result(
+            "local".into(),
+            vec![
+                sess("local", "db", 1, false, 200),
+                sess("local", "web", 1, false, 999),
+            ],
+            None,
+            &mut h.state,
+        );
+        assert_eq!(
+            group_session_names(&h, "local"),
+            vec!["db", "web"],
+            "a routine poll must not re-sort the tree under the user"
+        );
+    }
+
+    #[tokio::test]
+    async fn poll_appends_new_session_at_group_end() {
+        let mut h = Harness::from_sources(&["local"]);
+        h.sw.apply_source_result(
+            "local".into(),
+            vec![
+                sess("local", "web", 1, false, 100),
+                sess("local", "db", 1, false, 200),
+            ],
+            None,
+            &mut h.state,
+        ); // → db, web
+           // A poll surfaces a brand-new session `api` (most recent). It appends last,
+           // never displacing the frozen db, web order.
+        h.sw.apply_source_result(
+            "local".into(),
+            vec![
+                sess("local", "db", 1, false, 200),
+                sess("local", "web", 1, false, 100),
+                sess("local", "api", 1, false, 999),
+            ],
+            None,
+            &mut h.state,
+        );
+        assert_eq!(
+            group_session_names(&h, "local"),
+            vec!["db", "web", "api"],
+            "a session new since the scan appends at the group's end"
+        );
+    }
+
+    #[tokio::test]
+    async fn poll_preserves_host_group_order_after_scan() {
+        // Scan settles the host order: local pinned first, then jupiter00 (recency 300)
+        // above jupiter06 (recency 100).
+        let mut h = Harness::from_sources(&["local", "jupiter00", "jupiter06"]);
+        h.sw.apply_source_result(
+            "local".into(),
+            vec![sess("local", "w", 1, false, 50)],
+            None,
+            &mut h.state,
+        );
+        h.sw.apply_source_result(
+            "jupiter06".into(),
+            vec![sess("jupiter06", "b", 1, false, 100)],
+            None,
+            &mut h.state,
+        );
+        h.sw.apply_source_result(
+            "jupiter00".into(),
+            vec![sess("jupiter00", "a", 1, false, 300)],
+            None,
+            &mut h.state,
+        );
+        assert_eq!(
+            group_order(&h),
+            vec!["local", "jupiter00", "jupiter06"],
+            "the scan orders hosts local-first then by recency"
+        );
+        // A poll reports jupiter06's session freshly bumped (999) — live recency would
+        // lift jupiter06 above jupiter00, but the group order is frozen after the scan.
+        h.sw.apply_source_result(
+            "jupiter06".into(),
+            vec![sess("jupiter06", "b", 1, false, 999)],
+            None,
+            &mut h.state,
+        );
+        assert_eq!(
+            group_order(&h),
+            vec!["local", "jupiter00", "jupiter06"],
+            "a routine poll must not reorder host groups"
+        );
+    }
+
+    #[tokio::test]
+    async fn rescan_reapplies_recency_order() {
+        let mut h = Harness::from_sources(&["local"]);
+        h.sw.apply_source_result(
+            "local".into(),
+            vec![
+                sess("local", "web", 1, false, 100),
+                sess("local", "db", 1, false, 200),
+            ],
+            None,
+            &mut h.state,
+        ); // → db, web
+        h.sw.apply_source_result(
+            "local".into(),
+            vec![
+                sess("local", "db", 1, false, 200),
+                sess("local", "web", 1, false, 999),
+            ],
+            None,
+            &mut h.state,
+        );
+        assert_eq!(
+            group_session_names(&h, "local"),
+            vec!["db", "web"],
+            "the poll held the order"
+        );
+        // The `r` re-scan clears sessions + re-seeds scanning; the next result is a
+        // scan-driven one, so recency (web=999 now leads) is re-applied.
+        h.sw.request_rescan(&mut h.state);
+        h.sw.apply_source_result(
+            "local".into(),
+            vec![
+                sess("local", "db", 1, false, 200),
+                sess("local", "web", 1, false, 999),
+            ],
+            None,
+            &mut h.state,
+        );
+        assert_eq!(
+            group_session_names(&h, "local"),
+            vec!["web", "db"],
+            "a re-scan re-applies recency order"
         );
     }
 

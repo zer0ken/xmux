@@ -90,9 +90,11 @@ pub fn filter_groups(groups: &[Group], pattern: &str) -> Vec<Group> {
 }
 
 /// Returns groups with `s` placed in the group whose source matches `s.source`,
-/// replacing any existing session of the same name (dedup by name) and re-sorting
-/// that group by recency. If no group has the source, a new group is appended.
-/// Inputs are not mutated.
+/// replacing any existing session of the same name in place (dedup by name) or, when
+/// new, appending it at the group's end. It does NOT re-sort: a session created
+/// mid-session must not reshuffle the frozen tree order — ordering is applied only at
+/// scan time (see [`sort_by_recency`] / [`reorder_preserving`]). If no group has the
+/// source, a new group is appended. Inputs are not mutated.
 pub fn add_session(groups: &[Group], s: Session) -> Vec<Group> {
     let mut out = groups.to_vec();
     for g in out.iter_mut() {
@@ -112,7 +114,6 @@ pub fn add_session(groups: &[Group], s: Session) -> Vec<Group> {
         if !replaced {
             sessions.push(s.clone());
         }
-        sort_by_recency(&mut sessions);
         g.sessions = sessions;
         return out;
     }
@@ -136,6 +137,25 @@ pub fn remove_session(groups: &[Group], address: &str) -> Vec<Group> {
         }
     }
     out
+}
+
+/// Reorders `incoming` to preserve the display order established in `existing`:
+/// sessions present in both keep `existing`'s relative order (carrying the fresh
+/// `incoming` data), sessions new since then are appended in `incoming` order, and
+/// sessions absent from `incoming` are dropped. Used on a routine poll so the tree
+/// stays put under the user — recency ordering ([`sort_by_recency`]) is applied only
+/// at scan time (launch / re-scan), never on a live poll whose `last_attached` values
+/// xmux's own pre-attaching would otherwise churn.
+pub fn reorder_preserving(mut incoming: Vec<Session>, existing: &[Session]) -> Vec<Session> {
+    let rank: std::collections::HashMap<String, usize> = existing
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.address(), i))
+        .collect();
+    // Stable sort: existing sessions land at their prior rank; new ones (rank
+    // usize::MAX) keep their incoming relative order after them.
+    incoming.sort_by_cached_key(|s| rank.get(&s.address()).copied().unwrap_or(usize::MAX));
+    incoming
 }
 
 /// Orders host groups for display: the local source(s) pinned first (original
@@ -162,15 +182,14 @@ pub fn order_groups(groups: &[Group]) -> Vec<Group> {
     local.into_iter().chain(remote).collect()
 }
 
-/// Returns groups with the session at `address` renamed to `new_name` and its
-/// group re-sorted by recency. It is a no-op if no session matches. Inputs are
-/// not mutated.
+/// Returns groups with the session at `address` renamed to `new_name`, kept at its
+/// current position (a rename is not a recency event, so it never reorders the tree
+/// under the user). It is a no-op if no session matches. Inputs are not mutated.
 pub fn rename_session(groups: &[Group], address: &str, new_name: &str) -> Vec<Group> {
     let mut out = groups.to_vec();
     for g in out.iter_mut() {
         if let Some(j) = g.sessions.iter().position(|s| s.address() == address) {
             g.sessions[j].name = new_name.to_string();
-            sort_by_recency(&mut g.sessions);
             return out;
         }
     }
@@ -335,18 +354,20 @@ mod tests {
     }
 
     #[test]
-    fn add_session_append_to_existing_and_resort() {
+    fn add_session_appends_new_at_end() {
         let groups = vec![Group {
             source: "local".into(),
             err: None,
             sessions: vec![sess("local", "web", 50)],
         }];
+        // db is more recent (100 > 50) but a mid-session create must NOT reshuffle:
+        // the new session appends after the existing web.
         let got = add_session(&groups, sess("local", "db", 100));
         assert_eq!(got.len(), 1);
         let s = &got[0].sessions;
         assert_eq!(s.len(), 2);
-        assert_eq!(s[0].name, "db");
-        assert_eq!(s[1].name, "web");
+        assert_eq!(s[0].name, "web");
+        assert_eq!(s[1].name, "db");
     }
 
     #[test]
@@ -434,7 +455,7 @@ mod tests {
     }
 
     #[test]
-    fn rename_session_renames_and_resorts() {
+    fn rename_session_keeps_position() {
         let groups = vec![Group {
             source: "local".into(),
             err: None,
@@ -443,8 +464,56 @@ mod tests {
         let got = rename_session(&groups, "local/alpha", "zzz");
         let s = &got[0].sessions;
         assert_eq!(s.len(), 2);
-        assert_eq!(s[0].name, "zeta");
-        assert_eq!(s[1].name, "zzz");
+        // Renamed in place: alpha's slot (index 0) now holds zzz; no re-sort, even
+        // though by-name order would otherwise put zzz after zeta.
+        assert_eq!(s[0].name, "zzz");
+        assert_eq!(s[1].name, "zeta");
+    }
+
+    #[test]
+    fn reorder_preserving_keeps_existing_order() {
+        // Established display order is b, a. A poll arrives recency-sorted (a, b) with
+        // a bumped — the poll must NOT re-sort; the b, a order holds.
+        let existing = vec![sess("h", "b", 0), sess("h", "a", 0)];
+        let incoming = vec![sess("h", "a", 999), sess("h", "b", 500)];
+        let out = reorder_preserving(incoming, &existing);
+        let names: Vec<&str> = out.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["b", "a"]);
+    }
+
+    #[test]
+    fn reorder_preserving_appends_new_sessions() {
+        let existing = vec![sess("h", "b", 0), sess("h", "a", 0)];
+        let incoming = vec![sess("h", "a", 0), sess("h", "b", 0), sess("h", "c", 0)];
+        let out = reorder_preserving(incoming, &existing);
+        let names: Vec<&str> = out.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["b", "a", "c"],
+            "a session new since the scan appends last"
+        );
+    }
+
+    #[test]
+    fn reorder_preserving_multiple_new_keep_incoming_order() {
+        let existing = vec![sess("h", "a", 0)];
+        let incoming = vec![sess("h", "a", 0), sess("h", "z", 0), sess("h", "m", 0)];
+        let out = reorder_preserving(incoming, &existing);
+        let names: Vec<&str> = out.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["a", "z", "m"],
+            "several new sessions keep their incoming order after the existing ones"
+        );
+    }
+
+    #[test]
+    fn reorder_preserving_drops_missing_sessions() {
+        let existing = vec![sess("h", "b", 0), sess("h", "a", 0)];
+        let incoming = vec![sess("h", "b", 0)];
+        let out = reorder_preserving(incoming, &existing);
+        let names: Vec<&str> = out.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["b"], "a session gone from the poll is dropped");
     }
 
     #[test]
