@@ -344,6 +344,11 @@ pub struct Switcher {
     /// initial preselect (while the user has not moved); once `user_moved` is set,
     /// `restore_focus` keeps the cursor and this is ignored.
     preferred: Option<String>,
+    /// A pending re-scan reselect: the session address the cursor was on when `r`
+    /// was pressed. A re-scan clears every session, so the row briefly vanishes; this
+    /// returns the cursor to it the instant its host re-streams. Cleared once matched,
+    /// or when the user navigates off the parked parent host during the skeleton phase.
+    rescan_reselect: Option<String>,
     /// The whole frame area, captured each render so the menu box can be clamped to
     /// the screen at open time (mouse events arrive between renders).
     screen_area: Rect,
@@ -374,6 +379,7 @@ impl Switcher {
             list_state: ListState::default(),
             tree_inner: Rect::default(),
             preferred: None,
+            rescan_reselect: None,
             screen_area: Rect::default(),
             status: Status::default(),
             popup_offset: (0, 0),
@@ -1550,10 +1556,18 @@ impl Switcher {
 
     /// Resets every host to its scanning skeleton and signals the event loop to
     /// re-kick the streaming probes (the `r` re-scan) — sessions and panes stream
-    /// back in exactly as on first launch. Keeps the cursor on the focused host
-    /// if the user had moved it there.
+    /// back in exactly as on first launch. The selection does not drift: the cursor
+    /// parks on the focused node's parent host for the skeleton phase (every session
+    /// row just vanished) and `rescan_reselect` returns it to the exact session the
+    /// instant that host re-streams.
     pub fn request_rescan(&mut self, state: &mut crate::state::State) {
-        let prior = self.capture_focus();
+        let (reselect, parent) = match self.current_ref() {
+            Some(RowRef::Session(s)) => (Some(s.address()), Some(s.source.clone())),
+            Some(RowRef::Window { sess, .. }) => (Some(sess.address()), Some(sess.source.clone())),
+            Some(RowRef::Host { source, .. }) => (None, Some(source.clone())),
+            _ => (None, None),
+        };
+        self.rescan_reselect = reselect;
         state.scanning = state.groups.iter().map(|g| g.source.clone()).collect();
         for g in state.groups.iter_mut() {
             g.err = None;
@@ -1564,7 +1578,17 @@ impl Switcher {
         self.rescan_kick = true;
         self.reattach_kick = true;
         self.rebuild(state);
-        self.restore_focus(prior, state);
+        // Park on the parent host, whose row survives the clear — not the last-host
+        // landing a removal-fallback would pick when every session vanishes at once.
+        if let Some(src) = parent {
+            if let Some(i) = self
+                .rows
+                .iter()
+                .position(|r| matches!(&r.reference, RowRef::Host { source, .. } if *source == src))
+            {
+                self.set_selected(i, state);
+            }
+        }
     }
 
     /// Streams in one source's `list-sessions` outcome: clears its scanning
@@ -1644,6 +1668,34 @@ impl Switcher {
     /// indent or, when there is none, the parent. An untouched cursor follows
     /// the rebuild's recency preselect.
     fn restore_focus(&mut self, prior: PriorFocus, state: &crate::state::State) {
+        // A pending re-scan reselect returns the cursor to its session the instant that
+        // session re-streams — but only while the cursor still sits where the re-scan
+        // parked it (that session or its parent host). If the user has navigated
+        // elsewhere in the skeleton meanwhile, the pending reselect is dropped so it
+        // never yanks them back.
+        if let Some(addr) = self.rescan_reselect.clone() {
+            let parked = match prior.reference.as_ref() {
+                Some(RowRef::Host { source, .. }) => {
+                    addr.split('/').next() == Some(source.as_str())
+                }
+                Some(RowRef::Session(s)) => s.address() == addr,
+                Some(RowRef::Window { sess, .. }) => sess.address() == addr,
+                _ => false,
+            };
+            if parked {
+                if let Some(i) = self
+                    .rows
+                    .iter()
+                    .position(|r| matches!(&r.reference, RowRef::Session(s) if s.address() == addr))
+                {
+                    self.rescan_reselect = None;
+                    self.set_selected(i, state);
+                    return;
+                }
+            } else {
+                self.rescan_reselect = None;
+            }
+        }
         if !self.user_moved {
             return;
         }
@@ -3319,6 +3371,104 @@ mod tests {
             group_session_names(&h, "local"),
             vec!["web", "db"],
             "a re-scan re-applies recency order"
+        );
+    }
+
+    /// Streams the sample three-host tree (local/jupiter00/jupiter06), each with one
+    /// session, and leaves the cursor on the MIDDLE host's session.
+    async fn three_hosts_cursor_on_middle() -> Harness {
+        let mut h = Harness::from_sources(&["local", "jupiter00", "jupiter06"]);
+        h.sw.apply_source_result(
+            "local".into(),
+            vec![sess("local", "web", 1, false, 100)],
+            None,
+            &mut h.state,
+        );
+        h.sw.apply_source_result(
+            "jupiter00".into(),
+            vec![sess("jupiter00", "infer", 1, false, 300)],
+            None,
+            &mut h.state,
+        );
+        h.sw.apply_source_result(
+            "jupiter06".into(),
+            vec![sess("jupiter06", "build", 1, false, 50)],
+            None,
+            &mut h.state,
+        );
+        assert!(h.sw.select_address("jupiter00/infer", &h.state));
+        assert_eq!(cur_session_name(&h).as_deref(), Some("infer"));
+        h
+    }
+
+    #[tokio::test]
+    async fn rescan_parks_on_parent_host_not_bottom() {
+        let mut h = three_hosts_cursor_on_middle().await;
+        h.sw.request_rescan(&mut h.state);
+        // Skeleton phase: every session vanished, so the cursor parks on infer's parent
+        // host (jupiter00), NOT the last host a removal-fallback would jump to.
+        match h.sw.current_ref() {
+            Some(RowRef::Host { source, .. }) => assert_eq!(
+                source, "jupiter00",
+                "the re-scan skeleton parks on the parent host, not the bottom"
+            ),
+            _ => panic!("expected the parent host row after a re-scan"),
+        }
+    }
+
+    #[tokio::test]
+    async fn rescan_returns_cursor_to_the_same_session() {
+        let mut h = three_hosts_cursor_on_middle().await;
+        h.sw.request_rescan(&mut h.state);
+        // Sessions re-stream in a different arrival order; infer's host arrives last.
+        h.sw.apply_source_result(
+            "jupiter06".into(),
+            vec![sess("jupiter06", "build", 1, false, 50)],
+            None,
+            &mut h.state,
+        );
+        h.sw.apply_source_result(
+            "local".into(),
+            vec![sess("local", "web", 1, false, 100)],
+            None,
+            &mut h.state,
+        );
+        h.sw.apply_source_result(
+            "jupiter00".into(),
+            vec![sess("jupiter00", "infer", 1, false, 300)],
+            None,
+            &mut h.state,
+        );
+        assert_eq!(
+            cur_session_name(&h).as_deref(),
+            Some("infer"),
+            "a re-scan returns the cursor to the session it was on, not the bottom host"
+        );
+    }
+
+    #[tokio::test]
+    async fn rescan_reselect_dropped_when_user_navigates_away() {
+        let mut h = three_hosts_cursor_on_middle().await;
+        h.sw.request_rescan(&mut h.state);
+        // The user navigates to the last host during the skeleton phase.
+        h.key(KeyCode::End).await;
+        // Sessions re-stream — the cursor must NOT get yanked back to infer.
+        h.sw.apply_source_result(
+            "local".into(),
+            vec![sess("local", "web", 1, false, 100)],
+            None,
+            &mut h.state,
+        );
+        h.sw.apply_source_result(
+            "jupiter00".into(),
+            vec![sess("jupiter00", "infer", 1, false, 300)],
+            None,
+            &mut h.state,
+        );
+        assert_ne!(
+            cur_session_name(&h).as_deref(),
+            Some("infer"),
+            "a user move during the skeleton cancels the pending auto-reselect"
         );
     }
 
