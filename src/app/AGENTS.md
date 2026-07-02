@@ -86,7 +86,7 @@ pumped or a grid is rendered.
 
 ## Verification
 
-- Run `app::app` and `state` tests when changing selection sync, attach
+- Run `app::runtime` and `state` tests when changing selection sync, attach
   debounce, or focus/modal routing.
 - Set `XMUX_LOG=xmux::mux=debug` to emit `display_show`, `tty_probe`, and
   `display_inventory` at debug verbosity; the log file is at `<xmux_dir>/xmux.log`.

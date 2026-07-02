@@ -48,7 +48,7 @@ and owns the concrete switch/reattach decision. `Transport` lowers the machine e
   `enumerate` (existence set) and the merge with one list-sessions detail row.
 - The driver pulls the mux-agnostic seam (`MuxDriver`, `DriverCtx`, `lower_select_window`)
   from `crate::driver`, and the supervisor capabilities (`request_attach`, `run_lowered`,
-  `host_selection_key`, `terminal_view_size`, `display_key`) from `crate::app::app`.
+  `host_selection_key`, `terminal_view_size`, `display_key`) from `crate::app::runtime`.
   `crate::driver` does NOT import `PsmuxDriver`; the dependency is one-way (no cycle).
 
 ## Invariants

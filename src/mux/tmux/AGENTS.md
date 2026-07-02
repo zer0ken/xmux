@@ -39,7 +39,7 @@ machine execution (local `-S` / `ssh -tt`); the tmux family never hardcodes ssh.
   notification→event table, and the command-line builders behind `ControlProtocol`.
 - The driver pulls the mux-agnostic seam (`MuxDriver`, `DriverCtx`, `lower_select_window`)
   from `crate::driver`, and the supervisor capabilities (`request_attach`, `run_lowered`,
-  `host_selection_key`, `terminal_view_size`, `display_key`) from `crate::app::app`.
+  `host_selection_key`, `terminal_view_size`, `display_key`) from `crate::app::runtime`.
   `crate::driver` does NOT import `TmuxDriver`; the dependency is one-way (no cycle).
 
 ## Invariants
