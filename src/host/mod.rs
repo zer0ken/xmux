@@ -93,8 +93,8 @@ pub enum HostEvent {
     /// reaps the display attach ONLY when `client` matches `Host.display_tty`.
     ClientDetached { host: String, client: String },
     /// A `list-clients` probe over the -CC control connection resolved: this host's
-    /// display-client tty — the attached client WITHOUT the `control-mode` flag — or
-    /// `None` if the display attach has not registered yet. Captured OUT-OF-BAND over
+    /// display-client tty — the client the mux protocol identifies as xmux's display
+    /// attach — or `None` if it has not registered yet. Captured OUT-OF-BAND over
     /// the control connection, not via an in-band attach-shell marker (a Windows
     /// ConPTY consumes the marker's OSC before the pump can read it). Recorded on
     /// `Host.display_tty` so a later `switch-client -c <tty>` targets xmux's own client.
@@ -142,9 +142,9 @@ pub enum PendingReply {
     /// (the probe targeted a session id, so the name is resolved by the reply, not the
     /// correlator), resolved into a [`HostEvent::Focus`].
     ActiveWindow,
-    /// A `list-clients -F '#{client_tty} #{client_flags}'` probe: the block body's
-    /// non-control client tty is xmux's own display attach, resolved into a
-    /// [`HostEvent::DisplayTty`].
+    /// A `list-clients` probe: the mux protocol parses the block body for xmux's own
+    /// display-client tty (`ControlProtocol::parse_display_client_tty`), resolved into a
+    /// [`HostEvent::DisplayTty`]. The reader names no wire format.
     DisplayClientTty,
     Ignore,
 }
@@ -196,7 +196,7 @@ pub fn run_reader<E: FnMut(HostEvent)>(
                         last_error = Some(t);
                     }
                 }
-                resolve_block(host, kind, &body, state, &mut emit);
+                resolve_block(host, kind, &body, state, proto, &mut emit);
             } else {
                 // Re-borrow only to push; the `as_ref` borrow above has ended.
                 block.as_mut().unwrap().2.push(line);
@@ -241,41 +241,14 @@ pub fn run_reader<E: FnMut(HostEvent)>(
 }
 
 /// Resolves a closed `%begin…%end` block by applying its body to the inventory
-/// and emitting the follow-up events.
-/// The control-mode command line that lists each client's tty and flags
-/// (`list-clients -F '#{client_tty} #{client_flags}'`). Pure so the wire format is
-/// pinned by a test.
-pub fn display_tty_query_line() -> String {
-    "list-clients -F '#{client_tty} #{client_flags}'\n".to_string()
-}
-
-/// Picks xmux's display-client tty from a `list-clients` block body. Each line is
-/// `<client_tty> <client_flags>`; the display attach is the FIRST client whose flags
-/// do NOT contain `control-mode` (that flag marks the `-CC` metadata connection). The
-/// selection is applied at capture so a multi-client reply resolves deterministically.
-/// `None` when only the control client is attached (the display attach has not landed
-/// yet) — the caller then clears any prior tty rather than mis-targeting the control client.
-fn display_client_tty(body: &[String]) -> Option<String> {
-    body.iter().find_map(|line| {
-        let line = line.trim();
-        if line.is_empty() {
-            return None;
-        }
-        let mut parts = line.splitn(2, ' ');
-        let tty = parts.next()?;
-        let flags = parts.next().unwrap_or("");
-        if flags.split(',').any(|f| f == "control-mode") {
-            return None;
-        }
-        Some(tty.to_string())
-    })
-}
-
+/// and emitting the follow-up events. `proto` supplies the mux-specific parse of a
+/// `list-clients` body (the display-client tty), so the reader names no tmux wire detail.
 fn resolve_block<E: FnMut(HostEvent)>(
     host: &str,
     kind: PendingReply,
     body: &[String],
     state: &ReaderState,
+    proto: &dyn ControlProtocol,
     emit: &mut E,
 ) {
     match kind {
@@ -317,11 +290,11 @@ fn resolve_block<E: FnMut(HostEvent)>(
             }
         }
         PendingReply::DisplayClientTty => {
-            // `list-clients` body: one `<client_tty> <client_flags>` line per client.
-            // The display attach is the client WITHOUT the `control-mode` flag.
+            // A `list-clients` body: the mux protocol parses out the display attach's tty
+            // — the reader names no wire detail.
             emit(HostEvent::DisplayTty {
                 host: host.to_string(),
-                tty: display_client_tty(body),
+                tty: proto.parse_display_client_tty(body),
             });
         }
         PendingReply::Ignore => {}
@@ -569,7 +542,7 @@ impl HostClient {
     /// host. With the tty known, a session switch is an in-place `switch-client -c <tty>`.
     pub fn capture_display_tty(&self) {
         let _ = self.cmd_tx.send(HostCmd::Query {
-            line: display_tty_query_line(),
+            line: self.proto.display_clients_line(),
             reply: PendingReply::DisplayClientTty,
         });
     }
@@ -1464,36 +1437,6 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, HostEvent::Inventory { .. })));
-    }
-
-    #[test]
-    fn display_tty_query_line_lists_client_tty_and_flags() {
-        assert_eq!(
-            display_tty_query_line(),
-            "list-clients -F '#{client_tty} #{client_flags}'\n"
-        );
-    }
-
-    #[test]
-    fn display_client_tty_picks_the_non_control_client_with_many_clients() {
-        // list-clients prints one "<tty> <flags>" line per client. The -CC metadata
-        // connection carries the `control-mode` flag; xmux's display attach does not.
-        // The capture selects the display attach regardless of line order, ignoring an
-        // unrelated control client even if it lists first.
-        let body = vec![
-            "/dev/pts/7 control-mode".to_string(),
-            "/dev/pts/3 active-pane,focused".to_string(),
-        ];
-        assert_eq!(display_client_tty(&body).as_deref(), Some("/dev/pts/3"));
-    }
-
-    #[test]
-    fn display_client_tty_is_none_when_only_a_control_client_is_attached() {
-        // Only the -CC connection is attached (the display attach has not landed yet):
-        // no display client → None, so the caller clears any prior tty rather than
-        // mis-targeting the control client.
-        let body = vec!["/dev/pts/7 control-mode".to_string()];
-        assert_eq!(display_client_tty(&body), None);
     }
 
     #[test]

@@ -178,6 +178,28 @@ pub fn parse_notif(line: &str) -> Notif<'_> {
     }
 }
 
+/// Picks xmux's display-client tty from a `list-clients` block body. Each line is
+/// `<client_tty> <client_flags>`; the display attach is the FIRST client whose flags
+/// do NOT contain `control-mode` (that flag marks the `-CC` metadata connection). The
+/// selection is applied at capture so a multi-client reply resolves deterministically.
+/// `None` when only the control client is attached (the display attach has not landed
+/// yet) — the caller then clears any prior tty rather than mis-targeting the control client.
+pub(crate) fn parse_display_client_tty(body: &[String]) -> Option<String> {
+    body.iter().find_map(|line| {
+        let line = line.trim();
+        if line.is_empty() {
+            return None;
+        }
+        let mut parts = line.splitn(2, ' ');
+        let tty = parts.next()?;
+        let flags = parts.next().unwrap_or("");
+        if flags.split(',').any(|f| f == "control-mode") {
+            return None;
+        }
+        Some(tty.to_string())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,5 +353,31 @@ mod tests {
                 reason: Some("too far behind")
             }
         ));
+    }
+
+    #[test]
+    fn display_clients_line_pins_the_tmux_wire_format() {
+        use crate::mux::ControlProtocol;
+        assert_eq!(
+            super::super::TmuxControl.display_clients_line(),
+            "list-clients -F '#{client_tty} #{client_flags}'\n"
+        );
+    }
+
+    #[test]
+    fn parse_display_client_tty_picks_the_non_control_client() {
+        // The display attach is the FIRST client WITHOUT the control-mode flag (that flag
+        // marks the -CC metadata connection), regardless of line order.
+        let body = vec![
+            "/dev/pts/7 control-mode".to_string(),
+            "/dev/pts/3 active-pane,focused".to_string(),
+        ];
+        assert_eq!(
+            parse_display_client_tty(&body).as_deref(),
+            Some("/dev/pts/3")
+        );
+        // Only the -CC control client is attached → None (the display attach has not landed).
+        let only_control = vec!["/dev/pts/7 control-mode".to_string()];
+        assert_eq!(parse_display_client_tty(&only_control), None);
     }
 }

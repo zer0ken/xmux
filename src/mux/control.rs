@@ -58,4 +58,15 @@ pub trait ControlProtocol: Send + Sync {
 
     /// `refresh-client -C <cols>x<rows>` — the client-size formatter.
     fn size_line(&self, cols: u16, rows: u16) -> String;
+
+    /// The `list-clients` query line that lists each client's tty and flags — the
+    /// correlated query whose block resolves xmux's own display-client tty. The wire
+    /// format is the mux's own; the host reader names none of it.
+    fn display_clients_line(&self) -> String;
+
+    /// Picks xmux's display-client tty from a `list-clients` block body: the first
+    /// client without the control-mode flag (the `-CC` metadata connection carries that
+    /// flag). `None` when only the control client is attached (the display attach has
+    /// not landed yet), so the caller clears any prior tty rather than mis-targeting it.
+    fn parse_display_client_tty(&self, body: &[String]) -> Option<String>;
 }

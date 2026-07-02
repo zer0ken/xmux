@@ -247,6 +247,14 @@ impl ControlProtocol for TmuxControl {
         // `refresh-client -C WxH` — the `x`-form is correct for 3.3.x (`[research §7]`).
         format!("refresh-client -C {cols}x{rows}\n")
     }
+
+    fn display_clients_line(&self) -> String {
+        "list-clients -F '#{client_tty} #{client_flags}'\n".to_string()
+    }
+
+    fn parse_display_client_tty(&self, body: &[String]) -> Option<String> {
+        control_proto::parse_display_client_tty(body)
+    }
 }
 
 #[cfg(test)]
