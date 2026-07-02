@@ -270,6 +270,16 @@ fn known_muxes() -> &'static [MuxKind] {
     }]
 }
 
+/// The implicit tmux fallback — the single place that names tmux as the mux any
+/// binary/kind decodes to when it matches no `known_muxes()` entry. tmux has no
+/// positive help signal, so it cannot be a registry entry; this explicit helper is
+/// the one site that materialises it, preserving the invoked binary.
+fn tmux_fallback(bin: &str) -> Box<dyn Mux> {
+    Box::new(Tmux {
+        bin: bin.to_string(),
+    })
+}
+
 /// Picks a mux mux by conventional binary name. tmux is the fallback, matching
 /// the default in `Config::local_bin` / `host_specs`.
 pub fn for_binary(bin: &str) -> Box<dyn Mux> {
@@ -278,9 +288,7 @@ pub fn for_binary(bin: &str) -> Box<dyn Mux> {
             return (k.make)(bin.to_string());
         }
     }
-    Box::new(Tmux {
-        bin: bin.to_string(),
-    })
+    tmux_fallback(bin)
 }
 
 /// Builds a mux by canonical identity while preserving the binary used to
@@ -291,9 +299,7 @@ pub fn for_kind(kind: &str, bin: &str) -> Box<dyn Mux> {
             return (k.make)(bin.to_string());
         }
     }
-    Box::new(Tmux {
-        bin: bin.to_string(),
-    })
+    tmux_fallback(bin)
 }
 
 /// True when `name` names a mux xmux actually recognizes — tmux (the implicit
@@ -336,9 +342,7 @@ pub async fn detect_backend(
     // both probes failing is inconclusive (unreachable / not a mux) → retry later.
     let (name, args) = transport.exec_argv(false, &[bin.to_string(), "-V".to_string()]);
     if runner.run(&name, &args).await.is_ok() {
-        return Some(Box::new(Tmux {
-            bin: bin.to_string(),
-        }));
+        return Some(tmux_fallback(bin));
     }
     None
 }
@@ -713,6 +717,17 @@ mod tests {
         assert_eq!(t.kind(), "tmux");
         assert_eq!(t.bin(), "psmux");
         assert_eq!(t.event_source(), EventSource::Control);
+    }
+
+    #[test]
+    fn fallback_preserves_the_invoked_binary() {
+        // The tmux fallback (a binary that matches no known mux) keeps its invoked
+        // binary while reporting the tmux identity — pinned so folding the three
+        // fallback sites into one shared helper stays byte-identical.
+        assert_eq!(for_binary("some-fork").kind(), "tmux");
+        assert_eq!(for_binary("some-fork").bin(), "some-fork");
+        assert_eq!(for_kind("nope", "tcustom").kind(), "tmux");
+        assert_eq!(for_kind("nope", "tcustom").bin(), "tcustom");
     }
 
     #[test]
