@@ -53,6 +53,17 @@ fn scan_marker_once(acc: &mut Vec<u8>, captured: &mut Option<String>, chunk: &[u
     if let Some(tty) = crate::model::death::parse_display_tty_marker(acc) {
         *captured = Some(tty);
         acc.clear(); // release the buffer; we never scan again
+    } else {
+        // No whole marker yet: bound `acc` to a rolling tail so a never-completing
+        // marker (or an empty `$(tty)`) cannot grow it without limit or force an
+        // O(n²) re-scan. Same drain idiom as the pump's `qtail` carry. Append →
+        // parse (above) → cap, so a whole marker inside a big chunk is captured
+        // before any truncation.
+        let cap = crate::model::death::DISPLAY_TTY_MARKER_MAX;
+        if acc.len() > cap {
+            let cut = acc.len() - cap;
+            acc.drain(0..cut);
+        }
     }
 }
 
@@ -593,6 +604,29 @@ mod tests {
             captured.as_deref(),
             Some("/dev/pts/12"),
             "captured once the marker completes"
+        );
+    }
+
+    #[test]
+    fn scan_marker_once_bounds_acc_when_marker_never_completes() {
+        // A complete-but-EMPTY marker (an empty `$(tty)`) never yields a capture, and
+        // ordinary marker-free output keeps arriving. Without a rolling-tail cap `acc`
+        // would grow without bound (and be re-scanned O(n²) each read). The cap keeps
+        // it bounded while still never capturing.
+        let mut acc: Vec<u8> = Vec::new();
+        let mut captured: Option<String> = None;
+        scan_marker_once(&mut acc, &mut captured, b"\x1b]XMUX-DISPLAY-TTY:\x07");
+        for _ in 0..200 {
+            scan_marker_once(&mut acc, &mut captured, &[b'x'; 512]);
+        }
+        assert!(
+            captured.is_none(),
+            "an empty `$(tty)` marker never captures"
+        );
+        assert!(
+            acc.len() <= crate::model::death::DISPLAY_TTY_MARKER_MAX,
+            "acc is bounded to a rolling tail (got {})",
+            acc.len()
         );
     }
 

@@ -14,6 +14,13 @@ use crate::model::{DeathSignal, DisplayTty};
 const MARKER_OPEN: &str = "\x1b]XMUX-DISPLAY-TTY:";
 const MARKER_CLOSE: u8 = 0x07; // BEL
 
+/// Rolling-tail cap for the pump's display-tty marker accumulator: the marker open
+/// plus a generous bound on a controlling-tty path. A marker that never completes
+/// (or an empty `$(tty)`) must not grow the accumulator without limit — the cap
+/// bounds it while still admitting any realistic whole marker. Derived from the real
+/// marker format so it cannot drift from a magic number.
+pub(crate) const DISPLAY_TTY_MARKER_MAX: usize = MARKER_OPEN.len() + 128;
+
 /// True when `detached_tty` is xmux's OWN display client under a `ControlNotice`
 /// death (tmux's `%client-detached`). Only `ControlNotice` is tty-filtered — `Eof`
 /// and `PathStat` are per-session deaths that never arrive as a client detach. An
