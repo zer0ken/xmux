@@ -31,6 +31,10 @@ pub enum Action {
     Switch { address: String },
     /// Move focus between the tree view and the terminal view.
     Focus(FocusTarget),
+    /// Flip the view focus (Tree ⇄ Terminal) — the `prefix Tab` toggle and the
+    /// left-click-on-unfocused-view toggle. During a modal it flips the carried
+    /// `prior` so the modal stays open and restores onto the flipped view.
+    FocusToggle,
     /// Re-enumerate every host (the `r` re-scan).
     Rescan,
     /// Adjust the tree width by a signed delta.

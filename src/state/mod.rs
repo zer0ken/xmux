@@ -153,6 +153,10 @@ impl State {
                     .set_view_focus(crate::app::focus::ViewFocus::Tree);
                 Vec::new()
             }
+            Action::FocusToggle => {
+                self.focus.toggle();
+                Vec::new()
+            }
             Action::ConfirmDisplay(sel) => {
                 self.displayed = sel;
                 Vec::new()
@@ -775,6 +779,31 @@ mod tests {
         assert_eq!(s.focus, Focus::Terminal);
         assert!(s.apply(Action::Focus(FocusTarget::Tree)).is_empty());
         assert_eq!(s.focus, Focus::Tree);
+    }
+
+    #[test]
+    fn apply_focus_toggle_flips_the_view_and_delegates_to_focus_toggle() {
+        use crate::app::focus::ViewFocus;
+        let mut s = State::default(); // Tree
+        assert!(
+            s.apply(Action::FocusToggle).is_empty(),
+            "FocusToggle emits no command"
+        );
+        assert_eq!(s.focus, Focus::Terminal, "toggle flips Tree → Terminal");
+        s.apply(Action::FocusToggle);
+        assert_eq!(s.focus, Focus::Tree, "toggle flips back Terminal → Tree");
+        // During a modal, toggle flips the carried prior and keeps the modal open.
+        s.focus = Focus::Popup {
+            prior: ViewFocus::Tree,
+        };
+        s.apply(Action::FocusToggle);
+        assert_eq!(
+            s.focus,
+            Focus::Popup {
+                prior: ViewFocus::Terminal
+            },
+            "toggle during a modal flips prior, the modal stays open"
+        );
     }
 
     #[test]

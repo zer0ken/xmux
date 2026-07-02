@@ -1084,9 +1084,9 @@ impl Runtime {
                         ensure_current_host(mgr, hosts, switcher, cols, body_rows, tree_width);
                         // Focus state is `Menu{prior}` here; set the restore view to the terminal
                         // so closing the menu (next loop-top sync_modal(None)) lands on it.
-                        state
-                            .focus
-                            .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+                        state.apply(crate::model::Action::Focus(
+                            crate::model::FocusTarget::Terminal,
+                        ));
                     }
                     crate::ui::modal::MenuOutcome::Handled => {
                         // A menu item only OPENS the next modal (input / kill confirm) — the
@@ -1216,7 +1216,7 @@ impl Runtime {
             // The unfocused view was clicked → switch focus to it (no content
             // delivered); toggle flips Focus::Tree⇄Focus::Terminal either direction.
             ChainAction::FocusTerminal | ChainAction::FocusTree => {
-                state.focus.toggle();
+                state.apply(crate::model::Action::FocusToggle);
                 *mouse_focus_toggle = true;
             }
             ChainAction::SelectRow => {
@@ -1446,23 +1446,22 @@ impl Runtime {
             }
         }
         if *focus_terminal {
-            self.state
-                .focus
-                .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+            self.state.apply(crate::model::Action::Focus(
+                crate::model::FocusTarget::Terminal,
+            ));
             // No term.clear(): both states draw the SAME split layout (only the
             // view border colour changes), so clearing would blank the screen and
             // force a full repaint for nothing.
         }
         if *focus_tree {
             self.state
-                .focus
-                .set_view_focus(crate::app::focus::ViewFocus::Tree);
+                .apply(crate::model::Action::Focus(crate::model::FocusTarget::Tree));
             if !tree_replay.is_empty() {
                 let (ft, q, wd, th) = self.handle_tree_bytes(tree_replay, width_changed);
                 if ft {
-                    self.state
-                        .focus
-                        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+                    self.state.apply(crate::model::Action::Focus(
+                        crate::model::FocusTarget::Terminal,
+                    ));
                 }
                 *quit = *quit || q;
                 if wd != 0 {
