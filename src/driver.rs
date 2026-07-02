@@ -194,7 +194,7 @@ pub(crate) mod tests {
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
         let worker = crate::display::DisplayWorker::with_spawner(
             ptx,
-            Box::new(|_argv, _cols, _rows, id, _events| {
+            Box::new(|_argv, _cols, _rows, id, _events, _env_clear| {
                 Ok(crate::display::attachment::fake_attachment(id))
             }),
         );

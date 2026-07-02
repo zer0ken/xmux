@@ -36,6 +36,7 @@ type AttachmentSpawner = Box<
             u16,
             u64,
             tokio::sync::mpsc::UnboundedSender<PtyEvent>,
+            &[String],
         ) -> anyhow::Result<Attachment>
         + Send
         + Sync
@@ -64,7 +65,19 @@ impl DisplayWorker {
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<DisplayEnsure>();
         std::thread::spawn(move || {
             while let Ok(req) = cmd_rx.recv() {
-                let event = match spawner(&req.argv, req.cols, req.rows, req.id, pty_tx.clone()) {
+                // Resolve the mux session vars to strip from the attach child here,
+                // at the spawn call site, so the low-level `spawn_attachment` never
+                // names a mux var — the vocabulary stays in `mux::vocab`.
+                let env_clear =
+                    crate::mux::vocab::mux_env_keys_to_clear(std::env::vars().map(|(k, _)| k));
+                let event = match spawner(
+                    &req.argv,
+                    req.cols,
+                    req.rows,
+                    req.id,
+                    pty_tx.clone(),
+                    &env_clear,
+                ) {
                     Ok(attachment) => DisplayEvent::Ready {
                         seq: req.seq,
                         key: req.key,
@@ -111,7 +124,7 @@ mod tests {
         let (pty_tx, _pty_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
         let mut worker = DisplayWorker::with_spawner(
             pty_tx,
-            Box::new(move |_argv, _cols, _rows, id, _events| {
+            Box::new(move |_argv, _cols, _rows, id, _events, _env_clear| {
                 calls_for_spawner.fetch_add(1, Ordering::SeqCst);
                 std::thread::sleep(Duration::from_millis(100));
                 Ok(crate::display::attachment::fake_attachment(id))

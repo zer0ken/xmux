@@ -25,6 +25,13 @@ pub fn is_mux_var(key: &str) -> bool {
     matches!(key, "TMUX" | "TMUX_PANE") || key.starts_with("PSMUX")
 }
 
+/// From a set of env var names, the subset that are mux session vars — the keys a
+/// child spawned by xmux must have cleared. Lets a spawner strip mux vars from its
+/// environment without itself naming any mux var (the vocabulary stays here).
+pub fn mux_env_keys_to_clear(keys: impl IntoIterator<Item = String>) -> Vec<String> {
+    keys.into_iter().filter(|k| is_mux_var(k)).collect()
+}
+
 fn argv(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| s.to_string()).collect()
 }
@@ -286,6 +293,18 @@ mod tests {
         assert!(!is_mux_var("TMUXP_LAYOUT")); // tmuxp, a different tool
         assert!(!is_mux_var("TMUX_TMPDIR")); // selects the socket dir — must survive
         assert!(!is_mux_var("PATH"));
+    }
+
+    #[test]
+    fn mux_env_keys_to_clear_selects_only_mux_vars() {
+        // The caller (display's attach spawner) hands us the current process env
+        // keys; we return exactly the mux session vars to strip, order preserved.
+        let out = mux_env_keys_to_clear(
+            ["TMUX", "PATH", "PSMUX_SESSION", "TMUX_PANE", "TMUX_TMPDIR"]
+                .into_iter()
+                .map(String::from),
+        );
+        assert_eq!(out, vec!["TMUX", "PSMUX_SESSION", "TMUX_PANE"]);
     }
 
     #[test]

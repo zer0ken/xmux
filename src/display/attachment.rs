@@ -244,18 +244,19 @@ impl Attachment {
     }
 }
 
-/// Opens a PTY at `cols×rows`, spawns `argv` (a real `attach` argv from
-/// [`crate::source::Source::interactive_attach_command`]) with mux nesting-guard env cleared,
-/// starts the control thread (owns writer+master) and the output pump. The pump
-/// always feeds the grid, emits [`PtyEvent::Output`] per chunk (the app
-/// coalesces), clears `connecting` on the first read, and emits
-/// [`PtyEvent::Exited`] at master EOF so the registry can reap it.
+/// Opens a PTY at `cols×rows`, spawns `argv` (a real `attach` argv composed by the
+/// mux/transport layers) with the caller-supplied `env_clear` keys removed from the
+/// child's environment (the mux nesting guard), starts the control thread (owns
+/// writer+master) and the output pump. The pump always feeds the grid, emits
+/// [`PtyEvent::Output`] per chunk (the app coalesces), clears `connecting` on the
+/// first read, and emits [`PtyEvent::Exited`] at master EOF so the registry can reap it.
 pub fn spawn_attachment(
     argv: &[String],
     cols: u16,
     rows: u16,
     id: u64,
     events: tokio::sync::mpsc::UnboundedSender<PtyEvent>,
+    env_clear: &[String],
 ) -> anyhow::Result<Attachment> {
     anyhow::ensure!(!argv.is_empty(), "spawn_attachment: argv must not be empty");
     let pty = native_pty_system();
@@ -269,13 +270,11 @@ pub fn spawn_attachment(
     for arg in &argv[1..] {
         cmd.arg(arg);
     }
-    // Strip EVERY mux session var (all PSMUX*, TMUX, TMUX_PANE) so the attach child
-    // does not inherit stale routing state that could mis-target the server — the
-    // same precise strip the control-mode child uses (see mux::vocab::is_mux_var).
-    for (k, _) in std::env::vars() {
-        if crate::mux::vocab::is_mux_var(&k) {
-            cmd.env_remove(&k);
-        }
+    // Clear the env keys the caller resolved (the mux session vars) so the attach
+    // child does not inherit stale routing state that could mis-target the server.
+    // Which keys are mux vars is decided by the caller, not here.
+    for k in env_clear {
+        cmd.env_remove(k);
     }
     let child = pair.slave.spawn_command(cmd)?;
     drop(pair.slave);
@@ -654,7 +653,8 @@ mod tests {
             "/c".into(),
             format!("echo {MARKER}& ping -n 5 127.0.0.1 >nul"),
         ];
-        let att = spawn_attachment(&argv, 80, 24, 1, ev_tx).expect("spawn");
+        let env_clear = crate::mux::vocab::mux_env_keys_to_clear(std::env::vars().map(|(k, _)| k));
+        let att = spawn_attachment(&argv, 80, 24, 1, ev_tx, &env_clear).expect("spawn");
 
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut seen = false;
