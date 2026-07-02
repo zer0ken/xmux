@@ -271,6 +271,44 @@ mod tests {
     }
 
     #[test]
+    fn build_ids_match_source_build_order_for_multi_host_config() {
+        // The single runtime registry's projection (`Hosts::ids`) must list the SAME
+        // hosts in the SAME order as the `source::build` list it replaces: local first,
+        // then ssh specs in config order (ssh-config aliases, then config-only hosts).
+        // Seeding `State` from `hosts.ids()` is therefore byte-identical to the retired
+        // `env.srcs` seed — a reordered or dropped host would be a live regression.
+        // A config-only host (declared in config.toml, not ssh-config) with a mux override.
+        let cfg = Config {
+            hosts: vec![crate::config::HostConfig {
+                ssh: "cfgonly".into(),
+                mux: "psmux".into(),
+            }],
+            ..Config::default()
+        };
+        let aliases: Vec<String> = ["prod", "db"].iter().map(|s| s.to_string()).collect();
+        let os = "linux";
+        let dir = std::path::Path::new("/home/u/.xmux");
+        let hosts = Hosts::build(&cfg, &aliases, os, dir, None);
+        let srcs = crate::source::build(&cfg, &aliases, os, dir, None);
+        let src_order: Vec<String> = srcs.iter().map(|s| s.alias.clone()).collect();
+        assert_eq!(
+            hosts.ids(),
+            src_order.as_slice(),
+            "the host registry projection must equal the source-derived order"
+        );
+        assert_eq!(
+            src_order,
+            vec![
+                "local".to_string(),
+                "prod".to_string(),
+                "db".to_string(),
+                "cfgonly".to_string(),
+            ],
+            "local first, ssh-config aliases in order, then config-only hosts"
+        );
+    }
+
+    #[test]
     fn apply_event_for_unknown_host_is_a_noop() {
         let mut hosts = Hosts::build(
             &Config::default(),

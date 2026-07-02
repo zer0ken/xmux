@@ -569,7 +569,6 @@ fn attach_reply_is_current(
 /// detection probe resolves its mux.
 fn ensure_current_host(
     mgr: &mut HostManager,
-    env: &Env,
     hosts: &crate::model::Hosts,
     switcher: &crate::ui::switcher::Switcher,
     cols: u16,
@@ -578,7 +577,7 @@ fn ensure_current_host(
 ) {
     let (cols, rows) = terminal_view_size(cols, rows, tree_width);
     if let Some(id) = switcher.current_host() {
-        if let (Some(host), Some(_src)) = (hosts.get(&id), env.by_alias.get(&id)) {
+        if let Some(host) = hosts.get(&id) {
             if host.detected {
                 let _ = mgr.ensure(&id, host, cols, rows);
             }
@@ -586,19 +585,18 @@ fn ensure_current_host(
     }
 }
 
-fn transport_for_source(src: &crate::source::Source) -> Box<dyn crate::machine::Transport> {
-    src.transport()
-}
-
+/// Runs a host's mux-detection probe off the loop, cloning the host's transport + mux
+/// (built by `Hosts::build`) so the probe reaches the same machine over the same axes
+/// without re-deriving anything from a `Source`. The resolved mux (or `None` when the
+/// probe fails) is emitted as `HostEvent::Scanned`.
 fn spawn_host_detection(
-    src: crate::source::Source,
+    source: String,
+    transport: Box<dyn crate::machine::Transport>,
+    mux: Box<dyn crate::mux::Mux>,
     tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
 ) {
-    let source = src.alias.clone();
-    let transport = transport_for_source(&src);
-    let bin = src.binary.clone();
     tokio::spawn(async move {
-        let mut host = crate::model::Host::new(transport, crate::mux::for_binary(&bin));
+        let mut host = crate::model::Host::new(transport, mux);
         host.detect_and_correct(&crate::source::ExecRunner).await;
         let detected = host.detected.then_some(host.mux);
         let _ = tx.send(HostEvent::Scanned { source, detected });
@@ -610,7 +608,6 @@ fn spawn_host_detection(
 /// — a no-op when the channel is already live.
 fn dispatch_detected_host(
     mgr: &mut HostManager,
-    env: &Env,
     hosts: &crate::model::Hosts,
     source: &str,
     cols: u16,
@@ -619,14 +616,11 @@ fn dispatch_detected_host(
     let Some(host) = hosts.get(source) else {
         return;
     };
-    if let Some(_src) = env.by_alias.get(source) {
-        let _ = mgr.ensure(source, host, cols, rows);
-    }
+    let _ = mgr.ensure(source, host, cols, rows);
 }
 
 fn scan_or_dispatch_host(
     mgr: &mut HostManager,
-    env: &Env,
     hosts: &crate::model::Hosts,
     detecting: &mut HashSet<String>,
     source: &str,
@@ -638,13 +632,16 @@ fn scan_or_dispatch_host(
     };
     if !host.detected {
         if detecting.insert(source.to_string()) {
-            if let Some(src) = env.by_alias.get(source) {
-                spawn_host_detection(src.clone(), mgr.events());
-            }
+            spawn_host_detection(
+                source.to_string(),
+                host.transport.clone(),
+                host.mux.clone_box(),
+                mgr.events(),
+            );
         }
         return;
     }
-    dispatch_detected_host(mgr, env, hosts, source, cols, rows);
+    dispatch_detected_host(mgr, hosts, source, cols, rows);
 }
 
 fn apply_scan_result(
@@ -669,7 +666,6 @@ fn apply_scan_result(
 /// undetected one. A no-op when no kick is pending. Shared by the key and menu paths.
 fn kick_rescan(
     switcher: &mut crate::ui::switcher::Switcher,
-    env: &Env,
     hosts: &crate::model::Hosts,
     detecting: &mut HashSet<String>,
     mgr: &mut HostManager,
@@ -679,14 +675,14 @@ fn kick_rescan(
     if !switcher.take_rescan_kick() {
         return;
     }
-    for src in &env.srcs {
-        if let Some(host) = hosts.get(&src.alias) {
+    for id in hosts.ids() {
+        if let Some(host) = hosts.get(id) {
             if host.detected {
-                mgr.rescan(&src.alias, host, cols, rows);
+                mgr.rescan(id, host, cols, rows);
                 continue;
             }
         }
-        scan_or_dispatch_host(mgr, env, hosts, detecting, &src.alias, cols, rows);
+        scan_or_dispatch_host(mgr, hosts, detecting, id, cols, rows);
     }
 }
 
@@ -696,7 +692,6 @@ fn kick_rescan(
 /// as each source's sessions arrive (see [`sync_source_terminals`]).
 fn connect_all_sources(
     mgr: &mut HostManager,
-    env: &Env,
     hosts: &crate::model::Hosts,
     detecting: &mut HashSet<String>,
     cols: u16,
@@ -704,8 +699,8 @@ fn connect_all_sources(
     tree_width: u16,
 ) {
     let (cols, rows) = terminal_view_size(cols, rows, tree_width);
-    for src in &env.srcs {
-        scan_or_dispatch_host(mgr, env, hosts, detecting, &src.alias, cols, rows);
+    for id in hosts.ids() {
+        scan_or_dispatch_host(mgr, hosts, detecting, id, cols, rows);
     }
 }
 
@@ -901,8 +896,8 @@ fn handle_tree_bytes(
     if cmd_width_changed {
         *width_changed = true;
     }
-    ensure_current_host(mgr, env, hosts, switcher, cols, rows, tree_width);
-    kick_rescan(switcher, env, hosts, detecting, mgr, cols, rows);
+    ensure_current_host(mgr, hosts, switcher, cols, rows, tree_width);
+    kick_rescan(switcher, hosts, detecting, mgr, cols, rows);
     (focus_terminal, quit, width_delta, toggle_auto_hide)
 }
 
@@ -947,7 +942,6 @@ fn handle_host_event(
     registry: &mut AttachRegistry,
     switcher: &mut crate::ui::switcher::Switcher,
     state: &mut crate::state::State,
-    env: &Env,
     connected: &mut HashSet<String>,
     panes_requested: &mut HashSet<String>,
     detecting: &mut HashSet<String>,
@@ -972,7 +966,6 @@ fn handle_host_event(
             registry,
             switcher,
             state,
-            env,
             panes_requested,
             detecting,
             worker,
@@ -1002,7 +995,6 @@ fn run_event_effect(
     registry: &mut AttachRegistry,
     switcher: &mut crate::ui::switcher::Switcher,
     state: &mut crate::state::State,
-    env: &Env,
     panes_requested: &mut HashSet<String>,
     detecting: &mut HashSet<String>,
     worker: &DisplayWorker,
@@ -1085,7 +1077,7 @@ fn run_event_effect(
             detecting.remove(&source);
             apply_scan_result(hosts, &source, detected);
             let (vc, vr) = terminal_view_size(cols, rows, tree_width);
-            dispatch_detected_host(mgr, env, hosts, &source, vc, vr);
+            dispatch_detected_host(mgr, hosts, &source, vc, vr);
         }
         EventEffect::SyncPollSessions { source, sessions } => {
             // A poll host's SUCCESSFUL enumeration (the tree group is already applied).
@@ -1280,7 +1272,7 @@ fn handle_mouse_event(
                     // Connect the target's host (mirrors the left-click
                     // select path) so its control client streams, then
                     // focus the terminal on the now-selected session.
-                    ensure_current_host(mgr, env, hosts, switcher, cols, body_rows, tree_width);
+                    ensure_current_host(mgr, hosts, switcher, cols, body_rows, tree_width);
                     // Focus state is `Menu{prior}` here; set the restore view to the terminal
                     // so closing the menu (next loop-top sync_modal(None)) lands on it.
                     state
@@ -1292,8 +1284,8 @@ fn handle_mouse_event(
                     // actual mux op is committed later from that modal (Enter / y), which
                     // returns its RunOp through handle_key. Here just consume any re-scan
                     // (reconnect) kick and ensure the target's host is connected.
-                    kick_rescan(switcher, env, hosts, detecting, mgr, cols, body_rows);
-                    ensure_current_host(mgr, env, hosts, switcher, cols, body_rows, tree_width);
+                    kick_rescan(switcher, hosts, detecting, mgr, cols, body_rows);
+                    ensure_current_host(mgr, hosts, switcher, cols, body_rows, tree_width);
                 }
                 crate::ui::switcher::MenuOutcome::None => {}
             }
@@ -1415,7 +1407,7 @@ fn handle_mouse_event(
             // loop top commits the new selection (attach); ensure the
             // clicked row's host connects so its subtree streams in.
             switcher.mouse_select(col0, ev.row.saturating_sub(1), state);
-            ensure_current_host(mgr, env, hosts, switcher, cols, body_rows, tree_width);
+            ensure_current_host(mgr, hosts, switcher, cols, body_rows, tree_width);
             dirty = true;
         }
         ChainAction::ForwardToMux => {
@@ -1544,7 +1536,7 @@ fn handle_stdin_bytes(
     if wheel_scrolled {
         // The plain-wheel scroll moved the selection; connect the host it landed on
         // so its subtree streams in (mirrors handle_tree_bytes's ensure step).
-        ensure_current_host(mgr, env, hosts, switcher, cols, body_rows, tree_width);
+        ensure_current_host(mgr, hosts, switcher, cols, body_rows, tree_width);
     }
     // Resize-repeat: while the window from a prefix-driven resize is open, a
     // bare Ctrl+←/→ (no prefix, in either focus) keeps resizing and refreshes
@@ -1834,40 +1826,28 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
     let mut worker = DisplayWorker::new(pty_tx);
     let mut registry = AttachRegistry::new();
 
-    // Host model: keyed by id (same as Source::alias). Derives its args from the same
-    // source data that source::build uses: the local source's socket from env.srcs, the
-    // ssh aliases (every non-local source), and the local machine's OS (xmux always runs
-    // on this machine, so `std::env::consts::OS` — the same value source::build threads in,
-    // and what gates ControlMaster on each ssh host). Ids are "local" + each alias — the
-    // same strings that HostEvents carry as `host` and that the registry uses as the
-    // display key prefix.
-    let ssh_aliases: Vec<String> = env
-        .srcs
-        .iter()
-        .filter(|s| s.alias != crate::session::LOCAL_SOURCE)
-        .map(|s| s.alias.clone())
-        .collect();
+    // Host model: the single runtime registry, keyed by id (local first, then each ssh
+    // alias in config order). Built from the config-assembly products on `Env`
+    // (`ssh_aliases`, `local_socket`) — the same inputs `source::build` consumed — plus
+    // the local machine's OS (`std::env::consts::OS`, which also gates ControlMaster on
+    // each ssh host). Ids are "local" + each alias — the same strings HostEvents carry as
+    // `host` and the registry uses as the display key prefix.
     let host_os = std::env::consts::OS;
-    let local_socket_opt = env
-        .srcs
-        .iter()
-        .find(|s| s.alias == crate::session::LOCAL_SOURCE)
-        .and_then(|s| s.local_socket());
     let mut hosts = crate::model::Hosts::build(
         &env.cfg,
-        &ssh_aliases,
+        &env.ssh_aliases,
         host_os,
         &env.xmux_dir,
-        local_socket_opt,
+        env.local_socket.clone(),
     );
 
     // The app's runtime state (single source of truth): the inventory the
     // components read, the canonical selection committed from the switcher's selection at
     // the loop top, the attach debounce latch (last selection actually attached/switched
     // to) + its deadline, and the last session address persisted as the user's
-    // last-selected (#1). Seeded from the source skeletons; events stream the tree in.
-    let mut state =
-        crate::state::State::from_sources(env.srcs.iter().map(|s| s.alias.clone()).collect());
+    // last-selected (#1). Seeded from the host registry's ids (the single source
+    // projection); events stream the tree in.
+    let mut state = crate::state::State::from_sources(hosts.ids().to_vec());
     // The switcher, built over that seeded inventory; events stream the tree in.
     let mut switcher = Switcher::from_sources(&mut state);
     // Feed the switcher the ssh config so an unreachable host's info panel can show its
@@ -1944,7 +1924,6 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
     let mut detecting: HashSet<String> = HashSet::new();
     connect_all_sources(
         &mut mgr,
-        &env,
         &hosts,
         &mut detecting,
         cols,
@@ -2243,7 +2222,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
         tokio::select! {
             Some(ev) = host_rx.recv() => {
                 let t = std::time::Instant::now();
-                if handle_host_event(ev, &mut mgr, &mut hosts, &mut registry, &mut switcher, &mut state, &env, &mut connected, &mut panes_requested, &mut detecting, &worker, &driver_pty_tx, &mut attach_seq, cols, body_rows, tree_width) {
+                if handle_host_event(ev, &mut mgr, &mut hosts, &mut registry, &mut switcher, &mut state, &mut connected, &mut panes_requested, &mut detecting, &worker, &driver_pty_tx, &mut attach_seq, cols, body_rows, tree_width) {
                     state.attach_deadline = Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
                     dirty = true;
                 }
@@ -2251,7 +2230,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                 while budget > 0 {
                     match host_rx.try_recv() {
                         Ok(ev) => {
-                            if handle_host_event(ev, &mut mgr, &mut hosts, &mut registry, &mut switcher, &mut state, &env, &mut connected, &mut panes_requested, &mut detecting, &worker, &driver_pty_tx, &mut attach_seq, cols, body_rows, tree_width) {
+                            if handle_host_event(ev, &mut mgr, &mut hosts, &mut registry, &mut switcher, &mut state, &mut connected, &mut panes_requested, &mut detecting, &worker, &driver_pty_tx, &mut attach_seq, cols, body_rows, tree_width) {
                                 state.attach_deadline = Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
                                 dirty = true;
                             }
@@ -2422,7 +2401,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                             break;
                         }
                         // A Switch/Focus may need the selection's host connected.
-                        ensure_current_host(&mut mgr, &env, &hosts, &switcher, cols, body_rows, tree_width);
+                        ensure_current_host(&mut mgr, &hosts, &switcher, cols, body_rows, tree_width);
                         if sync_selection_from_switcher(&mut state, &switcher) {
                             dirty = true;
                         }
@@ -2476,7 +2455,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                         if quit_key {
                             break;
                         }
-                        ensure_current_host(&mut mgr, &env, &hosts, &switcher, cols, body_rows, tree_width);
+                        ensure_current_host(&mut mgr, &hosts, &switcher, cols, body_rows, tree_width);
                         if sync_selection_from_switcher(&mut state, &switcher) {
                             dirty = true;
                         }
@@ -2546,20 +2525,24 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
             }
             _ = reconnect.tick() => {
                 let (vc, vr) = terminal_view_size(cols, body_rows, tree_width);
-                // Self-heal sweep over every source: a DETECTED host re-ensures its
+                // The single runtime registry drives the sweep; snapshot the ids so the
+                // loops can re-borrow `hosts` (including `&mut` for the PTY re-warm) without
+                // holding the `ids()` borrow across the body.
+                let ids: Vec<String> = hosts.ids().to_vec();
+                // Self-heal sweep over every host: a DETECTED host re-ensures its
                 // metadata channel (a no-op when alive; respawns a died control client or
                 // a finished poll task — the manager picks the channel from event_source),
                 // an UNDETECTED host retries detection (a host down at launch populates its
                 // tree once it returns). This sweep is the sole automatic retry path now
                 // that the per-poll-tick re-enumeration lives inside the poll task itself.
-                for src in &env.srcs {
-                    let detected = hosts.get(&src.alias).map(|h| h.detected).unwrap_or(false);
+                for id in &ids {
+                    let detected = hosts.get(id).map(|h| h.detected).unwrap_or(false);
                     if detected {
-                        if let Some(host) = hosts.get(&src.alias) {
-                            let _ = mgr.ensure(&src.alias, host, vc, vr);
+                        if let Some(host) = hosts.get(id) {
+                            let _ = mgr.ensure(id, host, vc, vr);
                         }
                     } else {
-                        scan_or_dispatch_host(&mut mgr, &env, &hosts, &mut detecting, &src.alias, vc, vr);
+                        scan_or_dispatch_host(&mut mgr, &hosts, &mut detecting, id, vc, vr);
                     }
                 }
                 // Re-warm each host's dropped per-host PTY via its driver (ENSURE-ONLY,
@@ -2570,11 +2553,11 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                 // here — only a non-empty inventory is handed in. psmux sync is a no-op for
                 // a non-empty inventory (its attaches are selected on demand), so this stays
                 // a shared-host re-warm without the app naming the mux kind.
-                for src in &env.srcs {
-                    if hosts.get(&src.alias).is_none() {
+                for id in &ids {
+                    if hosts.get(id).is_none() {
                         continue;
                     }
-                    let inventory = match mgr.get(&src.alias) {
+                    let inventory = match mgr.get(id) {
                         Some(client) => match client.inventory.lock() {
                             Ok(inv) => inv.sessions.clone(),
                             Err(_) => continue,
@@ -2585,7 +2568,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                         continue;
                     }
                     sync_source_terminals(
-                        &mut registry, &mut hosts, &src.alias, &inventory, &worker, &mgr,
+                        &mut registry, &mut hosts, id, &inventory, &worker, &mgr,
                         &driver_pty_tx, &mut attach_seq, cols, body_rows, tree_width,
                     );
                 }
@@ -2595,15 +2578,15 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                 // remote host's tty is learned via this -CC `list-clients` probe instead —
                 // retried each sweep until the display client registers. With the tty
                 // known, a session switch is an in-place `switch-client -c <tty>`.
-                for src in &env.srcs {
-                    let Some(h) = hosts.get(&src.alias) else {
+                for id in &ids {
+                    let Some(h) = hosts.get(id) else {
                         continue;
                     };
                     if h.display_tty.0.is_some() {
                         continue;
                     }
                     if registry.contains(&host_selection_key(h)) {
-                        if let Some(client) = mgr.get(&src.alias) {
+                        if let Some(client) = mgr.get(id) {
                             client.capture_display_tty();
                         }
                     }
@@ -2930,6 +2913,11 @@ mod tests {
         let srcs: Vec<Source> = aliases.iter().map(|a| fake_source(a)).collect();
         let by_alias: HashMap<String, Source> =
             srcs.iter().map(|s| (s.alias.clone(), s.clone())).collect();
+        let ssh_aliases: Vec<String> = aliases
+            .iter()
+            .filter(|a| **a != crate::session::LOCAL_SOURCE)
+            .map(|a| a.to_string())
+            .collect();
         Env {
             cfg: Config::default(),
             cfg_warnings: Vec::new(),
@@ -2938,6 +2926,8 @@ mod tests {
             local_bin: "cmd.exe".into(),
             ui_prefix: "C-g".into(),
             xmux_dir: std::path::PathBuf::from("."),
+            ssh_aliases,
+            local_socket: None,
         }
     }
 
@@ -3074,20 +3064,6 @@ mod tests {
         // binary is a spawnable stand-in for ssh that EOFs at once.
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
         let mut mgr = HostManager::new(tx);
-        let mut src = fake_source("jupiter06");
-        src.binary = "cmd.exe".into();
-        let by_alias: HashMap<String, Source> = [("jupiter06".to_string(), src.clone())]
-            .into_iter()
-            .collect();
-        let env = Env {
-            cfg: Config::default(),
-            cfg_warnings: Vec::new(),
-            srcs: vec![src],
-            by_alias,
-            local_bin: "cmd.exe".into(),
-            ui_prefix: "C-g".into(),
-            xmux_dir: std::path::PathBuf::from("."),
-        };
         let mut hosts = crate::model::Hosts::default();
         let mut host = crate::model::Host::new(
             crate::machine::ssh("jupiter06".into(), String::new(), "linux".into()),
@@ -3098,7 +3074,6 @@ mod tests {
         let mut detecting = HashSet::new();
         connect_all_sources(
             &mut mgr,
-            &env,
             &hosts,
             &mut detecting,
             80,
@@ -3107,9 +3082,29 @@ mod tests {
         );
         assert!(
             mgr.get("jupiter06").is_some(),
-            "control host got a control client"
+            "control host got a control client from the registry alone"
         );
         mgr.teardown_all();
+    }
+
+    #[tokio::test]
+    async fn scan_or_dispatch_host_detects_from_hosts_without_env() {
+        // An UNDETECTED host is routed to detection using ONLY the Hosts registry — no
+        // Env/by_alias. The detection branch marks the source in `detecting`; the probe
+        // clones the host's transport + mux rather than re-deriving from a Source.
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
+        let mut mgr = HostManager::new(tx);
+        let mut hosts = crate::model::Hosts::default();
+        hosts.insert(crate::model::Host::new(
+            crate::machine::local(None),
+            crate::mux::for_kind("psmux", "psmux-no-such-binary"),
+        )); // Host::new leaves it undetected
+        let mut detecting = HashSet::new();
+        scan_or_dispatch_host(&mut mgr, &hosts, &mut detecting, "local", 80, 24);
+        assert!(
+            detecting.contains("local"),
+            "an undetected host is queued for detection straight from the registry"
+        );
     }
 
     #[test]
@@ -3481,7 +3476,6 @@ mod tests {
         let mut registry = AttachRegistry::new();
         let worker = DisplayWorker::new(ptx);
         let mut attach_seq = 0u64;
-        let env = fake_env_with_sources(&["jup"]);
         let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
         let mut connected = HashSet::new();
         let mut panes_requested = HashSet::new();
@@ -3498,7 +3492,6 @@ mod tests {
             &mut registry,
             &mut switcher,
             &mut state,
-            &env,
             &mut connected,
             &mut panes_requested,
             &mut HashSet::new(),
@@ -3583,7 +3576,6 @@ mod tests {
         let mut registry = AttachRegistry::new();
         let worker = DisplayWorker::new(ptx);
         let mut attach_seq = 0u64;
-        let env = fake_env_with_sources(&["jup"]);
         let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
         let mut connected = HashSet::new();
         let mut panes_requested = HashSet::new();
@@ -3599,7 +3591,6 @@ mod tests {
             &mut registry,
             &mut switcher,
             &mut state,
-            &env,
             &mut connected,
             &mut panes_requested,
             &mut HashSet::new(),
@@ -3675,7 +3666,6 @@ mod tests {
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
         let worker = DisplayWorker::new(ptx);
         let (pty_tx, _pty_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
-        let env = fake_env_with_sources(&["local"]);
         let mut panes_requested = HashSet::new();
         let mut detecting = HashSet::new();
         let mut attach_seq = 0u64;
@@ -3689,7 +3679,6 @@ mod tests {
             &mut registry,
             &mut switcher,
             &mut state,
-            &env,
             &mut panes_requested,
             &mut detecting,
             &worker,
@@ -4046,7 +4035,6 @@ mod tests {
         let mut registry = AttachRegistry::new();
         let mut state = crate::state::State::from_sources(vec!["jup".into()]);
         let mut switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
-        let env = fake_env_with_sources(&["jup"]);
         let mut connected = HashSet::new();
         let mut panes: HashSet<String> = HashSet::new();
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
@@ -4071,7 +4059,6 @@ mod tests {
             &mut registry,
             &mut switcher,
             &mut state,
-            &env,
             &mut connected,
             &mut panes,
             &mut HashSet::new(),
@@ -4104,7 +4091,6 @@ mod tests {
             &mut registry,
             &mut switcher,
             &mut state,
-            &env,
             &mut connected,
             &mut panes,
             &mut HashSet::new(),

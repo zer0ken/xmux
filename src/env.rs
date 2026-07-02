@@ -30,6 +30,13 @@ pub struct Env {
     pub local_bin: String,
     pub ui_prefix: String,
     pub xmux_dir: PathBuf,
+    /// The ssh-config host aliases discovered at startup (a config-assembly product).
+    /// `Hosts::build` reruns `Config::host_specs` over these to seed the runtime host
+    /// registry, so the registry is built from config, not by re-reading `srcs`.
+    pub ssh_aliases: Vec<String>,
+    /// The local mux server socket parsed from `$TMUX` (`-S` target), threaded into
+    /// the local host's transport by `Hosts::build`. `None` on the default socket.
+    pub local_socket: Option<String>,
 }
 
 /// Pure fallback decision: a resolved home is returned unflagged; an unresolved
@@ -95,6 +102,12 @@ pub fn build_env() -> (Env, Option<anyhow::Error>) {
     let by_alias = srcs.iter().map(|s| (s.alias.clone(), s.clone())).collect();
     let local_bin = cfg.local_bin(os);
     let ui_prefix = cfg.ui_prefix().to_string();
+    // The local host's `-S` socket, read back from the assembled local source so the
+    // host registry (`Hosts::build`) targets the same server the source list does.
+    let host_local_socket = srcs
+        .iter()
+        .find(|s| s.alias == crate::session::LOCAL_SOURCE)
+        .and_then(|s| s.local_socket());
     (
         Env {
             cfg,
@@ -104,6 +117,8 @@ pub fn build_env() -> (Env, Option<anyhow::Error>) {
             local_bin,
             ui_prefix,
             xmux_dir,
+            ssh_aliases: aliases,
+            local_socket: host_local_socket,
         },
         cfg_err,
     )
@@ -330,6 +345,8 @@ mod tests {
             local_bin: "tmux".into(),
             ui_prefix: "C-g".into(),
             xmux_dir: PathBuf::from("."),
+            ssh_aliases: Vec::new(),
+            local_socket: None,
         });
         let ops = env.ops();
         assert_eq!(ops.sources(), vec!["local".to_string()]);
