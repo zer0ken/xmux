@@ -275,6 +275,15 @@ pub fn for_kind(kind: &str, bin: &str) -> Box<dyn Mux> {
     })
 }
 
+/// True when `name` names a mux xmux actually recognizes — tmux (the implicit
+/// fallback) or any of the [`known_muxes`]. A narrower advisory predicate than
+/// [`for_binary`]/[`for_kind`], which always fall back to tmux; this lets config
+/// validation flag a value that decodes but names no real mux. Reuses
+/// `known_muxes()` so a future mux is covered automatically.
+pub fn is_recognized(name: &str) -> bool {
+    name == "tmux" || known_muxes().iter().any(|k| k.name == name)
+}
+
 /// Probes a server's true identity over `transport`, independent of its binary name
 /// and `-V` (psmux mimics tmux's `-V`, reporting a fake `tmux 3.3.6`). Two stages:
 ///
@@ -631,6 +640,14 @@ mod tests {
         assert_eq!(t.kind(), "tmux");
         assert_eq!(t.bin(), "psmux");
         assert_eq!(t.event_source(), EventSource::Control);
+    }
+
+    #[test]
+    fn is_recognized_covers_tmux_and_known_muxes() {
+        assert!(is_recognized("tmux"));
+        assert!(is_recognized("psmux"));
+        assert!(!is_recognized("zellij"));
+        assert!(!is_recognized(""));
     }
 
     #[test]

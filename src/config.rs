@@ -140,6 +140,32 @@ impl Config {
         self.local.mux.clone()
     }
 
+    /// Advisory warnings for `mux` values that DECODE but name no mux xmux knows
+    /// (e.g. a `"zellij"` typo), which would otherwise silently run as tmux. Emitted
+    /// through the existing `cfg_warnings` channel (surfaced by `xmux doctor`). The
+    /// documented defaults `""`/`"auto"` never warn.
+    pub fn value_warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if !self.local.mux.is_empty()
+            && self.local.mux != "auto"
+            && !crate::mux::is_recognized(&self.local.mux)
+        {
+            warnings.push(format!(
+                "local mux {:?} is not a recognized mux (psmux/tmux); treating it as tmux-compatible",
+                self.local.mux
+            ));
+        }
+        for h in &self.hosts {
+            if !h.mux.is_empty() && !crate::mux::is_recognized(&h.mux) {
+                warnings.push(format!(
+                    "host {:?} mux {:?} is not a recognized mux (psmux/tmux); treating it as tmux-compatible",
+                    h.ssh, h.mux
+                ));
+            }
+        }
+        warnings
+    }
+
     /// xmux's configured prefix spec.
     pub fn ui_prefix(&self) -> &str {
         &self.ui.prefix
@@ -508,6 +534,46 @@ bogus = "nope"
             };
             assert_eq!(c.local_bin(os), want, "mux={mux:?} os={os:?}");
         }
+    }
+
+    #[test]
+    fn value_warnings_flags_unrecognized_mux() {
+        // Documented defaults and recognized muxes never warn.
+        for mux in ["", "auto", "tmux", "psmux"] {
+            let c = Config {
+                local: LocalConfig { mux: mux.into() },
+                ..Default::default()
+            };
+            assert!(c.value_warnings().is_empty(), "mux={mux:?} must not warn");
+        }
+        // An unrecognized local mux warns exactly once and names the value.
+        let c = Config {
+            local: LocalConfig {
+                mux: "zellij".into(),
+            },
+            ..Default::default()
+        };
+        let w = c.value_warnings();
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("zellij"), "{w:?}");
+        // A recognized host mux is silent; an unrecognized one warns once and names
+        // both the host alias and the bad value.
+        let c = Config {
+            hosts: vec![
+                HostConfig {
+                    ssh: "prod".into(),
+                    mux: "psmux".into(),
+                },
+                HostConfig {
+                    ssh: "bad".into(),
+                    mux: "kitty".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        let w = c.value_warnings();
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("bad") && w[0].contains("kitty"), "{w:?}");
     }
 
     #[test]

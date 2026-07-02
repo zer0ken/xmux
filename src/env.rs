@@ -79,10 +79,14 @@ fn local_socket(tmux: Option<&str>) -> Option<String> {
 /// error (non-`None` for a malformed config); the [`Env`] is still usable with
 /// defaults so `doctor` can report the problem instead of dying on it.
 pub fn build_env() -> (Env, Option<anyhow::Error>) {
-    let (cfg, cfg_warnings, cfg_err) = match config::load_verbose(&config_path()) {
+    let (cfg, mut cfg_warnings, cfg_err) = match config::load_verbose(&config_path()) {
         Ok((c, w)) => (c, w, None),
         Err(e) => (Config::default(), Vec::new(), Some(e)),
     };
+    // Value-level advisories (an unrecognized `mux` typo) alongside the unknown-KEY
+    // warnings `load_verbose` already produced. On the parse-error branch cfg is a
+    // default, so this is a no-op there.
+    cfg_warnings.extend(cfg.value_warnings());
     let os = current_os();
     let aliases = config::ssh_host_aliases(&ssh_config_path());
     let xmux_dir = xmux_dir_path();
