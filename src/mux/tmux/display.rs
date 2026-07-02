@@ -54,7 +54,7 @@ impl MuxDriver for TmuxDriver {
                     "display_show"
                 );
                 // Build the argv (immutable mux/transport reads) BEFORE taking &mut display.
-                let mux_argv = host.mux.attach_plan(&sel.session, sel.window);
+                let mux_argv = host.mux.attach_plan(&sel.session);
                 let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
                 let mut argv = vec![cmd];
                 argv.extend(args);
@@ -114,7 +114,7 @@ impl MuxDriver for TmuxDriver {
                     session = %sel.session,
                     "display_show"
                 );
-                let mux_argv = host.mux.attach_plan(&sel.session, sel.window);
+                let mux_argv = host.mux.attach_plan(&sel.session);
                 let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
                 let mut argv = vec![cmd];
                 argv.extend(args);
@@ -203,7 +203,7 @@ impl MuxDriver for TmuxDriver {
                 // `show()` uses. A remote shared attach records its own tty before exec
                 // (for a later in-place switch); local attaches and non-recording muxes
                 // stay bare. (Immutable host reads before the &mut host.display below.)
-                let mux_argv = host.mux.attach_plan(&first.name, None);
+                let mux_argv = host.mux.attach_plan(&first.name);
                 let (cmd, args) = host.transport.interactive_attach_argv(&mux_argv, None);
                 let mut argv = vec![cmd];
                 argv.extend(args);

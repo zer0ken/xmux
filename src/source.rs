@@ -119,7 +119,7 @@ impl Source {
     /// the transport ignores it here.
     pub fn interactive_attach_command(&self, name: &str, window: Option<i64>) -> Vec<String> {
         let mux = crate::mux::for_binary(&self.binary);
-        let attach = mux.attach_plan(name, window);
+        let attach = mux.attach_plan(name);
         let pre_select = window.map(|w| mux.select_window_plan(&mux::window_target(name, w)));
         let (n, a) = self
             .transport()

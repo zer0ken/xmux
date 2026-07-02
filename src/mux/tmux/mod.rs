@@ -76,7 +76,7 @@ impl Mux for Tmux {
         crate::mux::enumerate_via_list_sessions(&self.bin, transport, runner).await
     }
 
-    fn attach_plan(&self, session: &str, _window: Option<i64>) -> Vec<String> {
+    fn attach_plan(&self, session: &str) -> Vec<String> {
         mux::attach(&self.bin, session)
     }
 

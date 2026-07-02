@@ -121,7 +121,7 @@ pub trait Mux: Send + Sync {
     /// The interactive attach argv (`argv[0]` = binary). The window is selected
     /// separately via `select_window_plan`; the transport folds it for a remote
     /// attach when composing the final connection.
-    fn attach_plan(&self, session: &str, window: Option<i64>) -> Vec<String>;
+    fn attach_plan(&self, session: &str) -> Vec<String>;
 
     /// The mux's own `switch-client` argv given the captured display tty + target.
     /// The driver closes over the host's display tty to move xmux's own display client
@@ -387,15 +387,8 @@ mod tests {
     #[test]
     fn tmux_attach_plan_is_plain_attach() {
         let m = tmux();
-        assert_eq!(
-            m.attach_plan("api", None),
-            argv(&["tmux", "attach", "-t", "api"])
-        );
         // The window is selected separately (select_window_plan); attach stays plain.
-        assert_eq!(
-            m.attach_plan("api", Some(2)),
-            argv(&["tmux", "attach", "-t", "api"])
-        );
+        assert_eq!(m.attach_plan("api"), argv(&["tmux", "attach", "-t", "api"]));
     }
 
     #[test]
@@ -478,7 +471,7 @@ mod tests {
         ) -> Result<Vec<Session>, RunError> {
             enumerate_via_list_sessions(&self.bin, transport, runner).await
         }
-        fn attach_plan(&self, session: &str, _window: Option<i64>) -> Vec<String> {
+        fn attach_plan(&self, session: &str) -> Vec<String> {
             mux::attach(&self.bin, session)
         }
         fn control_argv(&self) -> Option<Vec<String>> {
@@ -566,7 +559,7 @@ mod tests {
         // `new-session -A -s <name>` (routes to that session's own server) rather
         // than a bare `attach -t <name>` on the default socket (a warm clone).
         assert_eq!(
-            psmux().attach_plan("work", None),
+            psmux().attach_plan("work"),
             argv(&["psmux", "new-session", "-A", "-s", "work"])
         );
     }
@@ -604,7 +597,7 @@ mod tests {
     fn psmux_behavior_is_decoupled_from_invoked_binary() {
         let m = Psmux { bin: "tmux".into() };
         assert_eq!(
-            m.attach_plan("api", None),
+            m.attach_plan("api"),
             argv(&["tmux", "new-session", "-A", "-s", "api"])
         );
         assert_eq!(m.server_model(), ServerModel::PerSession);
@@ -617,7 +610,7 @@ mod tests {
             bin: "psmux".into(),
         };
         assert_eq!(
-            m.attach_plan("api", None),
+            m.attach_plan("api"),
             argv(&["psmux", "attach", "-t", "api"])
         );
         assert_eq!(m.server_model(), ServerModel::Shared);
@@ -664,7 +657,7 @@ mod tests {
         assert_eq!(got.kind(), "psmux");
         assert_eq!(got.server_model(), ServerModel::PerSession);
         assert_eq!(
-            got.attach_plan("api", None),
+            got.attach_plan("api"),
             argv(&["tmux", "new-session", "-A", "-s", "api"])
         );
     }

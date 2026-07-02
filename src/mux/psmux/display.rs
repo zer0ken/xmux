@@ -152,7 +152,7 @@ impl MuxDriver for PsmuxDriver {
             "display_show"
         );
         host.display.clear(&key);
-        let mux_argv = host.mux.attach_plan(&sel.session, None);
+        let mux_argv = host.mux.attach_plan(&sel.session);
         let remote = host.transport.is_remote();
         let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
         let mut argv = vec![cmd];

@@ -73,7 +73,7 @@ impl Mux for Psmux {
         ))
     }
 
-    fn attach_plan(&self, session: &str, _window: Option<i64>) -> Vec<String> {
+    fn attach_plan(&self, session: &str) -> Vec<String> {
         // psmux is one-server-per-session: each session is its own server on its own
         // port (`~/.psmux/<name>.port`). A bare `attach -t <name>` on the DEFAULT
         // socket does not reach that session's server — it lands on a warm clone / the

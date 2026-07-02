@@ -216,7 +216,7 @@ mod tests {
         ) -> Result<Vec<Session>, RunError> {
             Ok(vec![])
         }
-        fn attach_plan(&self, _s: &str, _w: Option<i64>) -> Vec<String> {
+        fn attach_plan(&self, _s: &str) -> Vec<String> {
             vec![]
         }
         fn control_argv(&self) -> Option<Vec<String>> {
@@ -442,7 +442,7 @@ mod tests {
         ) -> Result<Vec<Session>, RunError> {
             self.result.lock().unwrap().take().unwrap_or(Ok(vec![]))
         }
-        fn attach_plan(&self, _s: &str, _w: Option<i64>) -> Vec<String> {
+        fn attach_plan(&self, _s: &str) -> Vec<String> {
             vec![]
         }
         fn control_argv(&self) -> Option<Vec<String>> {
@@ -634,7 +634,7 @@ mod tests {
         assert_eq!(h.mux.kind(), "psmux");
         assert_eq!(h.mux.server_model(), ServerModel::PerSession);
         assert_eq!(
-            h.mux.attach_plan("api", None),
+            h.mux.attach_plan("api"),
             vec!["tmux", "new-session", "-A", "-s", "api"]
         );
         assert!(h.detected);
