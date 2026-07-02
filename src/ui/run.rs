@@ -141,6 +141,16 @@ async fn handle_conn(conn: Stream, cmd_tx: mpsc::Sender<Cmd>) {
     }
 }
 
+/// Maps a fire-and-forget enqueue result to the control-channel reply, so a command
+/// dropped because the app channel is closed is reported as `err:` rather than a
+/// false `ok`. Shared by the `Op`/`RawKey`/`RawBytes` arms.
+fn enqueue_reply(sent: Result<(), mpsc::error::SendError<Cmd>>) -> String {
+    match sent {
+        Ok(()) => "ok".into(),
+        Err(_) => "err: control channel closed".into(),
+    }
+}
+
 async fn dispatch(line: &str, cmd_tx: &mpsc::Sender<Cmd>) -> String {
     match crate::control::parse_ctl_op(line) {
         crate::control::CtlRequest::Ping => "pong".into(),
@@ -158,17 +168,10 @@ async fn dispatch(line: &str, cmd_tx: &mpsc::Sender<Cmd>) -> String {
             }
             rx.await.unwrap_or_default()
         }
-        crate::control::CtlRequest::Op(op) => {
-            let _ = cmd_tx.send(Cmd::Op(op)).await;
-            "ok".into()
-        }
-        crate::control::CtlRequest::RawKey(ev) => {
-            let _ = cmd_tx.send(Cmd::RawKey(ev)).await;
-            "ok".into()
-        }
+        crate::control::CtlRequest::Op(op) => enqueue_reply(cmd_tx.send(Cmd::Op(op)).await),
+        crate::control::CtlRequest::RawKey(ev) => enqueue_reply(cmd_tx.send(Cmd::RawKey(ev)).await),
         crate::control::CtlRequest::RawBytes(b) => {
-            let _ = cmd_tx.send(Cmd::RawBytes(b)).await;
-            "ok".into()
+            enqueue_reply(cmd_tx.send(Cmd::RawBytes(b)).await)
         }
         crate::control::CtlRequest::Unknown(_) => "err: unknown command".into(),
     }
@@ -235,6 +238,17 @@ mod tests {
         assert!(matches!(rx.recv().await, Some(Cmd::RawBytes(b)) if b == vec![0x1b, 0x5b, 0x41]));
         // the demoted bare verb is rejected
         assert!(dispatch("key down", &tx).await.starts_with("err:"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_reports_error_when_channel_closed() {
+        // The three fire-and-forget arms (Op/RawKey/RawBytes) must not falsely report
+        // "ok" when the command was dropped because the app channel is closed.
+        let (tx, rx) = mpsc::channel::<Cmd>(8);
+        drop(rx);
+        assert!(dispatch("rescan", &tx).await.starts_with("err:")); // Op
+        assert!(dispatch("raw:key down", &tx).await.starts_with("err:")); // RawKey
+        assert!(dispatch("raw:text hi", &tx).await.starts_with("err:")); // RawBytes
     }
 
     #[tokio::test]
