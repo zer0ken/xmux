@@ -3,6 +3,7 @@
 //! rendering is layered on top separately.
 
 pub mod chrome;
+pub mod modal;
 pub mod ops;
 pub mod run;
 pub mod switcher;

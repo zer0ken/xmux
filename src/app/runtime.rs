@@ -1273,7 +1273,7 @@ fn handle_mouse_event(
     if state.menu_active() {
         if !ev.pressed {
             match switcher.menu_release(state) {
-                crate::ui::switcher::MenuOutcome::FocusTerminal => {
+                crate::ui::modal::MenuOutcome::FocusTerminal => {
                     // Connect the target's host (mirrors the left-click
                     // select path) so its control client streams, then
                     // focus the terminal on the now-selected session.
@@ -1284,7 +1284,7 @@ fn handle_mouse_event(
                         .focus
                         .set_view_focus(crate::app::focus::ViewFocus::Terminal);
                 }
-                crate::ui::switcher::MenuOutcome::Handled => {
+                crate::ui::modal::MenuOutcome::Handled => {
                     // A menu item only OPENS the next modal (input / kill confirm) — the
                     // actual mux op is committed later from that modal (Enter / y), which
                     // returns its RunOp through handle_key. Here just consume any re-scan
@@ -1300,7 +1300,7 @@ fn handle_mouse_event(
                     );
                     ensure_current_host(mgr, hosts, switcher, cols, body_rows, tree_width);
                 }
-                crate::ui::switcher::MenuOutcome::None => {}
+                crate::ui::modal::MenuOutcome::None => {}
             }
             dirty = true;
         } else if !is_wheel {

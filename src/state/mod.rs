@@ -49,7 +49,7 @@ pub struct State {
     /// exclusion is structural: opening one drops whatever was open, and two can
     /// never coexist. The switcher owns the modal behavior and the transient popup
     /// geometry (drag offset / drawn rect); this owns which modal is open + its content.
-    pub(crate) modal: Option<crate::ui::switcher::Modal>,
+    pub(crate) modal: Option<crate::ui::modal::Modal>,
 }
 
 impl State {
@@ -59,7 +59,7 @@ impl State {
     ///
     /// [`ModalKind::Popup`]: crate::app::focus::ModalKind::Popup
     pub fn is_modal_popup_open(&self) -> bool {
-        use crate::ui::switcher::Modal;
+        use crate::ui::modal::Modal;
         matches!(
             self.modal,
             Some(Modal::Help | Modal::Input(_) | Modal::Kill(_))
@@ -69,12 +69,12 @@ impl State {
     /// True while an inline input (filter / rename / new) is open. The app
     /// routes every key to the switcher then, with no focus-switch hijack.
     pub fn is_inputting(&self) -> bool {
-        matches!(self.modal, Some(crate::ui::switcher::Modal::Input(_)))
+        matches!(self.modal, Some(crate::ui::modal::Modal::Input(_)))
     }
 
     /// True while the right-click context menu is open.
     pub fn menu_active(&self) -> bool {
-        matches!(self.modal, Some(crate::ui::switcher::Modal::Menu(_)))
+        matches!(self.modal, Some(crate::ui::modal::Modal::Menu(_)))
     }
 
     /// Which kind of modal is open — the focus machine derives its modal dimension
@@ -84,7 +84,7 @@ impl State {
     /// [`Focus`]: crate::app::focus::Focus
     pub(crate) fn modal_kind(&self) -> Option<crate::app::focus::ModalKind> {
         use crate::app::focus::ModalKind;
-        use crate::ui::switcher::Modal;
+        use crate::ui::modal::Modal;
         match self.modal {
             Some(Modal::Help | Modal::Input(_) | Modal::Kill(_)) => Some(ModalKind::Popup),
             Some(Modal::Menu(_)) => Some(ModalKind::Menu),

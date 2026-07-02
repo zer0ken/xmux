@@ -18,6 +18,9 @@ use unicode_width::UnicodeWidthStr;
 use crate::model::{Action, Command};
 use crate::session::{Session, WindowPanes};
 use crate::ui::chrome::Chrome;
+use crate::ui::modal::{
+    Input, InputMode, Menu, MenuItem, MenuOutcome, Modal, PendingKill, PopupDrag,
+};
 use crate::ui::tree::{self, Group, Row, RowRef};
 
 pub use crate::ui::ops::{run_op, OpResult, Ops};
@@ -41,72 +44,6 @@ pub use crate::ui::chrome::ViewBorderColors;
 pub struct Scan {
     pub groups: Vec<Group>,
     pub panes: HashMap<String, Vec<WindowPanes>>,
-}
-
-/// An armed kill confirm (awaiting y/n). One slot enforces "at most one armed".
-#[derive(Debug, Clone)]
-pub(crate) enum PendingKill {
-    Session(Session),
-    /// (source, session, target="session:window")
-    Window {
-        source: String,
-        session: String,
-        target: String,
-    },
-}
-
-/// One context-menu entry. The variant drives the action taken on release; the
-/// label is the row text. Words match the rest of the tree UI ("focus the terminal",
-/// "new", "rename", "kill" — never "open"/"split", which are not used elsewhere).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum MenuItem {
-    Focus,
-    NewSession,
-    NewWindow,
-    Rename,
-    Kill,
-}
-
-impl MenuItem {
-    fn label(self) -> &'static str {
-        match self {
-            MenuItem::Focus => "focus",
-            MenuItem::NewSession => "new session",
-            MenuItem::NewWindow => "new window",
-            MenuItem::Rename => "rename",
-            MenuItem::Kill => "kill",
-        }
-    }
-}
-
-/// What the app must do after a menu release. Most items are handled inside the
-/// switcher (they open an input or arm a kill); `FocusTerminal` is the one outcome the
-/// app owns (the "focus" item moves focus to the terminal view).
-pub enum MenuOutcome {
-    None,
-    Handled,
-    FocusTerminal,
-}
-
-/// An open right-click context menu. `target` is the node it acts on, re-located by
-/// identity at release so a tree rebuild during the brief hold cannot misfire on a
-/// stale row. `title` names that node (shown in the box's top border, like tmux's
-/// menu title — so the menu reads as "actions for <this node>"). `rect` is the
-/// bordered box in 0-based screen coords; `hovered` is the highlighted item.
-pub(crate) struct Menu {
-    target: RowRef,
-    title: String,
-    rect: Rect,
-    items: Vec<MenuItem>,
-    hovered: Option<usize>,
-}
-
-/// An active border-drag of a modal popup: the grabbed screen cell and the
-/// `popup_offset` at grab time, so motion can compute the new offset.
-#[derive(Clone, Copy)]
-struct PopupDrag {
-    grab: (u16, u16),
-    origin: (i16, i16),
 }
 
 /// The menu entries for a node, by type. Non-selectable rows (pane/loading) get none.
@@ -190,42 +127,6 @@ struct PriorFocus {
 pub struct TerminalViewTarget {
     pub source: String,
     pub target: String, // empty ⇒ no terminal view
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum InputMode {
-    Filter,
-    New,
-    NewWindow,
-    SplitWindow,
-    Rename,
-}
-
-pub(crate) struct Input {
-    mode: InputMode,
-    label: String,
-    buffer: String,
-    /// The create source / rename target captured when the input opened, so the
-    /// action lands on the node the user was on — not wherever streaming results
-    /// moved the selection by the time they pressed Enter.
-    source: Option<String>,
-    sess: Option<Session>,
-    /// The split target (`session:window`) for [`InputMode::SplitWindow`].
-    target: Option<String>,
-}
-
-/// The single open modal, if any — at most one of help / inline input / kill
-/// confirm / context menu. Modeling it as one `Option` (not four independent
-/// fields) makes the modals' mutual exclusion structural: opening one drops
-/// whatever was open, and the compiler guarantees two can never coexist, so the
-/// hand-maintained "clear the others" invariant cannot drift. Lives on
-/// [`crate::state::State`]; the switcher owns only the behavior and the transient
-/// popup geometry (drag offset / drawn rect).
-pub(crate) enum Modal {
-    Help,
-    Input(Input),
-    Kill(PendingKill),
-    Menu(Menu),
 }
 
 /// The switcher state machine.
