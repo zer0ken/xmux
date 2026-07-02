@@ -59,9 +59,7 @@ pub async fn run() -> i32 {
     // guard must outlive `run` (i.e. live until the process exits); binding it
     // here keeps it alive for the full call. The directory mirrors what
     // `env::build_env` resolves so the log lands next to the other xmux files.
-    let xmux_dir = dirs::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".xmux");
+    let xmux_dir = env::xmux_dir_path();
     let _log_guard = crate::logging::init(&xmux_dir);
 
     let cli = Cli::parse();

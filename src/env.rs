@@ -32,8 +32,22 @@ pub struct Env {
     pub xmux_dir: PathBuf,
 }
 
+/// Pure fallback decision: a resolved home is returned unflagged; an unresolved
+/// home falls back to the current directory (`.`) and flags it `true` so the caller
+/// can warn. Split out so the fallback is unit-tested without touching the real HOME.
+fn home_or_cwd(home: Option<PathBuf>) -> (PathBuf, bool) {
+    match home {
+        Some(p) => (p, false),
+        None => (PathBuf::from("."), true),
+    }
+}
+
 fn home_dir() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
+    let (dir, fell_back) = home_or_cwd(dirs::home_dir());
+    if fell_back {
+        tracing::warn!("could not resolve a home directory; falling back to the current directory for config, ~/.xmux state, sockets, and logs");
+    }
+    dir
 }
 
 fn config_path() -> PathBuf {
@@ -44,7 +58,7 @@ pub(crate) fn ssh_config_path() -> PathBuf {
     home_dir().join(".ssh").join("config")
 }
 
-fn xmux_dir_path() -> PathBuf {
+pub(crate) fn xmux_dir_path() -> PathBuf {
     home_dir().join(".xmux")
 }
 
@@ -370,6 +384,17 @@ mod tests {
         );
         assert_eq!(local_socket(None), None);
         assert_eq!(local_socket(Some("")), None);
+    }
+
+    #[test]
+    fn home_or_cwd_flags_the_cwd_fallback() {
+        // A resolved home is returned unflagged; an unresolved home falls back to the
+        // current directory AND flags it so the caller can warn.
+        assert_eq!(
+            home_or_cwd(Some(PathBuf::from("/home/u"))),
+            (PathBuf::from("/home/u"), false)
+        );
+        assert_eq!(home_or_cwd(None), (PathBuf::from("."), true));
     }
 
     #[test]
