@@ -72,11 +72,84 @@ pub(crate) struct Menu {
 }
 
 /// An active border-drag of a modal popup: the grabbed screen cell and the
-/// `popup_offset` at grab time, so motion can compute the new offset.
+/// popup offset at grab time, so motion can compute the new offset.
 #[derive(Clone, Copy)]
-pub(crate) struct PopupDrag {
-    pub(crate) grab: (u16, u16),
-    pub(crate) origin: (i16, i16),
+struct PopupDrag {
+    grab: (u16, u16),
+    origin: (i16, i16),
+}
+
+/// The transient geometry of the active modal popup, owned by the switcher: the
+/// drag `offset` from the centered position, the `rect` it was last drawn at (for
+/// border hit-testing), and the in-flight border `drag`. The drag behavior is
+/// self-contained here so the switcher only forwards mouse events.
+#[derive(Default)]
+pub(crate) struct PopupGeometry {
+    /// Drag offset (cells) applied to a modal popup's centered position. Reset
+    /// to (0,0) when a popup opens; updated while its border is dragged.
+    pub(crate) offset: (i16, i16),
+    /// The drawn rect of the active modal popup (help/input/confirm), cached
+    /// each render so a mouse press can hit-test its border. `Rect::default()`
+    /// ⇒ no modal popup open.
+    pub(crate) rect: Rect,
+    /// Active border-drag of a modal popup. `None` ⇒ not dragging.
+    drag: Option<PopupDrag>,
+}
+
+impl PopupGeometry {
+    /// True while a modal popup is being border-dragged.
+    pub(crate) fn drag_active(&self) -> bool {
+        self.drag.is_some()
+    }
+
+    /// A left press on the active modal popup's border begins a move-drag. `open` is
+    /// whether a modal popup is live: `rect` is only refreshed on render (frame-gated),
+    /// so a popup closed by a keystroke can leave a stale rect — the caller gates on
+    /// the live modal state so a press can't grab a popup that no longer exists.
+    /// Returns true iff it grabbed (so the app consumes the event).
+    pub(crate) fn begin_drag(&mut self, col: u16, row: u16, open: bool) -> bool {
+        if !open {
+            return false;
+        }
+        let r = self.rect;
+        if r.width < 2 || r.height < 2 {
+            return false; // no modal popup drawn yet
+        }
+        let inside = col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height;
+        let on_border = inside
+            && (col == r.x || col == r.x + r.width - 1 || row == r.y || row == r.y + r.height - 1);
+        if !on_border {
+            return false;
+        }
+        self.drag = Some(PopupDrag {
+            grab: (col, row),
+            origin: self.offset,
+        });
+        true
+    }
+
+    /// Updates `offset` from the pointer while a border-drag is active.
+    pub(crate) fn drag(&mut self, col: u16, row: u16) {
+        if let Some(d) = self.drag {
+            let dx = col as i32 - d.grab.0 as i32;
+            let dy = row as i32 - d.grab.1 as i32;
+            self.offset = (
+                (d.origin.0 as i32 + dx) as i16,
+                (d.origin.1 as i32 + dy) as i16,
+            );
+        }
+    }
+
+    /// Ends a border-drag.
+    pub(crate) fn end_drag(&mut self) {
+        self.drag = None;
+    }
+
+    /// Resets a modal popup to its centered position (called when one opens).
+    pub(crate) fn reset(&mut self) {
+        self.offset = (0, 0);
+        self.drag = None;
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -113,6 +186,53 @@ pub(crate) enum Modal {
     Input(Input),
     Kill(PendingKill),
     Menu(Menu),
+}
+
+/// True while a centered modal popup (help / inline input / kill confirm) is open.
+/// These three are draggable and drive [`ModalKind::Popup`]; the context menu is
+/// separate (pointer-anchored).
+///
+/// [`ModalKind::Popup`]: crate::app::focus::ModalKind::Popup
+pub(crate) fn is_popup_open(modal: &Option<Modal>) -> bool {
+    matches!(modal, Some(Modal::Help | Modal::Input(_) | Modal::Kill(_)))
+}
+
+/// True while an inline input (filter / rename / new) is open.
+pub(crate) fn is_inputting(modal: &Option<Modal>) -> bool {
+    matches!(modal, Some(Modal::Input(_)))
+}
+
+/// True while the right-click context menu is open.
+pub(crate) fn is_menu_active(modal: &Option<Modal>) -> bool {
+    matches!(modal, Some(Modal::Menu(_)))
+}
+
+/// Which kind of modal is open — the focus machine derives its modal dimension from
+/// this each loop-top, so focus can never mirror-and-desync from the open popup. A
+/// centered popup and the context menu are mutually exclusive.
+pub(crate) fn modal_kind(modal: &Option<Modal>) -> Option<crate::app::focus::ModalKind> {
+    use crate::app::focus::ModalKind;
+    match modal {
+        Some(Modal::Help | Modal::Input(_) | Modal::Kill(_)) => Some(ModalKind::Popup),
+        Some(Modal::Menu(_)) => Some(ModalKind::Menu),
+        None => None,
+    }
+}
+
+/// Feeds a raw key read to the help modal, tmux view-mode style. While help is open
+/// every key is consumed (returns true — nothing reaches the tree or the terminal
+/// view); `q` or a lone Esc closes it, every other key is swallowed. Returns false
+/// when help is closed, so the read falls through to normal routing.
+pub(crate) fn feed_help(modal: &mut Option<Modal>, bytes: &[u8]) -> bool {
+    if !matches!(modal, Some(Modal::Help)) {
+        return false;
+    }
+    // `q`, or a real Esc (a lone ESC, not the ESC `[` that starts an arrow/CSI).
+    let esc = bytes.contains(&0x1b) && !bytes.windows(2).any(|w| w == [0x1b, b'[']);
+    if bytes.contains(&b'q') || esc {
+        *modal = None;
+    }
+    true
 }
 
 /// The menu entries for a node, by type. Non-selectable rows (pane/loading) get none.
@@ -368,6 +488,19 @@ impl Menu {
     }
 }
 
+/// Mouse moved while the menu is held: highlight the item under the pointer. Over the
+/// box but off an item (the title border) keeps the current highlight; only dragging
+/// fully OUTSIDE the box clears it, so releasing there cancels. No-op when no menu.
+pub(crate) fn menu_hover(modal: &mut Option<Modal>, col: u16, row: u16) {
+    if let Some(Modal::Menu(menu)) = modal.as_mut() {
+        if let Some(i) = menu.item_at(col, row) {
+            menu.hovered = Some(i);
+        } else if !menu.contains(col, row) {
+            menu.hovered = None;
+        }
+    }
+}
+
 /// The bordered menu box for an anchor at 0-based screen (col,row): sized to the wider
 /// of the widest item label (+ a pad cell each side) and the title, plus borders, and
 /// the item count; clamped so it stays fully inside `area` (shifts up/left near an edge).
@@ -446,6 +579,49 @@ mod tests {
     fn modal_help_variant_constructs() {
         let m = Modal::Help;
         assert!(matches!(m, Modal::Help));
+    }
+
+    #[test]
+    fn modal_kind_classifies_help_input_kill_as_popup_menu_as_menu() {
+        use crate::app::focus::ModalKind;
+        assert_eq!(modal_kind(&None), None);
+        assert_eq!(modal_kind(&Some(Modal::Help)), Some(ModalKind::Popup));
+        assert!(is_popup_open(&Some(Modal::Help)));
+        assert!(!is_menu_active(&Some(Modal::Help)));
+        let menu = Menu {
+            target: RowRef::Pane,
+            title: String::new(),
+            rect: Rect::default(),
+            items: Vec::new(),
+            hovered: None,
+        };
+        assert_eq!(modal_kind(&Some(Modal::Menu(menu))), Some(ModalKind::Menu));
+    }
+
+    #[test]
+    fn help_feed_consumes_and_closes_on_q_or_esc() {
+        // tmux view-mode style: while open, every key is consumed; q/Esc closes, the
+        // rest are swallowed; while closed, nothing is consumed (falls through).
+        let mut m: Option<Modal> = None;
+        assert!(!feed_help(&mut m, b"q"), "closed → not consumed");
+
+        m = Some(Modal::Help);
+        assert!(feed_help(&mut m, b"j"), "open → consumed");
+        assert!(
+            matches!(m, Some(Modal::Help)),
+            "a non-close key is swallowed but keeps help open"
+        );
+        assert!(
+            feed_help(&mut m, b"\x1b[A"),
+            "an arrow (ESC [) is swallowed, not a close"
+        );
+        assert!(matches!(m, Some(Modal::Help)), "arrow keeps help open");
+        assert!(feed_help(&mut m, b"q"), "q → consumed");
+        assert!(m.is_none(), "q closes help");
+
+        m = Some(Modal::Help);
+        assert!(feed_help(&mut m, b"\x1b"), "lone Esc → consumed");
+        assert!(m.is_none(), "Esc closes help");
     }
 
     #[test]

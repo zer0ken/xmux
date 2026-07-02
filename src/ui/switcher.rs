@@ -19,7 +19,7 @@ use crate::model::{Action, Command};
 use crate::session::{Session, WindowPanes};
 use crate::ui::chrome::Chrome;
 use crate::ui::modal::{
-    self, Input, InputMode, Menu, MenuItem, MenuOutcome, Modal, PendingKill, PopupDrag,
+    self, Input, InputMode, Menu, MenuItem, MenuOutcome, Modal, PendingKill, PopupGeometry,
 };
 use crate::ui::tree::{self, Group, Row, RowRef};
 
@@ -98,15 +98,9 @@ pub struct Switcher {
     /// The chrome (view border, hint_bar, host-info) and its view-local state
     /// (flash, spinner, auto-hide/hover cues, view border colours, ssh-config, prefix).
     chrome: Chrome,
-    /// Drag offset (cells) applied to a modal popup's centered position. Reset
-    /// to (0,0) when a popup opens; updated while its border is dragged.
-    popup_offset: (i16, i16),
-    /// The drawn rect of the active modal popup (help/input/confirm), cached
-    /// each render so a mouse press can hit-test its border. `Rect::default()`
-    /// ⇒ no modal popup open.
-    popup_rect: Rect,
-    /// Active border-drag of a modal popup. `None` ⇒ not dragging.
-    popup_drag: Option<PopupDrag>,
+    /// The transient geometry of the active modal popup (drag offset / drawn rect /
+    /// in-flight border drag). The drag behavior lives on [`PopupGeometry`].
+    popup_geo: PopupGeometry,
 }
 
 impl Switcher {
@@ -124,9 +118,7 @@ impl Switcher {
             rescan_reselect: None,
             screen_area: Rect::default(),
             chrome: Chrome::default(),
-            popup_offset: (0, 0),
-            popup_rect: Rect::default(),
-            popup_drag: None,
+            popup_geo: PopupGeometry::default(),
         }
     }
 
@@ -619,62 +611,30 @@ impl Switcher {
     /// this is the explicit close + drag reset used by every opener and on dismissal.
     fn dismiss_modals(&mut self, state: &mut crate::state::State) {
         state.modal = None;
-        self.reset_popup_pos();
+        self.popup_geo.reset();
     }
 
     /// True while a modal popup is being border-dragged; the app routes every
     /// mouse event here until release, like the view border drag / menu hold.
     pub fn popup_drag_active(&self) -> bool {
-        self.popup_drag.is_some()
+        self.popup_geo.drag_active()
     }
 
     /// A left press on the active modal popup's border begins a move-drag. Returns
     /// true iff it grabbed (so the app consumes the event).
     pub fn begin_popup_drag(&mut self, col: u16, row: u16, state: &crate::state::State) -> bool {
-        // `popup_rect` is only refreshed on render (frame-gated), so a popup closed by a
-        // keystroke can leave a stale rect; gate on the live modal state so a press can't
-        // grab a popup that no longer exists.
-        if !state.is_modal_popup_open() {
-            return false;
-        }
-        let r = self.popup_rect;
-        if r.width < 2 || r.height < 2 {
-            return false; // no modal popup drawn yet
-        }
-        let inside = col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height;
-        let on_border = inside
-            && (col == r.x || col == r.x + r.width - 1 || row == r.y || row == r.y + r.height - 1);
-        if !on_border {
-            return false;
-        }
-        self.popup_drag = Some(PopupDrag {
-            grab: (col, row),
-            origin: self.popup_offset,
-        });
-        true
+        self.popup_geo
+            .begin_drag(col, row, state.is_modal_popup_open())
     }
 
-    /// Updates `popup_offset` from the selection while a border-drag is active.
+    /// Updates the popup offset from the selection while a border-drag is active.
     pub fn drag_popup(&mut self, col: u16, row: u16) {
-        if let Some(d) = self.popup_drag {
-            let dx = col as i32 - d.grab.0 as i32;
-            let dy = row as i32 - d.grab.1 as i32;
-            self.popup_offset = (
-                (d.origin.0 as i32 + dx) as i16,
-                (d.origin.1 as i32 + dy) as i16,
-            );
-        }
+        self.popup_geo.drag(col, row);
     }
 
     /// Ends a border-drag.
     pub fn end_popup_drag(&mut self) {
-        self.popup_drag = None;
-    }
-
-    /// Resets a modal popup to its centered position (called when one opens).
-    fn reset_popup_pos(&mut self) {
-        self.popup_offset = (0, 0);
-        self.popup_drag = None;
+        self.popup_geo.end_drag();
     }
 
     /// Modal help input, tmux view-mode style. While the modal is open it captures
@@ -684,15 +644,7 @@ impl Switcher {
     /// owner of help dismissal — the app calls it above the tree/terminal split, so the
     /// behavior is identical in both focuses.
     pub fn feed_help_key(&mut self, bytes: &[u8], state: &mut crate::state::State) -> bool {
-        if !matches!(state.modal, Some(Modal::Help)) {
-            return false;
-        }
-        // `q`, or a real Esc (a lone ESC, not the ESC `[` that starts an arrow/CSI).
-        let esc = bytes.contains(&0x1b) && !bytes.windows(2).any(|w| w == [0x1b, b'[']);
-        if bytes.contains(&b'q') || esc {
-            state.modal = None;
-        }
-        true
+        modal::feed_help(&mut state.modal, bytes)
     }
 
     /// Handles one key against the switcher. Navigation/modal-open keys mutate the
@@ -1402,13 +1354,7 @@ impl Switcher {
     /// box but off an item (the title border) keeps the current highlight; only dragging
     /// fully OUTSIDE the box clears it, so releasing there cancels.
     pub fn menu_hover(&mut self, col: u16, row: u16, state: &mut crate::state::State) {
-        if let Some(Modal::Menu(menu)) = state.modal.as_mut() {
-            if let Some(i) = menu.item_at(col, row) {
-                menu.hovered = Some(i);
-            } else if !menu.contains(col, row) {
-                menu.hovered = None;
-            }
-        }
+        modal::menu_hover(&mut state.modal, col, row);
     }
 
     /// Right-button up: act on the hovered item against the (re-located) target row,
@@ -1657,7 +1603,7 @@ impl Switcher {
             Some(Modal::Kill(armed)) => modal::confirm_lines(armed),
             Some(Modal::Input(input)) => modal::input_lines(input),
             _ => {
-                self.popup_rect = Rect::default();
+                self.popup_geo.rect = Rect::default();
                 return;
             }
         };
@@ -1666,8 +1612,8 @@ impl Switcher {
         // `.max(24).min(width)` (not `clamp`) so a sub-24-col terminal cannot panic.
         let w = (inner_w + 3).max(24).min(area.width.max(1));
         let h = (lines.len() as u16 + 2).min(area.height.max(1));
-        let rect = modal::offset_centered(w, h, area, self.popup_offset);
-        self.popup_rect = rect;
+        let rect = modal::offset_centered(w, h, area, self.popup_geo.offset);
+        self.popup_geo.rect = rect;
         modal::render_popup(frame, area, rect, &title, lines);
     }
 
@@ -4316,7 +4262,7 @@ mod tests {
         sw.open_input(InputMode::Filter, &mut state); // a small popup with room to move both ways
         let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
         term.draw(|f| sw.render(f, None, false, 0, &state)).unwrap();
-        let before = sw.popup_rect;
+        let before = sw.popup_geo.rect;
         let (bx, by) = (before.x, before.y); // top-left corner is on the border
         assert!(
             sw.begin_popup_drag(bx, by, &state),
@@ -4324,8 +4270,8 @@ mod tests {
         );
         sw.drag_popup(bx + 5, by + 3);
         term.draw(|f| sw.render(f, None, false, 0, &state)).unwrap();
-        assert_eq!(sw.popup_rect.x, before.x + 5, "moved right by 5");
-        assert_eq!(sw.popup_rect.y, before.y + 3, "moved down by 3");
+        assert_eq!(sw.popup_geo.rect.x, before.x + 5, "moved right by 5");
+        assert_eq!(sw.popup_geo.rect.y, before.y + 3, "moved down by 3");
         sw.end_popup_drag();
         assert!(!sw.popup_drag_active());
     }
@@ -4368,7 +4314,7 @@ mod tests {
         sw.open_input(InputMode::Filter, &mut state);
         let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
         term.draw(|f| sw.render(f, None, false, 0, &state)).unwrap();
-        let r = sw.popup_rect; // border rect is now cached
+        let r = sw.popup_geo.rect; // border rect is now cached
         sw.close_input(&mut state); // close WITHOUT re-rendering → popup_rect is stale
         assert!(
             !sw.begin_popup_drag(r.x, r.y, &state),
@@ -4385,7 +4331,10 @@ mod tests {
         sw.show_help(&mut state);
         let mut term = Terminal::new(TestBackend::new(10, 10)).unwrap();
         term.draw(|f| sw.render(f, None, false, 0, &state)).unwrap();
-        assert!(sw.popup_rect.width <= 10, "popup fits the narrow screen");
+        assert!(
+            sw.popup_geo.rect.width <= 10,
+            "popup fits the narrow screen"
+        );
     }
 
     #[test]
@@ -4395,7 +4344,7 @@ mod tests {
         sw.show_help(&mut state);
         let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
         term.draw(|f| sw.render(f, None, false, 0, &state)).unwrap();
-        let r = sw.popup_rect;
+        let r = sw.popup_geo.rect;
         assert!(
             !sw.begin_popup_drag(r.x + 2, r.y + 2, &state),
             "interior press does not start a drag"
@@ -4409,11 +4358,11 @@ mod tests {
         sw.show_help(&mut state);
         let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
         term.draw(|f| sw.render(f, None, false, 0, &state)).unwrap();
-        let r = sw.popup_rect;
+        let r = sw.popup_geo.rect;
         assert!(sw.begin_popup_drag(r.x, r.y, &state));
         sw.drag_popup(r.x.saturating_sub(50), r.y); // yank far left, past the edge
         term.draw(|f| sw.render(f, None, false, 0, &state)).unwrap();
-        assert_eq!(sw.popup_rect.x, 0, "clamped to the left screen edge");
+        assert_eq!(sw.popup_geo.rect.x, 0, "clamped to the left screen edge");
     }
 
     #[test]

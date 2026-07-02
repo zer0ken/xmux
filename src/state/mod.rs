@@ -59,22 +59,18 @@ impl State {
     ///
     /// [`ModalKind::Popup`]: crate::app::focus::ModalKind::Popup
     pub fn is_modal_popup_open(&self) -> bool {
-        use crate::ui::modal::Modal;
-        matches!(
-            self.modal,
-            Some(Modal::Help | Modal::Input(_) | Modal::Kill(_))
-        )
+        crate::ui::modal::is_popup_open(&self.modal)
     }
 
     /// True while an inline input (filter / rename / new) is open. The app
     /// routes every key to the switcher then, with no focus-switch hijack.
     pub fn is_inputting(&self) -> bool {
-        matches!(self.modal, Some(crate::ui::modal::Modal::Input(_)))
+        crate::ui::modal::is_inputting(&self.modal)
     }
 
     /// True while the right-click context menu is open.
     pub fn menu_active(&self) -> bool {
-        matches!(self.modal, Some(crate::ui::modal::Modal::Menu(_)))
+        crate::ui::modal::is_menu_active(&self.modal)
     }
 
     /// Which kind of modal is open — the focus machine derives its modal dimension
@@ -83,13 +79,7 @@ impl State {
     ///
     /// [`Focus`]: crate::app::focus::Focus
     pub(crate) fn modal_kind(&self) -> Option<crate::app::focus::ModalKind> {
-        use crate::app::focus::ModalKind;
-        use crate::ui::modal::Modal;
-        match self.modal {
-            Some(Modal::Help | Modal::Input(_) | Modal::Kill(_)) => Some(ModalKind::Popup),
-            Some(Modal::Menu(_)) => Some(ModalKind::Menu),
-            None => None,
-        }
+        crate::ui::modal::modal_kind(&self.modal)
     }
 
     /// Builds the inventory from a complete snapshot: every host is resolved
