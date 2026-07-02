@@ -1,4 +1,4 @@
-//! Free helpers for death-as-a-push, all over the Phase-1 `DeathSignal`/`DisplayTty`
+//! Free helpers for death-as-a-push, all over the `DeathSignal`/`DisplayTty`
 //! (defined in `crate::model::plan`, NOT here): the tty-match detach filter, the
 //! psmux `.port` liveness backing `DeathSignal::PathStat`, and the
 //! identity-preserving display-tty capture (the marker our OWN attach shell

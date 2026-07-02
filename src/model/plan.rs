@@ -1,8 +1,8 @@
 //! The leaf value types a `Mux` method returns: how a session's death is
 //! detected (`DeathSignal`), where change events come from (`EventSource`), and the
 //! captured display tty (`DisplayTty`). No logic — these are the shapes the supervisor
-//! matches on. `DeathSignal` is defined HERE and nowhere else; Phase 3's death wiring
-//! adds free helpers over this one enum.
+//! matches on. `DeathSignal` is defined HERE and nowhere else; the death-as-a-push
+//! helpers in `model::death` build over this one enum.
 
 /// How a Host detects that a displayed session/attachment died, so a `switch-client`
 /// is never aimed at a detached/dead tty (the blank-pane class). One PUSH per mux.

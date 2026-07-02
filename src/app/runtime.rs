@@ -291,9 +291,9 @@ fn selection_from_target(t: &TerminalViewTarget) -> Selection {
 /// arms the debounce (re-armed on every move, so rapid navigation coalesces into one
 /// trailing attach). Returns true when the selection changed (the tree needs a redraw).
 ///
-/// In 5.4d-i the switcher selection is still the selection authority; this only routes
-/// the derived value through `apply` instead of mutating `state` directly. (The
-/// authority inversion — `state.selection` authoritative, selection following — is 5.5.)
+/// The switcher selection is the selection authority; this routes the derived value
+/// through `apply` as an intent rather than mutating `state` directly, so a selection
+/// change still funnels through the single mutation site.
 ///
 /// [`Action::Select`]: crate::model::Action::Select
 /// [`Action::Tick`]: crate::model::Action::Tick

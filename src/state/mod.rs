@@ -55,7 +55,7 @@ pub struct State {
     /// plus their inputs (flash, spinner set + frame, auto-hide/hover cues, view border
     /// colours, ssh-config text, prefix). Owned here (the [`Modal`](crate::ui::modal::Modal)
     /// precedent) and fed by the app each frame; the switcher's `render` reads it off
-    /// `&state`. In P5 this may relocate to a `Runtime` grouping per-frame chrome inputs.
+    /// `&state`.
     pub(crate) chrome: crate::ui::chrome::Chrome,
 }
 
@@ -881,8 +881,8 @@ mod tests {
 
     // --- session-lifecycle intents fold into Command::RunOp ------------------
     // Each lifecycle Action is a pure intent → effect: apply mutates nothing and
-    // returns the MuxOp descriptor the run loop runs off-loop. The OpResult
-    // flow-back stays the existing channel path (5.4d-iii territory).
+    // returns the MuxOp descriptor the run loop runs off-loop. The OpResult flows
+    // back over the op channel.
 
     fn a_sess(name: &str) -> crate::session::Session {
         crate::session::Session {

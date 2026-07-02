@@ -186,10 +186,10 @@ pub(crate) struct MouseState {
 }
 
 /// The outcome of one stdin read: what the loop must act on after the handler runs.
-/// Replaces the inline arm's direct mutation of `dirty`/`quit`, so the handler is a
-/// function of (bytes, state) → outcome, unit-testable without the loop. `focus_*` and
-/// `tree_replay` carry the resolved focus path (applied inside the handler) for the
-/// per-handler round-trip test + observability.
+/// The stdin handler is a function of (bytes, state) → outcome — it mutates no loop
+/// local directly, so it is unit-testable without the loop. `focus_*` and `tree_replay`
+/// carry the resolved focus path (applied inside the handler) for the per-handler
+/// round-trip test + observability.
 #[derive(Default)]
 pub(crate) struct StdinOutcome {
     pub(crate) quit: bool,

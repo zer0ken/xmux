@@ -1,8 +1,9 @@
 //! The app's focus state machine. Every state draws the SAME split (tree on
 //! the left, the selection session's live grid on the right); focus only chooses
 //! where keys go and which view border rule is highlighted. There are four states
-//! along two dimensions: the VIEW dimension (`Tree` ⇄ `Terminal`, toggled by
-//! `prefix Tab`) and a MODAL dimension layered on top (`Popup` for help / inline
+//! along two dimensions: the VIEW dimension (`Tree` ⇄ `Terminal`, driven by prefix-key
+//! focus moves and a click on the unfocused view) and a MODAL dimension layered on top
+//! (`Popup` for help / inline
 //! input / kill-confirm, `Menu` for the right-click context menu). A modal is a
 //! first-class focus state that CARRIES the view it was opened from, so closing it
 //! restores that view structurally — no external "saved focus" variable. "Is a
@@ -71,9 +72,10 @@ impl Focus {
         )
     }
 
-    /// Flips the VIEW dimension (Tree ⇄ Terminal) — the `prefix Tab` toggle. During a
-    /// modal it flips the carried `prior` so the modal stays open and restores onto
-    /// the flipped view.
+    /// Flips the VIEW dimension (Tree ⇄ Terminal) — the mutation behind the
+    /// `FocusToggle` a click on the unfocused view produces (its sole trigger; the
+    /// prefix-key focus moves use `set_view_focus`). During a modal it flips the
+    /// carried `prior` so the modal stays open and restores onto the flipped view.
     pub fn toggle(&mut self) {
         let flip = |p: ViewFocus| match p {
             ViewFocus::Tree => ViewFocus::Terminal,

@@ -1,6 +1,6 @@
-//! `Hosts`: every host keyed by id, in display order (local first). The one owner —
-//! replaces `HostManager`'s clients map (host.rs:553) and `Env`'s srcs/by_alias
-//! (env.rs:28/29), so a host cannot exist in one registry but not the other.
+//! `Hosts`: the app loop's runtime host registry — every host keyed by id, in display
+//! order (local first). The single owner of each machine's `Host`, so display and host
+//! management cannot disagree about which machines exist.
 
 use std::collections::HashMap;
 
@@ -9,9 +9,8 @@ use crate::model::{Host, Liveness};
 use crate::mux::for_binary;
 use crate::session::LOCAL_SOURCE;
 
-/// Every host, keyed by host id, in display order (local first). The one owner —
-/// replaces `HostManager`'s clients map (host.rs:553) and `Env`'s srcs/by_alias
-/// (env.rs:28/29), so a host cannot exist in one registry but not the other.
+/// Every host, keyed by host id, in display order (local first). The single owner of
+/// each machine's `Host` for the app loop, so a host is present here or nowhere.
 #[derive(Default)]
 pub struct Hosts {
     order: Vec<String>,
@@ -19,7 +18,7 @@ pub struct Hosts {
 }
 
 impl Hosts {
-    /// An empty registry (same as `Default`; both pinned because Phase 4 tests call
+    /// An empty registry (same as `Default`; both pinned because tests call
     /// `Hosts::default()`).
     pub fn new() -> Self {
         Self::default()
@@ -87,8 +86,7 @@ impl Hosts {
         self.map.get_mut(id)
     }
 
-    /// Host ids in display order (local first) — replaces `Ops::sources`
-    /// (switcher.rs:121) and `Env.srcs` iteration for the render projection.
+    /// Host ids in display order (local first) — the render projection iterates these.
     pub fn ids(&self) -> &[String] {
         &self.order
     }
@@ -117,7 +115,7 @@ impl Hosts {
                 }
             }
             // Change/window/focus events drive refetch + selection follow in the render
-            // projection (later phase); they touch no Host-owned field here.
+            // projection; they touch no Host-owned field here.
             Changed { .. } | ActiveWindowChanged { .. } | Focus { .. } => {}
             // The tty-matched reap of xmux's own display attach is the supervisor's job (it
             // owns the registry + the recover-from-detach rearm); the Hosts map holds no

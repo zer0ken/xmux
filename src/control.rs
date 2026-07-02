@@ -382,8 +382,8 @@ mod tests {
         assert!(
             matches!(parse_ctl_op("raw:text hi"), CtlRequest::RawBytes(b) if b == b"hi".to_vec())
         );
-        // A bare `key` (no raw: prefix) is no longer a recognized verb — the keystroke
-        // surface is explicitly behind raw:, so the loose old verb is now Unknown.
+        // A bare `key` (no raw: prefix) is not a recognized verb — the keystroke
+        // surface is only behind raw:, so it parses as Unknown.
         assert!(matches!(parse_ctl_op("key down"), CtlRequest::Unknown(_)));
         assert!(
             matches!(parse_ctl_op("overlay"), CtlRequest::Unknown(_)),

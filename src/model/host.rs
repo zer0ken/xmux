@@ -12,8 +12,8 @@ use crate::model::DisplayTty;
 use crate::mux::Mux;
 use crate::source::Runner;
 
-/// Connecting / live / unreachable — replaces the loose `connecting` AtomicBool
-/// (host.rs:334) and the supervisor's `connected: HashSet` tracking (app.rs:1048).
+/// Connecting / live / unreachable — the single per-host reachability state the
+/// supervisor and the tree read (no separate `connecting` flag or `connected` set).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Liveness {
     Connecting,
@@ -192,8 +192,8 @@ pub struct Host {
 }
 
 impl Host {
-    /// Builds a host from a transport + mux. Replaces `source::build`'s per-source
-    /// construction (source.rs:460), one host at a time.
+    /// Builds a host from a transport + mux — the single per-host constructor, one host
+    /// at a time.
     pub fn new(transport: Box<dyn Transport>, mux: Box<dyn Mux>) -> Self {
         Host {
             transport,

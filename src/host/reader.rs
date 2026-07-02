@@ -211,8 +211,8 @@ mod tests {
 
     #[test]
     fn reader_resolves_list_sessions_block_into_inventory() {
-        // The reader no longer holds a shared inventory: the parsed sessions ride on
-        // the Connected + Inventory events for the loop to fold into `model::Host`.
+        // The reader holds no shared inventory: the parsed sessions ride on the
+        // Connected + Inventory events for the loop to fold into `model::Host`.
         let state = test_state(80, 24);
         let in_flight: InFlight = Default::default();
         in_flight
@@ -556,8 +556,8 @@ mod tests {
         // flags=0. The reader pops the correlation FIFO only for flags=1, so a
         // spontaneous block never shifts the replies. tmux 3.5a glues the entry DCS
         // to the FIRST real reply (flags=1) and emits a trailing spontaneous block
-        // (flags=0); the old single-banner-skip heuristic mis-skipped the real
-        // reply, desynced the FIFO, and resolved list-sessions empty.
+        // (flags=0); a single-banner-skip approach would mis-skip the real reply,
+        // desync the FIFO, and resolve list-sessions empty.
         let state = test_state(80, 24);
         let in_flight: InFlight = Default::default();
         in_flight

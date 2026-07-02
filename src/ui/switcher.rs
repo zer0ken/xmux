@@ -1474,8 +1474,8 @@ impl Switcher {
                 if selected {
                     style = style.add_modifier(Modifier::REVERSED);
                 }
-                // The active window / pane reads BOLD+ITALIC (replaces the "(active)"
-                // text) — the currently-displayed window of each session.
+                // The active window / pane reads BOLD+ITALIC — no "(active)" text
+                // marker — the currently-displayed window of each session.
                 if row.active {
                     style = style.add_modifier(Modifier::BOLD | Modifier::ITALIC);
                 }
@@ -2751,9 +2751,9 @@ mod tests {
     async fn streaming_keeps_local_preselect_when_untouched() {
         // With no persisted last-selected session, an untouched selection preselects the
         // LOCAL source's most-recent session, and a later more-recent REMOTE session
-        // streaming in must NOT steal the selection. This kills the old global-recency
-        // jump (selection leaping to a remote on first launch — #1). order_groups pins
-        // local first, so the local-first fallback is the first session row.
+        // streaming in must NOT steal the selection: the selection must not leap to a
+        // remote on first launch (#1). order_groups pins local first, so the local-first
+        // fallback is the first session row.
         let mut h = Harness::from_sources(&["local", "jupiter00"]);
         h.sw.apply_source_result(
             "local".into(),
@@ -4348,7 +4348,7 @@ mod tests {
         let buf = h.buf();
         let w = buf.area.width;
         let last = buf.area.height - 1;
-        // The entry field is NO LONGER on the bottom row.
+        // The entry field is not on the bottom row.
         let bottom: String = (0..w).map(|x| buf[(x, last)].symbol()).collect();
         assert!(
             !bottom.contains('❯'),

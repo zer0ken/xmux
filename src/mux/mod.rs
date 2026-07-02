@@ -798,11 +798,11 @@ mod tests {
         }
     }
 
-    /// Regression (Phase Y5): a poll sweep whose enumeration ERRORS must still surface
-    /// `err` on the emitted `Sessions` event. Before, the producer dropped the failure
-    /// from the debug log; the event payload is the signal a transient failure happened
-    /// (the tree shows it, attachments are kept). A remote psmux enumerates via
-    /// list-sessions over ssh, so a failed run becomes `Sessions { err: Some(_) }`.
+    /// A poll sweep whose enumeration ERRORS must still surface `err` on the emitted
+    /// `Sessions` event: the event payload is the signal that a transient failure
+    /// happened (the tree shows it, attachments are kept), not just a debug-log line. A
+    /// remote psmux enumerates via list-sessions over ssh, so a failed run becomes
+    /// `Sessions { err: Some(_) }`.
     #[tokio::test]
     async fn poll_once_surfaces_enumeration_error_on_sessions_event() {
         use crate::host::HostEvent;

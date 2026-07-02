@@ -230,7 +230,7 @@ pub(crate) struct Row {
     pub(crate) status: Option<String>,
     pub(crate) indent: usize,
     pub(crate) reference: RowRef,
-    /// The active window / active pane of its session — rendered bold+italic (replaces a
+    /// The active window / active pane of its session — rendered bold+italic (not a
     /// trailing "(active)" text marker).
     pub(crate) active: bool,
 }

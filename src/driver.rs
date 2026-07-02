@@ -8,9 +8,9 @@
 //! (`crate::mux::{tmux, psmux}`) and OWN the display decision. Each mux
 //! constructs its own driver via [`Mux::driver`](crate::mux::Mux::driver),
 //! so [`driver_for`] is a thin mux-agnostic wrapper (`host.mux.driver()`) that names no
-//! concrete mux type. Each driver is zero-sized — the per-host display STATE stays in
-//! `host.display`/`AttachRegistry`, borrowed through `DriverCtx`, so the boundary moved
-//! the decision without relocating the state (a later step inverts that ownership).
+//! concrete mux type. Each driver is zero-sized — the per-host display STATE lives in
+//! `host.display`/`AttachRegistry`, borrowed through `DriverCtx`, so the driver owns the
+//! DECISION while that state stays supervisor-owned.
 
 use std::sync::{Arc, Mutex};
 
