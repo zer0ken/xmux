@@ -669,12 +669,20 @@ fn kick_rescan(
     hosts: &crate::model::Hosts,
     detecting: &mut HashSet<String>,
     mgr: &mut HostManager,
+    panes_requested: &mut HashSet<String>,
     cols: u16,
     rows: u16,
 ) {
     if !switcher.take_rescan_kick() {
         return;
     }
+    // `request_rescan` cleared every session's panes from `state.panes`; clear the
+    // loop-local pane-request dedup in lockstep so each control host's re-`list_sessions`
+    // reply actually re-issues `list-panes` (`request_session_panes` only asks for
+    // addresses not already in this set — otherwise the subtree stays "loading…" until a
+    // `%`-change or relaunch). A global clear is safe: this set gates only control hosts;
+    // poll hosts re-emit their panes regardless.
+    panes_requested.clear();
     for id in hosts.ids() {
         if let Some(host) = hosts.get(id) {
             if host.detected {
@@ -844,6 +852,7 @@ fn handle_tree_bytes(
     env: &Env,
     hosts: &crate::model::Hosts,
     detecting: &mut HashSet<String>,
+    panes_requested: &mut HashSet<String>,
     ops: &Arc<dyn crate::ui::switcher::Ops>,
     op_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
     tree_width_natural: &mut u16,
@@ -897,7 +906,7 @@ fn handle_tree_bytes(
         *width_changed = true;
     }
     ensure_current_host(mgr, hosts, switcher, cols, rows, tree_width);
-    kick_rescan(switcher, hosts, detecting, mgr, cols, rows);
+    kick_rescan(switcher, hosts, detecting, mgr, panes_requested, cols, rows);
     (focus_terminal, quit, width_delta, toggle_auto_hide)
 }
 
@@ -1231,6 +1240,7 @@ fn handle_mouse_event(
     env: &Env,
     hosts: &crate::model::Hosts,
     detecting: &mut HashSet<String>,
+    panes_requested: &mut HashSet<String>,
     selection: &Selection,
     non_mouse: &mut Vec<u8>,
     mouse_focus_toggle: &mut bool,
@@ -1279,7 +1289,15 @@ fn handle_mouse_event(
                     // actual mux op is committed later from that modal (Enter / y), which
                     // returns its RunOp through handle_key. Here just consume any re-scan
                     // (reconnect) kick and ensure the target's host is connected.
-                    kick_rescan(switcher, hosts, detecting, mgr, cols, body_rows);
+                    kick_rescan(
+                        switcher,
+                        hosts,
+                        detecting,
+                        mgr,
+                        panes_requested,
+                        cols,
+                        body_rows,
+                    );
                     ensure_current_host(mgr, hosts, switcher, cols, body_rows, tree_width);
                 }
                 crate::ui::switcher::MenuOutcome::None => {}
@@ -1434,6 +1452,7 @@ fn handle_stdin_bytes(
     env: &Env,
     hosts: &mut crate::model::Hosts,
     detecting: &mut HashSet<String>,
+    panes_requested: &mut HashSet<String>,
     selection: &Selection,
     term_input: &mut crate::display::input::TermInput,
     tree_decoder: &mut crate::display::decode::KeyDecoder,
@@ -1482,6 +1501,7 @@ fn handle_stdin_bytes(
                     env,
                     hosts,
                     detecting,
+                    panes_requested,
                     selection,
                     &mut non_mouse,
                     &mut mouse_focus_toggle,
@@ -1592,6 +1612,7 @@ fn handle_stdin_bytes(
             env,
             hosts,
             detecting,
+            panes_requested,
             ops,
             op_tx,
             tree_width_natural,
@@ -1677,6 +1698,7 @@ fn handle_stdin_bytes(
                 env,
                 hosts,
                 detecting,
+                panes_requested,
                 ops,
                 op_tx,
                 tree_width_natural,
@@ -2367,7 +2389,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                 let selection = state.selection.clone();
                 let outcome = handle_stdin_bytes(
                     &bytes, &mut mouse_state, &mut switcher, &mut state, &mut registry, &mut mgr,
-                    &env, &mut hosts, &mut detecting, &selection, &mut term_input, &mut tree_decoder, &ops, &op_tx,
+                    &env, &mut hosts, &mut detecting, &mut panes_requested, &selection, &mut term_input, &mut tree_decoder, &ops, &op_tx,
                     &mut tree_width_natural, &mut auto_hide_tree, prefix, cols, body_rows,
                     tree_width,
                 );
@@ -3695,6 +3717,135 @@ mod tests {
     }
 
     #[test]
+    fn r_rescan_reloads_control_host_panes() {
+        // Regression (S4-M5 follow-up): the client-initiated `r` re-scan must not
+        // strand a control host's window/pane subtrees on "loading…". `request_rescan`
+        // clears every session's panes from `state.panes`, so the loop-local
+        // `panes_requested` dedup must be cleared in lockstep — otherwise the re-list's
+        // `ApplyInventory` skips `list-panes` for every already-requested address and
+        // the panes never reload. `kick_rescan` (the single consumer of the rescan
+        // kick) owns that clear.
+        use crate::session::{Pane, Session, WindowPanes};
+        use crate::ui::switcher::{Scan, Switcher};
+        use crate::ui::tree::Group;
+
+        let mut panes = std::collections::HashMap::new();
+        panes.insert(
+            "jup/api".to_string(),
+            vec![WindowPanes {
+                index: 0,
+                name: "w0".into(),
+                active: true,
+                panes: vec![Pane {
+                    index: 0,
+                    active: true,
+                    command: "bash".into(),
+                }],
+            }],
+        );
+        let scan = Scan {
+            groups: vec![Group {
+                source: "jup".into(),
+                err: None,
+                sessions: vec![Session {
+                    source: "jup".into(),
+                    name: "api".into(),
+                    windows: 1,
+                    attached: false,
+                    last_attached: 100,
+                }],
+            }],
+            panes,
+        };
+        let mut state = crate::state::State::from_scan(scan);
+        let mut switcher = Switcher::new(&mut state);
+
+        // A detected CONTROL (tmux) host with a live control client sink.
+        let (htx, _hrx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
+        let mut mgr = HostManager::new(htx);
+        mgr.insert_fake("jup");
+        let mut hosts = crate::model::Hosts::default();
+        let mut host = crate::model::Host::new(
+            crate::machine::ssh("jup".into(), String::new(), "linux".into()),
+            crate::mux::for_binary("tmux"),
+        );
+        host.detected = true;
+        hosts.insert(host);
+
+        let mut registry = AttachRegistry::new();
+        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
+        let worker = DisplayWorker::new(ptx);
+        let (pty_tx, _pty_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
+        let mut detecting = HashSet::new();
+        let mut attach_seq = 0u64;
+
+        // Panes were already loaded + requested during the initial scan.
+        let mut panes_requested: HashSet<String> = HashSet::new();
+        panes_requested.insert("jup/api".into());
+        assert!(
+            state.panes.contains_key("jup/api"),
+            "precondition: panes are loaded before the re-scan"
+        );
+
+        // The `r` re-scan resets the tree to its scanning skeleton and clears panes.
+        switcher.request_rescan(&mut state);
+        assert!(
+            !state.panes.contains_key("jup/api"),
+            "request_rescan cleared the loaded panes"
+        );
+
+        // The loop consumes the kick and re-lists each host.
+        kick_rescan(
+            &mut switcher,
+            &hosts,
+            &mut detecting,
+            &mut mgr,
+            &mut panes_requested,
+            80,
+            24,
+        );
+        // The dedup must no longer block re-requesting this session's panes; otherwise
+        // the re-list below silently skips `list-panes` and the subtree stays "loading…".
+        assert!(
+            !panes_requested.contains("jup/api"),
+            "kick_rescan must clear the pane-request dedup so control-host panes reload"
+        );
+
+        // The re-list reply folds in via ApplyInventory, which re-requests each
+        // session's panes — re-inserting the (now-cleared) address, i.e. issuing list-panes.
+        let sessions = vec![Session {
+            source: "jup".into(),
+            name: "api".into(),
+            windows: 1,
+            attached: false,
+            last_attached: 100,
+        }];
+        run_event_effect(
+            crate::model::EventEffect::ApplyInventory {
+                host: "jup".into(),
+                sessions,
+            },
+            &mut mgr,
+            &mut hosts,
+            &mut registry,
+            &mut switcher,
+            &mut state,
+            &mut panes_requested,
+            &mut detecting,
+            &worker,
+            &pty_tx,
+            &mut attach_seq,
+            80,
+            24,
+            crate::ui::switcher::TREE_WIDTH,
+        );
+        assert!(
+            panes_requested.contains("jup/api"),
+            "ApplyInventory re-requested the session's panes after the re-scan"
+        );
+    }
+
+    #[test]
     fn attach_reply_is_current_only_for_latest_seq() {
         let mut f = std::collections::HashMap::new();
         f.insert("k".to_string(), 5u64);
@@ -4367,6 +4518,7 @@ mod tests {
         let sel = Selection::default();
         let env = fake_env_with_sources(&["local"]);
         let mut detecting = HashSet::new();
+        let mut panes_requested = HashSet::new();
         let mut natural = 48u16;
         let mut hide = false;
         let out = handle_stdin_bytes(
@@ -4379,6 +4531,7 @@ mod tests {
             &env,
             &mut hosts,
             &mut detecting,
+            &mut panes_requested,
             &sel,
             &mut term_input,
             &mut tree_decoder,
@@ -4432,6 +4585,7 @@ mod tests {
         let (op_tx, _r) = tokio::sync::mpsc::unbounded_channel();
         let env = fake_env_with_sources(&["jup"]);
         let mut detecting = HashSet::new();
+        let mut panes_requested = HashSet::new();
         let mut natural = 48u16;
         let mut hide = false;
         macro_rules! feed {
@@ -4446,6 +4600,7 @@ mod tests {
                     &env,
                     &mut hosts,
                     &mut detecting,
+                    &mut panes_requested,
                     &Selection::default(),
                     &mut term_input,
                     &mut tree_decoder,
@@ -4581,6 +4736,7 @@ mod tests {
             let (op_tx, _r) = tokio::sync::mpsc::unbounded_channel();
             let env = fake_env_with_sources(&["local"]);
             let mut detecting = HashSet::new();
+            let mut panes_requested = HashSet::new();
             let mut natural = 48u16;
             let mut hide = false;
 
@@ -4594,6 +4750,7 @@ mod tests {
                 &env,
                 &mut hosts,
                 &mut detecting,
+                &mut panes_requested,
                 &selection,
                 &mut term_input,
                 &mut tree_decoder,
@@ -4675,6 +4832,7 @@ mod tests {
         let mut focus_toggle = false;
         let mut wheel = false;
         let mut detecting = HashSet::new();
+        let mut panes_requested = HashSet::new();
         handle_mouse_event(
             &ev,
             &mut st,
@@ -4685,6 +4843,7 @@ mod tests {
             &env_for_mouse_test(),
             &hosts,
             &mut detecting,
+            &mut panes_requested,
             &sel,
             &mut non_mouse,
             &mut focus_toggle,
