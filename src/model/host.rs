@@ -78,8 +78,8 @@ pub struct Host {
     pub inventory: HostInventory,
     /// Which session each display_key shows + what spawn is in flight.
     pub display: HostDisplay,
-    /// xmux's own display-client tty, captured in memory. Read by the driver's in-place
-    /// switch to build `mux.switch_client_argv(tty, session)`.
+    /// xmux's own display-client tty, captured in memory. Passed to the mux's
+    /// `switch_in_place` so its `SwitchPlan` targets xmux's own display client.
     pub display_tty: DisplayTty,
     pub liveness: Liveness,
     pub(crate) detected: bool,
@@ -142,9 +142,8 @@ impl Host {
     }
 
     /// Record xmux's display-client tty for this host, captured in memory from the
-    /// PTY marker (no `/tmp` file). The supervisor reads it to build a
-    /// `switch-client -c <tty>` (via `mux.switch_client_argv`) that targets xmux's
-    /// own display client only.
+    /// PTY marker (no `/tmp` file). The driver passes it to the mux's `switch_in_place`
+    /// so the resulting `SwitchPlan` targets xmux's own display client only.
     pub fn record_display_tty(&mut self, tty: Option<String>) {
         self.display_tty = DisplayTty(tty);
     }

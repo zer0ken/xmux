@@ -81,6 +81,20 @@ pub(crate) fn reason_is_no_sessions(text: &str) -> bool {
     })
 }
 
+/// An opaque, mux-authored plan for an in-place display-client switch. The driver runs
+/// it BLIND through the host's transport and never inspects which variant it is — the
+/// variant↔lowering mapping is `run_switch_plan`'s job, not the driver's. Each variant
+/// lowers 1:1 to a [`crate::machine::LoweredSwitch`].
+pub enum SwitchPlan {
+    /// Mux argv(s) to run non-interactively in order via the exec path (psmux:
+    /// `switch-client` then `refresh-client`).
+    Exec(Vec<Vec<String>>),
+    /// A raw shell command to run in the host shell (tmux: read the recorded tty file
+    /// and switch+refresh in one shell). A machine with no host shell cannot run it, so
+    /// the driver falls back to a reattach.
+    Shell(String),
+}
+
 /// One mux mux. Methods are the EXACT set the supervisor + control reader +
 /// manage layer call. `enumerate` takes `&Transport` because the per-session model
 /// runs a probe (registry read + one list-sessions); the shared model runs one
@@ -123,46 +137,19 @@ pub trait Mux: Send + Sync {
     /// attach when composing the final connection.
     fn attach_plan(&self, session: &str) -> Vec<String>;
 
-    /// The mux's own `switch-client` argv given the captured display tty + target.
-    /// The driver closes over the host's display tty to move xmux's own display client
-    /// to `session` (the psmux in-place switch). The ONLY mux method that names the tty;
-    /// it does NOT decide local-vs-ssh. The default builds the standard
-    /// `switch-client -c <tty> -t <session>` form; a mux with a divergent verb overrides it.
-    fn switch_client_argv(&self, display_tty: &str, session: &str) -> Vec<String> {
-        vec![
-            self.bin().to_string(),
-            "switch-client".to_string(),
-            "-c".to_string(),
-            display_tty.to_string(),
-            "-t".to_string(),
-            mux::quote_target(session),
-        ]
-    }
-
-    /// The shell prefix the mux's display attach prepends to its remote command so the
-    /// attach shell records its OWN controlling tty before exec'ing the attach — the
-    /// value a later `switch-client -c <tty>` targets, provably xmux's own display
-    /// client and never the user's own attached client. A shared mux (tmux) writes it
-    /// to a per-host file (`tty >FILE`); the read-back side is [`display_tty_read_argv`].
-    /// Out-of-band (a file, not the pty stream) so the Windows ConPTY cannot consume it.
-    /// `None` for a mux that identifies its display client another way (psmux correlates
-    /// by the session the client shows).
-    ///
-    /// [`display_tty_read_argv`]: Mux::display_tty_read_argv
-    fn display_tty_record_prefix(&self, _host_key: &str) -> Option<String> {
-        None
-    }
-
-    /// A self-contained shell command that moves the mux's display client to `session`
-    /// by READING the tty it recorded via [`display_tty_record_prefix`] — so the switch
-    /// targets xmux's OWN display client and never the user's own attached client (the
-    /// failure of identifying the client by `list-clients`, where both look alike). Reads
-    /// the file in-shell at switch time, so the value is always the live attach's current
-    /// tty (no stale capture). Run as a remote raw command; `None` for a mux that uses no
-    /// recorded-tty strategy.
-    ///
-    /// [`display_tty_record_prefix`]: Mux::display_tty_record_prefix
-    fn switch_via_recorded_tty_cmd(&self, _host_key: &str, _session: &str) -> Option<String> {
+    /// An opaque plan that moves xmux's OWN display client to `session` IN PLACE (no
+    /// teardown). The driver runs the returned [`SwitchPlan`] blind through the transport,
+    /// never inspecting the variant; the `tty >file` / read-back mechanism a shared mux
+    /// uses stays inside the mux family, not on this boundary. `display_tty` is the
+    /// captured tty of xmux's display client — psmux targets it directly; tmux ignores it
+    /// (it reads the tty its attach recorded to a per-host file). `None` (the default) for
+    /// a mux that supports no in-place switch, so the driver reattaches instead.
+    fn switch_in_place(
+        &self,
+        _host_key: &str,
+        _session: &str,
+        _display_tty: Option<&str>,
+    ) -> Option<SwitchPlan> {
         None
     }
 

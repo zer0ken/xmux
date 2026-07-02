@@ -28,9 +28,9 @@ pub enum EventSource {
     Poll { interval_ms: u64 },
 }
 
-/// xmux's own display-client tty, captured in memory (not a `/tmp` file). Read by
-/// `Mux::switch_client_argv` to build `switch-client -c <tty>`, and filtered against
-/// by `DeathSignal::ControlNotice`.
+/// xmux's own display-client tty, captured in memory (not a `/tmp` file). Passed to
+/// `Mux::switch_in_place` so its `SwitchPlan` targets xmux's display client, and filtered
+/// against by `DeathSignal::ControlNotice`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DisplayTty(pub Option<String>);
 

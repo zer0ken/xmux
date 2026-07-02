@@ -38,10 +38,11 @@ and owns the concrete switch/reattach decision. `Transport` lowers the machine e
 
 ## Module Seams
 
-- `mod.rs` — `Psmux` (`Mux`), the poll cadence constant (`PSMUX_POLL_MS`), and the
-  `switch_client_argv` the driver's in-place switch calls.
+- `mod.rs` — `Psmux` (`Mux`), the poll cadence constant (`PSMUX_POLL_MS`), and
+  `switch_in_place` (the exec `SwitchPlan` — `switch-client` + `refresh-client` — the
+  driver's in-place switch runs).
 - `display.rs` — `PsmuxDriver` (`MuxDriver`) plus the psmux-only helpers
-  `refresh_client_lowered`, `parse_psmux_client_tty`, and `spawn_local_psmux_tty_capture`.
+  `parse_psmux_client_tty` and `spawn_local_psmux_tty_capture`.
   Re-exported from `mod.rs` as `crate::mux::psmux::PsmuxDriver`.
 - `registry.rs` — the `~/.psmux` per-machine session registry that backs local
   `enumerate` (existence set) and the merge with one list-sessions detail row.

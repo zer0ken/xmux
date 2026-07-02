@@ -485,6 +485,35 @@ pub(crate) fn run_lowered(lowered: crate::machine::LoweredSwitch) {
     });
 }
 
+/// Runs a mux's opaque [`crate::mux::SwitchPlan`] BLIND: the driver hands the whole plan
+/// here and this lowers each variant through the host's transport, never naming the mux
+/// type. `Exec` argv(s) run non-interactively in order; a `Shell` command runs over the
+/// host's raw shell (`raw_ssh_argv`). Returns whether the switch was issued — `false` when
+/// a `Shell` plan has no host shell (a local machine), so the caller falls back to a
+/// reattach. The variant→lowering mapping is 1:1 with [`crate::machine::LoweredSwitch`].
+pub(crate) fn run_switch_plan(host: &crate::model::Host, plan: crate::mux::SwitchPlan) -> bool {
+    use crate::machine::LoweredSwitch;
+    use crate::mux::SwitchPlan;
+    match plan {
+        SwitchPlan::Exec(argvs) => {
+            for a in &argvs {
+                let (cmd, args) = host.transport.exec_argv(false, a);
+                let mut v = vec![cmd];
+                v.extend(args);
+                run_lowered(LoweredSwitch::Local(v));
+            }
+            true
+        }
+        SwitchPlan::Shell(cmd) => match host.transport.raw_ssh_argv(&cmd) {
+            Some(argv) => {
+                run_lowered(LoweredSwitch::RawSsh(argv));
+                true
+            }
+            None => false,
+        },
+    }
+}
+
 /// Keeps a source's display terminal in sync with its sessions by delegating to the
 /// host's driver, which owns the warm/reap decision (shared warms one host PTY on the
 /// first session and reaps it when empty; per-session is selected on demand and only

@@ -4,9 +4,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::app::runtime::{
-    host_selection_key, request_attach, run_lowered, terminal_view_size, Selection,
-};
+use crate::app::runtime::{host_selection_key, request_attach, terminal_view_size, Selection};
 use crate::display::grid::Grid;
 use crate::driver::{lower_select_window, DriverCtx, MuxDriver};
 use crate::model::Host;
@@ -85,21 +83,18 @@ impl MuxDriver for TmuxDriver {
             // screen until the new content lands (stale-while-revalidate) — no blank frame.
             let switched = host
                 .mux
-                .switch_via_recorded_tty_cmd(&key, &sel.session)
-                .and_then(|cmd| host.transport.raw_ssh_argv(&cmd))
-                .map(|argv| {
-                    tracing::info!(
-                        host = %sel.source,
-                        model = "shared",
-                        decision = "switch",
-                        reason = "recorded-tty",
-                        session = %sel.session,
-                        "display_show"
-                    );
-                    run_lowered(crate::machine::LoweredSwitch::RawSsh(argv));
-                })
-                .is_some();
+                .switch_in_place(&key, &sel.session, None)
+                .map(|plan| crate::app::runtime::run_switch_plan(host, plan))
+                .unwrap_or(false);
             if switched {
+                tracing::info!(
+                    host = %sel.source,
+                    model = "shared",
+                    decision = "switch",
+                    reason = "recorded-tty",
+                    session = %sel.session,
+                    "display_show"
+                );
                 host.display.set_shows(&key, &sel.session);
             } else if !host.display.in_flight.contains_key(&key) {
                 // No in-place switch (a LOCAL shared host has no remote shell to record /
@@ -229,17 +224,16 @@ impl MuxDriver for TmuxDriver {
     }
 }
 
-/// Folds the mux's display-tty record prefix into a REMOTE shared attach's command
-/// (the last argv element), so the attach shell records its OWN tty before exec'ing
-/// the attach — the value a later in-place `switch-client -c <tty>` targets (xmux's
-/// own display client, never the user's own attached client). A LOCAL attach (no shell
-/// to run the snippet) or a mux with no record strategy is returned unchanged.
+/// Folds the tmux record prefix into a REMOTE shared attach's command (the last argv
+/// element), so the attach shell records its OWN tty before exec'ing the attach — the
+/// value a later `switch_in_place` reads back to target xmux's own display client, never
+/// the user's own attached client. A LOCAL attach has no shell to run the snippet, so it
+/// is returned unchanged.
 fn with_display_tty_record(mut argv: Vec<String>, host: &Host, host_key: &str) -> Vec<String> {
     if host.transport.is_remote() {
-        if let Some(prefix) = host.mux.display_tty_record_prefix(host_key) {
-            if let Some(last) = argv.last_mut() {
-                *last = format!("{prefix}{last}");
-            }
+        let prefix = super::record_prefix(host_key);
+        if let Some(last) = argv.last_mut() {
+            *last = format!("{prefix}{last}");
         }
     }
     argv

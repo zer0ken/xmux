@@ -24,7 +24,7 @@ its display driver) and is re-exported from `mod.rs`:
   attach helper; `tmux/control_proto.rs` holds its pure, headlessly-testable `-CC`
   wire functions behind `ControlProtocol`. See `tmux/AGENTS.md`.
 - `psmux/mod.rs` — `Psmux` and its `Mux` impl, plus its poll cadence constant
-  (`PSMUX_POLL_MS`) and `switch_client_argv`; `psmux/display.rs` — `PsmuxDriver`
+  (`PSMUX_POLL_MS`) and `switch_in_place` (an exec `SwitchPlan`); `psmux/display.rs` — `PsmuxDriver`
   (`MuxDriver` impl) and its tty-capture/refresh helpers; `psmux/registry.rs` is the
   `~/.psmux` per-machine session registry that backs psmux `enumerate` (one server per
   session, no aggregate `list-sessions`). See `psmux/AGENTS.md`.

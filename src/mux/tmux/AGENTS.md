@@ -30,9 +30,9 @@ machine execution (local `-S` / `ssh -tt`); the tmux family never hardcodes ssh.
 
 ## Module Seams
 
-- `mod.rs` — `Tmux` (`Mux`), the per-host display-tty file helpers
-  (`display_tty_path`, the record/switch commands via `display_tty_record_prefix` /
-  `switch_via_recorded_tty_cmd`), the control argv, and `TmuxControl`.
+- `mod.rs` — `Tmux` (`Mux`), the per-host display-tty file helpers (`display_tty_path`,
+  the family-private `record_prefix`, and `switch_in_place` returning a shell `SwitchPlan`
+  that reads the recorded tty), the control argv, and `TmuxControl`.
 - `display.rs` — `TmuxDriver` (`MuxDriver`) plus the tmux-only attach helper
   `with_display_tty_record`. Re-exported from `mod.rs` as `crate::mux::tmux::TmuxDriver`.
 - `control_proto.rs` — the pure, headlessly-testable `-CC` line classification, the

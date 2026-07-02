@@ -91,18 +91,35 @@ impl Mux for Psmux {
         ]
     }
 
-    fn switch_client_argv(&self, display_tty: &str, session: &str) -> Vec<String> {
-        // The psmux driver's in-place switch (`PsmuxDriver::show`) calls this to move
-        // xmux's own display client across per-session servers on the default socket
-        // (`switch-client -c <tty> -t <session>`). Uses the psmux binary.
-        vec![
-            self.bin.clone(),
-            "switch-client".to_string(),
-            "-c".to_string(),
-            display_tty.to_string(),
-            "-t".to_string(),
-            mux::quote_target(session),
-        ]
+    fn switch_in_place(
+        &self,
+        _host_key: &str,
+        session: &str,
+        display_tty: Option<&str>,
+    ) -> Option<SwitchPlan> {
+        // The psmux in-place switch moves xmux's own display client across per-session
+        // servers on the default socket (`switch-client -c <tty> -t <session>`), then
+        // forces a full repaint (`refresh-client -t <tty>`) so the new session fills the
+        // grid. It runs ONLY with a non-empty captured tty; otherwise `None`, so the
+        // driver reattaches instead (the 4a5f053 guard — no regression).
+        display_tty.filter(|t| !t.is_empty()).map(|tty| {
+            SwitchPlan::Exec(vec![
+                vec![
+                    self.bin.clone(),
+                    "switch-client".to_string(),
+                    "-c".to_string(),
+                    tty.to_string(),
+                    "-t".to_string(),
+                    mux::quote_target(session),
+                ],
+                vec![
+                    self.bin.clone(),
+                    "refresh-client".to_string(),
+                    "-t".to_string(),
+                    tty.to_string(),
+                ],
+            ])
+        })
     }
 
     fn control_argv(&self) -> Option<Vec<String>> {
@@ -158,6 +175,31 @@ mod tests {
 
     fn ssh(alias: &str) -> Box<dyn Transport> {
         crate::machine::ssh(alias.into(), String::new(), "linux".into())
+    }
+
+    #[test]
+    fn psmux_switch_in_place_is_exec_plan_with_tty_and_none_without() {
+        // With a captured tty the psmux in-place switch is an exec plan: switch-client to
+        // move xmux's own display client across per-session servers, then refresh-client
+        // to force a full repaint. Without a tty there is no plan (the driver reattaches —
+        // the 4a5f053 guard), and an empty tty is treated the same.
+        let m = psmux();
+        let SwitchPlan::Exec(v) = m
+            .switch_in_place("local", "target", Some("/dev/pts/3"))
+            .expect("a captured tty yields an in-place exec plan")
+        else {
+            panic!("psmux switches via an exec plan, not a shell command");
+        };
+        assert_eq!(
+            v[0].iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["psmux", "switch-client", "-c", "/dev/pts/3", "-t", "target"]
+        );
+        assert_eq!(
+            v[1].iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["psmux", "refresh-client", "-t", "/dev/pts/3"]
+        );
+        assert!(m.switch_in_place("local", "target", None).is_none());
+        assert!(m.switch_in_place("local", "target", Some("")).is_none());
     }
 
     #[tokio::test]
