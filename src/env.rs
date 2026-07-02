@@ -233,7 +233,9 @@ impl Ops for EnvOps {
 
     async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session> {
         let src = self.source(source)?;
-        let assigned = with_timeout(DETAIL_TIMEOUT, manage::create(&src, name)).await?;
+        let host = src.host();
+        let assigned =
+            with_timeout(DETAIL_TIMEOUT, manage::create(&host, src.run_with(), name)).await?;
         Ok(Session {
             source: source.to_string(),
             name: assigned,
@@ -244,33 +246,59 @@ impl Ops for EnvOps {
 
     async fn new_window(&self, source: &str, session: &str, name: &str) -> anyhow::Result<()> {
         let src = self.source(source)?;
-        with_timeout(DETAIL_TIMEOUT, manage::new_window(&src, session, name)).await
+        let host = src.host();
+        with_timeout(
+            DETAIL_TIMEOUT,
+            manage::new_window(&host, src.run_with(), session, name),
+        )
+        .await
     }
 
     async fn split_window(&self, source: &str, target: &str, vertical: bool) -> anyhow::Result<()> {
         let src = self.source(source)?;
-        with_timeout(DETAIL_TIMEOUT, manage::split_window(&src, target, vertical)).await
+        let host = src.host();
+        with_timeout(
+            DETAIL_TIMEOUT,
+            manage::split_window(&host, src.run_with(), target, vertical),
+        )
+        .await
     }
 
     async fn kill(&self, s: &Session) -> anyhow::Result<()> {
         let src = self.source(&s.source)?;
-        with_timeout(DETAIL_TIMEOUT, manage::kill(&src, &s.name)).await
+        let host = src.host();
+        with_timeout(DETAIL_TIMEOUT, manage::kill(&host, src.run_with(), &s.name)).await
     }
 
     async fn rename(&self, s: &Session, new_name: &str) -> anyhow::Result<()> {
         let src = self.source(&s.source)?;
-        with_timeout(DETAIL_TIMEOUT, manage::rename(&src, &s.name, new_name)).await
+        let host = src.host();
+        with_timeout(
+            DETAIL_TIMEOUT,
+            manage::rename(&host, src.run_with(), &s.name, new_name),
+        )
+        .await
     }
 
     async fn panes(&self, s: &Session) -> anyhow::Result<Vec<WindowPanes>> {
         let src = self.source(&s.source)?;
+        let host = src.host();
         let _permit = self.sem.acquire().await?;
-        with_timeout(DETAIL_TIMEOUT, manage::panes(&src, &s.name)).await
+        with_timeout(
+            DETAIL_TIMEOUT,
+            manage::panes(&host, src.run_with(), &s.name),
+        )
+        .await
     }
 
     async fn kill_window(&self, source: &str, target: &str) -> anyhow::Result<()> {
         let src = self.source(source)?;
-        with_timeout(DETAIL_TIMEOUT, manage::kill_window(&src, target)).await
+        let host = src.host();
+        with_timeout(
+            DETAIL_TIMEOUT,
+            manage::kill_window(&host, src.run_with(), target),
+        )
+        .await
     }
 
     async fn rename_window(
@@ -280,9 +308,10 @@ impl Ops for EnvOps {
         new_name: &str,
     ) -> anyhow::Result<()> {
         let src = self.source(source)?;
+        let host = src.host();
         with_timeout(
             DETAIL_TIMEOUT,
-            manage::rename_window(&src, target, new_name),
+            manage::rename_window(&host, src.run_with(), target, new_name),
         )
         .await
     }
