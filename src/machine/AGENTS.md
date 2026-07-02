@@ -36,7 +36,7 @@ imports a mux type or a `Source`.
 
 ## Invariants
 
-- `Transport` names no mux and no server model. `is_remote()` shapes ssh options only;
+- `Transport` names no mux and no server model. `is_remote()` is a semantic ssh-vs-local marker exercised by tests, read on no production path;
   the capability predicates `runs_through_shell()` (a display attach runs through a host
   shell — the tty-record gate) and `local_registry_scope()` (this box's mux registry is
   authoritative — the registry-merge / local `list-clients` gate) express what the mux
