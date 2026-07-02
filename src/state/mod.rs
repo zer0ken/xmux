@@ -272,9 +272,10 @@ impl State {
     /// event (the active-window marker, a pane subtree, a poll enumeration, the
     /// unreachable mark) — driven through the switcher, which rebuilds the tree against
     /// `&mut State`. The follow-ups that need a mux handle the state layer must not
-    /// hold (a host client's inventory lock, a control-mode probe, the attach registry,
-    /// the detection dispatch) are returned as [`EventEffect`]s for the run loop — the
-    /// sole executor — to carry out (the AGENTS rule: no IO/registry mutation here).
+    /// hold (the single-owner inventory fold into `model::Host`, a control-mode probe,
+    /// the attach registry, the detection dispatch) are returned as [`EventEffect`]s for
+    /// the run loop — the sole executor — to carry out (the AGENTS rule: no IO/registry
+    /// mutation here).
     ///
     /// `connected` (the run loop's once-connected set) enters as data, like the clock on
     /// `Tick`: an `Exited` of a once-connected host is a transient drop that keeps the
@@ -291,11 +292,12 @@ impl State {
         use crate::host::HostEvent;
         use crate::model::EventEffect;
         match ev {
-            HostEvent::Connected { host } | HostEvent::Inventory { host } => {
-                // The inventory lives behind the host client's lock the state layer
-                // cannot reach; record the connected mark and let the loop apply it.
+            HostEvent::Connected { host, sessions } | HostEvent::Inventory { host, sessions } => {
+                // The reader carries the parsed sessions on the event; record the
+                // connected mark and hand the sessions to the loop, which folds them
+                // into `model::Host.inventory` (the single owner) and applies the tree.
                 connected.insert(host.clone());
-                vec![EventEffect::ApplyInventory { host }]
+                vec![EventEffect::ApplyInventory { host, sessions }]
             }
             HostEvent::Changed { host } => vec![EventEffect::Refetch { host }],
             HostEvent::ActiveWindowChanged {
@@ -977,29 +979,40 @@ mod tests {
 
     #[test]
     fn apply_event_connected_marks_connected_and_emits_apply_inventory() {
-        // Connected/Inventory's data lives behind the host client's lock, which State
-        // cannot reach — so apply_event records the connected mark and hands the
-        // inventory apply back to the loop as an effect.
+        // The reader carries the parsed sessions on Connected/Inventory; apply_event
+        // records the connected mark and hands the sessions to the loop as an effect
+        // (which folds them into `model::Host.inventory` — the single owner).
         let (mut state, mut sw) = with_switcher(one_session_scan());
         let mut connected = HashSet::new();
+        let sessions = vec![crate::session::Session {
+            source: "jup".into(),
+            name: "api".into(),
+            ..Default::default()
+        }];
         let effects = state.apply_event(
-            HostEvent::Connected { host: "jup".into() },
+            HostEvent::Connected {
+                host: "jup".into(),
+                sessions: sessions.clone(),
+            },
             &mut sw,
             &mut connected,
         );
         assert!(connected.contains("jup"), "Connected records the host");
         assert!(
-            matches!(effects.as_slice(), [EventEffect::ApplyInventory { host }] if host == "jup"),
-            "Connected returns one ApplyInventory effect: {effects:?}"
+            matches!(effects.as_slice(), [EventEffect::ApplyInventory { host, sessions }] if host == "jup" && sessions.len() == 1),
+            "Connected carries its sessions into one ApplyInventory effect: {effects:?}"
         );
         // Inventory behaves identically (the arm is shared).
         let effects = state.apply_event(
-            HostEvent::Inventory { host: "jup".into() },
+            HostEvent::Inventory {
+                host: "jup".into(),
+                sessions,
+            },
             &mut sw,
             &mut connected,
         );
         assert!(
-            matches!(effects.as_slice(), [EventEffect::ApplyInventory { host }] if host == "jup"),
+            matches!(effects.as_slice(), [EventEffect::ApplyInventory { host, sessions }] if host == "jup" && sessions.len() == 1),
         );
     }
 

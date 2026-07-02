@@ -189,12 +189,13 @@ as invariants, seams, and pitfalls — never as change history or phase narrativ
   intended shape keeps pure tree transforms in `ui/tree.rs`, slow side-effecting
   operations in `ui/ops.rs`, and moves smaller UI surfaces behind clearer module
   seams as the TUI is decomposed.
-- Per-host metadata ownership is not fully settled. `model::Host` owns domain
-  state for a host and also contains a `control` slot plus
-  `ensure_control_client`, while `host::HostManager` currently owns live control
-  clients and poll tasks. Before changing either area, confirm which module is
-  meant to own live metadata mechanisms and avoid adding a third per-host
-  registry.
+- Per-host session/window inventory has a single owner: `model::Host.inventory`.
+  Both metadata paths feed it through `HostEvent`s — the control reader carries
+  its parsed sessions on `Connected`/`Inventory` and pane subtrees on `Panes`, and
+  the poll task carries `Sessions`/`Panes`; the run loop folds them in and rebuilds
+  the tree from it. `host::HostManager` owns the live mechanisms (control clients
+  and poll tasks). Keep live process/task ownership out of `model::Host`, and do
+  not add a third per-host registry.
 - The migration boundary between `Env`/`Source` and `Hosts`/`Host` is not fully
   specified. `Hosts` is intended to become the per-machine owner, but `Env` and
   `Source` still drive CLI commands, discovery, `Ops`, and app source lookup.

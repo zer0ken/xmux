@@ -98,14 +98,14 @@ impl Hosts {
     }
 
     /// Routes one `HostEvent` (the metadata reader's output) to the host it names,
-    /// folding Host-owned liveness state. The inventory sessions for
-    /// `Connected`/`Inventory` are applied by the caller from the reader's shared
-    /// `HostInventory` (or via `Host::enumerate`); this sets liveness. An unknown host
-    /// id is a no-op — there is no second registry to grow a ghost host.
+    /// folding Host-owned liveness state. The sessions carried by `Connected`/`Inventory`
+    /// are folded into `model::Host.inventory` by the run loop (or via `Host::enumerate`);
+    /// this sets liveness. An unknown host id is a no-op — there is no second registry to
+    /// grow a ghost host.
     pub fn apply_host_event(&mut self, ev: &crate::host::HostEvent) {
         use crate::host::HostEvent::*;
         match ev {
-            Connected { host } | Inventory { host } => {
+            Connected { host, .. } | Inventory { host, .. } => {
                 if let Some(h) = self.get_mut(host) {
                     h.liveness = Liveness::Live;
                 }
@@ -266,7 +266,10 @@ mod tests {
             std::path::Path::new("/x"),
             None,
         );
-        hosts.apply_host_event(&HostEvent::Connected { host: "jup".into() });
+        hosts.apply_host_event(&HostEvent::Connected {
+            host: "jup".into(),
+            sessions: vec![],
+        });
         assert_eq!(hosts.get("jup").unwrap().liveness, Liveness::Live);
     }
 
@@ -320,6 +323,7 @@ mod tests {
         // No "ghost" host: routing an event to an id not in the map changes nothing.
         hosts.apply_host_event(&HostEvent::Connected {
             host: "ghost".into(),
+            sessions: vec![],
         });
         assert!(hosts.get("ghost").is_none());
     }

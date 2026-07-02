@@ -12,11 +12,13 @@ attachments (in `src/display`) own the pixels.
 Each remote host gets ONE `-CC` control-mode client (`HostClient`), owned and
 reaped by `HostManager`. A reader thread parses control-mode notifications into
 `HostEvent`s (via `run_reader`); a writer thread turns queued `HostCmd`s into the
-exact bytes to send (via `run_writer`). `HostInventory` holds the sessions and
-per-window panes, seeded from list-sessions/list-panes and kept live by
-notifications. `PendingReply` correlates a control command with its reply so the
-right `HostEvent` is emitted. The app reads the inventory to (re)build the
-tree and folds `HostEvent`s through `State::apply_event`.
+exact bytes to send (via `run_writer`). The reader holds no inventory of its own:
+it parses each list-sessions / list-panes block and carries the result on a
+`HostEvent` (`Connected`/`Inventory` carry sessions; `Panes` carries a subtree —
+the same carriers the poll path uses). `PendingReply` correlates a control command
+with its reply so the right `HostEvent` is emitted. The app folds those events
+through `State::apply_event` into `model::Host.inventory` — the single owner of
+per-host session/window inventory — and (re)builds the tree from it.
 
 ## Module Seams
 

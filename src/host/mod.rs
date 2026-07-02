@@ -54,10 +54,20 @@ pub enum HostCmd {
 
 /// A parsed event the reader emits to the app's `select!` loop.
 pub enum HostEvent {
-    /// First list-sessions returned.
-    Connected { host: String },
-    /// A list-sessions / list-panes reply resolved — re-apply the inventory.
-    Inventory { host: String },
+    /// First list-sessions returned. Carries the parsed sessions so the loop folds
+    /// them into `model::Host.inventory` (the single owner) — the reader keeps no
+    /// shared inventory of its own.
+    Connected {
+        host: String,
+        sessions: Vec<Session>,
+    },
+    /// A list-sessions reply resolved — carries the parsed sessions for the loop to
+    /// fold into `model::Host.inventory` and re-apply to the tree. (Pane subtrees
+    /// arrive separately as [`HostEvent::Panes`], the same carrier the poll path uses.)
+    Inventory {
+        host: String,
+        sessions: Vec<Session>,
+    },
     /// A `%`-notification reports the server's session/window STRUCTURE CHANGED
     /// (added, closed, renamed, or the set of sessions) — the app must REFETCH
     /// (re-run list-sessions + re-list panes), since the notification carries only an
@@ -115,17 +125,20 @@ pub enum HostEvent {
         sessions: Vec<Session>,
         err: Option<String>,
     },
-    /// A POLL host's per-session window/pane subtree resolved (keyed by the session's
-    /// `source/name` address), emitted by the poll task after `Sessions`.
+    /// A per-session window/pane subtree resolved (keyed by the session's
+    /// `source/name` address). Emitted by the poll task after `Sessions`, and by the
+    /// control reader when a `list-panes` block resolves — both paths carry pane data
+    /// the same way, applied purely by `apply_event`.
     Panes {
         address: String,
         panes: Vec<WindowPanes>,
     },
 }
 
-/// The reader's shared state the app also reads.
+/// The reader's shared liveness flag the app also reads. The parsed inventory is no
+/// longer held here — the reader carries sessions/panes on `HostEvent`s and the loop
+/// folds them into `model::Host.inventory` (the single owner).
 pub struct ReaderState {
-    pub inventory: Arc<Mutex<HostInventory>>,
     pub connecting: Arc<AtomicBool>,
 }
 
@@ -240,8 +253,9 @@ pub fn run_reader<E: FnMut(HostEvent)>(
     });
 }
 
-/// Resolves a closed `%begin…%end` block by applying its body to the inventory
-/// and emitting the follow-up events. `proto` supplies the mux-specific parse of a
+/// Resolves a closed `%begin…%end` block by parsing its body and carrying the result
+/// on a `HostEvent` — the loop folds it into `model::Host.inventory` (the single
+/// owner); the reader holds no inventory. `proto` supplies the mux-specific parse of a
 /// `list-clients` body (the display-client tty), so the reader names no tmux wire detail.
 fn resolve_block<E: FnMut(HostEvent)>(
     host: &str,
@@ -255,22 +269,22 @@ fn resolve_block<E: FnMut(HostEvent)>(
         PendingReply::ListSessions => {
             let out = body.join("\n");
             let sessions = parse_sessions(host, &out);
-            state.inventory.lock().unwrap().sessions = sessions;
             clear_connecting(state);
             emit(HostEvent::Connected {
                 host: host.to_string(),
+                sessions: sessions.clone(),
             });
             emit(HostEvent::Inventory {
                 host: host.to_string(),
+                sessions,
             });
         }
         PendingReply::ListPanes { address } => {
             let out = body.join("\n");
             let panes = parse_panes(&out);
-            state.inventory.lock().unwrap().panes.insert(address, panes);
-            emit(HostEvent::Inventory {
-                host: host.to_string(),
-            });
+            // Carry the subtree on the same `Panes` event the poll path uses — the loop
+            // applies it purely, no shared inventory to write.
+            emit(HostEvent::Panes { address, panes });
         }
         PendingReply::ActiveWindow => {
             // `display-message -p '#{session_name}\t#{window_index}'` prints one line:
@@ -362,14 +376,13 @@ pub fn run_writer<W: Write>(
 }
 
 /// One control-mode (`-CC`) host process: a piped child plus its reader and writer
-/// OS threads. The app holds the `cmd_tx` to drive it and reads `inventory`/
-/// `connecting` for the tree view. This is a METADATA / change-event /
-/// `select-window` channel only — the per-session PTY attachments own the pixels.
+/// OS threads. The app holds the `cmd_tx` to drive it and reads `connecting` for the
+/// spinner; the session/window inventory is carried on `HostEvent`s and owned by
+/// `model::Host.inventory`. This is a METADATA / change-event / `select-window`
+/// channel only — the per-session PTY attachments own the pixels.
 pub struct HostClient {
     /// Stable host id (the source name), echoed back on every `HostEvent`.
     pub host: String,
-    /// Live session/window inventory, kept current by the reader.
-    pub inventory: Arc<Mutex<HostInventory>>,
     /// True until any wire activity proves the channel is live.
     pub connecting: Arc<AtomicBool>,
     /// Current client size; updated by `resize`.
@@ -447,7 +460,6 @@ impl HostClient {
             let _ = std::io::copy(&mut stderr, &mut std::io::sink());
         });
 
-        let inventory = Arc::new(Mutex::new(HostInventory::new()));
         let connecting = Arc::new(AtomicBool::new(true));
         let in_flight: InFlight = Arc::new(Mutex::new(VecDeque::new()));
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<HostCmd>();
@@ -455,7 +467,6 @@ impl HostClient {
         // Reader thread: stdout lines → state machine; events to the async loop via
         // the non-blocking, thread-safe UnboundedSender.
         let state = ReaderState {
-            inventory: Arc::clone(&inventory),
             connecting: Arc::clone(&connecting),
         };
         let reader_host = host.clone();
@@ -489,7 +500,6 @@ impl HostClient {
 
         Ok(HostClient {
             host,
-            inventory,
             connecting,
             size: (cols, rows),
             proto,
@@ -866,17 +876,30 @@ mod tests {
         }
     }
 
-    /// Builds a `ReaderState` with an empty inventory and `connecting = true`. The
-    /// control client is metadata-only now (no grid).
+    /// Builds a `ReaderState` with `connecting = true`. The control client is
+    /// metadata-only now (no grid); the parsed inventory rides on `HostEvent`s.
     fn test_state(_cols: u16, _rows: u16) -> ReaderState {
         ReaderState {
-            inventory: Arc::new(Mutex::new(HostInventory::new())),
             connecting: Arc::new(AtomicBool::new(true)),
         }
     }
 
+    /// The sessions the reader carried on its first `Inventory` event — the parsed
+    /// list-sessions result the loop folds into `model::Host.inventory`.
+    fn carried_sessions(events: &[HostEvent]) -> Vec<Session> {
+        events
+            .iter()
+            .find_map(|e| match e {
+                HostEvent::Inventory { sessions, .. } => Some(sessions.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
     #[test]
     fn reader_resolves_list_sessions_block_into_inventory() {
+        // The reader no longer holds a shared inventory: the parsed sessions ride on
+        // the Connected + Inventory events for the loop to fold into `model::Host`.
         let state = test_state(80, 24);
         let in_flight: InFlight = Default::default();
         in_flight
@@ -898,13 +921,30 @@ mod tests {
             &in_flight,
             |e| events.push(e),
         );
-        let inv = state.inventory.lock().unwrap();
-        assert_eq!(inv.sessions.len(), 1);
-        assert_eq!(inv.sessions[0].name, "api");
-        assert_eq!(inv.sessions[0].source, "jupiter06");
-        assert!(events
+        // Both Connected and Inventory carry the parsed session.
+        let carried = |e: &HostEvent| match e {
+            HostEvent::Connected { sessions, .. } | HostEvent::Inventory { sessions, .. } => {
+                Some(sessions.clone())
+            }
+            _ => None,
+        };
+        let connected = events
             .iter()
-            .any(|e| matches!(e, HostEvent::Connected { .. })));
+            .find_map(|e| {
+                matches!(e, HostEvent::Connected { .. })
+                    .then(|| carried(e))
+                    .flatten()
+            })
+            .expect("a Connected event carrying sessions");
+        assert_eq!(connected.len(), 1);
+        assert_eq!(connected[0].name, "api");
+        assert_eq!(connected[0].source, "jupiter06");
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, HostEvent::Inventory { sessions, .. } if sessions.len() == 1)),
+            "an Inventory event carries the same session"
+        );
         assert!(!state.connecting.load(std::sync::atomic::Ordering::Acquire));
     }
 
@@ -926,10 +966,15 @@ mod tests {
         mgr.ensure("jupiter06", &host, 80, 24)
             .expect("spawn control client");
         let deadline = Instant::now() + Duration::from_secs(20);
+        let mut sessions = Vec::new();
         let mut connected = false;
         while !connected && Instant::now() < deadline {
             match tokio::time::timeout(Duration::from_secs(20), rx.recv()).await {
-                Ok(Some(HostEvent::Connected { .. })) => connected = true,
+                Ok(Some(HostEvent::Connected { sessions: s, .. })) => {
+                    // The event carries the parsed inventory (no shared lock to read).
+                    sessions = s;
+                    connected = true;
+                }
                 Ok(Some(_)) => continue,
                 _ => break,
             }
@@ -938,14 +983,6 @@ mod tests {
             connected,
             "control client must connect to jupiter06 + resolve list-sessions"
         );
-        let sessions = mgr
-            .get("jupiter06")
-            .unwrap()
-            .inventory
-            .lock()
-            .unwrap()
-            .sessions
-            .clone();
         eprintln!(
             "jupiter06 sessions: {:?}",
             sessions.iter().map(|s| &s.name).collect::<Vec<_>>()
@@ -1193,21 +1230,22 @@ mod tests {
                 "%end 1 2 1".to_string(),
             ]
             .into_iter();
+            let mut events = Vec::new();
             run_reader(
                 "jupiter06",
                 test_control_proto(),
                 lines,
                 &state,
                 &in_flight,
-                |_| {},
+                |e| events.push(e),
             );
-            let inv = state.inventory.lock().unwrap();
+            let sessions = carried_sessions(&events);
             assert_eq!(
-                inv.sessions.len(),
+                sessions.len(),
                 1,
                 "flags=0 banner stole the ListSessions entry"
             );
-            assert_eq!(inv.sessions[0].name, "api");
+            assert_eq!(sessions[0].name, "api");
         }
         // GLUED framing: the DCS prefixed onto the flags=0 banner `%begin` line.
         {
@@ -1225,21 +1263,22 @@ mod tests {
                 "%end 1 2 1".to_string(),
             ]
             .into_iter();
+            let mut events = Vec::new();
             run_reader(
                 "jupiter06",
                 test_control_proto(),
                 lines,
                 &state,
                 &in_flight,
-                |_| {},
+                |e| events.push(e),
             );
-            let inv = state.inventory.lock().unwrap();
+            let sessions = carried_sessions(&events);
             assert_eq!(
-                inv.sessions.len(),
+                sessions.len(),
                 1,
                 "glued flags=0 banner stole the ListSessions entry"
             );
-            assert_eq!(inv.sessions[0].name, "api");
+            assert_eq!(sessions[0].name, "api");
         }
     }
 
@@ -1266,21 +1305,22 @@ mod tests {
             "%end 1 11 0".to_string(),
         ]
         .into_iter();
+        let mut events = Vec::new();
         run_reader(
             "jupiter00",
             test_control_proto(),
             lines,
             &state,
             &in_flight,
-            |_| {},
+            |e| events.push(e),
         );
-        let inv = state.inventory.lock().unwrap();
+        let sessions = carried_sessions(&events);
         assert_eq!(
-            inv.sessions.len(),
+            sessions.len(),
             1,
             "list-sessions resolved against the flags=1 block"
         );
-        assert_eq!(inv.sessions[0].name, "api");
+        assert_eq!(sessions[0].name, "api");
     }
 
     #[test]
@@ -1302,8 +1342,11 @@ mod tests {
             "%end 1 6 1".to_string(),
         ]
         .into_iter();
-        run_reader("h", test_control_proto(), lines, &state, &in_flight, |_| {});
-        assert_eq!(state.inventory.lock().unwrap().sessions.len(), 1);
+        let mut events = Vec::new();
+        run_reader("h", test_control_proto(), lines, &state, &in_flight, |e| {
+            events.push(e)
+        });
+        assert_eq!(carried_sessions(&events).len(), 1);
     }
 
     #[test]
@@ -1408,15 +1451,18 @@ mod tests {
             &in_flight,
             |e| events.push(e),
         );
-        let inv = state.inventory.lock().unwrap();
-        let panes = inv
-            .panes
-            .get("jupiter00/if")
-            .expect("panes recorded under the session address");
-        assert_eq!(panes.len(), 1, "one window parsed");
-        assert!(events
+        // The subtree rides on a `Panes` event keyed by the session address — the same
+        // carrier the poll path uses; the loop applies it purely (no shared inventory).
+        let panes = events
             .iter()
-            .any(|e| matches!(e, HostEvent::Inventory { .. })));
+            .find_map(|e| match e {
+                HostEvent::Panes { address, panes } if address == "jupiter00/if" => {
+                    Some(panes.clone())
+                }
+                _ => None,
+            })
+            .expect("a Panes event under the session address");
+        assert_eq!(panes.len(), 1, "one window parsed");
     }
 
     #[test]

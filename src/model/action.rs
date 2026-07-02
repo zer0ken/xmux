@@ -166,16 +166,20 @@ pub enum MuxOp {
 ///
 /// The events whose payload is self-contained (`Focus`/`Panes`) produce NO effect —
 /// `apply_event` mutates the tree directly and returns an empty `Vec`. The events
-/// that need a mux handle (a host client's inventory lock, a control-mode probe,
-/// the registry, the detection box) return the matching effect for the loop to run.
+/// that need a mux handle (the single-owner inventory fold into `model::Host`, a
+/// control-mode probe, the registry, the detection box) return the matching effect
+/// for the loop to run.
 /// Not `Clone`/`Eq` — `DispatchScanned` carries a `Box<dyn Mux>`; tests match
 /// structurally.
 pub enum EventEffect {
-    /// `Connected`/`Inventory`: read `host`'s live inventory (behind the host
-    /// client's lock), apply it to the tree, request each session's panes, and sync
-    /// the host's display terminal(s). The data lives behind a mux lock the state
-    /// layer cannot reach, so the apply itself is the loop's job here.
-    ApplyInventory { host: String },
+    /// `Connected`/`Inventory`: fold the carried `sessions` into `host`'s
+    /// `model::Host.inventory` (the single owner), apply them to the tree, request
+    /// each session's panes, and sync the host's display terminal(s). The reader
+    /// carries the parsed sessions on the event, so the loop folds + applies here.
+    ApplyInventory {
+        host: String,
+        sessions: Vec<Session>,
+    },
     /// `Changed`: the server's session/window STRUCTURE changed — refetch `host`'s
     /// inventory (re-run list-sessions + re-list panes).
     Refetch { host: String },
@@ -215,9 +219,10 @@ pub enum EventEffect {
 impl std::fmt::Debug for EventEffect {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            EventEffect::ApplyInventory { host } => f
+            EventEffect::ApplyInventory { host, sessions } => f
                 .debug_struct("ApplyInventory")
                 .field("host", host)
+                .field("sessions", sessions)
                 .finish(),
             EventEffect::Refetch { host } => f.debug_struct("Refetch").field("host", host).finish(),
             EventEffect::ProbeActiveWindow { host, session_ref } => f

@@ -47,8 +47,9 @@ follow-ups it cannot perform itself as `EventEffect`s for the run loop to run
 `ReapDisplayAttach` / `DispatchScanned` / `SyncPollSessions`). The `connected`
 once-connected set enters as DATA (like the clock on `Tick`): an `Exited` of a
 once-connected host is a transient drop that keeps the last-known tree. The
-`Connected`/`Inventory` inventory lives behind the host client's lock the state
-layer cannot reach, so its apply is deferred to the loop as `ApplyInventory`.
+`Connected`/`Inventory` events carry their parsed sessions, which the loop folds
+into `model::Host.inventory` (the single owner) via `ApplyInventory` — the fold
+needs the `hosts` registry the state layer does not hold, so it is the loop's job.
 
 `modal` is one `Option<ui::switcher::Modal>` — at most one of help / inline
 input / kill confirm / context menu. A single Option (not four independent
@@ -68,7 +69,7 @@ the transient popup geometry (drag offset / drawn rect).
 - It stores state facts + the two mutation sites (`apply` / `apply_event`); the
   run loop owns effect dispatch — for `apply` the synchronous `Command`s (switcher
   selection move, attach, prefs IO, quit) and for `apply_event` the `EventEffect`
-  mux follow-ups (inventory lock apply, refetch, probe, reap, sync,
+  mux follow-ups (inventory fold+apply, refetch, probe, reap, sync,
   scan-dispatch) — and feeds back the runtime attach facts on `Tick`. No
   IO/spawning/channel sends happen here.
 

@@ -982,8 +982,8 @@ fn handle_host_event(
 }
 
 /// Carries out one [`EventEffect`](crate::model::EventEffect) `State::apply_event`
-/// returned — the mux I/O the state layer cannot perform (a host client's
-/// inventory lock, a control-mode probe, the attach registry, the detection
+/// returned — the mux I/O the state layer cannot perform (the single-owner inventory
+/// fold into `model::Host`, a control-mode probe, the attach registry, the detection
 /// dispatch). Returns `true` only for the matched-client display-attach reap, which
 /// asks the caller to rearm `attach_deadline` + mark `dirty` (the recover-from-detach
 /// path).
@@ -1006,31 +1006,26 @@ fn run_event_effect(
 ) -> bool {
     use crate::model::EventEffect;
     match effect {
-        EventEffect::ApplyInventory { host } => {
-            // The metadata reply's inventory lives behind the host client's lock; apply
-            // it to the tree, request each session's panes, and sync the display PTY(s).
-            if let Some(client) = mgr.get(&host) {
-                let sessions = if let Ok(inv) = client.inventory.lock() {
-                    switcher.apply_source_result(host.clone(), inv.sessions.clone(), None, state);
-                    for (addr, windows) in inv.panes.iter() {
-                        switcher.apply_panes(addr.clone(), windows.clone(), state);
-                    }
-                    inv.sessions.clone()
-                } else {
-                    // A poisoned inventory lock (a worker died mid-hold) — skip this
-                    // apply and do not rearm rather than panic on the hot path.
-                    return false;
-                };
-                request_session_panes(client, &sessions, panes_requested);
-                let n = sessions.len();
-                let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
-                tracing::info!(host, n, ?names, "sessions_applied");
-                // Sync this host's display terminal(s) (per-host for remote tmux).
-                sync_source_terminals(
-                    registry, hosts, &host, &sessions, worker, mgr, pty_tx, attach_seq, cols, rows,
-                    tree_width,
-                );
+        EventEffect::ApplyInventory { host, sessions } => {
+            // The reader carried the parsed sessions on the event. Fold them into the
+            // single owner (`model::Host.inventory`), apply them to the tree, request
+            // each session's panes, and sync the display PTY(s). Pane subtrees arrive
+            // separately as `HostEvent::Panes` (applied purely by `apply_event`).
+            if let Some(h) = hosts.get_mut(&host) {
+                h.inventory.sessions = sessions.clone();
             }
+            switcher.apply_source_result(host.clone(), sessions.clone(), None, state);
+            if let Some(client) = mgr.get(&host) {
+                request_session_panes(client, &sessions, panes_requested);
+            }
+            let n = sessions.len();
+            let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
+            tracing::info!(host, n, ?names, "sessions_applied");
+            // Sync this host's display terminal(s) (per-host for remote tmux).
+            sync_source_terminals(
+                registry, hosts, &host, &sessions, worker, mgr, pty_tx, attach_seq, cols, rows,
+                tree_width,
+            );
         }
         EventEffect::Refetch { host } => {
             // The server's session/window structure changed (a `%`-notification).
@@ -2545,23 +2540,22 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                         scan_or_dispatch_host(&mut mgr, &hosts, &mut detecting, id, vc, vr);
                     }
                 }
-                // Re-warm each host's dropped per-host PTY via its driver (ENSURE-ONLY,
-                // never reap: a just-respawned control client has an empty inventory until
-                // its list-sessions resolves; reaping on that would tear down a live PTY.
-                // Closed-host reaping is owned by the Inventory/Changed path). The driver's
-                // sync reaps when given an EMPTY inventory, so the empty case is skipped
-                // here — only a non-empty inventory is handed in. psmux sync is a no-op for
-                // a non-empty inventory (its attaches are selected on demand), so this stays
-                // a shared-host re-warm without the app naming the mux kind.
+                // Re-warm each control host's dropped per-host PTY via its driver
+                // (ENSURE-ONLY, never reap: the driver's sync reaps when handed an EMPTY
+                // session set, so a host with no known sessions yet — cold start before
+                // list-sessions resolves — is skipped here rather than reaping a live PTY.
+                // Closed-host reaping is owned by the Inventory/Changed path). The single
+                // owner (`model::Host.inventory`) supplies the last-known session set; only
+                // control hosts re-warm (poll hosts select attaches on demand). psmux sync
+                // is a no-op for a non-empty set, so this stays a shared-host re-warm without
+                // the app naming the mux kind.
                 for id in &ids {
-                    if hosts.get(id).is_none() {
+                    // Only a live control host re-warms here (poll hosts are not in `mgr`).
+                    if mgr.get(id).is_none() {
                         continue;
                     }
-                    let inventory = match mgr.get(id) {
-                        Some(client) => match client.inventory.lock() {
-                            Ok(inv) => inv.sessions.clone(),
-                            Err(_) => continue,
-                        },
+                    let inventory = match hosts.get(id) {
+                        Some(h) => h.inventory.sessions.clone(),
                         None => continue,
                     };
                     if inventory.is_empty() {
@@ -3627,33 +3621,20 @@ mod tests {
     }
 
     #[test]
-    fn apply_inventory_effect_survives_poisoned_inventory_lock() {
-        // The ApplyInventory effect reads the host client's inventory under a mutex.
-        // If a worker thread died mid-hold and poisoned that lock, the hot path must
-        // degrade gracefully (skip the apply, no rearm) rather than panic and take
-        // down the app loop.
+    fn apply_inventory_effect_folds_sessions_into_host_inventory() {
+        // C1: the control reader carries its parsed sessions on the HostEvent; the
+        // loop folds them into the single owner (`model::Host.inventory`) and applies
+        // them to the tree. There is no shared `Arc<Mutex<HostInventory>>` to read.
         use crate::ui::switcher::{Scan, Switcher};
         use crate::ui::tree::Group;
 
         let (htx, _hrx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
         let mut mgr = HostManager::new(htx);
-        mgr.insert_fake("local");
-
-        // Poison the inventory lock by holding it on a thread that panics.
-        let inv = Arc::clone(&mgr.get("local").expect("fake client").inventory);
-        let h = std::thread::spawn(move || {
-            let _guard = inv.lock().unwrap();
-            panic!("poison the inventory lock");
-        });
-        let _ = h.join(); // the thread panicked → the mutex is poisoned
-        assert!(
-            mgr.get("local").unwrap().inventory.is_poisoned(),
-            "inventory lock must be poisoned for this test"
-        );
+        mgr.insert_fake("jup"); // a control client so request_session_panes has a sink
 
         let scan = Scan {
             groups: vec![Group {
-                source: "local".into(),
+                source: "jup".into(),
                 err: None,
                 sessions: vec![],
             }],
@@ -3662,6 +3643,10 @@ mod tests {
         let mut state = crate::state::State::from_scan(scan);
         let mut switcher = Switcher::new(&mut state);
         let mut hosts = crate::model::Hosts::default();
+        hosts.insert(crate::model::Host::new(
+            crate::machine::ssh("jup".into(), String::new(), "linux".into()),
+            crate::mux::for_binary("tmux"),
+        ));
         let mut registry = AttachRegistry::new();
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
         let worker = DisplayWorker::new(ptx);
@@ -3670,9 +3655,15 @@ mod tests {
         let mut detecting = HashSet::new();
         let mut attach_seq = 0u64;
 
+        let sessions = vec![crate::session::Session {
+            source: "jup".into(),
+            name: "api".into(),
+            ..Default::default()
+        }];
         let rearm = run_event_effect(
             crate::model::EventEffect::ApplyInventory {
-                host: "local".into(),
+                host: "jup".into(),
+                sessions: sessions.clone(),
             },
             &mut mgr,
             &mut hosts,
@@ -3688,7 +3679,19 @@ mod tests {
             24,
             crate::ui::switcher::TREE_WIDTH,
         );
-        assert!(!rearm, "a poisoned inventory lock must not rearm recovery");
+        assert!(!rearm, "ApplyInventory does not rearm detach recovery");
+        // The single owner now holds the carried sessions — folded by the loop.
+        let owned = &hosts.get("jup").expect("host present").inventory.sessions;
+        assert_eq!(owned.len(), 1, "sessions folded into model::Host.inventory");
+        assert_eq!(owned[0].name, "api");
+        // And the tree group reflects the same sessions.
+        let group = state
+            .groups
+            .iter()
+            .find(|g| g.source == "jup")
+            .expect("jup group");
+        assert_eq!(group.sessions.len(), 1, "tree applied the carried sessions");
+        assert_eq!(group.sessions[0].name, "api");
     }
 
     #[test]
