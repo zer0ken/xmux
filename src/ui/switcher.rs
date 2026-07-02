@@ -23,6 +23,7 @@ use crate::ui::modal::{
 };
 use crate::ui::tree::{self, Group, Row, RowRef};
 
+use crate::ui::ops::OpFollow;
 pub use crate::ui::ops::{run_op, OpResult, Ops};
 
 /// Tree pane width: border + 1-cell inner padding each side + content.
@@ -989,48 +990,26 @@ impl Switcher {
 
     /// Applies a completed [`MuxOp`](crate::model::MuxOp)'s [`OpResult`] to the
     /// in-memory tree. The result is applied on the event loop after `run_op`
-    /// returns off-loop, so a slow ssh round-trip never blocks rendering.
+    /// returns off-loop, so a slow ssh round-trip never blocks rendering. State
+    /// owns the inventory fold ([`State::fold_op_result`](crate::state::State::fold_op_result));
+    /// the switcher only rebuilds its rows + restores the cursor per the returned
+    /// [`OpFollow`].
     pub fn apply_op_result(&mut self, result: OpResult, state: &mut crate::state::State) {
-        match result {
-            OpResult::Created { session, panes } => {
-                let addr = session.address();
-                state.panes.insert(addr.clone(), panes);
-                state.panes_loaded.insert(addr.clone());
-                state.groups = tree::add_session(&state.groups, session);
+        match state.fold_op_result(result) {
+            OpFollow::Reselect(addr) => {
                 self.rebuild(state);
                 if let Some(i) = self.row_of_session(&addr) {
                     self.user_moved = true;
                     self.set_selected(i, state);
                 }
             }
-            OpResult::Renamed {
-                source,
-                old_name,
-                new_name,
-            } => {
-                let old_addr = format!("{source}/{old_name}");
-                let new_addr = format!("{source}/{new_name}");
-                if let Some(wins) = state.panes.remove(&old_addr) {
-                    state.panes.insert(new_addr.clone(), wins);
-                }
-                if state.panes_loaded.remove(&old_addr) {
-                    state.panes_loaded.insert(new_addr);
-                }
-                state.groups = tree::rename_session(&state.groups, &old_addr, &new_name);
+            OpFollow::Rebuild => self.rebuild(state),
+            OpFollow::RebuildPreservingFocus => {
+                let prior = self.capture_focus();
                 self.rebuild(state);
+                self.restore_focus(prior, state);
             }
-            OpResult::Killed { address } => {
-                state.panes.remove(&address);
-                state.panes_loaded.remove(&address);
-                state.groups = tree::remove_session(&state.groups, &address);
-                self.rebuild(state);
-            }
-            OpResult::PanesRefreshed { address, panes } => {
-                // A new window or split: replace the session's subtree so the new
-                // window/pane shows. apply_panes restores the selection.
-                self.apply_panes(address, panes, state);
-            }
-            OpResult::Failed { message } => {
+            OpFollow::Flash(message) => {
                 self.chrome.flash = message;
             }
         }

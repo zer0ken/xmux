@@ -37,8 +37,11 @@ pub trait Ops: Send + Sync {
         -> anyhow::Result<()>;
 }
 
-/// The outcome of a [`MuxOp`], applied back into the switcher state by
-/// [`Switcher::apply_op_result`].
+/// The outcome of a [`MuxOp`]. [`State::fold_op_result`] folds it into the
+/// inventory (the single owner of `groups`/`panes`/`panes_loaded`) and returns
+/// an [`OpFollow`] telling the switcher how to rebuild its rows.
+///
+/// [`State::fold_op_result`]: crate::state::State::fold_op_result
 #[derive(Debug, Clone)]
 pub enum OpResult {
     Created {
@@ -62,6 +65,26 @@ pub enum OpResult {
     Failed {
         message: String,
     },
+}
+
+/// What the switcher must do after [`State::fold_op_result`] applies an op's
+/// inventory mutation: rebuild the rows and, per the op, move the cursor to the
+/// new session (a create), preserve the focused node across the change (a pane
+/// refresh), or just rebuild (a rename / kill) — or, on failure, flash a message
+/// with no inventory change. The mutation is State's; the row rebuild + cursor
+/// restore is the switcher's.
+///
+/// [`State::fold_op_result`]: crate::state::State::fold_op_result
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpFollow {
+    /// Rebuild, then move the cursor to this new session's row (a create).
+    Reselect(String),
+    /// Rebuild the rows (a rename / kill).
+    Rebuild,
+    /// Rebuild, preserving the focused node across the change (a pane refresh).
+    RebuildPreservingFocus,
+    /// No inventory change — flash this message (a failed op).
+    Flash(String),
 }
 
 /// Runs a [`MuxOp`] against the live mux and returns its [`OpResult`]. Pure over

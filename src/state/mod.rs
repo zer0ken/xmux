@@ -364,6 +364,63 @@ impl State {
     pub(crate) fn should_attach(&self, key_live: bool, in_flight: bool) -> bool {
         (self.selection != self.displayed || !key_live) && !in_flight
     }
+
+    /// Folds a completed [`MuxOp`](crate::model::MuxOp)'s [`OpResult`] into the
+    /// inventory — the single owner of `groups`/`panes`/`panes_loaded` — and returns
+    /// an [`OpFollow`] telling the switcher how to rebuild its rows (and, for a create,
+    /// which session to reselect). State owns the domain mutation here just as
+    /// [`apply`](State::apply) / [`apply_event`](State::apply_event) own the intent- and
+    /// event-driven ones; the row rebuild + cursor restore stay in the switcher. A
+    /// `Failed` op mutates no inventory — its message is returned to flash.
+    ///
+    /// [`OpResult`]: crate::ui::ops::OpResult
+    /// [`OpFollow`]: crate::ui::ops::OpFollow
+    pub(crate) fn fold_op_result(
+        &mut self,
+        result: crate::ui::ops::OpResult,
+    ) -> crate::ui::ops::OpFollow {
+        use crate::ui::ops::{OpFollow, OpResult};
+        use crate::ui::tree;
+        match result {
+            OpResult::Created { session, panes } => {
+                let addr = session.address();
+                self.panes.insert(addr.clone(), panes);
+                self.panes_loaded.insert(addr.clone());
+                self.groups = tree::add_session(&self.groups, session);
+                OpFollow::Reselect(addr)
+            }
+            OpResult::Renamed {
+                source,
+                old_name,
+                new_name,
+            } => {
+                let old_addr = format!("{source}/{old_name}");
+                let new_addr = format!("{source}/{new_name}");
+                if let Some(wins) = self.panes.remove(&old_addr) {
+                    self.panes.insert(new_addr.clone(), wins);
+                }
+                if self.panes_loaded.remove(&old_addr) {
+                    self.panes_loaded.insert(new_addr);
+                }
+                self.groups = tree::rename_session(&self.groups, &old_addr, &new_name);
+                OpFollow::Rebuild
+            }
+            OpResult::Killed { address } => {
+                self.panes.remove(&address);
+                self.panes_loaded.remove(&address);
+                self.groups = tree::remove_session(&self.groups, &address);
+                OpFollow::Rebuild
+            }
+            OpResult::PanesRefreshed { address, panes } => {
+                // A new window or split: replace the session's subtree so the new
+                // window/pane shows. The switcher rebuilds preserving the cursor.
+                self.panes_loaded.insert(address.clone());
+                self.panes.insert(address, panes);
+                OpFollow::RebuildPreservingFocus
+            }
+            OpResult::Failed { message } => OpFollow::Flash(message),
+        }
+    }
 }
 
 /// Debounce before a settled selection move attaches/switches its session+window.
@@ -1213,6 +1270,159 @@ mod tests {
                 [EventEffect::DispatchScanned { source, detected: None }] if source == "jup"
             ),
             "Scanned forwards a DispatchScanned effect: {effects:?}"
+        );
+    }
+
+    // --- fold_op_result: State owns the op-result inventory mutation ----------
+    // A completed MuxOp's OpResult folds its inventory change (groups / panes /
+    // panes_loaded) into State; the returned OpFollow tells the switcher only how
+    // to rebuild the rows + move the cursor. State owns the domain mutation.
+
+    fn a_win(name: &str) -> WindowPanes {
+        WindowPanes {
+            index: 0,
+            name: name.into(),
+            active: true,
+            panes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn fold_op_result_created_adds_session_and_panes_and_asks_reselect() {
+        use crate::ui::ops::{OpFollow, OpResult};
+        let mut s = State::default();
+        let session = a_sess("api");
+        let addr = session.address();
+        let follow = s.fold_op_result(OpResult::Created {
+            session,
+            panes: vec![a_win("w0")],
+        });
+        assert!(
+            s.groups
+                .iter()
+                .any(|g| g.sessions.iter().any(|se| se.address() == addr)),
+            "the created session is in the tree"
+        );
+        assert!(s.panes.contains_key(&addr), "its panes are recorded");
+        assert!(
+            s.panes_loaded.contains(&addr),
+            "its panes are marked loaded"
+        );
+        assert!(
+            matches!(follow, OpFollow::Reselect(a) if a == addr),
+            "a create asks the switcher to reselect the new session"
+        );
+    }
+
+    #[test]
+    fn fold_op_result_killed_removes_session() {
+        use crate::ui::ops::{OpFollow, OpResult};
+        let mut s = State::default();
+        let session = a_sess("api");
+        let addr = session.address();
+        s.fold_op_result(OpResult::Created {
+            session,
+            panes: vec![a_win("w0")],
+        });
+        let follow = s.fold_op_result(OpResult::Killed {
+            address: addr.clone(),
+        });
+        assert!(
+            !s.groups
+                .iter()
+                .any(|g| g.sessions.iter().any(|se| se.address() == addr)),
+            "the killed session is gone from the tree"
+        );
+        assert!(!s.panes.contains_key(&addr), "its panes are dropped");
+        assert!(
+            !s.panes_loaded.contains(&addr),
+            "its loaded mark is dropped"
+        );
+        assert!(matches!(follow, OpFollow::Rebuild));
+    }
+
+    #[test]
+    fn fold_op_result_renamed_moves_panes_and_renames() {
+        use crate::ui::ops::{OpFollow, OpResult};
+        let mut s = State::default();
+        let session = a_sess("api"); // jup/api
+        let old_addr = session.address();
+        s.fold_op_result(OpResult::Created {
+            session,
+            panes: vec![a_win("w0")],
+        });
+        let follow = s.fold_op_result(OpResult::Renamed {
+            source: "jup".into(),
+            old_name: "api".into(),
+            new_name: "svc".into(),
+        });
+        let new_addr = "jup/svc".to_string();
+        assert!(
+            s.groups
+                .iter()
+                .any(|g| g.sessions.iter().any(|se| se.address() == new_addr)),
+            "the renamed session is in the tree under its new address"
+        );
+        assert!(
+            !s.groups
+                .iter()
+                .any(|g| g.sessions.iter().any(|se| se.address() == old_addr)),
+            "the old address is gone"
+        );
+        assert!(
+            s.panes.contains_key(&new_addr),
+            "panes moved to new address"
+        );
+        assert!(
+            !s.panes.contains_key(&old_addr),
+            "old-address panes dropped"
+        );
+        assert!(s.panes_loaded.contains(&new_addr));
+        assert!(!s.panes_loaded.contains(&old_addr));
+        assert!(matches!(follow, OpFollow::Rebuild));
+    }
+
+    #[test]
+    fn fold_op_result_panes_refreshed_replaces_subtree_preserving_focus() {
+        use crate::ui::ops::{OpFollow, OpResult};
+        let mut s = State::default();
+        let session = a_sess("api");
+        let addr = session.address();
+        s.fold_op_result(OpResult::Created {
+            session,
+            panes: vec![a_win("w0")],
+        });
+        let follow = s.fold_op_result(OpResult::PanesRefreshed {
+            address: addr.clone(),
+            panes: vec![a_win("w0"), a_win("w1")],
+        });
+        assert_eq!(
+            s.panes.get(&addr).map(|w| w.len()),
+            Some(2),
+            "the session's window/pane subtree is replaced"
+        );
+        assert!(s.panes_loaded.contains(&addr));
+        assert!(matches!(follow, OpFollow::RebuildPreservingFocus));
+    }
+
+    #[test]
+    fn fold_op_result_failed_flashes_and_leaves_inventory_untouched() {
+        use crate::ui::ops::{OpFollow, OpResult};
+        let mut s = State::default();
+        s.fold_op_result(OpResult::Created {
+            session: a_sess("api"),
+            panes: vec![a_win("w0")],
+        });
+        let before_groups = s.groups.len();
+        let before_panes = s.panes.len();
+        let follow = s.fold_op_result(OpResult::Failed {
+            message: "kill failed: boom".into(),
+        });
+        assert_eq!(s.groups.len(), before_groups, "a failure mutates no groups");
+        assert_eq!(s.panes.len(), before_panes, "a failure mutates no panes");
+        assert!(
+            matches!(follow, OpFollow::Flash(m) if m == "kill failed: boom"),
+            "a failure carries its message to the switcher's flash"
         );
     }
 }
