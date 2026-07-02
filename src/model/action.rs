@@ -55,6 +55,14 @@ pub enum Action {
         /// Whether an attach for the selected session's key is already in flight.
         in_flight: bool,
     },
+    /// Advance the display truth (`state.displayed`) to this selection — the
+    /// confirmation of a synchronous in-place switch or a `DisplayReady`. The loop
+    /// makes the confirmation DECISION (a live grid exists, no reattach in flight)
+    /// and folds the resulting truth here so `apply` owns the mutation.
+    ConfirmDisplay(Selection),
+    /// Blank the display truth — the `r` reattach-kick tears the current display
+    /// down, so nothing is confirmed until the fresh attach lands.
+    ClearDisplay,
     /// Create a new session named `name` (empty = mux auto-name) on `source`.
     CreateSession { source: String, name: String },
     /// Create a new window named `name` (empty = mux auto-name) in `session` on `source`.

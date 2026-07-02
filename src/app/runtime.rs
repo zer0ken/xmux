@@ -1889,7 +1889,7 @@ impl Runtime {
             if let Some(h) = self.hosts.get_mut(&self.state.selection.source) {
                 h.display.clear(&key); // drop the prior latch so the re-attach is fresh
             }
-            self.state.displayed = Selection::default(); // nothing confirmed → blank view
+            self.state.apply(crate::model::Action::ClearDisplay); // nothing confirmed → blank view
             self.state.attach_deadline = Some(std::time::Instant::now());
         }
         // In terminal focus the tree selection tracks the displayed session's active
@@ -1945,7 +1945,8 @@ impl Runtime {
                                 .get(&sel.source)
                                 .is_some_and(|h| h.display.in_flight_contains(&k));
                             if self.registry.contains(&k) && !reattach_pending {
-                                self.state.displayed = sel.clone();
+                                self.state
+                                    .apply(crate::model::Action::ConfirmDisplay(sel.clone()));
                             }
                         }
                         DrawObserver::slow_step("select_attach", t);
@@ -2182,11 +2183,12 @@ impl Runtime {
                         // session, kept on screen until now) and install the fresh one.
                         self.registry.remove(&key);
                         self.registry.insert(&key, attachment);
-                        self.state.displayed = Selection {
-                            source: hid.clone(),
-                            session: shown,
-                            window: None,
-                        };
+                        self.state
+                            .apply(crate::model::Action::ConfirmDisplay(Selection {
+                                source: hid.clone(),
+                                session: shown,
+                                window: None,
+                            }));
                     }
                     // Reaped-race, stale seq, or unknown host: tear the fresh attachment down
                     // (resolve_ready already cleared the bookkeeping for the first two).

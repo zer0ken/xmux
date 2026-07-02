@@ -153,6 +153,14 @@ impl State {
                     .set_view_focus(crate::app::focus::ViewFocus::Tree);
                 Vec::new()
             }
+            Action::ConfirmDisplay(sel) => {
+                self.displayed = sel;
+                Vec::new()
+            }
+            Action::ClearDisplay => {
+                self.displayed = Selection::default();
+                Vec::new()
+            }
             Action::Rescan => vec![Command::Rescan],
             Action::TreeWidth(d) => vec![Command::AdjustTreeWidth(d)],
             Action::ToggleAutoHide => vec![Command::ToggleAutoHide],
@@ -728,6 +736,38 @@ mod tests {
         assert_eq!(s.focus, Focus::Terminal);
         assert!(s.apply(Action::Focus(FocusTarget::Tree)).is_empty());
         assert_eq!(s.focus, Focus::Tree);
+    }
+
+    #[test]
+    fn apply_confirm_display_sets_displayed() {
+        // ConfirmDisplay advances the display truth to the given selection — the
+        // in-place-attach / DisplayReady confirmation, folded at the single site.
+        let mut s = State::default();
+        assert!(s.displayed.is_empty());
+        let cmds = s.apply(Action::ConfirmDisplay(sel("api")));
+        assert_eq!(
+            s.displayed,
+            sel("api"),
+            "ConfirmDisplay sets the display truth"
+        );
+        assert!(cmds.is_empty(), "ConfirmDisplay emits no command");
+    }
+
+    #[test]
+    fn apply_clear_display_empties_displayed() {
+        // ClearDisplay blanks the display truth — the reattach-kick path (nothing
+        // confirmed yet → blank view until the fresh attach lands).
+        let mut s = State {
+            displayed: sel("api"),
+            ..State::default()
+        };
+        assert!(!s.displayed.is_empty());
+        let cmds = s.apply(Action::ClearDisplay);
+        assert!(
+            s.displayed.is_empty(),
+            "ClearDisplay blanks the display truth"
+        );
+        assert!(cmds.is_empty(), "ClearDisplay emits no command");
     }
 
     #[test]
