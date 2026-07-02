@@ -12,7 +12,7 @@ use interprocess::local_socket::ListenerOptions;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::Terminal;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::BufReader;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::control;
@@ -129,11 +129,10 @@ async fn accept_loop(listener: Listener, cmd_tx: mpsc::Sender<Cmd>) {
 async fn handle_conn(conn: Stream, cmd_tx: mpsc::Sender<Cmd>) {
     let mut buf = BufReader::new(conn);
     loop {
-        let mut line = String::new();
-        match buf.read_line(&mut line).await {
-            Ok(0) | Err(_) => return,
-            Ok(_) => {}
-        }
+        let line = match control::read_request_line(&mut buf).await {
+            Ok(Some(line)) => line,
+            Ok(None) | Err(_) => return,
+        };
         let payload = dispatch(&line, &cmd_tx).await;
         if control::write_frame(&mut buf, &payload).await.is_err() {
             return;

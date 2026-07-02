@@ -132,6 +132,26 @@ pub async fn read_frame<R: AsyncBufRead + Unpin>(r: &mut R) -> std::io::Result<S
     String::from_utf8(buf).map_err(|e| frame_err(e.to_string()))
 }
 
+/// Reads one newline-terminated request line, bounded to [`MAX_FRAME`] so a local
+/// buggy client that never sends a newline cannot grow the buffer without limit —
+/// the request path's symmetric counterpart to [`read_frame`]'s bound. `Ok(None)`
+/// signals EOF (close the connection); an over-limit line without a terminating
+/// newline is an error.
+pub async fn read_request_line<R: AsyncBufRead + Unpin>(
+    r: &mut R,
+) -> std::io::Result<Option<String>> {
+    let mut line = String::new();
+    let mut bounded = r.take(MAX_FRAME as u64);
+    let n = bounded.read_line(&mut line).await?;
+    if n == 0 {
+        return Ok(None);
+    }
+    if bounded.limit() == 0 && !line.ends_with('\n') {
+        return Err(frame_err("request line exceeds MAX_FRAME".into()));
+    }
+    Ok(Some(line))
+}
+
 fn frame_err(msg: String) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, format!("control: {msg}"))
 }
@@ -474,6 +494,25 @@ mod tests {
     async fn read_frame_oversized() {
         let mut r = TokioBufReader::new(Cursor::new(b"99999999\nx".to_vec()));
         assert!(read_frame(&mut r).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn read_request_line_bounds_unterminated_input() {
+        // A local buggy client that never sends a newline must not grow the request
+        // buffer without limit — mirror the response path's MAX_FRAME bound.
+        let mut r = TokioBufReader::new(Cursor::new(vec![b'x'; MAX_FRAME + 1]));
+        assert!(read_request_line(&mut r).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn read_request_line_reads_normal_and_eof() {
+        let mut r = TokioBufReader::new(Cursor::new(b"ping\n".to_vec()));
+        assert_eq!(
+            read_request_line(&mut r).await.unwrap(),
+            Some("ping\n".to_string())
+        );
+        let mut empty = TokioBufReader::new(Cursor::new(Vec::<u8>::new()));
+        assert_eq!(read_request_line(&mut empty).await.unwrap(), None);
     }
 
     #[test]
