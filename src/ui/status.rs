@@ -1,4 +1,4 @@
-//! The switcher's status surface: the tree|mux divider, the tree-column hint_bar
+//! The switcher's status surface: the tree|terminal divider, the tree-column hint_bar
 //! (help / status / wrapped flash), and the unreachable-host info panel. These
 //! own the view-local presentation state ([`Status`]) and read the runtime
 //! inventory from `State`; the [`Switcher`](crate::ui::switcher::Switcher) holds a
@@ -14,7 +14,7 @@ use ratatui::Frame;
 
 use crate::ui::switcher::{fit, wrap_text};
 
-/// The tree|mux divider's three colours, resolved from config (tmux's pane-border
+/// The tree|terminal divider's three colours, resolved from config (tmux's pane-border
 /// options): `active` marks the focused side, `inactive` the unfocused side, and
 /// `hover` the drag-resize grab cue. Defaults mirror tmux's own code defaults —
 /// `green` / terminal-default / `yellow`.
@@ -51,13 +51,13 @@ pub struct Status {
     /// spinner glyph renders right of their name in the tree.
     pub(crate) spinner: HashSet<String>,
     pub(crate) spinner_frame: usize,
-    /// Raw `~/.ssh/config` text (set once by the app). The right-pane info panel
+    /// Raw `~/.ssh/config` text (set once by the app). The terminal-view info panel
     /// shows the matching Host/Match stanza for a selected unreachable host. Empty in tests.
     pub(crate) ssh_config_text: String,
     /// The human-readable prefix string (e.g. `"C-g"`, `"C-Space"`) — set once by
     /// the app from config so the help modal reflects the active binding.
     pub(crate) ui_prefix: String,
-    /// The tree|mux divider colours (set once by the app from config; tmux defaults
+    /// The tree|terminal divider colours (set once by the app from config; tmux defaults
     /// otherwise). See [`DividerColors`].
     pub(crate) colors: DividerColors,
 }
@@ -103,7 +103,7 @@ impl Status {
         self.divider_hovered = on;
     }
 
-    /// Sets the tree|mux divider colours. The app calls this once at startup with
+    /// Sets the tree|terminal divider colours. The app calls this once at startup with
     /// the colours parsed from config's `pane-*-border-style` options; tmux defaults
     /// apply otherwise.
     pub(crate) fn set_divider_colors(&mut self, colors: DividerColors) {
@@ -123,7 +123,7 @@ impl Status {
 
     /// The vertical rule between the tree (left) and terminal (right). It splits into
     /// a top and bottom half: the accent (green) half marks WHICH view holds focus —
-    /// top = tree (left), bottom = mux (right) — and the other half stays dim. A single
+    /// top = tree (left), bottom = terminal (right) — and the other half stays dim. A single
     /// vertical rule cannot lean left/right, so the accent half's position carries the
     /// signal (adapting tmux's active-pane border). Replaces the per-pane box borders.
     /// The glyph also encodes auto-hide-tree mode: ║ (double) when on, │ when off — so
@@ -153,7 +153,7 @@ impl Status {
         } else {
             let top_rows = area.height.div_ceil(2); // top takes the extra row on odd heights
             let (top, bottom) = if terminal_focused {
-                (inactive, active) // mux focused → accent on the bottom (mux side)
+                (inactive, active) // terminal focused → accent on the bottom (terminal side)
             } else {
                 (active, inactive) // tree focused → accent on the top (tree side)
             };
@@ -170,7 +170,7 @@ impl Status {
         frame.render_widget(Paragraph::new(bars), area);
     }
 
-    /// The right-pane info panel for a selected unreachable host: the failure reason
+    /// The terminal-view info panel for a selected unreachable host: the failure reason
     /// and the host's `~/.ssh/config` stanza, so the user can see WHY the control
     /// connection failed without leaving the app.
     pub(crate) fn render_host_info(
@@ -250,10 +250,10 @@ impl Status {
         } else {
             fit(
                 &[
-                    format!(" ↑/↓ move · Enter/{p}→ focus mux · / filter · n new · R rename · x kill · r refresh · {p} ? help · {p} q quit"),
-                    format!(" ↑/↓ move · Enter focus mux · / filter · n new · x kill · {p} ? help · {p} q quit"),
-                    format!(" move · Enter focus mux · / filter · {p} ? help · {p} q quit"),
-                    format!(" Enter focus mux · {p} ? help · {p} q quit"),
+                    format!(" ↑/↓ move · Enter/{p}→ focus terminal · / filter · n new · R rename · x kill · r refresh · {p} ? help · {p} q quit"),
+                    format!(" ↑/↓ move · Enter focus terminal · / filter · n new · x kill · {p} ? help · {p} q quit"),
+                    format!(" move · Enter focus terminal · / filter · {p} ? help · {p} q quit"),
+                    format!(" Enter focus terminal · {p} ? help · {p} q quit"),
                     format!(" {p} ? help · {p} q quit"),
                 ],
                 width,

@@ -1,12 +1,12 @@
-//! Terminal-focus input handling. When the terminal pane has focus every byte is
+//! Terminal-focus input handling. When the terminal view has focus every byte is
 //! forwarded raw to the session's active pane (so a real program — vim, a pager —
 //! sees exact input), EXCEPT a prefix (default `C-g`) followed by a command key,
 //! which is intercepted: `prefix Left|Tab|Esc` returns focus to the tree, `prefix Right`
-//! keeps focus on the (already-focused) mux pane, `prefix q` quits, `prefix ?` toggles
+//! keeps focus on the (already-focused) terminal view, `prefix q` quits, `prefix ?` toggles
 //! the keys help, `prefix h`/`l` and `prefix Ctrl+←/→` resize the tree, `prefix t`
 //! toggles auto-hide-tree mode, and a doubled
 //! prefix sends one literal prefix byte. The same command set works in tree focus, so a
-//! command behaves identically regardless of which pane holds focus. The prefix is a C0
+//! command behaves identically regardless of which view holds focus. The prefix is a C0
 //! control byte, so it cannot collide with a UTF-8 continuation byte or appear mid-CSI;
 //! bracketed paste is respected so a prefix pasted as data is never intercepted.
 use crate::display::dispatch::Action;
@@ -128,7 +128,7 @@ impl TermInput {
                     } else {
                         1
                     };
-                    // prefix → (Right): focus the right (mux) pane — already focused here,
+                    // prefix → (Right): focus the right (terminal) view — already focused here,
                     // so swallow it and stay; the rest of the read resumes as mux input.
                     if cmd_len == 3 && bytes[i + 2] == b'C' {
                         i += cmd_len;
@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn prefix_then_right_stays_in_terminal() {
-        // prefix → focuses the (already-focused) mux pane: swallowed, no FocusTree,
+        // prefix → focuses the (already-focused) terminal view: swallowed, no FocusTree,
         // and any trailing bytes resume as forwarded input.
         let mut t = m();
         t.feed(&[0x07]);

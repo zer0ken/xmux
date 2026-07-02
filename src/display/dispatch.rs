@@ -20,13 +20,13 @@ pub enum Action {
     /// that followed the switch command in the same read: focus has changed, so the
     /// caller must hand them to the tree, not the pane.
     FocusTree(Vec<u8>),
-    /// Move focus to the mux pane (tree `Enter`, or `prefix` Right/Tab in tree focus).
-    FocusMux,
+    /// Move focus to the terminal view (tree `Enter`, or `prefix` Right/Tab in tree focus).
+    FocusTerminal,
     /// A tree key to hand to `Switcher::handle_key` (navigation / input row / kill).
     TreeKey(KeyEvent),
     /// `prefix` then `q` — quit the app.
     Quit,
-    /// `prefix ?` — toggle the keys help modal. Focus stays on the mux pane.
+    /// `prefix ?` — toggle the keys help modal. Focus stays on the terminal view.
     ShowHelp,
     /// `prefix h`/`l` or `prefix Ctrl+←/→` — adjust the tree width by this signed delta.
     Width(i32),
@@ -46,7 +46,7 @@ impl Action {
             Action::Quit => Some(DomainAction::Quit),
             Action::Width(d) => Some(DomainAction::TreeWidth(*d)),
             Action::ToggleAutoHide => Some(DomainAction::ToggleAutoHide),
-            Action::FocusMux => Some(DomainAction::Focus(FocusTarget::Terminal)),
+            Action::FocusTerminal => Some(DomainAction::Focus(FocusTarget::Terminal)),
             Action::FocusTree(_) => Some(DomainAction::Focus(FocusTarget::Tree)),
             Action::Forward(_) | Action::ShowHelp | Action::TreeKey(_) => None,
         }
@@ -71,7 +71,7 @@ mod tests {
             Some(DomainAction::ToggleAutoHide)
         );
         assert_eq!(
-            Action::FocusMux.as_action(),
+            Action::FocusTerminal.as_action(),
             Some(DomainAction::Focus(FocusTarget::Terminal))
         );
         assert_eq!(

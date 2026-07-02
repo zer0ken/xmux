@@ -1,7 +1,7 @@
 //! The app's focus state machine. Every state draws the SAME split (tree on
 //! the left, the cursor session's live grid on the right); focus only chooses
 //! where keys go and which divider rule is highlighted. There are four states
-//! along two dimensions: the PANE dimension (`Tree` ⇄ `Terminal`, toggled by
+//! along two dimensions: the VIEW dimension (`Tree` ⇄ `Terminal`, toggled by
 //! `prefix Tab`) and a MODAL dimension layered on top (`Popup` for help / inline
 //! input / kill-confirm, `Menu` for the right-click context menu). A modal is a
 //! first-class focus state that CARRIES the view it was opened from, so closing it
@@ -71,7 +71,7 @@ impl Focus {
         )
     }
 
-    /// Flips the PANE dimension (Tree ⇄ Terminal) — the `prefix Tab` toggle. During a
+    /// Flips the VIEW dimension (Tree ⇄ Terminal) — the `prefix Tab` toggle. During a
     /// modal it flips the carried `prior` so the modal stays open and restores onto
     /// the flipped view.
     pub fn toggle(&mut self) {
@@ -87,9 +87,9 @@ impl Focus {
         };
     }
 
-    /// Sets the PANE dimension to `p`. Not modal → becomes that view. Modal → sets the
+    /// Sets the VIEW dimension to `p`. Not modal → becomes that view. Modal → sets the
     /// carried `prior`, so a focus request during/closing a modal lands on `p` after
-    /// restore (the context-menu "focus mux" path).
+    /// restore (the context-menu "focus terminal" path).
     pub fn set_view_focus(&mut self, p: ViewFocus) {
         *self = match *self {
             Focus::Tree | Focus::Terminal => match p {
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn set_view_focus_during_a_menu_targets_the_restore_view() {
-        // The menu "focus mux" path: state is Menu{prior:Tree}, focus-mux requested.
+        // The menu "focus terminal" path: state is Menu{prior:Tree}, focus-terminal requested.
         let mut focus = Focus::Menu {
             prior: ViewFocus::Tree,
         };

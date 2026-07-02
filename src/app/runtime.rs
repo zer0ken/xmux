@@ -304,9 +304,9 @@ fn sync_selection_from_switcher(
     true
 }
 
-/// The size to give a PTY attachment: the terminal-view pane (right of the tree +
+/// The size to give a PTY attachment: the terminal view (right of the tree +
 /// divider), NOT the whole terminal. Sizing a session to the full terminal makes
-/// the remote wrap at a width wider than the visible pane, so a line overflows the
+/// the remote wrap at a width wider than the visible view, so a line overflows the
 /// right edge (and a double-width char straddles the clip boundary). The view width
 /// is `cols - tree_width - 1` (tree + the single divider rule), except `tree_width == 0`
 /// (the tree-hidden sentinel) gives the full `cols` with no divider; the view HEIGHT is
@@ -684,7 +684,7 @@ fn connect_all_sources(
     }
 }
 
-/// The single key that moves focus from the tree into the terminal pane.
+/// The single key that moves focus from the tree into the terminal view.
 /// (Arrows navigate the tree; the prefix-Esc path returns focus — see TermInput.)
 fn is_focus_in(code: KeyCode) -> bool {
     matches!(code, KeyCode::Enter)
@@ -692,17 +692,17 @@ fn is_focus_in(code: KeyCode) -> bool {
 
 /// Whether a wheel event should drive the TREE (scroll, or Ctrl-wheel level change).
 /// Only when the tree is focused AND the pointer is over the tree: mouse input acts on
-/// the pane under the cursor, and only when that pane is focused — the same rule clicks
-/// and motion already follow. A wheel over the mux pane while the tree is focused is not
+/// the view under the cursor, and only when that view is focused — the same rule clicks
+/// and motion already follow. A wheel over the terminal view while the tree is focused is not
 /// a tree scroll.
 fn wheel_targets_tree(tree_focused: bool, over_mux: bool) -> bool {
     tree_focused && !over_mux
 }
 
 /// Whether a right-button press may open the tree context menu. Tree-focus only: the
-/// menu operates on a tree row, so it is a tree-pane action, not a pane-independent
-/// global — it never opens (nor steals focus) while the mux pane is focused. Position-
-/// gated to the tree column; a right-click over the mux pane forwards to the child.
+/// menu operates on a tree row, so it is a tree-view action, not a view-independent
+/// global — it never opens (nor steals focus) while the terminal view is focused. Position-
+/// gated to the tree column; a right-click over the terminal view forwards to the child.
 fn tree_menu_may_open(is_right_press: bool, tree_focused: bool, over_mux: bool) -> bool {
     is_right_press && tree_focused && !over_mux
 }
@@ -715,22 +715,22 @@ enum ChainAction {
     ScrollTree(bool),
     /// Change the tree level (Ctrl+wheel, tree focus, over tree). `down` = descend.
     LevelChange(bool),
-    /// Toggle focus to the mux pane (left-click the mux while the tree is focused).
-    FocusMux,
+    /// Toggle focus to the terminal view (left-click the terminal view while the tree is focused).
+    FocusTerminal,
     /// Select the clicked tree row (left-click a tree row while the tree is focused).
     SelectRow,
     /// Toggle focus to the tree (left-click the tree while the mux is focused).
     FocusTree,
-    /// Forward the event to the focused mux child (mux focus, over the mux pane).
+    /// Forward the event to the focused mux child (terminal focus, over the terminal view).
     ForwardToMux,
     /// Nothing — the event is dropped.
     Nothing,
 }
 
 /// Pure focus×position routing for a mouse event that fell through every gate. The one
-/// rule: input acts on the pane under the cursor, and only when that pane is focused.
-/// A wheel over the mux while the tree is focused, or over the tree while the mux is
-/// focused, resolves to Nothing — it never crosses to the unfocused pane.
+/// rule: input acts on the view under the cursor, and only when that view is focused.
+/// A wheel over the terminal view while the tree is focused, or over the tree while the terminal view is
+/// focused, resolves to Nothing — it never crosses to the unfocused view.
 fn resolve_mouse_chain(
     is_wheel: bool,
     ctrl: bool,
@@ -747,7 +747,7 @@ fn resolve_mouse_chain(
         };
     }
     if is_left_press && tree_focused && over_mux {
-        return ChainAction::FocusMux;
+        return ChainAction::FocusTerminal;
     }
     if is_left_press && tree_focused && !over_mux {
         return ChainAction::SelectRow;
@@ -786,11 +786,11 @@ fn resolve_tree_key(
             KeyCode::Char('l') => Some(Action::Width(1)),
             KeyCode::Char('t') => Some(Action::ToggleAutoHide),
             KeyCode::Char('?') => Some(Action::ShowHelp),
-            // prefix Tab cycles focus to the mux (toggle, mirroring the mux side's
+            // prefix Tab cycles focus to the terminal (toggle, mirroring the terminal side's
             // prefix Tab → tree); prefix → also focuses the mux. The byte decoder yields
             // Char('\t') for Tab, never KeyCode::Tab, so match both. (prefix ←/Esc focus
             // the tree, where we already are — a no-op that resolves to nothing.)
-            KeyCode::Right | KeyCode::Tab | KeyCode::Char('\t') => Some(Action::FocusMux),
+            KeyCode::Right | KeyCode::Tab | KeyCode::Char('\t') => Some(Action::FocusTerminal),
             _ => None,
         };
     }
@@ -798,9 +798,9 @@ fn resolve_tree_key(
         *armed = true;
         return None;
     }
-    // Enter focuses the terminal pane. ←/→ navigate the tree inside `handle_key`.
+    // Enter focuses the terminal view. ←/→ navigate the tree inside `handle_key`.
     if !is_inputting && is_focus_in(key.code) {
-        return Some(Action::FocusMux);
+        return Some(Action::FocusTerminal);
     }
     Some(Action::TreeKey(key))
 }
@@ -843,13 +843,13 @@ fn handle_tree_bytes(
         // this, which changes how the next key in this same read resolves. Gating on
         // ANY modal popup (not just the inline input) makes a modal OWN its keys — a
         // kill-confirm swallows prefix/Enter, so `prefix q` can't quit and Enter can't
-        // focus the mux while a confirm is on screen; only y/n/Esc act on it.
+        // focus the terminal while a confirm is on screen; only y/n/Esc act on it.
         let is_inputting = state.is_modal_popup_open();
         match resolve_tree_key(key, tree_armed, prefix, is_inputting) {
             // A committed input/kill confirm folds through State::apply, which returns
             // its Commands; collect them and dispatch the whole batch below.
             Some(Action::TreeKey(k)) => key_cmds.extend(switcher.handle_key(k, state)),
-            Some(Action::FocusMux) => focus_terminal = true,
+            Some(Action::FocusTerminal) => focus_terminal = true,
             Some(Action::Quit) => quit = true,
             Some(Action::Width(d)) => width_delta = d,
             Some(Action::ToggleAutoHide) => toggle_auto_hide = true,
@@ -1170,7 +1170,7 @@ pub(crate) fn note_host_exited(
 /// must persist across reads). Field-for-field the loop locals `run_app` held.
 #[derive(Default)]
 struct MouseState {
-    /// True while the left button is dragging the tree/mux divider rule to resize.
+    /// True while the left button is dragging the tree/terminal divider rule to resize.
     dragging_divider: bool,
     /// True while the mouse hovers the divider rule (no button) — the drag-resize cue.
     hovered_divider: bool,
@@ -1228,10 +1228,10 @@ fn handle_mouse_event(
 ) -> bool {
     let mut dirty = false;
     let in_mux = to_grid_local(term_area, ev.col, ev.row);
-    // A LEFT-button press in the UNFOCUSED pane switches focus to that
-    // pane — focus only; the click is not delivered. Right-click is
+    // A LEFT-button press in the UNFOCUSED view switches focus to that
+    // view — focus only; the click is not delivered. Right-click is
     // reserved for the tree context menu, so it never moves focus.
-    // Within the focused mux pane, the click forwards.
+    // Within the focused terminal view, the click forwards.
     let is_press = ev.pressed && (ev.cb & 0x60) == 0;
     // Wheel events carry the 0x40 bit (cb 64=up, 65=down; +16=Ctrl).
     let is_wheel = ev.pressed && (ev.cb & 0x40) != 0;
@@ -1251,9 +1251,9 @@ fn handle_mouse_event(
                 crate::ui::switcher::MenuOutcome::FocusTerminal => {
                     // Connect the target's host (mirrors the left-click
                     // select path) so its control client streams, then
-                    // focus the mux on the now-selected session.
+                    // focus the terminal on the now-selected session.
                     ensure_current_host(mgr, env, hosts, switcher, cols, body_rows, tree_width);
-                    // Focus state is `Menu{prior}` here; set the restore pane to the mux
+                    // Focus state is `Menu{prior}` here; set the restore view to the terminal
                     // so closing the menu (next loop-top sync_modal(None)) lands on it.
                     state
                         .focus
@@ -1311,7 +1311,7 @@ fn handle_mouse_event(
     // A modal popup is mouse-modal: while one is open, every mouse
     // event that is not its border-drag (handled above) is swallowed,
     // so clicks, wheels, divider grabs, and hovers never reach the
-    // tree/mux/divider behind it.
+    // tree/terminal/divider behind it.
     if state.is_modal_popup_open() {
         return dirty;
     }
@@ -1323,7 +1323,7 @@ fn handle_mouse_event(
     // because any-motion tracking (1003h) is on. Over the divider it
     // lights the hover cue and is consumed (nothing under it to forward).
     // Elsewhere it falls through to the routing below, so a hover over the
-    // mux pane IS forwarded to the child (the inner app gets hover); over
+    // terminal view IS forwarded to the child (the inner app gets hover); over
     // the tree it is harmlessly dropped.
     if ev.pressed && (ev.cb & 0x23) == 0x23 {
         let over_divider = tree_width > 0 && col0 == tree_width;
@@ -1337,8 +1337,8 @@ fn handle_mouse_event(
     }
     // Right-button press over a selectable tree row opens its context
     // menu (press-hold-release). Tree-focus only: the menu acts on a
-    // tree row, so it is tree-pane input, not a global — a right-click
-    // while the mux is focused (or over the mux pane) does not open it
+    // tree row, so it is tree-view input, not a global — a right-click
+    // while the terminal view is focused (or over the terminal view) does not open it
     // and does not move focus. The menu's keyboard actions (rename input,
     // kill confirm) thus always run in tree focus, so a confirmed kill
     // can't quit the app out from under the mux.
@@ -1376,9 +1376,9 @@ fn handle_mouse_event(
             // arrow so the tree path (decode → handle_key → ensure) drives it.
             non_mouse.extend_from_slice(if down { b"\x1b[C" } else { b"\x1b[D" });
         }
-        // The unfocused pane was clicked → switch focus to it (no content
+        // The unfocused view was clicked → switch focus to it (no content
         // delivered); toggle flips Focus::Tree⇄Focus::Terminal either direction.
-        ChainAction::FocusMux | ChainAction::FocusTree => {
+        ChainAction::FocusTerminal | ChainAction::FocusTree => {
             state.focus.toggle();
             *mouse_focus_toggle = true;
         }
@@ -1525,7 +1525,7 @@ fn handle_stdin_bytes(
     // prefix armed and mis-read the following key). A pure-mouse read (empty
     // non_mouse) leaves the window untouched. Leading Ctrl-arrows are peeled off
     // (handles a coalesced autorepeat burst); any remaining bytes end the window
-    // and fall through to the normal tree/mux routing below.
+    // and fall through to the normal tree/terminal routing below.
     let mut consumed_by_repeat = false;
     if mouse
         .repeat_until
@@ -1558,14 +1558,14 @@ fn handle_stdin_bytes(
     if !consumed_by_repeat && !non_mouse.is_empty() && switcher.feed_help_key(&non_mouse, state) {
         // The help modal is modal (tmux view-mode style): while open it
         // captures every key in EITHER focus — q/Esc closes it, the rest are
-        // swallowed — so nothing leaks to the tree or the mux pane. Above the
-        // tree/mux split so the behavior is identical regardless of focus.
+        // swallowed — so nothing leaks to the tree or the terminal view. Above the
+        // tree/terminal split so the behavior is identical regardless of focus.
         *dirty = true;
     } else if !consumed_by_repeat && (state.focus.is_tree_focused() || state.focus.is_modal()) {
-        // Tree pane OR any modal: route to the switcher path. A modal popup (input /
-        // kill-confirm) opened from EITHER pane owns its keys here; the resolver gating
+        // Tree view OR any modal: route to the switcher path. A modal popup (input /
+        // kill-confirm) opened from EITHER view owns its keys here; the resolver gating
         // in handle_tree_bytes swallows everything but the modal's own keys, so a modal
-        // never emits FocusMux/quit and the focus toggles below never fire mid-modal.
+        // never emits FocusTerminal/quit and the focus toggles below never fire mid-modal.
         let (ft, q, wd, th) = handle_tree_bytes(
             &non_mouse,
             tree_decoder,
@@ -1621,7 +1621,7 @@ fn handle_stdin_bytes(
                 }
                 Action::Width(d) => {
                     // Same resize + repeat-window as the tree path, so a resize
-                    // started from the mux pane chains with bare Ctrl+←/→ too.
+                    // started from the terminal view chains with bare Ctrl+←/→ too.
                     if apply_width_delta(d, tree_width_natural) {
                         *width_changed = true;
                     }
@@ -1634,7 +1634,7 @@ fn handle_stdin_bytes(
                 }
                 // The mux-focus resolver (TermInput) never emits these — they
                 // belong to the tree-focus path (resolve_tree).
-                Action::FocusMux | Action::TreeKey(_) => {}
+                Action::FocusTerminal | Action::TreeKey(_) => {}
             }
         }
     }
@@ -1770,7 +1770,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
 
     let size = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
     let (mut cols, mut body_rows) = (size.0, size.1.saturating_sub(1)); // status bar = last row
-                                                                        // `tree_width` is the EFFECTIVE width (0 = tree hidden, mux full width); every
+                                                                        // `tree_width` is the EFFECTIVE width (0 = tree hidden, terminal full width); every
                                                                         // sizing/render site reads it. `tree_width_natural` holds the tree's natural
                                                                         // width (what prefix h·l adjusts, restored when the tree is shown again).
                                                                         // Restore the natural width the user last set (persisted across runs); clamp a
@@ -1782,13 +1782,13 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
     let mut tree_width = tree_width_natural;
     // Auto-hide-tree mode: the live `prefix t` toggle, restored from its persisted
     // state if set, else the `auto-hide-tree` config default. The loop-top reconcile
-    // reads it to size the tree (0 = hidden, mux full width) on focus changes.
+    // reads it to size the tree (0 = hidden, terminal full width) on focus changes.
     let mut auto_hide_tree = crate::prefs::load_auto_hide_tree(&env.xmux_dir)
         .unwrap_or_else(|| env.cfg.ui_auto_hide_tree());
     // The per-event mouse-gesture/input state the stdin arm carries across reads:
     //  - repeat_until: the resize-repeat window — set when a prefix-driven resize fires,
     //    it lets a bare Ctrl+←/→ keep resizing (no re-prefix) until it lapses (RESIZE_REPEAT_MS).
-    //  - dragging_divider: true while the left button is dragging the tree/mux divider rule.
+    //  - dragging_divider: true while the left button is dragging the tree/terminal divider rule.
     //  - hovered_divider: true while the mouse hovers the divider rule (no button) — lights it
     //    up as a drag-resize grab cue. Fed to the switcher each draw via set_divider_hovered.
     //  - tree_armed: true while a prefix has been pressed in tree focus, awaiting the command key.
@@ -1844,13 +1844,13 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
         crate::state::State::from_sources(env.srcs.iter().map(|s| s.alias.clone()).collect());
     // The switcher, built over that seeded inventory; events stream the tree in.
     let mut switcher = Switcher::from_sources(&mut state);
-    // Feed the switcher the ssh config so an unreachable host's info pane can show its
+    // Feed the switcher the ssh config so an unreachable host's info panel can show its
     // Host/Match stanza. Read once; a missing file just yields no stanza.
     switcher.set_ssh_config_text(
         std::fs::read_to_string(crate::env::ssh_config_path()).unwrap_or_default(),
     );
     // Divider colours from config's tmux-style pane-border options (tmux defaults
-    // otherwise), so the tree|mux rule matches the user's tmux pane-border experience.
+    // otherwise), so the tree|terminal rule matches the user's tmux pane-border experience.
     switcher.set_divider_colors(crate::ui::switcher::DividerColors {
         active: crate::ui::switcher::map_color(&env.cfg.ui.pane_active_border_style),
         inactive: crate::ui::switcher::map_color(&env.cfg.ui.pane_border_style),
@@ -1936,7 +1936,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Periodic reconnect sweep: re-ensure any died remote control client (so #5
     // metadata sync self-heals) and re-attach the selected session's PTY if it
-    // dropped (so a transient remote disconnect does not leave the right pane stuck
+    // dropped (so a transient remote disconnect does not leave the terminal view stuck
     // on "(attaching…)"). The sweep interval doubles as the retry backoff.
     let reconnect_start = tokio::time::Instant::now() + Duration::from_millis(RECONNECT_MS);
     let mut reconnect =
@@ -1967,8 +1967,8 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
         switcher.set_spinner_frame(spinner_frame_at(spinner_start.elapsed()));
         switcher.set_divider_hovered(mouse_state.hovered_divider);
         // Derive the modal dimension of focus from the open-modal kind: open a modal →
-        // Focus becomes Popup/Menu carrying the current pane; close it → restore that
-        // pane. The single owner of the modal/pane reconciliation.
+        // Focus becomes Popup/Menu carrying the current view; close it → restore that
+        // view. The single owner of the modal/view reconciliation.
         let modal_kind = state.modal_kind();
         state.focus.sync_modal(modal_kind);
         // The single owner of the effective tree width: reconcile it to the current
@@ -2686,17 +2686,17 @@ mod tests {
             vec![Action::ShowHelp],
             "prefix ? toggles help"
         );
-        // prefix Tab cycles focus to the mux pane, and prefix Right does too. (Tab
+        // prefix Tab cycles focus to the terminal view, and prefix Right does too. (Tab
         // arrives as Char('\t') from the byte decoder, not KeyCode::Tab — both map to
-        // FocusMux so prefix Tab toggles tree⇄mux like it does from the mux side.)
+        // FocusTerminal so prefix Tab toggles tree⇄terminal like it does from the terminal side.)
         assert_eq!(
             rt(b"\x07\t", false),
-            vec![Action::FocusMux],
+            vec![Action::FocusTerminal],
             "prefix Tab cycles focus to mux"
         );
         assert_eq!(
             rt(b"\x07\x1b[C", false),
-            vec![Action::FocusMux],
+            vec![Action::FocusTerminal],
             "prefix Right focuses mux"
         );
         assert_eq!(
@@ -2715,8 +2715,8 @@ mod tests {
     fn resolve_tree_enter_focuses_mux_and_nav_is_a_tree_key() {
         assert_eq!(
             rt(b"\r", false),
-            vec![Action::FocusMux],
-            "Enter focuses the mux pane"
+            vec![Action::FocusTerminal],
+            "Enter focuses the terminal view"
         );
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         assert_eq!(
@@ -2733,7 +2733,7 @@ mod tests {
     fn resolve_tree_while_inputting_passes_prefix_and_enter_to_the_tree() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         // While the input row is open, the prefix is NOT special (typed into the buffer)
-        // and Enter does NOT focus the mux (it submits the input) — both go to the tree.
+        // and Enter does NOT focus the terminal (it submits the input) — both go to the tree.
         assert_eq!(
             rt(b"\x07", true),
             vec![Action::TreeKey(KeyEvent::new(
@@ -2802,11 +2802,11 @@ mod tests {
             Nothing,
             "wheel, mux focus, over tree → nothing"
         );
-        // left press: focus-switch on the unfocused pane, act on the focused one.
+        // left press: focus-switch on the unfocused view, act on the focused one.
         assert_eq!(
             resolve_mouse_chain(false, false, false, true, true, true),
-            FocusMux,
-            "left, tree focus, over mux → focus mux"
+            FocusTerminal,
+            "left, tree focus, over terminal → focus terminal"
         );
         assert_eq!(
             resolve_mouse_chain(false, false, false, true, true, false),
@@ -2849,7 +2849,7 @@ mod tests {
         );
         assert!(
             !tree_menu_may_open(true, true, true),
-            "right-press over the mux pane → forwards, no tree menu"
+            "right-press over the terminal view → forwards, no tree menu"
         );
         assert!(
             !tree_menu_may_open(false, true, false),
@@ -4026,7 +4026,7 @@ mod tests {
     // 1. Launch `xmux`. Confirm it enters the alternate screen cleanly and starts in
     //    Focus::Tree: the Host·Session·Window·Pane tree on the left, the live REAL
     //    terminal of the cursor's session on the right (a true attached mux client).
-    // 2. Move the cursor between sessions. Confirm the right pane shows each session's
+    // 2. Move the cursor between sessions. Confirm the terminal view shows each session's
     //    real attached terminal instantly (it is pre-attached + kept alive), with a
     //    spinner while a session's attach is still establishing.
     // 3. Select a WINDOW row — confirm the attached client switches to that window.
@@ -4040,9 +4040,9 @@ mod tests {
     // 7. NEVER attach the session that owns xmux (xmux refuses to run inside a mux,
     //    so in normal use no session mirrors the UI).
     // 8. Mouse: dragging never selects native terminal text (the app captures the
-    //    mouse). A LEFT-button press in the UNFOCUSED pane switches focus to it (focus
+    //    mouse). A LEFT-button press in the UNFOCUSED view switches focus to it (focus
     //    only — the click is not delivered); right-click never moves focus (it opens the
-    //    tree context menu). Once the mux pane is focused, clicks/scroll/
+    //    tree context menu). Once the terminal view is focused, clicks/scroll/
     //    right-click reach the mux (status-bar click, pane select, scroll, context menu).
     //    Mux mouse forwarding requires the mux to have `mouse on` (`set -g mouse on`);
     //    xmux only forwards. (Windows: capture needs ENABLE_VIRTUAL_TERMINAL_INPUT +
@@ -4305,8 +4305,8 @@ mod tests {
         // A kill-confirm is a modal popup, so it OWNS every key. With the resolver gated
         // on is_modal_popup_open (true for a confirm, where is_inputting is false),
         // `prefix q` reaches the switcher instead of arming the prefix, and Enter reaches
-        // it instead of resolving to FocusMux — so a confirm can neither quit the app
-        // nor focus the mux out from under itself. (The first swallowed key cancels the
+        // it instead of resolving to FocusTerminal — so a confirm can neither quit the app
+        // nor focus the terminal out from under itself. (The first swallowed key cancels the
         // confirm, tmux confirm-before style; the point is the key does not quit/focus.)
         use crate::app::focus::{Focus, ViewFocus};
         use crate::session::Session;
@@ -4420,7 +4420,7 @@ mod tests {
             Focus::Popup {
                 prior: ViewFocus::Tree
             },
-            "Enter did not focus the mux"
+            "Enter did not focus the terminal"
         );
     }
 
@@ -4537,7 +4537,7 @@ mod tests {
                 Focus::Menu {
                     prior: ViewFocus::Tree
                 },
-                "{label} preserves the menu restore pane"
+                "{label} preserves the menu restore view"
             );
             assert_eq!(
                 restored,

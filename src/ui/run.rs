@@ -44,7 +44,7 @@ pub fn dump_switcher(
 }
 
 /// Renders the tree-focus view — the switcher with the cursor host's live `grid` (if
-/// any) in the terminal-view pane — to an off-screen `TestBackend` and flattens
+/// any) in the terminal view — to an off-screen `TestBackend` and flattens
 /// it. So a headless `dump` reflects the same screen the main draw produces,
 /// including the live terminal Grid. Runs without a real terminal.
 pub fn dump_screen(
@@ -251,7 +251,7 @@ mod tests {
     #[tokio::test]
     async fn dump_screen_renders_the_live_grid() {
         // A dump with a live grid must include both the tree AND the grid content
-        // (the terminal-view pane), so a headless `dump` reflects the live screen.
+        // (the terminal view), so a headless `dump` reflects the live screen.
         let mut state = crate::state::State::from_scan(sample());
         let mut sw = Switcher::new(&mut state);
         let mut grid = crate::display::grid::Grid::new(30, 100);

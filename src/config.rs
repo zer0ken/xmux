@@ -40,7 +40,7 @@ pub struct UiConfig {
     /// (`prefix Tab`/`←`/`Esc`). Default false keeps the tree shown in both focus states.
     #[serde(rename = "auto-hide-tree", default)]
     pub auto_hide_tree: bool,
-    /// The tree|mux divider colours, named after tmux's pane-border options so the
+    /// The tree|terminal divider colours, named after tmux's pane-border options so the
     /// experience matches tmux: the focused side uses `pane-active-border-style`, the
     /// unfocused side `pane-border-style`, and the drag-hover cue `pane-border-hover-style`.
     /// Values use tmux's colour vocabulary (parsed by [`crate::ui::switcher::map_color`]);

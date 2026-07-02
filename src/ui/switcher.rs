@@ -125,7 +125,7 @@ enum RowRef {
 }
 
 /// One context-menu entry. The variant drives the action taken on release; the
-/// label is the row text. Words match the rest of the tree UI ("focus the mux pane",
+/// label is the row text. Words match the rest of the tree UI ("focus the terminal",
 /// "new", "rename", "kill" — never "open"/"split", which are not used elsewhere).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum MenuItem {
@@ -150,7 +150,7 @@ impl MenuItem {
 
 /// What the app must do after a menu release. Most items are handled inside the
 /// switcher (they open an input or arm a kill); `FocusTerminal` is the one outcome the
-/// app owns (the "focus" item moves focus to the mux pane).
+/// app owns (the "focus" item moves focus to the terminal view).
 pub enum MenuOutcome {
     None,
     Handled,
@@ -619,7 +619,7 @@ impl Switcher {
 
     /// The dim trailing annotation for a host row: its scan state when it has no
     /// sessions to show — scanning…, ⚠ (unreachable; the reason is shown in the
-    /// right-pane info panel when the host row is selected), or (empty).
+    /// terminal-view info panel when the host row is selected), or (empty).
     fn host_hint(&self, g: &Group, scanning: bool) -> Option<String> {
         if scanning {
             Some("scanning…".into())
@@ -995,7 +995,7 @@ impl Switcher {
         self.status.set_divider_hovered(on);
     }
 
-    /// Sets the tree|mux divider colours. The app calls this once at startup with
+    /// Sets the tree|terminal divider colours. The app calls this once at startup with
     /// the colours parsed from config's `pane-*-border-style` options; tmux defaults
     /// apply otherwise.
     pub fn set_divider_colors(&mut self, colors: DividerColors) {
@@ -1093,9 +1093,9 @@ impl Switcher {
 
     /// Modal help input, tmux view-mode style. While the modal is open it captures
     /// the whole key read (returns true ⇒ consumed — nothing reaches the tree or the
-    /// mux pane); `q` or Esc closes it, every other key is swallowed. Returns false
+    /// terminal view); `q` or Esc closes it, every other key is swallowed. Returns false
     /// when help is closed, so the read falls through to normal routing. The single
-    /// owner of help dismissal — the app calls it above the tree/mux split, so the
+    /// owner of help dismissal — the app calls it above the tree/terminal split, so the
     /// behavior is identical in both focuses.
     pub fn feed_help_key(&mut self, bytes: &[u8], state: &mut crate::state::State) -> bool {
         if !matches!(state.modal, Some(Modal::Help)) {
@@ -1942,11 +1942,11 @@ impl Switcher {
         .split(cols[0]);
         self.render_tree(frame, left[0]);
         self.status.render_hint_bar(frame, left[1], state);
-        // The tree|mux divider marks focus between those two panes.
+        // The tree|terminal divider marks focus between those two views.
         self.status.render_divider(frame, cols[1], terminal_focused);
         let term_area = cols[2];
         // An unreachable host has no live grid; show an info panel (ssh config stanza
-        // + failure reason) in its right pane instead of the blank (attaching…) grid.
+        // + failure reason) in the terminal view instead of the blank (attaching…) grid.
         if self.current_host_unreachable() {
             let source = self.current_source().unwrap_or_default();
             self.status
@@ -2055,10 +2055,10 @@ impl Switcher {
     /// shared modal-popup path.
     fn help_lines(&self) -> (String, Vec<Line<'static>>) {
         // tmux mode-tree style: a right-aligned, bold key column, a `│` rule, then
-        // the description. `Head` breaks the flat list into tree/focus/mux sections;
+        // the description. `Head` breaks the flat list into tree/focus/terminal sections;
         // `Note` is a description-only row (the mux state has no keys of its own).
         //
-        // The tree and mux sections have no configurable keys so they are static.
+        // The tree and terminal sections have no configurable keys so they are static.
         // The focus section uses `self.status.ui_prefix` so the help modal matches the
         // active binding from config.
         enum HelpRow {
@@ -2088,10 +2088,10 @@ impl Switcher {
             HelpRow::Gap,
             // Focus section — prefix rows built from self.status.ui_prefix.
             HelpRow::Head(format!("focus ({p} = prefix)")),
-            HelpRow::Key(format!("Enter · {p} →"), "focus the mux pane".into()),
+            HelpRow::Key(format!("Enter · {p} →"), "focus the terminal".into()),
             HelpRow::Key(
                 format!("{p} Tab"),
-                "toggle focus between tree and mux".into(),
+                "toggle focus between tree and terminal".into(),
             ),
             HelpRow::Key(format!("{p} ← · {p} Esc"), "focus the tree".into()),
             HelpRow::Key(
@@ -2103,7 +2103,7 @@ impl Switcher {
                 "toggle auto-hide-tree (║ divider = on)".into(),
             ),
             HelpRow::Key(format!("{p} ?"), "show this help (q / Esc closes)".into()),
-            HelpRow::Key("click a pane".into(), "focus that pane".into()),
+            HelpRow::Key("click a view".into(), "focus that view".into()),
             HelpRow::Key("drag the divider".into(), "resize the tree".into()),
             HelpRow::Key(
                 "right-click a row".into(),
@@ -3006,7 +3006,7 @@ mod tests {
 
     #[test]
     fn select_window_follows_from_a_session_row() {
-        // When the terminal pane has focus the user is no longer driving the tree
+        // When the terminal view has focus the user is no longer driving the tree
         // cursor (stdin goes to the PTY), so the app only calls select_window
         // then. An active-window change must move the cursor to that window even from
         // the SESSION row — this is how focus→mux and in-mux window navigation keep
@@ -4613,7 +4613,7 @@ mod tests {
         );
         assert!(out.contains("fuzzy filter"), "help should list keybindings");
         // Modal dismissal (tmux view-mode): the app routes keys to feed_help_key
-        // above the tree/mux split — q closes it; other keys are swallowed (no nav).
+        // above the tree/terminal split — q closes it; other keys are swallowed (no nav).
         assert!(
             h.sw.feed_help_key(b"q", &mut h.state),
             "q is consumed while help is open"
@@ -4701,7 +4701,7 @@ mod tests {
 
     #[tokio::test]
     async fn enter_and_bare_q_are_noops() {
-        // Enter is consumed by the app (focus the mux), not the switcher; bare q does
+        // Enter is consumed by the app (focus the terminal), not the switcher; bare q does
         // nothing — quit is `prefix q` at the app level. Neither moves the cursor or
         // opens an input here.
         let mut h = Harness::new(sample());
@@ -4800,14 +4800,14 @@ mod tests {
         );
         assert!(
             hint_bar.contains("focus"),
-            "hint_bar mentions focusing the terminal pane:\n{hint_bar}"
+            "hint_bar mentions focusing the terminal view:\n{hint_bar}"
         );
         h.sw.show_help(&mut h.state); // driven by the app's `prefix ?`
         h.draw();
         let help = h.text();
         assert!(
-            help.contains("focus the mux"),
-            "help explains focusing the mux pane:\n{help}"
+            help.contains("focus the terminal"),
+            "help explains focusing the terminal view:\n{help}"
         );
         assert!(
             !help.contains("select = attach"),
@@ -4866,7 +4866,7 @@ mod tests {
     #[tokio::test]
     async fn divider_splits_top_bottom_to_mark_focused_side() {
         // The rule splits into halves: the accent (green) half marks WHICH pane has
-        // focus — top = tree (left), bottom = mux (right) — and the other half is dim.
+        // focus — top = tree (left), bottom = terminal (right) — and the other half is dim.
         let backend = TestBackend::new(100, 30);
         let mut term = Terminal::new(backend).unwrap();
         let mut state = crate::state::State::from_scan(sample());
@@ -4875,7 +4875,7 @@ mod tests {
         let (top, bottom) = (2u16, 27u16); // within the top / bottom halves of height 30
         let fg = |buf: &Buffer, y: u16| buf[(x, y)].fg;
 
-        // Mux focused: accent on the bottom (mux side), inactive on top. The inactive
+        // Terminal focused: accent on the bottom (terminal side), inactive on top. The inactive
         // half is the tmux default (terminal default = Color::Reset), not a dim grey.
         term.draw(|f| sw.render(f, None, true, TREE_WIDTH, &state))
             .unwrap();

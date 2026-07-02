@@ -29,7 +29,7 @@ pub enum Action {
     /// `switch`, or a context-menu pick). Moves the cursor; the attach commits on a
     /// later `Tick` once the selection settles.
     Switch { address: String },
-    /// Move focus between the tree sidebar and the terminal pane.
+    /// Move focus between the tree view and the terminal view.
     Focus(FocusTarget),
     /// Re-enumerate every host (the `r` re-scan).
     Rescan,
@@ -252,7 +252,7 @@ impl std::fmt::Debug for EventEffect {
     }
 }
 
-/// Which pane [`Action::Focus`] targets. The ctl `focus` verb and the keyboard
+/// Which view [`Action::Focus`] targets. The ctl `focus` verb and the keyboard
 /// focus toggles both resolve to this.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FocusTarget {
@@ -262,7 +262,7 @@ pub enum FocusTarget {
 
 impl FocusTarget {
     /// Parses the ctl `focus` argument. `mux` is accepted as a render-side alias
-    /// for `terminal` (the mux pane IS the terminal pane in the app's vocab).
+    /// for `terminal` (the terminal view shows the selected session's mux).
     #[allow(clippy::should_implement_trait)] // intentionally not FromStr: returns Option, not Result
     pub fn from_str(s: &str) -> Option<FocusTarget> {
         match s.trim() {
