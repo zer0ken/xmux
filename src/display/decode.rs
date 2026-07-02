@@ -77,12 +77,17 @@ impl KeyDecoder {
                     if i + len > self.buf.len() {
                         break;
                     } // incomplete, buffer it
-                    if let Ok(s) = std::str::from_utf8(&self.buf[i..i + len]) {
-                        if let Some(c) = s.chars().next() {
-                            out.push(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+                    match std::str::from_utf8(&self.buf[i..i + len]) {
+                        Ok(s) => {
+                            if let Some(c) = s.chars().next() {
+                                out.push(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+                            }
+                            i += len;
                         }
+                        // The estimated len was wrong (invalid lead byte): resync by a
+                        // single byte so the next valid byte is not swallowed.
+                        Err(_) => i += 1,
                     }
-                    i += len;
                 }
             }
         }
@@ -210,6 +215,18 @@ mod tests {
             codes(b"\x1b[H"),
             Vec::<KeyCode>::new(),
             "Home (ESC[H) should be silent"
+        );
+    }
+
+    #[test]
+    fn invalid_utf8_lead_resyncs_without_swallowing_next() {
+        // A stray invalid lead byte (0x80, estimated len 2) must be dropped ONE byte
+        // at a time so the following valid byte is not swallowed by the guess.
+        assert_eq!(codes(&[0x80, b'x']), vec![KeyCode::Char('x')]);
+        // A len-4 invalid lead (0xff) resyncs the same way and still yields the ASCII.
+        assert_eq!(
+            codes(&[0xff, b'a', b'b', b'c']),
+            vec![KeyCode::Char('a'), KeyCode::Char('b'), KeyCode::Char('c')]
         );
     }
 }
