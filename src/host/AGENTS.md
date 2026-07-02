@@ -22,6 +22,14 @@ per-host session/window inventory — and (re)builds the tree from it.
 
 ## Module Seams
 
+- The module is split by role: `inventory.rs` (the shared vocabulary — inventory
+  data plus the command/event/reply types the threads exchange), `reader.rs` (the
+  `-CC` stdout line state machine → `HostEvent`s), `writer.rs` (drains `HostCmd`s to
+  the child, one in-flight correlation per line), `client.rs` (`HostClient`: one
+  control-mode child plus its reader/writer/stderr threads and command API),
+  `poll.rs` (a POLL host's self-looping enumeration task for muxes with no control
+  stream), and `manager.rs` (`HostManager`: owns each host's metadata channel and
+  the composed `control_argv`).
 - `HostManager::ensure` spawns the `-CC` control child with an argv composed
   across the two orthogonal axes — `Transport::control_argv(&Mux::control_argv())`
   (the mux supplies the control payload, the transport wraps it for local `-S` /

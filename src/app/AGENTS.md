@@ -51,6 +51,12 @@ pumped or a grid is rendered.
 - `run_app` is a thin entry point: the `Runtime` struct owns the loop's world state,
   and every `select!` arm plus every stateful helper is a `&mut self` method, so each
   takes a small argument list rather than a large loose-parameter bundle.
+- The app loop is not a second State-writer: the display truth (`displayed`), the
+  attach debounce (`attach_deadline`), and `focus` all change only inside
+  `State::apply`, routed there as an `Action` (`ConfirmDisplay`/`ClearDisplay`,
+  `RearmAttach`/`RearmAttachNow`/`Tick`, `Focus`/`FocusToggle`). The loop makes the
+  decision — a live grid exists, a deadline elapsed, a click landed — and folds the
+  result through `apply`, so domain mutation stays at one site.
 - `Selection` (defined in `src/model`) is the canonical selected
   source/session/window value consumed by display selection and rendering.
 - The per-mux display decision lives in the `MuxDriver` implementation, never in
