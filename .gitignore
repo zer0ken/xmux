@@ -12,3 +12,6 @@ graphify-out/
 
 # editor
 /.vscode/
+
+# non-public planning material (kept on disk, excluded from the published tree)
+/docs/superpowers/
