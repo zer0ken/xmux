@@ -50,6 +50,13 @@ pub struct State {
     /// never coexist. The switcher owns the modal behavior and the transient popup
     /// geometry (drag offset / drawn rect); this owns which modal is open + its content.
     pub(crate) modal: Option<crate::ui::modal::Modal>,
+    /// The switcher's chrome view-state: the tree|terminal view border, the tree-column
+    /// hint bar (help / status / wrapped flash), and the unreachable-host info panel,
+    /// plus their inputs (flash, spinner set + frame, auto-hide/hover cues, view border
+    /// colours, ssh-config text, prefix). Owned here (the [`Modal`](crate::ui::modal::Modal)
+    /// precedent) and fed by the app each frame; the switcher's `render` reads it off
+    /// `&state`. In P5 this may relocate to a `Runtime` grouping per-frame chrome inputs.
+    pub(crate) chrome: crate::ui::chrome::Chrome,
 }
 
 impl State {
@@ -420,6 +427,13 @@ impl State {
             }
             OpResult::Failed { message } => OpFollow::Flash(message),
         }
+    }
+
+    /// Flashes a transient message in the tree-column hint bar (an error or notice).
+    /// The next tree key clears it (the switcher's `handle_key` clear path), so the
+    /// normal help/status hint bar returns. Delegates to the chrome's flash API.
+    pub(crate) fn flash(&mut self, msg: impl Into<String>) {
+        self.chrome.flash(msg);
     }
 }
 
@@ -1423,6 +1437,25 @@ mod tests {
         assert!(
             matches!(follow, OpFollow::Flash(m) if m == "kill failed: boom"),
             "a failure carries its message to the switcher's flash"
+        );
+    }
+
+    // --- chrome ownership: State owns the chrome view-state -------------------
+
+    #[test]
+    fn flash_sets_message_and_key_clears_it() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let (mut state, mut sw) = with_switcher(one_session_scan());
+        state.flash("boom");
+        assert_eq!(
+            state.chrome.flash, "boom",
+            "State::flash sets the chrome flash"
+        );
+        // A navigation key clears the flash (the switcher's handle_key clear path).
+        sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut state);
+        assert!(
+            state.chrome.flash.is_empty(),
+            "a key clears the flash so the normal hint bar returns"
         );
     }
 }

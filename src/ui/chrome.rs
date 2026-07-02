@@ -129,6 +129,13 @@ impl Default for Chrome {
 }
 
 impl Chrome {
+    /// Sets the transient flash message shown in the tree-column hint bar (an error
+    /// or notice). The next tree key clears it (the switcher's `handle_key`), so the
+    /// normal help/status hint bar returns.
+    pub(crate) fn flash(&mut self, msg: impl Into<String>) {
+        self.flash = msg.into();
+    }
+
     /// Replaces the set of session addresses currently connecting / awaiting
     /// first output. The tree draws a braille spinner right of each matching
     /// session name.

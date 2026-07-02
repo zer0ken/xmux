@@ -5,7 +5,7 @@
 //! that draws to either the live terminal or a headless `TestBackend` (the
 //! control channel's `dump`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
@@ -17,7 +17,6 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::model::{Action, Command};
 use crate::session::{Session, WindowPanes};
-use crate::ui::chrome::Chrome;
 use crate::ui::modal::{
     self, Input, InputMode, Menu, MenuItem, MenuOutcome, Modal, PendingKill, PopupGeometry,
 };
@@ -96,9 +95,6 @@ pub struct Switcher {
     /// The whole frame area, captured each render so the menu box can be clamped to
     /// the screen at open time (mouse events arrive between renders).
     screen_area: Rect,
-    /// The chrome (view border, hint_bar, host-info) and its view-local state
-    /// (flash, spinner, auto-hide/hover cues, view border colours, ssh-config, prefix).
-    chrome: Chrome,
     /// The transient geometry of the active modal popup (drag offset / drawn rect /
     /// in-flight border drag). The drag behavior lives on [`PopupGeometry`].
     popup_geo: PopupGeometry,
@@ -118,7 +114,6 @@ impl Switcher {
             preferred: None,
             rescan_reselect: None,
             screen_area: Rect::default(),
-            chrome: Chrome::default(),
             popup_geo: PopupGeometry::default(),
         }
     }
@@ -549,44 +544,6 @@ impl Switcher {
         changed
     }
 
-    /// Replaces the set of session addresses currently connecting / awaiting
-    /// first output. The tree draws a braille spinner right of each matching
-    /// session name.
-    pub fn set_spinner(&mut self, addresses: HashSet<String>) {
-        self.chrome.set_spinner(addresses);
-    }
-
-    /// Sets the braille spinner frame index. The app derives it from elapsed
-    /// wall-clock time, so the spinner animates on every render rather than once
-    /// per animation tick (which can starve under a `%output` flood).
-    pub fn set_spinner_frame(&mut self, frame: usize) {
-        self.chrome.set_spinner_frame(frame);
-    }
-
-    /// Sets auto-hide-tree mode (the app owns it; the view border glyph reflects it).
-    pub fn set_auto_hide(&mut self, on: bool) {
-        self.chrome.set_auto_hide(on);
-    }
-
-    /// Sets whether the mouse is hovering the view border (the app derives it from
-    /// idle motion); when set, the view border highlights as a drag-resize grab cue.
-    pub fn set_view_border_hovered(&mut self, on: bool) {
-        self.chrome.set_view_border_hovered(on);
-    }
-
-    /// Sets the tree|terminal view border colours. The app calls this once at startup with
-    /// the colours parsed from config's `pane-*-border-style` options; tmux defaults
-    /// apply otherwise.
-    pub fn set_view_border_colors(&mut self, colors: ViewBorderColors) {
-        self.chrome.set_view_border_colors(colors);
-    }
-
-    /// Sets the prefix string shown in the help modal. The app calls this once
-    /// at startup so the help modal reflects the binding from config's `[ui] prefix`.
-    pub fn set_ui_prefix(&mut self, prefix: String) {
-        self.chrome.set_ui_prefix(prefix);
-    }
-
     // --- key handling -------------------------------------------------------
 
     /// Open the modal keys help modal. In tree focus any key then dismisses it (see
@@ -664,7 +621,7 @@ impl Switcher {
         // A flash is a transient error/message — it lives only until the next key. Clear
         // it here so navigation (or any key) restores the normal help
         // hint_bar; actions below may set a fresh one, which survives because this runs first.
-        self.chrome.flash.clear();
+        state.chrome.flash.clear();
         match ev.code {
             KeyCode::Enter => {}
             // ↑/↓ (and k/j) move between SIBLINGS at the current tree level (next/prev
@@ -694,7 +651,7 @@ impl Switcher {
     // --- input row ----------------------------------------------------------
 
     fn open_input(&mut self, mode: InputMode, state: &mut crate::state::State) {
-        self.chrome.flash.clear();
+        state.chrome.flash.clear();
         self.dismiss_modals(state);
         match mode {
             InputMode::Filter => {
@@ -709,7 +666,7 @@ impl Switcher {
             }
             InputMode::Rename => match self.current_ref().cloned() {
                 Some(RowRef::Host { .. }) => {
-                    self.chrome.flash = "cannot rename a host".into();
+                    state.flash("cannot rename a host");
                 }
                 Some(RowRef::Session(sess)) => {
                     state.modal = Some(Modal::Input(Input {
@@ -747,10 +704,10 @@ impl Switcher {
     /// direction). The prompt context is captured up front so a streamed selection
     /// move cannot retarget it.
     fn open_new(&mut self, state: &mut crate::state::State) {
-        self.chrome.flash.clear();
+        state.chrome.flash.clear();
         self.dismiss_modals(state);
         if self.current_host_unreachable() {
-            self.chrome.flash = "host unreachable — cannot create here".into();
+            state.flash("host unreachable — cannot create here");
             return;
         }
         let Some(reference) = self.current_ref().cloned() else {
@@ -948,7 +905,7 @@ impl Switcher {
         }
         if new_name.starts_with('-') {
             // the mux silently no-ops a '-'-leading name (getopt eats it) — refuse.
-            self.chrome.flash = "rename: name cannot start with '-'".into();
+            state.flash("rename: name cannot start with '-'");
             return Vec::new();
         }
         state.apply(Action::RenameSession {
@@ -977,7 +934,7 @@ impl Switcher {
             return Vec::new();
         }
         if new_name.starts_with('-') {
-            self.chrome.flash = "rename: name cannot start with '-'".into();
+            state.flash("rename: name cannot start with '-'");
             return Vec::new();
         }
         state.apply(Action::RenameWindow {
@@ -1010,7 +967,7 @@ impl Switcher {
                 self.restore_focus(prior, state);
             }
             OpFollow::Flash(message) => {
-                self.chrome.flash = message;
+                state.flash(message);
             }
         }
     }
@@ -1027,7 +984,7 @@ impl Switcher {
         self.dismiss_modals(state);
         match self.current_ref().cloned() {
             Some(RowRef::Host { .. }) => {
-                self.chrome.flash = "cannot kill a host".into();
+                state.flash("cannot kill a host");
             }
             Some(RowRef::Session(sess)) => {
                 state.modal = Some(Modal::Kill(PendingKill::Session(sess)));
@@ -1445,23 +1402,25 @@ impl Switcher {
         // Tree column: the tree plus its hint_bar/help line. The hint_bar is normally one
         // line, but a long flash wraps across several — size the hint_bar to the wrapped
         // line count so it is never clipped.
-        let hint_bar_h = self.chrome.hint_bar_lines(tree_width, state).len().max(1) as u16;
+        let hint_bar_h = state.chrome.hint_bar_lines(tree_width, state).len().max(1) as u16;
         let left = Layout::vertical([
             Constraint::Min(0),             // tree
             Constraint::Length(hint_bar_h), // hint_bar (help / status / wrapped flash)
         ])
         .split(cols[0]);
-        self.render_tree(frame, left[0]);
-        self.chrome.render_hint_bar(frame, left[1], state);
+        self.render_tree(frame, left[0], state);
+        state.chrome.render_hint_bar(frame, left[1], state);
         // The tree|terminal view border marks focus between those two views.
-        self.chrome
+        state
+            .chrome
             .render_view_border(frame, cols[1], terminal_focused);
         let term_area = cols[2];
         // An unreachable host has no live grid; show an info panel (ssh config stanza
         // + failure reason) in the terminal view instead of the blank grid.
         if self.current_host_unreachable() {
             let source = self.current_source().unwrap_or_default();
-            self.chrome
+            state
+                .chrome
                 .render_host_info(frame, term_area, state, &source);
         } else {
             self.render_terminal_view(frame, term_area, grid);
@@ -1479,13 +1438,13 @@ impl Switcher {
         self.render_menu(frame, state);
     }
 
-    fn render_tree(&mut self, frame: &mut Frame, area: Rect) {
+    fn render_tree(&mut self, frame: &mut Frame, area: Rect, state: &crate::state::State) {
         // No border box: the tree fills its column outright and a single rule
         // (render_view_border) separates it from the terminal view.
         self.tree_inner = area;
 
         const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-        let spinner_glyph = SPINNER[self.chrome.spinner_frame % SPINNER.len()];
+        let spinner_glyph = SPINNER[state.chrome.spinner_frame % SPINNER.len()];
 
         let items: Vec<ListItem> = self
             .rows
@@ -1525,7 +1484,7 @@ impl Switcher {
                     Span::styled(pad_label(&row.label), style),
                 ];
                 // Spinner glyph: shown right of the session name when connecting.
-                if matches!(&row.reference, RowRef::Session(s) if self.chrome.spinner.contains(&s.address())) {
+                if matches!(&row.reference, RowRef::Session(s) if state.chrome.spinner.contains(&s.address())) {
                     let sp_style = Style::default().fg(COLOR_HINT);
                     spans.push(Span::styled(spinner_glyph.to_string(), sp_style));
                 }
@@ -1567,18 +1526,13 @@ impl Switcher {
         }
     }
 
-    /// Sets the raw `~/.ssh/config` text the unreachable-host info panel reads.
-    pub fn set_ssh_config_text(&mut self, text: String) {
-        self.chrome.set_ssh_config_text(text);
-    }
-
     /// Draws the active centered modal popup (help / confirm / input) shifted by
     /// `popup_offset`, through the shared opaque `render_popup`, and caches its rect
     /// for drag hit-testing. The single `popup` Option makes these mutually
     /// exclusive; the context menu is drawn separately by `render_menu`.
     fn render_modal_popup(&mut self, frame: &mut Frame, area: Rect, state: &crate::state::State) {
         let (title, lines) = match &state.modal {
-            Some(Modal::Help) => modal::help_lines(&self.chrome.ui_prefix),
+            Some(Modal::Help) => modal::help_lines(&state.chrome.ui_prefix),
             Some(Modal::Kill(armed)) => modal::confirm_lines(armed),
             Some(Modal::Input(input)) => modal::input_lines(input),
             _ => {
@@ -2738,7 +2692,7 @@ mod tests {
     #[tokio::test]
     async fn unreachable_info_pane_shows_ssh_config_stanza() {
         let mut h = Harness::from_sources(&["jupiter00"]);
-        h.sw.set_ssh_config_text(
+        h.state.chrome.set_ssh_config_text(
             "Host jupiter00\n    HostName 143.248.140.120\n    User hrlee\n\nHost other\n    HostName 1.2.3.4\n".into(),
         );
         h.sw.apply_source_result(
@@ -2997,10 +2951,9 @@ mod tests {
     fn hint_bar_text_reflects_configured_prefix() {
         // The hint_bar always-visible key-hints must show the active prefix, not a
         // hardcoded "C-g", so a user who sets a different binding sees the right hint.
-        let state = crate::state::State::default();
-        let mut sw = Switcher::blank();
-        sw.set_ui_prefix("C-Space".into());
-        let text = sw.chrome.hint_bar_text(200, &state);
+        let mut state = crate::state::State::default();
+        state.chrome.set_ui_prefix("C-Space".into());
+        let text = state.chrome.hint_bar_text(200, &state);
         assert!(
             text.contains("C-Space"),
             "custom prefix must appear in hint_bar:\n{text:?}"
@@ -3011,8 +2964,8 @@ mod tests {
         );
 
         // Default prefix (no setter) must still show C-g.
-        let sw_default = Switcher::blank();
-        let text_default = sw_default.chrome.hint_bar_text(200, &state);
+        let state_default = crate::state::State::default();
+        let text_default = state_default.chrome.hint_bar_text(200, &state_default);
         assert!(
             text_default.contains("C-g"),
             "default prefix C-g must appear in hint_bar:\n{text_default:?}"
@@ -3290,9 +3243,9 @@ mod tests {
         );
         h.ch('n').await;
         assert!(
-            h.sw.chrome.flash.to_lowercase().contains("unreachable"),
+            h.state.chrome.flash.to_lowercase().contains("unreachable"),
             "create on unreachable host should flash unreachable, got {:?}",
-            h.sw.chrome.flash
+            h.state.chrome.flash
         );
         assert!(h.ops.created.lock().unwrap().is_empty());
     }
@@ -3924,7 +3877,7 @@ mod tests {
         let mut h = Harness::new(sample());
         let mut connecting = std::collections::HashSet::new();
         connecting.insert("jupiter00/inference".to_string());
-        h.sw.set_spinner(connecting);
+        h.state.chrome.set_spinner(connecting);
         h.draw();
         let tree = h.tree_text();
         // a braille spinner glyph from the U+2800 block appears on the inference row.
@@ -3940,9 +3893,8 @@ mod tests {
         // The hint_bar lives in the tree column; a long flash must wrap across lines rather
         // than clip at the column edge (a narrow tree would otherwise hide most of it).
         let mut state = crate::state::State::from_scan(sample());
-        let mut sw = Switcher::new(&mut state);
-        sw.chrome.flash = "host unreachable — cannot create here".into();
-        let lines = sw.chrome.hint_bar_lines(20, &state);
+        state.chrome.flash = "host unreachable — cannot create here".into();
+        let lines = state.chrome.hint_bar_lines(20, &state);
         assert!(
             lines.len() > 1,
             "long flash wraps across lines, got {lines:?}"
@@ -3964,12 +3916,12 @@ mod tests {
         // dismisses it so the normal help/status hint_bar returns. Regression: it persisted
         // because only the input-opening actions cleared it, so navigation never did.
         let mut h = Harness::new(sample());
-        h.sw.chrome.flash = "host unreachable — cannot create here".into();
+        h.state.chrome.flash = "host unreachable — cannot create here".into();
         h.key(KeyCode::Down).await;
         assert!(
-            h.sw.chrome.flash.is_empty(),
+            h.state.chrome.flash.is_empty(),
             "navigation clears the flash, got {:?}",
-            h.sw.chrome.flash
+            h.state.chrome.flash
         );
     }
 
@@ -4010,7 +3962,7 @@ mod tests {
         let mut term = Terminal::new(backend).unwrap();
         let mut state = crate::state::State::from_scan(sample());
         let mut sw = Switcher::new(&mut state);
-        sw.set_view_border_colors(ViewBorderColors {
+        state.chrome.set_view_border_colors(ViewBorderColors {
             active: Color::Blue,
             inactive: Color::Gray,
             hover: Color::Red,
@@ -4035,7 +3987,7 @@ mod tests {
         );
 
         // Hovering the rule overrides with the configured hover colour.
-        sw.set_view_border_hovered(true);
+        state.chrome.set_view_border_hovered(true);
         term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
             .unwrap();
         let buf = term.backend().buffer().clone();
@@ -4095,7 +4047,7 @@ mod tests {
         let mut state = crate::state::State::from_scan(sample());
         let mut sw = Switcher::new(&mut state);
         let x = TREE_WIDTH;
-        sw.set_view_border_hovered(true);
+        state.chrome.set_view_border_hovered(true);
         term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
             .unwrap();
         let buf = term.backend().buffer().clone();
@@ -4128,7 +4080,7 @@ mod tests {
         let mut sw = Switcher::new(&mut state);
         let (x, y) = (TREE_WIDTH, 2u16);
 
-        sw.set_auto_hide(false);
+        state.chrome.set_auto_hide(false);
         term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
             .unwrap();
         assert_eq!(
@@ -4137,7 +4089,7 @@ mod tests {
             "mode off → single line"
         );
 
-        sw.set_auto_hide(true);
+        state.chrome.set_auto_hide(true);
         term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
             .unwrap();
         assert_eq!(
@@ -4598,9 +4550,9 @@ mod tests {
             "leading-dash window rename must be refused"
         );
         assert!(
-            h.sw.chrome.flash.contains("cannot start with"),
+            h.state.chrome.flash.contains("cannot start with"),
             "leading-dash window rename must set a flash message, got {:?}",
-            h.sw.chrome.flash
+            h.state.chrome.flash
         );
     }
 
@@ -4610,9 +4562,9 @@ mod tests {
         h.key(KeyCode::Home).await; // local host row
         h.ch('x').await;
         assert!(
-            h.sw.chrome.flash.to_lowercase().contains("cannot kill"),
+            h.state.chrome.flash.to_lowercase().contains("cannot kill"),
             "kill on host row must flash an error, got {:?}",
-            h.sw.chrome.flash
+            h.state.chrome.flash
         );
         assert!(
             !matches!(h.state.modal, Some(Modal::Kill(_))),
@@ -4626,9 +4578,13 @@ mod tests {
         h.key(KeyCode::Home).await; // local host row
         h.ch('R').await;
         assert!(
-            h.sw.chrome.flash.to_lowercase().contains("cannot rename"),
+            h.state
+                .chrome
+                .flash
+                .to_lowercase()
+                .contains("cannot rename"),
             "rename on host row must flash an error, got {:?}",
-            h.sw.chrome.flash
+            h.state.chrome.flash
         );
         assert!(!h.state.is_inputting(), "no input opened");
     }
@@ -4720,9 +4676,9 @@ mod tests {
     #[test]
     fn help_lines_reflects_configured_prefix() {
         // The focus-section rows must show the active prefix, not a hardcoded "C-g".
-        let mut sw = Switcher::blank();
-        sw.set_ui_prefix("C-Space".into());
-        let (_title, lines) = modal::help_lines(&sw.chrome.ui_prefix);
+        let mut state = crate::state::State::default();
+        state.chrome.set_ui_prefix("C-Space".into());
+        let (_title, lines) = modal::help_lines(&state.chrome.ui_prefix);
         let text: String = lines
             .iter()
             .map(|l| l.to_string())
@@ -4738,8 +4694,8 @@ mod tests {
         );
 
         // Default prefix (no setter) must still show C-g.
-        let sw_default = Switcher::blank();
-        let (_title, lines_default) = modal::help_lines(&sw_default.chrome.ui_prefix);
+        let state_default = crate::state::State::default();
+        let (_title, lines_default) = modal::help_lines(&state_default.chrome.ui_prefix);
         let text_default: String = lines_default
             .iter()
             .map(|l| l.to_string())

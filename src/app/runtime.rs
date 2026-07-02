@@ -1869,18 +1869,20 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
     let mut switcher = Switcher::from_sources(&mut state);
     // Feed the switcher the ssh config so an unreachable host's info panel can show its
     // Host/Match stanza. Read once; a missing file just yields no stanza.
-    switcher.set_ssh_config_text(
+    state.chrome.set_ssh_config_text(
         std::fs::read_to_string(crate::env::ssh_config_path()).unwrap_or_default(),
     );
     // View border colours from config's tmux-style pane-border options (tmux defaults
     // otherwise), so the tree|terminal rule matches the user's tmux pane-border experience.
-    switcher.set_view_border_colors(crate::ui::switcher::ViewBorderColors {
-        active: crate::ui::chrome::map_color(&env.cfg.ui.view_active_border_style),
-        inactive: crate::ui::chrome::map_color(&env.cfg.ui.view_border_style),
-        hover: crate::ui::chrome::map_color(&env.cfg.ui.view_border_hover_style),
-    });
+    state
+        .chrome
+        .set_view_border_colors(crate::ui::switcher::ViewBorderColors {
+            active: crate::ui::chrome::map_color(&env.cfg.ui.view_active_border_style),
+            inactive: crate::ui::chrome::map_color(&env.cfg.ui.view_border_style),
+            hover: crate::ui::chrome::map_color(&env.cfg.ui.view_border_hover_style),
+        });
     // The help modal must show the prefix the user configured, not a literal.
-    switcher.set_ui_prefix(env.ui_prefix.clone());
+    state.chrome.set_ui_prefix(env.ui_prefix.clone());
     // Restore the session the user last had selected (persisted across runs), so the
     // preselect lands there once its host streams in instead of guessing from the
     // unreliable cross-host `session_last_attached` (#1).
@@ -1988,8 +1990,12 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
         // Advance the spinner from wall-clock so it animates regardless of which arm
         // fired, then commit the selection's target into the canonical selection. A
         // changed selection ensures its PTY + (for a window row) switches the window.
-        switcher.set_spinner_frame(spinner_frame_at(spinner_start.elapsed()));
-        switcher.set_view_border_hovered(mouse_state.hovered_view_border);
+        state
+            .chrome
+            .set_spinner_frame(spinner_frame_at(spinner_start.elapsed()));
+        state
+            .chrome
+            .set_view_border_hovered(mouse_state.hovered_view_border);
         // Derive the modal dimension of focus from the open-modal kind: open a modal →
         // Focus becomes Popup/Menu carrying the current view; close it → restore that
         // view. The single owner of the modal/view reconciliation.
@@ -2163,7 +2169,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
             };
             let terminal_focused = state.focus.is_terminal_focused();
             // The view border glyph reflects auto-hide-tree mode (║ on, │ off).
-            switcher.set_auto_hide(auto_hide_tree);
+            state.chrome.set_auto_hide(auto_hide_tree);
             let t_draw = std::time::Instant::now();
             // Split the draw cost: `render` is the in-memory buffer build (tree +
             // grid → cells); the remainder of `draw` is crossterm's diff + console
@@ -2538,7 +2544,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                         sp.insert(state.selection.address());
                     }
                 }
-                switcher.set_spinner(sp);
+                state.chrome.set_spinner(sp);
             }
             _ = reconnect.tick() => {
                 let (vc, vr) = terminal_view_size(cols, body_rows, tree_width);
