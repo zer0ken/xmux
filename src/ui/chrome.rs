@@ -12,7 +12,8 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::ui::switcher::{fit, wrap_text};
+use crate::ui::modal::wrap_text;
+use crate::ui::switcher::fit;
 
 /// Parses a tmux-style colour token into a ratatui [`Color`], matching tmux/psmux's
 /// colour vocabulary so the view border colours can be configured exactly like

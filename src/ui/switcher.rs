@@ -10,8 +10,8 @@ use std::collections::{HashMap, HashSet};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Clear, List, ListItem, ListState};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
@@ -19,7 +19,7 @@ use crate::model::{Action, Command};
 use crate::session::{Session, WindowPanes};
 use crate::ui::chrome::Chrome;
 use crate::ui::modal::{
-    Input, InputMode, Menu, MenuItem, MenuOutcome, Modal, PendingKill, PopupDrag,
+    self, Input, InputMode, Menu, MenuItem, MenuOutcome, Modal, PendingKill, PopupDrag,
 };
 use crate::ui::tree::{self, Group, Row, RowRef};
 
@@ -44,74 +44,6 @@ pub use crate::ui::chrome::ViewBorderColors;
 pub struct Scan {
     pub groups: Vec<Group>,
     pub panes: HashMap<String, Vec<WindowPanes>>,
-}
-
-/// The menu entries for a node, by type. Non-selectable rows (pane/loading) get none.
-/// `focus` is first so a press-release with no drag falls on the safe default.
-fn menu_items(target: &RowRef) -> Vec<MenuItem> {
-    use MenuItem::*;
-    match target {
-        RowRef::Host { .. } => vec![NewSession],
-        RowRef::Session(_) => vec![Focus, NewWindow, Rename, Kill],
-        RowRef::Window { .. } => vec![Focus, Rename, Kill],
-        RowRef::Pane | RowRef::Loading => Vec::new(),
-    }
-}
-
-/// The menu's title — the human name of the node it acts on (host alias, session
-/// name, or `session:window`), shown in the box's top border.
-fn menu_title(target: &RowRef) -> String {
-    match target {
-        RowRef::Host { source, .. } => source.clone(),
-        RowRef::Session(s) => s.name.clone(),
-        RowRef::Window { sess, window } => crate::mux::window_target(&sess.name, *window),
-        RowRef::Pane | RowRef::Loading => String::new(),
-    }
-}
-
-/// Greedily word-wraps `text` to lines no wider than `width` display columns
-/// (Unicode-aware), breaking on spaces; a word longer than `width` is hard-split so
-/// nothing is ever clipped. Always returns at least one line. Used so the input
-/// prompt's description wraps across a narrow tree column instead of being truncated.
-pub(crate) fn wrap_text(text: &str, width: u16) -> Vec<String> {
-    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-    let width = (width as usize).max(1);
-    let mut lines: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    let mut cur_w = 0usize;
-    for word in text.split(' ') {
-        let ww = UnicodeWidthStr::width(word);
-        let sep = usize::from(!cur.is_empty());
-        if !cur.is_empty() && cur_w + sep + ww > width {
-            lines.push(std::mem::take(&mut cur));
-            cur_w = 0;
-        }
-        if ww > width {
-            // Longer than a whole line: hard-split across as many lines as needed.
-            if !cur.is_empty() {
-                lines.push(std::mem::take(&mut cur));
-                cur_w = 0;
-            }
-            for ch in word.chars() {
-                let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
-                if cur_w + cw > width && !cur.is_empty() {
-                    lines.push(std::mem::take(&mut cur));
-                    cur_w = 0;
-                }
-                cur.push(ch);
-                cur_w += cw;
-            }
-        } else {
-            if !cur.is_empty() {
-                cur.push(' ');
-                cur_w += 1;
-            }
-            cur.push_str(word);
-            cur_w += ww;
-        }
-    }
-    lines.push(cur);
-    lines
 }
 
 /// Snapshot of the selection taken before a rebuild so `restore_focus` can
@@ -1447,12 +1379,12 @@ impl Switcher {
         else {
             return false;
         };
-        let items = menu_items(&target);
+        let items = modal::menu_items(&target);
         if items.is_empty() {
             return false;
         }
-        let title = menu_title(&target);
-        let rect = menu_rect(col, row, &items, &title, self.screen_area);
+        let title = modal::menu_title(&target);
+        let rect = modal::menu_rect(col, row, &items, &title, self.screen_area);
         // No item is pre-highlighted, and the box opens just below the pointer (see
         // menu_rect) — so an accidental right-click that releases without dragging onto
         // an item does nothing. Selecting is a deliberate move down onto an item.
@@ -1715,114 +1647,15 @@ impl Switcher {
         self.chrome.set_ssh_config_text(text);
     }
 
-    /// The help modal's `(title, lines)`, built once and rendered through the
-    /// shared modal-popup path.
-    fn help_lines(&self) -> (String, Vec<Line<'static>>) {
-        // tmux mode-tree style: a right-aligned, bold key column, a `│` rule, then
-        // the description. `Head` breaks the flat list into tree/focus/terminal sections;
-        // `Note` is a description-only row (the mux state has no keys of its own).
-        //
-        // The tree and terminal sections have no configurable keys so they are static.
-        // The focus section uses `self.chrome.ui_prefix` so the help modal matches the
-        // active binding from config.
-        enum HelpRow {
-            Head(String),
-            Key(String, String),
-            Note(&'static str),
-            Gap,
-        }
-
-        let p = &self.chrome.ui_prefix;
-
-        // Tree section — no configurable keys; keep as literals.
-        let rows: Vec<HelpRow> = vec![
-            HelpRow::Head("tree".into()),
-            HelpRow::Key("↑/↓ · j/k".into(), "move between siblings".into()),
-            HelpRow::Key(
-                "→/l · ←/h".into(),
-                "descend into / ascend out of a node".into(),
-            ),
-            HelpRow::Key("PgUp/PgDn".into(), "jump by 10".into()),
-            HelpRow::Key("Home/End".into(), "first / last node".into()),
-            HelpRow::Key("n".into(), "new (session / window, by level)".into()),
-            HelpRow::Key("R".into(), "rename the focused session or window".into()),
-            HelpRow::Key("x".into(), "kill it (y / n confirm)".into()),
-            HelpRow::Key("/".into(), "fuzzy filter <source>/<name>".into()),
-            HelpRow::Key("r".into(), "re-scan every host".into()),
-            HelpRow::Gap,
-            // Focus section — prefix rows built from self.chrome.ui_prefix.
-            HelpRow::Head(format!("focus ({p} = prefix)")),
-            HelpRow::Key(format!("Enter · {p} →"), "focus the terminal".into()),
-            HelpRow::Key(
-                format!("{p} Tab"),
-                "toggle focus between tree and terminal".into(),
-            ),
-            HelpRow::Key(format!("{p} ← · {p} Esc"), "focus the tree".into()),
-            HelpRow::Key(
-                format!("{p} C-←/→ · h/l"),
-                "resize the tree (C-←/→ then repeats briefly)".into(),
-            ),
-            HelpRow::Key(
-                format!("{p} t"),
-                "toggle auto-hide-tree (║ view border = on)".into(),
-            ),
-            HelpRow::Key(format!("{p} ?"), "show this help (q / Esc closes)".into()),
-            HelpRow::Key("click a view".into(), "focus that view".into()),
-            HelpRow::Key("drag the view border".into(), "resize the tree".into()),
-            HelpRow::Key(
-                "right-click a row".into(),
-                "hold for its menu, release on an item".into(),
-            ),
-            HelpRow::Key(format!("{p} q"), "quit".into()),
-            HelpRow::Key(format!("{p} {p}"), format!("send a literal {p} to the mux")),
-            HelpRow::Gap,
-            // Mux section — no configurable keys; keep as literals.
-            HelpRow::Head("mux (focused)".into()),
-            HelpRow::Note("keys, scroll & clicks go to the pane"),
-            HelpRow::Note("(the mux needs its own mouse mode on)"),
-        ];
-
-        let kw = rows
-            .iter()
-            .filter_map(|r| match r {
-                HelpRow::Key(k, _) => Some(k.chars().count()),
-                _ => None,
-            })
-            .max()
-            .unwrap_or(0);
-        let bold = Style::new().add_modifier(Modifier::BOLD);
-        let lines: Vec<Line> = rows
-            .into_iter()
-            .map(|r| match r {
-                HelpRow::Gap => Line::from(""),
-                HelpRow::Head(h) => Line::from(Span::styled(
-                    format!(" {h}"),
-                    bold.add_modifier(Modifier::UNDERLINED),
-                )),
-                HelpRow::Key(k, d) => Line::from(vec![
-                    Span::styled(format!(" {k:>kw$} "), bold),
-                    Span::raw("│ "),
-                    Span::raw(d),
-                ]),
-                HelpRow::Note(n) => Line::from(vec![
-                    Span::raw(format!(" {:>kw$} ", "")),
-                    Span::raw("│ "),
-                    Span::raw(n),
-                ]),
-            })
-            .collect();
-        ("keys".to_string(), lines)
-    }
-
     /// Draws the active centered modal popup (help / confirm / input) shifted by
     /// `popup_offset`, through the shared opaque `render_popup`, and caches its rect
     /// for drag hit-testing. The single `popup` Option makes these mutually
     /// exclusive; the context menu is drawn separately by `render_menu`.
     fn render_modal_popup(&mut self, frame: &mut Frame, area: Rect, state: &crate::state::State) {
         let (title, lines) = match &state.modal {
-            Some(Modal::Help) => self.help_lines(),
-            Some(Modal::Kill(armed)) => confirm_lines(armed),
-            Some(Modal::Input(input)) => input_lines(input),
+            Some(Modal::Help) => modal::help_lines(&self.chrome.ui_prefix),
+            Some(Modal::Kill(armed)) => modal::confirm_lines(armed),
+            Some(Modal::Input(input)) => modal::input_lines(input),
             _ => {
                 self.popup_rect = Rect::default();
                 return;
@@ -1833,9 +1666,9 @@ impl Switcher {
         // `.max(24).min(width)` (not `clamp`) so a sub-24-col terminal cannot panic.
         let w = (inner_w + 3).max(24).min(area.width.max(1));
         let h = (lines.len() as u16 + 2).min(area.height.max(1));
-        let rect = offset_centered(w, h, area, self.popup_offset);
+        let rect = modal::offset_centered(w, h, area, self.popup_offset);
         self.popup_rect = rect;
-        render_popup(frame, area, rect, &title, lines);
+        modal::render_popup(frame, area, rect, &title, lines);
     }
 
     /// Draws the open context menu as a bordered popup at its anchored rect: the target's
@@ -1860,64 +1693,7 @@ impl Switcher {
                 Line::from(Span::styled(format!(" {:<pad$} ", it.label()), style))
             })
             .collect();
-        render_popup(frame, self.screen_area, rect, &menu.title, lines);
-    }
-}
-
-/// The active input rendered as popup `(title, lines)`: the instructional label,
-/// the `❯ buffer` entry line, and a dim Esc hint.
-fn input_lines(input: &Input) -> (String, Vec<Line<'static>>) {
-    let dim = Style::default().add_modifier(Modifier::DIM);
-    let lines = vec![
-        Line::from(Span::styled(format!(" {}", input.label.trim()), dim)),
-        Line::from(format!(" ❯ {}", input.buffer)),
-        Line::from(Span::styled(" Esc to cancel", dim)),
-    ];
-    (input_title(input.mode).to_string(), lines)
-}
-
-/// The armed kill confirm rendered as popup `(title, lines)`, in red.
-fn confirm_lines(armed: &PendingKill) -> (String, Vec<Line<'static>>) {
-    let red = Style::default().fg(Color::Red);
-    let q = match armed {
-        PendingKill::Session(sess) => format!(" kill {}?", sess.address()),
-        PendingKill::Window { source, target, .. } => format!(" kill {source}/{target}?"),
-    };
-    let lines = vec![
-        Line::from(Span::styled(q, red)),
-        Line::from(Span::styled(" [y]es / [n]o · Esc cancel", red)),
-    ];
-    ("kill?".to_string(), lines)
-}
-
-/// Renders an opaque bordered popup at `rect` (titled, content `lines`), in tmux's
-/// edge style. Two things make it tmux-consistent:
-///
-/// 1. **Opaque, no margin.** The box is filled with the reset (default) style so the
-///    mux grid's background colours behind it cannot bleed through, and ONLY `rect`
-///    itself is cleared — there is no blanket one-cell margin around the box, so
-///    half-width neighbours sit flush against the border.
-/// 2. **Wide-glyph edge handling.** A double-width (CJK) glyph whose right half the
-///    LEFT border now covers would otherwise leave its orphaned left half rendering
-///    as a broken glyph just outside the box. That single cell is blanked — and only
-///    that cell, only when it is actually a wide glyph. The right edge needs no fixup:
-///    ratatui stores a wide char as `[glyph][space]`, so a glyph whose lead the box
-///    covers leaves only its already-blank continuation outside.
-fn render_popup(frame: &mut Frame, area: Rect, rect: Rect, title: &str, lines: Vec<Line>) {
-    frame.render_widget(Clear, rect);
-    let block = Block::bordered()
-        .title(format!(" {title} "))
-        .style(Style::reset());
-    frame.render_widget(Paragraph::new(Text::from(lines)).block(block), rect);
-    if rect.x > area.x {
-        let x = rect.x - 1;
-        let y_end = (rect.y + rect.height).min(area.y + area.height);
-        let buf = frame.buffer_mut();
-        for y in rect.y..y_end {
-            if buf[(x, y)].symbol().width() > 1 {
-                buf[(x, y)].set_symbol(" ");
-            }
-        }
+        modal::render_popup(frame, self.screen_area, rect, &menu.title, lines);
     }
 }
 
@@ -1962,97 +1738,6 @@ fn terminal_cursor_pos(area: Rect, cursor: (u16, u16)) -> ratatui::layout::Posit
     ratatui::layout::Position {
         x: (area.x + col).min(area.x + area.width.saturating_sub(1)),
         y: (area.y + row).min(area.y + area.height.saturating_sub(1)),
-    }
-}
-
-impl Menu {
-    /// The item index at 0-based screen (col,row), or None if outside the item area
-    /// (the box's bordered interior, one row per item below the top border).
-    fn item_at(&self, col: u16, row: u16) -> Option<usize> {
-        let inside_x = col > self.rect.x && col + 1 < self.rect.x + self.rect.width;
-        if !inside_x || row <= self.rect.y {
-            return None;
-        }
-        let i = (row - self.rect.y - 1) as usize;
-        (i < self.items.len()).then_some(i)
-    }
-
-    /// Whether 0-based screen (col,row) is anywhere inside the box (border included).
-    /// Used to keep the highlight while the selection is over the title border but off an
-    /// item — only dragging fully outside the box clears it.
-    fn contains(&self, col: u16, row: u16) -> bool {
-        col >= self.rect.x
-            && col < self.rect.x + self.rect.width
-            && row >= self.rect.y
-            && row < self.rect.y + self.rect.height
-    }
-}
-
-/// The bordered menu box for an anchor at 0-based screen (col,row): sized to the wider
-/// of the widest item label (+ a pad cell each side) and the title, plus borders, and
-/// the item count; clamped so it stays fully inside `area` (shifts up/left near an edge).
-fn menu_rect(col: u16, row: u16, items: &[MenuItem], title: &str, area: Rect) -> Rect {
-    let item_w = items
-        .iter()
-        .map(|it| UnicodeWidthStr::width(it.label()))
-        .max()
-        .unwrap_or(0);
-    let content_w = (item_w + 2).max(UnicodeWidthStr::width(title)) as u16;
-    let w = (content_w + 2).min(area.width.max(1));
-    let h = (items.len() as u16 + 2).min(area.height.max(1));
-    // Anchor the title row (top border) on the pointer, tmux-style: the pointer lands on
-    // the title line, a column left so it sits just inside the box rather than on the left
-    // border. item_at() is None on the title row, so no item is pre-selected — an
-    // accidental right-click releases off every item (cancel), and a deliberate pick is a
-    // short drag straight down onto an item.
-    let ax = col.saturating_sub(1);
-    let ay = row;
-    let max_x = (area.x + area.width).saturating_sub(w).max(area.x);
-    let max_y = (area.y + area.height).saturating_sub(h).max(area.y);
-    Rect {
-        x: ax.clamp(area.x, max_x),
-        y: ay.clamp(area.y, max_y),
-        width: w,
-        height: h,
-    }
-}
-
-fn centered_rect(w: u16, h: u16, area: Rect) -> Rect {
-    let w = w.min(area.width);
-    let h = h.min(area.height);
-    let x = area.x + (area.width.saturating_sub(w)) / 2;
-    let y = area.y + (area.height.saturating_sub(h)) / 2;
-    Rect {
-        x,
-        y,
-        width: w,
-        height: h,
-    }
-}
-
-/// `centered_rect` shifted by `offset` (cells) and clamped fully inside `area`.
-fn offset_centered(w: u16, h: u16, area: Rect, offset: (i16, i16)) -> Rect {
-    let base = centered_rect(w, h, area);
-    let max_x = area.x + area.width.saturating_sub(base.width);
-    let max_y = area.y + area.height.saturating_sub(base.height);
-    let x = (base.x as i32 + offset.0 as i32).clamp(area.x as i32, max_x as i32) as u16;
-    let y = (base.y as i32 + offset.1 as i32).clamp(area.y as i32, max_y as i32) as u16;
-    Rect {
-        x,
-        y,
-        width: base.width,
-        height: base.height,
-    }
-}
-
-/// A short popup title for an input mode (shown on the box's top border).
-fn input_title(mode: InputMode) -> &'static str {
-    match mode {
-        InputMode::Filter => "filter",
-        InputMode::New => "new session",
-        InputMode::NewWindow => "new window",
-        InputMode::SplitWindow => "split",
-        InputMode::Rename => "rename",
     }
 }
 
@@ -3744,19 +3429,19 @@ mod tests {
             source: "h".into(),
             unreachable: false,
         };
-        assert_eq!(menu_items(&host), vec![NewSession]);
+        assert_eq!(modal::menu_items(&host), vec![NewSession]);
 
         let s = sess("h", "api", 1, false, 0);
         assert_eq!(
-            menu_items(&RowRef::Session(s.clone())),
+            modal::menu_items(&RowRef::Session(s.clone())),
             vec![Focus, NewWindow, Rename, Kill]
         );
         assert_eq!(
-            menu_items(&RowRef::Window { sess: s, window: 1 }),
+            modal::menu_items(&RowRef::Window { sess: s, window: 1 }),
             vec![Focus, Rename, Kill]
         );
-        assert!(menu_items(&RowRef::Pane).is_empty());
-        assert!(menu_items(&RowRef::Loading).is_empty());
+        assert!(modal::menu_items(&RowRef::Pane).is_empty());
+        assert!(modal::menu_items(&RowRef::Loading).is_empty());
     }
 
     /// The screen (col,row) of the tree row at `idx`, given the current layout.
@@ -3857,7 +3542,7 @@ mod tests {
         let mut h = Harness::new(sample());
         let s = sess("local", "build", 1, false, 100);
         let target = RowRef::Session(s);
-        let items = menu_items(&target);
+        let items = modal::menu_items(&target);
         let focus_at = items.iter().position(|i| *i == MenuItem::Focus).unwrap();
         h.state.modal = Some(Modal::Menu(Menu {
             target,
@@ -3881,7 +3566,7 @@ mod tests {
     async fn menu_release_rename_opens_input() {
         let mut h = Harness::new(sample());
         let target = RowRef::Session(sess("local", "build", 1, false, 100));
-        let items = menu_items(&target);
+        let items = modal::menu_items(&target);
         let at = items.iter().position(|i| *i == MenuItem::Rename).unwrap();
         h.state.modal = Some(Modal::Menu(Menu {
             target,
@@ -3901,7 +3586,7 @@ mod tests {
     async fn menu_release_kill_arms_confirm() {
         let mut h = Harness::new(sample());
         let target = RowRef::Session(sess("local", "build", 1, false, 100));
-        let items = menu_items(&target);
+        let items = modal::menu_items(&target);
         let at = items.iter().position(|i| *i == MenuItem::Kill).unwrap();
         h.state.modal = Some(Modal::Menu(Menu {
             target,
@@ -3934,7 +3619,7 @@ mod tests {
         h.sw.user_moved = true;
         // Kill a DIFFERENT session ('build') via the menu.
         let target = RowRef::Session(sess("local", "build", 1, false, 100));
-        let items = menu_items(&target);
+        let items = modal::menu_items(&target);
         let at = items.iter().position(|i| *i == MenuItem::Kill).unwrap();
         h.state.modal = Some(Modal::Menu(Menu {
             target,
@@ -3988,7 +3673,7 @@ mod tests {
         let mut h = Harness::new(sample());
         let s = sess("local", "editor", 2, true, 200); // editor: win 1 active, win 2 not
         let target = RowRef::Window { sess: s, window: 2 };
-        let items = menu_items(&target);
+        let items = modal::menu_items(&target);
         let at = items.iter().position(|i| *i == MenuItem::Focus).unwrap();
         h.state.modal = Some(Modal::Menu(Menu {
             target,
@@ -4055,7 +3740,7 @@ mod tests {
         let mut h = Harness::new(sample());
         let s = sess("local", "editor", 2, true, 200);
         let target = RowRef::Window { sess: s, window: 2 };
-        let items = menu_items(&target);
+        let items = modal::menu_items(&target);
         let at = items.iter().position(|i| *i == MenuItem::Focus).unwrap();
         h.state.modal = Some(Modal::Menu(Menu {
             target,
@@ -4065,7 +3750,7 @@ mod tests {
             hovered: Some(at),
         }));
         // A window row offers focus / rename / kill — no split.
-        assert!(!items_have_split(&menu_items(&RowRef::Window {
+        assert!(!items_have_split(&modal::menu_items(&RowRef::Window {
             sess: sess("local", "editor", 2, true, 200),
             window: 2
         })));
@@ -4097,7 +3782,7 @@ mod tests {
             source: "local".into(),
             unreachable: false,
         };
-        let items = menu_items(&target);
+        let items = modal::menu_items(&target);
         h.state.modal = Some(Modal::Menu(Menu {
             target,
             title: String::new(),
@@ -4117,7 +3802,7 @@ mod tests {
         let mut h = Harness::new(sample());
         // A target that does not exist in the tree (rebuilt away during the hold).
         let target = RowRef::Session(sess("local", "ghost", 1, false, 0));
-        let items = menu_items(&target);
+        let items = modal::menu_items(&target);
         h.state.modal = Some(Modal::Menu(Menu {
             target,
             title: String::new(),
@@ -4129,43 +3814,6 @@ mod tests {
             matches!(h.sw.menu_release(&mut h.state), MenuOutcome::None),
             "gone target → no-op"
         );
-    }
-
-    #[test]
-    fn menu_rect_clamps_into_screen() {
-        use super::MenuItem::*;
-        let area = Rect::new(0, 0, 80, 24);
-        let items = [Focus, Rename, Kill];
-        // Anchored near the bottom-right corner → shifted up/left to stay on-screen.
-        let r = menu_rect(78, 23, &items, "editor", area);
-        assert!(
-            r.x + r.width <= area.width,
-            "box stays within the right edge"
-        );
-        assert!(
-            r.y + r.height <= area.height,
-            "box stays within the bottom edge"
-        );
-    }
-
-    #[test]
-    fn menu_rect_fits_a_title_wider_than_the_items() {
-        use super::MenuItem::*;
-        let area = Rect::new(0, 0, 80, 24);
-        let r = menu_rect(0, 0, &[Focus], "a-very-long-session-name", area);
-        assert!(
-            r.width as usize >= "a-very-long-session-name".len() + 2,
-            "title fits in the box"
-        );
-    }
-
-    #[test]
-    fn menu_rect_measures_cjk_title_by_display_width() {
-        use super::MenuItem::*;
-        let area = Rect::new(0, 0, 80, 24);
-        let title = "한국한국한국한국";
-        let r = menu_rect(0, 0, &[Focus], title, area);
-        assert_eq!(r.width as usize, UnicodeWidthStr::width(title) + 2);
     }
 
     #[tokio::test]
@@ -4574,46 +4222,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn popup_blanks_only_a_wide_glyph_bisected_by_the_left_border() {
-        // tmux edge behaviour: no blanket margin. A double-width glyph whose right half
-        // the left border covers is blanked (its orphaned half would render broken); a
-        // half-width char at the same edge column stays flush; the box covers opaquely.
-        let backend = TestBackend::new(40, 10);
-        let mut term = Terminal::new(backend).unwrap();
-        term.draw(|f| {
-            let area = f.area();
-            f.buffer_mut()[(9u16, 3u16)].set_symbol("한"); // wide; right half under the border at x=10
-            f.buffer_mut()[(9u16, 4u16)].set_symbol("Y"); // half-width at the same edge column
-            f.buffer_mut()[(15u16, 4u16)].set_style(Style::default().bg(Color::Red)); // behind the popup
-            let rect = Rect::new(10, 2, 12, 5);
-            render_popup(
-                f,
-                area,
-                rect,
-                "t",
-                vec![Line::from("focus"), Line::from("kill"), Line::from("x")],
-            );
-        })
-        .unwrap();
-        let buf = term.backend().buffer();
-        assert_eq!(
-            buf[(9u16, 3u16)].symbol(),
-            " ",
-            "wide glyph bisected by the left border is blanked"
-        );
-        assert_eq!(
-            buf[(9u16, 4u16)].symbol(),
-            "Y",
-            "a half-width char at the edge stays flush — no margin"
-        );
-        assert_eq!(
-            buf[(15u16, 4u16)].bg,
-            Color::Reset,
-            "the popup covers the background colour opaquely"
-        );
-    }
-
     #[tokio::test]
     async fn every_popup_type_is_opaque_over_a_colored_grid() {
         // A grid filled with a blue background; each popup type drawn over it must leave
@@ -4887,33 +4495,6 @@ mod tests {
             h.ops.created.lock().unwrap().is_empty(),
             "Esc must not create anything"
         );
-    }
-
-    #[test]
-    fn wrap_text_wraps_on_words_and_hard_splits_long_words() {
-        use unicode_width::UnicodeWidthStr;
-        let s = "filter sessions · Esc to cancel";
-        let lines = wrap_text(s, 19);
-        assert!(
-            lines.len() >= 2,
-            "wraps when narrower than the text: {lines:?}"
-        );
-        assert!(
-            lines.iter().all(|l| l.as_str().width() <= 19),
-            "no line exceeds width: {lines:?}"
-        );
-        assert!(
-            lines.join(" ").contains("cancel"),
-            "tail survives (not clipped): {lines:?}"
-        );
-        // A single word longer than the width is hard-split, each piece within width.
-        let long = wrap_text("supercalifragilistic", 5);
-        assert!(
-            long.len() >= 4 && long.iter().all(|l| l.as_str().width() <= 5),
-            "{long:?}"
-        );
-        // A wide enough width keeps it on one line.
-        assert_eq!(wrap_text(s, 100).len(), 1);
     }
 
     #[tokio::test]
@@ -5213,7 +4794,7 @@ mod tests {
         // The focus-section rows must show the active prefix, not a hardcoded "C-g".
         let mut sw = Switcher::blank();
         sw.set_ui_prefix("C-Space".into());
-        let (_title, lines) = sw.help_lines();
+        let (_title, lines) = modal::help_lines(&sw.chrome.ui_prefix);
         let text: String = lines
             .iter()
             .map(|l| l.to_string())
@@ -5230,7 +4811,7 @@ mod tests {
 
         // Default prefix (no setter) must still show C-g.
         let sw_default = Switcher::blank();
-        let (_title, lines_default) = sw_default.help_lines();
+        let (_title, lines_default) = modal::help_lines(&sw_default.chrome.ui_prefix);
         let text_default: String = lines_default
             .iter()
             .map(|l| l.to_string())
