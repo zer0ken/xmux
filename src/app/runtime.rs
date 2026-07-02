@@ -578,9 +578,9 @@ fn ensure_current_host(
 ) {
     let (cols, rows) = terminal_view_size(cols, rows, tree_width);
     if let Some(id) = switcher.current_host() {
-        if let (Some(host), Some(src)) = (hosts.get(&id), env.by_alias.get(&id)) {
+        if let (Some(host), Some(_src)) = (hosts.get(&id), env.by_alias.get(&id)) {
             if host.detected {
-                let _ = mgr.ensure(&id, host, src, cols, rows);
+                let _ = mgr.ensure(&id, host, cols, rows);
             }
         }
     }
@@ -619,8 +619,8 @@ fn dispatch_detected_host(
     let Some(host) = hosts.get(source) else {
         return;
     };
-    if let Some(src) = env.by_alias.get(source) {
-        let _ = mgr.ensure(source, host, src, cols, rows);
+    if let Some(_src) = env.by_alias.get(source) {
+        let _ = mgr.ensure(source, host, cols, rows);
     }
 }
 
@@ -682,7 +682,7 @@ fn kick_rescan(
     for src in &env.srcs {
         if let Some(host) = hosts.get(&src.alias) {
             if host.detected {
-                mgr.rescan(&src.alias, host, src, cols, rows);
+                mgr.rescan(&src.alias, host, cols, rows);
                 continue;
             }
         }
@@ -2556,7 +2556,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                     let detected = hosts.get(&src.alias).map(|h| h.detected).unwrap_or(false);
                     if detected {
                         if let Some(host) = hosts.get(&src.alias) {
-                            let _ = mgr.ensure(&src.alias, host, src, vc, vr);
+                            let _ = mgr.ensure(&src.alias, host, vc, vr);
                         }
                     } else {
                         scan_or_dispatch_host(&mut mgr, &env, &hosts, &mut detecting, &src.alias, vc, vr);

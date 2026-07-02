@@ -719,10 +719,6 @@ impl HostManager {
         &mut self,
         id: &str,
         host: &crate::model::Host,
-        // The control argv is now composed from `host` (transport × mux); the source is
-        // no longer read here. It stays in the signature because `rescan` forwards it and the
-        // callers hand it in; a later stage retires the source-threading entirely.
-        _src: &crate::source::Source,
         cols: u16,
         rows: u16,
     ) -> anyhow::Result<bool> {
@@ -775,21 +771,14 @@ impl HostManager {
     /// re-issues list-sessions; a POLL host's task is aborted and respawned so the next
     /// enumeration fires NOW instead of at the next interval. Branches on which channel
     /// the manager holds — it does NOT read the mux's event source.
-    pub fn rescan(
-        &mut self,
-        id: &str,
-        host: &crate::model::Host,
-        src: &crate::source::Source,
-        cols: u16,
-        rows: u16,
-    ) {
+    pub fn rescan(&mut self, id: &str, host: &crate::model::Host, cols: u16, rows: u16) {
         if let Some(c) = self.clients.get(id) {
             c.list_sessions();
             return;
         }
         if let Some(h) = self.polls.remove(id) {
             h.abort();
-            let _ = self.ensure(id, host, src, cols, rows);
+            let _ = self.ensure(id, host, cols, rows);
         }
     }
 
@@ -928,23 +917,13 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn live_jupiter06_control_lists_sessions() {
         use std::time::{Duration, Instant};
-        let src = crate::source::Source {
-            alias: "jupiter06".into(),
-            binary: "tmux".into(),
-            kind: crate::machine::MachineKind::Ssh {
-                alias: "jupiter06".into(),
-                control_path: String::new(),
-                os: std::env::consts::OS.into(),
-            },
-            runner: None,
-        };
         let host = crate::model::Host::new(
             crate::machine::ssh("jupiter06".into(), String::new(), "linux".into()),
             crate::mux::for_binary("tmux"),
         );
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
         let mut mgr = HostManager::new(tx);
-        mgr.ensure("jupiter06", &host, &src, 80, 24)
+        mgr.ensure("jupiter06", &host, 80, 24)
             .expect("spawn control client");
         let deadline = Instant::now() + Duration::from_secs(20);
         let mut connected = false;
@@ -1520,15 +1499,6 @@ mod tests {
     /// ever did spawn it the process would exist rather than fail to launch. In these
     /// tests it stays dormant — `ensure` on an already-present host returns `Ok(false)`
     /// and a poll host's task is aborted before its runner is exercised.
-    fn fake_source(host: &str) -> crate::source::Source {
-        crate::source::Source {
-            alias: host.into(),
-            binary: "cmd.exe".into(),
-            kind: crate::machine::MachineKind::Local { socket: None },
-            runner: None,
-        }
-    }
-
     fn ssh_host(alias: &str, bin: &str, os: &str, control_path: &str) -> crate::model::Host {
         crate::model::Host::new(
             crate::machine::ssh(alias.into(), control_path.into(), os.into()),
@@ -1619,10 +1589,9 @@ mod tests {
         mgr.insert_fake("jupiter06");
         assert!(mgr.get("jupiter06").is_some());
         // ensure on an already-connected host returns Ok(false) (no fresh connect).
-        let src = fake_source("jupiter06");
         let host =
             crate::model::Host::new(crate::machine::local(None), crate::mux::for_binary("psmux"));
-        assert!(!mgr.ensure("jupiter06", &host, &src, 80, 24).unwrap());
+        assert!(!mgr.ensure("jupiter06", &host, 80, 24).unwrap());
     }
 
     #[test]
@@ -1646,9 +1615,8 @@ mod tests {
             crate::machine::local(None),
             crate::mux::for_kind("psmux", "psmux-no-such-binary"),
         );
-        let src = fake_source("local");
         assert!(
-            mgr.ensure("local", &host, &src, 80, 24).unwrap(),
+            mgr.ensure("local", &host, 80, 24).unwrap(),
             "first ensure spawns the poll task"
         );
         assert!(
@@ -1656,13 +1624,34 @@ mod tests {
             "a poll host has no control client"
         );
         assert!(
-            !mgr.ensure("local", &host, &src, 80, 24).unwrap(),
+            !mgr.ensure("local", &host, 80, 24).unwrap(),
             "ensure is idempotent while the poll task lives"
         );
         mgr.reap("local");
         assert!(
-            mgr.ensure("local", &host, &src, 80, 24).unwrap(),
+            mgr.ensure("local", &host, 80, 24).unwrap(),
             "reap aborted the task so ensure re-spawns it"
+        );
+        mgr.teardown_all();
+    }
+
+    #[tokio::test]
+    async fn ensure_needs_no_source_arg() {
+        // ensure composes the control/poll channel from the host alone (transport × mux);
+        // it takes no Source. A poll host (psmux) is idempotent while its task lives.
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
+        let mut mgr = HostManager::new(tx);
+        let host = crate::model::Host::new(
+            crate::machine::local(None),
+            crate::mux::for_kind("psmux", "psmux-no-such-binary"),
+        );
+        assert!(
+            mgr.ensure("local", &host, 80, 24).unwrap(),
+            "first ensure spawns the poll task without a source"
+        );
+        assert!(
+            !mgr.ensure("local", &host, 80, 24).unwrap(),
+            "ensure is idempotent while the poll task lives"
         );
         mgr.teardown_all();
     }
