@@ -104,6 +104,11 @@ pub trait Mux: Send + Sync {
     /// `DriverCtx`, so a fresh value per call is free.
     fn driver(&self) -> Box<dyn crate::driver::MuxDriver>;
 
+    /// Clones into a fresh box — a spawned poll task needs an owned mux, and a trait
+    /// object cannot derive `Clone`. Symmetric with `Transport::clone_box`; each mux
+    /// deep-copies itself (identity + invoked binary preserved).
+    fn clone_box(&self) -> Box<dyn Mux>;
+
     /// Lists this host's sessions over `transport`, executing its probe via
     /// `runner` (the real [`ExecRunner`] in production; an injected fake under test).
     /// A reachable empty mux => `Ok(vec![])`; unreachable => `Err`.
@@ -461,6 +466,11 @@ mod tests {
         fn driver(&self) -> Box<dyn crate::driver::MuxDriver> {
             Box::new(crate::mux::tmux::TmuxDriver)
         }
+        fn clone_box(&self) -> Box<dyn Mux> {
+            Box::new(BareMux {
+                bin: self.bin.clone(),
+            })
+        }
         async fn enumerate(
             &self,
             transport: &dyn Transport,
@@ -489,6 +499,21 @@ mod tests {
         let m = BareMux { bin: "tmux".into() };
         assert_eq!(m.list_panes_plan("work"), mux::list_panes("tmux", "work"));
         assert_eq!(m.new_session_plan("dev"), mux::new_session("tmux", "dev"));
+    }
+
+    #[test]
+    fn mux_clone_box_preserves_identity_and_binary() {
+        // A poll task needs an owned mux; `clone_box` deep-copies a `Box<dyn Mux>`
+        // preserving both identity and invoked binary (the `Transport::clone_box` idiom).
+        let p: Box<dyn Mux> = psmux().clone_box();
+        assert_eq!(p.kind(), "psmux");
+        assert_eq!(p.bin(), "psmux");
+        let t: Box<dyn Mux> = Tmux {
+            bin: "custom".into(),
+        }
+        .clone_box();
+        assert_eq!(t.kind(), "tmux");
+        assert_eq!(t.bin(), "custom");
     }
 
     // LIVE: enumerate over a real local tmux server. `#[ignore]` (needs tmux + a

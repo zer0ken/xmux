@@ -62,6 +62,12 @@ impl Mux for Tmux {
         Box::new(TmuxDriver)
     }
 
+    fn clone_box(&self) -> Box<dyn Mux> {
+        Box::new(Self {
+            bin: self.bin.clone(),
+        })
+    }
+
     async fn enumerate(
         &self,
         transport: &dyn Transport,

@@ -647,12 +647,10 @@ impl HostClient {
 async fn run_poll(
     source: String,
     transport: Box<dyn crate::machine::Transport>,
-    mux_kind: String,
-    mux_bin: String,
+    mux: Box<dyn crate::mux::Mux>,
     interval_ms: u64,
     events: tokio::sync::mpsc::UnboundedSender<HostEvent>,
 ) {
-    let mux = crate::mux::for_kind(&mux_kind, &mux_bin);
     // Fixed-cadence ticker: the first tick is immediate (enumerate on spawn), then a
     // sweep every `interval_ms` of wall-clock. Skip ticks missed while one enumeration
     // ran long, so a slow probe paces the loop instead of piling up overlapping sweeps.
@@ -786,8 +784,7 @@ impl HostManager {
                 let handle = tokio::spawn(run_poll(
                     id.to_string(),
                     host.transport.clone(),
-                    host.mux.kind().to_string(),
-                    host.mux.bin().to_string(),
+                    host.mux.clone_box(),
                     interval_ms,
                     self.events.clone(),
                 ));

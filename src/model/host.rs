@@ -206,6 +206,9 @@ mod tests {
         fn driver(&self) -> Box<dyn crate::driver::MuxDriver> {
             Box::new(StubDriver)
         }
+        fn clone_box(&self) -> Box<dyn Mux> {
+            Box::new(StubMux(self.0))
+        }
         async fn enumerate(
             &self,
             _t: &dyn Transport,
@@ -425,6 +428,12 @@ mod tests {
         }
         fn driver(&self) -> Box<dyn crate::driver::MuxDriver> {
             Box::new(StubDriver)
+        }
+        fn clone_box(&self) -> Box<dyn Mux> {
+            Box::new(EnumMux {
+                model: self.model,
+                result: std::sync::Mutex::new(None),
+            })
         }
         async fn enumerate(
             &self,
