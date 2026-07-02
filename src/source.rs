@@ -1,10 +1,11 @@
-//! Abstracts a mux server reachable from this machine: the local mux, or a
-//! remote one over ssh. It carries the per-source config/data (alias, mux binary,
-//! socket, control path, os) and the reachable-but-empty vs unreachable distinction.
-//! The mux-env vocabulary (which vars mark a mux session) lives in `mux::vocab`. The
-//! machine boundary itself — argv assembly and the ssh transport (connect-timeout,
-//! injection-safe quoting) — lives in `Transport`; this source delegates to it
-//! (`transport()`), so the layers above speak in sessions, not transports.
+//! Thin per-source config/data for a mux server reachable from this machine (the
+//! local mux, or a remote one over ssh): alias, mux binary, machine kind (socket /
+//! ssh alias, control path, os), and an injectable runner. The off-loop `Ops`/CLI
+//! paths assemble a value [`Host`](crate::model::Host) from this config (`host()`)
+//! and drive its enumerate/manage/attach through the `Host`/`Mux`/`Transport` APIs;
+//! the machine boundary itself — argv assembly and the ssh transport (connect-timeout,
+//! injection-safe quoting) — lives entirely in `Transport`, built at the single
+//! `MachineKind::transport` site. The mux-env vocabulary lives in `mux::vocab`.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -13,7 +14,6 @@ use async_trait::async_trait;
 
 use crate::config::Config;
 use crate::machine::MachineKind;
-use crate::mux;
 use crate::session;
 
 /// A failed command's outcome. Only a real non-zero exit carries stderr (and can
@@ -90,43 +90,11 @@ pub struct Source {
 }
 
 impl Source {
-    /// The argv that hands the terminal over to attach this source's named
-    /// session (over `ssh -t` for a remote).
-    ///
-    /// Composes the two axes: the MUX supplies the attach argv via
-    /// `Mux::attach_plan` (so local psmux uses `new-session -A -s <name>`, routing to
-    /// the session's OWN server, not a warm clone from a bare `attach -t`), and the
-    /// MACHINE wraps it via `Transport::interactive_attach_argv` (local `-S` injection, or
-    /// `ssh -t` with `[<select-window> ;] exec <attach>`). `window` is the window index to
-    /// land on: for a REMOTE source the selection is folded into the SAME `ssh -t`
-    /// connection so there is no second connection that could hang or be lost to
-    /// interactive auth; a LOCAL source pre-selects it with a separate instant command, so
-    /// the transport ignores it here.
-    pub fn interactive_attach_command(&self, name: &str, window: Option<i64>) -> Vec<String> {
-        let mux = crate::mux::for_binary(&self.binary);
-        let attach = mux.attach_plan(name);
-        let pre_select = window.map(|w| mux.select_window_plan(&mux::window_target(name, w)));
-        let (n, a) = self
-            .transport()
-            .interactive_attach_argv(&attach, pre_select.as_deref());
-        let mut v = vec![n];
-        v.extend(a);
-        v
-    }
-
     pub(crate) fn run_with(&self) -> &dyn Runner {
         match &self.runner {
             Some(r) => r.as_ref(),
             None => &ExecRunner,
         }
-    }
-
-    /// The machine transport this source reaches its mux over, built from its
-    /// [`MachineKind`] at the single `MachineKind::transport` site. `Transport` is the
-    /// sole owner of argv/ssh wrapping (`Transport::exec_argv`), so callers lower this
-    /// source's commands through the transport rather than the source itself.
-    pub(crate) fn transport(&self) -> Box<dyn crate::machine::Transport> {
-        self.kind.clone().transport()
     }
 
     /// The local mux server socket (`-S`) this source targets when it is a local
@@ -195,87 +163,6 @@ pub fn build(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn src(alias: &str, binary: &str, remote: bool, os: &str, control_path: &str) -> Source {
-        let kind = if remote {
-            MachineKind::Ssh {
-                alias: alias.into(),
-                control_path: control_path.into(),
-                os: os.into(),
-            }
-        } else {
-            MachineKind::Local { socket: None }
-        };
-        Source {
-            alias: alias.into(),
-            binary: binary.into(),
-            kind,
-            runner: None,
-        }
-    }
-
-    #[test]
-    fn interactive_attach_local_psmux_routes_to_the_per_session_server() {
-        // The bug FIX: local psmux must attach via `new-session -A -s <name>` (routing to
-        // that session's OWN server), NOT a bare `attach -t <name>` (which lands on a warm
-        // clone / the wrong session). The mux axis (Mux::attach_plan) supplies this;
-        // the local pre-select is a separate command, so the window is ignored here.
-        let loc = src("local", "psmux", false, "", "");
-        assert_eq!(
-            loc.interactive_attach_command("dev", None),
-            vec!["psmux", "new-session", "-A", "-s", "dev"]
-        );
-        assert_eq!(
-            loc.interactive_attach_command("dev", Some(3)),
-            vec!["psmux", "new-session", "-A", "-s", "dev"]
-        );
-    }
-
-    #[test]
-    fn interactive_attach_local_tmux_is_a_plain_attach() {
-        // A LOCAL tmux (Shared) attach stays `attach -t <name>` (unchanged).
-        let loc = src("local", "tmux", false, "", "");
-        assert_eq!(
-            loc.interactive_attach_command("dev", None),
-            vec!["tmux", "attach", "-t", "dev"]
-        );
-    }
-
-    #[test]
-    fn interactive_attach_remote_tmux_without_window() {
-        let rem = src("prod", "tmux", true, "linux", "");
-        let got = rem.interactive_attach_command("api", None);
-        assert_eq!(got[0], "ssh");
-        assert!(got.iter().any(|s| s == "-t"), "{got:?}");
-        assert_eq!(got.last().unwrap(), "exec tmux attach -t api");
-    }
-
-    #[test]
-    fn interactive_attach_remote_tmux_folds_window_into_one_connection() {
-        // The window pre-selection and the attach run over a SINGLE `ssh -t`, so
-        // there is no second connection to hang on a stalled remote or to lose the
-        // selection to interactive auth.
-        let rem = src("prod", "tmux", true, "linux", "");
-        let got = rem.interactive_attach_command("api", Some(2));
-        assert_eq!(got[0], "ssh");
-        assert!(got.iter().any(|s| s == "-t"), "{got:?}");
-        assert_eq!(
-            got.last().unwrap(),
-            "tmux select-window -t 'api:2' ; exec tmux attach -t api"
-        );
-    }
-
-    #[test]
-    fn interactive_attach_remote_psmux_uses_attach_plan_over_ssh() {
-        // A REMOTE psmux host is enumerated/attached the generic way (its registry lives
-        // on the far side); the attach argv still comes from Mux::attach_plan
-        // (`new-session -A -s`) and is `exec`d over `ssh -t`.
-        let rem = src("prod", "psmux", true, "linux", "");
-        let got = rem.interactive_attach_command("api", None);
-        assert_eq!(got[0], "ssh");
-        assert!(got.iter().any(|s| s == "-t"), "{got:?}");
-        assert_eq!(got.last().unwrap(), "exec psmux new-session -A -s api");
-    }
 
     #[test]
     fn build_puts_local_first() {
