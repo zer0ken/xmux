@@ -56,12 +56,18 @@ the live split view.
   `HostEvent`s route through `State::apply_event` (the event-driven mutation site);
   `handle_host_event` is then a thin executor that runs the returned `EventEffect`s
   (`run_event_effect`) against the host clients, registry, and display worker.
-- `source.rs` is thin source config/data: the `Source` fields plus delegating
-  accessors (`transport()` → a `machine::Transport`, `run_with()`, `list_sessions`,
-  `interactive_attach_command`). The machine axis is solely `machine::Transport`
-  (its shared shell vocab — `remote_command`/`quote` — lives in `machine/vocab.rs`);
-  `source.rs` carries no transport-wrapping implementation of its own. `env.rs` is
-  config assembly plumbing for source definitions and command construction.
+- `source.rs` is a thin source config adapter: the `Source` fields (alias, mux
+  binary, `MachineKind`, injectable runner) plus `run_with()`, `local_socket()`, and
+  `host()` — which assembles a value `model::Host` (transport at the single
+  `MachineKind::transport` site, mux from the binary) for the off-loop `Ops`/CLI
+  paths that cannot borrow the event loop's live `&mut Host`. Enumeration, manage
+  lifecycle ops, and interactive-attach argv are NOT here: they live on `Host` +
+  `Mux` + `Transport` (`Host::enumerate_with`, `manage::*`, `Host::interactive_attach_command`),
+  which `source.rs` reaches by building a `Host` and injecting `run_with()`. The
+  machine axis is solely `machine::Transport` (its shared shell vocab —
+  `remote_command`/`quote` — lives in `machine/vocab.rs`); `source.rs` carries no
+  transport-wrapping implementation of its own. `env.rs` is config assembly plumbing
+  for source definitions and command construction.
 - `logging.rs` sets up the `tracing` subscriber for the process. `logging::init(xmux_dir)`
   attaches a daily rolling file appender (`tracing_appender`) writing to
   `<xmux_dir>/xmux.log`, wrapped in a non-blocking worker. ANSI codes are
