@@ -115,10 +115,11 @@ mod tests {
         Source {
             alias: alias.into(),
             binary: "tmux".into(),
-            remote: true,
-            control_path: String::new(),
-            os: "linux".into(),
-            socket: None,
+            kind: crate::machine::MachineKind::Ssh {
+                alias: alias.into(),
+                control_path: String::new(),
+                os: "linux".into(),
+            },
             runner: Some(r),
         }
     }

@@ -931,10 +931,11 @@ mod tests {
         let src = crate::source::Source {
             alias: "jupiter06".into(),
             binary: "tmux".into(),
-            remote: true,
-            control_path: String::new(),
-            os: std::env::consts::OS.into(),
-            socket: None,
+            kind: crate::machine::MachineKind::Ssh {
+                alias: "jupiter06".into(),
+                control_path: String::new(),
+                os: std::env::consts::OS.into(),
+            },
             runner: None,
         };
         let host = crate::model::Host::new(
@@ -1523,10 +1524,7 @@ mod tests {
         crate::source::Source {
             alias: host.into(),
             binary: "cmd.exe".into(),
-            remote: false,
-            control_path: String::new(),
-            os: "windows".into(),
-            socket: None,
+            kind: crate::machine::MachineKind::Local { socket: None },
             runner: None,
         }
     }

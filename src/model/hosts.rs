@@ -51,7 +51,10 @@ impl Hosts {
 
         let local_bin = cfg.local_bin(os);
         hosts.insert(Host::new(
-            crate::machine::local(local_socket),
+            crate::machine::MachineKind::Local {
+                socket: local_socket,
+            }
+            .transport(),
             for_binary(&local_bin),
         ));
 
@@ -64,7 +67,12 @@ impl Hosts {
                 .to_string_lossy()
                 .into_owned();
             hosts.insert(Host::new(
-                crate::machine::ssh(spec.alias, control_path, os.to_string()),
+                crate::machine::MachineKind::Ssh {
+                    alias: spec.alias,
+                    control_path,
+                    os: os.to_string(),
+                }
+                .transport(),
                 for_binary(&spec.bin),
             ));
         }

@@ -558,11 +558,7 @@ fn ensure_current_host(
 }
 
 fn transport_for_source(src: &crate::source::Source) -> Box<dyn crate::machine::Transport> {
-    if src.remote {
-        crate::machine::ssh(src.alias.clone(), src.control_path.clone(), src.os.clone())
-    } else {
-        crate::machine::local(src.socket.clone())
-    }
+    src.transport()
 }
 
 fn spawn_host_detection(
@@ -1811,25 +1807,23 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
 
     // Host model: keyed by id (same as Source::alias). Derives its args from the same
     // source data that source::build uses: the local source's socket from env.srcs, the
-    // ssh aliases (every non-local source), and the OS from the first src's .os field
-    // (all srcs share the same host OS). Ids are "local" + each alias — the same strings
-    // that HostEvents carry as `host` and that the registry uses as the display key prefix.
+    // ssh aliases (every non-local source), and the local machine's OS (xmux always runs
+    // on this machine, so `std::env::consts::OS` — the same value source::build threads in,
+    // and what gates ControlMaster on each ssh host). Ids are "local" + each alias — the
+    // same strings that HostEvents carry as `host` and that the registry uses as the
+    // display key prefix.
     let ssh_aliases: Vec<String> = env
         .srcs
         .iter()
         .filter(|s| s.alias != crate::session::LOCAL_SOURCE)
         .map(|s| s.alias.clone())
         .collect();
-    let host_os = env
-        .srcs
-        .first()
-        .map(|s| s.os.as_str())
-        .unwrap_or(std::env::consts::OS);
+    let host_os = std::env::consts::OS;
     let local_socket_opt = env
         .srcs
         .iter()
         .find(|s| s.alias == crate::session::LOCAL_SOURCE)
-        .and_then(|s| s.socket.clone());
+        .and_then(|s| s.local_socket());
     let mut hosts = crate::model::Hosts::build(
         &env.cfg,
         &ssh_aliases,
@@ -2898,10 +2892,7 @@ mod tests {
         Source {
             alias: alias.into(),
             binary: "cmd.exe".into(),
-            remote: false,
-            control_path: String::new(),
-            os: "windows".into(),
-            socket: None,
+            kind: crate::machine::MachineKind::Local { socket: None },
             runner: None,
         }
     }

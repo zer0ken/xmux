@@ -124,10 +124,7 @@ mod tests {
         Source {
             alias: "local".into(),
             binary: "psmux".into(),
-            remote: false,
-            control_path: String::new(),
-            os: "linux".into(),
-            socket: None,
+            kind: crate::machine::MachineKind::Local { socket: None },
             runner: Some(r),
         }
     }
@@ -139,10 +136,11 @@ mod tests {
         Source {
             alias: "prod".into(),
             binary: "tmux".into(),
-            remote: true,
-            control_path: String::new(),
-            os: "linux".into(),
-            socket: None,
+            kind: crate::machine::MachineKind::Ssh {
+                alias: "prod".into(),
+                control_path: String::new(),
+                os: "linux".into(),
+            },
             runner: Some(r),
         }
     }

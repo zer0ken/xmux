@@ -296,13 +296,19 @@ mod tests {
     }
 
     fn test_source(alias: &str, remote: bool, line: &str) -> Source {
+        let kind = if remote {
+            crate::machine::MachineKind::Ssh {
+                alias: alias.into(),
+                control_path: String::new(),
+                os: "linux".into(),
+            }
+        } else {
+            crate::machine::MachineKind::Local { socket: None }
+        };
         Source {
             alias: alias.into(),
             binary: "tmux".into(),
-            remote,
-            control_path: String::new(),
-            os: "linux".into(),
-            socket: None,
+            kind,
             runner: Some(runner(line)),
         }
     }

@@ -103,6 +103,39 @@ pub enum LoweredSwitch {
     RawSsh(Vec<String>),
 }
 
+/// Which machine family a host reaches its mux over, carrying that family's own
+/// construction data. The SINGLE representation of transport kind: config/`Hosts::build`
+/// picks a variant, and [`MachineKind::transport`] is the one site that turns it into a
+/// concrete [`Transport`]. A new family is a variant here plus one match arm — no other
+/// `match`/`if` on kind exists.
+#[derive(Clone, Debug)]
+pub enum MachineKind {
+    /// The local machine, optionally targeting a non-default mux socket (`-S`).
+    Local { socket: Option<String> },
+    /// A remote over ssh: the destination `alias`, its ControlMaster socket
+    /// `control_path`, and the LOCAL platform `os` (gates ControlMaster).
+    Ssh {
+        alias: String,
+        control_path: String,
+        os: String,
+    },
+}
+
+impl MachineKind {
+    /// The one site that maps a machine kind to a concrete [`Transport`] (Decision A).
+    /// A new family = a variant above + one arm here; no other `match`/`if` on kind.
+    pub fn transport(self) -> Box<dyn Transport> {
+        match self {
+            MachineKind::Local { socket } => local(socket),
+            MachineKind::Ssh {
+                alias,
+                control_path,
+                os,
+            } => ssh(alias, control_path, os),
+        }
+    }
+}
+
 /// A local machine transport targeting an optional non-default mux socket.
 pub fn local(socket: Option<String>) -> Box<dyn Transport> {
     Box::new(Local { socket })
@@ -145,5 +178,32 @@ mod tests {
         let c = t.clone();
         assert_eq!(c.host_id(), "prod");
         assert!(c.is_remote());
+    }
+
+    #[test]
+    fn machine_kind_selects_the_family_at_one_site() {
+        // `MachineKind::transport` is the single site that maps a machine kind to a
+        // concrete Transport (Decision A: a new family = a variant + one match arm).
+        let local = MachineKind::Local {
+            socket: Some("/tmp/s".into()),
+        }
+        .transport();
+        assert_eq!(local.host_id(), "local");
+        assert!(!local.is_remote());
+        let (_n, args) = local.exec_argv(false, &["tmux".to_string(), "ls".to_string()]);
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["-S".to_string(), "/tmp/s".to_string()]),
+            "the local socket threads into the transport as -S: {args:?}"
+        );
+
+        let ssh = MachineKind::Ssh {
+            alias: "prod".into(),
+            control_path: String::new(),
+            os: "linux".into(),
+        }
+        .transport();
+        assert_eq!(ssh.host_id(), "prod");
+        assert!(ssh.is_remote());
     }
 }

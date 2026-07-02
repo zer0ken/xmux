@@ -12,6 +12,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::config::Config;
+use crate::machine::MachineKind;
 use crate::mux;
 use crate::session::{self, Session};
 
@@ -95,15 +96,10 @@ pub struct Source {
     pub alias: String,
     /// mux binary name on that machine.
     pub binary: String,
-    pub remote: bool,
-    /// ssh ControlMaster socket (non-windows remotes).
-    pub control_path: String,
-    /// platform of the machine running xmux (gates ControlMaster).
-    pub os: String,
-    /// The local mux server socket to target (`-S`), parsed from `$TMUX` when
-    /// xmux runs inside a mux (e.g. `tmux -L work`). `None` ⇒ the default
-    /// socket. Only meaningful for the local source.
-    pub socket: Option<String>,
+    /// Which machine family (and its construction data — socket / ssh alias, control
+    /// path, os) this source reaches its mux over. The single representation of transport
+    /// kind; `transport()` maps it to a concrete `Transport` at one site.
+    pub kind: MachineKind,
     /// injectable; `None` ⇒ the real exec runner.
     pub runner: Option<Arc<dyn Runner>>,
 }
@@ -140,20 +136,20 @@ impl Source {
         }
     }
 
-    /// The machine transport this source reaches its mux over. A remote source is an
-    /// ssh transport carrying the same alias/control-path/os; a local source is a
-    /// `Local` transport carrying the same `-S` socket. `Transport` is the sole owner
-    /// of argv/ssh wrapping (`Transport::exec_argv`), so callers lower this source's
-    /// commands through the transport rather than the source itself.
+    /// The machine transport this source reaches its mux over, built from its
+    /// [`MachineKind`] at the single `MachineKind::transport` site. `Transport` is the
+    /// sole owner of argv/ssh wrapping (`Transport::exec_argv`), so callers lower this
+    /// source's commands through the transport rather than the source itself.
     pub(crate) fn transport(&self) -> Box<dyn crate::machine::Transport> {
-        if self.remote {
-            crate::machine::ssh(
-                self.alias.clone(),
-                self.control_path.clone(),
-                self.os.clone(),
-            )
-        } else {
-            crate::machine::local(self.socket.clone())
+        self.kind.clone().transport()
+    }
+
+    /// The local mux server socket (`-S`) this source targets when it is a local
+    /// machine; `None` for a remote source or a local source on the default socket.
+    pub(crate) fn local_socket(&self) -> Option<String> {
+        match &self.kind {
+            MachineKind::Local { socket } => socket.clone(),
+            MachineKind::Ssh { .. } => None,
         }
     }
 
@@ -189,10 +185,9 @@ pub fn build(
     let mut srcs = vec![Source {
         alias: session::LOCAL_SOURCE.to_string(),
         binary: cfg.local_bin(os),
-        remote: false,
-        control_path: String::new(),
-        os: os.to_string(),
-        socket: local_socket,
+        kind: MachineKind::Local {
+            socket: local_socket,
+        },
         runner: None,
     }];
     for spec in cfg.host_specs(ssh_aliases) {
@@ -201,12 +196,13 @@ pub fn build(
             .to_string_lossy()
             .into_owned();
         srcs.push(Source {
-            alias: spec.alias,
+            alias: spec.alias.clone(),
             binary: spec.bin,
-            remote: true,
-            control_path,
-            os: os.to_string(),
-            socket: None,
+            kind: MachineKind::Ssh {
+                alias: spec.alias,
+                control_path,
+                os: os.to_string(),
+            },
             runner: None,
         });
     }
@@ -247,13 +243,19 @@ mod tests {
     }
 
     fn src(alias: &str, binary: &str, remote: bool, os: &str, control_path: &str) -> Source {
+        let kind = if remote {
+            MachineKind::Ssh {
+                alias: alias.into(),
+                control_path: control_path.into(),
+                os: os.into(),
+            }
+        } else {
+            MachineKind::Local { socket: None }
+        };
         Source {
             alias: alias.into(),
             binary: binary.into(),
-            remote,
-            control_path: control_path.into(),
-            os: os.into(),
-            socket: None,
+            kind,
             runner: None,
         }
     }
@@ -411,9 +413,9 @@ mod tests {
         let srcs = build(&cfg, &aliases, "linux", Path::new("/home/u/.xmux"), None);
         assert_eq!(srcs.len(), 3);
         assert_eq!(srcs[0].alias, "local");
-        assert!(!srcs[0].remote);
+        assert!(matches!(srcs[0].kind, MachineKind::Local { .. }));
         assert_eq!(srcs[1].alias, "prod");
-        assert!(srcs[1].remote);
+        assert!(matches!(srcs[1].kind, MachineKind::Ssh { .. }));
         assert_eq!(srcs[1].binary, "tmux");
     }
 }
