@@ -120,7 +120,14 @@ fn toggle_auto_hide(mode: &mut bool, xmux_dir: &std::path::Path) {
 /// [`Action`]: crate::model::Action
 /// [`Command`]: crate::model::Command
 /// [`State::apply`]: crate::state::State::apply
-#[allow(clippy::too_many_arguments)]
+/// The mutate-op sink the dispatchers hand to [`spawn_op`]: the `Ops` interface plus
+/// the channel its off-loop `OpResult` folds back through. Bundled as one argument so
+/// the two dispatchers stay under the argument-count lint.
+type OpSink<'a> = (
+    &'a Arc<dyn crate::ui::switcher::Ops>,
+    &'a tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
+);
+
 fn dispatch_action(
     action: crate::model::Action,
     switcher: &mut crate::ui::switcher::Switcher,
@@ -128,8 +135,7 @@ fn dispatch_action(
     tree_width_natural: &mut u16,
     auto_hide_tree: &mut bool,
     xmux_dir: &std::path::Path,
-    ops: &Arc<dyn crate::ui::switcher::Ops>,
-    op_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
+    op_sink: OpSink<'_>,
 ) -> (bool, bool) {
     dispatch_commands(
         state.apply(action),
@@ -138,8 +144,7 @@ fn dispatch_action(
         tree_width_natural,
         auto_hide_tree,
         xmux_dir,
-        ops,
-        op_tx,
+        op_sink,
     )
 }
 
@@ -152,7 +157,6 @@ fn dispatch_action(
 ///
 /// [`Action`]: crate::model::Action
 /// [`Command`]: crate::model::Command
-#[allow(clippy::too_many_arguments)]
 fn dispatch_commands(
     cmds: Vec<crate::model::Command>,
     switcher: &mut crate::ui::switcher::Switcher,
@@ -160,8 +164,7 @@ fn dispatch_commands(
     tree_width_natural: &mut u16,
     auto_hide_tree: &mut bool,
     xmux_dir: &std::path::Path,
-    ops: &Arc<dyn crate::ui::switcher::Ops>,
-    op_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
+    op_sink: OpSink<'_>,
 ) -> (bool, bool) {
     use crate::model::Command;
     let mut quit = false;
@@ -181,7 +184,7 @@ fn dispatch_commands(
             }
             Command::ToggleAutoHide => toggle_auto_hide(auto_hide_tree, xmux_dir),
             Command::Quit => quit = true,
-            Command::RunOp(op) => spawn_op(op, ops, op_tx),
+            Command::RunOp(op) => spawn_op(op, op_sink.0, op_sink.1),
             // Settled-selection effects come only from Action::Tick, dispatched by the
             // run loop with registry/host access — never from a key/ctl action here.
             Command::PersistLastSession(_) | Command::Attach(_) => {}
@@ -731,8 +734,7 @@ fn handle_tree_bytes(
         tree_width_natural,
         auto_hide_tree,
         &env.xmux_dir,
-        ops,
-        op_tx,
+        (ops, op_tx),
     );
     quit |= cmd_quit;
     if cmd_width_changed {
@@ -2352,8 +2354,7 @@ impl Runtime {
                     &mut self.tree_width_natural,
                     &mut self.auto_hide_tree,
                     &self.env.xmux_dir,
-                    &self.ops,
-                    &self.op_tx,
+                    (&self.ops, &self.op_tx),
                 );
                 if wc {
                     self.width_dirty = true;
@@ -2424,8 +2425,7 @@ impl Runtime {
                     &mut self.tree_width_natural,
                     &mut self.auto_hide_tree,
                     &self.env.xmux_dir,
-                    &self.ops,
-                    &self.op_tx,
+                    (&self.ops, &self.op_tx),
                 );
                 if wc {
                     self.width_dirty = true;
@@ -3999,8 +3999,7 @@ mod tests {
                 &mut natural,
                 &mut hide,
                 &dir,
-                &ops,
-                &op_tx,
+                (&ops, &op_tx),
             ),
             (false, false)
         );
@@ -4014,8 +4013,7 @@ mod tests {
             &mut natural,
             &mut hide,
             &dir,
-            &ops,
-            &op_tx,
+            (&ops, &op_tx),
         );
         assert_eq!(state.focus, Focus::Terminal);
         // Focus(Tree) returns to tree focus.
@@ -4026,8 +4024,7 @@ mod tests {
             &mut natural,
             &mut hide,
             &dir,
-            &ops,
-            &op_tx,
+            (&ops, &op_tx),
         );
         assert_eq!(state.focus, Focus::Tree);
         // TreeWidth adjusts the natural width and signals width_changed; Quit signals quit.
@@ -4039,8 +4036,7 @@ mod tests {
                 &mut natural,
                 &mut hide,
                 &dir,
-                &ops,
-                &op_tx,
+                (&ops, &op_tx),
             ),
             (false, true)
         );
@@ -4053,8 +4049,7 @@ mod tests {
                 &mut natural,
                 &mut hide,
                 &dir,
-                &ops,
-                &op_tx,
+                (&ops, &op_tx),
             ),
             (true, false),
             "Quit signals quit"
@@ -4135,8 +4130,7 @@ mod tests {
             &mut natural,
             &mut hide,
             &dir,
-            &ops,
-            &op_tx,
+            (&ops, &op_tx),
         );
 
         // The switch moved the selection to db; the loop-top derive routes it through
