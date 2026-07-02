@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>xmux 이상적 구조 리팩토링 — 마스터 설계</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
+<style>
+  :root {
+    --fg: #1c1e21; --muted: #6b7280; --bg: #ffffff; --panel: #f6f7f9;
+    --border: #e3e6ea; --accent: #2b6cb0; --code: #0b3d63;
+    --hi: #c0392b; --med: #b7791f; --lo: #718096; --ok: #2f855a;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, "Malgun Gothic", sans-serif;
+    color: var(--fg); background: var(--bg); line-height: 1.7; max-width: 1080px;
+    margin: 0 auto; padding: 2.2rem 1.4rem 5rem; }
+  h1 { font-size: 1.85rem; margin: 0 0 .3rem; }
+  h2 { font-size: 1.35rem; margin: 2.4rem 0 .8rem; padding-bottom: .3rem; border-bottom: 2px solid var(--border); }
+  h3 { font-size: 1.08rem; margin: 1.5rem 0 .5rem; color: var(--code); }
+  p, li { font-size: .96rem; }
+  code { font-family: "SF Mono", "Cascadia Code", Consolas, monospace; font-size: .86em;
+    background: var(--panel); padding: .1em .35em; border-radius: 4px; color: var(--code); }
+  pre { background: #0f172a; color: #e2e8f0; padding: 1rem 1.1rem; border-radius: 8px;
+    overflow-x: auto; font-size: .82rem; line-height: 1.5; }
+  pre code { background: none; color: inherit; padding: 0; }
+  .meta { color: var(--muted); font-size: .88rem; margin-bottom: 1.4rem; }
+  .meta b { color: var(--fg); }
+  .lead { background: var(--panel); border-left: 4px solid var(--accent); padding: .9rem 1.1rem;
+    border-radius: 6px; margin: 1rem 0; }
+  table { border-collapse: collapse; width: 100%; margin: .8rem 0; font-size: .84rem; }
+  th, td { border: 1px solid var(--border); padding: .45rem .6rem; text-align: left; vertical-align: top; }
+  th { background: var(--panel); font-weight: 600; }
+  td.mono, .mono { font-family: "SF Mono", Consolas, monospace; font-size: .82rem; }
+  .badge { display: inline-block; padding: .05em .5em; border-radius: 10px; font-size: .72rem;
+    font-weight: 700; color: #fff; white-space: nowrap; }
+  .b-hi { background: var(--hi); } .b-med { background: var(--med); } .b-lo { background: var(--lo); }
+  .b-ok { background: var(--ok); }
+  .eff { font-weight: 700; } .eff-S { color: var(--ok); } .eff-M { color: var(--med); } .eff-L { color: var(--hi); }
+  .hot { background: #fff5f5; }
+  .hot-tag { color: var(--hi); font-weight: 700; font-size: .72rem; }
+  .phase-box { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 1rem 1.2rem; margin: 1rem 0; }
+  .phase-box h3 { margin-top: 0; }
+  .kv { display: grid; grid-template-columns: 110px 1fr; gap: .2rem .8rem; font-size: .9rem; margin: .5rem 0; }
+  .kv dt { color: var(--muted); font-weight: 600; }
+  .mermaid { text-align: center; margin: 1.2rem 0; }
+  .callout { border: 1px solid var(--border); border-left: 4px solid var(--ok); background: #f0fff4;
+    padding: .8rem 1.1rem; border-radius: 6px; margin: 1rem 0; }
+  .callout.warn { border-left-color: var(--med); background: #fffbeb; }
+  ul.tight { margin: .3rem 0; } ul.tight li { margin: .15rem 0; }
+  .tablewrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+
+<h1>xmux — 이상적 구조 리팩토링</h1>
+<p class="meta">
+  마스터 설계 스펙 &middot; <b>2026-07-02</b> &middot;
+  브랜치 <code>refactor/ideal-structure</code> (워크트리 <code>.claude/worktrees/refactor-ideal</code>, 베이스 <code>0818679</code>) &middot;
+  상태: <b>설계 — 스펙 검토 대기</b>
+</p>
+
+<div class="lead">
+  이 스펙은 코드 품질 rubric(SOLID, 응집도, 결합도, DRY/WET, KISS/YAGNI, 관심사 분리, 데메테르의 법칙, CQS,
+  명시성, Fail-Fast/방어적 프로그래밍, 테스트 가능성)을 <b>이상적 구조</b>를 향한 단계적 리팩토링으로 옮긴 것이다.
+  근거는 <code>0818679</code> 시점 코드베이스에 대한 5슬라이스 read-only 감사(약 48건)다. 디렉토리 Working Notes 지침에 따라
+  <b>코드에 대한 사실</b>(구체적 <code>file:line</code> 발견)과 <b>후보 설계</b>(목표 형태·단계 로드맵)를 분리해 기술한다.
+</div>
+
+<h2>1. 목표 &amp; 북극성 목표 구조</h2>
+
+<p>
+  xmux는 이미 두 축(axis) 위에 깔끔한 orthogonal 설계를 갖고 있다. 목표는 <b>재작성이 아니다</b>. 두 축을
+  <b>순수 가산(purely additive)</b>으로 확장 가능하게 만들고, 세 god-module을 분해하며, "머신"을 두 번째로 모델링해
+  중복을 살려두는 레거시를 걷어내는 것이다. 두 축의 확장은 <b>확정</b>돼 있으므로(WSL 머신 패밀리, 추가 mux 패밀리),
+  그 trait 추상화는 <b>요구사항</b>이며 YAGNI가 적용되지 않는다.
+</p>
+
+<div class="callout">
+  <b>북극성 수용 기준.</b>
+  <ul class="tight">
+    <li>머신 패밀리(WSL) 추가 = 새 <code>src/machine/wsl.rs</code> + <code>machine::wsl()</code> 팩토리 + 단일 생성 사이트의 arm 한 줄. machine-kind에 대한 어떤 <code>match</code>/<code>if</code> 수정도 0, <code>mux/</code> 내부 수정도 0.</li>
+    <li>tmux 호환 mux 패밀리 추가 = 새 <code>src/mux/&lt;kind&gt;/</code> 디렉토리 + <code>known_muxes()</code> 엔트리 한 줄. 해당 패밀리는 identity + <code>attach_plan</code> + <code>driver</code> + <code>enumerate</code> + <code>control_argv</code>(+ 선택적 <code>switch_in_place</code>)만 구현하고, 공유 command-plan 동사는 공짜. <code>host/</code>·<code>app/</code>·<code>state/</code>·<code>ui/</code> 수정 0.</li>
+  </ul>
+</div>
+
+<h3>목표 모듈 지도</h3>
+<div class="tablewrap">
+<table>
+<tr><th>계층</th><th>소유</th><th>이상적 불변식</th></tr>
+<tr><td class="mono">src/machine/</td><td>MACHINE 축: <code>Transport</code> trait, <code>local.rs</code>/<code>ssh.rs</code>/<code>wsl.rs</code>, 셸 <code>vocab.rs</code></td><td>종류는 생성 시점 한 번 선택. <code>is_remote</code> 과부하가 아니라 능력 술어(capability predicate)가 동작을 결정.</td></tr>
+<tr><td class="mono">src/mux/&lt;kind&gt;/</td><td>MUX 축: <code>Mux</code> trait(슬림), 패밀리별 메타데이터 + command plan + <code>display.rs</code> 드라이버; 공유 <code>vocab.rs</code></td><td>단일 trait, 공유 동사는 기본 구현; 역할 분할 없음; 와이어 세부는 <code>ControlProtocol</code> 뒤로.</td></tr>
+<tr><td class="mono">src/model/</td><td>도메인 값: <code>Host</code>, <code>Hosts</code>(유일 런타임 레지스트리), <code>Action</code>, <code>Command</code>, <code>Selection</code></td><td><code>Hosts</code>가 유일한 per-machine 레지스트리; <code>Selection</code>은 <code>app</code>이 아니라 여기 위치.</td></tr>
+<tr><td class="mono">src/host/</td><td>라이브 메타데이터 메커니즘: <code>inventory</code>/<code>reader</code>/<code>writer</code>/<code>client</code>/<code>poll</code>/<code>manager</code></td><td>mux 패밀리처럼 분해; inventory 단일 소유; tmux 와이어 세부를 이름 붙이지 않음.</td></tr>
+<tr><td class="mono">src/display/</td><td>mux/app-비의존 PTY, <code>Grid</code>, 입력 메커니즘</td><td>이미 건전; I/O 경계 상한; mux var를 이름 붙이지 않음(env 필터를 주입받음).</td></tr>
+<tr><td class="mono">src/driver.rs</td><td>mux-비의존 <code>MuxDriver</code> trait + <code>DriverCtx</code> + <code>driver_for</code></td><td>구체 mux 타입을 이름 붙이지 않음(이미 성립); 공유 display-logging 헬퍼.</td></tr>
+<tr><td class="mono">src/state/</td><td>런타임 <code>State</code> + <code>apply</code>/<code>apply_event</code> fold</td><td>inventory + 도메인 상태 변경의 유일 소유; 순수 fold(I/O 없음, UI로 역호출 없음).</td></tr>
+<tr><td class="mono">src/ui/</td><td><code>tree</code>(순수 변환), <code>modal</code>, <code>render</code>, 잔여 <code>switcher</code>(커서 + 입력 디스패치), <code>status</code>, <code>ops</code></td><td>순수 tree 변환은 터미널 없이 테스트 가능; <code>switcher</code>는 god-object가 아니라 상태 기계.</td></tr>
+<tr><td class="mono">src/app/</td><td>오케스트레이션: <code>Runtime</code> 구조체, <code>input</code>, attach 코디네이터, host 오케스트레이터, focus</td><td>mux/machine-특정 분기 0; 900줄 god-function 없음; 도메인 상태는 <code>Action</code>을 통해 흐름.</td></tr>
+</table>
+</div>
+
+<h2>2. 확정된 설계 결정</h2>
+
+<p>축 형태에 관한 두 질문을 계획 수립 전에 해소했고, 각각 독립적 2차 리뷰어(Codex)로 교차 검증했다. 비용은
+  배제하고 이상적 구조만 따졌다.</p>
+
+<h3>MACHINE 팩토리 — 결정: <span class="badge b-ok">Option A</span> (함수형 팩토리 + 단일 디스패치)</h3>
+<p>
+  타입 있는 자유함수 팩토리(<code>machine::local(socket)</code>, <code>ssh(alias, control_path, os)</code>,
+  향후 <code>wsl(distro)</code>)를 유지하고, 선택은 정확히 한 곳(<code>Hosts::build</code>)의 <code>match src.kind</code>에서만
+  수행한다. 세 번째 패밀리를 표현하지 못하는 <code>Source.remote: bool</code>은 <code>MachineKind</code> enum으로 교체한다.
+  <b>기각</b>: mux를 흉내낸 <code>known_machines()</code> 레지스트리.
+</p>
+<p class="mono" style="font-size:.85rem">
+  원칙: 여기서 축 간 레지스트리 대칭은 피상적이다. mux 레지스트리는 런타임 <i>문자열 탐지</i>를 <i>균일한</i>
+  <code>fn(String)</code> 생성자로 지원하려고 존재한다. machine 축은 탐지가 없고(종류가 config 구조에서 확정) 생성자 입력이
+  <i>이질적</i>이다. <code>fn(&amp;Source)</code> 레지스트리는 모든 팩토리가 Source 레코드 통짜를 삼키게 만들어 각 transport의
+  실제 의존성을 숨긴다. 구조는 장식적 대칭이 아니라 실제 force를 따른다.
+</p>
+
+<h3>MUX trait — 결정: 단일 trait 슬림화, 분할 안 함</h3>
+<div class="tablewrap">
+<table>
+<tr><th>항목</th><th>결정</th></tr>
+<tr><td>바이트 동일한 9개 command-plan 메서드(<code>*_window_plan</code>, <code>*_session_plan</code>, <code>list_panes_plan</code>)</td><td><code>self.bin()</code> 위의 <b>trait 기본 구현</b>. 호환성은 기본 동작이지 헬퍼 계층이나 <code>TmuxCompatibleMux</code> 베이스 trait이 아니다.</td></tr>
+<tr><td><code>Mux</code>를 역할 sub-trait로 분할(ISP)?</td><td><b>안 함.</b> trait은 항상 하나의 구체 타입으로 통째 구현되고 단일 확장점으로 소비된다. 분할은 하나의 계약을 흩뿌릴 뿐 독립 소비자를 만들지 못한다. 정직한 ISP 선: 서로 다른 소비자가 독립적으로 mock/구현할 역할이 있을 때만 분할 — 여기는 아니다. <i>(감사의 "선택적 역할 분할"을 잘라냄.)</i></td></tr>
+<tr><td>3개 옵션 in-place-switch 메서드(<code>switch_client_argv</code> / <code>display_tty_record_prefix</code> / <code>switch_via_recorded_tty_cmd</code>)</td><td><b>하나로 통합</b>: <code>switch_in_place(host_key, session, display_tty) -&gt; Option&lt;SwitchPlan&gt;</code>가 드라이버가 blind 실행하는 불투명 계획을 반환. tmux의 <code>tty &gt;file</code> 메커니즘이 mux 경계로 새는 것을 차단.</td></tr>
+<tr><td><code>attach_plan</code>의 <code>window: Option&lt;i64&gt;</code>(두 impl에서 미사용)</td><td><b>제거.</b> 현재 force 없음; 윈도우는 <code>select_window_plan</code>으로 선택.</td></tr>
+</table>
+</div>
+
+<div class="callout warn">
+  <b>동시성 제약 — 타 세션 존중.</b> 다른 세션이 <code>src/driver.rs</code>, <code>src/mux/tmux/display.rs</code>,
+  <code>src/mux/psmux/display.rs</code>를 편집 중이다(테스트 전용 <code>Local::boxed</code>/<code>Ssh::boxed</code> 생성자
+  마이그레이션). 이 브랜치는 깨끗한 <code>HEAD</code>에서 분기했고 그 작업트리 변경을 건드리지 않는다. 이 세 파일을
+  건드리는 작업(아래 <span class="hot-tag">HOT</span> 표시)은 뒤(P5–P6)로 배치하거나 조율하며, 그 마이그레이션이 병합된 뒤
+  rebase한다. 프로덕션 영역과 테스트 영역이 달라 충돌은 작지만 실재한다.
+</div>
+
+<h2>3. 의도적으로 건드리지 않는 것</h2>
+<p>감사의 긍정 발견은 과잉 리팩토링(=rubric 자체의 KISS/YAGNI)에 대한 방어선이다. 아래는 건전하며 범위 밖이다:</p>
+<ul class="tight">
+  <li><b>mux 팩토리</b>(<code>known_muxes()</code> + <code>for_binary</code>/<code>for_kind</code>/<code>detect_backend</code>): 중앙 kind-<code>match</code> 없음; mux 추가는 이미 가산적. 북극성의 모범 사례.</li>
+  <li><b><code>State::apply</code>/<code>apply_event</code></b>: 순수 fold로 검증됨 — clock/registry를 데이터로 주입, I/O 없음. 수렴 원칙이 네비게이션/라이프사이클 action 집합에는 이미 성립.</li>
+  <li><b><code>machine/</code> 축 자체</b>: <code>Transport</code> trait + <code>Box&lt;dyn Transport&gt;</code> 블랭킷 impl은 올바른 형태, 과잉추상화 아님.</li>
+  <li><b><code>display/</code> 계층</b>: PTY/grid 메커니즘은 잘 분리돼 있고 실제 PTY 없이 테스트 가능(<code>PtySink</code> 뒤). 국소 수정 3건뿐, 재-레이어링 없음.</li>
+  <li><b>control 소켓 seam</b>: 시맨틱 <code>Action</code> vs <code>raw:</code> 경계가 파싱단에서 깨끗하게 강제됨. 방어적 공백(크기 상한, enqueue 확인)만.</li>
+  <li><b><code>attach</code>/<code>session</code>/<code>vocab</code> 모듈</b>: 응집적이고 테스트 잘 됨.</li>
+</ul>
+
+<h2>4. 단계 로드맵</h2>
+<p>7단계, 각각 독립 배포 가능한 하위 프로젝트로 이후 자체 spec→plan→구현 사이클을 가진다. 순서: 안전망 먼저 →
+  사용자 우선순위인 축 확장성 → 기반이 되는 레지스트리 통합 → 그 위에서 분해 → 문서/HOT 마지막.</p>
+
+<div class="mermaid">
+flowchart TD
+  P0["P0 · 정확성 &amp; 방어<br/><small>Fail-Fast · Defensive · Testability</small>"]
+  P1["P1 · 축 확장성<br/><small>OCP · ISP · LSP</small>"]
+  P2["P2 · 단일 호스트 레지스트리<br/><small>DRY · SoC · DIP</small>"]
+  P3["P3 · host/mod.rs 분해<br/><small>SRP · 응집도</small>"]
+  P4["P4 · UI(switcher.rs) 분해<br/><small>SRP · CQS · Testability</small>"]
+  P5["P5 · runtime.rs 분해 + 수렴<br/><small>SRP · DIP</small>"]
+  P6["P6 · HOT dedup + 문서(AS-IS)<br/><small>DRY · 명시성</small>"]
+  P0 --> P1
+  P1 --> P2
+  P2 --> P3
+  P2 --> P5
+  P0 --> P4
+  P4 -.->|State 수렴 상호작용| P5
+  P5 --> P6
+  P2 -.->|HOT: 타 세션 병합 후| P6
+  classDef hi fill:#fde8e8,stroke:#c0392b,color:#1c1e21;
+  classDef base fill:#eef2f7,stroke:#2b6cb0,color:#1c1e21;
+  class P0,P4 base;
+  class P1,P2,P5 hi;
+</div>
+
+<div class="phase-box">
+  <h3>P0 — 정확성 &amp; 방어적 하드닝 <span class="badge b-ok">안전망</span></h3>
+  <dl class="kv">
+    <dt>목표</dt><dd>실제 버그 1건 수정 + 방어적 공백 차단 + 안전한 dead-code 제거. 이후 모든 구조 단계의 테스트 baseline을 세운다.</dd>
+    <dt>원칙</dt><dd>Fail-Fast, 방어적 프로그래밍, 테스트 가능성.</dd>
+    <dt>의존</dt><dd>없음. 먼저 수행.</dd>
+    <dt>검증</dt><dd>신규 상한/검증 단위 테스트; <code>cargo test</code> + clippy + fmt 클린.</dd>
+  </dl>
+</div>
+
+<div class="phase-box">
+  <h3>P1 — 축 확장성 하드닝 <span class="badge b-hi">사용자 우선순위</span></h3>
+  <dl class="kv">
+    <dt>목표</dt><dd>새 machine/mux 패밀리를 가산적으로 만든다: <code>Mux</code> 슬림화(기본 구현 + <code>switch_in_place</code>, 죽은 window 파라미터 제거), tmux 와이어 포맷을 <code>ControlProtocol</code> 뒤로, <code>is_remote()</code> 과부하를 능력 술어로 교체, transport 생성을 단일 팩토리 사이트로.</dd>
+    <dt>원칙</dt><dd>OCP, ISP, LSP.</dd>
+    <dt>의존</dt><dd>없음(P2와 독립). <span class="hot-tag">HOT</span>: <code>switch_in_place</code> 호출부가 <code>display.rs</code> — 조율.</dd>
+    <dt>검증</dt><dd>"mux 추가 / WSL 추가" 사고 실험 체크리스트(새 파일 + 단일 사이트만 건드림); 테스트 통과.</dd>
+  </dl>
+</div>
+
+<div class="phase-box">
+  <h3>P2 — 단일 호스트 레지스트리 <span class="badge b-hi">기반</span></h3>
+  <dl class="kv">
+    <dt>목표</dt><dd><code>Hosts</code>를 유일 런타임 레지스트리로; <code>transport_for_source</code> 삭제; 죽은 <code>_src</code> 파라미터 제거; enumerate를 <code>Host::enumerate</code>로; per-host inventory 단일 소유; <code>Source</code>를 얇은 어댑터로 축소하고 <code>Source.remote</code> 제거(→ <code>MachineKind</code>).</dd>
+    <dt>원칙</dt><dd>DRY, SoC, DIP.</dd>
+    <dt>의존</dt><dd>P1(단일 transport 팩토리) 후. 가장 크고 위험 — attach/switch는 사람 라이브 게이트.</dd>
+    <dt>검증</dt><dd><code>cargo test</code>(무거운 교차 모듈) + jupiter06(throwaway) 후 실제 호스트 attach/switch 라이브.</dd>
+  </dl>
+</div>
+
+<div class="phase-box">
+  <h3>P3 — <code>host/mod.rs</code> 분해</h3>
+  <dl class="kv">
+    <dt>목표</dt><dd>1,732줄 파일을 <code>host/{inventory,reader,writer,client,poll,manager}.rs</code>로 분할(mux 패밀리 대칭). 무동작 변경.</dd>
+    <dt>원칙</dt><dd>SRP, 응집도.</dd>
+    <dt>의존</dt><dd>P2 후(inventory 소유 + <code>_src</code> 제거가 정착돼야 분할이 깨끗).</dd>
+    <dt>검증</dt><dd>동작 동일; 테스트 통과; 각 새 파일 &lt; 약 250줄.</dd>
+  </dl>
+</div>
+
+<div class="phase-box">
+  <h3>P4 — UI(<code>switcher.rs</code>) 분해</h3>
+  <dl class="kv">
+    <dt>목표</dt><dd>순수 <code>tree::flatten</code> + 갇힌 순수 함수를 <code>tree.rs</code>로; op-result inventory 적용을 <code>State</code>로 이관(State→UI→State 역호출 해소); <code>ui/modal.rs</code>·<code>ui/render.rs</code> 분리; app이 <code>Status</code> 소유; <code>map_color</code> 이동. 잔여 <code>Switcher</code> = 커서 상태 기계 + 입력 디스패치.</dd>
+    <dt>원칙</dt><dd>SRP, 응집도, SoC, CQS, 테스트 가능성.</dd>
+    <dt>의존</dt><dd>P0 후; P2/P3와 대체로 독립(병렬 가능). State 수렴에서 P5와 상호작용.</dd>
+    <dt>검증</dt><dd>신규 <code>tree.rs</code> 단위 테스트(이제 가능); harness 테스트; 사람 라이브 시각 게이트.</dd>
+  </dl>
+</div>
+
+<div class="phase-box">
+  <h3>P5 — <code>runtime.rs</code> 분해 + 도메인 수렴</h3>
+  <dl class="kv">
+    <dt>목표</dt><dd><code>Runtime</code> 구조체 도입(15–24 파라미터 헬퍼 + 913줄 god-function 제거); <code>app::input</code>, attach 코디네이터(<code>HostDisplay</code> 위의 시맨틱 메서드 + <code>current_grid</code> 헬퍼), host 오케스트레이터 추출; <code>displayed</code>/<code>attach_deadline</code>/<code>focus</code>를 <code>Action</code>으로; <code>Selection</code>을 <code>model</code>로; fingerprint/slow-step용 <code>DrawObserver</code>.</dd>
+    <dt>원칙</dt><dd>SRP, 응집도, DIP, 테스트 가능성, 명시성.</dd>
+    <dt>의존</dt><dd>P2 후(host 오케스트레이션 변경). <span class="hot-tag">HOT</span>: <code>Selection</code>→<code>model</code>이 <code>driver.rs</code>/<code>display.rs</code>를 건드림.</dd>
+    <dt>검증</dt><dd>모든 <code>too_many_arguments</code> allow 제거; 테스트 통과; 사람 라이브 게이트.</dd>
+  </dl>
+</div>
+
+<div class="phase-box">
+  <h3>P6 — HOT dedup + 레이어링 마무리 + AS-IS 문서 <span class="badge b-lo">마지막</span></h3>
+  <dl class="kv">
+    <dt>목표</dt><dd>타 세션 마이그레이션 병합 후: 4중복 <code>display_inventory</code> 로깅 dedup; <code>driver.rs</code> 시임 정리; <code>CONTEXT.md</code>(stale <code>model::Host</code> control-slot 노트 제거)·<code>state/AGENTS.md</code>(<code>popup</code>→<code>modal</code>)·새 디렉토리 <code>AGENTS.md</code> 갱신; planning 전용 주석 정리.</dd>
+    <dt>원칙</dt><dd>DRY, 명시성, AS-IS.</dd>
+    <dt>의존</dt><dd>마지막; P5 및 타 세션 병합 후.</dd>
+    <dt>검증</dt><dd>전체 테스트 + clippy + fmt; 최종 구조 리뷰; 문서-코드 일치.</dd>
+  </dl>
+</div>
+
+<h2>5. 통합 발견사항 (감사 사실)</h2>
+<p>약 48건, ~13 High / ~20 Medium / ~15 Low, 단계별 묶음. ID는 감사 슬라이스를 담는다
+  (<code>S1</code>=UI, <code>S2</code>=app/state, <code>S3</code>=machine/source, <code>S4</code>=mux/host, <code>S5</code>=display/control).
+  교차 슬라이스 중복은 병합됨. 모든 <code>file:line</code> 앵커는 <code>0818679</code> 기준이며 구현 전 재확인해야 한다(디렉토리 Working Notes).</p>
+
+<h3>P0 — 정확성 &amp; 방어</h3>
+<div class="tablewrap">
+<table>
+<tr><th>ID</th><th>File:line</th><th>원칙</th><th>심각도</th><th>비용</th><th>방향</th></tr>
+<tr><td>S5-1</td><td class="mono">display/attachment.rs:48-57,300,326-341; model/death.rs:62-68</td><td>Fail-Fast, 방어, 성능</td><td><span class="badge b-hi">High</span></td><td class="eff eff-S">S</td><td>버그: display-tty 마커 버퍼 무한 증가(O(n²) 재스캔; 빈 <code>$(tty)</code>는 영구 누수). 기존 <code>qtail</code>처럼 rolling tail로 상한.</td></tr>
+<tr><td>S5-2</td><td class="mono">ui/run.rs:129-142</td><td>방어</td><td><span class="badge b-med">Med</span></td><td class="eff eff-S">S</td><td>인바운드 control 요청 라인 무제한(응답 경로엔 <code>MAX_FRAME</code>, 요청엔 없음). 리더에 상한; 초과 시 거절.</td></tr>
+<tr><td>S5-4</td><td class="mono">ui/run.rs:161-172</td><td>CQS, Fail-Fast</td><td><span class="badge b-lo">Low</span></td><td class="eff eff-S">S</td><td><code>cmd_tx.send</code> 실패해도 <code>"ok"</code> 응답. 전송 오류 시 <code>err:</code> 반환.</td></tr>
+<tr><td>S5-5</td><td class="mono">display/decode.rs:94-104</td><td>방어</td><td><span class="badge b-lo">Low</span></td><td class="eff eff-S">S</td><td>Picker 키 디코더가 잘못된 UTF-8 선두 바이트 길이를 오판. <code>from_utf8</code> 실패 시 1바이트 재동기화.</td></tr>
+<tr><td>S2-8</td><td class="mono">app/runtime.rs:1905,1998,2495,997,2544</td><td>Fail-Fast, 방어</td><td><span class="badge b-lo">Low</span></td><td class="eff eff-S">S</td><td>draw/clear 오류 무시; 핫 루프의 <code>.lock().unwrap()</code>. draw 오류를 tracing에 로깅; <code>lock().ok()</code> 사용.</td></tr>
+<tr><td>S3-L1</td><td class="mono">env.rs:36; cli.rs:62-64</td><td>Fail-Fast, 명시성</td><td><span class="badge b-lo">Low</span></td><td class="eff eff-S">S</td><td><code>home_dir()</code>가 조용히 <code>"."</code>로 폴백. 상태를 CWD로 재배치하지 말고 경고/오류.</td></tr>
+<tr><td>S3-L2</td><td class="mono">config.rs:133-141</td><td>명시성, Fail-Fast</td><td><span class="badge b-lo">Low</span></td><td class="eff eff-S">S</td><td>config 값이 파싱은 되나 의미 검증 없음(알 수 없는 mux 바이너리 → 조용히 tmux 동작). <code>doctor</code> 검증 패스(경고) 추가.</td></tr>
+</table>
+</div>
+
+<h3>P1 — 축 확장성</h3>
+<div class="tablewrap">
+<table>
+<tr><th>ID</th><th>File:line</th><th>원칙</th><th>심각도</th><th>비용</th><th>방향</th></tr>
+<tr><td>S4-H1</td><td class="mono">mux/mod.rs:89-236; tmux/mod.rs:115-141; psmux/mod.rs:118-144</td><td>ISP, DRY</td><td><span class="badge b-hi">High</span></td><td class="eff eff-M">M</td><td>바이트 동일한 9개 command-plan 메서드 → <code>self.bin()</code> 위 <b>trait 기본 구현</b>. 역할 trait 분할 <b>안 함</b>.</td></tr>
+<tr><td>S4-H2</td><td class="mono">host/mod.rs:248-272,570</td><td>OCP, SoC, 명시성</td><td><span class="badge b-hi">High</span></td><td class="eff eff-S">S</td><td>tmux <code>list-clients</code> 와이어 포맷이 <code>host/</code>에 하드코딩. <code>ControlProtocol::display_clients_line()</code> + <code>tmux/control_proto.rs</code>의 파서 뒤로.</td></tr>
+<tr><td>S3-H4</td><td class="mono">machine/mod.rs:27; psmux/mod.rs:51; tmux/display.rs:238; psmux/display.rs:156</td><td>LSP, ISP, 명시성</td><td><span class="badge b-hi">High</span></td><td class="eff eff-M">M</td><td><code>is_remote()</code>가 "다른 머신"과 "셸 경유 실행"을 혼동; WSL이 3개 mux 사이트를 깨뜨림. 능력 술어(<code>runs_through_shell</code>/<code>local_registry_scope</code>) 도입; <code>is_remote</code>는 ssh 옵션 형성용으로만.</td></tr>
+<tr class="hot"><td>S4-M1</td><td class="mono">mux/mod.rs:126-162; tmux/display.rs:88,239; psmux/display.rs:100 <span class="hot-tag">HOT</span></td><td>ISP, 응집도, LSP</td><td><span class="badge b-med">Med</span></td><td class="eff eff-M">M</td><td>3개 옵션 switch 메서드 → 불투명 <code>switch_in_place -&gt; Option&lt;SwitchPlan&gt;</code> 하나로 통합.</td></tr>
+<tr class="hot"><td>S4-M4</td><td class="mono">psmux/mod.rs:88-100 <span class="hot-tag">HOT</span></td><td>DRY</td><td><span class="badge b-med">Med</span></td><td class="eff eff-S">S</td><td>psmux <code>switch_client_argv</code> 오버라이드가 기본 구현과 동일. S4-M1에 흡수.</td></tr>
+<tr><td>S4-L1</td><td class="mono">mux/mod.rs:119; tmux/mod.rs:73; psmux/mod.rs:70</td><td>명시성, YAGNI</td><td><span class="badge b-lo">Low</span></td><td class="eff eff-S">S</td><td><code>attach_plan</code>의 죽은 <code>window</code> 파라미터 제거.</td></tr>
+<tr><td>S4-L3</td><td class="mono">mux/mod.rs:254-263,267-276,290-314</td><td>OCP, DRY</td><td><span class="badge b-lo">Low</span></td><td class="eff eff-S">S</td><td>tmux 폴백이 3개 팩토리 함수에 하드코딩 → 공유 마커/엔트리 하나로.</td></tr>
+<tr><td>S4-L2</td><td class="mono">host/mod.rs:655,789</td><td>DRY, 결합도</td><td><span class="badge b-lo">Low</span></td><td class="eff eff-S">S</td><td><code>run_poll</code>이 <code>(kind,bin)</code> 문자열로 <code>for_kind</code>를 통해 mux 재구성. <code>Arc&lt;dyn Mux&gt;</code> 전달.</td></tr>
+<tr><td>S3-H2a</td><td class="mono">runtime.rs:560-566; source.rs:148-158; hosts.rs:43-72</td><td>OCP, DRY</td><td><span class="badge b-med">Med</span></td><td class="eff eff-M">M</td><td>3개 machine-kind 선택 사이트를 단일 팩토리로 수렴(결정 A: <code>Hosts::build</code>의 <code>MachineKind</code> match). 완전 제거는 P2에서.</td></tr>
+</table>
+</div>
+
+<h3>P2 — 단일 호스트 레지스트리</h3>
+<div class="tablewrap">
+<table>
+<tr><th>ID</th><th>File:line</th><th>원칙</th><th>심각도</th><th>비용</th><th>방향</th></tr>
+<tr><td>S3-H1</td><td class="mono">runtime.rs:1814-1836; 552,586-600,602-623</td><td>DRY, SRP, 결합도, SoC</td><td><span class="badge b-hi">High</span></td><td class="eff eff-L">L</td><td>이중 레지스트리(<code>Env{srcs,by_alias}</code> + <code>Hosts</code>). <code>Hosts</code>를 유일 레지스트리로; 렌더 투영을 <code>Hosts::ids()</code>에서; <code>Env.srcs</code>/<code>by_alias</code> 폐기.</td></tr>
+<tr><td>S3-H2</td><td class="mono">runtime.rs:560-566; source.rs:98,148-158</td><td>OCP, DRY</td><td><span class="badge b-hi">High</span></td><td class="eff eff-M">M</td><td><code>transport_for_source</code> 삭제; <code>Source.remote</code> 제거(→ <code>MachineKind</code>); transport는 <code>Hosts::build</code>에서만 생성.</td></tr>
+<tr><td>S3-H3</td><td class="mono">host/mod.rs:747-757; runtime.rs:554,598,616</td><td>결합도, YAGNI, 명시성</td><td><span class="badge b-hi">High</span></td><td class="eff eff-M">M</td><td><code>ensure</code>/<code>rescan</code>에서 죽은 <code>_src: &amp;Source</code> 제거; 짝지어진 <code>env</code>+<code>hosts</code> 호출 체인 축약.</td></tr>
+<tr><td>S3-M1</td><td class="mono">source.rs:168-172; host.rs:125-142</td><td>DRY</td><td><span class="badge b-med">Med</span></td><td class="eff eff-M">M</td><td><code>Host::enumerate</code>를 통해 enumerate(현재 테스트 전용); <code>Source::list_sessions</code> 삭제.</td></tr>
+<tr><td>S3-M2 + S5-3</td><td class="mono">source.rs:76-89; host/mod.rs:448; display/attachment.rs:261-268</td><td>응집도, SoC, DIP, dead-code</td><td><span class="badge b-med">Med</span></td><td class="eff eff-M">M</td><td><code>is_mux_var</code>를 <code>mux/vocab.rs</code>로; 죽은 <code>mux_clean_env</code> 삭제; display env-strip을 역전시켜 mux 드라이버가 env 키를 제공(display가 mux var를 이름 붙이지 않음).</td></tr>
+<tr><td>S4-M5</td><td class="mono">host/mod.rs:399; model/host.rs:78</td><td>SRP, 결합도</td><td><span class="badge b-med">Med</span></td><td class="eff eff-L">L</td><td>per-host inventory가 두 곳 소유. <code>model::Host.inventory</code>를 <code>HostEvent</code>로 채우는 단일 소유로; <code>HostClient</code>의 병렬 <code>Arc&lt;Mutex&gt;</code> 제거.</td></tr>
+<tr><td>S3-M3</td><td class="mono">source.rs:148-158; manage.rs:15</td><td>CQS</td><td><span class="badge b-med">Med</span></td><td class="eff eff-S">S</td><td><code>Source::transport()</code>가 호출마다 새 <code>Box</code> 할당(getter 모양 팩토리). ops가 <code>Host</code>로 옮겨지면 소멸.</td></tr>
+<tr><td>S3-L3</td><td class="mono">discovery.rs:19-26; host.rs:16-22</td><td>DRY, SoC</td><td><span class="badge b-lo">Low</span></td><td class="eff eff-M">M</td><td>병렬 도달성 모델(<code>ScanResult.err</code> vs <code>Host.liveness</code>). <code>Liveness</code>로 수렴.</td></tr>
+</table>
+</div>
+
+<h3>P3 — host/mod.rs 분해</h3>
+<div class="tablewrap">
+<table>
+<tr><th>ID</th><th>File:line</th><th>원칙</th><th>심각도</th><th>비용</th><th>방향</th></tr>
+<tr><td>S4-H3</td><td class="mono">host/mod.rs (전체; 1732줄)</td><td>SRP, 응집도</td><td><span class="badge b-hi">High</span></td><td class="eff eff-M">M</td><td>reader/writer 상태 기계, <code>HostClient</code> 프로세스 래퍼, <code>run_poll</code> 태스크, <code>HostManager</code>를 <code>host/{inventory,reader,writer,client,poll,manager}.rs</code>로 분할. 무동작 변경.</td></tr>
+</table>
+</div>
+
+<h3>P4 — UI(switcher.rs) 분해</h3>
+<div class="tablewrap">
+<table>
+<tr><th>ID</th><th>File:line</th><th>원칙</th><th>심각도</th><th>비용</th><th>방향</th></tr>
+<tr><td>S1-1</td><td class="mono">ui/switcher.rs:321,369-2201</td><td>SRP, 응집도, SoC</td><td><span class="badge b-hi">High</span></td><td class="eff eff-L">L</td><td>12개 책임의 god-object(~2400 프로덕션 줄). 아래 행들로 분할; 잔여 = 커서 상태 + 입력 디스패치.</td></tr>
+<tr><td>S1-2</td><td class="mono">switcher.rs:1455,1597,1642,946; state/mod.rs:321,352,360</td><td>SoC, 결합도, DIP</td><td><span class="badge b-hi">High</span></td><td class="eff eff-M">M</td><td>inventory 변경이 UI에; State→UI→State 역호출. op-result 적용을 <code>State</code>로; switcher는 행 재도출 + 커서 복원.</td></tr>
+<tr><td>S1-3</td><td class="mono">switcher.rs:484-618</td><td>SRP, 테스트 가능성</td><td><span class="badge b-hi">High</span></td><td class="eff eff-M">M</td><td><code>rebuild</code>가 5가지 일. 순수 <code>tree::flatten(groups,panes,loaded,filter)-&gt;Vec&lt;Row&gt;</code> 추출; capture→flatten→restore만 남김.</td></tr>
+<tr><td>S1-5</td><td class="mono">switcher.rs:443,792,811,623,1719</td><td>테스트 가능성, SRP</td><td><span class="badge b-med">Med</span></td><td class="eff eff-M">M</td><td>순수 계산이 <code>&amp;self</code> 메서드에 갇힘(<code>visible_groups</code>/<code>first_session_of</code>/<code>target_for</code>/<code>host_hint</code>). <code>tree.rs</code>로 승격.</td></tr>
+<tr><td>S1-4</td><td class="mono">switcher.rs:357,976-1009,2050</td><td>응집도, 결합도, 데메테르</td><td><span class="badge b-med">Med</span></td><td class="eff eff-M">M</td><td><code>Status</code>가 이미 <code>&amp;State</code>를 읽는데 7개 pass-through shim으로만 접근. app이 <code>Status</code> 소유; <code>flash()</code> API 제공.</td></tr>
+<tr><td>S1-6</td><td class="mono">switcher.rs:801-807,953,1473,1679; tree.rs:54; session.rs:23</td><td>DRY</td><td><span class="badge b-med">Med</span></td><td class="eff eff-S">S</td><td>필터-매칭 규칙 + <code>source/session</code> 주소 문법 중복. <code>tree::first_visible_session</code> 하나 + 주소 헬퍼 하나.</td></tr>
+<tr><td>S1-7</td><td class="mono">switcher.rs:43-85</td><td>SoC, 응집도</td><td><span class="badge b-med">Med</span></td><td class="eff eff-S">S</td><td><code>map_color</code>(tmux 색 토큰 파싱) → <code>config</code>/<code>mux::vocab</code>.</td></tr>
+<tr><td>S1-9</td><td class="mono">switcher.rs:313; state/mod.rs:52,61-93</td><td>응집도, 결합도</td><td><span class="badge b-med">Med</span></td><td class="eff eff-M">M</td><td>모달 타입+동작은 switcher, 저장+분류는 State. <code>ui/modal.rs</code>에 enum + 분류기 부여.</td></tr>
+<tr><td>S1-8</td><td class="mono">switcher.rs:868,904,925,946,1782,1047</td><td>CQS</td><td><span class="badge b-lo">Low</span></td><td class="eff eff-M">M</td><td>"dirty" bool 반환 뮤테이터. 수용된 관례로 문서화하거나 dirty 신호 분리.</td></tr>
+</table>
+</div>
+
+<h3>P5 — runtime.rs 분해 + 수렴</h3>
+<div class="tablewrap">
+<table>
+<tr><th>ID</th><th>File:line</th><th>원칙</th><th>심각도</th><th>비용</th><th>방향</th></tr>
+<tr><td>S2-1</td><td class="mono">app/runtime.rs:1698-2611 (+ 815,917,1208,1411 시그니처)</td><td>SRP, 응집도, 테스트 가능성, 결합도</td><td><span class="badge b-hi">High</span></td><td class="eff eff-L">L</td><td>913줄 <code>run_app</code> god-function; 헬퍼가 15–24개 느슨한 파라미터(9× <code>too_many_arguments</code>). <code>Runtime</code> 구조체 도입; <code>select!</code> arm당 메서드 하나.</td></tr>
+<tr><td>S2-2</td><td class="mono">runtime.rs:2015,2077,2331,2016,2215,2223,2293,1258,1382,1642</td><td>SRP, 명시성, 테스트 가능성, 결합도</td><td><span class="badge b-hi">High</span></td><td class="eff eff-L">L</td><td><code>displayed</code>/<code>attach_deadline</code>/<code>focus</code>가 <code>apply</code> 밖에서 변경; switcher가 두 번째 State-writer. <code>Action</code> 변이체를 통하도록; 수렴 완성.</td></tr>
+<tr><td>S2-3</td><td class="mono">runtime.rs:2298-2357; model/host.rs:32-42</td><td>데메테르, 캡슐화, 테스트 가능성, SRP</td><td><span class="badge b-med">Med</span></td><td class="eff eff-M">M</td><td><code>HostDisplay</code> 필드가 <code>pub</code>; Ready-arm reap/insert/stale 결정이 루프에 인라인. 시맨틱 메서드(<code>resolve_ready</code>) 부여; 필드 비공개화.</td></tr>
+<tr class="hot"><td>S2-5 = S4-M2</td><td class="mono">runtime.rs:244-281; state/mod.rs:4; model/action.rs:19; driver.rs:17 <span class="hot-tag">HOT</span></td><td>DIP, SoC, 레이어링</td><td><span class="badge b-med">Med</span></td><td class="eff eff-M">M</td><td>도메인 값 <code>Selection</code>이 <code>app::runtime</code>에; model/state/driver가 상향 의존. <code>model</code>로 이동.</td></tr>
+<tr><td>S2-6</td><td class="mono">runtime.rs:687-806,808-882,1168-1696</td><td>응집도, SRP</td><td><span class="badge b-med">Med</span></td><td class="eff eff-M">M</td><td>~700줄 입력 라우팅(키/마우스/제스처 상태 기계) → <code>app::input</code> / <code>InputRouter</code>.</td></tr>
+<tr><td>S2-4</td><td class="mono">runtime.rs:2118-2137,2403-2422</td><td>DRY</td><td><span class="badge b-med">Med</span></td><td class="eff eff-S">S</td><td>grid 획득(<code>DriverCtx</code>+<code>driver.grid</code>)이 draw와 dump에 중복. <code>current_grid</code> 헬퍼 하나.</td></tr>
+<tr><td>S2-7</td><td class="mono">runtime.rs:2148-2195 (+ log_slow_step 프로브)</td><td>SoC, SRP</td><td><span class="badge b-med">Med</span></td><td class="eff eff-S">S</td><td>fingerprint/slow-step 관측이 draw 핫 패스에 얽힘. <code>DrawObserver</code> 추출; draw 블록은 lock→render로.</td></tr>
+<tr><td>S2-9</td><td class="mono">runtime.rs:1069; model/host.rs:172-178</td><td>명시성/명명</td><td><span class="badge b-lo">Low</span></td><td class="eff eff-S">S</td><td><code>psmux_session_live</code> → <code>session_is_live</code> 개명(동작은 이미 mux-중립; 이름이 구체 mux를 노출).</td></tr>
+</table>
+</div>
+
+<h3>P6 — HOT dedup + 문서(AS-IS)</h3>
+<div class="tablewrap">
+<table>
+<tr><th>ID</th><th>File:line</th><th>원칙</th><th>심각도</th><th>비용</th><th>방향</th></tr>
+<tr class="hot"><td>S4-M3</td><td class="mono">psmux/display.rs:61-83,113-135,192-214; tmux/display.rs:153-175 <span class="hot-tag">HOT</span></td><td>DRY</td><td><span class="badge b-med">Med</span></td><td class="eff eff-S">S</td><td>동일한 ~20줄 <code>display_inventory</code> 로깅 블록 ×4. <code>driver.rs</code>에 <code>log_display_inventory(ctx, displayed, mismatch)</code> 추출.</td></tr>
+<tr><td>S2-11</td><td class="mono">state/AGENTS.md; state/mod.rs:52</td><td>명시성, SSOT</td><td><span class="badge b-lo">Low</span></td><td class="eff eff-S">S</td><td>Working Notes는 <code>popup</code>/<code>Popup</code>, 코드는 <code>modal</code>/<code>Modal</code>. 문서 갱신.</td></tr>
+<tr><td>S4-L5</td><td class="mono">CONTEXT.md:150-153; model/host.rs:74-86</td><td>명시성, AS-IS</td><td><span class="badge b-lo">Low</span></td><td class="eff eff-S">S</td><td><code>model::Host</code>의 <code>control</code> 슬롯 / <code>ensure_control_client</code> 개선 노트가 stale(해당 필드 없음). 실제 남은 모호성(S4-M5)으로 갱신.</td></tr>
+<tr><td>DOC</td><td class="mono">CONTEXT.md; 새 디렉토리 AGENTS.md; 모듈 주석</td><td>AS-IS, 명시성</td><td><span class="badge b-lo">Low</span></td><td class="eff eff-S">S</td><td>Improvement Notes를 리팩토링 후 구조로 갱신; 새 디렉토리 Working Notes 추가; planning 전용 주석 정리.</td></tr>
+</table>
+</div>
+
+<h2>6. 교차 불변식 (모든 단계의 리뷰 게이트)</h2>
+<ul class="tight">
+  <li><b>확장 축의 LSP 계약.</b> 모든 <code>Mux</code>/<code>Transport</code> impl은 동일한 행동 계약을 지켜야 한다(메서드별 문서화). "고칠" 게 아니라 보존할 뉘앙스: 로컬 psmux <code>enumerate</code>는 <code>Err</code>를 반환하지 않는다(레지스트리가 권위 있음) — 의도된 per-transport 보장으로 문서화.</li>
+  <li><b>ISP 정직 선.</b> 실제 소비자가 독립적으로 mock/구현할 부분집합이 필요할 때만 trait을 분할한다. 하나로 구현·소비되는 큰 trait은 단일 trait(기본 구현 포함)로 둔다.</li>
+  <li><b>Supervisor 무지(blindness).</b> <code>app/</code>·<code>ui/</code>·<code>state/</code>는 mux/machine-특정 분기 0 — 동작은 <code>driver_for(host)</code> / <code>host.mux</code> / <code>host.transport</code>를 통해 흐른다.</li>
+  <li><b>의존 방향.</b> 도메인(<code>model</code>)은 오케스트레이션(<code>app</code>)에서 import하지 않는다. <code>Selection</code>을 아래로 내리는 것이 구체적 수정.</li>
+  <li><b>경계에서 Fail-Fast.</b> 시작 시 config 검증; 모든 외부 I/O 읽기(PTY, control 소켓)에 상한; 의미 있는 값을 조용히 기본값 처리 금지.</li>
+  <li><b>AS-IS.</b> 주석/문서는 현재 불변식을 기술하며 변경 이력을 서술하지 않는다; 변경 기록은 git이 담당.</li>
+</ul>
+
+<h2>7. 순서 &amp; HOT 파일 조율</h2>
+<ul class="tight">
+  <li><span class="hot-tag">HOT</span> 표시 행은 <code>driver.rs</code> / <code>mux/tmux/display.rs</code> / <code>mux/psmux/display.rs</code>(타 세션 파일)를 건드린다. P5–P6에 집중(단, S4-M1의 <code>display.rs</code> 호출부는 P1에서 조율). 그 마이그레이션이 병합된 뒤 rebase; 프로덕션 vs 테스트 영역이 달라 작은 충돌만 예상.</li>
+  <li>P0과 P4는 레지스트리 작업과 독립이라 앞쪽/병렬로 진행 가능.</li>
+  <li>P1이 사용자 우선순위인 확장성을 전달하고 P2의 transport 사이트 완전 제거를 열어준다.</li>
+  <li>모든 단계는 완료 게이트에서 끝난다: <code>cargo test</code> + clippy + fmt 클린 + 단계별 검증; 구조 단계(P2·P4·P5)는 추가로 사람 라이브 게이트 필요.</li>
+</ul>
+
+<h2>8. 산출물 범위</h2>
+<p>
+  이 문서는 <b>마스터 로드맵</b>이다. 다음 단계는 <code>writing-plans</code>로 <b>P0</b>를 상세화하는 것(실행 가능한
+  테스트 우선 구현 계획). 이후 단계는 각자 spec→plan 사이클을 밟아, 결정이 직전 단계가 남긴 상태에 근거하도록 한다.
+  어떤 단계든 실행은 별도의 승인 단계이며, 이 스펙은 어떤 코드 변경도 약속하지 않는다.
+</p>
+
+</body>
+</html>
