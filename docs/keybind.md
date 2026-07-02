@@ -1,31 +1,113 @@
-# App global picker hotkey
+# Keybindings
 
-Under the app (entered via `xmux`), a built-in prefix hotkey opens the
-cross-environment picker — from ANY session, local or remote, with nothing
-installed on the remote host.
+Under the app (entered by running `xmux` with no arguments) the screen is split
+into two views: a **tree** of every reachable session on the left and the
+selected session's **live screen** on the right. Keyboard focus is on one view
+at a time. You navigate the tree with the keys below; moving the selection
+switches the right view to that session in place. A tmux-style **prefix** gates
+the handful of commands that apply regardless of which view holds focus.
 
-**Default binding:** `Ctrl-g` then `s` (mnemonic: switch).
+## The prefix
 
-    Ctrl-g s    open the cross-environment picker
-    Ctrl-g g    send one literal Ctrl-g byte through to the inner application
+xmux has its own prefix, like tmux's `set -g prefix`. It is read **only** from
+the config file — there is no environment-variable override. Set it under
+`[ui]` in `~/.config/xmux/config.toml`:
 
-Press the prefix twice (`Ctrl-g Ctrl-g`) to send one literal prefix byte through
-to the inner application. A lone prefix not followed by a recognised action key
-is also forwarded after a brief timeout, so a reflexive `Ctrl-g` still reaches
-readline/emacs.
+```toml
+[ui]
+prefix = "C-g"      # the default
+```
 
-**Change the prefix:** set `XMUX_PREFIX` to a `C-<x>` spec before launching:
+Accepted specs: `C-<letter>` (e.g. `C-g`, `C-b`, `C-a`) and `C-Space`. Anything
+unrecognised falls back to `C-g`. The prefix is a single control byte, so it
+never collides with typed text, and a prefix pasted as data (bracketed paste) is
+passed through untouched rather than intercepted.
 
-    XMUX_PREFIX=C-Space xmux
+## Tree navigation
 
-Accepted specs: `C-g`, `C-Space`, `C-b`, and any `C-<printable>`.
+These act on the tree while it holds focus.
 
-## What the picker does
+| Key | Action |
+|---|---|
+| `↑` / `↓` (or `k` / `j`) | move between siblings at the current level |
+| `→` / `l` | descend into the selected node's first child |
+| `←` / `h` | ascend to the parent node |
+| `PageUp` / `PageDown` | jump ten rows |
+| `Home` / `End` | jump to the first / last node |
 
-- **Peek and cancel** — `Esc` closes the picker; you are back in your session,
-  untouched.
-- **Same-server teleport** — pick a local session: xmux switches the client
-  in-place (`switch-client`), no detach.
-- **Cross-host re-attach** — pick a remote session: xmux tears down the current
-  attach and opens a new one to the remote host, all within the same terminal
-  window — no manual detach and no `xmux` command needed on the remote.
+## Tree actions
+
+Direct (non-prefix) keys while the tree holds focus. `n`, `R`, and `x` are
+level-aware — they act on the host, session, or window the selection is on.
+
+| Key | Action |
+|---|---|
+| `n` | create — a session on a host, a window on a session, or a split (pane) on a window |
+| `R` | rename the selected session or window |
+| `x` | kill the selected session or window (with a `y`/`n` confirm) |
+| `/` | fuzzy-filter the tree by `<source>/<name>` |
+| `r` | re-scan every host |
+
+Renaming or killing a host row is refused with a brief message; creating under
+an unreachable host is likewise refused.
+
+## Prefix commands
+
+Press the prefix, then the command key. These behave identically whether the
+tree or the live screen holds focus.
+
+| Chord | Action |
+|---|---|
+| `prefix q` | quit xmux (the only quit binding) |
+| `prefix ?` | toggle the keybinding help |
+| `prefix t` | toggle auto-hide-tree (focusing the screen then gives it the full width) |
+| `prefix h` / `prefix l` | narrow / widen the tree |
+| `prefix Ctrl-←` / `prefix Ctrl-→` | narrow / widen the tree (then a bare `Ctrl-←`/`Ctrl-→` keeps resizing for a moment) |
+| `prefix prefix` | send one literal prefix byte to the focused session's pane |
+
+## Focus
+
+| Key | Action |
+|---|---|
+| `Enter` | move focus from the tree into the live screen |
+| `prefix Tab` | toggle focus between the tree and the live screen |
+| `prefix →` | focus the live screen |
+| `prefix ←` / `prefix Esc` | focus the tree |
+
+When the live screen has focus, every key that is not a prefix chord is
+forwarded raw to the session's active pane, so programs running inside the mux
+(vim, a pager, a shell) see exact input.
+
+## Modals
+
+- **Help** (`prefix ?`): a scrollless key reference. `q` or `Esc` closes it;
+  any other key is swallowed while it is open.
+- **Input dialogs** (filter, new, rename, split): type into the buffer,
+  `Backspace` deletes, `Enter` submits, `Esc` cancels.
+- **Kill confirm**: `y` (or `Y`) confirms; `n`, `Esc`, or any other key cancels.
+
+## Mouse
+
+| Gesture | Action |
+|---|---|
+| left-click a tree row | select that row (tree focused) |
+| left-click a view | focus that view |
+| wheel over the tree | move the selection (tree focused) |
+| `Ctrl`+wheel over the tree | change the tree level — descend / ascend (tree focused) |
+| right-click a tree row | press-hold to open its context menu, release on an item to run it; release off the menu to cancel |
+| drag the view border | resize the tree |
+| drag a modal's border | move the modal |
+
+The context menu offers the same level-aware actions as the keyboard — focus,
+new session / new window, rename, kill — as applicable to the clicked row. While
+the live screen is focused, mouse events over it are forwarded to the pane (the
+mux needs its own mouse mode enabled to use them).
+
+## Automation
+
+A running xmux instance listens on a local control socket and speaks semantic
+verbs — `ping`, `status`, `dump`, `rescan`, `switch <address>`,
+`focus <tree|terminal>`, `width <n>`, `toggle-auto-hide`, and `quit`. Drive it
+with `xmux ctl <verb>`, e.g. `xmux ctl switch prod/api`. A low-level `raw:`
+namespace (`raw:key`, `raw:keys`, `raw:text`) injects keystrokes or bytes for
+tests; it is unstable and not part of the supported surface.
