@@ -228,12 +228,56 @@ fn reconciled_tree_width(terminal_focused: bool, auto_hide_tree: bool, natural: 
     }
 }
 
-/// Emits a `slow_step` DEBUG event when a synchronous step took at least 10ms — used
-/// to locate what stalls the single-threaded event loop during rapid navigation.
-fn log_slow_step(label: &str, start: std::time::Instant) {
-    let ms = start.elapsed().as_millis();
-    if ms >= 10 {
-        tracing::debug!(label, ms, "slow_step");
+/// The draw hot path's observability, kept OUT of the draw block so that block does
+/// nothing but lock → render. Owns the per-key grid fingerprints (the
+/// `display_grid_changed` dedup) and the `slow_step` probe that locates what stalls the
+/// single-threaded loop during rapid navigation.
+#[derive(Default)]
+struct DrawObserver {
+    /// Last (fingerprint, session) rendered per display key, so a `display_grid_changed`
+    /// event fires at most once per real content change, never per frame.
+    fingerprints: HashMap<String, (u64, String)>,
+}
+
+/// How a freshly-computed grid fingerprint relates to the last one rendered for its key —
+/// the pure classification the draw block turns into a `display_grid_changed` log grade.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FpOutcome {
+    /// Fingerprint unchanged — screen content did not change (no event).
+    Unchanged,
+    /// Fingerprint changed, same session — a steady-state repaint (TRACE grade).
+    Steady,
+    /// Fingerprint changed and the session differs, or first paint for this key — the
+    /// transition's first frame landed (INFO grade).
+    Switched,
+}
+
+impl DrawObserver {
+    /// Classify a freshly-computed fingerprint for `addr`/`session` against the last one
+    /// rendered, updating the record on any change. Returns the grade the caller emits.
+    fn observe(&mut self, addr: &str, session: &str, fp: u64) -> FpOutcome {
+        match self.fingerprints.get(addr) {
+            Some((last_fp, _)) if *last_fp == fp => FpOutcome::Unchanged,
+            Some((_, last_session)) if last_session == session => {
+                self.fingerprints
+                    .insert(addr.to_string(), (fp, session.to_string()));
+                FpOutcome::Steady
+            }
+            _ => {
+                self.fingerprints
+                    .insert(addr.to_string(), (fp, session.to_string()));
+                FpOutcome::Switched
+            }
+        }
+    }
+
+    /// Emits a `slow_step` DEBUG event when a synchronous step took at least 10ms — used
+    /// to locate what stalls the single-threaded event loop during rapid navigation.
+    fn slow_step(label: &str, start: std::time::Instant) {
+        let ms = start.elapsed().as_millis();
+        if ms >= 10 {
+            tracing::debug!(label, ms, "slow_step");
+        }
     }
 }
 
@@ -1990,12 +2034,9 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
         tree_width,
     );
 
-    // The last rendered (fingerprint, session) per display key. Used to detect when
-    // a display transition actually changed the visible screen content. The session
-    // field distinguishes the FIRST paint after a session change (INFO) from a
-    // steady-state repaint of the same session (TRACE) — so animated full-screen
-    // apps (htop, build logs) do not flood the default xmux=info log.
-    let mut grid_fingerprints: HashMap<String, (u64, String)> = HashMap::new();
+    // The draw hot path's observability (per-key grid fingerprints + slow-step probe),
+    // owned off the draw block so that block does nothing but lock → render.
+    let mut draw_observer = DrawObserver::default();
 
     let spinner_start = std::time::Instant::now();
     let mut tick = tokio::time::interval(Duration::from_millis(SPINNER_FRAME_MS));
@@ -2149,7 +2190,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                                 state.displayed = sel.clone();
                             }
                         }
-                        log_slow_step("select_attach", t);
+                        DrawObserver::slow_step("select_attach", t);
                         dirty = true;
                         let key = display_key(&hosts, &sel);
                         let session = &sel.session;
@@ -2213,52 +2254,50 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                 Some(g) => {
                     let t_lock = std::time::Instant::now();
                     let guard = g.lock().ok();
-                    log_slow_step("grid_lock", t_lock);
+                    DrawObserver::slow_step("grid_lock", t_lock);
                     // Compute the grid fingerprint under the same lock used for rendering.
-                    // Emit display_grid_changed only when the content actually changed — the
-                    // map comparison guarantees at-most-one event per content change, never
-                    // per frame. This is the EFFECT signal: a display_show decision=switch
-                    // not followed by display_grid_changed means the switch left the screen
-                    // unchanged (the psmux swap failure signal).
+                    // The observer emits display_grid_changed only when the content actually
+                    // changed — at-most-one event per content change, never per frame. This
+                    // is the EFFECT signal: a display_show decision=switch not followed by
+                    // display_grid_changed means the switch left the screen unchanged (the
+                    // psmux swap failure signal). The observer classifies; this block only
+                    // picks the log grade.
                     if let Some(grid) = guard.as_deref() {
                         let addr = display_key(&hosts, &state.displayed);
                         let session = &state.displayed.session;
                         let fp = grid.fingerprint();
-                        match grid_fingerprints.get(&addr) {
-                            Some((last_fp, _)) if last_fp == &fp => {
-                                // Fingerprint unchanged — screen content did not change.
-                            }
-                            Some((_, last_session)) if last_session == session => {
+                        match draw_observer.observe(&addr, session, fp) {
+                            // Fingerprint unchanged — screen content did not change.
+                            FpOutcome::Unchanged => {}
+                            FpOutcome::Steady => {
                                 // Fingerprint changed, same session — steady-state repaint
                                 // (htop / build logs / clock). TRACE to avoid flooding the
                                 // default xmux=info log with per-frame events.
                                 tracing::trace!(addr = %addr, session = %session, fp, "display_grid_changed");
-                                grid_fingerprints.insert(addr, (fp, session.clone()));
                             }
-                            _ => {
+                            FpOutcome::Switched => {
                                 // Fingerprint changed AND session differs (or first paint for
                                 // this key) — the transition's first frame landed. INFO so the
                                 // switch is observable without raising the log level.
                                 tracing::info!(addr = %addr, session = %session, fp, "display_grid_changed");
-                                grid_fingerprints.insert(addr, (fp, session.clone()));
                             }
                         }
                     }
                     term.draw(|f| {
                         let t_render = std::time::Instant::now();
                         switcher.render(f, guard.as_deref(), terminal_focused, tree_width, &state);
-                        log_slow_step("render", t_render);
+                        DrawObserver::slow_step("render", t_render);
                     })
                 }
                 None => term.draw(|f| {
                     let t_render = std::time::Instant::now();
                     switcher.render(f, None, terminal_focused, tree_width, &state);
-                    log_slow_step("render", t_render);
+                    DrawObserver::slow_step("render", t_render);
                 }),
             } {
                 tracing::warn!(error = %e, "term_draw_failed");
             }
-            log_slow_step("draw", t_draw);
+            DrawObserver::slow_step("draw", t_draw);
             // The grids are now on screen — clear every attachment's output-coalescing
             // flag so each pump may signal its next chunk (bounds the PTY event channel).
             registry.clear_all_pending();
@@ -2294,7 +2333,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                         Err(_) => break,
                     }
                 }
-                log_slow_step("host_drain", t);
+                DrawObserver::slow_step("host_drain", t);
             }
             Some(ev) = pty_rx.recv() => {
                 // A kept attachment's pump fed its grid (Output → redraw on the next
@@ -3913,6 +3952,19 @@ mod tests {
             crate::ui::switcher::TREE_WIDTH,
         );
         assert!(grid.is_none(), "empty displayed yields no grid");
+    }
+
+    #[test]
+    fn draw_observer_reports_change_only_on_new_fingerprint() {
+        let mut obs = DrawObserver::default();
+        // First paint of a key → a switch (INFO-grade transition, first frame).
+        assert_eq!(obs.observe("jup/api", "api", 1), FpOutcome::Switched);
+        // Same key, same fingerprint → unchanged (no event, no map update).
+        assert_eq!(obs.observe("jup/api", "api", 1), FpOutcome::Unchanged);
+        // Same key, same session, new fingerprint → steady-state repaint (TRACE).
+        assert_eq!(obs.observe("jup/api", "api", 2), FpOutcome::Steady);
+        // Same key, different session → a switch (INFO).
+        assert_eq!(obs.observe("jup/api", "db", 3), FpOutcome::Switched);
     }
 
     #[tokio::test(flavor = "current_thread")]
