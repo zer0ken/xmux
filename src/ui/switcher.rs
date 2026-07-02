@@ -34,56 +34,6 @@ const COLOR_PANE: Color = Color::Cyan;
 /// renders dim so pending state reads apart from settled content.
 const COLOR_HINT: Color = Color::DarkGray;
 
-/// Parses a tmux-style colour token into a ratatui [`Color`], matching tmux/psmux's
-/// colour vocabulary so the view border colours can be configured exactly like
-/// `pane-border-style`: the 16 named ANSI colours, their `bright*` variants,
-/// `colourN`/`colorN` (a 0-255 palette index), `#RRGGBB`, and `default` (terminal
-/// default). A leading `fg=` is tolerated so a tmux style string drops in verbatim.
-/// Unknown or empty tokens fall back to [`Color::Reset`] (terminal default).
-pub fn map_color(s: &str) -> Color {
-    let s = s.trim();
-    let s = s.strip_prefix("fg=").unwrap_or(s).trim();
-    if let Some(hex) = s.strip_prefix('#') {
-        if hex.len() == 6 {
-            if let (Ok(r), Ok(g), Ok(b)) = (
-                u8::from_str_radix(&hex[0..2], 16),
-                u8::from_str_radix(&hex[2..4], 16),
-                u8::from_str_radix(&hex[4..6], 16),
-            ) {
-                return Color::Rgb(r, g, b);
-            }
-        }
-    }
-    let lower = s.to_lowercase();
-    if let Some(idx) = lower
-        .strip_prefix("colour")
-        .or_else(|| lower.strip_prefix("color"))
-    {
-        if let Ok(n) = idx.parse::<u8>() {
-            return Color::Indexed(n);
-        }
-    }
-    match lower.as_str() {
-        "black" => Color::Black,
-        "red" => Color::Red,
-        "green" => Color::Green,
-        "yellow" => Color::Yellow,
-        "blue" => Color::Blue,
-        "magenta" => Color::Magenta,
-        "cyan" => Color::Cyan,
-        "white" => Color::White,
-        "brightblack" | "bright-black" => Color::DarkGray,
-        "brightred" | "bright-red" => Color::LightRed,
-        "brightgreen" | "bright-green" => Color::LightGreen,
-        "brightyellow" | "bright-yellow" => Color::LightYellow,
-        "brightblue" | "bright-blue" => Color::LightBlue,
-        "brightmagenta" | "bright-magenta" => Color::LightMagenta,
-        "brightcyan" | "bright-cyan" => Color::LightCyan,
-        "brightwhite" | "bright-white" => Color::White,
-        _ => Color::Reset,
-    }
-}
-
 pub use crate::ui::chrome::ViewBorderColors;
 
 /// A fully-populated snapshot of the reachable environment.
@@ -2415,43 +2365,6 @@ fn input_title(mode: InputMode) -> &'static str {
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
-
-    #[test]
-    fn map_color_named_and_default() {
-        assert_eq!(map_color("green"), Color::Green);
-        assert_eq!(map_color("blue"), Color::Blue);
-        assert_eq!(map_color("yellow"), Color::Yellow);
-        assert_eq!(map_color("white"), Color::White);
-        assert_eq!(map_color("default"), Color::Reset);
-        assert_eq!(
-            map_color(""),
-            Color::Reset,
-            "empty = inherit/terminal default"
-        );
-        assert_eq!(map_color("brightblack"), Color::DarkGray);
-    }
-
-    #[test]
-    fn map_color_indexed_and_hex() {
-        assert_eq!(map_color("colour4"), Color::Indexed(4));
-        assert_eq!(map_color("color12"), Color::Indexed(12));
-        assert_eq!(map_color("#268bd2"), Color::Rgb(0x26, 0x8b, 0xd2));
-    }
-
-    #[test]
-    fn map_color_tolerates_fg_prefix_and_case() {
-        assert_eq!(
-            map_color("fg=blue"),
-            Color::Blue,
-            "tmux style string drops in verbatim"
-        );
-        assert_eq!(
-            map_color("  Blue "),
-            Color::Blue,
-            "trimmed and case-insensitive"
-        );
-        assert_eq!(map_color("fg=#EEE8D5"), Color::Rgb(0xee, 0xe8, 0xd5));
-    }
     use ratatui::buffer::Buffer;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;

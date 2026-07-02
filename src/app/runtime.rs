@@ -1875,9 +1875,9 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
     // View border colours from config's tmux-style pane-border options (tmux defaults
     // otherwise), so the tree|terminal rule matches the user's tmux pane-border experience.
     switcher.set_view_border_colors(crate::ui::switcher::ViewBorderColors {
-        active: crate::ui::switcher::map_color(&env.cfg.ui.view_active_border_style),
-        inactive: crate::ui::switcher::map_color(&env.cfg.ui.view_border_style),
-        hover: crate::ui::switcher::map_color(&env.cfg.ui.view_border_hover_style),
+        active: crate::ui::chrome::map_color(&env.cfg.ui.view_active_border_style),
+        inactive: crate::ui::chrome::map_color(&env.cfg.ui.view_border_style),
+        hover: crate::ui::chrome::map_color(&env.cfg.ui.view_border_hover_style),
     });
     // The help modal must show the prefix the user configured, not a literal.
     switcher.set_ui_prefix(env.ui_prefix.clone());

@@ -43,7 +43,7 @@ pub struct UiConfig {
     /// The tree|terminal view border colours, named after tmux's pane-border options so the
     /// experience matches tmux: the focused side uses `view-active-border-style`, the
     /// unfocused side `view-border-style`, and the drag-hover cue `view-border-hover-style`.
-    /// Values use tmux's colour vocabulary (parsed by [`crate::ui::switcher::map_color`]);
+    /// Values use tmux's colour vocabulary (parsed by [`crate::ui::chrome::map_color`]);
     /// the defaults mirror tmux's own (`green` / `default` / `yellow`).
     #[serde(rename = "view-active-border-style", default = "default_active_border")]
     pub view_active_border_style: String,
