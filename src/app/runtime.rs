@@ -1092,7 +1092,7 @@ fn run_event_effect(
             // if its PTY has not EOF'd. Drop the stale attach so it cannot show a dead grid.
             if let Some(h) = hosts.get(&source) {
                 for s in &sessions {
-                    if !h.psmux_session_live(&s.name) {
+                    if !h.session_is_live(&s.name) {
                         // The host-keyed display attachment (one per-host PTY, reattached).
                         registry.remove(&host_selection_key(h));
                     }

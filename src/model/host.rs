@@ -214,7 +214,7 @@ impl Host {
     /// True when `session` is still live under this mux's death signal. PerSession
     /// (psmux) ⇒ the `.port` stat; any other model ⇒ always live (death arrives by
     /// EOF/ControlNotice, not a port file).
-    pub fn psmux_session_live(&self, session: &str) -> bool {
+    pub fn session_is_live(&self, session: &str) -> bool {
         match self.mux.death_signal() {
             crate::model::DeathSignal::PathStat {
                 dir_is_psmux_registry: true,
@@ -764,9 +764,9 @@ mod tests {
         let path = crate::model::death::psmux_port_path(&name);
         let _ = std::fs::create_dir_all(path.parent().unwrap());
         std::fs::write(&path, b"40001").unwrap();
-        assert!(h.psmux_session_live(&name), "a present .port ⇒ live");
+        assert!(h.session_is_live(&name), "a present .port ⇒ live");
         std::fs::remove_file(&path).unwrap();
-        assert!(!h.psmux_session_live(&name), "a vanished .port ⇒ not live");
+        assert!(!h.session_is_live(&name), "a vanished .port ⇒ not live");
     }
 
     #[test]
@@ -776,7 +776,7 @@ mod tests {
             crate::mux::for_binary("tmux"), // Shared → not PathStat
         );
         // A Shared host never dies by a .port file — liveness here is unconditionally true.
-        assert!(h.psmux_session_live("anything"));
+        assert!(h.session_is_live("anything"));
     }
 
     struct DetectRunner {
