@@ -49,7 +49,10 @@ type AttachmentSpawner = Box<
 /// attachment's pump feeds the app's grid (the worker keeps no registry of its own).
 pub struct DisplayWorker {
     tx: std::sync::mpsc::Sender<DisplayEnsure>,
-    rx: tokio::sync::mpsc::UnboundedReceiver<DisplayEvent>,
+    /// The reply receiver. The run loop takes it out ([`take_events`](Self::take_events))
+    /// so it can `select!` on replies while holding `&mut Runtime` for the arm body —
+    /// the send half (`ensure`) stays on the worker the runtime owns.
+    rx: Option<tokio::sync::mpsc::UnboundedReceiver<DisplayEvent>>,
 }
 
 impl DisplayWorker {
@@ -96,7 +99,7 @@ impl DisplayWorker {
         });
         DisplayWorker {
             tx: cmd_tx,
-            rx: event_rx,
+            rx: Some(event_rx),
         }
     }
 
@@ -104,8 +107,18 @@ impl DisplayWorker {
         let _ = self.tx.send(req);
     }
 
+    /// Takes the reply receiver out for the run loop to poll as a loop-local (so a
+    /// worker `Ready`/`Failed` can be `select!`ed while `&mut Runtime` is borrowed for the
+    /// arm). Callable once; the worker keeps only its send half afterwards.
+    pub fn take_events(&mut self) -> tokio::sync::mpsc::UnboundedReceiver<DisplayEvent> {
+        self.rx.take().expect("take_events called once")
+    }
+
     pub async fn recv(&mut self) -> Option<DisplayEvent> {
-        self.rx.recv().await
+        match self.rx.as_mut() {
+            Some(rx) => rx.recv().await,
+            None => std::future::pending().await,
+        }
     }
 }
 
