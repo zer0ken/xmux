@@ -63,6 +63,10 @@ const RECONNECT_MS: u64 = 2000;
 pub(crate) const TREE_WIDTH_MIN: u16 = 20;
 pub(crate) const TREE_WIDTH_MAX: u16 = 100;
 
+/// The ratatui terminal the app draws into. Loop-local in [`run_app`] (owns stdout);
+/// passed to the `Runtime` methods that draw / resize / dump.
+type Term = ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>;
+
 /// How long the resize-repeat window stays open after a prefix-driven tree resize:
 /// during it a bare Ctrl+←/→ (no prefix) keeps resizing and refreshes the window —
 /// tmux's `bind -r` repeat applied to the tree width. Each repeat resets the window.
@@ -1550,11 +1554,8 @@ fn handle_stdin_bytes(
 /// client per remote host for inventory/events/window-switch. It serves a picker
 /// control socket so a headless driver can inject keys/text and dump the screen.
 pub async fn run_app(env: Arc<Env>) -> i32 {
-    use crate::display::decode::KeyDecoder;
-    use crate::display::input::TermInput;
-    use crate::display::term::{parse_prefix, TermGuard};
-    use crate::ui::run::{dump_screen, serve_control, Cmd};
-    use crate::ui::switcher::Switcher;
+    use crate::display::term::TermGuard;
+    use crate::ui::run::{serve_control, Cmd};
     use std::io::Read;
     use std::time::Duration;
 
@@ -1618,99 +1619,23 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
         }));
     }
 
-    let size = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
-    let (mut cols, mut body_rows) = (size.0, size.1.saturating_sub(1)); // status bar = last row
-                                                                        // `tree_width` is the EFFECTIVE width (0 = tree hidden, terminal full width); every
-                                                                        // sizing/render site reads it. `tree_width_natural` holds the tree's natural
-                                                                        // width (what prefix h·l adjusts, restored when the tree is shown again).
-                                                                        // Restore the natural width the user last set (persisted across runs); clamp a
-                                                                        // stale out-of-range value, and fall back to the default when none is saved.
-    let mut tree_width_natural = adjust_tree_width(
-        crate::prefs::load_tree_width(&env.xmux_dir).unwrap_or(crate::ui::switcher::TREE_WIDTH),
-        0,
+    // Build the world state (Runtime) + the loop's I/O (the receivers `select!` polls).
+    let (mut rt, mut io) = Runtime::new(env);
+    // Kick each host's first scan here (NOT in `Runtime::new`), so a headless unit test
+    // can build a `Runtime` without launching real detection probes / control clients.
+    connect_all_sources(
+        &mut rt.mgr,
+        &rt.hosts,
+        &mut rt.detecting,
+        rt.cols,
+        rt.body_rows,
+        rt.tree_width,
     );
-    let mut tree_width = tree_width_natural;
-    // Auto-hide-tree mode: the live `prefix t` toggle, restored from its persisted
-    // state if set, else the `auto-hide-tree` config default. The loop-top reconcile
-    // reads it to size the tree (0 = hidden, terminal full width) on focus changes.
-    let mut auto_hide_tree = crate::prefs::load_auto_hide_tree(&env.xmux_dir)
-        .unwrap_or_else(|| env.cfg.ui_auto_hide_tree());
-    // The per-event mouse-gesture/input state the stdin arm carries across reads:
-    //  - repeat_until: the resize-repeat window — set when a prefix-driven resize fires,
-    //    it lets a bare Ctrl+←/→ keep resizing (no re-prefix) until it lapses (RESIZE_REPEAT_MS).
-    //  - dragging_view_border: true while the left button is dragging the tree/terminal view border rule.
-    //  - hovered_view_border: true while the mouse hovers the view border rule (no button) — lights it
-    //    up as a drag-resize grab cue. Fed to the switcher each draw via set_view_border_hovered.
-    //  - tree_armed: true while a prefix has been pressed in tree focus, awaiting the command key.
-    let mut mouse_state = MouseState::default();
+    // Take the worker's reply receiver out so the loop can `select!` on it while `&mut rt`
+    // is borrowed for the arm body (the send half stays on `rt.worker`).
+    let mut worker_events = rt.worker.take_events();
 
-    // The control-mode metadata clients: one per remote host.
-    let (host_tx, mut host_rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
-    let mut mgr = HostManager::new(host_tx);
-
-    // The live PTY attachments: one real attached mux client per session.
-    let (pty_tx, mut pty_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
-    // A clone the drivers can hand to an off-loop probe (e.g. the psmux display-tty
-    // capture) so its DisplayTty result folds back through the same event channel.
-    let driver_pty_tx = pty_tx.clone();
-    let mut worker = DisplayWorker::new(pty_tx);
-    let mut registry = AttachRegistry::new();
-
-    // Host model: the single runtime registry, keyed by id (local first, then each ssh
-    // alias in config order). Built from the config-assembly products on `Env`
-    // (`ssh_aliases`, `local_socket`) — the same inputs `source::build` consumed — plus
-    // the local machine's OS (`std::env::consts::OS`, which also gates ControlMaster on
-    // each ssh host). Ids are "local" + each alias — the same strings HostEvents carry as
-    // `host` and the registry uses as the display key prefix.
-    let host_os = std::env::consts::OS;
-    let mut hosts = crate::model::Hosts::build(
-        &env.cfg,
-        &env.ssh_aliases,
-        host_os,
-        &env.xmux_dir,
-        env.local_socket.clone(),
-    );
-
-    // The app's runtime state (single source of truth): the inventory the
-    // components read, the canonical selection committed from the switcher's selection at
-    // the loop top, the attach debounce latch (last selection actually attached/switched
-    // to) + its deadline, and the last session address persisted as the user's
-    // last-selected (#1). Seeded from the host registry's ids (the single source
-    // projection); events stream the tree in.
-    let mut state = crate::state::State::from_sources(hosts.ids().to_vec());
-    // The switcher, built over that seeded inventory; events stream the tree in.
-    let mut switcher = Switcher::from_sources(&mut state);
-    // Feed the switcher the ssh config so an unreachable host's info panel can show its
-    // Host/Match stanza. Read once; a missing file just yields no stanza.
-    state.chrome.set_ssh_config_text(
-        std::fs::read_to_string(crate::env::ssh_config_path()).unwrap_or_default(),
-    );
-    // View border colours from config's tmux-style pane-border options (tmux defaults
-    // otherwise), so the tree|terminal rule matches the user's tmux pane-border experience.
-    state
-        .chrome
-        .set_view_border_colors(crate::ui::switcher::ViewBorderColors {
-            active: crate::ui::chrome::map_color(&env.cfg.ui.view_active_border_style),
-            inactive: crate::ui::chrome::map_color(&env.cfg.ui.view_border_style),
-            hover: crate::ui::chrome::map_color(&env.cfg.ui.view_border_hover_style),
-        });
-    // The help modal must show the prefix the user configured, not a literal.
-    state.chrome.set_ui_prefix(env.ui_prefix.clone());
-    // Restore the session the user last had selected (persisted across runs), so the
-    // preselect lands there once its host streams in instead of guessing from the
-    // unreliable cross-host `session_last_attached` (#1).
-    switcher.set_preferred(crate::prefs::load_last_session(&env.xmux_dir));
-
-    // Off-loop attach sequence. The in-flight set + reaped-ids + which session each display
-    // shows now live on each `host.display` (HostDisplay), so the app holds no free
-    // host_session/in_flight/reaped_ids side-maps.
-    let mut attach_seq: u64 = 0;
-
-    // The live mutate ops (create/rename/kill) — NOT tree probing (that comes from
-    // the control clients' inventory + local enumeration).
-    let ops = env.ops();
-
-    // Single stdin reader thread: raw host bytes → channel.
+    // Single stdin reader thread: raw host bytes → channel (a loop-local receiver).
     let (stdin_tx, mut stdin_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
     std::thread::spawn(move || {
         let stdin = std::io::stdin();
@@ -1728,10 +1653,8 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
         }
     });
 
-    let prefix = parse_prefix(Some(&env.ui_prefix));
-    let mut term_input = TermInput::new(prefix);
-    let mut tree_decoder = KeyDecoder::new();
-
+    // The ratatui terminal: loop-local I/O the draw/tick/dump methods borrow as a
+    // param (kept off `Runtime` so a headless test never constructs one).
     let mut term =
         match ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(std::io::stdout())) {
             Ok(t) => t,
@@ -1746,137 +1669,306 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
 
     // The picker control socket: serves headless key/text/dump.
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<Cmd>(256);
-    let control = pick_control_path(&env);
+    let control = pick_control_path(&rt.env);
     let _control_handle = control.and_then(|p| serve_control(p, cmd_tx));
 
-    let (op_tx, mut op_rx) = tokio::sync::mpsc::unbounded_channel();
-
-    let mut connected: HashSet<String> = HashSet::new();
-    let mut panes_requested: HashSet<String> = HashSet::new();
-    let mut detecting: HashSet<String> = HashSet::new();
-    connect_all_sources(
-        &mut mgr,
-        &hosts,
-        &mut detecting,
-        cols,
-        body_rows,
-        tree_width,
-    );
-
-    // The draw hot path's observability (per-key grid fingerprints + slow-step probe),
-    // owned off the draw block so that block does nothing but lock → render.
-    let mut draw_observer = DrawObserver::default();
-
-    let spinner_start = std::time::Instant::now();
     let mut tick = tokio::time::interval(Duration::from_millis(SPINNER_FRAME_MS));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Periodic reconnect sweep: re-ensure any died remote control client (so #5
     // metadata sync self-heals) and re-attach the selected session's PTY if it
-    // dropped (so a transient remote disconnect does not leave the terminal view stuck
-    // blank). The sweep interval doubles as the retry backoff.
+    // dropped. The sweep interval doubles as the retry backoff.
     let reconnect_start = tokio::time::Instant::now() + Duration::from_millis(RECONNECT_MS);
     let mut reconnect =
         tokio::time::interval_at(reconnect_start, Duration::from_millis(RECONNECT_MS));
     reconnect.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Frame timer: wakes the loop at the redraw cadence so a pending `dirty` draw is
-    // flushed promptly even when no other event arrives. Redraws are gated on `dirty`
-    // + elapsed ≥ FRAME_MS, so rapid input coalesces into ≤30fps instead of one
-    // full-screen repaint per keystroke (the navigation freeze).
+    // flushed promptly even when no other event arrives.
     let mut frame = tokio::time::interval(Duration::from_millis(FRAME_MS));
     frame.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut dirty = true;
-    let mut last_draw = std::time::Instant::now() - Duration::from_millis(FRAME_MS);
-    // Debounced tree-width persist: set on each resize tick; flushed once ~400ms after
-    // the last tick (after a burst of Ctrl-arrow autorepeats settles). Avoids fsyncing
-    // the state dir per keystroke during a held autorepeat.
-    let mut width_dirty = false;
-    let mut width_flush_at: Option<std::time::Instant> = None;
-    // The mux DRIVER: the supervisor passes the selection as INTENT; the driver owns how
-    // it lands on screen. There is no single driver — each call selects the host's driver
-    // off its model (`crate::driver::driver_for`), so the supervisor never branches on the
-    // mux kind. Drivers are zero-sized, so a fresh value per call is free.
 
     loop {
-        // Advance the spinner from wall-clock so it animates regardless of which arm
-        // fired, then commit the selection's target into the canonical selection. A
-        // changed selection ensures its PTY + (for a window row) switches the window.
-        state
-            .chrome
-            .set_spinner_frame(spinner_frame_at(spinner_start.elapsed()));
-        state
-            .chrome
-            .set_view_border_hovered(mouse_state.hovered_view_border);
-        // Derive the modal dimension of focus from the open-modal kind: open a modal →
-        // Focus becomes Popup/Menu carrying the current view; close it → restore that
-        // view. The single owner of the modal/view reconciliation.
-        let modal_kind = state.modal_kind();
-        state.focus.sync_modal(modal_kind);
-        // The single owner of the effective tree width: reconcile it to the current
-        // focus + the hide setting, and to any natural-width change from prefix h/l.
-        // On a change (focus toggled, hide flips the width, or h/l resized the tree),
-        // resize the PTYs to the new mux view size so the mux reflows, and mark dirty.
-        // ponytail: resize_all touches every live attachment on each change. It is
-        // gated to fire once per actual change (not per loop), matching the existing
-        // h/l and console-resize paths; debounce only if toggle-spam proves costly.
-        let want_tree_width = reconciled_tree_width(
-            state.focus.is_terminal_focused(),
-            auto_hide_tree,
-            tree_width_natural,
+        rt.prepare_and_draw(&mut term);
+
+        // NOT biased: a biased select polls host_rx first every iteration, so a
+        // sustained output flood would starve stdin, the control socket, ops,
+        // enumeration, and the tick. Unbiased select gives every branch a fair share.
+        //
+        // Every arm EXCEPT the bare frame timer represents a real state change, so it
+        // marks the UI dirty (drawn on the next gated pass); the frame timer only wakes
+        // the loop to flush an already-pending dirty draw, so it must NOT set dirty.
+        let mut from_frame = false;
+        tokio::select! {
+            Some(ev) = io.host_rx.recv() => rt.on_host_event(ev, &mut io.host_rx),
+            Some(ev) = io.pty_rx.recv() => rt.on_pty_event(ev, &mut io.pty_rx),
+            Some(ev) = worker_events.recv() => rt.on_display_event(ev),
+            Some(bytes) = stdin_rx.recv() => {
+                if rt.on_stdin(&bytes) {
+                    break;
+                }
+            }
+            Some(cmd) = cmd_rx.recv() => {
+                if rt.on_ctl_command(cmd, &mut term) {
+                    break;
+                }
+            }
+            Some(result) = io.op_rx.recv() => rt.on_op_result(result),
+            _ = tick.tick() => rt.on_tick(&mut term),
+            _ = reconnect.tick() => rt.on_reconnect(),
+            _ = frame.tick() => {
+                from_frame = true;
+            }
+        }
+        // Any real event (not the bare frame wake) means the UI may have changed.
+        if !from_frame {
+            rt.dirty = true;
+        }
+    }
+
+    // A resize within the last WIDTH_FLUSH_MS before quit leaves the debounce deadline
+    // unreached, so the final width is still pending — persist it on the way out so the
+    // tree width the user left with survives the next launch.
+    if rt.width_dirty {
+        crate::prefs::save_tree_width(&rt.env.xmux_dir, rt.tree_width_natural);
+    }
+    rt.registry.teardown_all();
+    rt.mgr.teardown_all();
+    0
+}
+
+/// The persistent app's WORLD STATE: everything the `select!` loop mutates across
+/// iterations. The `select!` receivers/timers and the ratatui `Terminal` stay
+/// loop-local in [`run_app`] — a receiver cannot be polled from `self.<rx>.recv()`
+/// while an arm body borrows `&mut self` — so `Runtime` owns the long-lived state and
+/// each `select!` arm is one `&mut self` method.
+struct Runtime {
+    env: Arc<Env>,
+    ops: Arc<dyn crate::ui::switcher::Ops>,
+    hosts: crate::model::Hosts,
+    mgr: HostManager,
+    registry: AttachRegistry,
+    /// The off-loop attach worker. Its reply receiver is taken out in `run_app`
+    /// ([`DisplayWorker::take_events`]); this keeps only the send half (`ensure`).
+    worker: DisplayWorker,
+    switcher: crate::ui::switcher::Switcher,
+    state: crate::state::State,
+    attach_seq: u64,
+    /// A clone of the loop's `PtyEvent` sender handed to drivers for off-loop probes.
+    driver_pty_tx: tokio::sync::mpsc::UnboundedSender<PtyEvent>,
+    op_tx: tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
+    cols: u16,
+    body_rows: u16,
+    /// The EFFECTIVE tree width (0 = tree hidden, terminal full width).
+    tree_width: u16,
+    /// The tree's natural width (what prefix h/l adjusts; restored when shown again).
+    tree_width_natural: u16,
+    auto_hide_tree: bool,
+    mouse_state: MouseState,
+    term_input: crate::display::input::TermInput,
+    tree_decoder: crate::display::decode::KeyDecoder,
+    prefix: u8,
+    connected: HashSet<String>,
+    panes_requested: HashSet<String>,
+    detecting: HashSet<String>,
+    draw_observer: DrawObserver,
+    spinner_start: std::time::Instant,
+    dirty: bool,
+    last_draw: std::time::Instant,
+    width_dirty: bool,
+    width_flush_at: Option<std::time::Instant>,
+}
+
+/// The loop's receiver halves, whose send halves `Runtime::new` wired into the world
+/// state (mgr's host events, the worker's PTY events, the op-result channel). Held
+/// loop-local in [`run_app`] so an arm can `select!` on one while its body borrows
+/// `&mut Runtime`.
+struct LoopIo {
+    host_rx: tokio::sync::mpsc::UnboundedReceiver<HostEvent>,
+    pty_rx: tokio::sync::mpsc::UnboundedReceiver<PtyEvent>,
+    op_rx: tokio::sync::mpsc::UnboundedReceiver<crate::ui::switcher::OpResult>,
+}
+
+impl Runtime {
+    /// Builds the world state from `env` and returns it alongside the loop's receiver
+    /// halves ([`LoopIo`]). Pure construction — it starts NO probes (the startup scan
+    /// is kicked from `run_app`), so a headless unit test can build a `Runtime`.
+    fn new(env: Arc<Env>) -> (Runtime, LoopIo) {
+        let size = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
+        let (cols, body_rows) = (size.0, size.1.saturating_sub(1)); // status bar = last row
+                                                                    // Restore the natural tree width the user last set; clamp a stale out-of-range
+                                                                    // value, fall back to the default when none is saved.
+        let tree_width_natural = adjust_tree_width(
+            crate::prefs::load_tree_width(&env.xmux_dir).unwrap_or(crate::ui::switcher::TREE_WIDTH),
+            0,
         );
-        if want_tree_width != tree_width {
-            // Crossing the hidden sentinel (0) flips the column TOPOLOGY: full-width mux
-            // <-> tree+view border+terminal view. A stale wide-char (CJK) cell at the new tree/view border
-            // boundary can survive ratatui's incremental diff, leaving background residue,
-            // so force a full repaint on that transition. A plain h/l resize keeps the
-            // same topology and needs no clear (the per-frame Clear widget handles it).
-            let crossed_hidden = (want_tree_width == 0) != (tree_width == 0);
-            tree_width = want_tree_width;
-            let (vc, vr) = terminal_view_size(cols, body_rows, tree_width);
-            registry.resize_all(vc, vr);
-            mgr.resize_all(vc, vr);
+        let tree_width = tree_width_natural;
+        let auto_hide_tree = crate::prefs::load_auto_hide_tree(&env.xmux_dir)
+            .unwrap_or_else(|| env.cfg.ui_auto_hide_tree());
+
+        // The control-mode metadata clients: one per remote host.
+        let (host_tx, host_rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
+        let mgr = HostManager::new(host_tx);
+        // The live PTY attachments: one real attached mux client per session.
+        let (pty_tx, pty_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
+        let driver_pty_tx = pty_tx.clone();
+        let worker = DisplayWorker::new(pty_tx);
+        let registry = AttachRegistry::new();
+
+        // Host model: the single runtime registry, keyed by id (local first, then each
+        // ssh alias in config order), built from the config-assembly products on `Env`.
+        let host_os = std::env::consts::OS;
+        let hosts = crate::model::Hosts::build(
+            &env.cfg,
+            &env.ssh_aliases,
+            host_os,
+            &env.xmux_dir,
+            env.local_socket.clone(),
+        );
+
+        // The app's runtime state (single source of truth), seeded from the host ids;
+        // events stream the tree in.
+        let mut state = crate::state::State::from_sources(hosts.ids().to_vec());
+        let mut switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
+        // Feed the switcher the ssh config so an unreachable host's info panel can show
+        // its Host/Match stanza. Read once; a missing file just yields no stanza.
+        state.chrome.set_ssh_config_text(
+            std::fs::read_to_string(crate::env::ssh_config_path()).unwrap_or_default(),
+        );
+        // View border colours from config's tmux-style pane-border options.
+        state
+            .chrome
+            .set_view_border_colors(crate::ui::switcher::ViewBorderColors {
+                active: crate::ui::chrome::map_color(&env.cfg.ui.view_active_border_style),
+                inactive: crate::ui::chrome::map_color(&env.cfg.ui.view_border_style),
+                hover: crate::ui::chrome::map_color(&env.cfg.ui.view_border_hover_style),
+            });
+        // The help modal must show the prefix the user configured, not a literal.
+        state.chrome.set_ui_prefix(env.ui_prefix.clone());
+        // Restore the session the user last had selected (persisted across runs).
+        switcher.set_preferred(crate::prefs::load_last_session(&env.xmux_dir));
+
+        // The live mutate ops (create/rename/kill) — NOT tree probing.
+        let ops = env.ops();
+        let prefix = crate::display::term::parse_prefix(Some(&env.ui_prefix));
+        let term_input = crate::display::input::TermInput::new(prefix);
+        let tree_decoder = crate::display::decode::KeyDecoder::new();
+        let (op_tx, op_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let rt = Runtime {
+            env,
+            ops,
+            hosts,
+            mgr,
+            registry,
+            worker,
+            switcher,
+            state,
+            // Off-loop attach sequence. The in-flight set / reaped-ids / which session
+            // each display shows live on each `host.display` (HostDisplay).
+            attach_seq: 0,
+            driver_pty_tx,
+            op_tx,
+            cols,
+            body_rows,
+            tree_width,
+            tree_width_natural,
+            auto_hide_tree,
+            mouse_state: MouseState::default(),
+            term_input,
+            tree_decoder,
+            prefix,
+            connected: HashSet::new(),
+            panes_requested: HashSet::new(),
+            detecting: HashSet::new(),
+            // The draw hot path's observability (per-key grid fingerprints + slow-step
+            // probe), owned off the draw block so it does nothing but lock → render.
+            draw_observer: DrawObserver::default(),
+            spinner_start: std::time::Instant::now(),
+            dirty: true,
+            last_draw: std::time::Instant::now() - std::time::Duration::from_millis(FRAME_MS),
+            width_dirty: false,
+            width_flush_at: None,
+        };
+        (
+            rt,
+            LoopIo {
+                host_rx,
+                pty_rx,
+                op_rx,
+            },
+        )
+    }
+
+    /// The loop top: advance the spinner, reconcile the modal/tree-width, run the `r`
+    /// reattach-kick, follow the active window in terminal focus, sync the selection,
+    /// drive one debounce beat (the settled attach), flush the debounced width persist,
+    /// then draw the gated frame. `term` is the loop-local ratatui terminal.
+    fn prepare_and_draw(&mut self, term: &mut Term) {
+        use std::time::Duration;
+        // Advance the spinner from wall-clock so it animates regardless of which arm fired.
+        self.state
+            .chrome
+            .set_spinner_frame(spinner_frame_at(self.spinner_start.elapsed()));
+        self.state
+            .chrome
+            .set_view_border_hovered(self.mouse_state.hovered_view_border);
+        // Derive the modal dimension of focus from the open-modal kind (single owner of
+        // the modal/view reconciliation).
+        let modal_kind = self.state.modal_kind();
+        self.state.focus.sync_modal(modal_kind);
+        // The single owner of the effective tree width: reconcile it to the focus + the
+        // hide setting + any natural-width change. On a change, resize the PTYs so the
+        // mux reflows, and mark dirty.
+        let want_tree_width = reconciled_tree_width(
+            self.state.focus.is_terminal_focused(),
+            self.auto_hide_tree,
+            self.tree_width_natural,
+        );
+        if want_tree_width != self.tree_width {
+            // Crossing the hidden sentinel (0) flips the column TOPOLOGY; a stale wide-char
+            // cell at the new boundary can survive ratatui's diff, so force a full repaint.
+            let crossed_hidden = (want_tree_width == 0) != (self.tree_width == 0);
+            self.tree_width = want_tree_width;
+            let (vc, vr) = terminal_view_size(self.cols, self.body_rows, self.tree_width);
+            self.registry.resize_all(vc, vr);
+            self.mgr.resize_all(vc, vr);
             if crossed_hidden {
                 if let Err(e) = term.clear() {
                     tracing::warn!(error = %e, "term_clear_failed");
                 }
             }
-            dirty = true;
+            self.dirty = true;
         }
         // A portable-pty child spawn clears ENABLE_MOUSE_INPUT on the parent CONIN,
         // killing mouse capture; re-assert it whenever it drifts off.
         crate::display::term::ensure_mouse_capture();
-        // An `r` re-scan also re-attaches the CURRENT display: tear the (possibly
-        // detached / dead) attachment down and clear its switch latch so the attach
-        // below re-creates a fresh client for the viewed session. Keeps the per-host
-        // model — recovery from a lost display client is explicit, on demand.
-        if switcher.take_reattach_kick() && !state.selection.is_empty() {
-            let key = display_key(&hosts, &state.selection);
-            registry.remove(&key);
-            if let Some(h) = hosts.get_mut(&state.selection.source) {
+        // An `r` re-scan also re-attaches the CURRENT display: tear the (possibly dead)
+        // attachment down and clear its latch so the attach below re-creates a fresh
+        // client for the viewed session.
+        if self.switcher.take_reattach_kick() && !self.state.selection.is_empty() {
+            let key = display_key(&self.hosts, &self.state.selection);
+            self.registry.remove(&key);
+            if let Some(h) = self.hosts.get_mut(&self.state.selection.source) {
                 h.display.clear(&key); // drop the prior latch so the re-attach is fresh
             }
-            state.displayed = Selection::default(); // nothing confirmed on screen → blank terminal view
-            state.attach_deadline = Some(std::time::Instant::now());
+            self.state.displayed = Selection::default(); // nothing confirmed → blank view
+            self.state.attach_deadline = Some(std::time::Instant::now());
         }
-        // In the terminal view the user no longer drives the tree selection (stdin goes to the
-        // PTY), so the tree selection tracks the displayed session's active window — always.
-        // select_active_window is idempotent (no move when already on the active window or
-        // when the session's panes are unknown), so calling it each iteration is cheap.
-        if state.focus.is_terminal_focused() {
-            switcher.select_active_window(&mut state);
+        // In terminal focus the tree selection tracks the displayed session's active
+        // window (idempotent, so calling it each iteration is cheap).
+        if self.state.focus.is_terminal_focused() {
+            self.switcher.select_active_window(&mut self.state);
         }
-        if sync_selection_from_switcher(&mut state, &switcher) {
+        if sync_selection_from_switcher(&mut self.state, &self.switcher) {
             // The selection moved → the tree needs a redraw. The attach is NOT issued
-            // here: the Select above only marks it pending; the Tick below arms the
-            // debounce, re-armed on every move so only the settled selection attaches.
-            dirty = true;
+            // here; the Tick below arms the debounce, re-armed on every move.
+            self.dirty = true;
         }
-        // Drive one debounce beat. The clock and the registry/host attach facts enter
-        // as DATA on the Tick; State::apply owns the arm/fire decision (one mutation
-        // site). The frame timer re-enters the loop, so the settled attach fires even
-        // with no further input.
+        // Drive one debounce beat. The clock + the registry/host attach facts enter as
+        // DATA on the Tick; State::apply owns the arm/fire decision.
         {
-            let (key_live, in_flight) = selection_attach_facts(&registry, &hosts, &state.selection);
-            let cmds = state.apply(crate::model::Action::Tick {
+            let (key_live, in_flight) =
+                selection_attach_facts(&self.registry, &self.hosts, &self.state.selection);
+            let cmds = self.state.apply(crate::model::Action::Tick {
                 now: std::time::Instant::now(),
                 key_live,
                 in_flight,
@@ -1884,49 +1976,47 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
             for cmd in cmds {
                 match cmd {
                     crate::model::Command::PersistLastSession(addr) => {
-                        crate::prefs::save_last_session(&env.xmux_dir, &addr);
+                        crate::prefs::save_last_session(&self.env.xmux_dir, &addr);
                     }
                     crate::model::Command::Attach(sel) => {
                         let t = std::time::Instant::now();
                         // select_attach picks the host's driver and hands it the intent.
-                        let mut ctx = crate::driver::DriverCtx {
-                            registry: &mut registry,
-                            hosts: &mut hosts,
-                            worker: &worker,
-                            mgr: &mgr,
-                            pty_tx: &driver_pty_tx,
-                            attach_seq: &mut attach_seq,
-                            cols,
-                            body_rows,
-                            tree_width,
-                        };
-                        let shown = select_attach(&sel, &mut ctx);
+                        let shown = select_attach(
+                            &sel,
+                            &mut crate::driver::DriverCtx {
+                                registry: &mut self.registry,
+                                hosts: &mut self.hosts,
+                                worker: &self.worker,
+                                mgr: &self.mgr,
+                                pty_tx: &self.driver_pty_tx,
+                                attach_seq: &mut self.attach_seq,
+                                cols: self.cols,
+                                body_rows: self.body_rows,
+                                tree_width: self.tree_width,
+                            },
+                        );
                         if shown {
                             // Advance the display truth synchronously ONLY for a confirmed
-                            // in-place path (switch-client / select-window / already-attached):
-                            // a live grid for the key exists AND no reattach is in flight, so
-                            // the on-screen grid morphs to the new session in place. A reattach
-                            // KEEPS the prior session's grid under the key while its fresh
-                            // attach is pending (in_flight) — that held grid also satisfies
-                            // `contains`, so it is excluded here: `displayed` stays on the prior
-                            // session until DisplayReady swaps in the new grid and advances it
-                            // (stale-while-revalidate).
-                            let k = display_key(&hosts, &sel);
-                            let reattach_pending = hosts
+                            // in-place path: a live grid for the key exists AND no reattach
+                            // is in flight. A pending reattach KEEPS the prior session's grid
+                            // (stale-while-revalidate) until DisplayReady swaps it in.
+                            let k = display_key(&self.hosts, &sel);
+                            let reattach_pending = self
+                                .hosts
                                 .get(&sel.source)
                                 .is_some_and(|h| h.display.in_flight_contains(&k));
-                            if registry.contains(&k) && !reattach_pending {
-                                state.displayed = sel.clone();
+                            if self.registry.contains(&k) && !reattach_pending {
+                                self.state.displayed = sel.clone();
                             }
                         }
                         DrawObserver::slow_step("select_attach", t);
-                        dirty = true;
-                        let key = display_key(&hosts, &sel);
+                        self.dirty = true;
+                        let key = display_key(&self.hosts, &sel);
                         let session = &sel.session;
                         tracing::debug!(key, session, "selection");
                     }
-                    // The settled-selection Tick never returns the synchronous
-                    // key/ctl-only commands or a session-lifecycle RunOp.
+                    // The settled-selection Tick never returns the synchronous key/ctl-only
+                    // commands or a session-lifecycle RunOp.
                     crate::model::Command::SelectAddress(_)
                     | crate::model::Command::Rescan
                     | crate::model::Command::AdjustTreeWidth(_)
@@ -1938,519 +2028,576 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
         }
 
         // Flush the debounced tree-width persist once the resize burst settles.
-        // Armed by each apply_width_delta call (via StdinOutcome::width_changed or
-        // the ctl path); fires once ~WIDTH_FLUSH_MS after the last resize tick. The
-        // frame timer re-enters the loop so this fires even with no further input.
-        if width_dirty && width_flush_at.is_some_and(|d| std::time::Instant::now() >= d) {
-            crate::prefs::save_tree_width(&env.xmux_dir, tree_width_natural);
-            width_dirty = false;
-            width_flush_at = None;
+        if self.width_dirty
+            && self
+                .width_flush_at
+                .is_some_and(|d| std::time::Instant::now() >= d)
+        {
+            crate::prefs::save_tree_width(&self.env.xmux_dir, self.tree_width_natural);
+            self.width_dirty = false;
+            self.width_flush_at = None;
         }
 
-        // Draw the split: the tree (left) and the selected session's live PTY grid
-        // (right). GATED — redraw only when something changed (`dirty`) AND at most
-        // once per frame, so rapid navigation / a busy PTY cannot flood the terminal
-        // with full-screen repaints and stall the loop. The display key is the HOST
-        // for remote tmux (one PTY per host) or `source/session` for local psmux.
-        if dirty && last_draw.elapsed() >= Duration::from_millis(FRAME_MS) {
-            // Render the CONFIRMED display truth (`displayed`), not the selection: on a
-            // session switch the prior session stays on screen until the new one is
-            // ready (stale-while-revalidate), and `displayed` only advances at
-            // confirmation. An empty `displayed` (first launch) yields no grid → blank.
+        // Draw the split (tree + selected session's live grid). GATED — redraw only when
+        // something changed AND at most once per frame, so rapid navigation / a busy PTY
+        // cannot flood the terminal.
+        if self.dirty && self.last_draw.elapsed() >= Duration::from_millis(FRAME_MS) {
+            // Render the CONFIRMED display truth (`displayed`), not the selection: the prior
+            // session stays on screen until the new one is ready (stale-while-revalidate).
             let grid_arc = current_grid(
-                &state.displayed,
+                &self.state.displayed,
                 &crate::driver::DriverCtx {
-                    registry: &mut registry,
-                    hosts: &mut hosts,
-                    worker: &worker,
-                    mgr: &mgr,
-                    pty_tx: &driver_pty_tx,
-                    attach_seq: &mut attach_seq,
-                    cols,
-                    body_rows,
-                    tree_width,
+                    registry: &mut self.registry,
+                    hosts: &mut self.hosts,
+                    worker: &self.worker,
+                    mgr: &self.mgr,
+                    pty_tx: &self.driver_pty_tx,
+                    attach_seq: &mut self.attach_seq,
+                    cols: self.cols,
+                    body_rows: self.body_rows,
+                    tree_width: self.tree_width,
                 },
             );
-            let terminal_focused = state.focus.is_terminal_focused();
+            let terminal_focused = self.state.focus.is_terminal_focused();
             // The view border glyph reflects auto-hide-tree mode (║ on, │ off).
-            state.chrome.set_auto_hide(auto_hide_tree);
+            self.state.chrome.set_auto_hide(self.auto_hide_tree);
             let t_draw = std::time::Instant::now();
-            // Split the draw cost: `render` is the in-memory buffer build (tree +
-            // grid → cells); the remainder of `draw` is crossterm's diff + console
-            // flush. On Windows the flush (writing changed cells to the console) is
-            // the suspected dominant stall during a remote repaint flood — the split
-            // tells render-cost from flush-cost so the off-loop-draw fix targets the
-            // right half (#2).
             if let Err(e) = match &grid_arc {
                 Some(g) => {
                     let t_lock = std::time::Instant::now();
                     let guard = g.lock().ok();
                     DrawObserver::slow_step("grid_lock", t_lock);
-                    // Compute the grid fingerprint under the same lock used for rendering.
-                    // The observer emits display_grid_changed only when the content actually
-                    // changed — at-most-one event per content change, never per frame. This
-                    // is the EFFECT signal: a display_show decision=switch not followed by
-                    // display_grid_changed means the switch left the screen unchanged (the
-                    // psmux swap failure signal). The observer classifies; this block only
-                    // picks the log grade.
+                    // Compute the grid fingerprint under the same lock used for rendering;
+                    // the observer emits display_grid_changed only on a real content change.
                     if let Some(grid) = guard.as_deref() {
-                        let addr = display_key(&hosts, &state.displayed);
-                        let session = &state.displayed.session;
+                        let addr = display_key(&self.hosts, &self.state.displayed);
+                        let session = &self.state.displayed.session;
                         let fp = grid.fingerprint();
-                        match draw_observer.observe(&addr, session, fp) {
-                            // Fingerprint unchanged — screen content did not change.
+                        match self.draw_observer.observe(&addr, session, fp) {
                             FpOutcome::Unchanged => {}
                             FpOutcome::Steady => {
-                                // Fingerprint changed, same session — steady-state repaint
-                                // (htop / build logs / clock). TRACE to avoid flooding the
-                                // default xmux=info log with per-frame events.
                                 tracing::trace!(addr = %addr, session = %session, fp, "display_grid_changed");
                             }
                             FpOutcome::Switched => {
-                                // Fingerprint changed AND session differs (or first paint for
-                                // this key) — the transition's first frame landed. INFO so the
-                                // switch is observable without raising the log level.
                                 tracing::info!(addr = %addr, session = %session, fp, "display_grid_changed");
                             }
                         }
                     }
+                    // Split-borrow so the draw closure captures only these fields, not all
+                    // of `self` (the fingerprint block's borrows have ended above).
+                    let switcher = &mut self.switcher;
+                    let state = &self.state;
+                    let tree_width = self.tree_width;
                     term.draw(|f| {
                         let t_render = std::time::Instant::now();
-                        switcher.render(f, guard.as_deref(), terminal_focused, tree_width, &state);
+                        switcher.render(f, guard.as_deref(), terminal_focused, tree_width, state);
                         DrawObserver::slow_step("render", t_render);
                     })
                 }
-                None => term.draw(|f| {
-                    let t_render = std::time::Instant::now();
-                    switcher.render(f, None, terminal_focused, tree_width, &state);
-                    DrawObserver::slow_step("render", t_render);
-                }),
+                None => {
+                    let switcher = &mut self.switcher;
+                    let state = &self.state;
+                    let tree_width = self.tree_width;
+                    term.draw(|f| {
+                        let t_render = std::time::Instant::now();
+                        switcher.render(f, None, terminal_focused, tree_width, state);
+                        DrawObserver::slow_step("render", t_render);
+                    })
+                }
             } {
                 tracing::warn!(error = %e, "term_draw_failed");
             }
             DrawObserver::slow_step("draw", t_draw);
-            // The grids are now on screen — clear every attachment's output-coalescing
-            // flag so each pump may signal its next chunk (bounds the PTY event channel).
-            registry.clear_all_pending();
-            dirty = false;
-            last_draw = std::time::Instant::now();
+            // The grids are now on screen — clear every attachment's output-coalescing flag.
+            self.registry.clear_all_pending();
+            self.dirty = false;
+            self.last_draw = std::time::Instant::now();
         }
+    }
 
-        // NOT biased: a biased select polls host_rx first every iteration, so a
-        // sustained output flood would starve stdin, the control socket, ops,
-        // enumeration, and the tick. Unbiased select gives every branch a fair share.
-        //
-        // Every arm EXCEPT the bare frame timer represents a real state change, so it
-        // marks the UI dirty (drawn on the next gated pass); the frame timer only wakes
-        // the loop to flush an already-pending dirty draw, so it must NOT set dirty.
-        let mut from_frame = false;
-        tokio::select! {
-            Some(ev) = host_rx.recv() => {
-                let t = std::time::Instant::now();
-                if handle_host_event(ev, &mut mgr, &mut hosts, &mut registry, &mut switcher, &mut state, &mut connected, &mut panes_requested, &mut detecting, &worker, &driver_pty_tx, &mut attach_seq, cols, body_rows, tree_width) {
-                    state.attach_deadline = Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
-                    dirty = true;
-                }
-                let mut budget = EVENT_DRAIN_BUDGET;
-                while budget > 0 {
-                    match host_rx.try_recv() {
-                        Ok(ev) => {
-                            if handle_host_event(ev, &mut mgr, &mut hosts, &mut registry, &mut switcher, &mut state, &mut connected, &mut panes_requested, &mut detecting, &worker, &driver_pty_tx, &mut attach_seq, cols, body_rows, tree_width) {
-                                state.attach_deadline = Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
-                                dirty = true;
-                            }
-                            budget -= 1;
-                        }
-                        Err(_) => break,
-                    }
-                }
-                DrawObserver::slow_step("host_drain", t);
-            }
-            Some(ev) = pty_rx.recv() => {
-                // A kept attachment's pump fed its grid (Output → redraw on the next
-                // loop top) or its master hit EOF (Exited → reap). Coalesce a burst
-                // into one redraw so a busy session cannot monopolize the thread.
-                // Detach-to-recover: if the session the user is VIEWING (terminal view focused) exits —
-                // a `detach`, the user's own client detaching, or a transient drop — re-attach
-                // it instead of quitting (quit is `prefix q` only). Capture its id BEFORE any
-                // reap removes it; a background session dropping (tree focus, or a non-displayed
-                // attach) is just reaped.
-                let displayed_attach_id = (state.focus.is_terminal_focused() && !state.selection.is_empty())
-                    .then(|| registry.get(&display_key(&hosts, &state.selection)).map(|a| a.id()))
-                    .flatten();
-                let mut detached = false;
-                match ev {
-                    PtyEvent::Exited { id } => {
-                        if Some(id) == displayed_attach_id {
-                            detached = true;
-                        }
-                        clear_display_tty_for_attach(&mut hosts, &registry, id);
-                        if !registry.reap(id) {
-                            // pre-Ready Exited: registry has no id yet. Attribute to the owning
-                            // host via pending so its Ready tears down instead of inserting a
-                            // dead pane.
-                            hosts.iter_mut().any(|h| h.display.mark_reaped_if_pending(id));
-                        }
-                    }
-                    PtyEvent::DisplayTty { id, tty } => record_display_tty(&mut hosts, &registry, id, tty),
-                    PtyEvent::Output { .. } => {}
-                }
-                let mut budget = EVENT_DRAIN_BUDGET;
-                while budget > 0 {
-                    match pty_rx.try_recv() {
-                        Ok(PtyEvent::Exited { id }) => {
-                            if Some(id) == displayed_attach_id {
-                                detached = true;
-                            }
-                            clear_display_tty_for_attach(&mut hosts, &registry, id);
-                            if !registry.reap(id) {
-                                // pre-Ready Exited: attribute to the owning host's reaped_ids.
-                                hosts.iter_mut().any(|h| h.display.mark_reaped_if_pending(id));
-                            }
-                            budget -= 1;
-                        }
-                        Ok(PtyEvent::Output { .. }) => { budget -= 1; }
-                        Ok(PtyEvent::DisplayTty { id, tty }) => {
-                            record_display_tty(&mut hosts, &registry, id, tty);
-                            budget -= 1;
-                        }
-                        Err(_) => break,
-                    }
-                }
-                if detached {
-                    // The viewed session's client detached/exited — recover by re-attaching
-                    // it (reaped above, so the loop-top attach re-fires once its PTY is gone).
-                    // Debounced so a session that is genuinely gone makes only a few attempts
-                    // before the inventory refetch drops its row and the selection moves on.
-                    state.attach_deadline =
-                        Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
-                    dirty = true;
-                }
-            }
-            Some(ev) = worker.recv() => {
-                match ev {
-                    DisplayEvent::Ready { seq, key, attachment } => {
-                        let hid = host_of_key(&key).to_string();
-                        if let Some(h) = hosts.get_mut(&hid) {
-                            let id = attachment.id();
-                            tracing::info!(key, seq, id, "attach_ready");
-                            // HostDisplay owns the reap/install/stale DECISION against its
-                            // bookkeeping; the loop performs the registry install/teardown it
-                            // alone can (the state layer never reaches the registry).
-                            match h.display.resolve_ready(&key, seq, id) {
-                                // Exited raced ahead of this Ready: the child already died and its
-                                // pump (one Exited at EOF) has ended. Inserting now would leave a
-                                // dead, never-reaped pane that contains() refuses to re-attach.
-                                crate::model::ReadyOutcome::TearDownReaped => attachment.teardown(),
-                                // This attach is now the live grid for the key. `shown` is the
-                                // session it displays — the confirmed display truth, so the
-                                // terminal view switches from blank to its content. If the
-                                // selection moved to another session of the same host while this
-                                // attach was in flight, displayed now differs from selection, so
-                                // the next pass re-runs select_attach to switch (Shared) /
-                                // reattach (PerSession) to where the selection is.
-                                crate::model::ReadyOutcome::Install { shown } => {
-                                    // Swap: tear down the stale attachment held under this key
-                                    // (the prior session, kept on screen until now) and install
-                                    // the fresh one. `insert` alone drops the old Attachment
-                                    // without tearing down its PTY/control thread, so remove()
-                                    // first (a no-op when there was nothing held — first attach).
-                                    registry.remove(&key);
-                                    registry.insert(&key, attachment);
-                                    state.displayed = Selection {
-                                        source: hid.clone(),
-                                        session: shown,
-                                        window: None,
-                                    };
-                                }
-                                // Stale Ready (a newer attach superseded this seq): resolve_ready
-                                // already forgot its pending id so the id->key map cannot grow.
-                                crate::model::ReadyOutcome::TearDownStale => attachment.teardown(),
-                            }
-                        } else {
-                            attachment.teardown();
-                        }
-                    }
-                    DisplayEvent::Failed { seq, key, message } => {
-                        let hid = host_of_key(&key).to_string();
-                        if let Some(h) = hosts.get_mut(&hid) {
-                            h.display.resolve_failed(&key, seq);
-                        }
-                        tracing::warn!(key, error = %message, "attach_failed");
-                    }
-                }
-            }
-            Some(bytes) = stdin_rx.recv() => {
-                // Clone the selection so &mut state can be threaded through alongside it
-                // (the ForwardToMux path reads the selection for display_key/registry input).
-                let selection = state.selection.clone();
-                let outcome = handle_stdin_bytes(
-                    &bytes, &mut mouse_state, &mut switcher, &mut state, &mut registry, &mut mgr,
-                    &env, &mut hosts, &mut detecting, &mut panes_requested, &selection, &mut term_input, &mut tree_decoder, &ops, &op_tx,
-                    &mut tree_width_natural, &mut auto_hide_tree, prefix, cols, body_rows,
-                    tree_width,
-                );
-                if outcome.dirty {
-                    dirty = true;
-                }
-                if outcome.width_changed {
-                    width_dirty = true;
-                    width_flush_at = Some(std::time::Instant::now() + Duration::from_millis(WIDTH_FLUSH_MS));
-                }
-                if outcome.quit {
-                    break;
-                }
-            }
-            Some(cmd) = cmd_rx.recv() => {
-                match cmd {
-                    Cmd::Op(action) => {
-                        // dispatch_action spawns any RunOp (a ctl-driven lifecycle action)
-                        // off-loop itself; its OpResult folds back through op_tx as usual.
-                        let (quit_op, wc) = dispatch_action(action, &mut switcher, &mut state, &mut tree_width_natural, &mut auto_hide_tree, &env.xmux_dir, &ops, &op_tx);
-                        if wc {
-                            width_dirty = true;
-                            width_flush_at = Some(std::time::Instant::now() + Duration::from_millis(WIDTH_FLUSH_MS));
-                        }
-                        if quit_op {
-                            break;
-                        }
-                        // A Switch/Focus may need the selection's host connected.
-                        ensure_current_host(&mut mgr, &hosts, &switcher, cols, body_rows, tree_width);
-                        if sync_selection_from_switcher(&mut state, &switcher) {
-                            dirty = true;
-                        }
-                    }
-                    Cmd::Status(reply) => { let _ = reply.send(status_line(&switcher, state.focus.view_is_tree())); }
-                    Cmd::Dump(reply) => {
-                        let sz = term
-                            .size()
-                            .unwrap_or(ratatui::layout::Size { width: 80, height: 24 });
-                        let grid_arc = current_grid(
-                            &state.displayed,
-                            &crate::driver::DriverCtx {
-                                registry: &mut registry,
-                                hosts: &mut hosts,
-                                worker: &worker,
-                                mgr: &mgr,
-                                pty_tx: &driver_pty_tx,
-                                attach_seq: &mut attach_seq,
-                                cols,
-                                body_rows,
-                                tree_width,
-                            },
+    /// The `host_rx` arm: apply one host event, then drain a burst (bounded) so a `%`-event
+    /// flood coalesces into one redraw. Re-arms the attach debounce on the detach-reap path.
+    fn on_host_event(
+        &mut self,
+        ev: HostEvent,
+        host_rx: &mut tokio::sync::mpsc::UnboundedReceiver<HostEvent>,
+    ) {
+        use std::time::Duration;
+        let t = std::time::Instant::now();
+        if handle_host_event(
+            ev,
+            &mut self.mgr,
+            &mut self.hosts,
+            &mut self.registry,
+            &mut self.switcher,
+            &mut self.state,
+            &mut self.connected,
+            &mut self.panes_requested,
+            &mut self.detecting,
+            &self.worker,
+            &self.driver_pty_tx,
+            &mut self.attach_seq,
+            self.cols,
+            self.body_rows,
+            self.tree_width,
+        ) {
+            self.state.attach_deadline =
+                Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
+            self.dirty = true;
+        }
+        let mut budget = EVENT_DRAIN_BUDGET;
+        while budget > 0 {
+            match host_rx.try_recv() {
+                Ok(ev) => {
+                    if handle_host_event(
+                        ev,
+                        &mut self.mgr,
+                        &mut self.hosts,
+                        &mut self.registry,
+                        &mut self.switcher,
+                        &mut self.state,
+                        &mut self.connected,
+                        &mut self.panes_requested,
+                        &mut self.detecting,
+                        &self.worker,
+                        &self.driver_pty_tx,
+                        &mut self.attach_seq,
+                        self.cols,
+                        self.body_rows,
+                        self.tree_width,
+                    ) {
+                        self.state.attach_deadline = Some(
+                            std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS),
                         );
-                        let dump = match &grid_arc {
-                            Some(g) => {
-                                let guard = g.lock().ok();
-                                dump_screen(&mut switcher, guard.as_deref(), sz.width, sz.height, &state)
-                            }
-                            None => dump_screen(&mut switcher, None, sz.width, sz.height, &state),
-                        };
-                        let _ = reply.send(dump);
+                        self.dirty = true;
                     }
-                    Cmd::RawKey(k) => {
-                        // Route the FULL command batch through the single dispatcher (not
-                        // just RunOp): a switcher key emits only RunOp today, but
-                        // dispatch_commands handles every variant so a future non-RunOp
-                        // command is acted on, never silently dropped (RunOp still spawns
-                        // off-loop, its OpResult folding back through op_tx).
-                        let cmds = switcher.handle_key(k, &mut state);
-                        let (quit_key, wc) = dispatch_commands(cmds, &mut switcher, &mut state, &mut tree_width_natural, &mut auto_hide_tree, &env.xmux_dir, &ops, &op_tx);
-                        if wc {
-                            width_dirty = true;
-                            width_flush_at = Some(std::time::Instant::now() + Duration::from_millis(WIDTH_FLUSH_MS));
-                        }
-                        if quit_key {
-                            break;
-                        }
-                        ensure_current_host(&mut mgr, &hosts, &switcher, cols, body_rows, tree_width);
-                        if sync_selection_from_switcher(&mut state, &switcher) {
-                            dirty = true;
-                        }
-                    }
-                    Cmd::RawBytes(bytes) => {
-                        if !bytes.is_empty() {
-                            // Inject into the VISIBLE session (`displayed`), matching the
-                            // interactive keystroke path: the prior session is on screen
-                            // until the next is ready, so bytes reach what is shown.
-                            if let Some(host) = hosts.get(&state.displayed.source) {
-                                let mut driver = crate::driver::driver_for(host);
-                                let ctx = crate::driver::DriverCtx {
-                                    registry: &mut registry,
-                                    hosts: &mut hosts,
-                                    worker: &worker,
-                                    mgr: &mgr,
-                                    pty_tx: &driver_pty_tx,
-                                    attach_seq: &mut attach_seq,
-                                    cols,
-                                    body_rows,
-                                    tree_width,
-                                };
-                                driver.input(&state.displayed, bytes, &ctx);
-                            }
-                        }
-                    }
+                    budget -= 1;
                 }
-            }
-            Some(result) = op_rx.recv() => {
-                switcher.apply_op_result(result, &mut state);
-            }
-            _ = tick.tick() => {
-                // Resize detection: poll the console size (an ioctl, not a stdin
-                // read). On a change push the new size to the PTYs + control clients.
-                if let Ok((c, r)) = ratatui::crossterm::terminal::size() {
-                    if (c, r) != (cols, body_rows + 1) {
-                        let body = r.saturating_sub(1);
-                        cols = c;
-                        body_rows = body;
-                        let (vc, vr) = terminal_view_size(c, body, tree_width);
-                        registry.resize_all(vc, vr);
-                        mgr.resize_all(vc, vr);
-                        let _ = term.autoresize();
-                        // A console resize reflows the existing cells; a diff-only redraw
-                        // (the next output tick) would leave that reflowed garbage on
-                        // screen. Force a full repaint: clear the physical screen and mark
-                        // dirty so the loop redraws the whole UI fresh at the new size.
-                        if let Err(e) = term.clear() {
-                            tracing::warn!(error = %e, "term_clear_failed");
-                        }
-                        dirty = true;
-                    }
-                }
-                // Spinner set = the selected session if its PTY is still connecting.
-                let mut sp = HashSet::new();
-                if !state.selection.is_empty() {
-                    let key = display_key(&hosts, &state.selection);
-                    let in_flight_for_key = hosts
-                        .get(&state.selection.source)
-                        .map(|h| h.display.in_flight_contains(&key))
-                        .unwrap_or(false);
-                    if in_flight_for_key || registry.connecting(&key) {
-                        sp.insert(state.selection.address());
-                    }
-                }
-                state.chrome.set_spinner(sp);
-            }
-            _ = reconnect.tick() => {
-                let (vc, vr) = terminal_view_size(cols, body_rows, tree_width);
-                // The single runtime registry drives the sweep; snapshot the ids so the
-                // loops can re-borrow `hosts` (including `&mut` for the PTY re-warm) without
-                // holding the `ids()` borrow across the body.
-                let ids: Vec<String> = hosts.ids().to_vec();
-                // Self-heal sweep over every host: a DETECTED host re-ensures its
-                // metadata channel (a no-op when alive; respawns a died control client or
-                // a finished poll task — the manager picks the channel from event_source),
-                // an UNDETECTED host retries detection (a host down at launch populates its
-                // tree once it returns). This sweep is the sole automatic retry path now
-                // that the per-poll-tick re-enumeration lives inside the poll task itself.
-                for id in &ids {
-                    let detected = hosts.get(id).map(|h| h.detected).unwrap_or(false);
-                    if detected {
-                        if let Some(host) = hosts.get(id) {
-                            let _ = mgr.ensure(id, host, vc, vr);
-                        }
-                    } else {
-                        scan_or_dispatch_host(&mut mgr, &hosts, &mut detecting, id, vc, vr);
-                    }
-                }
-                // Re-warm each control host's dropped per-host PTY via its driver
-                // (ENSURE-ONLY, never reap: the driver's sync reaps when handed an EMPTY
-                // session set, so a host with no known sessions yet — cold start before
-                // list-sessions resolves — is skipped here rather than reaping a live PTY.
-                // Closed-host reaping is owned by the Inventory/Changed path). The single
-                // owner (`model::Host.inventory`) supplies the last-known session set; only
-                // control hosts re-warm (poll hosts select attaches on demand). psmux sync
-                // is a no-op for a non-empty set, so this stays a shared-host re-warm without
-                // the app naming the mux kind.
-                for id in &ids {
-                    // Only a live control host re-warms here (poll hosts are not in `mgr`).
-                    if mgr.get(id).is_none() {
-                        continue;
-                    }
-                    let inventory = match hosts.get(id) {
-                        Some(h) => h.inventory.sessions.clone(),
-                        None => continue,
-                    };
-                    if inventory.is_empty() {
-                        continue;
-                    }
-                    let mut ctx = crate::driver::DriverCtx {
-                        registry: &mut registry,
-                        hosts: &mut hosts,
-                        worker: &worker,
-                        mgr: &mgr,
-                        pty_tx: &driver_pty_tx,
-                        attach_seq: &mut attach_seq,
-                        cols,
-                        body_rows,
-                        tree_width,
-                    };
-                    sync_source_terminals(id, &inventory, &mut ctx);
-                }
-                // Capture the display-client tty for any shared host (one with a control
-                // client) whose display attach is live but whose tty is not yet known.
-                // The in-band attach-shell marker is consumed by a Windows ConPTY, so a
-                // remote host's tty is learned via this -CC `list-clients` probe instead —
-                // retried each sweep until the display client registers. With the tty
-                // known, a session switch is an in-place `switch-client -c <tty>`.
-                for id in &ids {
-                    let Some(h) = hosts.get(id) else {
-                        continue;
-                    };
-                    if h.display_tty.0.is_some() {
-                        continue;
-                    }
-                    if registry.contains(&host_selection_key(h)) {
-                        if let Some(client) = mgr.get(id) {
-                            client.capture_display_tty();
-                        }
-                    }
-                }
-                // Re-attach the selected session's display terminal if it dropped.
-                if !state.selection.is_empty() {
-                    let key = display_key(&hosts, &state.selection);
-                    let in_flight_for_key = hosts
-                        .get(&state.selection.source)
-                        .map(|h| h.display.in_flight_contains(&key))
-                        .unwrap_or(false);
-                    if !registry.contains(&key) && !in_flight_for_key {
-                        let mut ctx = crate::driver::DriverCtx {
-                            registry: &mut registry,
-                            hosts: &mut hosts,
-                            worker: &worker,
-                            mgr: &mgr,
-                            pty_tx: &driver_pty_tx,
-                            attach_seq: &mut attach_seq,
-                            cols,
-                            body_rows,
-                            tree_width,
-                        };
-                        select_attach(&state.selection, &mut ctx);
-                    }
-                }
-            }
-            _ = frame.tick() => {
-                // Bare wake-up: flush a pending dirty draw at the frame cadence. No
-                // state change, so it must NOT mark the UI dirty (else idle = 30fps
-                // redraws forever).
-                from_frame = true;
+                Err(_) => break,
             }
         }
-        // Any real event (not the bare frame wake) means the UI may have changed.
-        if !from_frame {
-            dirty = true;
+        DrawObserver::slow_step("host_drain", t);
+    }
+
+    /// The `pty_rx` arm: a kept attachment fed its grid or hit EOF (reap). Detach-to-recover
+    /// re-attaches the VIEWED session if its client exits; a background session is just reaped.
+    fn on_pty_event(
+        &mut self,
+        ev: PtyEvent,
+        pty_rx: &mut tokio::sync::mpsc::UnboundedReceiver<PtyEvent>,
+    ) {
+        use std::time::Duration;
+        // Capture the viewed attach id BEFORE any reap removes it; a background session
+        // dropping (tree focus, or a non-displayed attach) is just reaped.
+        let displayed_attach_id = (self.state.focus.is_terminal_focused()
+            && !self.state.selection.is_empty())
+        .then(|| {
+            self.registry
+                .get(&display_key(&self.hosts, &self.state.selection))
+                .map(|a| a.id())
+        })
+        .flatten();
+        let mut detached = false;
+        match ev {
+            PtyEvent::Exited { id } => {
+                if Some(id) == displayed_attach_id {
+                    detached = true;
+                }
+                clear_display_tty_for_attach(&mut self.hosts, &self.registry, id);
+                if !self.registry.reap(id) {
+                    // pre-Ready Exited: registry has no id yet. Attribute to the owning host
+                    // via pending so its Ready tears down instead of inserting a dead pane.
+                    self.hosts
+                        .iter_mut()
+                        .any(|h| h.display.mark_reaped_if_pending(id));
+                }
+            }
+            PtyEvent::DisplayTty { id, tty } => {
+                record_display_tty(&mut self.hosts, &self.registry, id, tty)
+            }
+            PtyEvent::Output { .. } => {}
+        }
+        let mut budget = EVENT_DRAIN_BUDGET;
+        while budget > 0 {
+            match pty_rx.try_recv() {
+                Ok(PtyEvent::Exited { id }) => {
+                    if Some(id) == displayed_attach_id {
+                        detached = true;
+                    }
+                    clear_display_tty_for_attach(&mut self.hosts, &self.registry, id);
+                    if !self.registry.reap(id) {
+                        self.hosts
+                            .iter_mut()
+                            .any(|h| h.display.mark_reaped_if_pending(id));
+                    }
+                    budget -= 1;
+                }
+                Ok(PtyEvent::Output { .. }) => {
+                    budget -= 1;
+                }
+                Ok(PtyEvent::DisplayTty { id, tty }) => {
+                    record_display_tty(&mut self.hosts, &self.registry, id, tty);
+                    budget -= 1;
+                }
+                Err(_) => break,
+            }
+        }
+        if detached {
+            // The viewed session's client detached/exited — recover by re-attaching it
+            // (reaped above, so the loop-top attach re-fires once its PTY is gone).
+            self.state.attach_deadline =
+                Some(std::time::Instant::now() + Duration::from_millis(ATTACH_DEBOUNCE_MS));
+            self.dirty = true;
         }
     }
 
-    // A resize within the last WIDTH_FLUSH_MS before quit leaves the debounce deadline
-    // unreached, so the final width is still pending — persist it on the way out so the
-    // tree width the user left with survives the next launch.
-    if width_dirty {
-        crate::prefs::save_tree_width(&env.xmux_dir, tree_width_natural);
+    /// The worker `Ready`/`Failed` arm. `HostDisplay` owns the reap/install/stale DECISION;
+    /// the loop performs the registry install/teardown it alone can.
+    fn on_display_event(&mut self, ev: DisplayEvent) {
+        match ev {
+            DisplayEvent::Ready {
+                seq,
+                key,
+                attachment,
+            } => {
+                let hid = host_of_key(&key).to_string();
+                let id = attachment.id();
+                let outcome = match self.hosts.get_mut(&hid) {
+                    Some(h) => {
+                        tracing::info!(key, seq, id, "attach_ready");
+                        Some(h.display.resolve_ready(&key, seq, id))
+                    }
+                    None => None,
+                };
+                match outcome {
+                    Some(crate::model::ReadyOutcome::Install { shown }) => {
+                        // Swap: tear down the stale attachment held under this key (the prior
+                        // session, kept on screen until now) and install the fresh one.
+                        self.registry.remove(&key);
+                        self.registry.insert(&key, attachment);
+                        self.state.displayed = Selection {
+                            source: hid.clone(),
+                            session: shown,
+                            window: None,
+                        };
+                    }
+                    // Reaped-race, stale seq, or unknown host: tear the fresh attachment down
+                    // (resolve_ready already cleared the bookkeeping for the first two).
+                    Some(_) | None => attachment.teardown(),
+                }
+            }
+            DisplayEvent::Failed { seq, key, message } => {
+                let hid = host_of_key(&key).to_string();
+                if let Some(h) = self.hosts.get_mut(&hid) {
+                    h.display.resolve_failed(&key, seq);
+                }
+                tracing::warn!(key, error = %message, "attach_failed");
+            }
+        }
     }
-    registry.teardown_all();
-    mgr.teardown_all();
-    0
+
+    /// The `stdin_rx` arm: route a raw read (mouse/keys) through the input core. Returns
+    /// whether the app should quit.
+    fn on_stdin(&mut self, bytes: &[u8]) -> bool {
+        use std::time::Duration;
+        // Clone the selection so &mut state can be threaded alongside it (the ForwardToMux
+        // path reads the selection for display_key/registry input).
+        let selection = self.state.selection.clone();
+        let outcome = handle_stdin_bytes(
+            bytes,
+            &mut self.mouse_state,
+            &mut self.switcher,
+            &mut self.state,
+            &mut self.registry,
+            &mut self.mgr,
+            &self.env,
+            &mut self.hosts,
+            &mut self.detecting,
+            &mut self.panes_requested,
+            &selection,
+            &mut self.term_input,
+            &mut self.tree_decoder,
+            &self.ops,
+            &self.op_tx,
+            &mut self.tree_width_natural,
+            &mut self.auto_hide_tree,
+            self.prefix,
+            self.cols,
+            self.body_rows,
+            self.tree_width,
+        );
+        if outcome.dirty {
+            self.dirty = true;
+        }
+        if outcome.width_changed {
+            self.width_dirty = true;
+            self.width_flush_at =
+                Some(std::time::Instant::now() + Duration::from_millis(WIDTH_FLUSH_MS));
+        }
+        outcome.quit
+    }
+
+    /// The control-socket arm: headless op/status/dump/key/bytes. Returns whether to quit.
+    fn on_ctl_command(&mut self, cmd: crate::ui::run::Cmd, term: &mut Term) -> bool {
+        use crate::ui::run::{dump_screen, Cmd};
+        use std::time::Duration;
+        match cmd {
+            Cmd::Op(action) => {
+                // dispatch_action spawns any RunOp off-loop itself; its OpResult folds back
+                // through op_tx as usual.
+                let (quit_op, wc) = dispatch_action(
+                    action,
+                    &mut self.switcher,
+                    &mut self.state,
+                    &mut self.tree_width_natural,
+                    &mut self.auto_hide_tree,
+                    &self.env.xmux_dir,
+                    &self.ops,
+                    &self.op_tx,
+                );
+                if wc {
+                    self.width_dirty = true;
+                    self.width_flush_at =
+                        Some(std::time::Instant::now() + Duration::from_millis(WIDTH_FLUSH_MS));
+                }
+                if quit_op {
+                    return true;
+                }
+                // A Switch/Focus may need the selection's host connected.
+                ensure_current_host(
+                    &mut self.mgr,
+                    &self.hosts,
+                    &self.switcher,
+                    self.cols,
+                    self.body_rows,
+                    self.tree_width,
+                );
+                if sync_selection_from_switcher(&mut self.state, &self.switcher) {
+                    self.dirty = true;
+                }
+            }
+            Cmd::Status(reply) => {
+                let _ = reply.send(status_line(&self.switcher, self.state.focus.view_is_tree()));
+            }
+            Cmd::Dump(reply) => {
+                let sz = term.size().unwrap_or(ratatui::layout::Size {
+                    width: 80,
+                    height: 24,
+                });
+                let grid_arc = current_grid(
+                    &self.state.displayed,
+                    &crate::driver::DriverCtx {
+                        registry: &mut self.registry,
+                        hosts: &mut self.hosts,
+                        worker: &self.worker,
+                        mgr: &self.mgr,
+                        pty_tx: &self.driver_pty_tx,
+                        attach_seq: &mut self.attach_seq,
+                        cols: self.cols,
+                        body_rows: self.body_rows,
+                        tree_width: self.tree_width,
+                    },
+                );
+                let dump = match &grid_arc {
+                    Some(g) => {
+                        let guard = g.lock().ok();
+                        dump_screen(
+                            &mut self.switcher,
+                            guard.as_deref(),
+                            sz.width,
+                            sz.height,
+                            &self.state,
+                        )
+                    }
+                    None => dump_screen(&mut self.switcher, None, sz.width, sz.height, &self.state),
+                };
+                let _ = reply.send(dump);
+            }
+            Cmd::RawKey(k) => {
+                // Route the FULL command batch through the single dispatcher (RunOp spawns
+                // off-loop, its OpResult folding back through op_tx).
+                let cmds = self.switcher.handle_key(k, &mut self.state);
+                let (quit_key, wc) = dispatch_commands(
+                    cmds,
+                    &mut self.switcher,
+                    &mut self.state,
+                    &mut self.tree_width_natural,
+                    &mut self.auto_hide_tree,
+                    &self.env.xmux_dir,
+                    &self.ops,
+                    &self.op_tx,
+                );
+                if wc {
+                    self.width_dirty = true;
+                    self.width_flush_at =
+                        Some(std::time::Instant::now() + Duration::from_millis(WIDTH_FLUSH_MS));
+                }
+                if quit_key {
+                    return true;
+                }
+                ensure_current_host(
+                    &mut self.mgr,
+                    &self.hosts,
+                    &self.switcher,
+                    self.cols,
+                    self.body_rows,
+                    self.tree_width,
+                );
+                if sync_selection_from_switcher(&mut self.state, &self.switcher) {
+                    self.dirty = true;
+                }
+            }
+            Cmd::RawBytes(bytes) => {
+                if !bytes.is_empty() {
+                    // Inject into the VISIBLE session (`displayed`), matching the interactive
+                    // keystroke path.
+                    if let Some(host) = self.hosts.get(&self.state.displayed.source) {
+                        let mut driver = crate::driver::driver_for(host);
+                        let ctx = crate::driver::DriverCtx {
+                            registry: &mut self.registry,
+                            hosts: &mut self.hosts,
+                            worker: &self.worker,
+                            mgr: &self.mgr,
+                            pty_tx: &self.driver_pty_tx,
+                            attach_seq: &mut self.attach_seq,
+                            cols: self.cols,
+                            body_rows: self.body_rows,
+                            tree_width: self.tree_width,
+                        };
+                        driver.input(&self.state.displayed, bytes, &ctx);
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// The op-result arm: fold a finished mutate op back into the tree/state.
+    fn on_op_result(&mut self, result: crate::ui::switcher::OpResult) {
+        self.switcher.apply_op_result(result, &mut self.state);
+    }
+
+    /// The animation-tick arm: detect a console resize (push the new size to PTYs +
+    /// control clients, force a full repaint) and refresh the connecting-spinner set.
+    fn on_tick(&mut self, term: &mut Term) {
+        // Resize detection: poll the console size (an ioctl, not a stdin read).
+        if let Ok((c, r)) = ratatui::crossterm::terminal::size() {
+            if (c, r) != (self.cols, self.body_rows + 1) {
+                let body = r.saturating_sub(1);
+                self.cols = c;
+                self.body_rows = body;
+                let (vc, vr) = terminal_view_size(c, body, self.tree_width);
+                self.registry.resize_all(vc, vr);
+                self.mgr.resize_all(vc, vr);
+                let _ = term.autoresize();
+                // A console resize reflows the existing cells; force a full repaint.
+                if let Err(e) = term.clear() {
+                    tracing::warn!(error = %e, "term_clear_failed");
+                }
+                self.dirty = true;
+            }
+        }
+        // Spinner set = the selected session if its PTY is still connecting.
+        let mut sp = HashSet::new();
+        if !self.state.selection.is_empty() {
+            let key = display_key(&self.hosts, &self.state.selection);
+            let in_flight_for_key = self
+                .hosts
+                .get(&self.state.selection.source)
+                .map(|h| h.display.in_flight_contains(&key))
+                .unwrap_or(false);
+            if in_flight_for_key || self.registry.connecting(&key) {
+                sp.insert(self.state.selection.address());
+            }
+        }
+        self.state.chrome.set_spinner(sp);
+    }
+
+    /// The reconnect-sweep arm: re-ensure died metadata channels, re-detect undetected
+    /// hosts, re-warm dropped control-host PTYs, capture display ttys, and re-attach the
+    /// selected session if its display terminal dropped. The sole automatic retry path.
+    fn on_reconnect(&mut self) {
+        let (vc, vr) = terminal_view_size(self.cols, self.body_rows, self.tree_width);
+        // Snapshot the ids so the loops can re-borrow `hosts` (incl. &mut) without holding
+        // the `ids()` borrow across the body.
+        let ids: Vec<String> = self.hosts.ids().to_vec();
+        // Self-heal sweep: a DETECTED host re-ensures its metadata channel; an UNDETECTED
+        // one retries detection.
+        for id in &ids {
+            let detected = self.hosts.get(id).map(|h| h.detected).unwrap_or(false);
+            if detected {
+                if let Some(host) = self.hosts.get(id) {
+                    let _ = self.mgr.ensure(id, host, vc, vr);
+                }
+            } else {
+                scan_or_dispatch_host(&mut self.mgr, &self.hosts, &mut self.detecting, id, vc, vr);
+            }
+        }
+        // Re-warm each control host's dropped per-host PTY via its driver (ENSURE-ONLY;
+        // a host with no known sessions yet is skipped rather than reaping a live PTY).
+        for id in &ids {
+            if self.mgr.get(id).is_none() {
+                continue;
+            }
+            let inventory = match self.hosts.get(id) {
+                Some(h) => h.inventory.sessions.clone(),
+                None => continue,
+            };
+            if inventory.is_empty() {
+                continue;
+            }
+            let mut ctx = crate::driver::DriverCtx {
+                registry: &mut self.registry,
+                hosts: &mut self.hosts,
+                worker: &self.worker,
+                mgr: &self.mgr,
+                pty_tx: &self.driver_pty_tx,
+                attach_seq: &mut self.attach_seq,
+                cols: self.cols,
+                body_rows: self.body_rows,
+                tree_width: self.tree_width,
+            };
+            sync_source_terminals(id, &inventory, &mut ctx);
+        }
+        // Capture the display-client tty for any shared host whose display attach is live
+        // but whose tty is not yet known (retried each sweep).
+        for id in &ids {
+            let Some(h) = self.hosts.get(id) else {
+                continue;
+            };
+            if h.display_tty.0.is_some() {
+                continue;
+            }
+            if self.registry.contains(&host_selection_key(h)) {
+                if let Some(client) = self.mgr.get(id) {
+                    client.capture_display_tty();
+                }
+            }
+        }
+        // Re-attach the selected session's display terminal if it dropped.
+        if !self.state.selection.is_empty() {
+            let key = display_key(&self.hosts, &self.state.selection);
+            let in_flight_for_key = self
+                .hosts
+                .get(&self.state.selection.source)
+                .map(|h| h.display.in_flight_contains(&key))
+                .unwrap_or(false);
+            if !self.registry.contains(&key) && !in_flight_for_key {
+                let mut ctx = crate::driver::DriverCtx {
+                    registry: &mut self.registry,
+                    hosts: &mut self.hosts,
+                    worker: &self.worker,
+                    mgr: &self.mgr,
+                    pty_tx: &self.driver_pty_tx,
+                    attach_seq: &mut self.attach_seq,
+                    cols: self.cols,
+                    body_rows: self.body_rows,
+                    tree_width: self.tree_width,
+                };
+                select_attach(&self.state.selection, &mut ctx);
+            }
+        }
+    }
 }
 
 /// Runs a [`MuxOp`](crate::model::MuxOp) (the create/rename/kill/... a key resolved
