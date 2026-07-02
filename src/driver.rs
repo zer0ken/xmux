@@ -94,6 +94,43 @@ pub fn driver_for(host: &Host) -> Box<dyn MuxDriver> {
     host.mux.driver()
 }
 
+/// Emit the `display_inventory` debug event: for every attachment in the registry,
+/// `addr=<the session it shows>`, tagged with the currently-`displayed` session and the
+/// pre-show `mismatch` flag. Shared by both drivers at each display-decision branch.
+///
+/// A `macro_rules!` rather than a `fn` so the `tracing` event's target stays the per-mux
+/// driver module that invokes it (`module_path!()` resolves at the expansion site). The
+/// mux Working Notes document `XMUX_LOG=xmux::mux::tmux=debug` / `xmux::mux::psmux=debug`
+/// as the way to filter these; a `fn` would retarget every event to `xmux::driver` and
+/// break that filter.
+macro_rules! log_display_inventory {
+    ($ctx:expr, $displayed:expr, $mismatch:expr $(,)?) => {{
+        let ctx = &*$ctx;
+        let attached: Vec<String> = ctx
+            .registry
+            .addresses()
+            .into_iter()
+            .map(|addr| {
+                let host_id = addr.split_once('/').map_or(addr.as_str(), |(h, _)| h);
+                let shown = ctx
+                    .hosts
+                    .get(host_id)
+                    .and_then(|h| h.display.shows(&addr))
+                    .unwrap_or("?");
+                format!("{}={}", addr, shown)
+            })
+            .collect();
+        tracing::debug!(
+            count = ctx.registry.len(),
+            attached = %attached.join(","),
+            displayed = %$displayed,
+            mismatch = $mismatch,
+            "display_inventory"
+        );
+    }};
+}
+pub(crate) use log_display_inventory;
+
 /// Moves the session's active window server-side (the real attached client follows).
 /// Over the host's open `-CC` connection if any (no fresh ssh handshake), else a lowered
 /// select-window subprocess. Shared by both drivers' window-row handling.

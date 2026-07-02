@@ -56,29 +56,7 @@ impl MuxDriver for PsmuxDriver {
                 if let Some(win) = sel.window {
                     lower_select_window(host, control, &sel.session, win);
                 }
-                {
-                    let attached: Vec<String> = ctx
-                        .registry
-                        .addresses()
-                        .into_iter()
-                        .map(|addr| {
-                            let host_id = addr.split_once('/').map_or(addr.as_str(), |(h, _)| h);
-                            let shown = ctx
-                                .hosts
-                                .get(host_id)
-                                .and_then(|h| h.display.shows(&addr))
-                                .unwrap_or("?");
-                            format!("{}={}", addr, shown)
-                        })
-                        .collect();
-                    tracing::debug!(
-                        count = ctx.registry.len(),
-                        attached = %attached.join(","),
-                        displayed = %sel.session,
-                        mismatch = pre_mismatch,
-                        "display_inventory"
-                    );
-                }
+                crate::driver::log_display_inventory!(ctx, sel.session, pre_mismatch);
                 return true;
             }
             // IN-PLACE SWITCH (the user's core want): switch the live client to a
@@ -108,29 +86,7 @@ impl MuxDriver for PsmuxDriver {
             if let Some(win) = sel.window {
                 lower_select_window(host, control, &sel.session, win);
             }
-            {
-                let attached: Vec<String> = ctx
-                    .registry
-                    .addresses()
-                    .into_iter()
-                    .map(|addr| {
-                        let host_id = addr.split_once('/').map_or(addr.as_str(), |(h, _)| h);
-                        let shown = ctx
-                            .hosts
-                            .get(host_id)
-                            .and_then(|h| h.display.shows(&addr))
-                            .unwrap_or("?");
-                        format!("{}={}", addr, shown)
-                    })
-                    .collect();
-                tracing::debug!(
-                    count = ctx.registry.len(),
-                    attached = %attached.join(","),
-                    displayed = %sel.session,
-                    mismatch = pre_mismatch,
-                    "display_inventory"
-                );
-            }
+            crate::driver::log_display_inventory!(ctx, sel.session, pre_mismatch);
             return true;
         }
 
@@ -185,29 +141,7 @@ impl MuxDriver for PsmuxDriver {
         if let Some(win) = sel.window {
             lower_select_window(host, control, &sel.session, win);
         }
-        {
-            let attached: Vec<String> = ctx
-                .registry
-                .addresses()
-                .into_iter()
-                .map(|addr| {
-                    let host_id = addr.split_once('/').map_or(addr.as_str(), |(h, _)| h);
-                    let shown = ctx
-                        .hosts
-                        .get(host_id)
-                        .and_then(|h| h.display.shows(&addr))
-                        .unwrap_or("?");
-                    format!("{}={}", addr, shown)
-                })
-                .collect();
-            tracing::debug!(
-                count = ctx.registry.len(),
-                attached = %attached.join(","),
-                displayed = %sel.session,
-                mismatch = pre_mismatch,
-                "display_inventory"
-            );
-        }
+        crate::driver::log_display_inventory!(ctx, sel.session, pre_mismatch);
         true
     }
 
