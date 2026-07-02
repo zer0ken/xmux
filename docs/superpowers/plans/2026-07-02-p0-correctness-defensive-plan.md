@@ -1,5 +1,7 @@
 # P0 구현 계획 — 정확성 & 방어적 하드닝
 
+> **✅ 구현·검증 완료** — `cf5e574` 위 7커밋(`3147c22`..`5492cbc`), 585 tests / clippy0 / fmt0, 미푸시. 계획 내 `file:line`은 `0818679` 기준이라 실제 구현 위치와 다를 수 있음(구현 중 실코드로 재탐색).
+>
 > xmux 이상적 구조 리팩토링 · 2026-07-02 · 브랜치 `refactor/ideal-structure`
 > 마스터 스펙: `docs/superpowers/specs/2026-07-02-ideal-structure-refactor-design.html` (§5 P0)
 > 도출: ultracode 워크플로(finding별 초안 → 적대적 검증 → 종합), 15 에이전트, **7건 전원 verdict SOUND**.

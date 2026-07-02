@@ -58,8 +58,8 @@
 <h1>xmux — 이상적 구조 리팩토링</h1>
 <p class="meta">
   마스터 설계 스펙 &middot; <b>2026-07-02</b> &middot;
-  브랜치 <code>refactor/ideal-structure</code> (워크트리 <code>.claude/worktrees/refactor-ideal</code>, 베이스 <code>0818679</code>) &middot;
-  상태: <b>설계 — 스펙 검토 대기</b>
+  브랜치 <code>refactor/ideal-structure</code> (워크트리 <code>.claude/worktrees/refactor-ideal</code>, 베이스 <code>cf5e574</code> — 최초 <code>0818679</code>에서 rebase) &middot;
+  상태: <b>P0 구현·검증 완료 (585 tests / clippy0 / fmt0) · P1–P6 설계</b>
 </p>
 
 <div class="lead">
@@ -97,7 +97,7 @@
 <tr><td class="mono">src/display/</td><td>mux/app-비의존 PTY, <code>Grid</code>, 입력 메커니즘</td><td>이미 건전; I/O 경계 상한; mux var를 이름 붙이지 않음(env 필터를 주입받음).</td></tr>
 <tr><td class="mono">src/driver.rs</td><td>mux-비의존 <code>MuxDriver</code> trait + <code>DriverCtx</code> + <code>driver_for</code></td><td>구체 mux 타입을 이름 붙이지 않음(이미 성립); 공유 display-logging 헬퍼.</td></tr>
 <tr><td class="mono">src/state/</td><td>런타임 <code>State</code> + <code>apply</code>/<code>apply_event</code> fold</td><td>inventory + 도메인 상태 변경의 유일 소유; 순수 fold(I/O 없음, UI로 역호출 없음).</td></tr>
-<tr><td class="mono">src/ui/</td><td><code>tree</code>(순수 변환), <code>modal</code>, <code>render</code>, 잔여 <code>switcher</code>(커서 + 입력 디스패치), <code>status</code>, <code>ops</code></td><td>순수 tree 변환은 터미널 없이 테스트 가능; <code>switcher</code>는 god-object가 아니라 상태 기계.</td></tr>
+<tr><td class="mono">src/ui/</td><td><code>tree</code>(순수 변환), <code>modal</code>, <code>render</code>, 잔여 <code>switcher</code>(커서 + 입력 디스패치), <code>chrome</code>(구 <code>status</code>), <code>ops</code></td><td>순수 tree 변환은 터미널 없이 테스트 가능; <code>switcher</code>는 god-object가 아니라 상태 기계.</td></tr>
 <tr><td class="mono">src/app/</td><td>오케스트레이션: <code>Runtime</code> 구조체, <code>input</code>, attach 코디네이터, host 오케스트레이터, focus</td><td>mux/machine-특정 분기 0; 900줄 god-function 없음; 도메인 상태는 <code>Action</code>을 통해 흐름.</td></tr>
 </table>
 </div>
@@ -251,7 +251,7 @@ flowchart TD
 <h2>5. 통합 발견사항 (감사 사실)</h2>
 <p>약 48건, ~13 High / ~20 Medium / ~15 Low, 단계별 묶음. ID는 감사 슬라이스를 담는다
   (<code>S1</code>=UI, <code>S2</code>=app/state, <code>S3</code>=machine/source, <code>S4</code>=mux/host, <code>S5</code>=display/control).
-  교차 슬라이스 중복은 병합됨. 모든 <code>file:line</code> 앵커는 <code>0818679</code> 기준이며 구현 전 재확인해야 한다(디렉토리 Working Notes).</p>
+  교차 슬라이스 중복은 병합됨. 모든 <code>file:line</code> 앵커는 감사 시점 <code>0818679</code> 기준이다. 이 브랜치는 이후 <code>cf5e574</code>(terminology-alignment 병합)로 rebase됐으므로 osc11이 건드린 파일(<code>runtime.rs</code>·<code>switcher.rs</code>·<code>config.rs</code>, <code>status.rs</code>→<code>chrome.rs</code>)의 앵커는 이동했다. <b>P0 앵커는 구현 중 실코드로 재확인·구현 완료</b>(아래 커밋); P1–P6 앵커는 각 단계 계획 작성 시 재확인한다.</p>
 
 <h3>P0 — 정확성 &amp; 방어</h3>
 <div class="tablewrap">
