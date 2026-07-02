@@ -68,8 +68,7 @@ impl MuxDriver for TmuxDriver {
                     ctx.attach_seq,
                     &key,
                     argv,
-                    cols,
-                    rows,
+                    (cols, rows),
                 );
                 tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
                 host.display.set_shows(&key, &sel.session);
@@ -122,8 +121,7 @@ impl MuxDriver for TmuxDriver {
                     ctx.attach_seq,
                     &key,
                     argv,
-                    cols,
-                    rows,
+                    (cols, rows),
                 );
                 tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
                 host.display.set_shows(&key, &sel.session);
@@ -210,8 +208,7 @@ impl MuxDriver for TmuxDriver {
                     ctx.attach_seq,
                     source,
                     argv,
-                    cols,
-                    rows,
+                    (cols, rows),
                 );
                 host.display.set_shows(source, &first.name);
             }

@@ -378,7 +378,6 @@ fn selection_attach_facts(
 /// the worker to spawn. The worker's `Ready` reply (handled in the app loop) inserts the
 /// finished attachment into the registry. `display` MUST be the host that owns `key`. Returns
 /// the allocated attachment id so a caller can correlate a follow-up probe to it.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn request_attach(
     registry: &mut AttachRegistry,
     worker: &DisplayWorker,
@@ -386,8 +385,7 @@ pub(crate) fn request_attach(
     attach_seq: &mut u64,
     key: &str,
     argv: Vec<String>,
-    cols: u16,
-    rows: u16,
+    size: (u16, u16),
 ) -> u64 {
     let id = registry.alloc_id();
     *attach_seq += 1;
@@ -397,8 +395,8 @@ pub(crate) fn request_attach(
         seq: *attach_seq,
         key: key.to_string(),
         argv,
-        cols,
-        rows,
+        cols: size.0,
+        rows: size.1,
         id,
     });
     id
@@ -416,38 +414,15 @@ pub(crate) fn request_attach(
 ///
 /// [`driver_for`]: crate::driver::driver_for
 /// [`DriverCtx`]: crate::driver::DriverCtx
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn select_attach(
-    registry: &mut AttachRegistry,
-    hosts: &mut crate::model::Hosts,
-    sel: &Selection,
-    worker: &DisplayWorker,
-    pty_tx: &tokio::sync::mpsc::UnboundedSender<PtyEvent>,
-    attach_seq: &mut u64,
-    cols: u16,
-    rows: u16,
-    tree_width: u16,
-    mgr: &HostManager,
-) -> bool {
+pub(crate) fn select_attach(sel: &Selection, ctx: &mut crate::driver::DriverCtx) -> bool {
     if sel.is_empty() {
         return false;
     }
-    let Some(host) = hosts.get(&sel.source) else {
+    let Some(host) = ctx.hosts.get(&sel.source) else {
         return false;
     };
     let mut driver = crate::driver::driver_for(host);
-    let mut ctx = crate::driver::DriverCtx {
-        registry,
-        hosts,
-        worker,
-        mgr,
-        pty_tx,
-        attach_seq,
-        cols,
-        body_rows: rows,
-        tree_width,
-    };
-    driver.show(sel, &mut ctx)
+    driver.show(sel, ctx)
 }
 
 /// The grid the supervisor renders for the CONFIRMED display truth (`displayed`), or
@@ -457,37 +432,15 @@ pub(crate) fn select_attach(
 /// and the ctl `dump` path so the two never drift.
 ///
 /// [`driver_for`]: crate::driver::driver_for
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn current_grid(
     displayed: &Selection,
-    registry: &mut AttachRegistry,
-    hosts: &mut crate::model::Hosts,
-    worker: &DisplayWorker,
-    mgr: &HostManager,
-    pty_tx: &tokio::sync::mpsc::UnboundedSender<PtyEvent>,
-    attach_seq: &mut u64,
-    cols: u16,
-    body_rows: u16,
-    tree_width: u16,
+    ctx: &crate::driver::DriverCtx,
 ) -> Option<Arc<std::sync::Mutex<crate::display::grid::Grid>>> {
-    let driver = hosts.get(&displayed.source).map(crate::driver::driver_for);
-    match driver {
-        Some(driver) => {
-            let ctx = crate::driver::DriverCtx {
-                registry,
-                hosts,
-                worker,
-                mgr,
-                pty_tx,
-                attach_seq,
-                cols,
-                body_rows,
-                tree_width,
-            };
-            driver.grid(displayed, &ctx)
-        }
-        None => None,
-    }
+    let driver = ctx
+        .hosts
+        .get(&displayed.source)
+        .map(crate::driver::driver_for);
+    driver.and_then(|driver| driver.grid(displayed, ctx))
 }
 
 /// Spawns the lowered switch command off the event loop. Local variants run as a
@@ -548,36 +501,16 @@ pub(crate) fn run_switch_plan(host: &crate::model::Host, plan: crate::mux::Switc
 /// reaps when empty). Called whenever a source's inventory updates (a remote `%`-event
 /// refresh or a local poll), so a new session is reachable and a killed one is torn
 /// down (#5).
-#[allow(clippy::too_many_arguments)]
 fn sync_source_terminals(
-    registry: &mut AttachRegistry,
-    hosts: &mut crate::model::Hosts,
     source: &str,
     sessions: &[crate::session::Session],
-    worker: &DisplayWorker,
-    mgr: &HostManager,
-    pty_tx: &tokio::sync::mpsc::UnboundedSender<PtyEvent>,
-    attach_seq: &mut u64,
-    cols: u16,
-    rows: u16,
-    tree_width: u16,
+    ctx: &mut crate::driver::DriverCtx,
 ) {
-    let Some(host) = hosts.get(source) else {
+    let Some(host) = ctx.hosts.get(source) else {
         return;
     };
     let mut driver = crate::driver::driver_for(host);
-    let mut ctx = crate::driver::DriverCtx {
-        registry,
-        hosts,
-        worker,
-        mgr,
-        pty_tx,
-        attach_seq,
-        cols,
-        body_rows: rows,
-        tree_width,
-    };
-    driver.sync(source, sessions, &mut ctx);
+    driver.sync(source, sessions, ctx);
 }
 
 /// Connects the host the selection is on (if not already + detected), so its metadata
@@ -927,10 +860,18 @@ fn run_event_effect(
             let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
             tracing::info!(host, n, ?names, "sessions_applied");
             // Sync this host's display terminal(s) (per-host for remote tmux).
-            sync_source_terminals(
-                registry, hosts, &host, &sessions, worker, mgr, pty_tx, attach_seq, cols, rows,
+            let mut ctx = crate::driver::DriverCtx {
+                registry: &mut *registry,
+                hosts: &mut *hosts,
+                worker,
+                mgr,
+                pty_tx,
+                attach_seq: &mut *attach_seq,
+                cols,
+                body_rows: rows,
                 tree_width,
-            );
+            };
+            sync_source_terminals(&host, &sessions, &mut ctx);
         }
         EventEffect::Refetch { host } => {
             // The server's session/window structure changed (a `%`-notification).
@@ -994,10 +935,18 @@ fn run_event_effect(
                     }
                 }
             }
-            sync_source_terminals(
-                registry, hosts, &source, &sessions, worker, mgr, pty_tx, attach_seq, cols, rows,
+            let mut ctx = crate::driver::DriverCtx {
+                registry: &mut *registry,
+                hosts: &mut *hosts,
+                worker,
+                mgr,
+                pty_tx,
+                attach_seq: &mut *attach_seq,
+                cols,
+                body_rows: rows,
                 tree_width,
-            );
+            };
+            sync_source_terminals(&source, &sessions, &mut ctx);
         }
         EventEffect::RecordDisplayTty { host, tty } => {
             // The -CC `list-clients` probe resolved xmux's display-client tty. Record it
@@ -1940,18 +1889,18 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                     crate::model::Command::Attach(sel) => {
                         let t = std::time::Instant::now();
                         // select_attach picks the host's driver and hands it the intent.
-                        let shown = select_attach(
-                            &mut registry,
-                            &mut hosts,
-                            &sel,
-                            &worker,
-                            &driver_pty_tx,
-                            &mut attach_seq,
+                        let mut ctx = crate::driver::DriverCtx {
+                            registry: &mut registry,
+                            hosts: &mut hosts,
+                            worker: &worker,
+                            mgr: &mgr,
+                            pty_tx: &driver_pty_tx,
+                            attach_seq: &mut attach_seq,
                             cols,
                             body_rows,
                             tree_width,
-                            &mgr,
-                        );
+                        };
+                        let shown = select_attach(&sel, &mut ctx);
                         if shown {
                             // Advance the display truth synchronously ONLY for a confirmed
                             // in-place path (switch-client / select-window / already-attached):
@@ -2010,15 +1959,17 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
             // confirmation. An empty `displayed` (first launch) yields no grid → blank.
             let grid_arc = current_grid(
                 &state.displayed,
-                &mut registry,
-                &mut hosts,
-                &worker,
-                &mgr,
-                &driver_pty_tx,
-                &mut attach_seq,
-                cols,
-                body_rows,
-                tree_width,
+                &crate::driver::DriverCtx {
+                    registry: &mut registry,
+                    hosts: &mut hosts,
+                    worker: &worker,
+                    mgr: &mgr,
+                    pty_tx: &driver_pty_tx,
+                    attach_seq: &mut attach_seq,
+                    cols,
+                    body_rows,
+                    tree_width,
+                },
             );
             let terminal_focused = state.focus.is_terminal_focused();
             // The view border glyph reflects auto-hide-tree mode (║ on, │ off).
@@ -2276,15 +2227,17 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                             .unwrap_or(ratatui::layout::Size { width: 80, height: 24 });
                         let grid_arc = current_grid(
                             &state.displayed,
-                            &mut registry,
-                            &mut hosts,
-                            &worker,
-                            &mgr,
-                            &driver_pty_tx,
-                            &mut attach_seq,
-                            cols,
-                            body_rows,
-                            tree_width,
+                            &crate::driver::DriverCtx {
+                                registry: &mut registry,
+                                hosts: &mut hosts,
+                                worker: &worker,
+                                mgr: &mgr,
+                                pty_tx: &driver_pty_tx,
+                                attach_seq: &mut attach_seq,
+                                cols,
+                                body_rows,
+                                tree_width,
+                            },
                         );
                         let dump = match &grid_arc {
                             Some(g) => {
@@ -2421,10 +2374,18 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                     if inventory.is_empty() {
                         continue;
                     }
-                    sync_source_terminals(
-                        &mut registry, &mut hosts, id, &inventory, &worker, &mgr,
-                        &driver_pty_tx, &mut attach_seq, cols, body_rows, tree_width,
-                    );
+                    let mut ctx = crate::driver::DriverCtx {
+                        registry: &mut registry,
+                        hosts: &mut hosts,
+                        worker: &worker,
+                        mgr: &mgr,
+                        pty_tx: &driver_pty_tx,
+                        attach_seq: &mut attach_seq,
+                        cols,
+                        body_rows,
+                        tree_width,
+                    };
+                    sync_source_terminals(id, &inventory, &mut ctx);
                 }
                 // Capture the display-client tty for any shared host (one with a control
                 // client) whose display attach is live but whose tty is not yet known.
@@ -2453,10 +2414,18 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                         .map(|h| h.display.in_flight_contains(&key))
                         .unwrap_or(false);
                     if !registry.contains(&key) && !in_flight_for_key {
-                        select_attach(
-                            &mut registry, &mut hosts, &state.selection, &worker,
-                            &driver_pty_tx, &mut attach_seq, cols, body_rows, tree_width, &mgr,
-                        );
+                        let mut ctx = crate::driver::DriverCtx {
+                            registry: &mut registry,
+                            hosts: &mut hosts,
+                            worker: &worker,
+                            mgr: &mgr,
+                            pty_tx: &driver_pty_tx,
+                            attach_seq: &mut attach_seq,
+                            cols,
+                            body_rows,
+                            tree_width,
+                        };
+                        select_attach(&state.selection, &mut ctx);
                     }
                 }
             }
@@ -3357,15 +3326,17 @@ mod tests {
         let displayed = Selection::default();
         let grid = current_grid(
             &displayed,
-            &mut registry,
-            &mut hosts,
-            &worker,
-            &mgr,
-            &pty_tx,
-            &mut attach_seq,
-            80,
-            24,
-            crate::ui::switcher::TREE_WIDTH,
+            &crate::driver::DriverCtx {
+                registry: &mut registry,
+                hosts: &mut hosts,
+                worker: &worker,
+                mgr: &mgr,
+                pty_tx: &pty_tx,
+                attach_seq: &mut attach_seq,
+                cols: 80,
+                body_rows: 24,
+                tree_width: crate::ui::switcher::TREE_WIDTH,
+            },
         );
         assert!(grid.is_none(), "empty displayed yields no grid");
     }
@@ -3413,16 +3384,18 @@ mod tests {
 
         // First attach (session a): requests off-loop, latches display.current[jup]=a, marks in-flight.
         assert!(select_attach(
-            &mut registry,
-            &mut hosts,
             &sel_a,
-            &worker,
-            &pty_tx,
-            &mut attach_seq,
-            80,
-            24,
-            crate::ui::switcher::TREE_WIDTH,
-            &mgr
+            &mut crate::driver::DriverCtx {
+                registry: &mut registry,
+                hosts: &mut hosts,
+                worker: &worker,
+                mgr: &mgr,
+                pty_tx: &pty_tx,
+                attach_seq: &mut attach_seq,
+                cols: 80,
+                body_rows: 24,
+                tree_width: crate::ui::switcher::TREE_WIDTH,
+            }
         ));
         assert_eq!(hosts.get("jup").unwrap().display.shows("jup"), Some("a"));
         assert!(
@@ -3433,16 +3406,18 @@ mod tests {
         // Select session b of the SAME host before a's Ready arrives: must NOT overwrite the
         // shown session (else the switch-client to b after a lands would never fire).
         assert!(select_attach(
-            &mut registry,
-            &mut hosts,
             &sel_b,
-            &worker,
-            &pty_tx,
-            &mut attach_seq,
-            80,
-            24,
-            crate::ui::switcher::TREE_WIDTH,
-            &mgr
+            &mut crate::driver::DriverCtx {
+                registry: &mut registry,
+                hosts: &mut hosts,
+                worker: &worker,
+                mgr: &mgr,
+                pty_tx: &pty_tx,
+                attach_seq: &mut attach_seq,
+                cols: 80,
+                body_rows: 24,
+                tree_width: crate::ui::switcher::TREE_WIDTH,
+            }
         ));
         assert_eq!(
             hosts.get("jup").unwrap().display.shows("jup"),
@@ -3482,16 +3457,18 @@ mod tests {
         };
 
         assert!(select_attach(
-            &mut registry,
-            &mut hosts,
             &sel_test2,
-            &worker,
-            &pty_tx,
-            &mut attach_seq,
-            80,
-            24,
-            crate::ui::switcher::TREE_WIDTH,
-            &mgr
+            &mut crate::driver::DriverCtx {
+                registry: &mut registry,
+                hosts: &mut hosts,
+                worker: &worker,
+                mgr: &mgr,
+                pty_tx: &pty_tx,
+                attach_seq: &mut attach_seq,
+                cols: 80,
+                body_rows: 24,
+                tree_width: crate::ui::switcher::TREE_WIDTH,
+            }
         ));
         let ready = tokio::time::timeout(std::time::Duration::from_millis(100), worker.recv())
             .await
@@ -3523,16 +3500,18 @@ mod tests {
         );
 
         assert!(select_attach(
-            &mut registry,
-            &mut hosts,
             &sel_test,
-            &worker,
-            &pty_tx,
-            &mut attach_seq,
-            80,
-            24,
-            crate::ui::switcher::TREE_WIDTH,
-            &mgr
+            &mut crate::driver::DriverCtx {
+                registry: &mut registry,
+                hosts: &mut hosts,
+                worker: &worker,
+                mgr: &mgr,
+                pty_tx: &pty_tx,
+                attach_seq: &mut attach_seq,
+                cols: 80,
+                body_rows: 24,
+                tree_width: crate::ui::switcher::TREE_WIDTH,
+            }
         ));
 
         let h = hosts.get("local").unwrap();
@@ -3578,16 +3557,18 @@ mod tests {
         };
 
         assert!(select_attach(
-            &mut registry,
-            &mut hosts,
             &sel,
-            &worker,
-            &pty_tx,
-            &mut attach_seq,
-            80,
-            24,
-            crate::ui::switcher::TREE_WIDTH,
-            &mgr
+            &mut crate::driver::DriverCtx {
+                registry: &mut registry,
+                hosts: &mut hosts,
+                worker: &worker,
+                mgr: &mgr,
+                pty_tx: &pty_tx,
+                attach_seq: &mut attach_seq,
+                cols: 80,
+                body_rows: 24,
+                tree_width: crate::ui::switcher::TREE_WIDTH,
+            }
         ));
 
         let h = hosts.get("local").unwrap();
@@ -3660,16 +3641,18 @@ mod tests {
         };
 
         assert!(select_attach(
-            &mut registry,
-            &mut hosts,
             &sel,
-            &worker,
-            &pty_tx,
-            &mut attach_seq,
-            80,
-            24,
-            crate::ui::switcher::TREE_WIDTH,
-            &mgr
+            &mut crate::driver::DriverCtx {
+                registry: &mut registry,
+                hosts: &mut hosts,
+                worker: &worker,
+                mgr: &mgr,
+                pty_tx: &pty_tx,
+                attach_seq: &mut attach_seq,
+                cols: 80,
+                body_rows: 24,
+                tree_width: crate::ui::switcher::TREE_WIDTH,
+            }
         ));
 
         let h = hosts.get("local").unwrap();

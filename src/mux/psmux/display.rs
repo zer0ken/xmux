@@ -161,8 +161,7 @@ impl MuxDriver for PsmuxDriver {
             ctx.attach_seq,
             &key,
             argv,
-            cols,
-            rows,
+            (cols, rows),
         );
         tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
         host.display.set_shows(&key, &sel.session);
