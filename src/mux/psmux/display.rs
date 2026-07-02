@@ -101,7 +101,7 @@ impl MuxDriver for PsmuxDriver {
             let (cmd, args) = host.transport.exec_argv(false, &argv);
             let mut v = vec![cmd];
             v.extend(args);
-            run_lowered(crate::model::LoweredSwitch::Local(v));
+            run_lowered(crate::machine::LoweredSwitch::Local(v));
             // Force a full repaint after the switch so the new session's content fills the
             // cleared grid (a switch-client alone may leave it blank; a reattach repaints
             // fully, and this gives the in-place switch the same).
@@ -242,7 +242,7 @@ impl MuxDriver for PsmuxDriver {
 /// the client but need not refill the cleared grid; a fresh attach repaints fully, and
 /// this gives the in-place switch the same full repaint. The transport prepends ssh for a
 /// remote host; psmux is tmux-compatible so the `refresh-client` verb is the same.
-fn refresh_client_lowered(host: &Host, tty: &str) -> crate::model::LoweredSwitch {
+fn refresh_client_lowered(host: &Host, tty: &str) -> crate::machine::LoweredSwitch {
     let argv = vec![
         host.mux.bin().to_string(),
         "refresh-client".to_string(),
@@ -252,7 +252,7 @@ fn refresh_client_lowered(host: &Host, tty: &str) -> crate::model::LoweredSwitch
     let (cmd, args) = host.transport.exec_argv(false, &argv);
     let mut v = vec![cmd];
     v.extend(args);
-    crate::model::LoweredSwitch::Local(v)
+    crate::machine::LoweredSwitch::Local(v)
 }
 
 /// The tty of the psmux client currently showing `session`, parsed from `list-clients`
@@ -330,7 +330,7 @@ mod tests {
     async fn psmux_driver_show_replaces_the_display_attachment() {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
-            crate::model::Transport::Local { socket: None },
+            crate::machine::local(None),
             crate::mux::for_binary("psmux"),
         ));
         hosts
@@ -399,7 +399,7 @@ mod tests {
     async fn psmux_driver_sync_does_not_warm_and_reaps_only_when_empty() {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
-            crate::model::Transport::Local { socket: None },
+            crate::machine::local(None),
             crate::mux::for_binary("psmux"),
         ));
         hosts
@@ -477,7 +477,7 @@ mod tests {
     async fn psmux_driver_show_switches_in_place_when_tty_known() {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
-            crate::model::Transport::Local { socket: None },
+            crate::machine::local(None),
             crate::mux::for_binary("psmux"),
         ));
         {
@@ -540,7 +540,7 @@ mod tests {
     async fn psmux_driver_show_reattaches_when_tty_unknown() {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
-            crate::model::Transport::Local { socket: None },
+            crate::machine::local(None),
             crate::mux::for_binary("psmux"),
         ));
         hosts

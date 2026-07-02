@@ -29,14 +29,8 @@ state mutation and returns the mux follow-ups (refetch / probe / reap / sync
   the two are distinct types in separate modules. `EventEffect` is not
   `Clone`/`Eq` (its `DispatchScanned` carries a `Box<dyn Mux>`) and has a
   hand-written `Debug`.
-- `transport.rs` is the MACHINE axis: it lowers a mux argv into executable argv for
-  local or remote hosts and OWNS all local/ssh/socket/exec/pty wrapping. `exec_argv`
-  lowers a non-interactive command; `interactive_attach_argv` lowers an attach into the
-  terminal handover (local `-S` injection, or `ssh -t` running `[<select-window> ;] exec
-  <attach>` — the `exec`/window-fold is here, never in the mux or caller); `control_argv`
-  lowers a `-CC` child; `raw_ssh_argv` wraps a raw remote command (the driver's remote
-  in-place switch). The mux argv comes from a `Mux::*_plan` method; the transport only
-  decides HOW to run it.
+- The MACHINE axis lives in `crate::machine` (not here): the `Transport` trait +
+  `Local`/`Ssh` families. A `Host`'s `transport` field is `Box<dyn machine::Transport>`.
 - `host.rs` and `hosts.rs` store per-host domain state and collections. A `Host`
   carries no control client, no display-key derivation, and no attach/reap plan:
   the live control client is owned by `HostManager`, the live warm/reap by

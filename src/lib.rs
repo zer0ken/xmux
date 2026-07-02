@@ -16,6 +16,7 @@ pub mod driver;
 pub mod env;
 pub mod host;
 pub mod logging;
+pub mod machine;
 pub mod manage;
 pub mod model;
 pub mod mux;

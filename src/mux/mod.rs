@@ -10,9 +10,9 @@
 use async_trait::async_trait;
 
 use crate::host::HostEvent;
+use crate::machine::Transport;
 use crate::model::plan::{DeathSignal, EventSource};
 use crate::model::server_model::ServerModel;
-use crate::model::transport::Transport;
 use crate::mux::vocab as mux;
 use crate::session::Session;
 use crate::source::{RunError, Runner};
@@ -55,7 +55,7 @@ pub(crate) fn is_no_sessions(err: &RunError) -> bool {
 /// LOCAL-psmux behavior — `~/.psmux` has no remote awareness).
 pub(crate) async fn enumerate_via_list_sessions(
     bin: &str,
-    transport: &Transport,
+    transport: &dyn Transport,
     runner: &dyn Runner,
 ) -> Result<Vec<Session>, RunError> {
     let (name, args) = transport.exec_argv(false, &mux::list_sessions(bin));
@@ -109,7 +109,7 @@ pub trait Mux: Send + Sync {
     /// A reachable empty mux => `Ok(vec![])`; unreachable => `Err`.
     async fn enumerate(
         &self,
-        transport: &Transport,
+        transport: &dyn Transport,
         runner: &dyn Runner,
     ) -> Result<Vec<Session>, RunError>;
 
@@ -191,7 +191,7 @@ pub trait Mux: Send + Sync {
     async fn poll_once(
         &self,
         source: &str,
-        transport: &Transport,
+        transport: &dyn Transport,
         runner: &dyn Runner,
         emit: &mut (dyn FnMut(HostEvent) + Send),
     ) {
@@ -288,7 +288,7 @@ pub fn for_kind(kind: &str, bin: &str) -> Box<dyn Mux> {
 /// (unreachable host / missing binary), so the caller keeps its current mux and
 /// retries on a later scan.
 pub async fn detect_backend(
-    transport: &Transport,
+    transport: &dyn Transport,
     bin: &str,
     runner: &dyn Runner,
 ) -> Option<Box<dyn Mux>> {
@@ -411,7 +411,7 @@ mod tests {
     #[ignore = "live: needs a running local tmux server"]
     #[tokio::test]
     async fn tmux_enumerate_live() {
-        let t = Transport::Local { socket: None };
+        let t = crate::machine::local(None);
         let sessions = tmux()
             .enumerate(&t, &crate::source::ExecRunner)
             .await
@@ -546,7 +546,7 @@ mod tests {
 
     #[tokio::test]
     async fn detect_backend_classifies_psmux_by_help_marker() {
-        let transport = Transport::Local { socket: None };
+        let transport = crate::machine::local(None);
         // psmux names itself in `help`; `-V` is never reached (it would lie "tmux 3.3.6").
         let runner = ProbeRunner::new(Some("usage: PsMuX help"), Some("tmux 3.3.6"));
         let got = detect_backend(&transport, "tmux", &runner).await.unwrap();
@@ -563,7 +563,7 @@ mod tests {
         // Regression: real tmux has no `help` command (`tmux help` exits non-zero), so
         // the help probe errors. The `-V` fallback must still identify it as tmux —
         // otherwise a correctly-configured tmux host never gets detected/connected.
-        let transport = Transport::Local { socket: None };
+        let transport = crate::machine::local(None);
         let runner = ProbeRunner::new(None, Some("tmux 3.5a"));
         let got = detect_backend(&transport, "tmux", &runner).await.unwrap();
         assert_eq!(got.kind(), "tmux");
@@ -573,7 +573,7 @@ mod tests {
     #[tokio::test]
     async fn detect_backend_classifies_tmux_when_help_lacks_marker() {
         // A `help` that succeeds without a known-mux marker still falls through to `-V`.
-        let transport = Transport::Local { socket: None };
+        let transport = crate::machine::local(None);
         let runner = ProbeRunner::new(Some("usage: tmux commands"), Some("tmux 3.5a"));
         let got = detect_backend(&transport, "tmux", &runner).await.unwrap();
         assert_eq!(got.kind(), "tmux");
@@ -587,17 +587,13 @@ mod tests {
     #[tokio::test]
     async fn detect_backend_live() {
         use crate::source::ExecRunner;
-        let ssh = Transport::Ssh {
-            alias: "jupiter00".into(),
-            control_path: String::new(),
-            os: "windows".into(),
-        };
+        let ssh = crate::machine::ssh("jupiter00".into(), String::new(), "windows".into());
         let got = detect_backend(&ssh, "tmux", &ExecRunner).await;
         eprintln!(
             "DETECT jupiter00/tmux -> {:?}",
             got.as_ref().map(|m| (m.kind(), m.server_model()))
         );
-        let local = Transport::Local { socket: None };
+        let local = crate::machine::local(None);
         let got = detect_backend(&local, "psmux", &ExecRunner).await;
         eprintln!(
             "DETECT local/psmux -> {:?}",
@@ -608,7 +604,7 @@ mod tests {
     #[tokio::test]
     async fn detect_backend_both_probes_fail_is_inconclusive() {
         // Unreachable host / missing binary: both probes error ⇒ None (retry later).
-        let transport = Transport::Local { socket: None };
+        let transport = crate::machine::local(None);
         let runner = ProbeRunner::new(None, None);
         assert!(detect_backend(&transport, "tmux", &runner).await.is_none());
     }
@@ -700,11 +696,7 @@ mod tests {
     #[tokio::test]
     async fn poll_once_surfaces_enumeration_error_on_sessions_event() {
         use crate::host::HostEvent;
-        let transport = Transport::Ssh {
-            alias: "down-host".into(),
-            control_path: String::new(),
-            os: "linux".into(),
-        };
+        let transport = crate::machine::ssh("down-host".into(), String::new(), "linux".into());
         let mut events: Vec<HostEvent> = Vec::new();
         psmux()
             .poll_once("down-host", &transport, &FailRunner, &mut |e| {
@@ -760,11 +752,7 @@ mod tests {
             }
         }
 
-        let transport = Transport::Ssh {
-            alias: "host".into(),
-            control_path: String::new(),
-            os: "linux".into(),
-        };
+        let transport = crate::machine::ssh("host".into(), String::new(), "linux".into());
         let mut events: Vec<HostEvent> = Vec::new();
         psmux()
             .poll_once("host", &transport, &OkRunner, &mut |e| events.push(e))

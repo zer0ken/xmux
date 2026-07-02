@@ -110,7 +110,7 @@ pub(crate) fn lower_select_window(
         let (cmd, args) = host.transport.exec_argv(false, &mux_argv);
         let mut argv = vec![cmd];
         argv.extend(args);
-        run_lowered(crate::model::LoweredSwitch::Local(argv));
+        run_lowered(crate::machine::LoweredSwitch::Local(argv));
     }
 }
 
@@ -148,14 +148,10 @@ pub(crate) mod tests {
         // non-dispatchable method this stops compiling. Obtained via the production
         // path (`Mux::driver()` through `driver_for`) so this seam names no
         // concrete driver type — those live in `crate::mux::{tmux, psmux}`.
-        let tmux_host = crate::model::Host::new(
-            crate::model::Transport::Local { socket: None },
-            crate::mux::for_binary("tmux"),
-        );
-        let psmux_host = crate::model::Host::new(
-            crate::model::Transport::Local { socket: None },
-            crate::mux::for_binary("psmux"),
-        );
+        let tmux_host =
+            crate::model::Host::new(crate::machine::local(None), crate::mux::for_binary("tmux"));
+        let psmux_host =
+            crate::model::Host::new(crate::machine::local(None), crate::mux::for_binary("psmux"));
         let _t: Box<dyn MuxDriver> = driver_for(&tmux_host);
         let _p: Box<dyn MuxDriver> = driver_for(&psmux_host);
     }
@@ -166,17 +162,11 @@ pub(crate) mod tests {
     #[test]
     fn driver_for_picks_the_mux_specific_driver_by_backend() {
         let tmux_host = crate::model::Host::new(
-            crate::model::Transport::Ssh {
-                alias: "jup".into(),
-                control_path: String::new(),
-                os: "linux".into(),
-            },
+            crate::machine::ssh("jup".into(), String::new(), "linux".into()),
             crate::mux::for_binary("tmux"),
         );
-        let psmux_host = crate::model::Host::new(
-            crate::model::Transport::Local { socket: None },
-            crate::mux::for_binary("psmux"),
-        );
+        let psmux_host =
+            crate::model::Host::new(crate::machine::local(None), crate::mux::for_binary("psmux"));
         assert_eq!(driver_for(&tmux_host).kind(), "tmux");
         assert_eq!(driver_for(&psmux_host).kind(), "psmux");
     }
@@ -190,7 +180,7 @@ pub(crate) mod tests {
     async fn seam_show_replaces_the_psmux_display_attachment() {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
-            crate::model::Transport::Local { socket: None },
+            crate::machine::local(None),
             crate::mux::for_binary("psmux"),
         ));
         // A stale attachment + bookkeeping for a different session: show() must drop it

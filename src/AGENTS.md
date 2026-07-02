@@ -4,7 +4,7 @@
 
 `src/` contains the runtime application: CLI/config assembly, mux discovery,
 the app event loop, host metadata management, display attachment spawning,
-the control socket, and the app/ui/model/mux/state submodules.
+the control socket, and the app/ui/model/mux/machine/state submodules.
 
 ## Mental Model
 
@@ -57,11 +57,11 @@ the live split view.
   `handle_host_event` is then a thin executor that runs the returned `EventEffect`s
   (`run_event_effect`) against the host clients, registry, and display worker.
 - `source.rs` is thin source config/data: the `Source` fields plus delegating
-  accessors (`transport()`, `run_with()`, `list_sessions`, `interactive_attach_command`)
-  and the shared pure shell vocab (`remote_command`/`quote`/`is_shell_safe`) that
-  `model::Transport` calls. It carries no transport-wrapping implementation of its
-  own — the machine axis is solely `model::Transport`. `env.rs` is config assembly
-  plumbing for source definitions and command construction.
+  accessors (`transport()` → a `machine::Transport`, `run_with()`, `list_sessions`,
+  `interactive_attach_command`). The machine axis is solely `machine::Transport`
+  (its shared shell vocab — `remote_command`/`quote` — lives in `machine/vocab.rs`);
+  `source.rs` carries no transport-wrapping implementation of its own. `env.rs` is
+  config assembly plumbing for source definitions and command construction.
 - `logging.rs` sets up the `tracing` subscriber for the process. `logging::init(xmux_dir)`
   attaches a daily rolling file appender (`tracing_appender`) writing to
   `<xmux_dir>/xmux.log`, wrapped in a non-blocking worker. ANSI codes are
@@ -98,7 +98,7 @@ the live split view.
 - Do not block the app loop on process spawn, PTY close, pipe reads, writes,
   or resize operations.
 - Do not treat `Source` as the preferred place for new execution semantics;
-  prefer `model::Transport` for machine execution, `mux::Mux` for
+  prefer `machine::Transport` for machine execution, `mux::Mux` for
   mux vocabulary and classification (attach argv, server model, enumeration),
   and the per-mux `MuxDriver` impls (`mux/tmux/display.rs`,
   `mux/psmux/display.rs`) for per-host display orchestration and the concrete

@@ -39,7 +39,7 @@ impl Mux for Psmux {
 
     async fn enumerate(
         &self,
-        transport: &Transport,
+        transport: &dyn Transport,
         runner: &dyn Runner,
     ) -> Result<Vec<Session>, RunError> {
         // The local-registry merge is a LOCAL-psmux behavior: `~/.psmux` is THIS
@@ -48,9 +48,9 @@ impl Mux for Psmux {
         // generic way (list-sessions over ssh) — identical to a remote tmux. Folding
         // the local registry into a remote host would inject local session names as
         // phantoms and (worse) swallow an ssh failure into a fake empty/populated list.
-        let Transport::Local { .. } = transport else {
+        if transport.is_remote() {
             return crate::mux::enumerate_via_list_sessions(&self.bin, transport, runner).await;
-        };
+        }
         // Local psmux: the registry (`~/.psmux/<name>.port`) is the authoritative
         // existence set; one list-sessions supplies display detail (empty on a
         // default-route miss).
@@ -178,12 +178,8 @@ mod tests {
         }
     }
 
-    fn ssh(alias: &str) -> Transport {
-        Transport::Ssh {
-            alias: alias.into(),
-            control_path: String::new(),
-            os: "linux".into(),
-        }
+    fn ssh(alias: &str) -> Box<dyn Transport> {
+        crate::machine::ssh(alias.into(), String::new(), "linux".into())
     }
 
     #[tokio::test]
@@ -240,9 +236,7 @@ mod tests {
         // pins that the Local-vs-Ssh dispatch is intact.
         let m = psmux();
         let runner = CannedRunner::err(RunError::Other("psmux: default route is dead".into()));
-        let got = m
-            .enumerate(&Transport::Local { socket: None }, &runner)
-            .await;
+        let got = m.enumerate(&crate::machine::local(None), &runner).await;
         assert!(
             got.is_ok(),
             "local psmux swallows the error into the registry merge, never errors: {got:?}"

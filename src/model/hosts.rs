@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use crate::config::Config;
-use crate::model::{Host, Liveness, Transport};
+use crate::model::{Host, Liveness};
 use crate::mux::for_binary;
 use crate::session::LOCAL_SOURCE;
 
@@ -51,9 +51,7 @@ impl Hosts {
 
         let local_bin = cfg.local_bin(os);
         hosts.insert(Host::new(
-            Transport::Local {
-                socket: local_socket,
-            },
+            crate::machine::local(local_socket),
             for_binary(&local_bin),
         ));
 
@@ -66,11 +64,7 @@ impl Hosts {
                 .to_string_lossy()
                 .into_owned();
             hosts.insert(Host::new(
-                Transport::Ssh {
-                    alias: spec.alias,
-                    control_path,
-                    os: os.to_string(),
-                },
+                crate::machine::ssh(spec.alias, control_path, os.to_string()),
                 for_binary(&spec.bin),
             ));
         }
@@ -141,6 +135,7 @@ impl Hosts {
 mod tests {
     use super::*;
     use crate::host::HostEvent;
+    use crate::machine::Transport;
     use crate::model::{Liveness, ServerModel};
 
     #[test]
@@ -152,11 +147,11 @@ mod tests {
     #[test]
     fn insert_keys_on_host_id_and_appends_order_once() {
         let mut hosts = Hosts::default();
-        let local = Host::new(Transport::Local { socket: None }, for_binary("tmux"));
+        let local = Host::new(crate::machine::local(None), for_binary("tmux"));
         hosts.insert(local);
         assert_eq!(hosts.ids(), &["local".to_string()]);
         // Re-inserting the same id replaces in place, does not duplicate the order.
-        let local2 = Host::new(Transport::Local { socket: None }, for_binary("psmux"));
+        let local2 = Host::new(crate::machine::local(None), for_binary("psmux"));
         hosts.insert(local2);
         assert_eq!(
             hosts.ids(),
@@ -185,14 +180,10 @@ mod tests {
             hosts.ids(),
             &["local".to_string(), "prod".to_string(), "db".to_string()]
         );
-        assert!(matches!(
-            hosts.get("local").unwrap().transport,
-            Transport::Local { .. }
-        ));
-        match &hosts.get("prod").unwrap().transport {
-            Transport::Ssh { alias, .. } => assert_eq!(alias, "prod"),
-            _ => panic!("prod must be an ssh transport"),
-        }
+        assert!(!hosts.get("local").unwrap().transport.is_remote());
+        let prod = hosts.get("prod").unwrap();
+        assert!(prod.transport.is_remote());
+        assert_eq!(prod.transport.host_id(), "prod");
     }
 
     #[test]
@@ -205,12 +196,17 @@ mod tests {
             std::path::Path::new("/x"),
             Some("/tmp/tmux-1000/work".into()),
         );
-        match &hosts.get("local").unwrap().transport {
-            Transport::Local { socket } => {
-                assert_eq!(socket.as_deref(), Some("/tmp/tmux-1000/work"))
-            }
-            _ => panic!("local transport"),
-        }
+        // The socket is observable as the `-S <socket>` the transport injects.
+        let (_n, args) = hosts
+            .get("local")
+            .unwrap()
+            .transport
+            .exec_argv(false, &["tmux".to_string(), "list-sessions".to_string()]);
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["-S".to_string(), "/tmp/tmux-1000/work".to_string()]),
+            "socket threads into the transport as -S: {args:?}"
+        );
     }
 
     #[test]

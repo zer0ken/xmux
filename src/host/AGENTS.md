@@ -50,7 +50,7 @@ tree and folds `HostEvent`s through `State::apply_event`.
 ## Before Editing
 
 - Decide whether the change is metadata (here), display PTY (`src/display`), or
-  transport lowering (`model::Transport`).
+  transport lowering (`machine::Transport`).
 - For a new event, add the `HostEvent` variant and its `State::apply_event` arm
   and `EventEffect` follow-up together.
 

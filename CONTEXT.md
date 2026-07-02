@@ -18,8 +18,10 @@ module hides, and which dependencies are allowed to cross into it.
 
 One concept, one word. The two axes and the runtime:
 
-- `Transport` (MACHINE axis) — local vs ssh execution; knows nothing about the
-  mux.
+- `Transport` (MACHINE axis) — the per-machine execution trait (impls `Local` /
+  `Ssh`); a host's `transport` field is `Box<dyn Transport>`. It owns where a
+  command runs and how its argv is executed, and knows nothing about the mux.
+  "machine" is the family/concept; `Transport` is the trait.
 - `Mux` (MUX axis) — the per-mux behavior trait (impls `Tmux` / `Psmux`); a
   host's `mux` field is `Box<dyn Mux>`. "mux" is the family/concept; `Mux` is
   the trait.
@@ -79,8 +81,12 @@ must be excluded before release.
 
 Two orthogonal axes describe every connection, and no module conflates them:
 
-- MACHINE — `src/model/transport.rs`. `Transport` (`Local` / `Ssh`) owns where a
-  command runs and how its argv is executed; it knows nothing about the mux.
+- MACHINE — `src/machine/`. Each machine family (`local.rs`, `ssh.rs`) owns its
+  execution behind the `Transport` trait; a host builds one via `machine::local()`
+  / `machine::ssh()`, so machine selection lives at construction, never a central
+  `match`. Shared shell vocabulary (`quote` / `remote_command`) lives in
+  `src/machine/vocab.rs`. `Transport` owns where a command runs and how its argv is
+  executed; it knows nothing about the mux.
 - MUX — `src/mux/<kind>/`. Each mux family (`tmux/`, `psmux/`) owns its metadata
   and command plans in `mod.rs` (behind the `Mux` trait) and its display
   driver in `display.rs`. A mux builds its OWN driver via `Mux::driver()`,
@@ -103,8 +109,10 @@ The remaining layers each own one concern:
   spawning, the `Grid`, input decode, `term`, `dispatch`, the registry, worker).
 - `src/host/` — host connection management (control-mode reader/writer, poll
   tasks, live client ownership).
-- `src/model/` — domain types (`Host`, `Hosts`, `Transport`, `Action`,
-  `Command`, `EventEffect`, server model).
+- `src/machine/` — the machine axis: the `Transport` trait, the `Local`/`Ssh`
+  families, and the shared shell vocab (`vocab.rs`).
+- `src/model/` — domain types (`Host`, `Hosts`, `Action`, `Command`,
+  `EventEffect`, server model).
 - `src/driver.rs` — the mux-agnostic `MuxDriver` trait + `DriverCtx` (the
   supervisor capabilities a driver borrows) + the thin `driver_for` wrapper. It
   names no concrete mux type.
@@ -113,7 +121,9 @@ The remaining layers each own one concern:
 
 At creation time, place a new source file by the axis it belongs to:
 
-- Machine-specific (a new transport / execution behavior) → `src/model/transport.rs`.
+- Machine-specific → a new machine family is a new `src/machine/<kind>.rs`
+  implementing `Transport` (+ a `machine::<kind>()` factory); new per-machine
+  execution goes in the existing `local.rs`/`ssh.rs`.
 - Mux-specific (a new mux family or per-mux behavior) → `src/mux/<kind>/`.
 - PTY / grid / terminal-protocol mechanics → `src/display/`.
 - Orchestration (runtime loop, focus) → `src/app/`.
@@ -152,7 +162,7 @@ as invariants, seams, and pitfalls — never as change history or phase narrativ
   is renamed or reshaped as a runtime manager. `Source` should shrink toward a
   compatibility adapter as `Mux + Transport` cover its command-building and
   execution roles.
-- `Source` and `model::Transport` currently duplicate machine-execution
+- `Source` and `machine::Transport` currently duplicate machine-execution
   responsibilities. Treat `Source` as live compatibility plumbing, not the
   preferred home for new execution semantics. New local/ssh execution behavior
   belongs in `Transport`; new mux behavior belongs in `Mux`. A future

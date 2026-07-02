@@ -7,7 +7,8 @@
 use std::collections::HashMap;
 
 use crate::host::HostInventory;
-use crate::model::{DisplayTty, Transport};
+use crate::machine::Transport;
+use crate::model::DisplayTty;
 use crate::mux::Mux;
 use crate::source::Runner;
 
@@ -71,7 +72,7 @@ impl HostDisplay {
 /// rather than a bare alias string. The PTYs are NOT here — they live in
 /// `AttachRegistry`/`DisplayWorker`; `Host` owns only the bookkeeping.
 pub struct Host {
-    pub transport: Transport,
+    pub transport: Box<dyn Transport>,
     pub mux: Box<dyn Mux>,
     /// Live session/window inventory.
     pub inventory: HostInventory,
@@ -87,7 +88,7 @@ pub struct Host {
 impl Host {
     /// Builds a host from a transport + mux. Replaces `source::build`'s per-source
     /// construction (source.rs:460), one host at a time.
-    pub fn new(transport: Transport, mux: Box<dyn Mux>) -> Self {
+    pub fn new(transport: Box<dyn Transport>, mux: Box<dyn Mux>) -> Self {
         Host {
             transport,
             mux,
@@ -181,7 +182,7 @@ impl Host {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{DeathSignal, EventSource, ServerModel, Transport};
+    use crate::model::{DeathSignal, EventSource, ServerModel};
     use crate::mux::Mux;
     use crate::session::Session;
     use crate::source::{RunError, Runner};
@@ -207,7 +208,7 @@ mod tests {
         }
         async fn enumerate(
             &self,
-            _t: &Transport,
+            _t: &dyn Transport,
             _r: &dyn crate::source::Runner,
         ) -> Result<Vec<Session>, RunError> {
             Ok(vec![])
@@ -294,16 +295,12 @@ mod tests {
     #[test]
     fn host_id_is_the_transport_host_id() {
         let h = Host::new(
-            Transport::Local { socket: None },
+            crate::machine::local(None),
             Box::new(StubMux(ServerModel::Shared)),
         );
         assert_eq!(h.id(), "local");
         let r = Host::new(
-            Transport::Ssh {
-                alias: "jup".into(),
-                control_path: String::new(),
-                os: "linux".into(),
-            },
+            crate::machine::ssh("jup".into(), String::new(), "linux".into()),
             Box::new(StubMux(ServerModel::Shared)),
         );
         assert_eq!(r.id(), "jup");
@@ -312,7 +309,7 @@ mod tests {
     #[test]
     fn new_host_starts_connecting_with_empty_inventory_and_tty() {
         let h = Host::new(
-            Transport::Local { socket: None },
+            crate::machine::local(None),
             Box::new(StubMux(ServerModel::PerSession)),
         );
         assert_eq!(h.liveness, Liveness::Connecting);
@@ -431,7 +428,7 @@ mod tests {
         }
         async fn enumerate(
             &self,
-            _t: &Transport,
+            _t: &dyn Transport,
             _r: &dyn crate::source::Runner,
         ) -> Result<Vec<Session>, RunError> {
             self.result.lock().unwrap().take().unwrap_or(Ok(vec![]))
@@ -480,7 +477,7 @@ mod tests {
     #[tokio::test]
     async fn enumerate_ok_fills_inventory_and_goes_live() {
         let mut h = Host::new(
-            Transport::Local { socket: None },
+            crate::machine::local(None),
             Box::new(EnumMux::ok(ServerModel::PerSession, &["work", "build"])),
         );
         h.enumerate().await.unwrap();
@@ -498,7 +495,7 @@ mod tests {
     async fn enumerate_empty_is_live_not_unreachable() {
         // A reachable mux with zero sessions is Live (the "(empty)" case), not Unreachable.
         let mut h = Host::new(
-            Transport::Local { socket: None },
+            crate::machine::local(None),
             Box::new(EnumMux::ok(ServerModel::Shared, &[])),
         );
         h.enumerate().await.unwrap();
@@ -509,7 +506,7 @@ mod tests {
     #[tokio::test]
     async fn enumerate_err_marks_unreachable_and_propagates() {
         let mut h = Host::new(
-            Transport::Local { socket: None },
+            crate::machine::local(None),
             Box::new(EnumMux::err(ServerModel::Shared)),
         );
         assert!(h.enumerate().await.is_err());
@@ -519,11 +516,7 @@ mod tests {
     #[test]
     fn record_and_clear_display_tty_round_trips() {
         let mut h = Host::new(
-            Transport::Ssh {
-                alias: "jup".into(),
-                control_path: String::new(),
-                os: "linux".into(),
-            },
+            crate::machine::ssh("jup".into(), String::new(), "linux".into()),
             Box::new(StubMux(ServerModel::Shared)),
         );
         assert!(h.display_tty.0.is_none(), "starts with no tty");
@@ -539,13 +532,9 @@ mod tests {
 
     #[test]
     fn matches_display_tty_only_for_our_own_client_under_control_notice() {
-        use crate::model::{DisplayTty, Transport};
+        use crate::model::DisplayTty;
         let mut h = Host::new(
-            Transport::Ssh {
-                alias: "jup".into(),
-                control_path: String::new(),
-                os: "linux".into(),
-            },
+            crate::machine::ssh("jup".into(), String::new(), "linux".into()),
             crate::mux::for_binary("tmux"), // Shared → DeathSignal::ControlNotice
         );
         assert!(
@@ -565,9 +554,8 @@ mod tests {
 
     #[test]
     fn psmux_host_session_liveness_uses_the_port_stat() {
-        use crate::model::Transport;
         let h = Host::new(
-            Transport::Local { socket: None },
+            crate::machine::local(None),
             crate::mux::for_binary("psmux"), // PerSession → DeathSignal::PathStat
         );
         let name = format!("xmux-hostlive-{}", std::process::id());
@@ -581,13 +569,8 @@ mod tests {
 
     #[test]
     fn tmux_host_session_is_always_live_by_port_stat() {
-        use crate::model::Transport;
         let h = Host::new(
-            Transport::Ssh {
-                alias: "jup".into(),
-                control_path: String::new(),
-                os: "linux".into(),
-            },
+            crate::machine::ssh("jup".into(), String::new(), "linux".into()),
             crate::mux::for_binary("tmux"), // Shared → not PathStat
         );
         // A Shared host never dies by a .port file — liveness here is unconditionally true.
@@ -636,10 +619,7 @@ mod tests {
 
     #[tokio::test]
     async fn detect_and_correct_replaces_behavior_and_preserves_bin() {
-        let mut h = Host::new(
-            Transport::Local { socket: None },
-            crate::mux::for_binary("tmux"),
-        );
+        let mut h = Host::new(crate::machine::local(None), crate::mux::for_binary("tmux"));
         let runner = DetectRunner::ok("psmux command help");
         h.detect_and_correct(&runner).await;
         assert_eq!(h.mux.kind(), "psmux");
@@ -656,10 +636,7 @@ mod tests {
 
     #[tokio::test]
     async fn detect_and_correct_retries_after_inconclusive_probe() {
-        let mut h = Host::new(
-            Transport::Local { socket: None },
-            crate::mux::for_binary("tmux"),
-        );
+        let mut h = Host::new(crate::machine::local(None), crate::mux::for_binary("tmux"));
         let runner = DetectRunner::err();
         h.detect_and_correct(&runner).await;
         assert_eq!(h.mux.kind(), "tmux");

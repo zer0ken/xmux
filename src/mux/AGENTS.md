@@ -69,7 +69,7 @@ supply a per-session attach plan.
 
 - A reachable empty mux enumerates as `Ok(vec![])`; unreachable hosts return an
   error.
-- Transport-specific command wrapping belongs in `model::Transport`.
+- Transport-specific command wrapping belongs in `machine::Transport`.
 - Mux methods should stay at the exact behavior surface used by app,
   host metadata, and manage code.
 

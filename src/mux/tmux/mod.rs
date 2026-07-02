@@ -64,7 +64,7 @@ impl Mux for Tmux {
 
     async fn enumerate(
         &self,
-        transport: &Transport,
+        transport: &dyn Transport,
         runner: &dyn Runner,
     ) -> Result<Vec<Session>, RunError> {
         crate::mux::enumerate_via_list_sessions(&self.bin, transport, runner).await

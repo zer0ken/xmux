@@ -646,7 +646,7 @@ impl HostClient {
 /// (app exit). Mirrors a control client's connect-then-stream role for poll muxes.
 async fn run_poll(
     source: String,
-    transport: crate::model::Transport,
+    transport: Box<dyn crate::machine::Transport>,
     mux_kind: String,
     mux_bin: String,
     interval_ms: u64,
@@ -968,11 +968,7 @@ mod tests {
             runner: None,
         };
         let host = crate::model::Host::new(
-            crate::model::Transport::Ssh {
-                alias: "jupiter06".into(),
-                control_path: String::new(),
-                os: "linux".into(),
-            },
+            crate::machine::ssh("jupiter06".into(), String::new(), "linux".into()),
             crate::mux::for_binary("tmux"),
         );
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
@@ -1597,20 +1593,14 @@ mod tests {
 
     fn ssh_host(alias: &str, bin: &str, os: &str, control_path: &str) -> crate::model::Host {
         crate::model::Host::new(
-            crate::model::Transport::Ssh {
-                alias: alias.into(),
-                control_path: control_path.into(),
-                os: os.into(),
-            },
+            crate::machine::ssh(alias.into(), control_path.into(), os.into()),
             crate::mux::for_binary(bin),
         )
     }
 
     fn local_host(bin: &str, socket: Option<&str>) -> crate::model::Host {
         crate::model::Host::new(
-            crate::model::Transport::Local {
-                socket: socket.map(str::to_string),
-            },
+            crate::machine::local(socket.map(str::to_string)),
             crate::mux::for_binary(bin),
         )
     }
@@ -1692,10 +1682,8 @@ mod tests {
         assert!(mgr.get("jupiter06").is_some());
         // ensure on an already-connected host returns Ok(false) (no fresh connect).
         let src = fake_source("jupiter06");
-        let host = crate::model::Host::new(
-            crate::model::Transport::Local { socket: None },
-            crate::mux::for_binary("psmux"),
-        );
+        let host =
+            crate::model::Host::new(crate::machine::local(None), crate::mux::for_binary("psmux"));
         assert!(!mgr.ensure("jupiter06", &host, &src, 80, 24).unwrap());
     }
 
@@ -1717,7 +1705,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
         let mut mgr = HostManager::new(tx);
         let host = crate::model::Host::new(
-            crate::model::Transport::Local { socket: None },
+            crate::machine::local(None),
             crate::mux::for_kind("psmux", "psmux-no-such-binary"),
         );
         let src = fake_source("local");
