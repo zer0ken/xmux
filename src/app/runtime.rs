@@ -993,13 +993,16 @@ fn run_event_effect(
             // The metadata reply's inventory lives behind the host client's lock; apply
             // it to the tree, request each session's panes, and sync the display PTY(s).
             if let Some(client) = mgr.get(&host) {
-                let sessions = {
-                    let inv = client.inventory.lock().unwrap();
+                let sessions = if let Ok(inv) = client.inventory.lock() {
                     switcher.apply_source_result(host.clone(), inv.sessions.clone(), None, state);
                     for (addr, windows) in inv.panes.iter() {
                         switcher.apply_panes(addr.clone(), windows.clone(), state);
                     }
                     inv.sessions.clone()
+                } else {
+                    // A poisoned inventory lock (a worker died mid-hold) — skip this
+                    // apply and do not rearm rather than panic on the hot path.
+                    return false;
                 };
                 request_session_panes(client, &sessions, panes_requested);
                 let n = sessions.len();
@@ -1902,7 +1905,9 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                 return 1;
             }
         };
-    let _ = term.clear();
+    if let Err(e) = term.clear() {
+        tracing::warn!(error = %e, "term_clear_failed");
+    }
 
     // The picker control socket: serves headless key/text/dump.
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<Cmd>(256);
@@ -1995,7 +2000,9 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
             registry.resize_all(vc, vr);
             mgr.resize_all(vc, vr);
             if crossed_hidden {
-                let _ = term.clear();
+                if let Err(e) = term.clear() {
+                    tracing::warn!(error = %e, "term_clear_failed");
+                }
             }
             dirty = true;
         }
@@ -2145,7 +2152,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
             // the suspected dominant stall during a remote repaint flood — the split
             // tells render-cost from flush-cost so the off-loop-draw fix targets the
             // right half (#2).
-            let _ = match &grid_arc {
+            if let Err(e) = match &grid_arc {
                 Some(g) => {
                     let t_lock = std::time::Instant::now();
                     let guard = g.lock().ok();
@@ -2191,7 +2198,9 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                     switcher.render(f, None, terminal_focused, tree_width, &state);
                     log_slow_step("render", t_render);
                 }),
-            };
+            } {
+                tracing::warn!(error = %e, "term_draw_failed");
+            }
             log_slow_step("draw", t_draw);
             // The grids are now on screen — clear every attachment's output-coalescing
             // flag so each pump may signal its next chunk (bounds the PTY event channel).
@@ -2492,7 +2501,9 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                         // (the next output tick) would leave that reflowed garbage on
                         // screen. Force a full repaint: clear the physical screen and mark
                         // dirty so the loop redraws the whole UI fresh at the new size.
-                        let _ = term.clear();
+                        if let Err(e) = term.clear() {
+                            tracing::warn!(error = %e, "term_clear_failed");
+                        }
                         dirty = true;
                     }
                 }
@@ -2541,7 +2552,10 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                         continue;
                     }
                     let inventory = match mgr.get(&src.alias) {
-                        Some(client) => client.inventory.lock().unwrap().sessions.clone(),
+                        Some(client) => match client.inventory.lock() {
+                            Ok(inv) => inv.sessions.clone(),
+                            Err(_) => continue,
+                        },
                         None => continue,
                     };
                     if inventory.is_empty() {
@@ -3599,6 +3613,73 @@ mod tests {
     fn fake_env_builder_constructs() {
         let env = fake_env_with_sources(&["local", "jupiter06"]);
         assert_eq!(env.srcs.len(), 2);
+    }
+
+    #[test]
+    fn apply_inventory_effect_survives_poisoned_inventory_lock() {
+        // The ApplyInventory effect reads the host client's inventory under a mutex.
+        // If a worker thread died mid-hold and poisoned that lock, the hot path must
+        // degrade gracefully (skip the apply, no rearm) rather than panic and take
+        // down the app loop.
+        use crate::ui::switcher::{Scan, Switcher};
+        use crate::ui::tree::Group;
+
+        let (htx, _hrx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
+        let mut mgr = HostManager::new(htx);
+        mgr.insert_fake("local");
+
+        // Poison the inventory lock by holding it on a thread that panics.
+        let inv = Arc::clone(&mgr.get("local").expect("fake client").inventory);
+        let h = std::thread::spawn(move || {
+            let _guard = inv.lock().unwrap();
+            panic!("poison the inventory lock");
+        });
+        let _ = h.join(); // the thread panicked → the mutex is poisoned
+        assert!(
+            mgr.get("local").unwrap().inventory.is_poisoned(),
+            "inventory lock must be poisoned for this test"
+        );
+
+        let scan = Scan {
+            groups: vec![Group {
+                source: "local".into(),
+                err: None,
+                sessions: vec![],
+            }],
+            panes: Default::default(),
+        };
+        let mut state = crate::state::State::from_scan(scan);
+        let mut switcher = Switcher::new(&mut state);
+        let mut hosts = crate::model::Hosts::default();
+        let mut registry = AttachRegistry::new();
+        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
+        let worker = DisplayWorker::new(ptx);
+        let (pty_tx, _pty_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
+        let env = fake_env_with_sources(&["local"]);
+        let mut panes_requested = HashSet::new();
+        let mut detecting = HashSet::new();
+        let mut attach_seq = 0u64;
+
+        let rearm = run_event_effect(
+            crate::model::EventEffect::ApplyInventory {
+                host: "local".into(),
+            },
+            &mut mgr,
+            &mut hosts,
+            &mut registry,
+            &mut switcher,
+            &mut state,
+            &env,
+            &mut panes_requested,
+            &mut detecting,
+            &worker,
+            &pty_tx,
+            &mut attach_seq,
+            80,
+            24,
+            crate::ui::switcher::TREE_WIDTH,
+        );
+        assert!(!rearm, "a poisoned inventory lock must not rearm recovery");
     }
 
     #[test]
