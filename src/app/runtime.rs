@@ -462,6 +462,46 @@ pub(crate) fn select_attach(
     driver.show(sel, &mut ctx)
 }
 
+/// The grid the supervisor renders for the CONFIRMED display truth (`displayed`), or
+/// `None` when nothing is confirmed (empty selection ⇒ blank terminal on first launch).
+/// Picks the host's driver off its model ([`driver_for`]) and reads back its live attach
+/// grid — the read counterpart to [`select_attach`]'s show. Shared by the draw hot path
+/// and the ctl `dump` path so the two never drift.
+///
+/// [`driver_for`]: crate::driver::driver_for
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn current_grid(
+    displayed: &Selection,
+    registry: &mut AttachRegistry,
+    hosts: &mut crate::model::Hosts,
+    worker: &DisplayWorker,
+    mgr: &HostManager,
+    pty_tx: &tokio::sync::mpsc::UnboundedSender<PtyEvent>,
+    attach_seq: &mut u64,
+    cols: u16,
+    body_rows: u16,
+    tree_width: u16,
+) -> Option<Arc<std::sync::Mutex<crate::display::grid::Grid>>> {
+    let driver = hosts.get(&displayed.source).map(crate::driver::driver_for);
+    match driver {
+        Some(driver) => {
+            let ctx = crate::driver::DriverCtx {
+                registry,
+                hosts,
+                worker,
+                mgr,
+                pty_tx,
+                attach_seq,
+                cols,
+                body_rows,
+                tree_width,
+            };
+            driver.grid(displayed, &ctx)
+        }
+        None => None,
+    }
+}
+
 /// Spawns the lowered switch command off the event loop. Local variants run as a
 /// plain subprocess; RawSsh variants run the full ssh argv non-interactively.
 pub(crate) fn run_lowered(lowered: crate::machine::LoweredSwitch) {
@@ -2147,26 +2187,18 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
             // session switch the prior session stays on screen until the new one is
             // ready (stale-while-revalidate), and `displayed` only advances at
             // confirmation. An empty `displayed` (first launch) yields no grid → blank.
-            let driver = hosts
-                .get(&state.displayed.source)
-                .map(crate::driver::driver_for);
-            let grid_arc = match driver {
-                Some(driver) => {
-                    let ctx = crate::driver::DriverCtx {
-                        registry: &mut registry,
-                        hosts: &mut hosts,
-                        worker: &worker,
-                        mgr: &mgr,
-                        pty_tx: &driver_pty_tx,
-                        attach_seq: &mut attach_seq,
-                        cols,
-                        body_rows,
-                        tree_width,
-                    };
-                    driver.grid(&state.displayed, &ctx)
-                }
-                None => None,
-            };
+            let grid_arc = current_grid(
+                &state.displayed,
+                &mut registry,
+                &mut hosts,
+                &worker,
+                &mgr,
+                &driver_pty_tx,
+                &mut attach_seq,
+                cols,
+                body_rows,
+                tree_width,
+            );
             let terminal_focused = state.focus.is_terminal_focused();
             // The view border glyph reflects auto-hide-tree mode (║ on, │ off).
             state.chrome.set_auto_hide(auto_hide_tree);
@@ -2434,26 +2466,18 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                         let sz = term
                             .size()
                             .unwrap_or(ratatui::layout::Size { width: 80, height: 24 });
-                        let driver = hosts
-                            .get(&state.displayed.source)
-                            .map(crate::driver::driver_for);
-                        let grid_arc = match driver {
-                            Some(driver) => {
-                                let ctx = crate::driver::DriverCtx {
-                                    registry: &mut registry,
-                                    hosts: &mut hosts,
-                                    worker: &worker,
-                                    mgr: &mgr,
-                                    pty_tx: &driver_pty_tx,
-                                    attach_seq: &mut attach_seq,
-                                    cols,
-                                    body_rows,
-                                    tree_width,
-                                };
-                                driver.grid(&state.displayed, &ctx)
-                            }
-                            None => None,
-                        };
+                        let grid_arc = current_grid(
+                            &state.displayed,
+                            &mut registry,
+                            &mut hosts,
+                            &worker,
+                            &mgr,
+                            &driver_pty_tx,
+                            &mut attach_seq,
+                            cols,
+                            body_rows,
+                            tree_width,
+                        );
                         let dump = match &grid_arc {
                             Some(g) => {
                                 let guard = g.lock().ok();
@@ -3861,6 +3885,34 @@ mod tests {
             !attach_reply_is_current(&f, "absent", 5),
             "no in-flight request → stale"
         );
+    }
+
+    #[test]
+    fn current_grid_returns_none_for_empty_displayed() {
+        // An empty `displayed` (source "") misses `hosts.get`, so no driver is
+        // built and no grid is produced — the blank-terminal case on first launch.
+        let mut hosts = crate::model::Hosts::default();
+        let mut registry = AttachRegistry::new();
+        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
+        let worker = crate::display::DisplayWorker::new(ptx);
+        let (etx, _erx) = tokio::sync::mpsc::unbounded_channel::<crate::host::HostEvent>();
+        let mgr = HostManager::new(etx);
+        let (pty_tx, _pty_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
+        let mut attach_seq = 0u64;
+        let displayed = Selection::default();
+        let grid = current_grid(
+            &displayed,
+            &mut registry,
+            &mut hosts,
+            &worker,
+            &mgr,
+            &pty_tx,
+            &mut attach_seq,
+            80,
+            24,
+            crate::ui::switcher::TREE_WIDTH,
+        );
+        assert!(grid.is_none(), "empty displayed yields no grid");
     }
 
     #[tokio::test(flavor = "current_thread")]
