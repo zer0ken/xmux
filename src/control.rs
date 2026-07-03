@@ -301,9 +301,11 @@ fn pid_from_sock(path: &Path) -> Option<u32> {
         .ok()
 }
 
-/// Returns the path of the most-recently-modified `ctl-*.sock` in `dir`. Ties on
-/// modification time are broken by the higher pid. Errors if none exist.
-pub fn discover(dir: &Path) -> std::io::Result<PathBuf> {
+/// Every live `ctl-<pid>.sock` in `dir` as `(path, pid)`, most-recently-modified
+/// first (ties broken by the higher pid). The enumeration behind `xmux ctl list` and
+/// the multi-instance targeting guard. An empty (or absent-entry) dir yields an empty
+/// vec, not an error — the caller decides what "no instances" means.
+pub fn discover_all(dir: &Path) -> std::io::Result<Vec<(PathBuf, u32)>> {
     let mut cands: Vec<(PathBuf, std::time::SystemTime, u32)> = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
@@ -319,14 +321,52 @@ pub fn discover(dir: &Path) -> std::io::Result<PathBuf> {
         };
         cands.push((path, modified, pid));
     }
-    if cands.is_empty() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("control: no ctl-*.sock found in {}", dir.display()),
-        ));
-    }
     cands.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)));
-    Ok(cands[0].0.clone())
+    Ok(cands.into_iter().map(|(p, _, pid)| (p, pid)).collect())
+}
+
+/// The parsed `status` reply — the per-instance identity `xmux ctl list` shows. The
+/// wire form is TAB-separated `key=value` (tab, not space, so a value may itself
+/// contain spaces — e.g. a Windows `cwd`). [`format_status`] / [`parse_status`] are
+/// inverses; keeping both here is what stops the producer (the app's `status_line`)
+/// and the consumer (`xmux ctl list`) from drifting.
+#[derive(Debug, Default, PartialEq)]
+pub struct StatusFields {
+    /// `tree` or `terminal` — which view has focus.
+    pub focus: String,
+    /// The displayed session address (`source/session`).
+    pub target: String,
+    /// The instance's working directory.
+    pub cwd: String,
+    /// The instance's controlling tty (`-` where there is none / on Windows).
+    pub tty: String,
+}
+
+/// Renders a [`StatusFields`] to the tab-separated wire line the `status` verb replies.
+pub fn format_status(f: &StatusFields) -> String {
+    format!(
+        "focus={}\ttarget={}\tcwd={}\ttty={}",
+        f.focus, f.target, f.cwd, f.tty
+    )
+}
+
+/// Parses a `status` reply line back into [`StatusFields`]. Unknown keys are ignored
+/// and missing keys stay empty, so a format that gains a field never breaks an older
+/// reader.
+pub fn parse_status(line: &str) -> StatusFields {
+    let mut f = StatusFields::default();
+    for field in line.trim().split('\t') {
+        if let Some((k, v)) = field.split_once('=') {
+            match k {
+                "focus" => f.focus = v.to_string(),
+                "target" => f.target = v.to_string(),
+                "cwd" => f.cwd = v.to_string(),
+                "tty" => f.tty = v.to_string(),
+                _ => {}
+            }
+        }
+    }
+    f
 }
 
 #[cfg(test)]
@@ -541,12 +581,15 @@ mod tests {
     }
 
     #[test]
-    fn discover_newest_then_higher_pid() {
+    fn discover_all_newest_then_higher_pid() {
         let dir = std::env::temp_dir().join(format!("xmux-ctl-discover-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        assert!(discover(&dir).is_err(), "empty dir must error");
+        assert!(
+            discover_all(&dir).unwrap().is_empty(),
+            "empty dir yields no instances"
+        );
 
         let older = socket_path(&dir, 100);
         let newer = socket_path(&dir, 200);
@@ -556,13 +599,15 @@ mod tests {
         let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
         filetime_set(&older, hour_ago);
 
-        assert_eq!(discover(&dir).unwrap(), newer);
+        let all = discover_all(&dir).unwrap();
+        assert_eq!(all.len(), 2, "both sockets enumerated");
+        assert_eq!(all[0], (newer, 200), "newest first");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn discover_tie_break_higher_pid() {
+    fn discover_all_tie_break_higher_pid() {
         let dir = std::env::temp_dir().join(format!("xmux-ctl-tie-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -571,14 +616,26 @@ mod tests {
         let b = socket_path(&dir, 200);
         std::fs::write(&a, b"").unwrap();
         std::fs::write(&b, b"").unwrap();
-        // Same mtime for both: tie-break must pick the higher pid.
+        // Same mtime for both: tie-break must order the higher pid first.
         let ts = std::time::SystemTime::now();
         filetime_set(&a, ts);
         filetime_set(&b, ts);
 
-        assert_eq!(discover(&dir).unwrap(), b);
+        assert_eq!(discover_all(&dir).unwrap()[0], (b, 200));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn status_format_parse_roundtrips_with_spaces_in_cwd() {
+        let f = StatusFields {
+            focus: "terminal".into(),
+            target: "jup/api".into(),
+            cwd: r"C:\Program Files\xmux".into(), // a value WITH spaces
+            tty: "-".into(),
+        };
+        // Tab-separated so the spaced cwd survives the round-trip.
+        assert_eq!(parse_status(&format_status(&f)), f);
     }
 
     /// Sets a file's mtime via the filesystem so Discover's ordering is testable

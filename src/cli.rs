@@ -37,15 +37,16 @@ enum Command {
     },
     /// Diagnose configuration and source reachability.
     Doctor,
-    /// Drive a running switcher over its control socket.
+    /// Drive a running switcher over its control socket, or `list` running instances.
     Ctl {
-        /// Target the instance with this pid.
+        /// Target the instance with this pid (see `xmux ctl list`).
         #[arg(long)]
         pid: Option<u32>,
         /// Target this socket path.
         #[arg(long)]
         sock: Option<PathBuf>,
-        /// The command to send (e.g. `dump`, `key down`); empty reads from stdin.
+        /// The command to send (e.g. `list`, `switch prod/api`, `dump`); empty reads
+        /// from stdin. With no target and several instances running, use --pid.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -184,10 +185,16 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
     0
 }
 
-/// Drives a running switcher over its control socket. With command args it sends
-/// one command; with none it streams commands from stdin. The target is the
-/// explicit `--sock`, else `--pid`'s socket, else the newest socket.
+/// Drives a running switcher over its control socket. `list` enumerates instances;
+/// otherwise, with command args it sends one command and with none it streams
+/// commands from stdin. The target is the explicit `--sock`, else `--pid`'s socket,
+/// else the sole running instance (an error when several run — pick one with --pid).
 async fn run_ctl(env: &Env, pid: Option<u32>, sock: Option<PathBuf>, args: Vec<String>) -> i32 {
+    // `list` is a meta-command over ALL instances, not one — handle it before
+    // resolving a single target socket.
+    if args.first().map(String::as_str) == Some("list") {
+        return run_ctl_list(env).await;
+    }
     let path = match resolve_ctl_socket(&env.xmux_dir, pid, sock) {
         Ok(p) => p,
         Err(e) => {
@@ -233,7 +240,22 @@ fn resolve_ctl_socket(
     match (sock, pid) {
         (Some(s), _) => Ok(s),
         (None, Some(p)) => Ok(control::socket_path(xmux_dir, p)),
-        (None, None) => Ok(control::discover(xmux_dir)?),
+        // No explicit target: use the sole instance if there is exactly one. With
+        // several running, refuse to guess (the old "newest wins" silently drove the
+        // wrong client) — name one with --pid, listed by `xmux ctl list`.
+        (None, None) => {
+            let all = control::discover_all(xmux_dir)?;
+            match all.len() {
+                0 => Err(anyhow::anyhow!(
+                    "no running xmux instance found in {}",
+                    xmux_dir.display()
+                )),
+                1 => Ok(all.into_iter().next().unwrap().0),
+                n => Err(anyhow::anyhow!(
+                    "{n} xmux instances running; target one with --pid <pid> (run `xmux ctl list`)"
+                )),
+            }
+        }
     }
 }
 
@@ -252,6 +274,71 @@ async fn ctl_one(client: &mut control::Client, line: &str) -> i32 {
             1
         }
     }
+}
+
+/// Lists every running xmux instance so a specific one can be driven with `--pid`.
+/// Enumerates the `ctl-<pid>.sock` markers, then dials each for its `status` (cwd /
+/// tty / displayed session / focus). A socket that does not answer is a crashed
+/// instance's stale marker and is skipped, so the listing shows only live, drivable
+/// instances.
+async fn run_ctl_list(env: &Env) -> i32 {
+    let instances = control::discover_all(&env.xmux_dir).unwrap_or_default();
+    let mut rows: Vec<[String; 5]> = vec![[
+        "PID".into(),
+        "CWD".into(),
+        "TTY".into(),
+        "DISPLAYED".into(),
+        "FOCUS".into(),
+    ]];
+    for (path, pid) in instances {
+        let Ok(mut client) = control::Client::dial(&path).await else {
+            continue; // stale marker for a crashed instance
+        };
+        let Ok(resp) = client.do_cmd("status").await else {
+            continue;
+        };
+        let f = control::parse_status(&resp);
+        let cell = |s: String| if s.is_empty() { "-".to_string() } else { s };
+        rows.push([
+            pid.to_string(),
+            cell(f.cwd),
+            cell(f.tty),
+            cell(f.target),
+            cell(f.focus),
+        ]);
+    }
+    if rows.len() == 1 {
+        println!("no running xmux instances");
+        return 0;
+    }
+    print!("{}", format_table(&rows));
+    0
+}
+
+/// Renders rows as a left-aligned table: each column is padded to its widest cell.
+/// The final column is not padded, and trailing space is trimmed, so `-` cells never
+/// leave dangling whitespace.
+fn format_table(rows: &[[String; 5]]) -> String {
+    let mut widths = [0usize; 5];
+    for r in rows {
+        for (i, c) in r.iter().enumerate() {
+            widths[i] = widths[i].max(c.chars().count());
+        }
+    }
+    let mut out = String::new();
+    for r in rows {
+        let mut line = String::new();
+        for (i, c) in r.iter().enumerate() {
+            if i + 1 == r.len() {
+                line.push_str(c);
+            } else {
+                line.push_str(&format!("{c:<width$}  ", width = widths[i]));
+            }
+        }
+        out.push_str(line.trim_end());
+        out.push('\n');
+    }
+    out
 }
 
 async fn probe(s: &Source) -> Result<usize, String> {
@@ -277,4 +364,81 @@ fn ssh_on_path() -> bool {
         .stderr(std::process::Stdio::null())
         .status()
         .is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_ctl_socket_explicit_targets_win() {
+        let dir = std::env::temp_dir();
+        // --sock is returned verbatim.
+        let s = PathBuf::from("/some/explicit.sock");
+        assert_eq!(resolve_ctl_socket(&dir, None, Some(s.clone())).unwrap(), s);
+        // --pid maps to that pid's socket path.
+        assert_eq!(
+            resolve_ctl_socket(&dir, Some(42), None).unwrap(),
+            control::socket_path(&dir, 42)
+        );
+    }
+
+    #[test]
+    fn resolve_ctl_socket_no_target_needs_exactly_one_instance() {
+        let dir = std::env::temp_dir().join(format!("xmux-ctl-resolve-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 0 instances → error (nothing to drive).
+        assert!(
+            resolve_ctl_socket(&dir, None, None).is_err(),
+            "none → error"
+        );
+
+        // Exactly 1 → that socket, no --pid needed.
+        let one = control::socket_path(&dir, 100);
+        std::fs::write(&one, b"").unwrap();
+        assert_eq!(resolve_ctl_socket(&dir, None, None).unwrap(), one);
+
+        // 2+ → refuse to guess (the multi-instance guard); require --pid.
+        std::fs::write(control::socket_path(&dir, 200), b"").unwrap();
+        assert!(
+            resolve_ctl_socket(&dir, None, None).is_err(),
+            "multiple → refuse to guess"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn format_table_aligns_columns_and_trims() {
+        let rows = vec![
+            [
+                "PID".into(),
+                "CWD".into(),
+                "TTY".into(),
+                "DISPLAYED".into(),
+                "FOCUS".into(),
+            ],
+            [
+                "48213".into(),
+                "/home/u/xmux".into(),
+                "-".into(),
+                "jup/api".into(),
+                "terminal".into(),
+            ],
+        ];
+        let out = format_table(&rows);
+        let lines: Vec<&str> = out.lines().collect();
+        // The CWD column starts at the same offset in the header and the data row
+        // (PID padded to the width of "48213").
+        let col = lines[0].find("CWD").unwrap();
+        assert_eq!(&lines[1][col..col + "/home/u/xmux".len()], "/home/u/xmux");
+        // No row carries trailing whitespace, and the last column is unpadded.
+        assert!(
+            lines.iter().all(|l| *l == l.trim_end()),
+            "no trailing space"
+        );
+        assert!(lines[1].ends_with("terminal"));
+    }
 }

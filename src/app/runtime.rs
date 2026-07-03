@@ -189,14 +189,55 @@ fn dispatch_commands(
     (quit, width_changed)
 }
 
-/// The `status` verb reply: the current focus side + the selection's session target.
-/// A flat, parseable line an agent reads to confirm a `switch`/`focus` landed.
-fn status_line(switcher: &crate::ui::switcher::Switcher, tree_focused: bool) -> String {
-    format!(
-        "focus={} target={}",
-        if tree_focused { "tree" } else { "terminal" },
-        switcher.terminal_view_target().target,
-    )
+/// The `status` verb reply: focus side, displayed session, and this instance's
+/// working directory + controlling tty. A flat, TAB-separated `key=value` line an
+/// agent reads to confirm a `switch`/`focus` landed and that `xmux ctl list` parses to
+/// tell instances apart. The wire format lives in `control` so producer and parser
+/// cannot drift.
+fn status_line(
+    switcher: &crate::ui::switcher::Switcher,
+    tree_focused: bool,
+    cwd: &str,
+    tty: &str,
+) -> String {
+    crate::control::format_status(&crate::control::StatusFields {
+        focus: if tree_focused { "tree" } else { "terminal" }.to_string(),
+        target: switcher.terminal_view_target().target.to_string(),
+        cwd: cwd.to_string(),
+        tty: tty.to_string(),
+    })
+}
+
+/// This process's working directory for the `status` reply, or `-` if unreadable.
+fn self_cwd() -> String {
+    std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "-".to_string())
+}
+
+/// This process's controlling terminal, for `xmux ctl list`: `/dev/pts/N` on Linux
+/// when stdin is a tty, `-` where there is none (a redirect) or on Windows (a console
+/// has no pts). Best-effort and dependency-free — a `-` never breaks the listing, it
+/// just leaves that column blank while pid + cwd + displayed session still identify
+/// the instance.
+fn self_tty() -> String {
+    #[cfg(unix)]
+    {
+        use std::io::IsTerminal;
+        if std::io::stdin().is_terminal() {
+            if let Ok(link) = std::fs::read_link("/proc/self/fd/0") {
+                let s = link.display().to_string();
+                if s.starts_with("/dev/") {
+                    return s;
+                }
+            }
+        }
+        "-".to_string()
+    }
+    #[cfg(not(unix))]
+    {
+        "-".to_string()
+    }
 }
 
 /// The EFFECTIVE tree width to render and size the terminal view against. Hidden (0, terminal view
@@ -2268,7 +2309,12 @@ impl Runtime {
                 }
             }
             Cmd::Status(reply) => {
-                let _ = reply.send(status_line(&self.switcher, self.state.focus.view_is_tree()));
+                let _ = reply.send(status_line(
+                    &self.switcher,
+                    self.state.focus.view_is_tree(),
+                    &self_cwd(),
+                    &self_tty(),
+                ));
             }
             Cmd::Dump(reply) => {
                 let sz = term.size().unwrap_or(ratatui::layout::Size {
@@ -3912,8 +3958,16 @@ mod tests {
         };
         let mut state = crate::state::State::from_scan(scan);
         let sw = Switcher::new(&mut state);
-        assert_eq!(status_line(&sw, true), "focus=tree target=api");
-        assert_eq!(status_line(&sw, false), "focus=terminal target=api");
+        // Tab-separated so a cwd containing spaces survives; cwd/tty are injected so
+        // the assertion stays deterministic (no real env read).
+        assert_eq!(
+            status_line(&sw, true, "/tmp/x", "-"),
+            "focus=tree\ttarget=api\tcwd=/tmp/x\ttty=-"
+        );
+        assert_eq!(
+            status_line(&sw, false, "/tmp/x", "/dev/pts/3"),
+            "focus=terminal\ttarget=api\tcwd=/tmp/x\ttty=/dev/pts/3"
+        );
     }
 
     #[test]

@@ -111,3 +111,8 @@ verbs — `ping`, `status`, `dump`, `rescan`, `switch <address>`,
 with `xmux ctl <verb>`, e.g. `xmux ctl switch prod/api`. A low-level `raw:`
 namespace (`raw:key`, `raw:keys`, `raw:text`) injects keystrokes or bytes for
 tests; it is unstable and not part of the supported surface.
+
+With one instance running `xmux ctl` targets it automatically; with several it
+refuses to guess. `xmux ctl list` prints each instance (pid, working directory,
+tty, displayed session, focus) so you can drive a specific one with
+`xmux ctl --pid <pid> <verb>`.

@@ -152,8 +152,13 @@ xmux ctl status
 xmux ctl switch prod/api
 ```
 
-By default `xmux ctl` targets the newest instance; use `--pid` or `--sock` to
-pick one.
+With one instance running, `xmux ctl` targets it automatically. When several are
+running it refuses to guess: list them and target one by pid.
+
+```sh
+xmux ctl list                 # PID · CWD · TTY · displayed session · focus
+xmux ctl --pid 51907 switch local/logs
+```
 
 ## Architecture
 
