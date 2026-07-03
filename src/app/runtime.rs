@@ -836,26 +836,34 @@ impl Runtime {
                 if let Some(h) = hosts.get_mut(&host) {
                     h.inventory.sessions = sessions.clone();
                 }
-                switcher.apply_source_result(host.clone(), sessions.clone(), None, state);
-                if let Some(client) = mgr.get(&host) {
-                    request_session_panes(client, &sessions, panes_requested);
+                // Act on the tree/terminals ONLY while the host still has a live client.
+                // Per-host FIFO delivers this inventory before the host's `Exited`/reap, so
+                // `mgr.get` is normally `Some` here; the gate is the backstop that keeps a
+                // broken ordering from reviving a reaped host in the tree
+                // (`apply_source_result`) or resyncing its dead terminals. (`ApplyInventory`
+                // is emitted only for control-mode hosts, so a poll host is never gated out.)
+                if mgr.get(&host).is_some() {
+                    switcher.apply_source_result(host.clone(), sessions.clone(), None, state);
+                    if let Some(client) = mgr.get(&host) {
+                        request_session_panes(client, &sessions, panes_requested);
+                    }
+                    let n = sessions.len();
+                    let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
+                    tracing::info!(host, n, ?names, "sessions_applied");
+                    // Sync this host's display terminal(s) (per-host for remote tmux).
+                    let mut ctx = crate::driver::DriverCtx {
+                        registry: &mut *registry,
+                        hosts: &mut *hosts,
+                        worker,
+                        mgr,
+                        pty_tx,
+                        attach_seq: &mut *attach_seq,
+                        cols,
+                        body_rows: rows,
+                        tree_width,
+                    };
+                    sync_source_terminals(&host, &sessions, &mut ctx);
                 }
-                let n = sessions.len();
-                let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
-                tracing::info!(host, n, ?names, "sessions_applied");
-                // Sync this host's display terminal(s) (per-host for remote tmux).
-                let mut ctx = crate::driver::DriverCtx {
-                    registry: &mut *registry,
-                    hosts: &mut *hosts,
-                    worker,
-                    mgr,
-                    pty_tx,
-                    attach_seq: &mut *attach_seq,
-                    cols,
-                    body_rows: rows,
-                    tree_width,
-                };
-                sync_source_terminals(&host, &sessions, &mut ctx);
             }
             EventEffect::Refetch { host } => {
                 // The server's session/window structure changed (a `%`-notification).

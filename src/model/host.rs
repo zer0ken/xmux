@@ -126,13 +126,21 @@ impl HostDisplay {
     }
 
     /// Resolves a worker `Ready(seq, id)` for `key` against the bookkeeping: a reaped-race
-    /// (its `Exited` arrived first) tears down and clears in-flight + pending; the current
-    /// seq installs (clears in-flight + pending, returns the shown session); a stale seq
+    /// (its `Exited` arrived first) tears down and clears this id's pending — and the
+    /// in-flight slot too, UNLESS a newer attach has since taken it; the current seq
+    /// installs (clears in-flight + pending, returns the shown session); a stale seq
     /// tears down (clears only this id's pending). The run loop performs the registry
     /// install/teardown the outcome names — this owns only the bookkeeping decision.
     pub fn resolve_ready(&mut self, key: &str, seq: u64, id: u64) -> ReadyOutcome {
         if self.reaped_ids.remove(&id) {
-            self.in_flight.remove(key);
+            // Clear the in-flight slot only when THIS reaped reply is still the current
+            // one. A reattach-flap can request a newer attach for the same key after the
+            // reap; the dead id's late `Ready` must tear its own attachment down without
+            // clobbering the newer in-flight seq — otherwise that live attach then
+            // resolves as stale and blanks the pane until it self-heals.
+            if self.reply_is_current(key, seq) {
+                self.in_flight.remove(key);
+            }
             self.pending.remove(&id);
             ReadyOutcome::TearDownReaped
         } else if self.reply_is_current(key, seq) {
@@ -180,7 +188,11 @@ impl HostDisplay {
 pub struct Host {
     pub transport: Box<dyn Transport>,
     pub mux: Box<dyn Mux>,
-    /// Live session/window inventory.
+    /// Session/window inventory — the single owner for the paths that read it: the
+    /// control-mode `-CC` reader's fold (`ApplyInventory`) and the enumerate/CLI path
+    /// (`Host::enumerate`). A poll host applies its enumeration straight to the tree and
+    /// leaves this untouched; nothing in the live loop reads a poll host's inventory (the
+    /// re-warm reader is gated on a live control client).
     pub inventory: HostInventory,
     /// Which session each display_key shows + what spawn is in flight.
     pub display: HostDisplay,
@@ -543,6 +555,34 @@ mod tests {
         );
         assert!(!d.in_flight_contains("local/w"), "in-flight cleared");
         assert!(!d.pending.contains_key(&42), "pending id cleared");
+        assert!(!d.reaped_ids.contains(&42), "reaped id consumed");
+    }
+
+    #[test]
+    fn host_display_resolve_ready_reaped_keeps_newer_in_flight() {
+        let mut d = HostDisplay::default();
+        // A reattach flap: id=42/seq=3 was reaped before its Ready, then a NEW attach
+        // (id=99/seq=7) was requested for the same key, so seq=7 is now in flight.
+        d.mark_in_flight("local/w", 7);
+        d.pending.insert(42, "local/w".into());
+        d.pending.insert(99, "local/w".into());
+        d.reaped_ids.insert(42);
+        // The late Ready for the DEAD id (seq=3) tears its own attachment down but must
+        // NOT clear the newer in-flight seq=7, or the live attach resolves as stale.
+        assert_eq!(
+            d.resolve_ready("local/w", 3, 42),
+            ReadyOutcome::TearDownReaped
+        );
+        assert_eq!(
+            d.in_flight_seq("local/w"),
+            Some(7),
+            "the newer in-flight seq survives the dead id's teardown"
+        );
+        assert!(!d.pending.contains_key(&42), "dead id's pending cleared");
+        assert!(
+            d.pending.contains_key(&99),
+            "newer attach's pending untouched"
+        );
         assert!(!d.reaped_ids.contains(&42), "reaped id consumed");
     }
 
