@@ -25,9 +25,11 @@ use std::time::Instant;
 /// selection derive.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
-    /// Move the display target to this `source/session[:window]` address (ctl
-    /// `switch`, or a context-menu pick). Moves the selection; the attach commits on a
-    /// later `Tick` once the selection settles.
+    /// Move the display target to this `source/session` address (the ctl `switch`
+    /// verb — its only producer). Selects the addressed SESSION; a `:window` suffix is
+    /// not honored, since the switcher matches session rows by their `source/session`
+    /// address. Moves the selection; the attach commits on a later `Tick` once the
+    /// selection settles.
     Switch { address: String },
     /// Move focus between the tree view and the terminal view.
     Focus(FocusTarget),

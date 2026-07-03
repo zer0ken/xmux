@@ -142,15 +142,23 @@ session, the live auto-hide-tree toggle, logs, and control sockets) lives under
 
 ## Control socket
 
-A running xmux instance listens on a local socket (`~/.xmux/ctl-<pid>.sock`). It
-speaks navigation/display verbs — `ping`, `status`, `dump`, `rescan`,
-`switch <addr>`, `focus <target>`, `width <n>`, `toggle-auto-hide`, `quit` — and
-session-lifecycle verbs — `new-session <source> [name]`, `kill-session <addr>`,
-`rename-session <addr> <name>`, `new-window <addr> [name]`,
-`split-window <addr> [h|v]`, `kill-window <addr>`, `rename-window <addr> <name>`
-(a session is addressed `<source>/<session>`, a window
-`<source>/<session>:<window>`). An unstable `raw:` namespace is reserved for
-low-level key/byte injection. Drive it with:
+A running xmux instance listens on a local socket (`~/.xmux/ctl-<pid>.sock`).
+Sessions are addressed `<source>/<session>` and windows
+`<source>/<session>:<window>`. It speaks navigation/display verbs — `ping`,
+`status`, `dump`, `rescan`, `switch <source>/<session>`, `focus <tree|terminal>`,
+`width <delta>` (adjusts the tree width by a signed column count — a delta, not an
+absolute width), `toggle-auto-hide`, `quit` — and session-lifecycle verbs:
+
+- `new-session <source> [name]`
+- `kill-session <source>/<session>`
+- `rename-session <source>/<session> <name>`
+- `new-window <source>/<session> [name]`
+- `split-window <source>/<session>:<window> [v|h]` — vertical by default
+- `kill-window <source>/<session>:<window>`
+- `rename-window <source>/<session>:<window> <name>`
+
+An unstable `raw:` namespace is reserved for low-level key/byte injection. Drive it
+with:
 
 ```sh
 xmux ctl status

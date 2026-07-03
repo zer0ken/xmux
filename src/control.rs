@@ -256,8 +256,8 @@ pub enum CtlRequest {
 /// [`Action`]; the raw keystroke surface is `raw:key` / `raw:keys` / `raw:text`.
 /// Anything else is `Unknown` (the dispatcher replies `err: ...`). ctl speaks the
 /// DOMAIN here, not internal key names (C-CTL): the wire never references an input
-/// Action/KeyCode again. A session is addressed `<source>/<session>`, a window
-/// `<source>/<session>:<window>` — the same grammar as `switch` and the tree.
+/// Action/KeyCode again. A session is addressed `<source>/<session>` (as `switch` and
+/// the tree use); the three window verbs take a window address `<source>/<session>:<window>`.
 pub fn parse_ctl_op(line: &str) -> CtlRequest {
     let req = parse_request(line);
     let unknown = || CtlRequest::Unknown(line.trim().to_string());

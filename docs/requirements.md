@@ -121,10 +121,10 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   `nest_guard_inside`, `nest_guard_outside`, `in_mux_value_cases`; `run_app` wiring is
   in `runtime.rs`. **Live-verified** (exit 2).
 - **FR-D4** — Socket hygiene: a stale socket is removed before bind, the socket is
-  owner-only (`0600`) on unix, and it is removed on exit. Discovery finds the newest
-  `ctl-*.sock` by mtime, tie-broken by higher pid. **Tests:**
+  owner-only (`0600`) on unix, and it is removed on exit. Discovery enumerates the live
+  `ctl-*.sock` markers, newest by mtime first, tie-broken by higher pid. **Tests:**
   `control_handle_drop_removes_socket`, `control_socket_is_owner_only` (unix),
-  `discover_newest_then_higher_pid`, `discover_tie_break_higher_pid`.
+  `discover_all_newest_then_higher_pid`, `discover_all_tie_break_higher_pid`.
 - **FR-D5** — The app launches directly into the persistent split view (tree +
   terminal view) with the cursor preselected — the persisted last session if set,
   else a local-first recency preselect. There is no separate picker mode; `prefix q`
@@ -150,20 +150,29 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
 ## F. Control channel
 
 - **FR-F1** — A single per-pid local socket (`ctl-<pid>.sock`) drives the running app
-  headlessly. Its semantic verbs — `ping`, `dump`, `status`, `switch <address>`,
-  `focus <terminal|tree>`, `rescan`, `quit`, `width <int>`, `toggle-auto-hide` — parse
-  to a domain `Action`; raw key/text injection stays behind the unstable `raw:`
-  namespace (`raw:key` / `raw:keys` / `raw:text`), reserved for tests. **Tests:**
-  `parse_ctl_op_semantic_verbs`, `parse_ctl_op_raw_namespace_is_test_only_surface`,
-  `parse_ctl_op_rejects_malformed`, `parse_request_cases`, `parse_key_*`,
-  `control_end_to_end`, `dispatch_resolves_semantic_verbs_to_op_cmds`.
+  headlessly. Its navigation/display verbs — `ping`, `dump`, `status`,
+  `switch <source>/<session>`, `focus <terminal|tree>`, `rescan`, `quit`,
+  `width <delta>` (a signed column delta, not an absolute width), `toggle-auto-hide` —
+  and its session-lifecycle verbs — `new-session`, `kill-session`, `rename-session`,
+  `new-window`, `split-window`, `kill-window`, `rename-window` (sessions addressed
+  `<source>/<session>`, windows `<source>/<session>:<window>`) — parse to a domain
+  `Action`; raw key/text injection stays behind the unstable `raw:` namespace
+  (`raw:key` / `raw:keys` / `raw:text`), reserved for tests. A command-level failure
+  replies `err: …` and `xmux ctl` exits non-zero. **Tests:**
+  `parse_ctl_op_semantic_verbs`, `parse_ctl_op_session_lifecycle_verbs`,
+  `parse_ctl_op_raw_namespace_is_test_only_surface`, `parse_ctl_op_rejects_malformed`,
+  `parse_request_cases`, `parse_key_*`, `control_end_to_end`,
+  `dispatch_resolves_semantic_verbs_to_op_cmds`.
 - **FR-F2** — There is one unified socket, not a separate app socket: `switch <address>`
   is a first-class ctl verb resolving to `Action::Switch`. **Tests:**
   `control_end_to_end`, `dispatch_resolves_semantic_verbs_to_op_cmds`,
   `parse_ctl_op_semantic_verbs`.
-- **FR-F3** — Socket discovery: newest `ctl-*.sock` by mtime then higher pid.
-  **Tests:** `discover_newest_then_higher_pid`, `discover_tie_break_higher_pid`,
-  `socket_path_format`.
+- **FR-F3** — Socket discovery enumerates live `ctl-*.sock` markers, newest by mtime
+  first then higher pid. `xmux ctl` with no `--pid`/`--sock` drives the sole instance
+  and refuses to guess when several run; `xmux ctl list` shows each (pid, cwd, tty,
+  displayed session, focus) so a specific one can be targeted with `--pid`. **Tests:**
+  `discover_all_newest_then_higher_pid`, `discover_all_tie_break_higher_pid`,
+  `resolve_ctl_socket_no_target_needs_exactly_one_instance`, `socket_path_format`.
 - **FR-F4** — Length-framed messages (decimal count + `\n` + bytes) with a bounded
   read; endpoint naming works for `ctl-*.sock` on every platform. **Tests:**
   `read_frame_oversized`, `frame_round_trip`, `socket_path_format`,
