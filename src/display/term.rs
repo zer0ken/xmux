@@ -139,7 +139,7 @@ pub fn ensure_mouse_capture() {
 #[cfg(not(windows))]
 pub fn ensure_mouse_capture() {}
 
-/// Parse an `XMUX_PREFIX`-style spec into a C0 control byte.
+/// Parse a prefix-key spec (the `[ui] prefix` config value) into a C0 control byte.
 ///
 /// Recognised forms:
 /// - `C-<letter>` / `c-<letter>` → 0x01..0x1a
