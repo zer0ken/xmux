@@ -42,9 +42,11 @@ imports a mux type or a `Source`.
   authoritative — the registry-merge / local `list-clients` gate) express what the mux
   sites need. None of the three derives from another, and no code reads them to pick a
   server model (that is `ServerModel`).
-- Machine selection is a single construction-time match — `MachineKind::transport()` maps
-  a kind to a concrete transport (via the `machine::local` / `machine::ssh` factories),
-  never a match scattered across call sites. The trait object then carries the choice.
+- The `MachineKind` query methods are the ONLY code that matches on the kind:
+  `transport()` maps a kind to a concrete transport (via the `machine::local` /
+  `machine::ssh` factories) and `local_socket()` reads its `-S` socket. No match on the
+  kind is scattered across call sites — `Source::local_socket` delegates to the kind, and
+  the trait object carries the choice everywhere else.
 - `exec_argv` lowers a non-interactive command; `interactive_attach_argv` lowers an
   attach into the terminal handover (local `-S` injection, or `ssh -t` running
   `[<select-window> ;] exec <attach>` — the `exec`/window-fold lives here, never in
@@ -72,8 +74,9 @@ imports a mux type or a `Source`.
   implementing `Transport` — override the capability predicates for its combination
   (WSL is `runs_through_shell() = true`, `local_registry_scope() = false`) rather than
   deriving from `is_remote` — add a `machine::<kind>()` factory, and add a
-  `MachineKind::<Kind>` variant plus one arm in `MachineKind::transport()` (the single
-  selection site). No other `match`/`if` on kind changes.
+  `MachineKind::<Kind>` variant plus one arm in each `MachineKind` method that matches the
+  kind (`transport()`, `local_socket()`). The compiler forces both arms; no match on the
+  kind exists outside `MachineKind`.
 - Adding per-machine execution behavior to an existing family: edit `local.rs` /
   `ssh.rs`; keep the shared shell vocab in `vocab.rs`.
 

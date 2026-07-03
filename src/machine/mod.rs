@@ -128,9 +128,10 @@ pub enum LoweredSwitch {
 
 /// Which machine family a host reaches its mux over, carrying that family's own
 /// construction data. The SINGLE representation of transport kind: config/`Hosts::build`
-/// picks a variant, and [`MachineKind::transport`] is the one site that turns it into a
-/// concrete [`Transport`]. A new family is a variant here plus one match arm — no other
-/// `match`/`if` on kind exists.
+/// picks a variant, and the `MachineKind` query methods ([`transport`](Self::transport),
+/// [`local_socket`](Self::local_socket)) are the only code that matches on the kind. A new
+/// family is a variant here plus one arm in each of those methods — no code OUTSIDE
+/// `MachineKind` matches on the kind.
 #[derive(Clone, Debug)]
 pub enum MachineKind {
     /// The local machine, optionally targeting a non-default mux socket (`-S`).
@@ -146,7 +147,8 @@ pub enum MachineKind {
 
 impl MachineKind {
     /// The one site that maps a machine kind to a concrete [`Transport`] (Decision A).
-    /// A new family = a variant above + one arm here; no other `match`/`if` on kind.
+    /// A new family = a variant above + one arm here (and in the sibling `local_socket`);
+    /// no code outside `MachineKind` matches on the kind.
     pub fn transport(self) -> Box<dyn Transport> {
         match self {
             MachineKind::Local { socket } => local(socket),
@@ -155,6 +157,17 @@ impl MachineKind {
                 control_path,
                 os,
             } => ssh(alias, control_path, os),
+        }
+    }
+
+    /// The local mux server socket (`-S`) this machine targets — `Some` only for a local
+    /// machine on a non-default socket, `None` for a remote machine or the default socket.
+    /// Like [`transport`](Self::transport), the match on the kind lives HERE on the type, so
+    /// a new family is compiler-forced to state its socket in one place.
+    pub fn local_socket(&self) -> Option<String> {
+        match self {
+            MachineKind::Local { socket } => socket.clone(),
+            MachineKind::Ssh { .. } => None,
         }
     }
 }
@@ -228,6 +241,28 @@ mod tests {
         .transport();
         assert_eq!(ssh.host_id(), "prod");
         assert!(ssh.is_remote());
+    }
+
+    #[test]
+    fn local_socket_is_some_only_for_a_local_nondefault_socket() {
+        assert_eq!(
+            MachineKind::Local {
+                socket: Some("/tmp/s".into())
+            }
+            .local_socket(),
+            Some("/tmp/s".into())
+        );
+        assert_eq!(MachineKind::Local { socket: None }.local_socket(), None);
+        assert_eq!(
+            MachineKind::Ssh {
+                alias: "prod".into(),
+                control_path: String::new(),
+                os: "linux".into(),
+            }
+            .local_socket(),
+            None,
+            "a remote machine has no local socket"
+        );
     }
 
     #[test]

@@ -99,11 +99,9 @@ impl Source {
 
     /// The local mux server socket (`-S`) this source targets when it is a local
     /// machine; `None` for a remote source or a local source on the default socket.
+    /// Delegates to [`MachineKind::local_socket`] — the match on the kind lives on the kind.
     pub(crate) fn local_socket(&self) -> Option<String> {
-        match &self.kind {
-            MachineKind::Local { socket } => socket.clone(),
-            MachineKind::Ssh { .. } => None,
-        }
+        self.kind.local_socket()
     }
 
     /// Assembles a value [`Host`](crate::model::Host) from this source's config —
