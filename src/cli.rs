@@ -200,12 +200,19 @@ async fn run_ctl(env: &Env, pid: Option<u32>, sock: Option<PathBuf>, args: Vec<S
     if args.first().is_some_and(|s| s.eq_ignore_ascii_case("list")) {
         return run_ctl_list(env).await;
     }
-    let path = match resolve_ctl_socket(&env.xmux_dir, pid, sock) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("xmux ctl: {e}");
-            return 1;
-        }
+    let path = match (sock, pid) {
+        (Some(s), _) => s,
+        (None, Some(p)) => control::socket_path(&env.xmux_dir, p),
+        // No explicit target: drive the sole LIVE instance. Enumerating LIVE instances
+        // (a dialable socket), not markers, is what keeps a crashed instance's stale
+        // `ctl-*.sock` from counting — several dead markers must not read as "many".
+        (None, None) => match choose_sole_instance(&live_instances(&env.xmux_dir).await) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("xmux ctl: {e}");
+                return 1;
+            }
+        },
     };
     let mut client = match control::Client::dial(&path).await {
         Ok(c) => c,
@@ -237,30 +244,30 @@ async fn run_ctl(env: &Env, pid: Option<u32>, sock: Option<PathBuf>, args: Vec<S
     0
 }
 
-fn resolve_ctl_socket(
-    xmux_dir: &std::path::Path,
-    pid: Option<u32>,
-    sock: Option<PathBuf>,
-) -> anyhow::Result<PathBuf> {
-    match (sock, pid) {
-        (Some(s), _) => Ok(s),
-        (None, Some(p)) => Ok(control::socket_path(xmux_dir, p)),
-        // No explicit target: use the sole instance if there is exactly one. With
-        // several running, refuse to guess (the old "newest wins" silently drove the
-        // wrong client) — name one with --pid, listed by `xmux ctl list`.
-        (None, None) => {
-            let all = control::discover_all(xmux_dir)?;
-            match all.len() {
-                0 => Err(anyhow::anyhow!(
-                    "no running xmux instance found in {}",
-                    xmux_dir.display()
-                )),
-                1 => Ok(all.into_iter().next().unwrap().0),
-                n => Err(anyhow::anyhow!(
-                    "{n} xmux instances running; target one with --pid <pid> (run `xmux ctl list`)"
-                )),
-            }
+/// The live instances (a dialable `ctl-<pid>.sock`) among the discovered markers — the
+/// same liveness `xmux ctl list` uses. A crashed instance's stale marker does not dial
+/// and is filtered out, so it never counts toward which instance to drive.
+async fn live_instances(dir: &std::path::Path) -> Vec<(PathBuf, u32)> {
+    let mut live = Vec::new();
+    for (path, pid) in control::discover_all(dir).unwrap_or_default() {
+        if control::Client::dial(&path).await.is_ok() {
+            live.push((path, pid));
         }
+    }
+    live
+}
+
+/// Picks the socket to drive when `xmux ctl` is given no explicit target: exactly one
+/// live instance → its socket; none → an error; several → refuse to guess (name one
+/// with --pid, listed by `xmux ctl list`). Pure over the already-filtered live set.
+fn choose_sole_instance(live: &[(PathBuf, u32)]) -> anyhow::Result<PathBuf> {
+    match live {
+        [] => Err(anyhow::anyhow!("no running xmux instance found")),
+        [(path, _)] => Ok(path.clone()),
+        many => Err(anyhow::anyhow!(
+            "{} xmux instances running; target one with --pid <pid> (run `xmux ctl list`)",
+            many.len()
+        )),
     }
 }
 
@@ -390,42 +397,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolve_ctl_socket_explicit_targets_win() {
-        let dir = std::env::temp_dir();
-        // --sock is returned verbatim.
-        let s = PathBuf::from("/some/explicit.sock");
-        assert_eq!(resolve_ctl_socket(&dir, None, Some(s.clone())).unwrap(), s);
-        // --pid maps to that pid's socket path.
+    fn choose_sole_instance_needs_exactly_one_live() {
+        let inst = |n: u32| (PathBuf::from(format!("ctl-{n}.sock")), n);
+        // None → error (nothing live to drive).
+        assert!(choose_sole_instance(&[]).is_err(), "none → error");
+        // Exactly one → that socket, no --pid needed.
         assert_eq!(
-            resolve_ctl_socket(&dir, Some(42), None).unwrap(),
-            control::socket_path(&dir, 42)
+            choose_sole_instance(&[inst(100)]).unwrap(),
+            PathBuf::from("ctl-100.sock")
+        );
+        // Several live → refuse to guess (the multi-instance guard).
+        assert!(
+            choose_sole_instance(&[inst(100), inst(200)]).is_err(),
+            "multiple → refuse to guess"
         );
     }
 
-    #[test]
-    fn resolve_ctl_socket_no_target_needs_exactly_one_instance() {
-        let dir = std::env::temp_dir().join(format!("xmux-ctl-resolve-{}", std::process::id()));
+    #[tokio::test]
+    async fn live_instances_filters_out_dead_markers() {
+        let dir = std::env::temp_dir().join(format!("xmux-ctl-live-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-
-        // 0 instances → error (nothing to drive).
-        assert!(
-            resolve_ctl_socket(&dir, None, None).is_err(),
-            "none → error"
-        );
-
-        // Exactly 1 → that socket, no --pid needed.
-        let one = control::socket_path(&dir, 100);
-        std::fs::write(&one, b"").unwrap();
-        assert_eq!(resolve_ctl_socket(&dir, None, None).unwrap(), one);
-
-        // 2+ → refuse to guess (the multi-instance guard); require --pid.
+        // Two markers with no live listener: both undialable, so neither counts. This is
+        // the crux — a pile of crashed-instance markers must resolve to zero live, not
+        // to "many".
+        std::fs::write(control::socket_path(&dir, 100), b"").unwrap();
         std::fs::write(control::socket_path(&dir, 200), b"").unwrap();
         assert!(
-            resolve_ctl_socket(&dir, None, None).is_err(),
-            "multiple → refuse to guess"
+            live_instances(&dir).await.is_empty(),
+            "stale markers never count as live instances"
         );
-
         let _ = std::fs::remove_dir_all(&dir);
     }
 

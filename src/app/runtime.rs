@@ -1654,6 +1654,13 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<Cmd>(256);
     let control = pick_control_path(&rt.env);
     let _control_handle = control.and_then(|p| serve_control(p, cmd_tx));
+    // Off the startup path, sweep `ctl-*.sock` markers left by crashed instances (a
+    // clean exit removes its own on drop; a hard-kill does not) so discovery does not
+    // over-count dead instances.
+    {
+        let dir = rt.env.xmux_dir.clone();
+        tokio::spawn(async move { crate::control::prune_stale(&dir, std::process::id()).await });
+    }
 
     let mut tick = tokio::time::interval(Duration::from_millis(SPINNER_FRAME_MS));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

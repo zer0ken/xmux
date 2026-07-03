@@ -429,6 +429,24 @@ pub fn discover_all(dir: &Path) -> std::io::Result<Vec<(PathBuf, u32)>> {
     Ok(cands.into_iter().map(|(p, _, pid)| (p, pid)).collect())
 }
 
+/// Removes every stale `ctl-<pid>.sock` marker in `dir` — one whose control socket no
+/// longer answers a dial — except `keep_pid` (this process). A cleanly-exiting instance
+/// removes its own marker on drop, but a crash or hard-kill leaves one behind; without
+/// this sweep they accumulate and make instance discovery over-count dead instances.
+/// Best-effort: a marker that cannot be removed is skipped. Safe against a just-started
+/// peer because the marker is written only AFTER its listener binds, so an existing
+/// marker whose dial fails is genuinely dead.
+pub async fn prune_stale(dir: &Path, keep_pid: u32) {
+    for (path, pid) in discover_all(dir).unwrap_or_default() {
+        if pid == keep_pid {
+            continue;
+        }
+        if Client::dial(&path).await.is_err() {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
 /// The parsed `status` reply — the per-instance identity `xmux ctl list` shows. The
 /// wire form is TAB-separated `key=value` (tab, not space, so a value may itself
 /// contain spaces — e.g. a Windows `cwd`). [`format_status`] / [`parse_status`] are
@@ -854,6 +872,25 @@ mod tests {
         };
         // Tab-separated so the spaced cwd survives the round-trip.
         assert_eq!(parse_status(&format_status(&f)), f);
+    }
+
+    #[tokio::test]
+    async fn prune_stale_removes_dead_markers_and_keeps_own() {
+        let dir = std::env::temp_dir().join(format!("xmux-ctl-prune-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let own = socket_path(&dir, 111);
+        let dead = socket_path(&dir, 222);
+        std::fs::write(&own, b"").unwrap();
+        std::fs::write(&dead, b"").unwrap();
+
+        // Neither marker has a live listener; prune keeps our own pid (skipped without
+        // dialing) and removes the other (its dial fails ⇒ dead instance).
+        prune_stale(&dir, 111).await;
+        assert!(own.exists(), "our own marker is kept");
+        assert!(!dead.exists(), "a dead instance's marker is removed");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Sets a file's mtime via the filesystem so Discover's ordering is testable
