@@ -160,7 +160,7 @@ fn frame_err(msg: String) -> std::io::Error {
 /// path IS the AF_UNIX socket (and the discovery marker); on Windows, where local
 /// sockets are named pipes, the endpoint is the namespaced name `xmux-ctl-<pid>`
 /// derived from the pid, and the `.sock` file is a separate filesystem marker the
-/// [`discover`] glob finds.
+/// [`discover_all`] glob finds.
 pub fn endpoint_name(path: &Path) -> std::io::Result<Name<'static>> {
     #[cfg(unix)]
     {
@@ -249,13 +249,18 @@ pub enum CtlRequest {
     Unknown(String),
 }
 
-/// Resolves a ctl request line to a `CtlRequest`. Semantic verbs (`switch`,
-/// `focus`, `rescan`, `quit`, `width`, `toggle-auto-hide`) become a domain [`Action`];
-/// the raw keystroke surface is `raw:key` / `raw:keys` / `raw:text`. Anything else is
-/// `Unknown` (the dispatcher replies `err: ...`). ctl speaks the DOMAIN here, not
-/// internal key names (C-CTL): the wire never references an input Action/KeyCode again.
+/// Resolves a ctl request line to a `CtlRequest`. The navigation/display verbs
+/// (`switch`, `focus`, `rescan`, `quit`, `width`, `toggle-auto-hide`) and the
+/// session-lifecycle verbs (`new-session`, `kill-session`, `rename-session`,
+/// `new-window`, `split-window`, `kill-window`, `rename-window`) become a domain
+/// [`Action`]; the raw keystroke surface is `raw:key` / `raw:keys` / `raw:text`.
+/// Anything else is `Unknown` (the dispatcher replies `err: ...`). ctl speaks the
+/// DOMAIN here, not internal key names (C-CTL): the wire never references an input
+/// Action/KeyCode again. A session is addressed `<source>/<session>`, a window
+/// `<source>/<session>:<window>` — the same grammar as `switch` and the tree.
 pub fn parse_ctl_op(line: &str) -> CtlRequest {
     let req = parse_request(line);
+    let unknown = || CtlRequest::Unknown(line.trim().to_string());
     match req.verb.as_str() {
         "ping" => CtlRequest::Ping,
         "dump" => CtlRequest::Dump,
@@ -268,23 +273,122 @@ pub fn parse_ctl_op(line: &str) -> CtlRequest {
         }),
         "focus" => match FocusTarget::from_str(&req.arg) {
             Some(t) => CtlRequest::Op(Action::Focus(t)),
-            None => CtlRequest::Unknown(line.trim().to_string()),
+            None => unknown(),
         },
         "width" => match req.arg.trim().parse::<i32>() {
             Ok(d) => CtlRequest::Op(Action::TreeWidth(d)),
-            Err(_) => CtlRequest::Unknown(line.trim().to_string()),
+            Err(_) => unknown(),
         },
+        // Session lifecycle. Each maps to the SAME domain `Action` a keypress
+        // produces; only the addressing is parsed here. `new-session`/`new-window`
+        // take an optional name (empty ⇒ the mux auto-names). `KillSession` /
+        // `RenameSession` carry a `Session` built from the address via `parse_target`
+        // (the op uses only its source + name — see `ui::ops::run_op`).
+        "new-session" if !req.arg.trim().is_empty() => {
+            let (source, name) = split_first(&req.arg);
+            CtlRequest::Op(Action::CreateSession { source, name })
+        }
+        "kill-session" => match crate::session::parse_target(req.arg.trim()) {
+            Ok(sess) => CtlRequest::Op(Action::KillSession { sess }),
+            Err(_) => unknown(),
+        },
+        "rename-session" => {
+            let (addr, new_name) = split_first(&req.arg);
+            match crate::session::parse_target(&addr) {
+                Ok(sess) if !new_name.trim().is_empty() => CtlRequest::Op(Action::RenameSession {
+                    sess,
+                    new_name: new_name.trim().to_string(),
+                }),
+                _ => unknown(),
+            }
+        }
+        "new-window" => {
+            let (addr, name) = split_first(&req.arg);
+            match crate::session::parse_target(&addr) {
+                Ok(sess) => CtlRequest::Op(Action::NewWindow {
+                    source: sess.source,
+                    session: sess.name,
+                    name,
+                }),
+                Err(_) => unknown(),
+            }
+        }
+        "split-window" => {
+            let (addr, dir) = split_first(&req.arg);
+            match parse_window_addr(&addr) {
+                Some((source, session, target)) => {
+                    // Vertical unless the direction is horizontal (`h`, `-h`,
+                    // `horizontal`) — mirrors the interactive split default.
+                    let d = dir.trim().trim_start_matches('-').to_ascii_lowercase();
+                    let vertical = !(d == "h" || d == "horizontal");
+                    CtlRequest::Op(Action::SplitWindow {
+                        source,
+                        target,
+                        session,
+                        vertical,
+                    })
+                }
+                None => unknown(),
+            }
+        }
+        "kill-window" => match parse_window_addr(req.arg.trim()) {
+            Some((source, session, target)) => CtlRequest::Op(Action::KillWindow {
+                source,
+                session,
+                target,
+            }),
+            None => unknown(),
+        },
+        "rename-window" => {
+            let (addr, new_name) = split_first(&req.arg);
+            match parse_window_addr(&addr) {
+                Some((source, session, target)) if !new_name.trim().is_empty() => {
+                    CtlRequest::Op(Action::RenameWindow {
+                        source,
+                        session,
+                        target,
+                        new_name: new_name.trim().to_string(),
+                    })
+                }
+                _ => unknown(),
+            }
+        }
         "raw:key" => match parse_key(&req.arg) {
             Some(ev) => CtlRequest::RawKey(ev),
-            None => CtlRequest::Unknown(line.trim().to_string()),
+            None => unknown(),
         },
         "raw:keys" => match parse_hex(req.arg.trim()) {
             Ok(b) => CtlRequest::RawBytes(b),
-            Err(_) => CtlRequest::Unknown(line.trim().to_string()),
+            Err(_) => unknown(),
         },
         "raw:text" => CtlRequest::RawBytes(req.arg.into_bytes()),
-        _ => CtlRequest::Unknown(line.trim().to_string()),
+        _ => unknown(),
     }
+}
+
+/// Splits an arg into (first whitespace-delimited token, verbatim remainder). The
+/// remainder keeps its inner spaces (a session/window name may contain them) and is
+/// empty when the arg is a single token. Both halves are trimmed of surrounding space.
+fn split_first(arg: &str) -> (String, String) {
+    let arg = arg.trim();
+    match arg.split_once(char::is_whitespace) {
+        Some((first, rest)) => (first.to_string(), rest.trim().to_string()),
+        None => (arg.to_string(), String::new()),
+    }
+}
+
+/// Parses a window address `<source>/<session>:<window>` into `(source, session,
+/// target)`, where `target` is the `<session>:<window>` half the window `Action`s
+/// carry. Splits the source on the FIRST `/` (a session name may contain `/`) and the
+/// window on the LAST `:` (a session name may contain `:`; the window index never
+/// does). `None` unless both a `/` and a `:` are present with non-empty source/session.
+fn parse_window_addr(addr: &str) -> Option<(String, String, String)> {
+    let (source, rest) = addr.trim().split_once('/')?; // rest = <session>:<window>
+    let (session, _window) = rest.rsplit_once(':')?;
+    if source.is_empty() || session.is_empty() {
+        return None;
+    }
+    Some((source.to_string(), session.to_string(), rest.to_string()))
 }
 
 /// Returns the control socket path for a given pid in `dir`.
@@ -410,6 +514,120 @@ mod tests {
         assert_eq!(parse_ctl_op("ping"), CtlRequest::Ping);
         assert_eq!(parse_ctl_op("dump"), CtlRequest::Dump);
     }
+
+    #[test]
+    fn parse_ctl_op_session_lifecycle_verbs() {
+        use crate::model::Action;
+        use crate::session::parse_target;
+
+        // new-session: source + optional name (empty ⇒ the mux auto-names).
+        assert_eq!(
+            parse_ctl_op("new-session jup api"),
+            CtlRequest::Op(Action::CreateSession {
+                source: "jup".into(),
+                name: "api".into()
+            })
+        );
+        assert_eq!(
+            parse_ctl_op("new-session jup"),
+            CtlRequest::Op(Action::CreateSession {
+                source: "jup".into(),
+                name: String::new()
+            })
+        );
+        // kill/rename-session: a Session built from the <source>/<session> address.
+        assert_eq!(
+            parse_ctl_op("kill-session local/api"),
+            CtlRequest::Op(Action::KillSession {
+                sess: parse_target("local/api").unwrap()
+            })
+        );
+        assert_eq!(
+            parse_ctl_op("rename-session local/api svc"),
+            CtlRequest::Op(Action::RenameSession {
+                sess: parse_target("local/api").unwrap(),
+                new_name: "svc".into(),
+            })
+        );
+        // window verbs: <source>/<session>:<window>.
+        assert_eq!(
+            parse_ctl_op("new-window jup/api log"),
+            CtlRequest::Op(Action::NewWindow {
+                source: "jup".into(),
+                session: "api".into(),
+                name: "log".into(),
+            })
+        );
+        assert_eq!(
+            parse_ctl_op("split-window jup/api:1 -h"),
+            CtlRequest::Op(Action::SplitWindow {
+                source: "jup".into(),
+                target: "api:1".into(),
+                session: "api".into(),
+                vertical: false,
+            })
+        );
+        assert_eq!(
+            parse_ctl_op("split-window jup/api:1"), // no direction ⇒ vertical
+            CtlRequest::Op(Action::SplitWindow {
+                source: "jup".into(),
+                target: "api:1".into(),
+                session: "api".into(),
+                vertical: true,
+            })
+        );
+        assert_eq!(
+            parse_ctl_op("kill-window jup/api:2"),
+            CtlRequest::Op(Action::KillWindow {
+                source: "jup".into(),
+                session: "api".into(),
+                target: "api:2".into(),
+            })
+        );
+        assert_eq!(
+            parse_ctl_op("rename-window jup/api:2 build"),
+            CtlRequest::Op(Action::RenameWindow {
+                source: "jup".into(),
+                session: "api".into(),
+                target: "api:2".into(),
+                new_name: "build".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_ctl_op_lifecycle_rejects_malformed() {
+        use crate::model::Action;
+        assert!(
+            matches!(parse_ctl_op("new-session"), CtlRequest::Unknown(_)),
+            "new-session needs a source"
+        );
+        assert!(
+            matches!(parse_ctl_op("kill-session noslash"), CtlRequest::Unknown(_)),
+            "session verbs need a <source>/<session> address"
+        );
+        assert!(
+            matches!(
+                parse_ctl_op("rename-session local/api"),
+                CtlRequest::Unknown(_)
+            ),
+            "rename needs a new name"
+        );
+        assert!(
+            matches!(parse_ctl_op("kill-window jup/api"), CtlRequest::Unknown(_)),
+            "window verbs need a :window index"
+        );
+        // A session name may contain `/` and `:`; the window splits on the LAST `:`.
+        assert_eq!(
+            parse_ctl_op("kill-window jup/a/b:3"),
+            CtlRequest::Op(Action::KillWindow {
+                source: "jup".into(),
+                session: "a/b".into(),
+                target: "a/b:3".into(),
+            })
+        );
+    }
+
     #[test]
     fn parse_ctl_op_raw_namespace_is_test_only_surface() {
         assert!(matches!(

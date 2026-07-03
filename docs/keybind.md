@@ -105,10 +105,14 @@ mux needs its own mouse mode enabled to use them).
 
 ## Automation
 
-A running xmux instance listens on a local control socket and speaks semantic
-verbs — `ping`, `status`, `dump`, `rescan`, `switch <address>`,
-`focus <tree|terminal>`, `width <n>`, `toggle-auto-hide`, and `quit`. Drive it
-with `xmux ctl <verb>`, e.g. `xmux ctl switch prod/api`. A low-level `raw:`
+A running xmux instance listens on a local control socket and speaks
+navigation/display verbs — `ping`, `status`, `dump`, `rescan`,
+`switch <address>`, `focus <tree|terminal>`, `width <n>`, `toggle-auto-hide`,
+`quit` — and session-lifecycle verbs — `new-session <source> [name]`,
+`kill-session <addr>`, `rename-session <addr> <name>`, `new-window <addr> [name]`,
+`split-window <addr> [h|v]`, `kill-window <addr>`, `rename-window <addr> <name>`
+(a session is `<source>/<session>`, a window `<source>/<session>:<window>`). Drive
+it with `xmux ctl <verb>`, e.g. `xmux ctl switch prod/api`. A low-level `raw:`
 namespace (`raw:key`, `raw:keys`, `raw:text`) injects keystrokes or bytes for
 tests; it is unstable and not part of the supported surface.
 

@@ -142,10 +142,15 @@ session, the live auto-hide-tree toggle, logs, and control sockets) lives under
 
 ## Control socket
 
-A running xmux instance listens on a local socket (`~/.xmux/ctl-<pid>.sock`) that
-speaks semantic verbs — `ping`, `status`, `dump`, `rescan`, `switch <addr>`,
-`focus <target>`, `width <n>`, `toggle-auto-hide`, `quit` — with an unstable
-`raw:` namespace reserved for low-level key/byte injection. Drive it with:
+A running xmux instance listens on a local socket (`~/.xmux/ctl-<pid>.sock`). It
+speaks navigation/display verbs — `ping`, `status`, `dump`, `rescan`,
+`switch <addr>`, `focus <target>`, `width <n>`, `toggle-auto-hide`, `quit` — and
+session-lifecycle verbs — `new-session <source> [name]`, `kill-session <addr>`,
+`rename-session <addr> <name>`, `new-window <addr> [name]`,
+`split-window <addr> [h|v]`, `kill-window <addr>`, `rename-window <addr> <name>`
+(a session is addressed `<source>/<session>`, a window
+`<source>/<session>:<window>`). An unstable `raw:` namespace is reserved for
+low-level key/byte injection. Drive it with:
 
 ```sh
 xmux ctl status
