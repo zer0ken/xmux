@@ -158,6 +158,10 @@ async fn run_direct_attach(env: &Env, addr: &str) -> i32 {
 async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
     println!("xmux doctor");
 
+    // A config that failed to parse is a real error the diagnostic must signal in its
+    // exit code (like `ls` does for all-unreachable); an unreachable source is reported
+    // but not itself a doctor failure.
+    let config_broken = cfg_err.is_some();
     if let Some(e) = cfg_err {
         println!("config.toml: ERROR — {e} (using defaults)");
     } else if !env.cfg_warnings.is_empty() {
@@ -182,7 +186,7 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
             Err(e) => println!("  {} ({}): UNREACHABLE — {}", s.alias, s.binary, e),
         }
     }
-    0
+    i32::from(config_broken)
 }
 
 /// Drives a running switcher over its control socket. `list` enumerates instances;
@@ -191,8 +195,9 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
 /// else the sole running instance (an error when several run — pick one with --pid).
 async fn run_ctl(env: &Env, pid: Option<u32>, sock: Option<PathBuf>, args: Vec<String>) -> i32 {
     // `list` is a meta-command over ALL instances, not one — handle it before
-    // resolving a single target socket.
-    if args.first().map(String::as_str) == Some("list") {
+    // resolving a single target socket. Matched case-insensitively, like every socket
+    // verb (which `parse_request` lowercases), so `LIST` is not forwarded and rejected.
+    if args.first().is_some_and(|s| s.eq_ignore_ascii_case("list")) {
         return run_ctl_list(env).await;
     }
     let path = match resolve_ctl_socket(&env.xmux_dir, pid, sock) {
@@ -259,15 +264,29 @@ fn resolve_ctl_socket(
     }
 }
 
+/// A framed reply beginning `err:` is the control protocol's command-level failure
+/// signal (an unknown verb or a rejected op — see `ui::run::dispatch`). Distinguished
+/// from a transport error so `xmux ctl` reports a refused command as a failure a script
+/// can detect, not a silent success.
+fn reply_is_err(resp: &str) -> bool {
+    resp.starts_with("err:")
+}
+
 async fn ctl_one(client: &mut control::Client, line: &str) -> i32 {
     match client.do_cmd(line).await {
         Ok(resp) => {
-            if resp.ends_with('\n') {
-                print!("{resp}");
+            let text = resp.strip_suffix('\n').unwrap_or(&resp);
+            if reply_is_err(text) {
+                // A command-level error: route it like a transport error — to stderr,
+                // with the `xmux ctl:` prefix, exit non-zero — so it is not mistaken
+                // for a successful reply on stdout.
+                let msg = text.strip_prefix("err: ").unwrap_or(text);
+                eprintln!("xmux ctl: {msg}");
+                1
             } else {
-                println!("{resp}");
+                println!("{text}");
+                0
             }
-            0
         }
         Err(e) => {
             eprintln!("xmux ctl: {e}");
@@ -440,5 +459,13 @@ mod tests {
             "no trailing space"
         );
         assert!(lines[1].ends_with("terminal"));
+    }
+
+    #[test]
+    fn reply_is_err_only_for_the_err_prefix() {
+        assert!(reply_is_err("err: unknown command"));
+        assert!(!reply_is_err("ok"));
+        assert!(!reply_is_err("pong"));
+        assert!(!reply_is_err("focus=tree\ttarget=api"));
     }
 }
