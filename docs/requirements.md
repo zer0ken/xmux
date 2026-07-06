@@ -18,8 +18,8 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
 - **FR-A2** — A reachable mux with zero sessions is reported as empty, not failed;
   a dead host is reported unreachable; "every source unreachable" is distinguished.
   **Tests:** `ls_lines_all_unreachable`, `ls_lines_reachable_empty_is_not_all_unreachable`,
-  `is_no_sessions_classification`, `list_sessions_benign_no_server_is_empty_not_error`,
-  `list_sessions_unreachable_is_error`.
+  `is_no_sessions_classification`, `enumerate_with_benign_no_server_is_empty_not_error`,
+  `enumerate_with_unreachable_is_error`.
 - **FR-A3** — `xmux doctor` reports config health, ssh availability, and per-source
   reachability with session counts. **Tests:** per-source probe via
   `list_sessions_*`; the doctor print wiring is in `cli.rs` (`run_doctor`, not unit-tested).
@@ -193,7 +193,7 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   `quote_neutralizes_shell_metachars`, `remote_command_joins_quoted`.
 - **FR-G3** — Mux session env (`TMUX`/`TMUX_PANE`/`PSMUX*`) is stripped for listing so a
   command run from inside a mux is not refused as nesting; lookalikes survive. **Tests:**
-  `is_mux_var_is_precise`, `mux_clean_env_*`.
+  `is_mux_var_matches_exactly_tmux_and_psmux_markers`, `mux_env_keys_to_clear_selects_only_mux_vars`.
 - **FR-G4** — A remote attach folds the window pre-selection into the single
   `ssh -t` connection (no second connection to hang or lose), and the mux axis supplies
   the attach argv (local psmux routes to its per-session server). **Tests:**
