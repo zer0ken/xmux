@@ -449,7 +449,11 @@ fn active_window_probe_moves_tree_selection() {
     };
     let mut state = crate::state::State::from_scan(scan);
     let mut switcher = Switcher::new(&mut state);
-    // session row -> (→ descend) window 0 -> (↓ sibling) window 1.
+    // host row -> (→ descend) api session -> (→ descend) window 0 -> (↓ sibling) window 1.
+    switcher.handle_key(
+        KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+        &mut state,
+    );
     switcher.handle_key(
         KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
         &mut state,
@@ -532,6 +536,10 @@ fn focus_event_updates_marker_without_moving_cursor() {
     };
     let mut state = crate::state::State::from_scan(scan);
     let mut switcher = Switcher::new(&mut state);
+    switcher.handle_key(
+        KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+        &mut state,
+    ); // → api (session): launch preselects the host row
     switcher.handle_key(
         KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
         &mut state,
@@ -1516,6 +1524,8 @@ fn kill_confirm_owns_keys_so_prefix_q_and_enter_do_not_quit_or_focus_mux() {
             rt.handle_stdin_bytes($bytes, &Selection::default())
         };
     }
+    // Launch preselects the host row; `l` (== →) descends to the api session row.
+    feed!(b"l");
     // `x` on the session row arms the y/n confirm (a modal popup, not an inline input).
     feed!(b"x");
     assert!(

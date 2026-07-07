@@ -82,11 +82,6 @@ pub struct Switcher {
     list_state: ListState,
     tree_inner: Rect,
 
-    /// The persisted last-selected session address (`source/session`) used to
-    /// preselect on launch; `None` ⇒ the local-first preselect. Drives only the
-    /// initial preselect (while the user has not moved); once `user_moved` is set,
-    /// `restore_focus` keeps the selection and this is ignored.
-    preferred: Option<String>,
     /// A pending re-scan reselect: the session address the selection was on when `r`
     /// was pressed. A re-scan clears every session, so the row briefly vanishes; this
     /// returns the selection to it the instant its host re-streams. Cleared once matched,
@@ -111,7 +106,6 @@ impl Switcher {
             terminal_view_target: TerminalViewTarget::default(),
             list_state: ListState::default(),
             tree_inner: Rect::default(),
-            preferred: None,
             rescan_reselect: None,
             screen_area: Rect::default(),
             popup_geo: PopupGeometry::default(),
@@ -155,15 +149,6 @@ impl Switcher {
         std::mem::take(&mut self.reattach_kick)
     }
 
-    /// Sets the persisted last-selected session address (`source/session`) to
-    /// preselect on launch (see [`crate::state`]). Takes effect on the next rebuild
-    /// as sessions stream in; `None` clears it (local-first preselect). Set once
-    /// before sessions stream — the seed has no session rows, so it is inert until
-    /// then.
-    pub fn set_preferred(&mut self, address: Option<String>) {
-        self.preferred = address;
-    }
-
     // --- tree model ---------------------------------------------------------
 
     /// Whether the node an armed kill targets still exists in the current rows,
@@ -188,10 +173,11 @@ impl Switcher {
     fn rebuild(&mut self, state: &mut crate::state::State) {
         // Once the user has moved the selection, hold their current session/window selection
         // across this rebuild when it survives (matched by identity) — a routine rebuild
-        // (local poll, remote %-event refetch) must NOT snap the selection back to the recency
-        // preselect, which would yank the displayed session out from under the user on every
+        // (local poll, remote %-event refetch) must NOT snap the selection back to the top
+        // row, which would yank the displayed session out from under the user on every
         // poll (the selection thrash). The user_moved gate at the target below preserves the
-        // launch behavior: an untouched selection still follows the preferred/recency preselect.
+        // launch behavior: an untouched selection preselects the top row (the local host,
+        // index 0).
         let keep = self
             .rows
             .get(self.selected)
@@ -210,27 +196,6 @@ impl Switcher {
             &state.filter,
         );
 
-        // Preselect priority: the persisted last-selected session (restored on
-        // launch) wins; otherwise the FIRST session row — which order_groups pins to
-        // the LOCAL source's most-recent session — so an untouched selection never jumps
-        // to a remote on a global-recency tiebreak (#1). `session_last_attached` is
-        // not a reliable cross-host "most recent" signal (xmux's own pre-attaching and
-        // clock skew corrupt it), so the preselect uses the persisted last-selected
-        // session, falling back to the local-first first session. Derived by scanning
-        // the flattened rows, not built inline, now that flatten owns row generation.
-        let mut preferred_row: Option<usize> = None;
-        let mut first_session_row: Option<usize> = None;
-        for (i, r) in rows.iter().enumerate() {
-            if let RowRef::Session(s) = &r.reference {
-                if first_session_row.is_none() {
-                    first_session_row = Some(i);
-                }
-                if self.preferred.as_deref() == Some(s.address().as_str()) {
-                    preferred_row = Some(i);
-                }
-            }
-        }
-
         self.rows = rows;
         // Keep an armed kill confirm across this rebuild as long as its target still
         // EXISTS (matched by identity, not row position). Only a tree change that
@@ -247,8 +212,6 @@ impl Switcher {
                     .and_then(|k| self.rows.iter().position(|r| same_node(&r.reference, k)))
             })
             .flatten()
-            .or(preferred_row)
-            .or(first_session_row)
             .or_else(|| self.rows.iter().position(Row::selectable))
             .unwrap_or(0);
         self.set_selected(target, state);

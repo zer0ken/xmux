@@ -425,6 +425,10 @@ fn select_window_follows_external_change_on_a_window_row() {
     sw.handle_key(
         KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
         &mut state,
+    ); // → api (session)
+    sw.handle_key(
+        KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+        &mut state,
     ); // → window 0
     sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut state); // ↓ → window 1
     assert!(matches!(
@@ -480,7 +484,11 @@ fn up_down_move_within_level_and_hjkl_match_arrows() {
     // ↑/↓ (and k/j) move between SIBLINGS at the current tree level — they do NOT
     // descend into children. →/← (and l/h) change level (descend/ascend). (#1,#2)
     let mut state = crate::state::State::from_scan(sample());
-    let mut sw = Switcher::new(&mut state); // editor (local) preselected
+    let mut sw = Switcher::new(&mut state); // local host preselected
+    sw.handle_key(
+        KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+        &mut state,
+    ); // → editor (local's first session)
     assert!(matches!(sw.current_ref(), Some(RowRef::Session(s)) if s.name == "editor"));
     sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut state);
     assert!(
@@ -499,6 +507,14 @@ fn up_down_move_within_level_and_hjkl_match_arrows() {
     // hjkl mirror the arrows exactly.
     let mut state2 = crate::state::State::from_scan(sample());
     let mut sw2 = Switcher::new(&mut state2);
+    sw2.handle_key(
+        KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
+        &mut state2,
+    ); // l == → : descend local host → editor
+    assert!(
+        matches!(sw2.current_ref(), Some(RowRef::Session(s)) if s.name == "editor"),
+        "l descends to the first session"
+    );
     sw2.handle_key(
         KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
         &mut state2,
@@ -558,6 +574,10 @@ fn select_window_follows_from_a_session_row() {
     // the tree view mirroring the displayed window (#3).
     let mut state = crate::state::State::from_scan(two_window_scan());
     let mut sw = Switcher::new(&mut state);
+    sw.handle_key(
+        KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+        &mut state,
+    ); // → api (session): launch preselects the host row
     assert!(matches!(sw.current_ref(), Some(RowRef::Session(_))));
     assert!(
         sw.select_window("jup", "api", 1, &state),
@@ -576,6 +596,10 @@ fn select_active_window_moves_to_cached_active_window() {
     // tree view mirrors the window the mux is displaying (#3). Window 0 is active.
     let mut state = crate::state::State::from_scan(two_window_scan());
     let mut sw = Switcher::new(&mut state);
+    sw.handle_key(
+        KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+        &mut state,
+    ); // → api (session): launch preselects the host row
     assert!(matches!(sw.current_ref(), Some(RowRef::Session(_))));
     assert!(
         sw.select_active_window(&mut state),
@@ -597,8 +621,7 @@ fn select_active_window_descends_from_a_host_row() {
     // focus→terminal from a HOST row must descend into the host's recent session's active
     // window (the window the mux displays), not leave the selection stuck on the host.
     let mut state = crate::state::State::from_scan(two_window_scan());
-    let mut sw = Switcher::new(&mut state);
-    sw.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), &mut state); // ascend: session → host
+    let mut sw = Switcher::new(&mut state); // launch preselects the host row
     assert!(
         matches!(sw.current_ref(), Some(RowRef::Host { .. })),
         "selection on the host row"
@@ -618,6 +641,10 @@ fn select_window_no_move_for_another_session() {
     // A window change on a session the selection is NOT on must not move it.
     let mut state = crate::state::State::from_scan(two_window_scan());
     let mut sw = Switcher::new(&mut state);
+    sw.handle_key(
+        KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+        &mut state,
+    ); // → api (session): launch preselects the host row
     sw.handle_key(
         KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
         &mut state,
@@ -655,12 +682,29 @@ async fn renders_four_level_tree() {
 }
 
 #[tokio::test]
-async fn preselects_local_first_session() {
-    // With no persisted last-selected session, the preselect lands on the LOCAL
-    // source's most-recent session (order_groups pins local first), NOT the
-    // globally most-recent remote — so first launch never jumps to a remote (#1).
-    let h = Harness::new(sample());
-    assert_eq!(cur_session_name(&h).as_deref(), Some("editor"));
+async fn launch_preselects_top_local_host_row() {
+    // #G: on launch the highlight sits on the very top row — the local host
+    // (index 0) — regardless of recency; no persisted last_session is consulted.
+    let mut h = Harness::from_sources(&["local", "jupiter00"]);
+    h.sw.apply_source_result(
+        "local".into(),
+        vec![sess("local", "editor", 1, false, 100)],
+        None,
+        &mut h.state,
+    );
+    // A more-recent remote streams in and must NOT pull the cursor down.
+    h.sw.apply_source_result(
+        "jupiter00".into(),
+        vec![sess("jupiter00", "infer", 1, false, 300)],
+        None,
+        &mut h.state,
+    );
+    h.draw();
+    assert_eq!(h.sw.selected, 0, "the launch cursor is the very top row");
+    assert!(
+        matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "local"),
+        "the top row is the local host"
+    );
 }
 
 #[tokio::test]
@@ -1120,11 +1164,9 @@ async fn apply_panes_attaches_and_clears_loading() {
 
 #[tokio::test]
 async fn streaming_keeps_local_preselect_when_untouched() {
-    // With no persisted last-selected session, an untouched selection preselects the
-    // LOCAL source's most-recent session, and a later more-recent REMOTE session
-    // streaming in must NOT steal the selection: the selection must not leap to a
-    // remote on first launch (#1). order_groups pins local first, so the local-first
-    // fallback is the first session row.
+    // An untouched selection sits on the top row (the local host, index 0), and a
+    // later more-recent REMOTE session streaming in must NOT steal it: the selection
+    // must not leap to a remote on first launch (#1).
     let mut h = Harness::from_sources(&["local", "jupiter00"]);
     h.sw.apply_source_result(
         "local".into(),
@@ -1133,7 +1175,10 @@ async fn streaming_keeps_local_preselect_when_untouched() {
         &mut h.state,
     );
     h.draw();
-    assert_eq!(cur_session_name(&h).as_deref(), Some("editor"));
+    assert_eq!(
+        h.sw.selected, 0,
+        "the selection stays on the local host row"
+    );
     h.sw.apply_source_result(
         "jupiter00".into(),
         vec![sess("jupiter00", "infer", 1, false, 300)],
@@ -1142,38 +1187,12 @@ async fn streaming_keeps_local_preselect_when_untouched() {
     );
     h.draw();
     assert_eq!(
-        cur_session_name(&h).as_deref(),
-        Some("editor"),
-        "an untouched selection stays on the local preselect; a recent remote must not steal it"
+        h.sw.selected, 0,
+        "an untouched selection stays on the local host row (index 0); a recent remote must not steal it"
     );
-}
-
-#[tokio::test]
-async fn preferred_session_wins_preselect_when_it_streams_in() {
-    // The persisted last-selected session is restored on launch: once its host
-    // streams in it wins the preselect over the local-first default (#1).
-    let mut h = Harness::from_sources(&["local", "jupiter00"]);
-    h.sw.set_preferred(Some("jupiter00/infer".to_string()));
-    h.sw.apply_source_result(
-        "local".into(),
-        vec![sess("local", "editor", 1, false, 100)],
-        None,
-        &mut h.state,
-    );
-    h.draw();
-    // The preferred host has not streamed yet → the local-first default stands.
-    assert_eq!(cur_session_name(&h).as_deref(), Some("editor"));
-    h.sw.apply_source_result(
-        "jupiter00".into(),
-        vec![sess("jupiter00", "infer", 1, false, 300)],
-        None,
-        &mut h.state,
-    );
-    h.draw();
-    assert_eq!(
-        cur_session_name(&h).as_deref(),
-        Some("infer"),
-        "the persisted last-selected session is restored once it streams in"
+    assert!(
+        matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "local"),
+        "the untouched selection is the local host row"
     );
 }
 
@@ -1250,7 +1269,8 @@ async fn streaming_preserves_cursor_once_user_moves() {
         &mut h.state,
     );
     h.draw();
-    // editor preselected (most recent local); move down to build.
+    // local host preselected; descend to editor, then move down to build.
+    h.key(KeyCode::Right).await;
     h.key(KeyCode::Down).await;
     assert_eq!(cur_session_name(&h).as_deref(), Some("build"));
     // A more-recent remote session streams in; the selection must NOT jump.
@@ -1345,7 +1365,8 @@ fn hint_bar_text_reflects_configured_prefix() {
 
 #[tokio::test]
 async fn selected_node_renders_reverse_video() {
-    let h = Harness::new(sample());
+    let mut h = Harness::new(sample());
+    h.key(KeyCode::Right).await; // launch preselects the host row; descend to editor
     let sel = h.tree_row_of("editor").expect("editor row");
     let other = h.tree_row_of("inference").expect("inference row");
     assert!(h.tree_row_reversed(sel), "selected row must be reversed");
@@ -1384,7 +1405,8 @@ async fn filter_narrows() {
 
 #[tokio::test]
 async fn kill_confirm_esc_cancels() {
-    let mut h = Harness::new(sample()); // a local session ("editor") is preselected
+    let mut h = Harness::new(sample()); // launch preselects the local host row
+    h.key(KeyCode::Right).await; // → editor (a local session)
     h.ch('x').await; // arm the kill y/n confirm
     assert!(
         matches!(h.state.modal, Some(Modal::Kill(_))),
@@ -1404,7 +1426,8 @@ async fn kill_confirm_esc_cancels() {
 #[tokio::test]
 async fn kill_removes_session_and_cache() {
     let mut h = Harness::new(sample());
-    // editor (local) is the default preselect; kill the focused session.
+    // launch preselects the local host row; descend to the editor session, then kill it.
+    h.key(KeyCode::Right).await; // → editor (local)
     assert!(h.state.panes.contains_key("local/editor"));
     h.ch('x').await; // arm
     assert!(
@@ -1428,7 +1451,7 @@ async fn kill_removes_session_and_cache() {
 #[tokio::test]
 async fn create_adds_and_selects() {
     let mut h = Harness::new(sample());
-    h.key(KeyCode::Left).await; // editor preselected → ← ascend to the local HOST row
+    // launch preselects the local HOST row; n on a host row ⇒ create a session.
     h.ch('n').await; // n on a host row ⇒ create a session
     h.sw.set_input_text("scratch", &mut h.state);
     h.key(KeyCode::Enter).await;
@@ -1441,7 +1464,7 @@ async fn slow_op_is_deferred_off_the_key_path() {
     // The key-handling path must NOT perform the network create (which would
     // freeze the UI on a slow remote); it only queues the op for the loop.
     let mut h = Harness::new(sample());
-    h.key(KeyCode::Left).await; // ← ascend to the local HOST row
+    // launch preselects the local HOST row.
     h.ch('n').await; // open New (create a session) on local
     h.sw.set_input_text("scratch", &mut h.state);
     let cmds = h.sw.handle_key(
@@ -1470,7 +1493,8 @@ async fn slow_op_is_deferred_off_the_key_path() {
 async fn n_on_session_row_creates_a_window() {
     // The `n` action is level-aware: on a SESSION row it creates a window.
     let mut h = Harness::new(sample());
-    // editor (local) is preselected (a session row).
+    // launch preselects the local HOST row; descend to the editor session row.
+    h.key(KeyCode::Right).await; // → local/editor (session)
     h.ch('n').await;
     h.sw.set_input_text("logs", &mut h.state);
     h.key(KeyCode::Enter).await;
@@ -1505,8 +1529,8 @@ async fn n_on_window_row_splits_a_pane() {
 #[tokio::test]
 async fn rename_targets_node_captured_at_open_not_enter() {
     // Open rename on alpha/a-sess, then let a more-recent session stream in on
-    // another host (which, with an untouched selection, moves the preselect). The
-    // rename must still target the session captured when the input opened.
+    // another host. The rename must still target the session captured when the
+    // input opened.
     let mut h = Harness::from_sources(&["alpha", "beta"]);
     h.sw.apply_source_result(
         "alpha".into(),
@@ -1514,6 +1538,7 @@ async fn rename_targets_node_captured_at_open_not_enter() {
         None,
         &mut h.state,
     );
+    h.key(KeyCode::Right).await; // launch preselects the alpha host row; descend to a-sess
     h.ch('R').await; // capture alpha/a-sess
     h.sw.apply_source_result(
         "beta".into(),
@@ -2578,6 +2603,10 @@ fn modals_are_mutually_exclusive() {
     // keystrokes route (the context menu can open input/confirm bypassing handle_key).
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
+    sw.handle_key(
+        KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+        &mut state,
+    ); // launch preselects the host row; descend to a killable session
     sw.arm_kill(&mut state);
     assert!(matches!(state.modal, Some(Modal::Kill(_))));
     sw.open_input(InputMode::Rename, &mut state); // as the menu's Rename would
@@ -2960,6 +2989,10 @@ fn removed_window_selection_falls_to_previous_sibling_then_parent() {
     // to the session row (parent).
     let mut state = crate::state::State::from_scan(two_window_scan());
     let mut sw = Switcher::new(&mut state);
+    sw.handle_key(
+        KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+        &mut state,
+    ); // → api (session): launch preselects the host row
     sw.handle_key(
         KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
         &mut state,

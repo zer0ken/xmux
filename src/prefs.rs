@@ -1,8 +1,7 @@
-//! Persists the last-selected session across runs so the next launch can preselect
-//! it. (`session_last_attached` is not used: xmux's own pre-attaching and
-//! cross-host clock differences make it an unreliable interaction signal.) This is
-//! a best-effort hint only — a stale/missing value just falls back to the
-//! local-first preselect, so xmux stays stateless about sessions themselves.
+//! Persists lightweight, best-effort UI preferences across runs (the last-selected
+//! session address, the tree width, the auto-hide-tree mode). Every value is a hint
+//! only — a stale, missing, or unparsable file falls back to the built-in default,
+//! so xmux stays stateless about sessions themselves.
 
 use std::path::Path;
 
@@ -53,14 +52,6 @@ pub fn save_tree_width(xmux_dir: &Path, width: u16) {
     let _ = std::fs::write(xmux_dir.join(TREE_WIDTH_FILE), width.to_string());
 }
 
-/// Reads the persisted last-selected session address (`source/session`). `None`
-/// when the file is absent, unreadable, or blank.
-pub fn load_last_session(xmux_dir: &Path) -> Option<String> {
-    let raw = std::fs::read_to_string(xmux_dir.join(LAST_SESSION_FILE)).ok()?;
-    let trimmed = raw.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
-}
-
 /// Persists `address` (`source/session`) as the last-selected session. Best-effort:
 /// a write failure is ignored — it only degrades the next launch's preselect.
 pub fn save_last_session(xmux_dir: &Path, address: &str) {
@@ -78,27 +69,12 @@ mod tests {
     }
 
     #[test]
-    fn save_then_load_round_trips_the_address() {
+    fn save_writes_the_address() {
         let dir = temp_dir("roundtrip");
         save_last_session(&dir, "jupiter00/infer");
-        assert_eq!(load_last_session(&dir).as_deref(), Some("jupiter00/infer"));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_missing_file_is_none() {
-        let dir = std::env::temp_dir().join("xmux-state-absent-does-not-exist-zzz");
-        assert_eq!(load_last_session(&dir), None);
-    }
-
-    #[test]
-    fn load_blank_file_is_none() {
-        let dir = temp_dir("blank");
-        save_last_session(&dir, "   \n");
         assert_eq!(
-            load_last_session(&dir),
-            None,
-            "a blank value is treated as absent"
+            std::fs::read_to_string(dir.join(LAST_SESSION_FILE)).unwrap(),
+            "jupiter00/infer"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

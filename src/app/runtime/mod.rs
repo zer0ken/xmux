@@ -1817,7 +1817,7 @@ impl Runtime {
         // The app's runtime state (single source of truth), seeded from the host ids;
         // events stream the tree in.
         let mut state = crate::state::State::from_sources(hosts.ids().to_vec());
-        let mut switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
+        let switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
         // Feed the switcher the ssh config so an unreachable host's info panel can show
         // its Host/Match stanza. Read once; a missing file just yields no stanza.
         state.chrome.set_ssh_config_text(
@@ -1833,8 +1833,6 @@ impl Runtime {
             });
         // The help modal must show the prefix the user configured, not a literal.
         state.chrome.set_ui_prefix(env.ui_prefix.clone());
-        // Restore the session the user last had selected (persisted across runs).
-        switcher.set_preferred(crate::prefs::load_last_session(&env.xmux_dir));
 
         // The live mutate ops (create/rename/kill) — NOT tree probing.
         let ops = env.ops();
