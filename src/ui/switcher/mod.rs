@@ -1356,23 +1356,23 @@ impl Switcher {
             self.render_menu(frame, state);
             return;
         }
+        // Split vertically first so the hint_bar spans the full terminal width, not just
+        // the tree column: [body, hint_bar]. The hint_bar is normally one line; a long
+        // flash wraps across several, so size it to the wrapped line count (never clipped).
+        let hint_bar_h = state.chrome.hint_bar_lines(area.width, state).len().max(1) as u16;
+        let rows = Layout::vertical([
+            Constraint::Min(0),             // body: tree | view border | terminal view
+            Constraint::Length(hint_bar_h), // full-width hint_bar (help / status / wrapped flash)
+        ])
+        .split(area);
         let cols = Layout::horizontal([
             Constraint::Length(tree_width),
             Constraint::Length(1),
             Constraint::Min(0),
         ])
-        .split(area);
-        // Tree column: the tree plus its hint_bar/help line. The hint_bar is normally one
-        // line, but a long flash wraps across several — size the hint_bar to the wrapped
-        // line count so it is never clipped.
-        let hint_bar_h = state.chrome.hint_bar_lines(tree_width, state).len().max(1) as u16;
-        let left = Layout::vertical([
-            Constraint::Min(0),             // tree
-            Constraint::Length(hint_bar_h), // hint_bar (help / status / wrapped flash)
-        ])
-        .split(cols[0]);
-        self.render_tree(frame, left[0], state);
-        state.chrome.render_hint_bar(frame, left[1], state);
+        .split(rows[0]);
+        self.render_tree(frame, cols[0], state);
+        state.chrome.render_hint_bar(frame, rows[1], state);
         // The tree|terminal view border marks focus between those two views.
         state
             .chrome

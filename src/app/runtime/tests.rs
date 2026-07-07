@@ -207,10 +207,26 @@ async fn scan_or_dispatch_host_detects_from_hosts_without_env() {
 fn terminal_view_size_zero_tree_is_full_width() {
     // Hidden tree (sentinel 0): full cols, no view border subtracted.
     assert_eq!(terminal_view_size(80, 23, 0), (80, 24));
-    // Shown tree: cols - tree_width - 1 (view border), height = body_rows + 1.
-    assert_eq!(terminal_view_size(80, 23, 48), (31, 24));
+    // Shown tree: cols - tree_width - 1 (view border), height = body_rows (bottom row
+    // reserved for the full-width hint_bar).
+    assert_eq!(terminal_view_size(80, 23, 48), (31, 23));
     // Degenerate widths clamp to at least 1.
     assert_eq!(terminal_view_size(0, 0, 0), (1, 1));
+}
+
+#[test]
+fn terminal_view_size_reserves_full_width_hint_row_when_tree_shown() {
+    use crate::ui::switcher::TREE_WIDTH;
+    // Tree hidden (sentinel 0): no hint_bar, terminal view spans the full height.
+    let (_, full) = terminal_view_size(120, 39, 0);
+    assert_eq!(full, 40);
+    // Tree shown: the full-width hint_bar owns the bottom row, so the terminal
+    // view is exactly one row shorter.
+    let (_, shown) = terminal_view_size(120, 39, TREE_WIDTH);
+    assert_eq!(
+        shown, 39,
+        "shown tree reserves one row for the full-width hint_bar"
+    );
 }
 
 #[test]
@@ -271,9 +287,9 @@ fn terminal_view_size_subtracts_tree_and_view_border() {
         143 - (TREE_WIDTH + 1),
         "cols minus tree minus view border"
     );
-    // The hint_bar and input live in the tree column, so the terminal column
-    // spans the full terminal height (body_rows + 1).
-    assert_eq!(vr, 40, "height is the full terminal height (body_rows + 1)");
+    // The full-width hint_bar owns the bottom row, so the terminal view drops one row
+    // below the full terminal height (height == body_rows).
+    assert_eq!(vr, 39, "height drops one row for the full-width hint_bar");
 }
 
 #[test]
@@ -281,7 +297,7 @@ fn terminal_view_size_clamps_to_at_least_one() {
     use crate::ui::switcher::TREE_WIDTH;
     let (vc, vr) = terminal_view_size(10, 0, TREE_WIDTH);
     assert_eq!(vc, 1);
-    // (0 + 1).max(1) = 1: clamping still holds for zero body rows.
+    // 0.max(1) = 1: clamping still holds for zero body rows.
     assert_eq!(vr, 1);
 }
 

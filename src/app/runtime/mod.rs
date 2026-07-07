@@ -355,9 +355,10 @@ fn sync_selection_from_switcher(
 /// the remote wrap at a width wider than the visible view, so a line overflows the
 /// right edge (and a double-width char straddles the clip boundary). The view width
 /// is `cols - tree_width - 1` (tree + the single view border rule), except `tree_width == 0`
-/// (the tree-hidden sentinel) gives the full `cols` with no view border; the view HEIGHT is
-/// the full terminal height (`body_rows + 1`) because the hint_bar and input occupy
-/// the tree column, leaving the terminal column the full height. Both clamp to at least 1.
+/// (the tree-hidden sentinel) gives the full `cols` with no view border. The hint_bar now
+/// spans the full width along the bottom, so a shown tree gives the terminal view height
+/// `body_rows` (full height minus the one hint_bar row); the tree-hidden sentinel has no
+/// hint_bar and keeps the full height `body_rows + 1`. Both clamp to at least 1.
 pub(crate) fn terminal_view_size(cols: u16, body_rows: u16, tree_width: u16) -> (u16, u16) {
     // tree_width == 0 is the "tree hidden" sentinel: the terminal view takes the full width
     // with no view border column. Otherwise subtract the tree column + the 1-col view border.
@@ -366,7 +367,15 @@ pub(crate) fn terminal_view_size(cols: u16, body_rows: u16, tree_width: u16) -> 
     } else {
         cols.saturating_sub(tree_width + 1).max(1)
     };
-    (view_cols, (body_rows + 1).max(1))
+    let view_rows = if tree_width == 0 {
+        // Tree hidden: no hint_bar, terminal view spans the full terminal height.
+        (body_rows + 1).max(1)
+    } else {
+        // Tree shown: the full-width hint_bar owns the bottom row, so the terminal
+        // view is one row shorter than the terminal (body_rows == full_height - 1).
+        body_rows.max(1)
+    };
+    (view_cols, view_rows)
 }
 
 /// The `AttachRegistry` key for a selection.
