@@ -35,6 +35,13 @@ pub trait Ops: Send + Sync {
     async fn kill_window(&self, source: &str, target: &str) -> anyhow::Result<()>;
     async fn rename_window(&self, source: &str, target: &str, new_name: &str)
         -> anyhow::Result<()>;
+    /// Reads the source's live `pane-active-border-style` / `pane-border-style`,
+    /// returned as `(active_raw, inactive_raw)`. A default (both empty) makes the
+    /// view border fall back to config/defaults, so a mock or offline test needs no
+    /// override.
+    async fn border_styles(&self, _source: &str) -> anyhow::Result<(String, String)> {
+        Ok((String::new(), String::new()))
+    }
 }
 
 /// The outcome of a [`MuxOp`]. [`State::fold_op_result`] folds it into the

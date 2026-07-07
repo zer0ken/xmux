@@ -301,6 +301,27 @@ impl Ops for EnvOps {
         .await
     }
 
+    async fn border_styles(&self, source: &str) -> anyhow::Result<(String, String)> {
+        let src = self.source(source)?;
+        let _permit = self.sem.acquire().await?;
+        let host = src.host();
+        // A failed / timed-out query degrades to "" so the view border falls back to
+        // the configured override, then the stock default (never an error to the caller).
+        let active = with_timeout(
+            DETAIL_TIMEOUT,
+            manage::show_option(&host, src.run_with(), "pane-active-border-style"),
+        )
+        .await
+        .unwrap_or_default();
+        let inactive = with_timeout(
+            DETAIL_TIMEOUT,
+            manage::show_option(&host, src.run_with(), "pane-border-style"),
+        )
+        .await
+        .unwrap_or_default();
+        Ok((active, inactive))
+    }
+
     async fn rename_window(
         &self,
         source: &str,

@@ -52,6 +52,38 @@ pub fn attach(bin: &str, name: &str) -> Vec<String> {
     argv(&[bin, "attach", "-t", name])
 }
 
+/// Reads one global server option's value: `<bin> show -gv <name>`. `-g` reads the
+/// global scope and `-v` prints just the value, so stdout is the option string
+/// (e.g. `pane-active-border-style` → `fg=blue,bg=default`). Used to match the
+/// view border colours to the displayed session's live mux server.
+pub fn show_option(bin: &str, name: &str) -> Vec<String> {
+    argv(&[bin, "show", "-gv", name])
+}
+
+/// Extracts the foreground colour token from a tmux style string (the value of a
+/// `pane-*-border-style` option). tmux styles are comma-separated attributes, so a
+/// `fg=<colour>` part yields its colour; a bare single token (`green`, `default`)
+/// is itself the fg; anything else (only `bg=`/attributes, or empty) yields `""`,
+/// letting the caller fall back to the configured/default colour. Complements
+/// [`crate::ui::chrome::map_color`], which tolerates a leading `fg=` but not the
+/// comma-separated form.
+pub fn border_fg(style: &str) -> String {
+    let s = style.trim();
+    if s.is_empty() {
+        return String::new();
+    }
+    for part in s.split(',') {
+        if let Some(fg) = part.trim().strip_prefix("fg=") {
+            return fg.trim().to_string();
+        }
+    }
+    // A bare token with no `=` is itself the colour (`green`, `default`).
+    if !s.contains('=') {
+        return s.to_string();
+    }
+    String::new()
+}
+
 /// Creates-or-attaches a DETACHED session and prints its assigned name. `-A`
 /// makes it idempotent, `-d` keeps it detached, and `-P -F` prints the assigned
 /// name even when the mux auto-names (e.g. `"0"`). A non-empty name is requested
@@ -332,6 +364,21 @@ mod tests {
         assert_eq!(
             attach("tmux", "main"),
             sv(&["tmux", "attach", "-t", "main"])
+        );
+    }
+
+    #[test]
+    fn border_fg_extracts_fg_component() {
+        // The fg part of a comma-separated style; a bare token is itself the colour.
+        assert_eq!(border_fg("fg=blue,bg=default"), "blue");
+        assert_eq!(border_fg("default"), "default");
+        // Only a bg (no fg) → empty, so the caller falls back.
+        assert_eq!(border_fg("bg=red"), "");
+        assert_eq!(border_fg(""), "");
+        // The option-read argv is `show -gv <name>`.
+        assert_eq!(
+            show_option("tmux", "pane-border-style"),
+            sv(&["tmux", "show", "-gv", "pane-border-style"])
         );
     }
 

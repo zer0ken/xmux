@@ -1143,6 +1143,7 @@ fn test_rt(env: Env) -> Runtime {
     let switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
     let ops = env.ops();
     let (op_tx, _op_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (border_tx, _border_rx) = tokio::sync::mpsc::unbounded_channel();
     let prefix = crate::display::term::parse_prefix(Some(&env.ui_prefix));
     Runtime {
         env,
@@ -1174,6 +1175,10 @@ fn test_rt(env: Env) -> Runtime {
         last_draw: std::time::Instant::now(),
         width_dirty: false,
         width_flush_at: None,
+        border_tx,
+        border_cache: Default::default(),
+        border_inflight: Default::default(),
+        border_applied: None,
     }
 }
 

@@ -80,6 +80,13 @@ pub async fn panes(
     Ok(mux::parse_panes(&String::from_utf8_lossy(&out)))
 }
 
+/// Reads one global mux server option's trimmed value (`show -gv <name>`). Used to
+/// match the view border colours to the displayed session's live `pane-*-border-style`.
+pub async fn show_option(host: &Host, runner: &dyn Runner, name: &str) -> Result<String, RunError> {
+    let out = run_plan(host, runner, &host.mux.show_option_plan(name)).await?;
+    Ok(String::from_utf8_lossy(&out).trim().to_string())
+}
+
 /// Creates a new window in a session (optionally named).
 pub async fn new_window(
     host: &Host,

@@ -65,10 +65,11 @@ pub fn map_color(s: &str) -> Color {
     }
 }
 
-/// The tree|terminal view border's three colours, resolved from config (tmux's pane-border
-/// options): `active` marks the focused side, `inactive` the unfocused side, and
-/// `hover` the drag-resize grab cue. Defaults mirror tmux's own code defaults —
-/// `green` / terminal-default / `yellow`.
+/// The tree|terminal view border's three colours: `active` marks the focused side,
+/// `inactive` the unfocused side, and `hover` the drag-resize grab cue. Resolved in
+/// three tiers by [`Self::resolve`] — an explicit xmux config override wins, else the
+/// displayed host's live mux `pane-*-border-style`, else the stock default. Defaults
+/// mirror tmux's own code defaults — `green` / terminal-default / `yellow`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ViewBorderColors {
     pub active: Color,
@@ -82,6 +83,46 @@ impl Default for ViewBorderColors {
             active: Color::Green,
             inactive: Color::Reset,
             hover: Color::Yellow,
+        }
+    }
+}
+
+impl ViewBorderColors {
+    /// Layers the three colour sources: an explicit xmux config value (`cfg_*`) wins,
+    /// else the fg extracted from the displayed host's live mux style (`mux_active`
+    /// / `mux_inactive`, e.g. `fg=blue,bg=default`), else the stock default. `hover`
+    /// has no mux source (tmux has no `pane-border-hover-style`), so it is config-or-
+    /// default only. An empty config string means "unset" — that is why the config
+    /// keys default to empty (see [`crate::config::UiConfig`]); a non-empty stock
+    /// default there would mask the mux query.
+    pub fn resolve(
+        mux_active: &str,
+        mux_inactive: &str,
+        cfg_active: &str,
+        cfg_inactive: &str,
+        cfg_hover: &str,
+    ) -> Self {
+        let d = ViewBorderColors::default();
+        let pick = |cfg: &str, muxs: &str, fb: Color| {
+            if !cfg.trim().is_empty() {
+                map_color(cfg)
+            } else {
+                let fg = crate::mux::border_fg(muxs);
+                if fg.trim().is_empty() {
+                    fb
+                } else {
+                    map_color(&fg)
+                }
+            }
+        };
+        ViewBorderColors {
+            active: pick(cfg_active, mux_active, d.active),
+            inactive: pick(cfg_inactive, mux_inactive, d.inactive),
+            hover: if cfg_hover.trim().is_empty() {
+                d.hover
+            } else {
+                map_color(cfg_hover)
+            },
         }
     }
 }
@@ -161,9 +202,9 @@ impl Chrome {
         self.view_border_hovered = on;
     }
 
-    /// Sets the tree|terminal view border colours. The app calls this once at startup with
-    /// the colours parsed from config's `view-*-border-style` options; tmux defaults
-    /// apply otherwise.
+    /// Sets the tree|terminal view border colours. The app calls this with a config
+    /// baseline at startup, then again per displayed host once its live mux
+    /// `pane-*-border-style` is read (see [`ViewBorderColors::resolve`]).
     pub(crate) fn set_view_border_colors(&mut self, colors: ViewBorderColors) {
         self.colors = colors;
     }
@@ -371,6 +412,33 @@ mod tests {
         assert_eq!(map_color("colour4"), Color::Indexed(4));
         assert_eq!(map_color("color12"), Color::Indexed(12));
         assert_eq!(map_color("#268bd2"), Color::Rgb(0x26, 0x8b, 0xd2));
+    }
+
+    #[test]
+    fn resolve_layers_override_over_mux_over_default() {
+        // Mux value used when config is unset; the comma-separated `fg=` is extracted.
+        // hover has no mux source, so it falls to the default (yellow).
+        let c = ViewBorderColors::resolve("fg=blue,bg=default", "fg=white", "", "", "");
+        assert_eq!(c.active, Color::Blue);
+        assert_eq!(c.inactive, Color::White);
+        assert_eq!(c.hover, Color::Yellow);
+
+        // An explicit config override wins over the mux value.
+        let c = ViewBorderColors::resolve("fg=blue", "fg=white", "red", "green", "cyan");
+        assert_eq!(c.active, Color::Red);
+        assert_eq!(c.inactive, Color::Green);
+        assert_eq!(c.hover, Color::Cyan);
+
+        // Everything empty / unavailable → the stock default (the no-regression guarantee).
+        assert_eq!(
+            ViewBorderColors::resolve("", "", "", "", ""),
+            ViewBorderColors::default()
+        );
+
+        // Bare + `default` tokens resolve too (`default` → terminal default = Reset).
+        let c = ViewBorderColors::resolve("green", "default", "", "", "");
+        assert_eq!(c.active, Color::Green);
+        assert_eq!(c.inactive, Color::Reset);
     }
 
     #[test]

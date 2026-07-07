@@ -43,7 +43,10 @@ UI elements a user perceives as distinct things:
 - view border — the vertical line between the two views. Modelled on tmux's pane
   border, but it borders views (not panes), so it is a `view border`, never a
   "pane border" or a bare "divider". Its color config keys are `view-border-style`
-  / `view-active-border-style` / `view-border-hover-style`.
+  / `view-active-border-style` / `view-border-hover-style`. These keys are
+  OVERRIDES: unset (empty), each colour comes from the displayed host's live mux
+  `pane-*-border-style` (queried per displayed host), falling back to the stock
+  default (`green` / terminal-default / `yellow`). A non-empty key wins over both.
 - active view border — the view border half painted the active color to mark which
   view holds focus (tmux `pane-active-border-style`; the top half is the active
   color for tree focus, the bottom half for terminal focus).

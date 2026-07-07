@@ -210,11 +210,14 @@ pub trait Mux: Send + Sync {
         }
     }
 
-    // The 9 command-plan verbs are tmux-compatible argv builders over `self.bin()`, so
+    // The command-plan verbs are tmux-compatible argv builders over `self.bin()`, so
     // every tmux-compatible mux inherits them for free (the north-star additivity). A mux
     // whose argv diverges overrides only the verb it differs on.
     fn list_panes_plan(&self, session: &str) -> Vec<String> {
         mux::list_panes(self.bin(), session)
+    }
+    fn show_option_plan(&self, name: &str) -> Vec<String> {
+        mux::show_option(self.bin(), name)
     }
     fn new_window_plan(&self, session: &str, name: &str) -> Vec<String> {
         mux::new_window(self.bin(), session, name)
@@ -425,7 +428,7 @@ mod tests {
     }
 
     /// A minimal tmux-compatible mux that implements ONLY the required `Mux` methods
-    /// — none of the 9 command-plan verbs. It must still compile and get every command
+    /// — none of the command-plan verbs. It must still compile and get every command
     /// plan for free from the trait defaults (the north-star additivity: a new
     /// tmux-compatible mux = identity + a few methods, the verbs are free).
     struct BareMux {
@@ -474,7 +477,7 @@ mod tests {
 
     #[test]
     fn bare_tmux_compatible_mux_gets_command_plans_for_free() {
-        // The 9 command-plan verbs are trait defaults over `self.bin()`, so a bare
+        // The command-plan verbs are trait defaults over `self.bin()`, so a bare
         // tmux-compatible mux inherits byte-identical plans without overriding them.
         let m = BareMux { bin: "tmux".into() };
         assert_eq!(m.list_panes_plan("work"), mux::list_panes("tmux", "work"));

@@ -40,16 +40,20 @@ pub struct UiConfig {
     /// (`prefix Tab`/`←`/`Esc`). Default false keeps the tree shown in both focus states.
     #[serde(rename = "auto-hide-tree", default)]
     pub auto_hide_tree: bool,
-    /// The tree|terminal view border colours, named after tmux's pane-border options so the
-    /// experience matches tmux: the focused side uses `view-active-border-style`, the
-    /// unfocused side `view-border-style`, and the drag-hover cue `view-border-hover-style`.
-    /// Values use tmux's colour vocabulary (parsed by [`crate::ui::chrome::map_color`]);
-    /// the defaults mirror tmux's own (`green` / `default` / `yellow`).
-    #[serde(rename = "view-active-border-style", default = "default_active_border")]
+    /// The tree|terminal view border colour OVERRIDES, named after tmux's pane-border
+    /// options: the focused side is `view-active-border-style`, the unfocused side
+    /// `view-border-style`, the drag-hover cue `view-border-hover-style`. Values use
+    /// tmux's colour vocabulary (parsed by [`crate::ui::chrome::map_color`]). Each
+    /// defaults to EMPTY (unset): when unset the colour comes from the displayed
+    /// host's live mux `pane-*-border-style`, falling back to the stock default
+    /// (`green` / terminal-default / `yellow`). A non-empty value here overrides both
+    /// — see [`crate::ui::chrome::ViewBorderColors::resolve`]. (`hover` has no live
+    /// mux source, so it is this override or the stock default only.)
+    #[serde(rename = "view-active-border-style", default)]
     pub view_active_border_style: String,
-    #[serde(rename = "view-border-style", default = "default_border")]
+    #[serde(rename = "view-border-style", default)]
     pub view_border_style: String,
-    #[serde(rename = "view-border-hover-style", default = "default_hover_border")]
+    #[serde(rename = "view-border-hover-style", default)]
     pub view_border_hover_style: String,
 }
 
@@ -57,24 +61,16 @@ fn default_prefix() -> String {
     "C-g".to_string()
 }
 
-fn default_active_border() -> String {
-    "green".to_string()
-}
-fn default_border() -> String {
-    "default".to_string()
-}
-fn default_hover_border() -> String {
-    "yellow".to_string()
-}
-
 impl Default for UiConfig {
     fn default() -> Self {
         UiConfig {
             prefix: default_prefix(),
             auto_hide_tree: false,
-            view_active_border_style: default_active_border(),
-            view_border_style: default_border(),
-            view_border_hover_style: default_hover_border(),
+            // Empty = unset: the effective colour comes from the live mux
+            // pane-*-border-style, falling back to ViewBorderColors::default().
+            view_active_border_style: String::new(),
+            view_border_style: String::new(),
+            view_border_hover_style: String::new(),
         }
     }
 }
@@ -629,18 +625,20 @@ bogus = "nope"
 
     #[test]
     fn ui_border_styles_default_to_tmux_defaults() {
-        // Missing file → tmux's own code defaults (green / default / yellow).
+        // The keys are OVERRIDE-only, so unset → empty. The effective visual default
+        // (green / terminal-default / yellow) comes from ViewBorderColors::default()
+        // via ViewBorderColors::resolve, not from these raw config values.
         let missing = std::env::temp_dir().join("xmux-border-absent-xyz.toml");
         let cfg = load(&missing).unwrap();
-        assert_eq!(cfg.ui.view_active_border_style, "green");
-        assert_eq!(cfg.ui.view_border_style, "default");
-        assert_eq!(cfg.ui.view_border_hover_style, "yellow");
+        assert_eq!(cfg.ui.view_active_border_style, "");
+        assert_eq!(cfg.ui.view_border_style, "");
+        assert_eq!(cfg.ui.view_border_hover_style, "");
 
-        // [ui] present but border keys missing → still the defaults.
+        // [ui] present but border keys missing → still unset (empty).
         let path = write_temp("[ui]\nprefix = \"C-g\"\n", "border-missing.toml");
         let cfg = load(&path).unwrap();
-        assert_eq!(cfg.ui.view_active_border_style, "green");
-        assert_eq!(cfg.ui.view_border_style, "default");
+        assert_eq!(cfg.ui.view_active_border_style, "");
+        assert_eq!(cfg.ui.view_border_style, "");
     }
 
     #[test]
