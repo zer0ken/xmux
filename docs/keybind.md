@@ -37,19 +37,20 @@ These act on the tree while it holds focus.
 
 ## Tree actions
 
-Direct (non-prefix) keys while the tree holds focus. `n`, `R`, and `x` are
-level-aware — they act on the host, session, or window the selection is on.
+While the tree holds focus:
 
 | Key | Action |
 |---|---|
-| `n` | create — a session on a host, a window on a session, or a split (pane) on a window |
-| `R` | rename the selected session or window |
-| `x` | kill the selected session or window (with a `y`/`n` confirm) |
-| `/` | fuzzy-filter the tree by `<source>/<name>` |
-| `r` | re-scan every host |
+| `/` | fuzzy-filter the tree by `<source>/<name>` (no prefix) |
+| `prefix n` | create — a session on a host, a window on a session, or a split (pane) on a window |
+| `prefix R` | rename the selected session or window |
+| `prefix x` | kill the selected session or window (with a `y`/`n` confirm) |
+| `prefix r` | re-scan every host |
 
-Renaming or killing a host row is refused with a brief message; creating under
-an unreachable host is likewise refused.
+`prefix n`, `prefix R`, and `prefix x` are level-aware — they act on the host,
+session, or window the selection is on. Renaming or killing a host row is refused
+with a brief message; creating under an unreachable host is likewise refused. The
+prefix guards these so a stray keystroke cannot destroy or disrupt a session.
 
 ## Prefix commands
 

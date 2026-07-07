@@ -1526,8 +1526,8 @@ fn kill_confirm_owns_keys_so_prefix_q_and_enter_do_not_quit_or_focus_mux() {
     }
     // Launch preselects the host row; `l` (== →) descends to the api session row.
     feed!(b"l");
-    // `x` on the session row arms the y/n confirm (a modal popup, not an inline input).
-    feed!(b"x");
+    // `prefix x` on the session row arms the y/n confirm (a modal popup, not an inline input).
+    feed!(b"\x07x");
     assert!(
         rt.state.is_modal_popup_open(),
         "x armed the kill-confirm popup"
@@ -1561,7 +1561,7 @@ fn kill_confirm_owns_keys_so_prefix_q_and_enter_do_not_quit_or_focus_mux() {
         "pane focus unchanged"
     );
     // Re-arm and feed Enter: routed to the switcher, NOT a terminal-view focus.
-    feed!(b"x");
+    feed!(b"\x07x");
     {
         let mk = rt.state.modal_kind();
         rt.state.focus.sync_modal(mk);

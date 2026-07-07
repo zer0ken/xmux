@@ -156,6 +156,11 @@ pub(crate) fn resolve_tree_key(
             // Char('\t') for Tab, never KeyCode::Tab, so match both. (prefix ←/Esc focus
             // the tree, where we already are — a no-op that resolves to nothing.)
             KeyCode::Right | KeyCode::Tab | KeyCode::Char('\t') => Some(Action::FocusTerminal),
+            // Tier A: destructive/state-changing tree actions are prefix-gated. The prefix
+            // arms them; they then resolve to the tree executor via the existing TreeKey path.
+            KeyCode::Char('x') | KeyCode::Char('r') | KeyCode::Char('n') | KeyCode::Char('R') => {
+                Some(Action::TreeKey(key))
+            }
             _ => None,
         };
     }
@@ -166,6 +171,17 @@ pub(crate) fn resolve_tree_key(
     // Enter focuses the terminal view. ←/→ navigate the tree inside `handle_key`.
     if !is_inputting && is_focus_in(key.code) {
         return Some(Action::FocusTerminal);
+    }
+    // Tier A: bare (unprefixed) x/r/n/R are inert — they require the prefix. Navigation,
+    // Enter, and `/` filter stay bare. Only applies when not inputting, so every key is
+    // still literal text while an input row (filter/new/rename) is open.
+    if !is_inputting
+        && matches!(
+            key.code,
+            KeyCode::Char('x') | KeyCode::Char('r') | KeyCode::Char('n') | KeyCode::Char('R')
+        )
+    {
+        return None;
     }
     Some(Action::TreeKey(key))
 }
@@ -263,6 +279,35 @@ mod tests {
             rt(b"\x07\x1b[1;5D", false),
             vec![Action::Width(-1)],
             "prefix Ctrl-Left narrows"
+        );
+    }
+
+    #[test]
+    fn resolve_tree_action_keys_require_prefix() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let tk = |c: char| Action::TreeKey(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+
+        // Bare destructive/state-changing keys are inert without the prefix.
+        for k in [b"x" as &[u8], b"r", b"n", b"R"] {
+            assert_eq!(
+                rt(k, false),
+                Vec::<Action>::new(),
+                "a bare action key does nothing without the prefix"
+            );
+        }
+        // The prefix arms them → they resolve to the tree executor (TreeKey).
+        assert_eq!(rt(b"\x07x", false), vec![tk('x')], "prefix x arms kill");
+        assert_eq!(rt(b"\x07r", false), vec![tk('r')], "prefix r arms rescan");
+        assert_eq!(rt(b"\x07n", false), vec![tk('n')], "prefix n arms new");
+        assert_eq!(rt(b"\x07R", false), vec![tk('R')], "prefix R arms rename");
+        // Bare navigation and `/` filter stay bare (fast-switcher identity preserved).
+        assert_eq!(rt(b"/", false), vec![tk('/')], "/ filter stays bare");
+        assert_eq!(rt(b"j", false), vec![tk('j')], "navigation stays bare");
+        // While an input row is open the keys are literal text again.
+        assert_eq!(
+            rt(b"x", true),
+            vec![tk('x')],
+            "x is literal while inputting"
         );
     }
 
