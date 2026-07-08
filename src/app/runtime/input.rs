@@ -510,9 +510,40 @@ impl Runtime {
                         toggle_auto_hide(&mut self.auto_hide_tree, &self.env.xmux_dir);
                         *dirty = true;
                     }
-                    // The terminal-view focus resolver (TermInput) never emits these — they
-                    // belong to the tree-focus path (resolve_tree).
-                    Action::FocusTerminal | Action::TreeKey(_) => {}
+                    // prefix n/R/x/r reach here from terminal focus: run them through the
+                    // switcher exactly like the tree path. handle_key opens the modal on the
+                    // displayed session (n/R/x) or arms the re-scan (r); a committing key
+                    // (Enter / y) then routes via the modal path (is_modal) on the next read.
+                    // `r` only sets the re-scan flag, so kick_rescan must fire it — the tree
+                    // path (handle_tree_bytes) runs the same tail after every read.
+                    Action::TreeKey(k) => {
+                        let cmds = self.switcher.handle_key(k, &mut self.state);
+                        let (cq, cwc) = dispatch_commands(
+                            cmds,
+                            &mut self.switcher,
+                            &mut self.state,
+                            &mut self.tree_width_natural,
+                            &mut self.auto_hide_tree,
+                            &self.env.xmux_dir,
+                            (&self.ops, &self.op_tx),
+                        );
+                        *quit |= cq;
+                        if cwc {
+                            *width_changed = true;
+                        }
+                        kick_rescan(
+                            &mut self.switcher,
+                            &self.hosts,
+                            &mut self.detecting,
+                            &mut self.mgr,
+                            &mut self.panes_requested,
+                            self.cols,
+                            self.body_rows,
+                        );
+                        *dirty = true;
+                    }
+                    // TermInput never emits FocusTerminal (that is the tree-focus path).
+                    Action::FocusTerminal => {}
                 }
             }
         }

@@ -4,12 +4,15 @@
 //! which is intercepted: `prefix Left|Tab|Esc` returns focus to the tree, `prefix Right`
 //! keeps focus on the (already-focused) terminal view, `prefix q` quits, `prefix ?` toggles
 //! the keys help, `prefix h`/`l` and `prefix Ctrl+←/→` resize the tree, `prefix t`
-//! toggles auto-hide-tree mode, and a doubled
+//! toggles auto-hide-tree mode, `prefix n`/`R`/`x`/`r` run the tree actions
+//! (new / rename / kill / re-scan) on the displayed session so they work from the
+//! terminal view too, and a doubled
 //! prefix sends one literal prefix byte. The same command set works in tree focus, so a
 //! command behaves identically regardless of which view holds focus. The prefix is a C0
 //! control byte, so it cannot collide with a UTF-8 continuation byte or appear mid-CSI;
 //! bracketed paste is respected so a prefix pasted as data is never intercepted.
 use crate::display::dispatch::Action;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 pub struct TermInput {
     prefix: u8,
@@ -94,6 +97,23 @@ impl TermInput {
                         out.push(Action::Forward(std::mem::take(&mut fwd)));
                     }
                     out.push(Action::ToggleAutoHide);
+                    i += 1;
+                    continue;
+                }
+                // prefix n/R/x/r → the tree actions (new / rename / kill / re-scan), so they
+                // are reachable from the terminal view too, not only tree focus. Emitted as
+                // a TreeKey the caller hands to Switcher::handle_key: n/R/x open a modal on
+                // the displayed session, r kicks a re-scan. Focus stays on the terminal view
+                // (the modal draws over it and owns the NEXT read), so the rest of THIS read
+                // still forwards to the pane — same shape as prefix ?/t above.
+                if matches!(b0, b'n' | b'R' | b'x' | b'r') {
+                    if !fwd.is_empty() {
+                        out.push(Action::Forward(std::mem::take(&mut fwd)));
+                    }
+                    out.push(Action::TreeKey(KeyEvent::new(
+                        KeyCode::Char(b0 as char),
+                        KeyModifiers::NONE,
+                    )));
                     i += 1;
                     continue;
                 }
@@ -286,6 +306,38 @@ mod tests {
     }
 
     #[test]
+    fn prefix_then_tree_action_emits_tree_key() {
+        // prefix n/R/x/r each emit a TreeKey the caller routes to Switcher::handle_key,
+        // so the tree actions work from terminal focus too.
+        for (b, c) in [(b'n', 'n'), (b'R', 'R'), (b'x', 'x'), (b'r', 'r')] {
+            let mut t = m();
+            t.feed(&[0x07]);
+            assert_eq!(
+                t.feed(&[b]),
+                vec![Action::TreeKey(KeyEvent::new(
+                    KeyCode::Char(c),
+                    KeyModifiers::NONE
+                ))],
+                "prefix {c} emits a tree key"
+            );
+        }
+    }
+
+    #[test]
+    fn prefix_tree_action_keeps_focus_and_forwards_rest() {
+        // Like prefix ?/t: the action keeps terminal-view focus, so trailing bytes in the
+        // same read still forward to the pane (the opened modal owns the NEXT read).
+        let mut t = m();
+        assert_eq!(
+            t.feed(b"\x07xabc"),
+            vec![
+                Action::TreeKey(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+                Action::Forward(b"abc".to_vec()),
+            ]
+        );
+    }
+
+    #[test]
     fn prefix_then_h_or_l_resizes() {
         let mut t = m();
         t.feed(&[0x07]);
@@ -344,7 +396,8 @@ mod tests {
     fn prefix_then_other_key_is_swallowed() {
         let mut t = m();
         t.feed(&[0x07]);
-        let out = t.feed(b"x");
+        // `z` is not a command key (unlike q/?/h/l/t/n/R/x/r), so it is swallowed.
+        let out = t.feed(b"z");
         assert!(
             out.is_empty(),
             "unrecognised follow-up is swallowed: {out:?}"
@@ -361,9 +414,9 @@ mod tests {
 
     #[test]
     fn prefix_then_unknown_then_trailing_forwards_rest() {
-        // `C-g x abc`: x is swallowed as command mode; abc still forwards.
+        // `C-g z abc`: z (not a command key) is swallowed as command mode; abc still forwards.
         let mut t = m();
-        assert_eq!(fwd(&t.feed(b"\x07xabc")), b"abc");
+        assert_eq!(fwd(&t.feed(b"\x07zabc")), b"abc");
     }
 
     #[test]

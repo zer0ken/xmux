@@ -37,7 +37,9 @@ These act on the tree while it holds focus.
 
 ## Tree actions
 
-While the tree holds focus:
+These act on the selected node. `/` filter needs tree focus; `prefix n`/`R`/`x`/`r`
+also work while the live screen is focused (they act on the displayed session, so you
+can create, rename, kill, or re-scan without returning to the tree first):
 
 | Key | Action |
 |---|---|

@@ -1508,6 +1508,78 @@ fn handle_stdin_bytes_quit_on_prefix_q_in_tree_focus() {
     assert!(out.quit, "prefix+q in tree focus quits");
 }
 
+/// Builds a `Runtime` with one reachable session on source `jup`, focused on the
+/// TERMINAL view — the setup the focus-independent tree-action tests share.
+fn rt_terminal_focus_with_session() -> Runtime {
+    use crate::session::Session;
+    use crate::ui::switcher::{Scan, Switcher};
+    use crate::ui::tree::Group;
+    let scan = Scan {
+        groups: vec![Group {
+            source: "jup".into(),
+            err: None,
+            sessions: vec![Session {
+                source: "jup".into(),
+                name: "api".into(),
+                windows: 1,
+                attached: false,
+                last_attached: 1,
+            }],
+        }],
+        panes: Default::default(),
+    };
+    let mut state = crate::state::State::from_scan(scan); // launches in tree focus
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&["jup"]));
+    rt.hosts = crate::model::Hosts::default();
+    rt.state = state;
+    rt.switcher = switcher;
+    // Descend to the api session so it is the selection, then focus the terminal view.
+    rt.handle_stdin_bytes(b"l", &Selection::default());
+    rt.state.apply(crate::model::Action::Focus(
+        crate::model::FocusTarget::Terminal,
+    ));
+    assert!(
+        !rt.state.focus.is_tree_focused() && !rt.state.focus.is_modal(),
+        "precondition: the terminal view holds focus (not tree, not modal)"
+    );
+    rt
+}
+
+#[test]
+fn prefix_x_in_terminal_focus_arms_kill_confirm() {
+    // prefix x is focus-independent: from the terminal view it arms the kill confirm on
+    // the displayed session, just as it does in tree focus. (TermInput → TreeKey → the
+    // terminal arm routes it through Switcher::handle_key.)
+    let mut rt = rt_terminal_focus_with_session();
+    rt.handle_stdin_bytes(b"\x07x", &Selection::default());
+    assert!(
+        rt.state.is_modal_popup_open(),
+        "prefix x in terminal focus armed the kill confirm"
+    );
+}
+
+#[test]
+fn prefix_r_in_terminal_focus_kicks_rescan() {
+    // prefix r is focus-independent: from the terminal view it re-scans every host. The
+    // re-scan clears each group's sessions and re-arms scanning — and kick_rescan must
+    // run for it to fire, which the terminal arm now does.
+    let mut rt = rt_terminal_focus_with_session();
+    assert!(
+        !rt.state.groups[0].sessions.is_empty(),
+        "precondition: a session exists before the re-scan"
+    );
+    rt.handle_stdin_bytes(b"\x07r", &Selection::default());
+    assert!(
+        rt.state.groups[0].sessions.is_empty(),
+        "prefix r in terminal focus cleared sessions for a re-scan"
+    );
+    assert!(
+        rt.state.scanning.contains("jup"),
+        "and re-armed scanning for the source"
+    );
+}
+
 #[test]
 fn kill_confirm_owns_keys_so_prefix_q_and_enter_do_not_quit_or_focus_mux() {
     // A kill-confirm is a modal popup, so it OWNS every key. With the resolver gated
