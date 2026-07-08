@@ -131,6 +131,7 @@ auto-hide-tree = false                # initial auto-hide-tree state
 view-active-border-style = "green"    # focused view-border colour (tmux colour vocabulary)
 view-border-style = "default"         # unfocused view-border colour
 view-border-hover-style = "yellow"    # drag-to-resize hover cue
+hint-bar-style = "bg=blue,fg=white"   # hint bar colour (tmux status-style; empty = tmux default)
 ```
 
 Hosts come from `~/.ssh/config` first. Connection details (user, port, key,

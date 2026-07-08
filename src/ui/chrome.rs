@@ -127,9 +127,44 @@ impl ViewBorderColors {
     }
 }
 
+/// The hint bar's built-in default style: tmux's default `status-style`
+/// (`bg=themegreen,fg=themeblack`) as it resolves on a 256+/truecolor terminal —
+/// `yellowgreen` (#9acd32) background, `gray5` (#0d0d0d) foreground. A BRIGHT green
+/// with near-black text; the brightness is what keeps it readable (plain ANSI green
+/// renders too dark on many themes for black text to show). Used when `[ui]
+/// hint-bar-style` is unset.
+pub(crate) fn hint_bar_default_style() -> Style {
+    Style::default()
+        .bg(Color::Rgb(0x9a, 0xcd, 0x32))
+        .fg(Color::Rgb(0x0d, 0x0d, 0x0d))
+}
+
+/// Parses a `[ui] hint-bar-style` spec into the hint bar [`Style`]. Empty ⇒ the
+/// built-in tmux default ([`hint_bar_default_style`]). Otherwise a tmux-style comma
+/// list: `bg=<colour>` sets the background, `fg=<colour>` (or a bare colour token) the
+/// foreground, using the same colour vocabulary as the view border ([`map_color`], so
+/// named colours, `colourN`, `#RRGGBB`, `default`). Unrecognised tokens are ignored.
+pub(crate) fn parse_hint_bar_style(spec: &str) -> Style {
+    if spec.trim().is_empty() {
+        return hint_bar_default_style();
+    }
+    let mut style = Style::default();
+    for tok in spec.split(',') {
+        let tok = tok.trim();
+        if let Some(c) = tok.strip_prefix("bg=") {
+            style = style.bg(map_color(c));
+        } else if let Some(c) = tok.strip_prefix("fg=") {
+            style = style.fg(map_color(c));
+        } else if !tok.is_empty() {
+            style = style.fg(map_color(tok));
+        }
+    }
+    style
+}
+
 /// The switcher's chrome view state: the view border/hint_bar/host-info draws and
 /// their inputs (flash, spinner set + frame, auto-hide + hover cues, view border
-/// colours, the ssh-config text, and the configured prefix string).
+/// colours, the ssh-config text, the configured prefix string, and the hint bar style).
 pub struct Chrome {
     pub(crate) flash: String,
     /// Auto-hide-tree mode (set by the app each frame). Drives the view border glyph:
@@ -152,6 +187,9 @@ pub struct Chrome {
     /// The tree|terminal view border colours (set once by the app from config; tmux defaults
     /// otherwise). See [`ViewBorderColors`].
     pub(crate) colors: ViewBorderColors,
+    /// The hint bar's style (set once by the app from `[ui] hint-bar-style`; the tmux
+    /// default otherwise). See [`hint_bar_default_style`].
+    pub(crate) hint_bar_style: Style,
 }
 
 impl Default for Chrome {
@@ -165,6 +203,7 @@ impl Default for Chrome {
             ssh_config_text: String::new(),
             ui_prefix: "C-g".into(),
             colors: ViewBorderColors::default(),
+            hint_bar_style: hint_bar_default_style(),
         }
     }
 }
@@ -213,6 +252,12 @@ impl Chrome {
     /// at startup so the help modal reflects the binding from config's `[ui] prefix`.
     pub(crate) fn set_ui_prefix(&mut self, prefix: String) {
         self.ui_prefix = prefix;
+    }
+
+    /// Sets the hint bar style. The app calls this once at startup from
+    /// `[ui] hint-bar-style` (empty ⇒ the tmux default; see [`parse_hint_bar_style`]).
+    pub(crate) fn set_hint_bar_style(&mut self, style: Style) {
+        self.hint_bar_style = style;
     }
 
     /// Sets the raw `~/.ssh/config` text the unreachable-host info panel reads.
@@ -384,23 +429,30 @@ impl Chrome {
     ) {
         let lines = self.hint_bar_lines(area.width, state);
         let text = Text::from(lines.into_iter().map(Line::from).collect::<Vec<_>>());
-        // A tmux-style status bar. tmux's default `status-style` is `bg=themegreen,
-        // fg=themeblack`; on a 256+/truecolor terminal those theme colours resolve to
-        // `yellowgreen` (#9acd32) and `gray5` (#0d0d0d) — a BRIGHT green bar with near-black
-        // text. The brightness is what keeps it readable: plain ANSI green (colour 2) renders
-        // too dark on many themes for black text to show. The style fills the whole area, so
-        // the bar spans full width even where the text does not; the plain text lines carry
-        // no style of their own, so they inherit the bar's fg/bg.
-        let bar = Style::default()
-            .bg(Color::Rgb(0x9a, 0xcd, 0x32))
-            .fg(Color::Rgb(0x0d, 0x0d, 0x0d));
-        frame.render_widget(Paragraph::new(text).style(bar), area);
+        // The hint bar is a solid status bar (`self.hint_bar_style`: the tmux default from
+        // `hint_bar_default_style`, or the `[ui] hint-bar-style` override). The style fills
+        // the whole area, so the bar spans full width even where the text does not; the plain
+        // text lines carry no style of their own, so they inherit the bar's fg/bg.
+        frame.render_widget(Paragraph::new(text).style(self.hint_bar_style), area);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_hint_bar_style_default_and_override() {
+        // Empty (and whitespace-only) ⇒ the built-in tmux default (yellowgreen / gray5).
+        assert_eq!(parse_hint_bar_style(""), hint_bar_default_style());
+        assert_eq!(parse_hint_bar_style("   "), hint_bar_default_style());
+        // bg=/fg= tokens set the two colours (tmux status-style vocabulary).
+        let s = parse_hint_bar_style("bg=blue,fg=white");
+        assert_eq!(s.bg, Some(Color::Blue));
+        assert_eq!(s.fg, Some(Color::White));
+        // A bare colour token is the foreground (tmux convention).
+        assert_eq!(parse_hint_bar_style("red").fg, Some(Color::Red));
+    }
 
     #[test]
     fn map_color_named_and_default() {

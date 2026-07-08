@@ -55,6 +55,11 @@ pub struct UiConfig {
     pub view_border_style: String,
     #[serde(rename = "view-border-hover-style", default)]
     pub view_border_hover_style: String,
+    /// The hint bar's colour as a tmux `status-style` string (`bg=…,fg=…`, tmux colour
+    /// vocabulary parsed by [`crate::ui::chrome::parse_hint_bar_style`]). Empty (default)
+    /// = the built-in tmux default (themegreen/themeblack → yellowgreen / gray5).
+    #[serde(rename = "hint-bar-style", default)]
+    pub hint_bar_style: String,
 }
 
 fn default_prefix() -> String {
@@ -71,6 +76,9 @@ impl Default for UiConfig {
             view_active_border_style: String::new(),
             view_border_style: String::new(),
             view_border_hover_style: String::new(),
+            // Empty = the built-in tmux default hint bar style (see
+            // crate::ui::chrome::hint_bar_default_style).
+            hint_bar_style: String::new(),
         }
     }
 }
@@ -570,6 +578,19 @@ bogus = "nope"
         let w = c.value_warnings();
         assert_eq!(w.len(), 1, "{w:?}");
         assert!(w[0].contains("bad") && w[0].contains("kitty"), "{w:?}");
+    }
+
+    #[test]
+    fn ui_hint_bar_style_defaults_empty_and_parses() {
+        // Missing key ⇒ empty (the app then uses the built-in tmux default).
+        let missing = std::env::temp_dir().join("xmux-hintbar-absent-xyz.toml");
+        assert_eq!(load(&missing).unwrap().ui.hint_bar_style, "");
+        // An explicit value round-trips as the raw tmux-style string.
+        let path = write_temp(
+            "[ui]\nhint-bar-style = \"bg=blue,fg=white\"\n",
+            "ui-hintbar.toml",
+        );
+        assert_eq!(load(&path).unwrap().ui.hint_bar_style, "bg=blue,fg=white");
     }
 
     #[test]

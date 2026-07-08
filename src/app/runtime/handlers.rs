@@ -236,6 +236,12 @@ impl Runtime {
             ));
         // The help modal must show the prefix the user configured, not a literal.
         state.chrome.set_ui_prefix(env.ui_prefix.clone());
+        // The hint bar colour: the `[ui] hint-bar-style` override, else the tmux default.
+        state
+            .chrome
+            .set_hint_bar_style(crate::ui::chrome::parse_hint_bar_style(
+                &env.cfg.ui.hint_bar_style,
+            ));
 
         // The live mutate ops (create/rename/kill) — NOT tree probing.
         let ops = env.ops();
