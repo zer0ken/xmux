@@ -1350,12 +1350,19 @@ fn hint_bar_has_status_bar_background() {
         .unwrap();
     let buf = term.backend().buffer();
     let y = buf.area.height - 1; // the one-line hint bar sits on the last row
-    assert_eq!(buf[(1, y)].bg, Color::Green, "a text cell has the bar bg");
-    assert_eq!(buf[(1, y)].fg, Color::Black, "the hint text is black");
+                                 // tmux's default status-style themegreen/themeblack = yellowgreen / gray5 on truecolor.
+    let bg = Color::Rgb(0x9a, 0xcd, 0x32);
+    let fg = Color::Rgb(0x0d, 0x0d, 0x0d);
+    assert_eq!(
+        buf[(1, y)].bg,
+        bg,
+        "a text cell has the bar bg (yellowgreen)"
+    );
+    assert_eq!(buf[(1, y)].fg, fg, "the hint text is near-black (gray5)");
     assert_eq!(
         buf[(buf.area.width - 1, y)].bg,
-        Color::Green,
-        "a trailing cell past the text is also green (the bar fills full width)"
+        bg,
+        "a trailing cell past the text is also the bar bg (fills full width)"
     );
 }
 

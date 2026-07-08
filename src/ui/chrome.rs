@@ -384,12 +384,16 @@ impl Chrome {
     ) {
         let lines = self.hint_bar_lines(area.width, state);
         let text = Text::from(lines.into_iter().map(Line::from).collect::<Vec<_>>());
-        // A tmux-style status bar: a solid bar (green bg, black fg, like tmux's default
-        // `status-style`) so the hint bar reads as chrome, clearly set off from the tree
-        // rows above. The style fills the whole area, so the bar spans full width even
-        // where the text does not; the plain text lines carry no style of their own, so
-        // they inherit the bar's fg/bg.
-        let bar = Style::default().bg(Color::Green).fg(Color::Black);
+        // A tmux-style status bar. tmux's default `status-style` is `bg=themegreen,
+        // fg=themeblack`; on a 256+/truecolor terminal those theme colours resolve to
+        // `yellowgreen` (#9acd32) and `gray5` (#0d0d0d) — a BRIGHT green bar with near-black
+        // text. The brightness is what keeps it readable: plain ANSI green (colour 2) renders
+        // too dark on many themes for black text to show. The style fills the whole area, so
+        // the bar spans full width even where the text does not; the plain text lines carry
+        // no style of their own, so they inherit the bar's fg/bg.
+        let bar = Style::default()
+            .bg(Color::Rgb(0x9a, 0xcd, 0x32))
+            .fg(Color::Rgb(0x0d, 0x0d, 0x0d));
         frame.render_widget(Paragraph::new(text).style(bar), area);
     }
 }
