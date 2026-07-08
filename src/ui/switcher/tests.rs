@@ -1339,6 +1339,27 @@ async fn hint_bar_fits_narrow_width() {
 }
 
 #[test]
+fn hint_bar_has_status_bar_background() {
+    // The hint bar is a solid tmux-style status bar (green bg / black fg) spanning the
+    // full width — including cells past the text — so it reads as chrome, clearly set
+    // off from the tree rows above.
+    let mut state = crate::state::State::from_scan(sample());
+    let mut sw = Switcher::new(&mut state);
+    let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
+    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
+        .unwrap();
+    let buf = term.backend().buffer();
+    let y = buf.area.height - 1; // the one-line hint bar sits on the last row
+    assert_eq!(buf[(1, y)].bg, Color::Green, "a text cell has the bar bg");
+    assert_eq!(buf[(1, y)].fg, Color::Black, "the hint text is black");
+    assert_eq!(
+        buf[(buf.area.width - 1, y)].bg,
+        Color::Green,
+        "a trailing cell past the text is also green (the bar fills full width)"
+    );
+}
+
+#[test]
 fn hint_bar_text_reflects_configured_prefix() {
     // The hint_bar always-visible key-hints must show the active prefix, not a
     // hardcoded "C-g", so a user who sets a different binding sees the right hint.
