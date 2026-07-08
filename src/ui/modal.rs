@@ -334,7 +334,10 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
         HelpRow::Key("PgUp/PgDn".into(), "jump by 10".into()),
         HelpRow::Key("Home/End".into(), "first / last node".into()),
         HelpRow::Key(format!("{p} n"), "new (session / window, by level)".into()),
-        HelpRow::Key(format!("{p} R"), "rename the focused session or window".into()),
+        HelpRow::Key(
+            format!("{p} R"),
+            "rename the focused session or window".into(),
+        ),
         HelpRow::Key(format!("{p} x"), "kill it (y / n confirm)".into()),
         HelpRow::Key("/".into(), "fuzzy filter <source>/<name>".into()),
         HelpRow::Key(format!("{p} r"), "re-scan every host".into()),
