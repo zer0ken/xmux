@@ -322,7 +322,8 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
 
     let p = prefix;
 
-    // Tree section — no configurable keys; keep as literals.
+    // Tree section — the mutating keys carry the prefix (bare presses are inert);
+    // navigation and the `/` filter stay bare.
     let rows: Vec<HelpRow> = vec![
         HelpRow::Head("tree".into()),
         HelpRow::Key("↑/↓ · j/k".into(), "move between siblings".into()),
@@ -332,11 +333,11 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
         ),
         HelpRow::Key("PgUp/PgDn".into(), "jump by 10".into()),
         HelpRow::Key("Home/End".into(), "first / last node".into()),
-        HelpRow::Key("n".into(), "new (session / window, by level)".into()),
-        HelpRow::Key("R".into(), "rename the focused session or window".into()),
-        HelpRow::Key("x".into(), "kill it (y / n confirm)".into()),
+        HelpRow::Key(format!("{p} n"), "new (session / window, by level)".into()),
+        HelpRow::Key(format!("{p} R"), "rename the focused session or window".into()),
+        HelpRow::Key(format!("{p} x"), "kill it (y / n confirm)".into()),
         HelpRow::Key("/".into(), "fuzzy filter <source>/<name>".into()),
-        HelpRow::Key("r".into(), "re-scan every host".into()),
+        HelpRow::Key(format!("{p} r"), "re-scan every host".into()),
         HelpRow::Gap,
         // Focus section — prefix rows built from `prefix`.
         HelpRow::Head(format!("focus ({p} = prefix)")),

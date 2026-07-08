@@ -349,8 +349,8 @@ impl Chrome {
         } else {
             fit(
                 &[
-                    format!(" ↑/↓ move · Enter/{p}→ focus terminal · / filter · n new · R rename · x kill · r refresh · {p} ? help · {p} q quit"),
-                    format!(" ↑/↓ move · Enter focus terminal · / filter · n new · x kill · {p} ? help · {p} q quit"),
+                    format!(" ↑/↓ move · Enter/{p}→ focus terminal · / filter · {p} n new · {p} R rename · {p} x kill · {p} r refresh · {p} ? help · {p} q quit"),
+                    format!(" ↑/↓ move · Enter focus terminal · / filter · {p} n new · {p} x kill · {p} ? help · {p} q quit"),
                     format!(" move · Enter focus terminal · / filter · {p} ? help · {p} q quit"),
                     format!(" Enter focus terminal · {p} ? help · {p} q quit"),
                     format!(" {p} ? help · {p} q quit"),
