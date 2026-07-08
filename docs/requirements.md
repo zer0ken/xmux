@@ -43,7 +43,7 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   `render_terminal_view_none_grid_is_blank_not_attaching`,
   `terminal_view_target_follows_cursor`, `dump_screen_renders_the_live_grid`.
 - **FR-B4** — Navigation: up/down/home/end/pgup/pgdn; fuzzy filter over
-  `<source>/<name>`; manual `r` rescan. **Tests:** `filter_narrows`,
+  `<source>/<name>`; manual `prefix r` rescan. **Tests:** `filter_narrows`,
   `up_down_move_within_level_and_hjkl_match_arrows`, `navigation_wraps_around`,
   `request_rescan_*`.
 - **FR-B5** — Surveying without committing is first-class: xmux is a switcher, not a
@@ -136,12 +136,12 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
 
 ## E. Session management
 
-- **FR-E1** — Create a session on any source (`n`), then it appears in the tree.
+- **FR-E1** — Create a session on any source (`prefix n`), then it appears in the tree.
   **Tests:** `create_*`, `new_session_*` (mux), `create_on_unreachable_host_refused`.
-- **FR-E2** — Kill a session (`x`) behind an inline confirmation. **Tests:**
+- **FR-E2** — Kill a session (`prefix x`) behind an inline confirmation. **Tests:**
   `menu_release_kill_arms_confirm`, `kill_confirm_esc_cancels`,
   `kill_removes_session_and_cache`.
-- **FR-E3** — Rename a session (`R`); a leading-dash name is refused.
+- **FR-E3** — Rename a session (`prefix R`); a leading-dash name is refused.
   **Tests:** `rename_*`, `rename_rejects_leading_dash`.
 - **FR-E4** — Create/kill/rename run off the key path so a slow ssh round-trip never
   freezes rendering or the control channel. A committing key folds through
@@ -236,4 +236,4 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
 
 - The seamless-cross-host-switch design and its accepted limitations (single live app,
   inter-client repaint flash, Windows ssh latency): `docs/superpowers/` planning
-  material and `docs/solutions/architecture-patterns/app-cross-host-switch.md`.
+  material.

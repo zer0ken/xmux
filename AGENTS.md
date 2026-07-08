@@ -31,11 +31,13 @@ mux-specific. Domain intent converges on `model::Action` applied at
 
 - `src/app/` — the app: the runtime loop (`runtime.rs`, entry `run_app`) that
   owns the terminal, plus focus state (`focus.rs`).
+- `src/machine/` — the MACHINE axis: the `Transport` trait, per-machine families
+  (`local.rs`, `ssh.rs`), and shared shell vocabulary (`vocab.rs`). A host builds
+  one via `machine::local()` / `machine::ssh()`.
 - `src/mux/` — the MUX axis: the `Mux` trait, per-mux families (`tmux/`,
   `psmux/`) owning metadata + command plans + a display driver, and shared mux
   vocabulary (`vocab.rs`).
-- `src/model/` — runtime domain values, including `Transport` (the MACHINE
-  axis), `Host`, `Action`, and `Command`.
+- `src/model/` — runtime domain values: `Host`, `Action`, and `Command`.
 - `src/driver.rs` — the mux-agnostic `MuxDriver` trait and the thin `driver_for`
   wrapper; names no concrete mux type.
 - `src/display/` — PTY attachment, the `Grid`, terminal input, and low-level
