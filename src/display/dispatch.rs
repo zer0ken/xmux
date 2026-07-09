@@ -24,6 +24,10 @@ pub enum Action {
     FocusTerminal,
     /// A tree key to hand to `Switcher::handle_key` (navigation / input row / kill).
     TreeKey(KeyEvent),
+    /// `prefix x` in TERMINAL focus — arm a kill confirm for the active pane of the
+    /// displayed session (the pane on screen). Distinct from tree focus, where `prefix x`
+    /// kills the selected node; handed to `Switcher::arm_kill_active_pane`.
+    KillActivePane,
     /// `prefix` then `q` — quit the app.
     Quit,
     /// `prefix ?` — toggle the keys help modal. Focus stays on the terminal view.
@@ -48,7 +52,9 @@ impl Action {
             Action::ToggleAutoHide => Some(DomainAction::ToggleAutoHide),
             Action::FocusTerminal => Some(DomainAction::Focus(FocusTarget::Terminal)),
             Action::FocusTree(_) => Some(DomainAction::Focus(FocusTarget::Tree)),
-            Action::Forward(_) | Action::ShowHelp | Action::TreeKey(_) => None,
+            Action::Forward(_) | Action::ShowHelp | Action::TreeKey(_) | Action::KillActivePane => {
+                None
+            }
         }
     }
 }

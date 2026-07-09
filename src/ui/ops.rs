@@ -33,6 +33,8 @@ pub trait Ops: Send + Sync {
     async fn rename(&self, s: &Session, new_name: &str) -> anyhow::Result<()>;
     async fn panes(&self, s: &Session) -> anyhow::Result<Vec<WindowPanes>>;
     async fn kill_window(&self, source: &str, target: &str) -> anyhow::Result<()>;
+    /// Kills the active pane of `target` (`session:window`) — the terminal view's pane.
+    async fn kill_pane(&self, source: &str, target: &str) -> anyhow::Result<()>;
     async fn rename_window(&self, source: &str, target: &str, new_name: &str)
         -> anyhow::Result<()>;
     /// Reads the source's live `pane-active-border-style` / `pane-border-style`,
@@ -154,6 +156,18 @@ pub async fn run_op(op: &MuxOp, ops: &dyn Ops) -> OpResult {
             Ok(()) => refreshed_panes(ops, source, session).await,
             Err(e) => OpResult::Failed {
                 message: format!("kill window failed: {e}"),
+            },
+        },
+        MuxOp::KillPane {
+            source,
+            session,
+            target,
+        } => match ops.kill_pane(source, target).await {
+            // A pane kill reflows its window (or closes it / the session when it was the
+            // last pane) — refetch the session's panes so the tree reflects the change.
+            Ok(()) => refreshed_panes(ops, source, session).await,
+            Err(e) => OpResult::Failed {
+                message: format!("kill pane failed: {e}"),
             },
         },
         MuxOp::RenameWindow {

@@ -181,6 +181,12 @@ pub fn kill_window(bin: &str, target: &str) -> Vec<String> {
     argv(&[bin, "kill-window", "-t", target])
 }
 
+/// Kills the pane `target` addresses. A `session:window` target resolves to that
+/// window's ACTIVE pane; a `session:window.pane` target names one exactly.
+pub fn kill_pane(bin: &str, target: &str) -> Vec<String> {
+    argv(&[bin, "kill-pane", "-t", target])
+}
+
 /// Renames the window `target` (`session:window`) to `new_name`.
 pub fn rename_window(bin: &str, target: &str, new_name: &str) -> Vec<String> {
     argv(&[bin, "rename-window", "-t", target, new_name])
@@ -441,6 +447,19 @@ mod tests {
         assert_eq!(
             rename_window("tmux", "api:2", "logs"),
             sv(&["tmux", "rename-window", "-t", "api:2", "logs"])
+        );
+    }
+
+    #[test]
+    fn kill_pane_argv() {
+        // A session:window target lets the mux resolve the window's active pane.
+        assert_eq!(
+            kill_pane("tmux", "api:2"),
+            sv(&["tmux", "kill-pane", "-t", "api:2"])
+        );
+        assert_eq!(
+            kill_pane("psmux", "work:0"),
+            sv(&["psmux", "kill-pane", "-t", "work:0"])
         );
     }
 

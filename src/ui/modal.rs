@@ -23,6 +23,13 @@ pub(crate) enum PendingKill {
         session: String,
         target: String,
     },
+    /// The active pane of the terminal view's session. (source, session,
+    /// target="session:window" — the window whose active pane is killed.)
+    Pane {
+        source: String,
+        session: String,
+        target: String,
+    },
 }
 
 /// One context-menu entry. The variant drives the action taken on release; the
@@ -424,6 +431,9 @@ pub(crate) fn confirm_lines(armed: &PendingKill) -> (String, Vec<Line<'static>>)
     let q = match armed {
         PendingKill::Session(sess) => format!(" kill {}?", sess.address()),
         PendingKill::Window { source, target, .. } => format!(" kill {source}/{target}?"),
+        PendingKill::Pane { source, target, .. } => {
+            format!(" kill active pane of {source}/{target}?")
+        }
     };
     let lines = vec![
         Line::from(Span::styled(q, red)),

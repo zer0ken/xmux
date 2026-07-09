@@ -301,6 +301,16 @@ impl Ops for EnvOps {
         .await
     }
 
+    async fn kill_pane(&self, source: &str, target: &str) -> anyhow::Result<()> {
+        let src = self.source(source)?;
+        let host = src.host();
+        with_timeout(
+            DETAIL_TIMEOUT,
+            manage::kill_pane(&host, src.run_with(), target),
+        )
+        .await
+    }
+
     async fn border_styles(&self, source: &str) -> anyhow::Result<(String, String)> {
         let src = self.source(source)?;
         let _permit = self.sem.acquire().await?;

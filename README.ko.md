@@ -80,7 +80,7 @@ xmux version
 | `Enter` | 고른 세션의 실시간 화면으로 초점 옮기기 |
 | `prefix n` | 만들기 (고른 단계에 따라 세션 / 창 / 분할) |
 | `prefix R` | 고른 세션이나 창 이름 바꾸기 |
-| `prefix x` | 고른 세션 없애기 (확인 창이 뜬다) |
+| `prefix x` | 고른 세션이나 창 없애기 (확인 창이 뜬다) |
 | `/` | 트리 퍼지 필터 |
 | `prefix r` | 모든 호스트 다시 훑기 |
 
@@ -98,6 +98,10 @@ xmux version
 | `prefix h` / `prefix l` (또는 `prefix Ctrl-←/→`) | 트리 좁히기 / 넓히기 |
 | `prefix Tab` / 화살표 / `Esc` | 트리와 화면 사이 초점 이동 |
 | `prefix prefix` | prefix 바이트 하나를 초점 세션에 그대로 보내기 |
+
+`prefix x`는 초점에 따라 다르게 동작한다. 트리에서는 고른 세션이나 창을 없애고,
+화면에 초점이 있으면 그 세션의 **활성 pane**, 즉 지금 보고 있는 pane을 없앤다.
+tmux의 `prefix x`와 같다.
 
 prefix에 관한 자세한 내용은 [`docs/keybind.md`](docs/keybind.md)를 참고한다.
 

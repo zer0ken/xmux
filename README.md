@@ -84,7 +84,7 @@ screen. Keyboard focus is on one region at a time.
 | `Enter` | move focus into the selected session's live screen |
 | `prefix n` | create (session / window / split, depending on the selected level) |
 | `prefix R` | rename the selected session or window |
-| `prefix x` | kill the selected session (with a confirm prompt) |
+| `prefix x` | kill the selected session or window (with a confirm prompt) |
 | `/` | fuzzy-filter the tree |
 | `prefix r` | re-scan every host |
 
@@ -103,6 +103,10 @@ prefix, then:
 | `prefix h` / `prefix l` (or `prefix Ctrl-←/→`) | narrow / widen the tree |
 | `prefix Tab` / arrow / `Esc` | move focus between the tree and the screen |
 | `prefix prefix` | send one literal prefix byte to the focused session |
+
+`prefix x` is focus-aware: in the tree it kills the selected session or window;
+with the screen focused it kills that session's **active pane** — the one you're
+looking at — like tmux's own `prefix x`.
 
 See [`docs/keybind.md`](docs/keybind.md) for more on the prefix.
 

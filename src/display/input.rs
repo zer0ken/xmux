@@ -4,11 +4,13 @@
 //! which is intercepted: `prefix Left|Tab|Esc` returns focus to the tree, `prefix Right`
 //! keeps focus on the (already-focused) terminal view, `prefix q` quits, `prefix ?` toggles
 //! the keys help, `prefix h`/`l` and `prefix Ctrl+←/→` resize the tree, `prefix t`
-//! toggles auto-hide-tree mode, `prefix n`/`R`/`x`/`r` run the tree actions
-//! (new / rename / kill / re-scan) on the displayed session so they work from the
-//! terminal view too, and a doubled
-//! prefix sends one literal prefix byte. The same command set works in tree focus, so a
-//! command behaves identically regardless of which view holds focus. The prefix is a C0
+//! toggles auto-hide-tree mode, `prefix n`/`R`/`r` run the tree actions
+//! (new / rename / re-scan) on the displayed session, `prefix x` kills the ACTIVE pane
+//! of the displayed session (tmux `prefix x` parity — distinct from tree focus, where
+//! `prefix x` kills the selected node), and a doubled
+//! prefix sends one literal prefix byte. Apart from `prefix x`, the command set matches
+//! tree focus, so those commands behave identically regardless of which view holds
+//! focus. The prefix is a C0
 //! control byte, so it cannot collide with a UTF-8 continuation byte or appear mid-CSI;
 //! bracketed paste is respected so a prefix pasted as data is never intercepted.
 use crate::display::dispatch::Action;
@@ -100,13 +102,27 @@ impl TermInput {
                     i += 1;
                     continue;
                 }
-                // prefix n/R/x/r → the tree actions (new / rename / kill / re-scan), so they
-                // are reachable from the terminal view too, not only tree focus. Emitted as
-                // a TreeKey the caller hands to Switcher::handle_key: n/R/x open a modal on
-                // the displayed session, r kicks a re-scan. Focus stays on the terminal view
+                // prefix x from the terminal view kills the ACTIVE pane of the displayed
+                // session (tmux prefix-x parity) — NOT the tree selection. Distinct from
+                // tree focus, where prefix x kills the selected node. Emitted as
+                // KillActivePane; the caller arms the confirm on the displayed session.
+                // Focus stays on the terminal view (the confirm draws over it and owns the
+                // NEXT read), so the rest of THIS read still forwards to the pane.
+                if b0 == b'x' {
+                    if !fwd.is_empty() {
+                        out.push(Action::Forward(std::mem::take(&mut fwd)));
+                    }
+                    out.push(Action::KillActivePane);
+                    i += 1;
+                    continue;
+                }
+                // prefix n/R/r → the tree actions (new / rename / re-scan), so they are
+                // reachable from the terminal view too, not only tree focus. Emitted as a
+                // TreeKey the caller hands to Switcher::handle_key: n/R open a modal on the
+                // displayed session, r kicks a re-scan. Focus stays on the terminal view
                 // (the modal draws over it and owns the NEXT read), so the rest of THIS read
                 // still forwards to the pane — same shape as prefix ?/t above.
-                if matches!(b0, b'n' | b'R' | b'x' | b'r') {
+                if matches!(b0, b'n' | b'R' | b'r') {
                     if !fwd.is_empty() {
                         out.push(Action::Forward(std::mem::take(&mut fwd)));
                     }
@@ -307,9 +323,10 @@ mod tests {
 
     #[test]
     fn prefix_then_tree_action_emits_tree_key() {
-        // prefix n/R/x/r each emit a TreeKey the caller routes to Switcher::handle_key,
-        // so the tree actions work from terminal focus too.
-        for (b, c) in [(b'n', 'n'), (b'R', 'R'), (b'x', 'x'), (b'r', 'r')] {
+        // prefix n/R/r each emit a TreeKey the caller routes to Switcher::handle_key,
+        // so the tree actions work from terminal focus too. (prefix x is separate — it
+        // kills the active pane; see prefix_then_x_kills_active_pane.)
+        for (b, c) in [(b'n', 'n'), (b'R', 'R'), (b'r', 'r')] {
             let mut t = m();
             t.feed(&[0x07]);
             assert_eq!(
@@ -324,16 +341,23 @@ mod tests {
     }
 
     #[test]
+    fn prefix_then_x_kills_active_pane() {
+        // In terminal focus prefix x targets the ACTIVE pane of the displayed session
+        // (tmux prefix-x parity), not the tree selection — so it emits KillActivePane,
+        // not a TreeKey('x').
+        let mut t = m();
+        t.feed(&[0x07]);
+        assert_eq!(t.feed(b"x"), vec![Action::KillActivePane]);
+    }
+
+    #[test]
     fn prefix_tree_action_keeps_focus_and_forwards_rest() {
         // Like prefix ?/t: the action keeps terminal-view focus, so trailing bytes in the
-        // same read still forward to the pane (the opened modal owns the NEXT read).
+        // same read still forward to the pane (the opened confirm owns the NEXT read).
         let mut t = m();
         assert_eq!(
             t.feed(b"\x07xabc"),
-            vec![
-                Action::TreeKey(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
-                Action::Forward(b"abc".to_vec()),
-            ]
+            vec![Action::KillActivePane, Action::Forward(b"abc".to_vec()),]
         );
     }
 

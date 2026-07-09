@@ -16,6 +16,7 @@ struct RecordOps {
     windowed: Mutex<Vec<String>>,
     split: Mutex<Vec<String>>,
     killed_windows: Mutex<Vec<String>>,
+    killed_panes: Mutex<Vec<String>>,
     renamed_windows: Mutex<Vec<String>>,
 }
 
@@ -69,6 +70,10 @@ impl Ops for RecordOps {
     }
     async fn kill_window(&self, _source: &str, target: &str) -> anyhow::Result<()> {
         self.killed_windows.lock().unwrap().push(target.to_string());
+        Ok(())
+    }
+    async fn kill_pane(&self, _source: &str, target: &str) -> anyhow::Result<()> {
+        self.killed_panes.lock().unwrap().push(target.to_string());
         Ok(())
     }
     async fn rename_window(
@@ -2851,6 +2856,48 @@ async fn kill_on_window_row_targets_the_window() {
     let op = only_run_op(cmds).expect("kill window queued");
     assert!(
         matches!(op, crate::model::MuxOp::KillWindow { ref target, .. } if target == "editor:1")
+    );
+}
+
+#[tokio::test]
+async fn kill_active_pane_targets_the_displayed_sessions_active_window() {
+    // prefix-x-in-terminal parity: the kill targets the ACTIVE pane of the session the
+    // terminal view is showing (state.displayed), NOT the tree selection. The fixture's
+    // local/editor has window 1 active, so the target is editor:1 (session:window — the
+    // mux resolves that window's active pane).
+    let mut h = Harness::new(sample());
+    h.state.displayed = crate::model::Selection {
+        source: "local".into(),
+        session: "editor".into(),
+        window: None,
+    };
+    h.sw.arm_kill_active_pane(&mut h.state);
+    let target = match &h.state.modal {
+        Some(Modal::Kill(PendingKill::Pane { target, .. })) => target.clone(),
+        _ => panic!("expected a Pane kill confirm"),
+    };
+    assert_eq!(target, "editor:1");
+    let cmds = h.sw.handle_key(
+        KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+        &mut h.state,
+    );
+    let op = only_run_op(cmds).expect("kill pane queued");
+    assert!(
+        matches!(op, crate::model::MuxOp::KillPane { ref target, .. } if target == "editor:1"),
+        "y confirms → KillPane on the displayed session's active window"
+    );
+}
+
+#[tokio::test]
+async fn kill_active_pane_is_a_no_op_when_nothing_is_displayed() {
+    // With no session on screen (displayed empty), there is no pane to target — the
+    // confirm must not arm (a flash is shown instead).
+    let mut h = Harness::new(sample());
+    assert!(h.state.displayed.is_empty(), "nothing displayed at start");
+    h.sw.arm_kill_active_pane(&mut h.state);
+    assert!(
+        !matches!(h.state.modal, Some(Modal::Kill(_))),
+        "no kill confirm armed when nothing is displayed"
     );
 }
 

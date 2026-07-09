@@ -58,6 +58,13 @@ pub async fn kill_window(host: &Host, runner: &dyn Runner, target: &str) -> Resu
     Ok(())
 }
 
+/// Kills a pane by `target`. A `session:window` target kills that window's active
+/// pane (the one shown in xmux's terminal view).
+pub async fn kill_pane(host: &Host, runner: &dyn Runner, target: &str) -> Result<(), RunError> {
+    run_plan(host, runner, &host.mux.kill_pane_plan(target)).await?;
+    Ok(())
+}
+
 /// Renames a window.
 pub async fn rename_window(
     host: &Host,

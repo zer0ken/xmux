@@ -231,6 +231,9 @@ pub trait Mux: Send + Sync {
     fn kill_window_plan(&self, target: &str) -> Vec<String> {
         mux::kill_window(self.bin(), target)
     }
+    fn kill_pane_plan(&self, target: &str) -> Vec<String> {
+        mux::kill_pane(self.bin(), target)
+    }
     fn rename_window_plan(&self, target: &str, new: &str) -> Vec<String> {
         mux::rename_window(self.bin(), target, new)
     }
@@ -409,6 +412,7 @@ mod tests {
             m.kill_window_plan("api:2"),
             mux::kill_window("tmux", "api:2")
         );
+        assert_eq!(m.kill_pane_plan("api:2"), mux::kill_pane("tmux", "api:2"));
         assert_eq!(
             m.rename_window_plan("api:2", "logs"),
             mux::rename_window("tmux", "api:2", "logs")

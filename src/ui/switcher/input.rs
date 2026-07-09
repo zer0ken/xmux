@@ -479,7 +479,49 @@ impl Switcher {
                 session,
                 target,
             },
+            PendingKill::Pane {
+                source,
+                session,
+                target,
+            } => Action::KillPane {
+                source,
+                session,
+                target,
+            },
         };
         state.apply(action)
+    }
+
+    /// Arms a kill confirm for the ACTIVE pane of the DISPLAYED session — the pane the
+    /// terminal view is showing (tmux `prefix x` parity). Unlike [`arm_kill`], which
+    /// targets the tree SELECTION, this reads `state.displayed` and resolves that
+    /// session's active window from the cached pane data, so the confirmed kill hits the
+    /// pane on screen regardless of where the tree cursor sits. A no-op flash when no
+    /// session is displayed or its active pane is not yet known.
+    pub fn arm_kill_active_pane(&mut self, state: &mut crate::state::State) {
+        self.dismiss_modals(state);
+        let sel = state.displayed.clone();
+        if sel.is_empty() {
+            state.flash("no session displayed");
+            return;
+        }
+        let addr = crate::session::address_of(&sel.source, &sel.session);
+        let Some(window) = state
+            .panes
+            .get(&addr)
+            .and_then(|ws| ws.iter().find(|w| w.active))
+            .map(|w| w.index)
+        else {
+            state.flash("no active pane to kill");
+            return;
+        };
+        // session:window (not a bare session) so a numeric session name can't be
+        // mis-parsed as a window index — the mux resolves the window's active pane.
+        let target = crate::mux::window_target(&sel.session, window);
+        state.modal = Some(Modal::Kill(PendingKill::Pane {
+            source: sel.source,
+            session: sel.session,
+            target,
+        }));
     }
 }

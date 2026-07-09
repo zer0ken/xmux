@@ -171,6 +171,14 @@ impl Switcher {
                 matches!(&r.reference, RowRef::Window { sess, window }
                     if sess.source == *source && crate::mux::window_target(&sess.name, *window) == *target)
             }),
+            // The pane target has no tree row of its own (panes are display-only); the
+            // confirm stays valid while the session it belongs to is still shown.
+            PendingKill::Pane { source, session, .. } => {
+                let addr = crate::session::address_of(source, session);
+                self.rows
+                    .iter()
+                    .any(|r| matches!(&r.reference, RowRef::Session(s) if s.address() == addr))
+            }
         }
     }
 

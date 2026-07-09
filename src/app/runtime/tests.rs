@@ -1547,15 +1547,40 @@ fn rt_terminal_focus_with_session() -> Runtime {
 }
 
 #[test]
-fn prefix_x_in_terminal_focus_arms_kill_confirm() {
-    // prefix x is focus-independent: from the terminal view it arms the kill confirm on
-    // the displayed session, just as it does in tree focus. (TermInput → TreeKey → the
-    // terminal arm routes it through Switcher::handle_key.)
+fn prefix_x_in_terminal_focus_arms_active_pane_kill() {
+    // prefix x is focus-AWARE: from the terminal view it arms a kill confirm for the
+    // ACTIVE pane of the DISPLAYED session (tmux prefix-x parity), not the tree
+    // selection. (TermInput → KillActivePane → Switcher::arm_kill_active_pane, which
+    // reads state.displayed + its cached active window.)
     let mut rt = rt_terminal_focus_with_session();
+    // The terminal view shows jup/api; give it an active window so the active pane resolves.
+    rt.state.panes.insert(
+        "jup/api".into(),
+        vec![crate::session::WindowPanes {
+            index: 0,
+            name: "w".into(),
+            active: true,
+            panes: vec![crate::session::Pane {
+                index: 0,
+                active: true,
+                command: "bash".into(),
+            }],
+        }],
+    );
+    rt.state.displayed = Selection {
+        source: "jup".into(),
+        session: "api".into(),
+        window: None,
+    };
     rt.handle_stdin_bytes(b"\x07x", &Selection::default());
     assert!(
-        rt.state.is_modal_popup_open(),
-        "prefix x in terminal focus armed the kill confirm"
+        matches!(
+            rt.state.modal,
+            Some(crate::ui::modal::Modal::Kill(
+                crate::ui::modal::PendingKill::Pane { .. }
+            ))
+        ),
+        "prefix x in terminal focus arms a kill confirm for the displayed session's active pane"
     );
 }
 

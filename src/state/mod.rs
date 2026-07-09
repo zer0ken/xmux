@@ -265,6 +265,15 @@ impl State {
                 session,
                 target,
             })],
+            Action::KillPane {
+                source,
+                session,
+                target,
+            } => vec![Command::RunOp(MuxOp::KillPane {
+                source,
+                session,
+                target,
+            })],
             Action::RenameWindow {
                 source,
                 session,

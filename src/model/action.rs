@@ -104,6 +104,14 @@ pub enum Action {
         session: String,
         target: String,
     },
+    /// Kill the active pane of `target` (`session:window`) of `session` on `source` —
+    /// the pane shown in the terminal view. `session` is carried so the tree refetches
+    /// after the kill.
+    KillPane {
+        source: String,
+        session: String,
+        target: String,
+    },
     /// Rename window `target` (`session:window`) of `session` on `source` to `new_name`.
     RenameWindow {
         source: String,
@@ -168,6 +176,11 @@ pub enum MuxOp {
         sess: Session,
     },
     KillWindow {
+        source: String,
+        session: String,
+        target: String,
+    },
+    KillPane {
         source: String,
         session: String,
         target: String,

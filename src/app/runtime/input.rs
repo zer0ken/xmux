@@ -59,8 +59,12 @@ impl Runtime {
                 Some(Action::Width(d)) => width_delta = d,
                 Some(Action::ToggleAutoHide) => toggle_auto_hide = true,
                 Some(Action::ShowHelp) => switcher.toggle_help(state),
-                // resolve_tree_key never emits the mux-only variants; None = armed/consumed.
-                Some(Action::Forward(_)) | Some(Action::FocusTree(_)) | None => {}
+                // resolve_tree_key never emits the mux-only or terminal-only variants
+                // (Forward/FocusTree/KillActivePane); None = armed/consumed.
+                Some(Action::Forward(_))
+                | Some(Action::FocusTree(_))
+                | Some(Action::KillActivePane)
+                | None => {}
             }
         }
         // Route the FULL command batch through the single dispatcher (not just RunOp): a
@@ -540,6 +544,14 @@ impl Runtime {
                             self.cols,
                             self.body_rows,
                         );
+                        *dirty = true;
+                    }
+                    // prefix x from the terminal view: arm a kill confirm for the ACTIVE
+                    // pane of the displayed session (not the tree selection). The confirm
+                    // draws over the terminal view and owns the next read; y/n routes
+                    // through the modal path like any other kill confirm.
+                    Action::KillActivePane => {
+                        self.switcher.arm_kill_active_pane(&mut self.state);
                         *dirty = true;
                     }
                     // TermInput never emits FocusTerminal (that is the tree-focus path).

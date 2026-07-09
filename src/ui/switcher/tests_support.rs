@@ -38,6 +38,9 @@ impl Ops for NoopOps {
     async fn kill_window(&self, _source: &str, _target: &str) -> anyhow::Result<()> {
         unreachable!("noop_ops is only constructed, never called")
     }
+    async fn kill_pane(&self, _source: &str, _target: &str) -> anyhow::Result<()> {
+        unreachable!("noop_ops is only constructed, never called")
+    }
     async fn rename_window(
         &self,
         _source: &str,
