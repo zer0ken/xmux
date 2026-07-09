@@ -107,7 +107,6 @@ impl Switcher {
                     RowRef::Host { .. } => COLOR_HOST,
                     RowRef::Session(_) => COLOR_SESSION,
                     RowRef::Window { .. } => COLOR_WINDOW,
-                    RowRef::Pane => COLOR_PANE,
                     RowRef::Loading => COLOR_HINT,
                 };
                 let mut style = Style::default().fg(color);

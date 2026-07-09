@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use unicode_width::UnicodeWidthStr;
 
-use crate::session::{Pane, Session, WindowPanes};
+use crate::session::{Session, WindowPanes};
 
 /// The sessions of one source. A non-`None` `err` means the host was
 /// unreachable, in which case `sessions` carries no meaning.
@@ -214,7 +214,6 @@ pub(crate) enum RowRef {
         sess: Session,
         window: i64,
     },
-    Pane,
     /// A "panes loading…" placeholder under a session whose detail is in flight.
     Loading,
 }
@@ -237,7 +236,7 @@ pub(crate) struct Row {
 
 impl Row {
     pub(crate) fn selectable(&self) -> bool {
-        !matches!(self.reference, RowRef::Pane | RowRef::Loading)
+        !matches!(self.reference, RowRef::Loading)
     }
 }
 
@@ -319,7 +318,7 @@ pub(crate) fn target_for(reference: &RowRef, groups: &[Group], filter: &str) -> 
             sess.source.clone(),
             crate::mux::window_target(&sess.name, *window),
         ),
-        RowRef::Pane | RowRef::Loading => (String::new(), String::new()),
+        RowRef::Loading => (String::new(), String::new()),
     }
 }
 
@@ -349,10 +348,6 @@ pub(crate) fn session_label(sess: &Session, name_col_width: usize) -> String {
 // trailing "(active)" text marker.
 pub(crate) fn window_label(w: &WindowPanes) -> String {
     format!("window {}: {}", w.index, w.name)
-}
-
-pub(crate) fn pane_label(p: &Pane) -> String {
-    format!("pane {}  {}", p.index, p.command)
 }
 
 /// Flattens the inventory into display rows: one Host row per visible group, then
@@ -418,15 +413,6 @@ pub(crate) fn flatten(
                             },
                             active: w.active,
                         });
-                        for p in &w.panes {
-                            rows.push(Row {
-                                label: pane_label(p),
-                                status: None,
-                                indent: 6,
-                                reference: RowRef::Pane,
-                                active: p.active,
-                            });
-                        }
                     }
                 }
             } else {
@@ -448,6 +434,7 @@ pub(crate) fn flatten(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::Pane;
 
     fn sess(source: &str, name: &str, last: i64) -> Session {
         Session {
@@ -833,7 +820,6 @@ mod tests {
             RowRef::Host { .. } => "host",
             RowRef::Session(_) => "session",
             RowRef::Window { .. } => "window",
-            RowRef::Pane => "pane",
             RowRef::Loading => "loading",
         }
     }
@@ -880,26 +866,24 @@ mod tests {
     }
 
     #[test]
-    fn flatten_builds_host_session_window_pane_rows() {
+    fn flatten_builds_host_session_window_rows() {
+        // Panes are NOT tree rows — a window is a leaf. The tree stops at the window level.
         let (groups, panes, loaded) = loaded_fixture();
         let rows = flatten(&groups, &panes, &loaded, &HashSet::new(), "");
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
-        assert_eq!(
-            kinds,
-            vec!["host", "session", "window", "pane", "window", "pane"]
-        );
+        assert_eq!(kinds, vec!["host", "session", "window", "window"]);
         let indents: Vec<usize> = rows.iter().map(|r| r.indent).collect();
-        assert_eq!(indents, vec![0, 2, 4, 6, 4, 6]);
+        assert_eq!(indents, vec![0, 2, 4, 4]);
     }
 
     #[test]
-    fn flatten_marks_active_window_and_pane() {
+    fn flatten_marks_active_window() {
         let (groups, panes, loaded) = loaded_fixture();
         let rows = flatten(&groups, &panes, &loaded, &HashSet::new(), "");
-        // window 0 (+its pane) is active; window 1 (+its pane) is not.
+        // window 0 is active; window 1 is not. (Panes are not rows.)
         let active: Vec<bool> = rows.iter().map(|r| r.active).collect();
-        //             host   session w0     p0     w1     p1
-        assert_eq!(active, vec![false, false, true, true, false, false]);
+        //             host   session w0    w1
+        assert_eq!(active, vec![false, false, true, false]);
     }
 
     #[test]

@@ -250,7 +250,7 @@ pub(crate) fn menu_items(target: &RowRef) -> Vec<MenuItem> {
         RowRef::Host { .. } => vec![NewSession],
         RowRef::Session(_) => vec![Focus, NewWindow, Rename, Kill],
         RowRef::Window { .. } => vec![Focus, Rename, Kill],
-        RowRef::Pane | RowRef::Loading => Vec::new(),
+        RowRef::Loading => Vec::new(),
     }
 }
 
@@ -261,7 +261,7 @@ pub(crate) fn menu_title(target: &RowRef) -> String {
         RowRef::Host { source, .. } => source.clone(),
         RowRef::Session(s) => s.name.clone(),
         RowRef::Window { sess, window } => crate::mux::window_target(&sess.name, *window),
-        RowRef::Pane | RowRef::Loading => String::new(),
+        RowRef::Loading => String::new(),
     }
 }
 
@@ -603,7 +603,7 @@ mod tests {
         assert!(is_popup_open(&Some(Modal::Help)));
         assert!(!is_menu_active(&Some(Modal::Help)));
         let menu = Menu {
-            target: RowRef::Pane,
+            target: RowRef::Loading,
             title: String::new(),
             rect: Rect::default(),
             items: Vec::new(),

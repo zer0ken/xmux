@@ -32,7 +32,6 @@ pub const TREE_WIDTH: u16 = 48;
 const COLOR_HOST: Color = Color::Yellow;
 const COLOR_SESSION: Color = Color::Green;
 const COLOR_WINDOW: Color = Color::Magenta;
-const COLOR_PANE: Color = Color::Cyan;
 /// Transient per-element status (scanning…, loading…, (empty), unreachable)
 /// renders dim so pending state reads apart from settled content.
 const COLOR_HINT: Color = Color::DarkGray;
@@ -349,7 +348,7 @@ impl Switcher {
             RowRef::Host { source, .. } => Some(source.clone()),
             RowRef::Session(s) => Some(s.source.clone()),
             RowRef::Window { sess, .. } => Some(sess.source.clone()),
-            RowRef::Pane | RowRef::Loading => None,
+            RowRef::Loading => None,
         }
     }
 

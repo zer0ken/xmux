@@ -555,18 +555,13 @@ fn up_down_move_within_level_and_hjkl_match_arrows() {
 }
 
 #[test]
-fn active_window_pane_have_no_text_marker() {
-    // The active window/pane is shown bold+italic (Row::active), not with "(active)" text.
+fn active_window_has_no_text_marker() {
+    // The active window is shown bold+italic (Row::active), not with "(active)" text.
     let w = win(2, "logs", true, vec![pane(1, true, "tail")]);
     assert_eq!(
         tree::window_label(&w),
         "window 2: logs",
         "no (active) text on the window label"
-    );
-    assert_eq!(
-        tree::pane_label(&w.panes[0]),
-        "pane 1  tail",
-        "no (active) text on the pane label"
     );
 }
 
@@ -665,20 +660,19 @@ fn select_window_no_move_for_another_session() {
 // --- tests --------------------------------------------------------------
 
 #[tokio::test]
-async fn renders_four_level_tree() {
+async fn renders_host_session_window_tree() {
+    // Panes are not tree rows — the tree stops at the window level.
     let h = Harness::new(sample());
     let out = h.text();
     for want in [
         "local",
         "editor",
         "window 1: shell",
-        "pane 1  bash",
         "window 2: logs",
         "build",
         "jupiter00",
         "inference",
         "window 1: train",
-        "pane 1  python",
         "db-2",
         "⚠", // unreachable host marker (the reason now lives in the info pane)
     ] {
@@ -728,15 +722,11 @@ async fn panes_are_not_selectable() {
         matches!(h.sw.current_ref(), Some(RowRef::Window { .. })),
         "→ on a window is a no-op (its panes are not selectable)"
     );
-    // ↓/↑ cycle window siblings; the selection must never land on a pane.
+    // ↓/↑ cycle window siblings; the selection always lands on a real node.
     let mut saw_window = false;
     for _ in 0..8 {
         let r = h.sw.current_ref();
         assert!(r.is_some(), "selection landed on a node");
-        assert!(
-            !matches!(r, Some(RowRef::Pane)),
-            "selection must never land on a pane"
-        );
         if matches!(r, Some(RowRef::Window { .. })) {
             saw_window = true;
         }
@@ -1685,7 +1675,6 @@ async fn levels_have_distinct_colors() {
     assert_eq!(h.tree_fg_of("local"), Some(COLOR_HOST));
     assert_eq!(h.tree_fg_of("editor"), Some(COLOR_SESSION));
     assert_eq!(h.tree_fg_of("window 1: shell"), Some(COLOR_WINDOW));
-    assert_eq!(h.tree_fg_of("pane 1  bash"), Some(COLOR_PANE));
 }
 
 #[tokio::test]
@@ -1741,7 +1730,6 @@ fn menu_items_by_row_type() {
         modal::menu_items(&RowRef::Window { sess: s, window: 1 }),
         vec![Focus, Rename, Kill]
     );
-    assert!(modal::menu_items(&RowRef::Pane).is_empty());
     assert!(modal::menu_items(&RowRef::Loading).is_empty());
 }
 
@@ -1773,18 +1761,6 @@ async fn menu_open_on_session_does_not_move_cursor() {
         h.sw.selected, before,
         "opening the menu must not move the tree selection"
     );
-}
-
-#[tokio::test]
-async fn menu_does_not_open_on_pane_row() {
-    let mut h = Harness::new(sample());
-    let idx = row_index(&h, |r| matches!(r, RowRef::Pane));
-    let (x, y) = row_screen_pos(&h, idx);
-    assert!(
-        !h.sw.menu_open(x, y, &mut h.state),
-        "no menu over a pane row"
-    );
-    assert!(!h.state.menu_active());
 }
 
 #[tokio::test]

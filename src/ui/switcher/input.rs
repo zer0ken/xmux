@@ -198,7 +198,7 @@ impl Switcher {
                     target: Some(target),
                 }))
             }
-            RowRef::Pane | RowRef::Loading => None,
+            RowRef::Loading => None,
         };
     }
 
