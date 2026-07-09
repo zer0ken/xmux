@@ -167,19 +167,23 @@ impl MuxDriver for PsmuxDriver {
     }
 }
 
-/// The tty of the psmux client currently showing `session`, parsed from `list-clients`
-/// output. psmux prints one client per line as `<tty>: <session>: <cmd> [<size>] …`
-/// (its `-F` is unreliable, so the default format is parsed). The FIRST line whose
-/// second `:`-field equals `session` is xmux's display client for that session — psmux
-/// is one-server-per-session, so the client showing session S is on S's own server.
-/// `None` when no line matches (the capture stays unset → the next switch reattaches).
+/// The tty of xmux's OWN psmux display client for `session`, parsed from `list-clients`
+/// (default format `<tty>: <session>: <cmd> [<size>] …`, since `-F` is unreliable).
+/// Returns the tty ONLY when EXACTLY ONE client shows `session` — xmux is then that sole
+/// client, so the tty is unambiguously ours. When ZERO match, OR MULTIPLE do (an external
+/// psmux client is also attached to that session), `list-clients` cannot tell xmux's client
+/// apart, so a `switch-client -c <tty>` could move the WRONG (external) client — return
+/// `None`, leaving the tty unset so the next switch REATTACHES (safe) rather than guessing.
 pub(crate) fn parse_psmux_client_tty(out: &str, session: &str) -> Option<String> {
-    out.lines().find_map(|line| {
+    let mut ttys = out.lines().filter_map(|line| {
         let mut parts = line.splitn(3, ':');
         let tty = parts.next()?.trim();
         let sess = parts.next()?.trim();
         (sess == session && !tty.is_empty()).then(|| tty.to_string())
-    })
+    });
+    let first = ttys.next()?;
+    // Unambiguous only: a second client on the same session means we can't identify ours.
+    ttys.next().is_none().then_some(first)
 }
 
 /// Captures xmux's local psmux display-client tty off the event loop, so the next
@@ -536,5 +540,27 @@ mod tests {
             "no client shows that session ⇒ no tty (the switch reattaches instead)"
         );
         assert_eq!(parse_psmux_client_tty("", "target"), None);
+    }
+
+    #[test]
+    fn parse_psmux_client_tty_is_none_when_ambiguous() {
+        // Two clients on the SAME session (xmux's own + an external psmux client): we
+        // cannot tell them apart from list-clients, so a switch-client -c <tty> could move
+        // the wrong one. Return None → the switch reattaches (safe) instead of guessing.
+        let dup = "/dev/pts/3: target: pwsh [80x24] (utf8)\n\
+                   /dev/pts/9: target: pwsh [80x24] (utf8)\n";
+        assert_eq!(
+            parse_psmux_client_tty(dup, "target"),
+            None,
+            "an external client sharing the session makes the tty ambiguous ⇒ reattach"
+        );
+        // A single client for the session is still unambiguously ours.
+        let one = "/dev/pts/3: target: pwsh [80x24] (utf8)\n\
+                   /dev/pts/9: other: pwsh [80x24] (utf8)\n";
+        assert_eq!(
+            parse_psmux_client_tty(one, "target").as_deref(),
+            Some("/dev/pts/3"),
+            "the sole client on the session is xmux's own"
+        );
     }
 }
