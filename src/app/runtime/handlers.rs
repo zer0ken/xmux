@@ -871,7 +871,38 @@ impl Runtime {
 
     /// The op-result arm: fold a finished mutate op back into the tree/state.
     pub(super) fn on_op_result(&mut self, result: crate::ui::switcher::OpResult) {
+        // Killing the session a host's display client currently shows invalidates that
+        // client (psmux: its per-session server is gone; tmux: detach-on-destroy) WITHOUT
+        // necessarily EOF'ing the PTY — so no reap fires and the registry entry lingers.
+        // The next show() would then trust that stale `live` and take the in-place
+        // switch-client path against a dead client: a silent no-op that leaves the whole
+        // host blank forever. Tear the attachment down (+ rearm the attach) so show() takes
+        // the safe reattach path for the new selection instead.
+        let killed = match &result {
+            crate::ui::switcher::OpResult::Killed { address } => address
+                .split_once('/')
+                .map(|(s, n)| (s.to_string(), n.to_string())),
+            _ => None,
+        };
         self.switcher.apply_op_result(result, &mut self.state);
+        if let Some((source, session)) = killed {
+            let shows_killed = self
+                .hosts
+                .get(&source)
+                .map(|h| h.display.shows(&host_selection_key(h)) == Some(session.as_str()))
+                .unwrap_or(false);
+            if shows_killed {
+                if let Some(host) = self.hosts.get_mut(&source) {
+                    let key = host_selection_key(host);
+                    self.registry.remove(&key);
+                    host.display.clear(&key);
+                }
+                self.state.apply(crate::model::Action::RearmAttachNow {
+                    now: std::time::Instant::now(),
+                });
+                self.dirty = true;
+            }
+        }
     }
 
     /// The animation-tick arm: detect a console resize (push the new size to PTYs +

@@ -1581,6 +1581,109 @@ fn prefix_r_in_terminal_focus_kicks_rescan() {
 }
 
 #[test]
+fn killing_the_displayed_session_tears_down_the_host_attach_for_reattach() {
+    // Regression (psmux "kill the shown session → host blanks forever"): killing the
+    // session a host's display client currently shows invalidates that client (its
+    // per-session server is gone) but the PTY need not EOF, so no reap fires and the
+    // registry entry lingers. Without teardown the next show() trusts that stale `live`
+    // and switch-client's a dead client — a silent no-op that blanks the whole host.
+    // on_op_result must tear the attach down + rearm attach so show() reattaches fresh.
+    use crate::session::Session;
+    use crate::ui::switcher::{Scan, Switcher};
+    use crate::ui::tree::Group;
+    let sess = |n: &str, r: i64| Session {
+        source: "local".into(),
+        name: n.into(),
+        windows: 1,
+        attached: false,
+        last_attached: r,
+    };
+    let scan = Scan {
+        groups: vec![Group {
+            source: "local".into(),
+            err: None,
+            sessions: vec![sess("A", 2), sess("B", 1)],
+        }],
+        panes: Default::default(),
+    };
+    let mut state = crate::state::State::from_scan(scan);
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.state = state;
+    rt.switcher = switcher;
+    // A live display attach showing session A (key = host id = "local").
+    rt.registry.insert_fake("local", 1);
+    rt.hosts
+        .get_mut("local")
+        .unwrap()
+        .display
+        .set_shows("local", "A");
+    assert!(
+        rt.registry.contains("local"),
+        "precondition: the host has a live display attach"
+    );
+
+    // Kill the DISPLAYED session A.
+    rt.on_op_result(crate::ui::switcher::OpResult::Killed {
+        address: "local/A".into(),
+    });
+
+    assert!(
+        !rt.registry.contains("local"),
+        "the stale attach that showed the killed session is torn down"
+    );
+    assert!(
+        rt.state.attach_deadline.is_some(),
+        "a reattach is armed so the next show() reattaches the new selection"
+    );
+}
+
+#[test]
+fn killing_a_background_session_keeps_the_displayed_attach() {
+    // The teardown is scoped: killing a session the display client is NOT showing must
+    // leave the live attach intact (no needless blank/reattach).
+    use crate::session::Session;
+    use crate::ui::switcher::{Scan, Switcher};
+    use crate::ui::tree::Group;
+    let sess = |n: &str, r: i64| Session {
+        source: "local".into(),
+        name: n.into(),
+        windows: 1,
+        attached: false,
+        last_attached: r,
+    };
+    let scan = Scan {
+        groups: vec![Group {
+            source: "local".into(),
+            err: None,
+            sessions: vec![sess("A", 2), sess("B", 1)],
+        }],
+        panes: Default::default(),
+    };
+    let mut state = crate::state::State::from_scan(scan);
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.registry.insert_fake("local", 1);
+    rt.hosts
+        .get_mut("local")
+        .unwrap()
+        .display
+        .set_shows("local", "A"); // showing A
+
+    // Kill the BACKGROUND session B (not the one on screen).
+    rt.on_op_result(crate::ui::switcher::OpResult::Killed {
+        address: "local/B".into(),
+    });
+
+    assert!(
+        rt.registry.contains("local"),
+        "killing a background session leaves the displayed attach alone"
+    );
+}
+
+#[test]
 fn kill_confirm_owns_keys_so_prefix_q_and_enter_do_not_quit_or_focus_mux() {
     // A kill-confirm is a modal popup, so it OWNS every key. With the resolver gated
     // on is_modal_popup_open (true for a confirm, where is_inputting is false),
