@@ -37,7 +37,7 @@ One concept, one word. The two axes and the runtime:
 UI elements a user perceives as distinct things:
 
 - split view — the whole two-region layout.
-- tree view — the left region (the host / session / window / pane tree). Never
+- tree view — the left region (the host / session / window tree). Never
   the "sidebar".
 - terminal view — the right region (the selected session's live grid).
 - view border — the vertical line between the two views. Modelled on tmux's pane
@@ -55,25 +55,26 @@ UI elements a user perceives as distinct things:
   `heavy ┃` (hover — the drag-resize grab cue).
 - chrome — the furniture around the two views, owned by the `Chrome` type: the
   view border, the hint bar, and the host info.
-- hint bar — the bottom line of the tree column (key hints, flash, the scan
-  indicator, filter text). Scoped to the tree column, so not a full-width status bar.
+- hint bar — the bottom line spanning the full terminal width (key hints, flash,
+  the scan indicator, filter text), not just the tree column, so a long flash wraps
+  across it instead of clipping. A shown flash paints it in the error style.
 - host info — the unreachable-host detail shown in the terminal-view region.
 - grid — the live terminal content drawn in the terminal view: xmux's in-memory
   cell mirror of the attached session's screen, fed by the vt100 parser.
 - cursor — the real terminal cursor placed over the grid at the mux's cursor cell
   while the terminal view is focused. "cursor" always means this text cursor,
   never the tree selection.
-- row — one tree line (host / session / window / pane / loading row).
+- row — one tree line (host / session / window / loading row).
 - level color — the fixed per-depth row color: host yellow, session green, window
-  magenta, pane cyan, status / loading grey.
+  magenta, status / loading grey.
 - selection — the tree's current pick (its row index is `selected`), advanced by
   navigation; a routine poll or restream never moves it (only launch / rescan
   re-sorts). `preselect` / `reselect` are the launch and post-rescan selections.
 - selection highlight — the reverse-video rendering of the selected row and its
   status (ratatui's `highlight_style`); `pad_label` gives it a space of breathing
   room each side. `selected` + `highlight` follow ratatui's list vocabulary.
-- active marker — the bold + italic styling on the displayed window's row and its
-  active pane.
+- active marker — the bold + italic styling on each shown session's displayed
+  (active) window row.
 - spinner — the braille activity glyph on a connecting session row.
 - loading row — a whole-row spinner standing where a session's not-yet-loaded
   windows will appear; distinct from the trailing `spinner`, though both use the

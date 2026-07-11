@@ -1,4 +1,4 @@
-//! The switcher's chrome: the tree|terminal view border, the tree-column hint_bar
+//! The switcher's chrome: the tree|terminal view border, the full-width hint_bar
 //! (help / status / wrapped flash), and the unreachable-host info panel. These
 //! own the view-local presentation state ([`Chrome`]) and read the runtime
 //! inventory from `State`; the [`Switcher`](crate::ui::switcher::Switcher) holds a
@@ -220,7 +220,7 @@ impl Default for Chrome {
 }
 
 impl Chrome {
-    /// Sets the transient flash message shown in the tree-column hint bar (an error
+    /// Sets the transient flash message shown in the full-width hint bar (an error
     /// or notice). The next tree key clears it (the switcher's `handle_key`), so the
     /// normal help/status hint bar returns.
     pub(crate) fn flash(&mut self, msg: impl Into<String>) {
@@ -418,7 +418,7 @@ impl Chrome {
 
     /// The hint_bar text split into the lines to render. The fit-based text is always one
     /// line; only a flash (an arbitrary error message) may exceed `width`, so it wraps
-    /// across the narrow tree-column hint_bar rather than clipping.
+    /// across the full-width hint bar rather than clipping.
     pub(crate) fn hint_bar_lines(&self, width: u16, state: &crate::state::State) -> Vec<String> {
         let text = self.hint_bar_text(width, state);
         // Only a flash can exceed `width` (the fit-based text is already constrained);
