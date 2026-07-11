@@ -441,10 +441,12 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
         HelpRow::Key("↑/↓ · j/k".into(), "move between siblings".into()),
         HelpRow::Key(
             "→/l · ←/h".into(),
-            "descend into / ascend out of a node".into(),
+            "descend / ascend (on a host: expand / collapse)".into(),
         ),
+        HelpRow::Key("Space".into(), "fold / unfold the selected host".into()),
         HelpRow::Key("PgUp/PgDn".into(), "jump by 10".into()),
         HelpRow::Key("Home/End".into(), "first / last node".into()),
+        HelpRow::Key("1…9".into(), "jump to that numbered row".into()),
         HelpRow::Key(format!("{p} n"), "new (session / window, by level)".into()),
         HelpRow::Key(
             format!("{p} R"),
