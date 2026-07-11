@@ -172,13 +172,118 @@ pub(crate) struct Input {
     pub(crate) mode: InputMode,
     pub(crate) label: String,
     pub(crate) buffer: String,
+    /// Caret position as a char index into `buffer` (`0..=buffer char count`). Every
+    /// edit and movement keeps it in range; the entry line renders a block caret at
+    /// this column, so editing is no longer append-only.
+    pub(crate) cursor: usize,
     /// The create source / rename target captured when the input opened, so the
-    /// action lands on the node the user was on — not wherever streaming results
+    /// action lands on the node the user was on, not wherever streaming results
     /// moved the selection by the time they pressed Enter.
     pub(crate) source: Option<String>,
     pub(crate) sess: Option<Session>,
     /// The split target (`session:window`) for [`InputMode::SplitWindow`].
     pub(crate) target: Option<String>,
+}
+
+impl Input {
+    /// Builds an input with the caret at the END of `buffer`, so a prefilled name
+    /// (rename / filter) is ready to edit from its tail. The one constructor keeps
+    /// the caret-init rule in a single place.
+    pub(crate) fn new(
+        mode: InputMode,
+        label: String,
+        buffer: String,
+        source: Option<String>,
+        sess: Option<Session>,
+        target: Option<String>,
+    ) -> Self {
+        let cursor = buffer.chars().count();
+        Input {
+            mode,
+            label,
+            buffer,
+            cursor,
+            source,
+            sess,
+            target,
+        }
+    }
+
+    /// Inserts `c` at the caret and advances past it. Char-indexed so multi-byte
+    /// (CJK) text stays correct.
+    pub(crate) fn insert(&mut self, c: char) {
+        let mut v: Vec<char> = self.buffer.chars().collect();
+        let i = self.cursor.min(v.len());
+        v.insert(i, c);
+        self.cursor = i + 1;
+        self.buffer = v.into_iter().collect();
+    }
+
+    /// Deletes the char before the caret (Backspace).
+    pub(crate) fn backspace(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let mut v: Vec<char> = self.buffer.chars().collect();
+        let i = self.cursor.min(v.len());
+        if i == 0 {
+            return;
+        }
+        v.remove(i - 1);
+        self.cursor = i - 1;
+        self.buffer = v.into_iter().collect();
+    }
+
+    /// Deletes the char at the caret (Delete); a no-op at end of line.
+    pub(crate) fn delete(&mut self) {
+        let mut v: Vec<char> = self.buffer.chars().collect();
+        if self.cursor >= v.len() {
+            return;
+        }
+        v.remove(self.cursor);
+        self.buffer = v.into_iter().collect();
+    }
+
+    /// Deletes the word (and any run of spaces) before the caret (Ctrl-W).
+    pub(crate) fn delete_word_before(&mut self) {
+        let v: Vec<char> = self.buffer.chars().collect();
+        let end = self.cursor.min(v.len());
+        let mut i = end;
+        while i > 0 && v[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        while i > 0 && !v[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        let mut v = v;
+        v.drain(i..end);
+        self.cursor = i;
+        self.buffer = v.into_iter().collect();
+    }
+
+    /// Clears the whole line (Ctrl-U).
+    pub(crate) fn clear_line(&mut self) {
+        self.buffer.clear();
+        self.cursor = 0;
+    }
+
+    pub(crate) fn left(&mut self) {
+        self.cursor = self.cursor.saturating_sub(1);
+    }
+
+    pub(crate) fn right(&mut self) {
+        if self.cursor < self.buffer.chars().count() {
+            self.cursor += 1;
+        }
+    }
+
+    pub(crate) fn home(&mut self) {
+        self.cursor = 0;
+    }
+
+    pub(crate) fn end(&mut self) {
+        self.cursor = self.buffer.chars().count();
+    }
 }
 
 /// The single open modal, if any — at most one of help / inline input / kill
@@ -417,9 +522,24 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
 /// the `❯ buffer` entry line, and a dim Esc hint.
 pub(crate) fn input_lines(input: &Input) -> (String, Vec<Line<'static>>) {
     let dim = Style::default().add_modifier(Modifier::DIM);
+    let caret = Style::default().add_modifier(Modifier::REVERSED);
+    // Split the buffer at the caret so the char under it (or a trailing space at
+    // end of line) renders as a reversed block, making the edit position visible.
+    let chars: Vec<char> = input.buffer.chars().collect();
+    let cur = input.cursor.min(chars.len());
+    let before: String = chars[..cur].iter().collect();
+    let (at, after): (String, String) = if cur < chars.len() {
+        (chars[cur].to_string(), chars[cur + 1..].iter().collect())
+    } else {
+        (" ".to_string(), String::new())
+    };
     let lines = vec![
         Line::from(Span::styled(format!(" {}", input.label.trim()), dim)),
-        Line::from(format!(" ❯ {}", input.buffer)),
+        Line::from(vec![
+            Span::raw(format!(" ❯ {before}")),
+            Span::styled(at, caret),
+            Span::raw(after),
+        ]),
         Line::from(Span::styled(" Esc to cancel", dim)),
     ];
     (input_title(input.mode).to_string(), lines)
@@ -588,6 +708,57 @@ mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+
+    fn edit_input(buffer: &str) -> Input {
+        Input::new(
+            InputMode::Rename,
+            "t".into(),
+            buffer.to_string(),
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[test]
+    fn input_edits_and_moves_at_the_caret() {
+        // new() drops the caret at the end of a prefilled buffer.
+        let mut i = edit_input("abc");
+        assert_eq!(i.cursor, 3);
+        i.left();
+        i.left();
+        i.insert('X'); // mid-string insert, not append
+        assert_eq!((i.buffer.as_str(), i.cursor), ("aXbc", 2));
+        i.backspace(); // deletes the char BEFORE the caret
+        assert_eq!((i.buffer.as_str(), i.cursor), ("abc", 1));
+        i.delete(); // deletes the char AT the caret
+        assert_eq!((i.buffer.as_str(), i.cursor), ("ac", 1));
+        i.home();
+        i.backspace(); // no-op at start
+        assert_eq!((i.buffer.as_str(), i.cursor), ("ac", 0));
+        i.end();
+        i.right(); // no-op at end
+        assert_eq!(i.cursor, 2);
+    }
+
+    #[test]
+    fn input_ctrl_w_ctrl_u_and_cjk_are_char_indexed() {
+        let mut i = edit_input("one two three");
+        i.delete_word_before();
+        assert_eq!(i.buffer, "one two ");
+        i.delete_word_before();
+        assert_eq!(i.buffer, "one ");
+        i.clear_line();
+        assert_eq!((i.buffer.as_str(), i.cursor), ("", 0));
+        // Multi-byte text: the caret is a char index, so an edit never splits a syllable.
+        let mut k = edit_input("가나");
+        assert_eq!(k.cursor, 2);
+        k.left();
+        k.insert('X');
+        assert_eq!((k.buffer.as_str(), k.cursor), ("가X나", 2));
+        k.backspace();
+        assert_eq!(k.buffer, "가나");
+    }
 
     #[test]
     fn modal_help_variant_constructs() {

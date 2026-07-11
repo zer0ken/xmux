@@ -112,42 +112,42 @@ impl Switcher {
         self.dismiss_modals(state);
         match mode {
             InputMode::Filter => {
-                state.modal = Some(Modal::Input(Input {
+                state.modal = Some(Modal::Input(Input::new(
                     mode,
-                    label: " filter sessions".into(),
-                    buffer: state.filter.clone(),
-                    source: None,
-                    sess: None,
-                    target: None,
-                }));
+                    " filter sessions".into(),
+                    state.filter.clone(),
+                    None,
+                    None,
+                    None,
+                )));
             }
             InputMode::Rename => match self.current_ref().cloned() {
                 Some(RowRef::Host { .. }) => {
                     state.flash("cannot rename a host");
                 }
                 Some(RowRef::Session(sess)) => {
-                    state.modal = Some(Modal::Input(Input {
+                    state.modal = Some(Modal::Input(Input::new(
                         mode,
-                        label: " rename session".into(),
-                        buffer: sess.name.clone(),
-                        source: None,
-                        sess: Some(sess),
-                        target: None,
-                    }));
+                        " rename session".into(),
+                        sess.name.clone(),
+                        None,
+                        Some(sess),
+                        None,
+                    )));
                 }
                 Some(RowRef::Window { sess, window }) => {
                     let win_name = self
                         .window_name(&sess.address(), window, state)
                         .unwrap_or_default();
                     let target = crate::mux::window_target(&sess.name, window);
-                    state.modal = Some(Modal::Input(Input {
+                    state.modal = Some(Modal::Input(Input::new(
                         mode,
-                        label: " rename window".into(),
-                        buffer: win_name,
-                        source: Some(sess.source.clone()),
-                        sess: Some(sess),
-                        target: Some(target),
-                    }));
+                        " rename window".into(),
+                        win_name,
+                        Some(sess.source.clone()),
+                        Some(sess),
+                        Some(target),
+                    )));
                 }
                 _ => {}
             },
@@ -171,32 +171,32 @@ impl Switcher {
             return;
         };
         state.modal = match reference {
-            RowRef::Host { source, .. } => Some(Modal::Input(Input {
-                mode: InputMode::New,
-                label: " new session name (empty = auto)".into(),
-                buffer: String::new(),
-                source: Some(source),
-                sess: None,
-                target: None,
-            })),
-            RowRef::Session(sess) => Some(Modal::Input(Input {
-                mode: InputMode::NewWindow,
-                label: format!(" new window in {} (name optional)", sess.name),
-                buffer: String::new(),
-                source: Some(sess.source.clone()),
-                sess: Some(sess),
-                target: None,
-            })),
+            RowRef::Host { source, .. } => Some(Modal::Input(Input::new(
+                InputMode::New,
+                " new session name (empty = auto)".into(),
+                String::new(),
+                Some(source),
+                None,
+                None,
+            ))),
+            RowRef::Session(sess) => Some(Modal::Input(Input::new(
+                InputMode::NewWindow,
+                format!(" new window in {} (name optional)", sess.name),
+                String::new(),
+                Some(sess.source.clone()),
+                Some(sess),
+                None,
+            ))),
             RowRef::Window { sess, window } => {
                 let target = crate::mux::window_target(&sess.name, window);
-                Some(Modal::Input(Input {
-                    mode: InputMode::SplitWindow,
-                    label: " split [v]ertical / [h]orizontal (default v)".into(),
-                    buffer: String::new(),
-                    source: Some(sess.source.clone()),
-                    sess: Some(sess),
-                    target: Some(target),
-                }))
+                Some(Modal::Input(Input::new(
+                    InputMode::SplitWindow,
+                    " split [v]ertical / [h]orizontal (default v)".into(),
+                    String::new(),
+                    Some(sess.source.clone()),
+                    Some(sess),
+                    Some(target),
+                )))
             }
             RowRef::Loading => None,
         };
@@ -246,19 +246,28 @@ impl Switcher {
                 self.close_input(state);
                 Vec::new()
             }
-            KeyCode::Backspace => {
+            // All other keys edit the buffer at the caret. Grab the input once so each
+            // editing key routes through the same borrow. The byte decoder delivers
+            // Ctrl-letters as their control char (like the C-g prefix), so Ctrl-U / Ctrl-W
+            // match the raw NAK / ETB bytes, not Char('u')/Char('w') + a modifier.
+            code => {
                 if let Some(Modal::Input(input)) = state.modal.as_mut() {
-                    input.buffer.pop();
+                    match code {
+                        KeyCode::Backspace => input.backspace(),
+                        KeyCode::Delete => input.delete(),
+                        KeyCode::Left => input.left(),
+                        KeyCode::Right => input.right(),
+                        KeyCode::Home => input.home(),
+                        KeyCode::End => input.end(),
+                        KeyCode::Char('\u{15}') => input.clear_line(),
+                        KeyCode::Char('\u{17}') => input.delete_word_before(),
+                        // Ignore control chars so a stray C-g etc. never lands as text.
+                        KeyCode::Char(c) if !c.is_control() => input.insert(c),
+                        _ => {}
+                    }
                 }
                 Vec::new()
             }
-            KeyCode::Char(c) => {
-                if let Some(Modal::Input(input)) = state.modal.as_mut() {
-                    input.buffer.push(c);
-                }
-                Vec::new()
-            }
-            _ => Vec::new(),
         }
     }
 
@@ -266,6 +275,7 @@ impl Switcher {
     pub fn set_input_text(&mut self, text: &str, state: &mut crate::state::State) {
         if let Some(Modal::Input(input)) = state.modal.as_mut() {
             input.buffer = text.to_string();
+            input.cursor = text.chars().count();
         }
     }
 
