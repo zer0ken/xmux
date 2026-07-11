@@ -164,7 +164,7 @@ impl Switcher {
         state.chrome.flash.clear();
         self.dismiss_modals(state);
         if self.current_host_unreachable() {
-            state.flash("host unreachable — cannot create here");
+            state.flash("host unreachable, cannot create here");
             return;
         }
         let Some(reference) = self.current_ref().cloned() else {

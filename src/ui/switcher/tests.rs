@@ -2292,7 +2292,7 @@ fn long_flash_wraps_in_narrow_hint_bar_instead_of_clipping() {
     // The hint_bar lives in the tree column; a long flash must wrap across lines rather
     // than clip at the column edge (a narrow tree would otherwise hide most of it).
     let mut state = crate::state::State::from_scan(sample());
-    state.chrome.flash = "host unreachable — cannot create here".into();
+    state.chrome.flash = "host unreachable, cannot create here".into();
     let lines = state.chrome.hint_bar_lines(20, &state);
     assert!(
         lines.len() > 1,
@@ -2311,11 +2311,11 @@ fn long_flash_wraps_in_narrow_hint_bar_instead_of_clipping() {
 
 #[tokio::test]
 async fn flash_clears_on_next_key_restoring_the_hint_bar() {
-    // A flash (e.g. "host unreachable — cannot create here") is transient: any key
+    // A flash (e.g. "host unreachable, cannot create here") is transient: any key
     // dismisses it so the normal help/status hint_bar returns. Regression: it persisted
     // because only the input-opening actions cleared it, so navigation never did.
     let mut h = Harness::new(sample());
-    h.state.chrome.flash = "host unreachable — cannot create here".into();
+    h.state.chrome.flash = "host unreachable, cannot create here".into();
     h.key(KeyCode::Down).await;
     assert!(
         h.state.chrome.flash.is_empty(),

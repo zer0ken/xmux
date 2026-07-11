@@ -162,6 +162,17 @@ pub(crate) fn parse_hint_bar_style(spec: &str) -> Style {
     style
 }
 
+/// The hint bar's refusal style: a solid red bar that breaks hard from the calm
+/// status/default green so a refused action reads as an error at a glance, not as
+/// more of the key cheatsheet. Every flash today is a refusal, so a shown flash
+/// always paints this. Fixed, not configurable: an error must stay legible
+/// regardless of any `[ui] hint-bar-style` override.
+pub(crate) fn error_flash_style() -> Style {
+    Style::default()
+        .bg(Color::Rgb(0xb0, 0x2a, 0x1f))
+        .fg(Color::Rgb(0xff, 0xff, 0xff))
+}
+
 /// The switcher's chrome view state: the view border/hint_bar/host-info draws and
 /// their inputs (flash, spinner set + frame, auto-hide + hover cues, view border
 /// colours, the ssh-config text, the configured prefix string, and the hint bar style).
@@ -365,7 +376,7 @@ impl Chrome {
         // Use the active prefix so the hint_bar matches the user's configured binding.
         let p = &self.ui_prefix;
         if !self.flash.is_empty() {
-            format!(" {}", self.flash)
+            format!(" ⚠ {}", self.flash)
         } else if !state.scanning.is_empty() {
             // A subtle global indicator while host probes are in flight; clears
             // (falls through to the help line) once every host has settled.
@@ -421,6 +432,18 @@ impl Chrome {
             .collect()
     }
 
+    /// The style the hint bar paints with this frame. While a flash is showing it is
+    /// the [`error_flash_style`] (every flash is a refusal); otherwise the configured
+    /// status style. Split from [`Self::render_hint_bar`] so the choice is unit-testable
+    /// without a backend.
+    pub(crate) fn hint_bar_render_style(&self) -> Style {
+        if self.flash.is_empty() {
+            self.hint_bar_style
+        } else {
+            error_flash_style()
+        }
+    }
+
     pub(crate) fn render_hint_bar(
         &self,
         frame: &mut Frame,
@@ -429,11 +452,15 @@ impl Chrome {
     ) {
         let lines = self.hint_bar_lines(area.width, state);
         let text = Text::from(lines.into_iter().map(Line::from).collect::<Vec<_>>());
-        // The hint bar is a solid status bar (`self.hint_bar_style`: the tmux default from
-        // `hint_bar_default_style`, or the `[ui] hint-bar-style` override). The style fills
-        // the whole area, so the bar spans full width even where the text does not; the plain
-        // text lines carry no style of their own, so they inherit the bar's fg/bg.
-        frame.render_widget(Paragraph::new(text).style(self.hint_bar_style), area);
+        // The hint bar is a solid status bar: the configured status style
+        // (`hint_bar_default_style` / the `[ui] hint-bar-style` override) normally, or the
+        // `error_flash_style` while a refusal flash shows. The style fills the whole area,
+        // so the bar spans full width even where the text does not; the plain text lines
+        // carry no style of their own, so they inherit the bar's fg/bg.
+        frame.render_widget(
+            Paragraph::new(text).style(self.hint_bar_render_style()),
+            area,
+        );
     }
 }
 
@@ -452,6 +479,27 @@ mod tests {
         assert_eq!(s.fg, Some(Color::White));
         // A bare colour token is the foreground (tmux convention).
         assert_eq!(parse_hint_bar_style("red").fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn flash_paints_the_error_style_not_the_status_style() {
+        let mut c = Chrome::default();
+        assert_eq!(
+            c.hint_bar_render_style(),
+            c.hint_bar_style,
+            "with no flash the bar keeps the configured status style"
+        );
+        c.flash("cannot kill a host");
+        assert_eq!(
+            c.hint_bar_render_style(),
+            error_flash_style(),
+            "a refusal flash paints the distinct error style"
+        );
+        assert_ne!(
+            error_flash_style(),
+            c.hint_bar_style,
+            "the error style is visually distinct from the status style"
+        );
     }
 
     #[test]
