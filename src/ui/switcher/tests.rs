@@ -2325,6 +2325,24 @@ async fn flash_clears_on_next_key_restoring_the_hint_bar() {
 }
 
 #[tokio::test]
+async fn space_folds_and_unfolds_the_selected_host() {
+    // Space on the first host row (index 0) collapses it, hiding its child rows and
+    // keeping the selection on the host; Space again restores them.
+    let mut h = Harness::new(sample());
+    assert_eq!(h.sw.selected, 0, "selection starts on the first host");
+    let before = h.sw.rows.len();
+    h.ch(' ').await;
+    let folded = h.sw.rows.len();
+    assert!(
+        folded < before,
+        "folding hides child rows ({before} -> {folded})"
+    );
+    assert_eq!(h.sw.selected, 0, "selection stays on the folded host");
+    h.ch(' ').await;
+    assert_eq!(h.sw.rows.len(), before, "unfolding restores the rows");
+}
+
+#[tokio::test]
 async fn digit_keys_quick_jump_to_selectable_rows() {
     // 1..9 jump straight to the Nth selectable row (the dim digit rendered on it),
     // reusing the normal selection path. Robust to the sample's exact shape: a

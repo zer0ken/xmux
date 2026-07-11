@@ -362,8 +362,12 @@ pub(crate) fn flatten(
     panes_loaded: &HashSet<String>,
     scanning: &HashSet<String>,
     filter: &str,
+    collapsed: &HashSet<String>,
 ) -> Vec<Row> {
     let groups = visible_groups(groups, filter);
+    // A non-empty filter force-expands every host so a buried match is never hidden;
+    // the manual fold set is untouched and re-applies the moment the filter clears.
+    let force_expand = !filter.is_empty();
 
     let mut name_col_width = 0;
     for g in &groups {
@@ -379,9 +383,25 @@ pub(crate) fn flatten(
     for g in &groups {
         let is_scanning = scanning.contains(&g.source);
         let unreachable = g.err.is_some();
+        // Only a reachable, non-empty host folds; scanning / unreachable / empty hosts
+        // have no children, so they get no caret. A folded host shows a ▸ caret and a
+        // session count and hides its sessions; an expanded one shows ▾.
+        let foldable = !is_scanning && !unreachable && !g.sessions.is_empty();
+        let folded = foldable && collapsed.contains(&g.source) && !force_expand;
+        let label = if foldable {
+            format!("{} {}", if folded { '▸' } else { '▾' }, g.source)
+        } else {
+            g.source.clone()
+        };
+        let status = if folded {
+            let n = g.sessions.len();
+            Some(format!("{n} session{}", if n == 1 { "" } else { "s" }))
+        } else {
+            host_status(g, is_scanning)
+        };
         rows.push(Row {
-            label: g.source.clone(),
-            status: host_status(g, is_scanning),
+            label,
+            status,
             indent: 0,
             reference: RowRef::Host {
                 source: g.source.clone(),
@@ -389,7 +409,7 @@ pub(crate) fn flatten(
             },
             active: false,
         });
-        if is_scanning || unreachable {
+        if is_scanning || unreachable || folded {
             continue;
         }
         for sess in &g.sessions {
@@ -869,7 +889,14 @@ mod tests {
     fn flatten_builds_host_session_window_rows() {
         // Panes are NOT tree rows — a window is a leaf. The tree stops at the window level.
         let (groups, panes, loaded) = loaded_fixture();
-        let rows = flatten(&groups, &panes, &loaded, &HashSet::new(), "");
+        let rows = flatten(
+            &groups,
+            &panes,
+            &loaded,
+            &HashSet::new(),
+            "",
+            &HashSet::new(),
+        );
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["host", "session", "window", "window"]);
         let indents: Vec<usize> = rows.iter().map(|r| r.indent).collect();
@@ -879,11 +906,69 @@ mod tests {
     #[test]
     fn flatten_marks_active_window() {
         let (groups, panes, loaded) = loaded_fixture();
-        let rows = flatten(&groups, &panes, &loaded, &HashSet::new(), "");
+        let rows = flatten(
+            &groups,
+            &panes,
+            &loaded,
+            &HashSet::new(),
+            "",
+            &HashSet::new(),
+        );
         // window 0 is active; window 1 is not. (Panes are not rows.)
         let active: Vec<bool> = rows.iter().map(|r| r.active).collect();
         //             host   session w0    w1
         assert_eq!(active, vec![false, false, true, false]);
+    }
+
+    #[test]
+    fn flatten_folds_a_collapsed_host() {
+        let (groups, panes, loaded) = loaded_fixture();
+        let mut collapsed = HashSet::new();
+        collapsed.insert("jup".to_string());
+        let rows = flatten(&groups, &panes, &loaded, &HashSet::new(), "", &collapsed);
+        // Only the host row remains; its session/window rows are hidden.
+        let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
+        assert_eq!(kinds, vec!["host"]);
+        assert!(
+            rows[0].label.starts_with('▸'),
+            "a collapsed host shows the ▸ caret, got {:?}",
+            rows[0].label
+        );
+        assert_eq!(rows[0].status.as_deref(), Some("1 session"));
+    }
+
+    #[test]
+    fn flatten_expanded_foldable_host_shows_open_caret() {
+        let (groups, panes, loaded) = loaded_fixture();
+        let rows = flatten(
+            &groups,
+            &panes,
+            &loaded,
+            &HashSet::new(),
+            "",
+            &HashSet::new(),
+        );
+        assert!(
+            rows[0].label.starts_with('▾'),
+            "an expanded foldable host shows the ▾ caret, got {:?}",
+            rows[0].label
+        );
+    }
+
+    #[test]
+    fn flatten_filter_force_expands_a_collapsed_host() {
+        let (groups, panes, loaded) = loaded_fixture();
+        let mut collapsed = HashSet::new();
+        collapsed.insert("jup".to_string());
+        // A non-empty filter must surface buried matches, so it overrides the fold.
+        let rows = flatten(&groups, &panes, &loaded, &HashSet::new(), "jup", &collapsed);
+        let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
+        assert_eq!(kinds, vec!["host", "session", "window", "window"]);
+        assert!(
+            rows[0].label.starts_with('▾'),
+            "a filtered host is force-expanded (▾), got {:?}",
+            rows[0].label
+        );
     }
 
     #[test]
@@ -900,6 +985,7 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
             "",
+            &HashSet::new(),
         );
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["host", "session", "loading"]);
@@ -915,7 +1001,14 @@ mod tests {
         }];
         let mut scanning = HashSet::new();
         scanning.insert("jup".to_string());
-        let rows = flatten(&groups, &HashMap::new(), &HashSet::new(), &scanning, "");
+        let rows = flatten(
+            &groups,
+            &HashMap::new(),
+            &HashSet::new(),
+            &scanning,
+            "",
+            &HashSet::new(),
+        );
         // A scanning host shows only its host row; sessions are not expanded.
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["host"]);
@@ -1003,6 +1096,7 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
             "",
+            &HashSet::new(),
         );
         let labels: Vec<u16> = rows
             .iter()

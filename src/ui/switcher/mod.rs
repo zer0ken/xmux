@@ -1,11 +1,11 @@
 //! The interactive session switcher: a two-pane navigator (a unified
-//! Host·Session·Window·Pane tree on the left, a live preview on the right) with a
+//! Host·Session·Window tree on the left, a live preview on the right) with a
 //! hidden input row and a hint_bar. ratatui is immediate-mode, so this owns its
 //! state machine, a flattened row model, key/mouse handling, and a render pass
 //! that draws to either the live terminal or a headless `TestBackend` (the
 //! control channel's `dump`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
@@ -75,6 +75,11 @@ pub struct Switcher {
 
     rows: Vec<Row>,
     selected: usize,
+    /// Host sources the user has folded in the tree: their session/window rows are
+    /// hidden and the host row shows a ▸ caret + session count. A non-empty filter
+    /// force-expands everything (see [`tree::flatten`]); the set persists so folds
+    /// return when the filter clears.
+    collapsed: HashSet<String>,
 
     terminal_view_target: TerminalViewTarget,
 
@@ -106,6 +111,7 @@ impl Switcher {
             reattach_kick: false,
             rows: Vec::new(),
             selected: 0,
+            collapsed: HashSet::new(),
             terminal_view_target: TerminalViewTarget::default(),
             list_state: ListState::default(),
             tree_inner: Rect::default(),
@@ -205,6 +211,7 @@ impl Switcher {
             &state.panes_loaded,
             &state.scanning,
             &state.filter,
+            &self.collapsed,
         );
 
         self.rows = rows;
@@ -337,6 +344,79 @@ impl Switcher {
             pos as usize
         };
         self.set_selected(sel[idx], state);
+    }
+
+    /// Sets a host's fold state and re-flattens, then snaps the selection back onto
+    /// that host row (matched by source) since `rebuild` would otherwise re-preselect
+    /// away from it.
+    fn set_host_fold(&mut self, source: String, collapse: bool, state: &mut crate::state::State) {
+        if collapse {
+            self.collapsed.insert(source.clone());
+        } else {
+            self.collapsed.remove(&source);
+        }
+        self.user_moved = true;
+        self.rebuild(state);
+        if let Some(pos) = self
+            .rows
+            .iter()
+            .position(|r| matches!(&r.reference, RowRef::Host { source: s, .. } if *s == source))
+        {
+            self.set_selected(pos, state);
+        }
+    }
+
+    /// The selected row is a host that currently shows child rows (expanded, non-empty):
+    /// the next row is deeper. Decides whether `←` collapses the host or ascends.
+    fn host_has_visible_children(&self) -> bool {
+        match (
+            self.rows.get(self.selected),
+            self.rows.get(self.selected + 1),
+        ) {
+            (Some(cur), Some(next)) => next.indent > cur.indent,
+            _ => false,
+        }
+    }
+
+    /// `→`/`l` on a collapsed host expands it; otherwise descend into the first child.
+    fn expand_or_descend(&mut self, state: &mut crate::state::State) {
+        let expand = match self.current_ref() {
+            Some(RowRef::Host { source, .. }) if self.collapsed.contains(source) => {
+                Some(source.clone())
+            }
+            _ => None,
+        };
+        match expand {
+            Some(source) => self.set_host_fold(source, false, state),
+            None => self.descend(state),
+        }
+    }
+
+    /// `←`/`h` on an expanded host collapses it; otherwise ascend to the parent.
+    fn collapse_or_ascend(&mut self, state: &mut crate::state::State) {
+        let collapse = match self.current_ref() {
+            Some(RowRef::Host { source, .. }) if self.host_has_visible_children() => {
+                Some(source.clone())
+            }
+            _ => None,
+        };
+        match collapse {
+            Some(source) => self.set_host_fold(source, true, state),
+            None => self.ascend(state),
+        }
+    }
+
+    /// Space on a host row toggles its fold.
+    fn toggle_host_fold(&mut self, state: &mut crate::state::State) {
+        let toggle = match self.current_ref() {
+            Some(RowRef::Host { source, .. }) => {
+                Some((source.clone(), !self.collapsed.contains(source)))
+            }
+            _ => None,
+        };
+        if let Some((source, collapse)) = toggle {
+            self.set_host_fold(source, collapse, state);
+        }
     }
 
     fn current_ref(&self) -> Option<&RowRef> {

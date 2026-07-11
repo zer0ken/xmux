@@ -86,8 +86,8 @@ impl Switcher {
             // first child, ← ascends to the parent. hjkl mirror the arrows. (#1, #2)
             KeyCode::Up | KeyCode::Char('k') => self.move_sibling(-1, state),
             KeyCode::Down | KeyCode::Char('j') => self.move_sibling(1, state),
-            KeyCode::Right | KeyCode::Char('l') => self.descend(state),
-            KeyCode::Left | KeyCode::Char('h') => self.ascend(state),
+            KeyCode::Right | KeyCode::Char('l') => self.expand_or_descend(state),
+            KeyCode::Left | KeyCode::Char('h') => self.collapse_or_ascend(state),
             KeyCode::PageUp => self.move_selection(-10, state),
             KeyCode::PageDown => self.move_selection(10, state),
             KeyCode::Home => self.move_to(0, state),
@@ -98,6 +98,8 @@ impl Switcher {
                 'R' => self.open_input(InputMode::Rename, state),
                 'x' => self.arm_kill(state),
                 'r' => self.request_rescan(state),
+                // Space folds/unfolds the selected host (a no-op on other rows).
+                ' ' => self.toggle_host_fold(state),
                 // Quick-jump: 1..9 select the Nth selectable row (the dim digit shown on
                 // that row), reusing the normal selection/attach-debounce path.
                 '1'..='9' => self.move_to((c as u8 - b'1') as isize, state),
