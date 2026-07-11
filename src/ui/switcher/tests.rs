@@ -2325,6 +2325,24 @@ async fn flash_clears_on_next_key_restoring_the_hint_bar() {
 }
 
 #[tokio::test]
+async fn digit_keys_quick_jump_to_selectable_rows() {
+    // 1..9 jump straight to the Nth selectable row (the dim digit rendered on it),
+    // reusing the normal selection path. Robust to the sample's exact shape: a
+    // different digit lands on a different row, and 1 returns to the first.
+    let mut h = Harness::new(sample());
+    h.key(KeyCode::Char('1')).await;
+    let first = h.sw.selected;
+    h.key(KeyCode::Char('2')).await;
+    let second = h.sw.selected;
+    assert_ne!(first, second, "a different digit selects a different row");
+    h.key(KeyCode::Char('1')).await;
+    assert_eq!(
+        h.sw.selected, first,
+        "digit 1 returns to the first selectable row"
+    );
+}
+
+#[tokio::test]
 async fn hint_bar_and_help_reflect_new_model() {
     let mut h = Harness::new(sample());
     let hint_bar = h.hint_bar_text();

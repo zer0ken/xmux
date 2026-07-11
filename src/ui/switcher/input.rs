@@ -98,6 +98,9 @@ impl Switcher {
                 'R' => self.open_input(InputMode::Rename, state),
                 'x' => self.arm_kill(state),
                 'r' => self.request_rescan(state),
+                // Quick-jump: 1..9 select the Nth selectable row (the dim digit shown on
+                // that row), reusing the normal selection/attach-debounce path.
+                '1'..='9' => self.move_to((c as u8 - b'1') as isize, state),
                 _ => {}
             },
             _ => {}

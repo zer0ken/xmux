@@ -86,21 +86,39 @@ impl Switcher {
         const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
         let spinner_glyph = SPINNER[state.chrome.spinner_frame % SPINNER.len()];
 
+        // Quick-jump gutter: the first nine SELECTABLE rows (in flatten order, matching
+        // `move_to`) get a dim 1..9 digit; pressing that digit in tree focus jumps there.
+        // A 2-col gutter is reserved on EVERY row so numbering never reflows the tree.
+        let sel = self.selectable_indices();
+        let mut jump_digit: Vec<Option<char>> = vec![None; self.rows.len()];
+        for (pos, &ri) in sel.iter().enumerate().take(9) {
+            jump_digit[ri] = Some((b'1' + pos as u8) as char);
+        }
+
         let items: Vec<ListItem> = self
             .rows
             .iter()
             .enumerate()
             .map(|(i, row)| {
+                let selected = i == self.selected;
+                let mut gutter_style = Style::default().add_modifier(Modifier::DIM);
+                if selected {
+                    gutter_style = gutter_style.add_modifier(Modifier::REVERSED);
+                }
+                let gutter = match jump_digit[i] {
+                    Some(d) => format!("{d} "),
+                    None => "  ".to_string(),
+                };
                 let indent = " ".repeat(row.indent);
                 // The pane-loading placeholder is an animated progress spinner,
                 // not the word "loading".
                 if matches!(row.reference, RowRef::Loading) {
                     return ListItem::new(Line::from(vec![
+                        Span::styled(gutter, gutter_style),
                         Span::raw(indent),
                         Span::styled(spinner_glyph.to_string(), Style::default().fg(COLOR_HINT)),
                     ]));
                 }
-                let selected = i == self.selected;
                 // Colour is a pure function of the row's level, derived here so the
                 // tree model (`tree::Row`) stays terminal-free. Loading returns above.
                 let color = match &row.reference {
@@ -119,6 +137,7 @@ impl Switcher {
                     style = style.add_modifier(Modifier::BOLD | Modifier::ITALIC);
                 }
                 let mut spans = vec![
+                    Span::styled(gutter, gutter_style),
                     Span::raw(indent),
                     Span::styled(pad_label(&row.label), style),
                 ];
