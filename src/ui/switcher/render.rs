@@ -1,5 +1,8 @@
 use super::*;
 
+/// Braille spinner frames for pending states (connecting session, loading panes).
+const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
 impl Switcher {
     pub fn render(
         &mut self,
@@ -40,7 +43,7 @@ impl Switcher {
         // row; a long flash wraps, so size it to the wrapped line count (never clipped).
         let hint_bar_h = state.chrome.hint_bar_lines(area.width, state).len().max(1) as u16;
         let r = compute_regions(area, tree_width, hint_bar_h);
-        self.render_tree(frame, r.tree, state);
+        self.render_tree(frame, r.tree, r.layout, state);
         state.chrome.render_hint_bar(frame, r.hint_bar, state);
         // The view border marks focus between the two views (vertical in Side, horizontal in Top).
         state
@@ -70,87 +73,178 @@ impl Switcher {
         self.render_menu(frame, state);
     }
 
-    fn render_tree(&mut self, frame: &mut Frame, area: Rect, state: &crate::state::State) {
-        // No border box: the tree fills its column outright and a single rule
+    fn render_tree(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        layout: ViewLayout,
+        state: &crate::state::State,
+    ) {
+        // No border box: the tree fills its region outright and a single rule
         // (render_view_border) separates it from the terminal view.
         self.tree_inner = area;
 
-        const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
         let spinner_glyph = SPINNER[state.chrome.spinner_frame % SPINNER.len()];
+        let jump_digit = self.jump_digits();
+        match layout {
+            // Side: one vertical list; `list_state` carries the scroll offset so the
+            // selected row stays visible as the tree grows past the column height.
+            ViewLayout::Side => {
+                let items: Vec<ListItem> = (0..self.rows.len())
+                    .map(|i| self.tree_row_item(i, jump_digit[i], spinner_glyph, state))
+                    .collect();
+                let list = List::new(items);
+                frame.render_stateful_widget(list, area, &mut self.list_state);
+            }
+            // Top (portrait): one column per host, paged horizontally to the selection.
+            ViewLayout::Top => {
+                self.render_tree_columns(frame, area, &jump_digit, spinner_glyph, state)
+            }
+        }
+    }
 
-        // Quick-jump gutter: the first nine SELECTABLE rows (in flatten order, matching
-        // `move_to`) get a dim 1..9 digit; pressing that digit in tree focus jumps there.
-        // A 2-col gutter is reserved on EVERY row so numbering never reflows the tree.
+    /// The quick-jump digit for each row: the first nine SELECTABLE rows (in flatten
+    /// order, matching `move_to`) get a dim 1..9; the rest `None`. A 2-col gutter is
+    /// reserved on every row so numbering never reflows the tree.
+    fn jump_digits(&self) -> Vec<Option<char>> {
         let sel = self.selectable_indices();
         let mut jump_digit: Vec<Option<char>> = vec![None; self.rows.len()];
         for (pos, &ri) in sel.iter().enumerate().take(9) {
             jump_digit[ri] = Some((b'1' + pos as u8) as char);
         }
+        jump_digit
+    }
 
-        let items: Vec<ListItem> = self
+    /// Builds one tree row's list item — the reserved digit gutter, the level indent,
+    /// the level-coloured (bold+italic when active) label, plus any connecting spinner
+    /// or dim status annotation. Shared by the Side list and the Top per-host columns so
+    /// a row looks identical in either layout; `i == self.selected` drives the
+    /// reverse-video highlight.
+    fn tree_row_item(
+        &self,
+        i: usize,
+        digit: Option<char>,
+        spinner_glyph: char,
+        state: &crate::state::State,
+    ) -> ListItem<'static> {
+        let row = &self.rows[i];
+        let selected = i == self.selected;
+        let mut gutter_style = Style::default().add_modifier(Modifier::DIM);
+        if selected {
+            gutter_style = gutter_style.add_modifier(Modifier::REVERSED);
+        }
+        let gutter = match digit {
+            Some(d) => format!("{d} "),
+            None => "  ".to_string(),
+        };
+        let indent = " ".repeat(row.indent);
+        // The pane-loading placeholder is an animated progress spinner, not the word "loading".
+        if matches!(row.reference, RowRef::Loading) {
+            return ListItem::new(Line::from(vec![
+                Span::styled(gutter, gutter_style),
+                Span::raw(indent),
+                Span::styled(spinner_glyph.to_string(), Style::default().fg(COLOR_HINT)),
+            ]));
+        }
+        // Colour is a pure function of the row's level, derived here so the tree model
+        // (`tree::Row`) stays terminal-free. Loading returns above.
+        let color = match &row.reference {
+            RowRef::Host { .. } => COLOR_HOST,
+            RowRef::Session(_) => COLOR_SESSION,
+            RowRef::Window { .. } => COLOR_WINDOW,
+            RowRef::Loading => COLOR_HINT,
+        };
+        let mut style = Style::default().fg(color);
+        if selected {
+            style = style.add_modifier(Modifier::REVERSED);
+        }
+        // The active window / pane reads BOLD+ITALIC — no "(active)" text marker — the
+        // currently-displayed window of each session.
+        if row.active {
+            style = style.add_modifier(Modifier::BOLD | Modifier::ITALIC);
+        }
+        let mut spans = vec![
+            Span::styled(gutter, gutter_style),
+            Span::raw(indent),
+            Span::styled(pad_label(&row.label), style),
+        ];
+        // Spinner glyph: shown right of the session name when connecting.
+        if matches!(&row.reference, RowRef::Session(s) if state.chrome.spinner.contains(&s.address()))
+        {
+            spans.push(Span::styled(
+                spinner_glyph.to_string(),
+                Style::default().fg(COLOR_HINT),
+            ));
+        }
+        if let Some(status) = &row.status {
+            let mut status_style = Style::default().fg(COLOR_HINT);
+            if selected {
+                status_style = status_style.add_modifier(Modifier::REVERSED);
+            }
+            spans.push(Span::styled(format!("{status} "), status_style));
+        }
+        ListItem::new(Line::from(spans))
+    }
+
+    /// Top (portrait) layout: the tree becomes one column per host, each column that
+    /// host's Host→Session→Window subtree laid left-to-right. Host segments are read
+    /// straight off the flat rows (each starts at a Host row and runs to the next), so
+    /// no separate model is needed. When more hosts than fit, the columns page
+    /// horizontally so the selected host's column stays on screen; within a column the
+    /// per-column `ListState` scrolls vertically to keep the selection visible.
+    // ponytail: whole-page paging (stateless), not smooth sliding — swap for a remembered
+    // offset only if the page-flip on a boundary crossing feels abrupt in real use.
+    fn render_tree_columns(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        jump_digit: &[Option<char>],
+        spinner_glyph: char,
+        state: &crate::state::State,
+    ) {
+        let starts: Vec<usize> = self
             .rows
             .iter()
             .enumerate()
-            .map(|(i, row)| {
-                let selected = i == self.selected;
-                let mut gutter_style = Style::default().add_modifier(Modifier::DIM);
-                if selected {
-                    gutter_style = gutter_style.add_modifier(Modifier::REVERSED);
-                }
-                let gutter = match jump_digit[i] {
-                    Some(d) => format!("{d} "),
-                    None => "  ".to_string(),
-                };
-                let indent = " ".repeat(row.indent);
-                // The pane-loading placeholder is an animated progress spinner,
-                // not the word "loading".
-                if matches!(row.reference, RowRef::Loading) {
-                    return ListItem::new(Line::from(vec![
-                        Span::styled(gutter, gutter_style),
-                        Span::raw(indent),
-                        Span::styled(spinner_glyph.to_string(), Style::default().fg(COLOR_HINT)),
-                    ]));
-                }
-                // Colour is a pure function of the row's level, derived here so the
-                // tree model (`tree::Row`) stays terminal-free. Loading returns above.
-                let color = match &row.reference {
-                    RowRef::Host { .. } => COLOR_HOST,
-                    RowRef::Session(_) => COLOR_SESSION,
-                    RowRef::Window { .. } => COLOR_WINDOW,
-                    RowRef::Loading => COLOR_HINT,
-                };
-                let mut style = Style::default().fg(color);
-                if selected {
-                    style = style.add_modifier(Modifier::REVERSED);
-                }
-                // The active window / pane reads BOLD+ITALIC — no "(active)" text
-                // marker — the currently-displayed window of each session.
-                if row.active {
-                    style = style.add_modifier(Modifier::BOLD | Modifier::ITALIC);
-                }
-                let mut spans = vec![
-                    Span::styled(gutter, gutter_style),
-                    Span::raw(indent),
-                    Span::styled(pad_label(&row.label), style),
-                ];
-                // Spinner glyph: shown right of the session name when connecting.
-                if matches!(&row.reference, RowRef::Session(s) if state.chrome.spinner.contains(&s.address())) {
-                    let sp_style = Style::default().fg(COLOR_HINT);
-                    spans.push(Span::styled(spinner_glyph.to_string(), sp_style));
-                }
-                if let Some(status) = &row.status {
-                    let mut status_style = Style::default().fg(COLOR_HINT);
-                    if selected {
-                        status_style = status_style.add_modifier(Modifier::REVERSED);
-                    }
-                    spans.push(Span::styled(format!("{status} "), status_style));
-                }
-                ListItem::new(Line::from(spans))
-            })
+            .filter(|(_, r)| matches!(r.reference, RowRef::Host { .. }))
+            .map(|(i, _)| i)
             .collect();
+        if starts.is_empty() {
+            return;
+        }
+        // Each host owns rows [start, next_start) — its whole subtree, contiguous.
+        let segs: Vec<(usize, usize)> = starts
+            .iter()
+            .enumerate()
+            .map(|(k, &s)| (s, *starts.get(k + 1).unwrap_or(&self.rows.len())))
+            .collect();
+        let sel_host = segs
+            .iter()
+            .position(|&(s, e)| self.selected >= s && self.selected < e)
+            .unwrap_or(0);
 
-        let list = List::new(items);
-        frame.render_stateful_widget(list, area, &mut self.list_state);
+        // Fit as many min-width columns as the region allows, then page to the
+        // selection. col_w >= 1 always (per_page <= area.width for width >= 1).
+        const MIN_COL_W: u16 = 18;
+        let per_page = (area.width / MIN_COL_W).max(1) as usize;
+        let col_w = area.width / per_page as u16;
+        let first = (sel_host / per_page) * per_page;
+        let visible = &segs[first..(first + per_page).min(segs.len())];
+
+        let constraints: Vec<Constraint> =
+            visible.iter().map(|_| Constraint::Length(col_w)).collect();
+        let cols = Layout::horizontal(constraints).split(area);
+        for (ci, &(s, e)) in visible.iter().enumerate() {
+            let items: Vec<ListItem> = (s..e)
+                .map(|i| self.tree_row_item(i, jump_digit[i], spinner_glyph, state))
+                .collect();
+            let list = List::new(items);
+            let mut cstate = ListState::default();
+            if self.selected >= s && self.selected < e {
+                cstate.select(Some(self.selected - s));
+            }
+            frame.render_stateful_widget(list, cols[ci], &mut cstate);
+        }
     }
 
     fn render_terminal_view(

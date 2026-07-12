@@ -2354,6 +2354,36 @@ fn compute_regions_side_top_and_hidden() {
     assert_eq!(hidden.view_border, Rect::default());
 }
 
+#[test]
+fn top_layout_renders_hosts_as_side_by_side_columns() {
+    // Portrait (taller than wide) → Top layout: the tree becomes one column per host,
+    // laid left-to-right. So two hosts render on the SAME screen row (side by side),
+    // which a vertical Side list never does — that is the columnar signature.
+    let mut term = Terminal::new(TestBackend::new(48, 60)).unwrap();
+    let mut state = crate::state::State::from_scan(sample());
+    let mut sw = Switcher::new(&mut state);
+    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
+        .unwrap();
+    let buf = term.backend().buffer().clone();
+
+    let (lx, ly) = locate(&buf, "local", buf.area.width).expect("local host visible");
+    let (jx, jy) = locate(&buf, "jupiter00", buf.area.width).expect("jupiter00 host visible");
+    assert_eq!(
+        ly, jy,
+        "the two host columns share a screen row (side by side), not stacked"
+    );
+    assert!(
+        jx > lx,
+        "jupiter00's column sits to the right of local's (jx={jx} > lx={lx})"
+    );
+    // Two 18-min columns fit in width 48 (col width 24), so the second host starts in
+    // the right half.
+    assert!(
+        jx >= 24,
+        "the second host sits in the second column, got x={jx}"
+    );
+}
+
 #[tokio::test]
 async fn space_folds_and_unfolds_the_selected_host() {
     // Space on the first host row (index 0) collapses it, hiding its child rows and
