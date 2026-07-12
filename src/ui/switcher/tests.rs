@@ -2341,6 +2341,11 @@ fn compute_regions_side_top_and_hidden() {
     assert_eq!(s.view_border, Rect::new(48, 0, 1, 29));
     assert_eq!(s.terminal, Rect::new(49, 0, 51, 29));
     assert_eq!(s.hint_bar, Rect::new(0, 29, 100, 1));
+    // A landscape SCREEN can still be Top when the side tree would squeeze the terminal
+    // view into a portrait shape: 100 wide, tree 48 → terminal view ~51 wide vs 80 tall, so
+    // Top wins even though the screen itself is wider than tall.
+    let squeezed = compute_regions(Rect::new(0, 0, 100, 80), 48, 1);
+    assert_eq!(squeezed.layout, ViewLayout::Top);
     // Portrait → Top: tree on top, 1-row border, terminal below, hint bar the bottom row.
     let port = Rect::new(0, 0, 40, 100);
     let t = compute_regions(port, 48, 1);
@@ -2362,10 +2367,10 @@ fn compute_regions_side_top_and_hidden() {
 
 #[test]
 fn top_layout_renders_hosts_as_side_by_side_columns() {
-    // Portrait (taller than wide) → Top layout: the tree becomes one column per host,
-    // laid left-to-right. So two hosts render on the SAME screen row (side by side),
-    // which a vertical Side list never does — that is the columnar signature.
-    let mut term = Terminal::new(TestBackend::new(48, 60)).unwrap();
+    // Top layout: the tree becomes one column per host, laid left-to-right. So two hosts
+    // render on the SAME screen row (side by side), which a vertical Side list never does —
+    // that is the columnar signature. The width (60) fits two content-sized columns.
+    let mut term = Terminal::new(TestBackend::new(60, 70)).unwrap();
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
@@ -2382,11 +2387,25 @@ fn top_layout_renders_hosts_as_side_by_side_columns() {
         jx > lx,
         "jupiter00's column sits to the right of local's (jx={jx} > lx={lx})"
     );
-    // Two 18-min columns fit in width 48 (col width 24), so the second host starts in
-    // the right half.
+}
+
+#[test]
+fn top_layout_columns_size_to_labels_not_a_narrow_cap() {
+    // Columns are sized to their content, so a session's window count is NOT clipped the way
+    // a fixed narrow column would clip it. One host fills a portrait-narrow screen; ←→ pages.
+    let mut term = Terminal::new(TestBackend::new(40, 70)).unwrap();
+    let mut state = crate::state::State::from_scan(sample());
+    let mut sw = Switcher::new(&mut state);
+    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
+        .unwrap();
+    let buf = term.backend().buffer().clone();
+    // The editor session's full "2 windows" count renders — a 24-col column would have
+    // clipped it to "2 windo". ("2 windows" is specific to the session count; a window row
+    // reads "window 1: …", never "2 windows".)
     assert!(
-        jx >= 24,
-        "the second host sits in the second column, got x={jx}"
+        locate(&buf, "2 windows", buf.area.width).is_some(),
+        "session window count renders in full, not clipped\n{}",
+        buffer_text(&buf)
     );
 }
 

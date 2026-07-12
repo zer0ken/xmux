@@ -295,10 +295,12 @@ fn terminal_view_size_subtracts_tree_and_view_border() {
 #[test]
 fn terminal_view_size_clamps_to_at_least_one() {
     use crate::ui::switcher::TREE_WIDTH;
+    // A 10-col terminal can't fit the 48-col tree beside it, so the layout goes Top and the
+    // terminal keeps full width; a zero-row body still clamps the height up to 1. The
+    // invariant this guards is that neither dimension is ever 0 (degenerate PTY size).
     let (vc, vr) = terminal_view_size(10, 0, TREE_WIDTH);
-    assert_eq!(vc, 1);
-    // 0.max(1) = 1: clamping still holds for zero body rows.
-    assert_eq!(vr, 1);
+    assert!(vc >= 1, "width never zero, got {vc}");
+    assert_eq!(vr, 1, "0.max(1) = 1: height clamps up for a zero-row body");
 }
 
 #[tokio::test]

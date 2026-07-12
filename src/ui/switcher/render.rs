@@ -3,6 +3,19 @@ use super::*;
 /// Braille spinner frames for pending states (connecting session, loading panes).
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
+/// The rendered display width of a tree row: the 2-col digit gutter, the level indent, the
+/// padded label, and any trailing status annotation. Sizes a Top-layout host column to its
+/// content so labels are not clipped.
+fn row_render_width(row: &Row) -> u16 {
+    let label = UnicodeWidthStr::width(pad_label(&row.label).as_str());
+    let status = row
+        .status
+        .as_ref()
+        .map(|s| UnicodeWidthStr::width(s.as_str()) + 1)
+        .unwrap_or(0);
+    (2 + row.indent + label + status) as u16
+}
+
 impl Switcher {
     pub fn render(
         &mut self,
@@ -14,6 +27,8 @@ impl Switcher {
     ) {
         let area = frame.area();
         self.screen_area = area;
+        // Cache the stacking so key handling routes the arrows to match what is on screen.
+        self.layout = view_layout(area, tree_width);
         // Reset the buffer before painting. The widgets below do not all fill every cell
         // they own — the mux grid only paints its top-left clip (cells past the grid size
         // are skipped), the view border rule sets fg only, and the tree leaves blank rows — so
@@ -217,10 +232,20 @@ impl Switcher {
             .position(|&(s, e)| self.selected >= s && self.selected < e)
             .unwrap_or(0);
 
-        // Fit as many min-width columns as the region allows, then page to the
-        // selection. col_w >= 1 always (per_page <= area.width for width >= 1).
-        const MIN_COL_W: u16 = 18;
-        let per_page = (area.width / MIN_COL_W).max(1) as usize;
+        // Columns are as wide as their widest row (gutter + indent + label + status) so
+        // full labels show without clipping — no fixed width cap. Fit as many as the region
+        // holds and stretch to fill; when hosts overflow the width, the horizontal paging
+        // below IS the scroll. A single column that alone exceeds the region is capped there
+        // (a label longer than the whole screen still clips — nothing to scroll it into).
+        let natural = self
+            .rows
+            .iter()
+            .map(row_render_width)
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        let col_natural = natural.min(area.width).max(1);
+        let per_page = (area.width / col_natural).max(1) as usize;
         let col_w = area.width / per_page as u16;
         let first = (sel_host / per_page) * per_page;
         let visible = &segs[first..(first + per_page).min(segs.len())];

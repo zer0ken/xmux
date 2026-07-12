@@ -84,7 +84,7 @@ impl Switcher {
         // current tree level, →/← change level (→ descends to the first child / expands a
         // folded host, ← ascends / collapses). Top (per-host columns): ↑/↓ move WITHIN the
         // current host's column, ←/→ move BETWEEN host columns. Space folds in either.
-        let top = self.layout() == ViewLayout::Top;
+        let top = self.layout == ViewLayout::Top;
         match ev.code {
             KeyCode::Enter => {}
             KeyCode::Up | KeyCode::Char('k') => {

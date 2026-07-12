@@ -47,20 +47,29 @@ pub enum ViewLayout {
     Top,
 }
 
-/// Picks the layout from the area's aspect: a portrait area (taller than wide) uses the
-/// stacked `Top` layout, everything else the `Side` layout.
-pub fn view_layout(area: Rect) -> ViewLayout {
-    if area.height > area.width {
+/// Picks the layout from the TERMINAL VIEW's aspect, not the whole screen's: putting the
+/// tree in a side column costs the terminal `tree_width + 1` columns, and if that would
+/// leave the terminal view taller than wide (portrait), the tree stacks on `Top` instead so
+/// the terminal keeps full width. So a screen that is landscape overall can still go `Top`
+/// once the tree squeezes the terminal into a portrait shape. `tree_width` is the width the
+/// tree would occupy in `Side` (the natural/unhidden width).
+pub fn view_layout(area: Rect, tree_width: u16) -> ViewLayout {
+    let side_term_w = area.width.saturating_sub(tree_width.saturating_add(1));
+    if area.height > side_term_w {
         ViewLayout::Top
     } else {
         ViewLayout::Side
     }
 }
 
-/// The tree region's height in the `Top` layout: ~40% of the body, clamped so both the
-/// tree and the terminal stay usable.
+/// The tree region's height in the `Top` layout: ~40% of the body, at least a few rows, but
+/// never so tall the terminal loses its last rows. Composed with min/max (not `clamp`) so a
+/// tiny body — where the floor would exceed the ceiling and `clamp` would panic — just yields
+/// the small floor instead.
 fn top_tree_height(body_h: u16) -> u16 {
-    ((body_h as u32 * 2 / 5) as u16).clamp(3, body_h.saturating_sub(3).max(1))
+    let want = (body_h as u32 * 2 / 5) as u16;
+    let ceil = body_h.saturating_sub(3).max(1);
+    want.max(3).min(ceil).max(1)
 }
 
 /// The screen regions the switcher draws into, derived ONCE per frame so the renderer,
@@ -77,7 +86,9 @@ pub struct Regions {
 }
 
 pub fn compute_regions(area: Rect, tree_width: u16, hint_bar_h: u16) -> Regions {
-    let layout = view_layout(area);
+    // The layout is decided from the natural tree width so the terminal-view aspect test is
+    // stable; the hidden sentinel (0) below still forces the whole area to the terminal.
+    let layout = view_layout(area, tree_width);
     if tree_width == 0 {
         return Regions {
             layout,
@@ -171,6 +182,10 @@ pub struct Switcher {
 
     list_state: ListState,
     tree_inner: Rect,
+    /// The view stacking as of the last render (Side vs Top), cached so key handling can
+    /// route the arrows to match what is on screen without re-deriving the geometry. Set
+    /// each frame by `render` from [`view_layout`].
+    layout: ViewLayout,
 
     /// A pending re-scan reselect: the session address the selection was on when `r`
     /// was pressed. A re-scan clears every session, so the row briefly vanishes; this
@@ -201,6 +216,7 @@ impl Switcher {
             terminal_view_target: TerminalViewTarget::default(),
             list_state: ListState::default(),
             tree_inner: Rect::default(),
+            layout: ViewLayout::Side,
             rescan_reselect: None,
             screen_area: Rect::default(),
             popup_geo: PopupGeometry::default(),
@@ -342,13 +358,6 @@ impl Switcher {
             .filter(|(_, r)| matches!(r.reference, RowRef::Host { .. }))
             .map(|(i, _)| i)
             .collect()
-    }
-
-    /// Which way the two views are stacked right now, derived from the last-rendered
-    /// screen area — the same aspect test `compute_regions` uses, so key handling and the
-    /// render agree on Side vs Top.
-    fn layout(&self) -> ViewLayout {
-        view_layout(self.screen_area)
     }
 
     fn set_selected(&mut self, idx: usize, state: &crate::state::State) {
