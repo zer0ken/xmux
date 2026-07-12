@@ -62,6 +62,14 @@ pub fn view_layout(area: Rect, tree_width: u16) -> ViewLayout {
     }
 }
 
+/// The auto `Top`-layout tree height for a body of `body_rows` rows (before the hint bar row
+/// is removed the caller passes `full_height - 1`). This is the seed a RELATIVE height resize
+/// (prefix h/l in Top) starts from while `tree_height` is still 0 (auto), so the first key
+/// adjusts the height the user actually sees.
+pub fn default_tree_height(body_rows: u16) -> u16 {
+    top_tree_height(body_rows)
+}
+
 /// The tree region's height in the `Top` layout: ~40% of the body, at least a few rows, but
 /// never so tall the terminal loses its last rows. Composed with min/max (not `clamp`) so a
 /// tiny body — where the floor would exceed the ceiling and `clamp` would panic — just yields
@@ -258,6 +266,13 @@ impl Switcher {
 
     pub fn terminal_view_target(&self) -> TerminalViewTarget {
         self.terminal_view_target.clone()
+    }
+
+    /// The view stacking as of the last render (Side vs Top). Lets the app route the
+    /// tree-resize keys to the dimension the current layout resizes: WIDTH in Side, HEIGHT
+    /// in the portrait Top layout.
+    pub fn layout(&self) -> ViewLayout {
+        self.layout
     }
 
     /// Takes the pending rescan-kick flag (true once after seeding or an `r`

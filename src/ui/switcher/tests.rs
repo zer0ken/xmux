@@ -2443,6 +2443,22 @@ async fn top_layout_arrows_move_within_and_between_hosts() {
 }
 
 #[tokio::test]
+async fn top_layout_click_selects_row_in_the_clicked_column() {
+    // A click in the Top layout maps through the clicked COLUMN to that host's rows (not the
+    // Side vertical-list offset). 60 wide fits two columns; the right column is jupiter00, and
+    // its row below the host row is the session — clicking it selects that session.
+    let mut h = Harness::new_sized(sample(), 60, 70);
+    // 0-based screen coords: col ~32 lands in the second column (col width 30); row 1 is the
+    // row under that column's host row.
+    h.sw.mouse_select(32, 1, &h.state);
+    assert!(
+        matches!(h.sw.current_ref(), Some(RowRef::Session(s)) if s.source == "jupiter00"),
+        "clicking a row in jupiter00's column selects that session, got {:?}",
+        h.sw.current_source()
+    );
+}
+
+#[tokio::test]
 async fn space_folds_and_unfolds_the_selected_host() {
     // Space on the first host row (index 0) collapses it, hiding its child rows and
     // keeping the selection on the host; Space again restores them.

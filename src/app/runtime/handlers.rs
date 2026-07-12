@@ -276,6 +276,7 @@ impl Runtime {
             tree_width,
             tree_width_natural,
             tree_height,
+            applied_tree_height: u16::MAX,
             auto_hide_tree,
             mouse_state: MouseState::default(),
             term_input,
@@ -352,11 +353,15 @@ impl Runtime {
             self.auto_hide_tree,
             self.tree_width_natural,
         );
-        if want_tree_width != self.tree_width {
+        // Resize when EITHER dimension of the split moved: the width (focus / hide / prefix
+        // h·l in Side) or the Top height (border drag / resize keys). Both change the mux
+        // terminal region, so both must resize the PTYs or the grid mismatches the draw.
+        if want_tree_width != self.tree_width || self.tree_height != self.applied_tree_height {
             // Crossing the hidden sentinel (0) flips the column TOPOLOGY; a stale wide-char
             // cell at the new boundary can survive ratatui's diff, so force a full repaint.
             let crossed_hidden = (want_tree_width == 0) != (self.tree_width == 0);
             self.tree_width = want_tree_width;
+            self.applied_tree_height = self.tree_height;
             let (vc, vr) =
                 terminal_view_size(self.cols, self.body_rows, self.tree_width, self.tree_height);
             self.registry.resize_all(vc, vr);

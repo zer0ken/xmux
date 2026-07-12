@@ -7,13 +7,40 @@ impl Switcher {
         self.tree_inner.contains(Position { x: col, y: row })
     }
 
+    /// The tree row index under a 0-based screen `(col, row)`, or `None` if it is outside the
+    /// tree or past its rows. Layout-aware: in Side the tree is one scrolled vertical list
+    /// (the `list_state` offset maps the row); in Top it is per-host columns, so the column
+    /// under `col` picks the host segment and the row within it maps to that host's rows.
+    ///
+    /// The Top mapping assumes each column starts at its segment top (offset 0), which holds
+    /// for every column except a selected one tall enough to have scrolled — an edge case,
+    /// since a click usually targets a different column/row than the current selection.
+    fn row_at(&self, col: u16, row: u16) -> Option<usize> {
+        if !self.in_tree(col, row) {
+            return None;
+        }
+        let row_in = row.saturating_sub(self.tree_inner.y) as usize;
+        match self.layout {
+            ViewLayout::Side => Some(self.list_state.offset() + row_in),
+            ViewLayout::Top => {
+                let (segs, col_w, per_page) = self.top_columns(self.tree_inner);
+                if segs.is_empty() {
+                    return None;
+                }
+                let first = (self.selected_host_index(&segs) / per_page) * per_page;
+                let col_index = (col.saturating_sub(self.tree_inner.x) / col_w) as usize;
+                let &(s, e) = segs.get(first + col_index)?;
+                let idx = s + row_in;
+                (idx < e).then_some(idx)
+            }
+        }
+    }
+
     /// Single click: move the selection to the clicked row (select; never attach).
     pub fn mouse_select(&mut self, col: u16, row: u16, state: &crate::state::State) {
-        if !self.in_tree(col, row) {
+        let Some(idx) = self.row_at(col, row) else {
             return;
-        }
-        let offset = self.list_state.offset();
-        let idx = offset + (row.saturating_sub(self.tree_inner.y)) as usize;
+        };
         if self.rows.get(idx).is_some_and(Row::selectable) {
             self.user_moved = true;
             self.set_selected(idx, state);
@@ -38,11 +65,9 @@ impl Switcher {
     /// the gesture only remembers the target, so no background attach fires mid-hold.
     /// Returns true iff a menu opened (so the app knows to consume the event).
     pub fn menu_open(&mut self, col: u16, row: u16, state: &mut crate::state::State) -> bool {
-        if !self.in_tree(col, row) {
+        let Some(idx) = self.row_at(col, row) else {
             return false;
-        }
-        let offset = self.list_state.offset();
-        let idx = offset + (row.saturating_sub(self.tree_inner.y)) as usize;
+        };
         let Some(target) = self
             .rows
             .get(idx)

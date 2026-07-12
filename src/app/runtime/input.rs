@@ -337,6 +337,34 @@ impl Runtime {
 }
 
 impl Runtime {
+    /// Applies a tree-resize delta (prefix h/l · Ctrl+←/→) to the dimension the CURRENT
+    /// layout resizes: the tree HEIGHT in the portrait Top layout, else the WIDTH. Height is
+    /// seeded from the effective auto height the first time (while `tree_height == 0`) so a
+    /// relative step starts from what is on screen, clamped so the terminal keeps room, and
+    /// persisted immediately. Width defers to `apply_width_delta` (the caller schedules the
+    /// debounced width persist). Returns whether the size changed (caller resizes PTYs + redraws).
+    pub(super) fn apply_tree_resize(&mut self, delta: i32) -> bool {
+        if self.switcher.layout() != crate::ui::switcher::ViewLayout::Top {
+            return apply_width_delta(delta, &mut self.tree_width_natural);
+        }
+        let base = if self.tree_height == 0 {
+            crate::ui::switcher::default_tree_height(self.body_rows)
+        } else {
+            self.tree_height
+        };
+        let ceil = self
+            .body_rows
+            .saturating_sub(2)
+            .clamp(TREE_HEIGHT_MIN, TREE_HEIGHT_MAX);
+        let next = (base as i32 + delta).clamp(TREE_HEIGHT_MIN as i32, ceil as i32) as u16;
+        if next == self.tree_height {
+            return false;
+        }
+        self.tree_height = next;
+        crate::prefs::save_tree_height(&self.env.xmux_dir, self.tree_height);
+        true
+    }
+
     /// The whole `stdin_rx` arm body, lifted. Scans the read for SGR mouse sequences
     /// (routed via [`Runtime::handle_mouse_event`]) vs a non-mouse byte stream, runs the
     /// lost-release watchdogs, the resize-repeat window, and the help-modal / tree-focus /
@@ -456,7 +484,7 @@ impl Runtime {
         {
             let mut n = 0;
             while let Some((d, len)) = leading_ctrl_arrow(&non_mouse[n..]) {
-                if apply_width_delta(d, &mut self.tree_width_natural) {
+                if self.apply_tree_resize(d) {
                     *width_changed = true;
                 }
                 n += len;
@@ -497,7 +525,7 @@ impl Runtime {
             if wd != 0 {
                 // A prefix-driven resize: apply it and open the repeat window so the
                 // next bare Ctrl+←/→ keeps resizing without re-pressing the prefix.
-                if apply_width_delta(wd, &mut self.tree_width_natural) {
+                if self.apply_tree_resize(wd) {
                     *width_changed = true;
                 }
                 self.mouse_state.repeat_until =
@@ -530,7 +558,7 @@ impl Runtime {
                     Action::Width(d) => {
                         // Same resize + repeat-window as the tree path, so a resize
                         // started from the terminal view chains with bare Ctrl+←/→ too.
-                        if apply_width_delta(d, &mut self.tree_width_natural) {
+                        if self.apply_tree_resize(d) {
                             *width_changed = true;
                         }
                         self.mouse_state.repeat_until = Some(
@@ -608,7 +636,7 @@ impl Runtime {
                 if wd != 0 {
                     // A prefix-driven resize on the replayed bytes: apply + open the
                     // repeat window, same as the direct tree-focus path above.
-                    if apply_width_delta(wd, &mut self.tree_width_natural) {
+                    if self.apply_tree_resize(wd) {
                         *width_changed = true;
                     }
                     self.mouse_state.repeat_until =

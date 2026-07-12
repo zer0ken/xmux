@@ -1043,9 +1043,13 @@ struct Runtime {
     tree_width: u16,
     /// The tree's natural width (what prefix h/l adjusts; restored when shown again).
     tree_width_natural: u16,
-    /// The Top-layout tree height, set by dragging the horizontal view border. 0 = auto
-    /// (~40% of the body). Only used in the portrait Top layout; ignored in Side.
+    /// The Top-layout tree height, set by dragging the horizontal view border or the resize
+    /// keys. 0 = auto (~40% of the body). Only used in the portrait Top layout; ignored in Side.
     tree_height: u16,
+    /// The `tree_height` last applied to the PTY sizes, so the loop-top reconcile resizes the
+    /// mux terminals when the Top height changes (not only on a width change). `u16::MAX`
+    /// forces the first reconcile to size them.
+    applied_tree_height: u16,
     auto_hide_tree: bool,
     mouse_state: MouseState,
     term_input: crate::display::input::TermInput,

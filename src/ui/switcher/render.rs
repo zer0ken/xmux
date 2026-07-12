@@ -210,6 +210,39 @@ impl Switcher {
     /// per-column `ListState` scrolls vertically to keep the selection visible.
     // ponytail: whole-page paging (stateless), not smooth sliding — swap for a remembered
     // offset only if the page-flip on a boundary crossing feels abrupt in real use.
+    /// The Top-layout column geometry for `area`: the per-host row segments
+    /// (`[start, next_host_start)`), the column width, and how many columns fit per page.
+    /// Columns are as wide as the widest row (gutter + indent + label + status) so full
+    /// labels show without a fixed cap; when hosts overflow the width the caller pages
+    /// horizontally. Shared by the renderer and mouse hit-testing so a click maps to the
+    /// same columns that were drawn.
+    pub(super) fn top_columns(&self, area: Rect) -> (Vec<(usize, usize)>, u16, usize) {
+        let starts = self.host_starts();
+        let segs: Vec<(usize, usize)> = starts
+            .iter()
+            .enumerate()
+            .map(|(k, &s)| (s, *starts.get(k + 1).unwrap_or(&self.rows.len())))
+            .collect();
+        let natural = self
+            .rows
+            .iter()
+            .map(row_render_width)
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        let col_natural = natural.min(area.width.max(1)).max(1);
+        let per_page = (area.width / col_natural).max(1) as usize;
+        let col_w = (area.width / per_page as u16).max(1);
+        (segs, col_w, per_page)
+    }
+
+    /// The host segment the selection sits in, given the column segments.
+    pub(super) fn selected_host_index(&self, segs: &[(usize, usize)]) -> usize {
+        segs.iter()
+            .position(|&(s, e)| self.selected >= s && self.selected < e)
+            .unwrap_or(0)
+    }
+
     fn render_tree_columns(
         &self,
         frame: &mut Frame,
@@ -218,37 +251,12 @@ impl Switcher {
         spinner_glyph: char,
         state: &crate::state::State,
     ) {
-        let starts = self.host_starts();
-        if starts.is_empty() {
+        let (segs, col_w, per_page) = self.top_columns(area);
+        if segs.is_empty() {
             return;
         }
-        // Each host owns rows [start, next_start) — its whole subtree, contiguous.
-        let segs: Vec<(usize, usize)> = starts
-            .iter()
-            .enumerate()
-            .map(|(k, &s)| (s, *starts.get(k + 1).unwrap_or(&self.rows.len())))
-            .collect();
-        let sel_host = segs
-            .iter()
-            .position(|&(s, e)| self.selected >= s && self.selected < e)
-            .unwrap_or(0);
-
-        // Columns are as wide as their widest row (gutter + indent + label + status) so
-        // full labels show without clipping — no fixed width cap. Fit as many as the region
-        // holds and stretch to fill; when hosts overflow the width, the horizontal paging
-        // below IS the scroll. A single column that alone exceeds the region is capped there
-        // (a label longer than the whole screen still clips — nothing to scroll it into).
-        let natural = self
-            .rows
-            .iter()
-            .map(row_render_width)
-            .max()
-            .unwrap_or(1)
-            .max(1);
-        let col_natural = natural.min(area.width).max(1);
-        let per_page = (area.width / col_natural).max(1) as usize;
-        let col_w = area.width / per_page as u16;
-        let first = (sel_host / per_page) * per_page;
+        // Whole-page paging (stateless), not smooth sliding — the page holding the selection.
+        let first = (self.selected_host_index(&segs) / per_page) * per_page;
         let visible = &segs[first..(first + per_page).min(segs.len())];
 
         let constraints: Vec<Constraint> =

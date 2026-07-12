@@ -1171,6 +1171,7 @@ fn test_rt(env: Env) -> Runtime {
         tree_width: crate::ui::switcher::TREE_WIDTH,
         tree_width_natural: crate::ui::switcher::TREE_WIDTH,
         tree_height: 0,
+        applied_tree_height: u16::MAX,
         auto_hide_tree: false,
         mouse_state: MouseState::default(),
         term_input: crate::display::input::TermInput::new(prefix),
@@ -2000,4 +2001,43 @@ fn handle_mouse_event_top_layout_border_drag_resizes_height() {
         rt.tree_height, 29,
         "dragging the horizontal border sets the tree HEIGHT to the dragged row"
     );
+}
+
+#[test]
+fn resize_keys_adjust_height_in_top_layout() {
+    use crate::ui::switcher::{Scan, Switcher, ViewLayout, TREE_WIDTH};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    // In the portrait Top layout the tree-resize keys (prefix h/l · Ctrl+←/→) adjust the
+    // HEIGHT, not the width — seeded from the auto height the first time.
+    let mut state = crate::state::State::from_scan(Scan {
+        groups: vec![],
+        panes: Default::default(),
+    });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.cols = 40;
+    rt.body_rows = 59;
+    rt.tree_height = 0; // auto
+                        // Render once into a portrait backend so the switcher caches layout = Top.
+    let mut term = Terminal::new(TestBackend::new(40, 60)).unwrap();
+    {
+        let sw = &mut rt.switcher;
+        let st = &rt.state;
+        term.draw(|f| sw.render(f, None, false, TREE_WIDTH, 0, st))
+            .unwrap();
+    }
+    assert_eq!(rt.switcher.layout(), ViewLayout::Top, "portrait → Top");
+
+    let auto = crate::ui::switcher::default_tree_height(59);
+    assert!(rt.apply_tree_resize(1), "grow changes the height");
+    assert_eq!(
+        rt.tree_height,
+        auto + 1,
+        "a resize key grows the Top tree height from the auto seed"
+    );
+    assert!(rt.apply_tree_resize(-1), "shrink changes the height");
+    assert_eq!(rt.tree_height, auto, "and shrinks it back");
 }
