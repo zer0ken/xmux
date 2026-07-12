@@ -65,6 +65,9 @@ pub struct DriverCtx<'a> {
     pub cols: u16,
     pub body_rows: u16,
     pub tree_width: u16,
+    /// The Top-layout tree height (0 = auto), so the driver sizes the PTY to the same
+    /// terminal region the renderer draws in portrait. Ignored in the Side layout.
+    pub tree_height: u16,
 }
 
 /// One mux driver per host: intent in, screen out.
@@ -262,6 +265,7 @@ pub(crate) mod tests {
                 cols: 80,
                 body_rows: 24,
                 tree_width: crate::ui::switcher::TREE_WIDTH,
+                tree_height: 0,
             };
             driver.show(&sel, &mut ctx)
         };

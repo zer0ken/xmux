@@ -9,13 +9,21 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
-use crate::app::runtime::{TREE_WIDTH_MAX, TREE_WIDTH_MIN};
+use crate::app::runtime::{TREE_HEIGHT_MAX, TREE_HEIGHT_MIN, TREE_WIDTH_MAX, TREE_WIDTH_MIN};
 use crate::display::dispatch::Action;
 
 /// The tree width a view border drag to 1-based screen column `col` sets: the dragged
 /// column becomes the view border position (= the tree width), clamped to the allowed range.
 pub(crate) fn view_border_drag_width(col: u16) -> u16 {
     col.saturating_sub(1).clamp(TREE_WIDTH_MIN, TREE_WIDTH_MAX)
+}
+
+/// The Top-layout tree height a horizontal view border drag to 1-based screen row `row`
+/// sets: the dragged row becomes the border position (0-based), which is the tree height,
+/// clamped to the allowed range. compute_regions clamps further to the live body height.
+pub(crate) fn view_border_drag_height(row: u16) -> u16 {
+    row.saturating_sub(1)
+        .clamp(TREE_HEIGHT_MIN, TREE_HEIGHT_MAX)
 }
 
 /// If `bytes` STARTS with a Ctrl+←/→ (`ESC [ 1 ; 5 D/C`), the resize delta and the

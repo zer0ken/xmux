@@ -25,7 +25,8 @@ impl MuxDriver for PsmuxDriver {
         if sel.is_empty() {
             return false;
         }
-        let (cols, rows) = terminal_view_size(ctx.cols, ctx.body_rows, ctx.tree_width);
+        let (cols, rows) =
+            terminal_view_size(ctx.cols, ctx.body_rows, ctx.tree_width, ctx.tree_height);
         let control = ctx.mgr.get(&sel.source);
         let Some(host) = ctx.hosts.get_mut(&sel.source) else {
             return false;
@@ -286,6 +287,7 @@ mod tests {
                 cols: 80,
                 body_rows: 24,
                 tree_width: crate::ui::switcher::TREE_WIDTH,
+                tree_height: 0,
             };
             driver.show(&sel, &mut ctx)
         };
@@ -349,6 +351,7 @@ mod tests {
                 cols: 80,
                 body_rows: 24,
                 tree_width: crate::ui::switcher::TREE_WIDTH,
+                tree_height: 0,
             };
             driver.sync(
                 "local",
@@ -376,6 +379,7 @@ mod tests {
                 cols: 80,
                 body_rows: 24,
                 tree_width: crate::ui::switcher::TREE_WIDTH,
+                tree_height: 0,
             };
             driver.sync("local", &[], &mut ctx);
         }
@@ -431,6 +435,7 @@ mod tests {
                 cols: 80,
                 body_rows: 24,
                 tree_width: crate::ui::switcher::TREE_WIDTH,
+                tree_height: 0,
             };
             assert!(driver.show(&sel, &mut ctx));
         }
@@ -495,6 +500,7 @@ mod tests {
                 cols: 80,
                 body_rows: 24,
                 tree_width: crate::ui::switcher::TREE_WIDTH,
+                tree_height: 0,
             };
             assert!(driver.show(&sel, &mut ctx));
         }

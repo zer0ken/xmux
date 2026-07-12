@@ -61,7 +61,7 @@ pub fn dump_screen(
         Err(_) => return String::new(),
     };
     if term
-        .draw(|f| switcher.render(f, grid, false, crate::ui::switcher::TREE_WIDTH, state))
+        .draw(|f| switcher.render(f, grid, false, crate::ui::switcher::TREE_WIDTH, 0, state))
         .is_err()
     {
         return String::new();

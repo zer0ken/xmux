@@ -1,5 +1,5 @@
 //! Persists lightweight, best-effort UI preferences across runs (the last-selected
-//! session address, the tree width, the auto-hide-tree mode). Every value is a hint
+//! session address, the tree width and height, the auto-hide-tree mode). Every value is a hint
 //! only — a stale, missing, or unparsable file falls back to the built-in default,
 //! so xmux stays stateless about sessions themselves.
 
@@ -11,6 +11,10 @@ const LAST_SESSION_FILE: &str = "last_session";
 /// The file under the xmux dir holding the tree view width the user last set
 /// with `prefix h`/`l`, so the next launch restores it instead of the default.
 const TREE_WIDTH_FILE: &str = "tree_width";
+
+/// The file under the xmux dir holding the tree view height (portrait Top layout) the
+/// user last set by dragging the horizontal view border, so the next launch restores it.
+const TREE_HEIGHT_FILE: &str = "tree_height";
 
 /// The file under the xmux dir holding the auto-hide-tree mode the user last set
 /// with `prefix t` ("1"/"0"), so the next launch restores it (overriding the
@@ -50,6 +54,19 @@ pub fn load_tree_width(xmux_dir: &Path) -> Option<u16> {
 /// launch's width restore.
 pub fn save_tree_width(xmux_dir: &Path, width: u16) {
     let _ = std::fs::write(xmux_dir.join(TREE_WIDTH_FILE), width.to_string());
+}
+
+/// Reads the persisted Top-layout tree height. `None` when absent or unparsable — the
+/// caller falls back to the auto height (~40% of the body).
+pub fn load_tree_height(xmux_dir: &Path) -> Option<u16> {
+    let raw = std::fs::read_to_string(xmux_dir.join(TREE_HEIGHT_FILE)).ok()?;
+    raw.trim().parse::<u16>().ok()
+}
+
+/// Persists the Top-layout tree height. Best-effort: a write failure only loses the
+/// next launch's height restore.
+pub fn save_tree_height(xmux_dir: &Path, height: u16) {
+    let _ = std::fs::write(xmux_dir.join(TREE_HEIGHT_FILE), height.to_string());
 }
 
 /// Persists `address` (`source/session`) as the last-selected session. Best-effort:

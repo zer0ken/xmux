@@ -206,23 +206,23 @@ async fn scan_or_dispatch_host_detects_from_hosts_without_env() {
 #[test]
 fn terminal_view_size_zero_tree_is_full_width() {
     // Hidden tree (sentinel 0): full cols, no view border subtracted.
-    assert_eq!(terminal_view_size(80, 23, 0), (80, 24));
+    assert_eq!(terminal_view_size(80, 23, 0, 0), (80, 24));
     // Shown tree: cols - tree_width - 1 (view border), height = body_rows (bottom row
     // reserved for the full-width hint_bar).
-    assert_eq!(terminal_view_size(80, 23, 48), (31, 23));
+    assert_eq!(terminal_view_size(80, 23, 48, 0), (31, 23));
     // Degenerate widths clamp to at least 1.
-    assert_eq!(terminal_view_size(0, 0, 0), (1, 1));
+    assert_eq!(terminal_view_size(0, 0, 0, 0), (1, 1));
 }
 
 #[test]
 fn terminal_view_size_reserves_full_width_hint_row_when_tree_shown() {
     use crate::ui::switcher::TREE_WIDTH;
     // Tree hidden (sentinel 0): no hint_bar, terminal view spans the full height.
-    let (_, full) = terminal_view_size(120, 39, 0);
+    let (_, full) = terminal_view_size(120, 39, 0, 0);
     assert_eq!(full, 40);
     // Tree shown: the full-width hint_bar owns the bottom row, so the terminal
     // view is exactly one row shorter.
-    let (_, shown) = terminal_view_size(120, 39, TREE_WIDTH);
+    let (_, shown) = terminal_view_size(120, 39, TREE_WIDTH, 0);
     assert_eq!(
         shown, 39,
         "shown tree reserves one row for the full-width hint_bar"
@@ -281,7 +281,7 @@ fn tree_width_adjust_clamps() {
 #[test]
 fn terminal_view_size_subtracts_tree_and_view_border() {
     use crate::ui::switcher::TREE_WIDTH;
-    let (vc, vr) = terminal_view_size(143, 39, TREE_WIDTH);
+    let (vc, vr) = terminal_view_size(143, 39, TREE_WIDTH, 0);
     assert_eq!(
         vc,
         143 - (TREE_WIDTH + 1),
@@ -298,7 +298,7 @@ fn terminal_view_size_clamps_to_at_least_one() {
     // A 10-col terminal can't fit the 48-col tree beside it, so the layout goes Top and the
     // terminal keeps full width; a zero-row body still clamps the height up to 1. The
     // invariant this guards is that neither dimension is ever 0 (degenerate PTY size).
-    let (vc, vr) = terminal_view_size(10, 0, TREE_WIDTH);
+    let (vc, vr) = terminal_view_size(10, 0, TREE_WIDTH, 0);
     assert!(vc >= 1, "width never zero, got {vc}");
     assert_eq!(vr, 1, "0.max(1) = 1: height clamps up for a zero-row body");
 }
@@ -792,6 +792,7 @@ fn current_grid_returns_none_for_empty_displayed() {
             cols: 80,
             body_rows: 24,
             tree_width: crate::ui::switcher::TREE_WIDTH,
+            tree_height: 0,
         },
     );
     assert!(grid.is_none(), "empty displayed yields no grid");
@@ -851,6 +852,7 @@ async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
             cols: 80,
             body_rows: 24,
             tree_width: crate::ui::switcher::TREE_WIDTH,
+            tree_height: 0,
         }
     ));
     assert_eq!(hosts.get("jup").unwrap().display.shows("jup"), Some("a"));
@@ -873,6 +875,7 @@ async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
             cols: 80,
             body_rows: 24,
             tree_width: crate::ui::switcher::TREE_WIDTH,
+            tree_height: 0,
         }
     ));
     assert_eq!(
@@ -924,6 +927,7 @@ async fn psmux_selection_replaces_the_single_display_attachment() {
             cols: 80,
             body_rows: 24,
             tree_width: crate::ui::switcher::TREE_WIDTH,
+            tree_height: 0,
         }
     ));
     let ready = tokio::time::timeout(std::time::Duration::from_millis(100), worker.recv())
@@ -967,6 +971,7 @@ async fn psmux_selection_replaces_the_single_display_attachment() {
             cols: 80,
             body_rows: 24,
             tree_width: crate::ui::switcher::TREE_WIDTH,
+            tree_height: 0,
         }
     ));
 
@@ -1024,6 +1029,7 @@ async fn psmux_select_attach_does_not_trust_stale_display_bookkeeping() {
             cols: 80,
             body_rows: 24,
             tree_width: crate::ui::switcher::TREE_WIDTH,
+            tree_height: 0,
         }
     ));
 
@@ -1108,6 +1114,7 @@ async fn psmux_select_attach_supersedes_in_flight_attach() {
             cols: 80,
             body_rows: 24,
             tree_width: crate::ui::switcher::TREE_WIDTH,
+            tree_height: 0,
         }
     ));
 
@@ -1163,6 +1170,7 @@ fn test_rt(env: Env) -> Runtime {
         body_rows: 24,
         tree_width: crate::ui::switcher::TREE_WIDTH,
         tree_width_natural: crate::ui::switcher::TREE_WIDTH,
+        tree_height: 0,
         auto_hide_tree: false,
         mouse_state: MouseState::default(),
         term_input: crate::display::input::TermInput::new(prefix),
@@ -1833,7 +1841,7 @@ fn menu_keyboard_input_is_consumed_without_changing_restore_pane_or_writing_pty(
         let mut state = crate::state::State::from_scan(scan);
         let mut switcher = Switcher::new(&mut state);
         let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        term.draw(|f| switcher.render(f, None, false, crate::ui::switcher::TREE_WIDTH, &state))
+        term.draw(|f| switcher.render(f, None, false, crate::ui::switcher::TREE_WIDTH, 0, &state))
             .unwrap();
         let opened = (0..10).any(|row| switcher.menu_open(1, row, &mut state));
         assert!(opened, "menu opens over a rendered tree row");
@@ -1924,7 +1932,7 @@ fn handle_mouse_event_view_border_grab_sets_dragging() {
         row: 3,
         pressed: true,
     };
-    let (vw, vh) = terminal_view_size(80, 24, tree_width);
+    let (vw, vh) = terminal_view_size(80, 24, tree_width, 0);
     let term_area = ratatui::layout::Rect::new(tree_width + 1, 0, vw, vh);
     let mut non_mouse: Vec<u8> = Vec::new();
     let mut focus_toggle = false;
@@ -1943,5 +1951,53 @@ fn handle_mouse_event_view_border_grab_sets_dragging() {
     assert!(
         rt.mouse_state.dragging_view_border,
         "left-press on the view border column grabs it"
+    );
+}
+
+#[test]
+fn handle_mouse_event_top_layout_border_drag_resizes_height() {
+    use crate::ui::switcher::{Scan, Switcher};
+    // In the portrait Top layout the view border is a HORIZONTAL rule; a left-press on that
+    // row grabs it and a drag sets the tree HEIGHT (not width). 40x60 → Top; auto height is
+    // ~40% of the 59-row body = 23, so the border sits at row 23 (0-based) = SGR row 24.
+    let mut state = crate::state::State::from_scan(Scan {
+        groups: vec![],
+        panes: Default::default(),
+    });
+    let switcher = Switcher::new(&mut state);
+    let sel = Selection::default();
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.cols = 40;
+    rt.body_rows = 59;
+    rt.tree_height = 0; // auto
+
+    let press = crate::display::mouse::MouseEvent {
+        cb: 0,
+        col: 5,
+        row: 24,
+        pressed: true,
+    };
+    let mut non_mouse: Vec<u8> = Vec::new();
+    let (mut ft, mut wheel) = (false, false);
+    let area = ratatui::layout::Rect::default();
+    rt.handle_mouse_event(&press, &sel, &mut non_mouse, &mut ft, &mut wheel, area);
+    assert!(
+        rt.mouse_state.dragging_view_border,
+        "left-press on the horizontal Top border grabs it"
+    );
+
+    // Drag DOWN to SGR row 30 (motion bit 0x20, left button held) → tree height = 30-1 = 29.
+    let drag = crate::display::mouse::MouseEvent {
+        cb: 0x20,
+        col: 5,
+        row: 30,
+        pressed: true,
+    };
+    rt.handle_mouse_event(&drag, &sel, &mut non_mouse, &mut ft, &mut wheel, area);
+    assert_eq!(
+        rt.tree_height, 29,
+        "dragging the horizontal border sets the tree HEIGHT to the dragged row"
     );
 }

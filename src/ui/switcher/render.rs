@@ -23,6 +23,7 @@ impl Switcher {
         grid: Option<&crate::display::grid::Grid>,
         terminal_focused: bool,
         tree_width: u16,
+        tree_height: u16,
         state: &crate::state::State,
     ) {
         let area = frame.area();
@@ -57,7 +58,7 @@ impl Switcher {
         // for a portrait screen), parted by the view border. The hint bar is normally one
         // row; a long flash wraps, so size it to the wrapped line count (never clipped).
         let hint_bar_h = state.chrome.hint_bar_lines(area.width, state).len().max(1) as u16;
-        let r = compute_regions(area, tree_width, hint_bar_h);
+        let r = compute_regions(area, tree_width, tree_height, hint_bar_h);
         self.render_tree(frame, r.tree, r.layout, state);
         state.chrome.render_hint_bar(frame, r.hint_bar, state);
         // The view border marks focus between the two views (vertical in Side, horizontal in Top).

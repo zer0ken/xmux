@@ -164,7 +164,7 @@ impl Harness {
         let sw = &mut self.sw;
         let state = &self.state;
         self.term
-            .draw(|f| sw.render(f, None, false, TREE_WIDTH, state))
+            .draw(|f| sw.render(f, None, false, TREE_WIDTH, 0, state))
             .unwrap();
     }
 
@@ -1320,7 +1320,7 @@ async fn hint_bar_fits_narrow_width() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     let mut term = Terminal::new(TestBackend::new(30, 30)).unwrap();
-    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
+    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, 0, &state))
         .unwrap();
     let buf = term.backend().buffer();
     let y = buf.area.height - 1;
@@ -1347,7 +1347,7 @@ fn hint_bar_has_status_bar_background() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
-    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
+    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, 0, &state))
         .unwrap();
     let buf = term.backend().buffer();
     let y = buf.area.height - 1; // the one-line hint bar sits on the last row
@@ -2193,7 +2193,7 @@ async fn render_terminal_view_draws_live_grid() {
     // Render with the live grid supplied.
     let sw = &mut h.sw;
     h.term
-        .draw(|f| sw.render(f, Some(&g), false, TREE_WIDTH, &h.state))
+        .draw(|f| sw.render(f, Some(&g), false, TREE_WIDTH, 0, &h.state))
         .unwrap();
     let out = buffer_text(h.term.backend().buffer());
     assert!(
@@ -2212,7 +2212,8 @@ fn render_terminal_view_none_grid_is_blank_not_attaching() {
     let mut state = crate::state::State::from_sources(vec!["local".into(), "jupiter06".into()]);
     let mut sw = Switcher::from_sources(&mut state);
     let mut term = Terminal::new(TestBackend::new(40, 10)).unwrap();
-    term.draw(|f| sw.render(f, None, true, 0, &state)).unwrap();
+    term.draw(|f| sw.render(f, None, true, 0, 0, &state))
+        .unwrap();
     let out = buffer_text(term.backend().buffer());
     assert!(
         !out.contains("attaching"),
@@ -2335,7 +2336,7 @@ fn compute_regions_side_top_and_hidden() {
     use ratatui::layout::Rect;
     // Landscape → Side: tree left, 1-col border, terminal right, hint bar the bottom row.
     let land = Rect::new(0, 0, 100, 30);
-    let s = compute_regions(land, 48, 1);
+    let s = compute_regions(land, 48, 0, 1);
     assert_eq!(s.layout, ViewLayout::Side);
     assert_eq!(s.tree, Rect::new(0, 0, 48, 29));
     assert_eq!(s.view_border, Rect::new(48, 0, 1, 29));
@@ -2344,11 +2345,11 @@ fn compute_regions_side_top_and_hidden() {
     // A landscape SCREEN can still be Top when the side tree would squeeze the terminal
     // view into a portrait shape: 100 wide, tree 48 → terminal view ~51 wide vs 80 tall, so
     // Top wins even though the screen itself is wider than tall.
-    let squeezed = compute_regions(Rect::new(0, 0, 100, 80), 48, 1);
+    let squeezed = compute_regions(Rect::new(0, 0, 100, 80), 48, 0, 1);
     assert_eq!(squeezed.layout, ViewLayout::Top);
     // Portrait → Top: tree on top, 1-row border, terminal below, hint bar the bottom row.
     let port = Rect::new(0, 0, 40, 100);
-    let t = compute_regions(port, 48, 1);
+    let t = compute_regions(port, 48, 0, 1);
     assert_eq!(t.layout, ViewLayout::Top);
     assert_eq!(t.tree.y, 0);
     assert_eq!(t.tree.width, 40);
@@ -2359,7 +2360,7 @@ fn compute_regions_side_top_and_hidden() {
     assert_eq!(t.terminal.width, 40);
     assert_eq!(t.hint_bar, Rect::new(0, 99, 40, 1));
     // Tree-hidden sentinel: the terminal owns the whole area, no hint bar / border.
-    let hidden = compute_regions(land, 0, 1);
+    let hidden = compute_regions(land, 0, 0, 1);
     assert_eq!(hidden.terminal, land);
     assert_eq!(hidden.hint_bar, Rect::default());
     assert_eq!(hidden.view_border, Rect::default());
@@ -2373,7 +2374,7 @@ fn top_layout_renders_hosts_as_side_by_side_columns() {
     let mut term = Terminal::new(TestBackend::new(60, 70)).unwrap();
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
-    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
+    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, 0, &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
 
@@ -2396,7 +2397,7 @@ fn top_layout_columns_size_to_labels_not_a_narrow_cap() {
     let mut term = Terminal::new(TestBackend::new(40, 70)).unwrap();
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
-    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
+    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, 0, &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     // The editor session's full "2 windows" count renders — a 24-col column would have
@@ -2524,7 +2525,7 @@ async fn view_border_uses_configured_colors() {
     let fg = |buf: &Buffer, y: u16| buf[(x, y)].fg;
 
     // Tree focused: top = active(Blue), bottom = inactive(Gray).
-    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
+    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, 0, &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(
@@ -2540,7 +2541,7 @@ async fn view_border_uses_configured_colors() {
 
     // Hovering the rule overrides with the configured hover colour.
     state.chrome.set_view_border_hovered(true);
-    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
+    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, 0, &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(
@@ -2564,7 +2565,7 @@ async fn view_border_splits_top_bottom_to_mark_focused_side() {
 
     // Terminal focused: accent on the bottom (terminal side), inactive on top. The inactive
     // half is the tmux default (terminal default = Color::Reset), not a dim grey.
-    term.draw(|f| sw.render(f, None, true, TREE_WIDTH, &state))
+    term.draw(|f| sw.render(f, None, true, TREE_WIDTH, 0, &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(buf[(x, top)].symbol(), "│", "view border still drawn");
@@ -2580,7 +2581,7 @@ async fn view_border_splits_top_bottom_to_mark_focused_side() {
     );
 
     // Tree focused: accent on the top (tree side), inactive on bottom.
-    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
+    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, 0, &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(fg(&buf, top), Color::Green, "tree focus: top half accent");
@@ -2600,7 +2601,7 @@ async fn view_border_highlights_on_hover() {
     let mut sw = Switcher::new(&mut state);
     let x = TREE_WIDTH;
     state.chrome.set_view_border_hovered(true);
-    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
+    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, 0, &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     for y in [2u16, 27u16] {
@@ -2633,7 +2634,7 @@ async fn view_border_glyph_reflects_auto_hide_mode() {
     let (x, y) = (TREE_WIDTH, 2u16);
 
     state.chrome.set_auto_hide(false);
-    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
+    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, 0, &state))
         .unwrap();
     assert_eq!(
         term.backend().buffer()[(x, y)].symbol(),
@@ -2642,7 +2643,7 @@ async fn view_border_glyph_reflects_auto_hide_mode() {
     );
 
     state.chrome.set_auto_hide(true);
-    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, &state))
+    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, 0, &state))
         .unwrap();
     assert_eq!(
         term.backend().buffer()[(x, y)].symbol(),
@@ -2702,7 +2703,7 @@ async fn every_popup_type_is_opaque_over_a_colored_grid() {
     h.sw.show_help(&mut h.state);
     let g = blue_grid();
     h.term
-        .draw(|f| h.sw.render(f, Some(&g), true, 0, &h.state))
+        .draw(|f| h.sw.render(f, Some(&g), true, 0, 0, &h.state))
         .unwrap();
     assert_eq!(
         interior_blue(h.buf()),
@@ -2714,7 +2715,7 @@ async fn every_popup_type_is_opaque_over_a_colored_grid() {
     h.ch('/').await;
     let g = blue_grid();
     h.term
-        .draw(|f| h.sw.render(f, Some(&g), false, TREE_WIDTH, &h.state))
+        .draw(|f| h.sw.render(f, Some(&g), false, TREE_WIDTH, 0, &h.state))
         .unwrap();
     assert_eq!(
         interior_blue(h.buf()),
@@ -2729,7 +2730,7 @@ async fn every_popup_type_is_opaque_over_a_colored_grid() {
     h.sw.arm_kill(&mut h.state);
     let g = blue_grid();
     h.term
-        .draw(|f| h.sw.render(f, Some(&g), false, TREE_WIDTH, &h.state))
+        .draw(|f| h.sw.render(f, Some(&g), false, TREE_WIDTH, 0, &h.state))
         .unwrap();
     assert_eq!(
         interior_blue(h.buf()),
@@ -2744,7 +2745,8 @@ fn popup_border_press_then_drag_moves_the_rect() {
     let mut sw = Switcher::new(&mut state);
     sw.open_input(InputMode::Filter, &mut state); // a small popup with room to move both ways
     let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-    term.draw(|f| sw.render(f, None, false, 0, &state)).unwrap();
+    term.draw(|f| sw.render(f, None, false, 0, 0, &state))
+        .unwrap();
     let before = sw.popup_geo.rect;
     let (bx, by) = (before.x, before.y); // top-left corner is on the border
     assert!(
@@ -2752,7 +2754,8 @@ fn popup_border_press_then_drag_moves_the_rect() {
         "press on the border grabs"
     );
     sw.drag_popup(bx + 5, by + 3);
-    term.draw(|f| sw.render(f, None, false, 0, &state)).unwrap();
+    term.draw(|f| sw.render(f, None, false, 0, 0, &state))
+        .unwrap();
     assert_eq!(sw.popup_geo.rect.x, before.x + 5, "moved right by 5");
     assert_eq!(sw.popup_geo.rect.y, before.y + 3, "moved down by 3");
     sw.end_popup_drag();
@@ -2799,7 +2802,8 @@ fn closed_popup_cannot_be_grabbed_even_with_a_stale_rect() {
     let mut sw = Switcher::new(&mut state);
     sw.open_input(InputMode::Filter, &mut state);
     let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-    term.draw(|f| sw.render(f, None, false, 0, &state)).unwrap();
+    term.draw(|f| sw.render(f, None, false, 0, 0, &state))
+        .unwrap();
     let r = sw.popup_geo.rect; // border rect is now cached
     sw.close_input(&mut state); // close WITHOUT re-rendering → popup_rect is stale
     assert!(
@@ -2816,7 +2820,8 @@ fn popup_renders_without_panicking_on_a_narrow_screen() {
     let mut sw = Switcher::new(&mut state);
     sw.show_help(&mut state);
     let mut term = Terminal::new(TestBackend::new(10, 10)).unwrap();
-    term.draw(|f| sw.render(f, None, false, 0, &state)).unwrap();
+    term.draw(|f| sw.render(f, None, false, 0, 0, &state))
+        .unwrap();
     assert!(
         sw.popup_geo.rect.width <= 10,
         "popup fits the narrow screen"
@@ -2829,7 +2834,8 @@ fn popup_interior_press_does_not_grab() {
     let mut sw = Switcher::new(&mut state);
     sw.show_help(&mut state);
     let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-    term.draw(|f| sw.render(f, None, false, 0, &state)).unwrap();
+    term.draw(|f| sw.render(f, None, false, 0, 0, &state))
+        .unwrap();
     let r = sw.popup_geo.rect;
     assert!(
         !sw.begin_popup_drag(r.x + 2, r.y + 2, &state),
@@ -2843,11 +2849,13 @@ fn popup_drag_clamps_within_screen() {
     let mut sw = Switcher::new(&mut state);
     sw.show_help(&mut state);
     let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-    term.draw(|f| sw.render(f, None, false, 0, &state)).unwrap();
+    term.draw(|f| sw.render(f, None, false, 0, 0, &state))
+        .unwrap();
     let r = sw.popup_geo.rect;
     assert!(sw.begin_popup_drag(r.x, r.y, &state));
     sw.drag_popup(r.x.saturating_sub(50), r.y); // yank far left, past the edge
-    term.draw(|f| sw.render(f, None, false, 0, &state)).unwrap();
+    term.draw(|f| sw.render(f, None, false, 0, 0, &state))
+        .unwrap();
     assert_eq!(sw.popup_geo.rect.x, 0, "clamped to the left screen edge");
 }
 
@@ -3237,7 +3245,7 @@ fn render_tree_width_zero_gives_terminal_full_width() {
     g.feed(b"EDGE-CONTENT");
 
     // tree_width == 0 → no tree column, no view border: the terminal view starts at x=0.
-    term.draw(|f| sw.render(f, Some(&g), true, 0, &state))
+    term.draw(|f| sw.render(f, Some(&g), true, 0, 0, &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     // Column 0 row 0 must NOT be the view border rule '│' (the view border is gone).
@@ -3254,7 +3262,7 @@ fn render_tree_width_zero_gives_terminal_full_width() {
     );
 
     // Sanity: with a normal width the view border rule IS present at the tree edge.
-    term.draw(|f| sw.render(f, Some(&g), true, 20, &state))
+    term.draw(|f| sw.render(f, Some(&g), true, 20, 0, &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(

@@ -75,8 +75,9 @@ fn top_tree_height(body_h: u16) -> u16 {
 /// The screen regions the switcher draws into, derived ONCE per frame so the renderer,
 /// the PTY sizing, and mouse hit-testing all agree (one geometry, no divergence). The
 /// hint bar always spans the bottom full width; the tree and terminal split horizontally
-/// (`Side`) or vertically (`Top`), parted by the one-cell view border. `tree_width == 0`
-/// is the tree-hidden sentinel: the terminal owns the whole area.
+/// (`Side`, sized by `tree_width`) or vertically (`Top`, sized by `tree_height`), parted by
+/// the one-cell view border. `tree_width == 0` is the tree-hidden sentinel: the terminal
+/// owns the whole area. `tree_height == 0` means the `Top` height is auto (~40% of the body).
 pub struct Regions {
     pub layout: ViewLayout,
     pub tree: Rect,
@@ -85,7 +86,18 @@ pub struct Regions {
     pub hint_bar: Rect,
 }
 
-pub fn compute_regions(area: Rect, tree_width: u16, hint_bar_h: u16) -> Regions {
+/// The Top-layout tree height: a user-set `tree_height` (dragged border) clamped so both
+/// views keep room, or the auto ~40% when `tree_height == 0`. min/max (not `clamp`) so a
+/// tiny body cannot panic on inverted bounds.
+fn top_tree_height_for(body_h: u16, tree_height: u16) -> u16 {
+    if tree_height == 0 {
+        top_tree_height(body_h)
+    } else {
+        tree_height.min(body_h.saturating_sub(2)).max(1)
+    }
+}
+
+pub fn compute_regions(area: Rect, tree_width: u16, tree_height: u16, hint_bar_h: u16) -> Regions {
     // The layout is decided from the natural tree width so the terminal-view aspect test is
     // stable; the hidden sentinel (0) below still forces the whole area to the terminal.
     let layout = view_layout(area, tree_width);
@@ -117,7 +129,7 @@ pub fn compute_regions(area: Rect, tree_width: u16, hint_bar_h: u16) -> Regions 
             }
         }
         ViewLayout::Top => {
-            let th = top_tree_height(body.height);
+            let th = top_tree_height_for(body.height, tree_height);
             let r = Layout::vertical([
                 Constraint::Length(th),
                 Constraint::Length(1),

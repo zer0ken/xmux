@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use crate::app::input::{
     leading_ctrl_arrow, resolve_mouse_chain, resolve_tree_key, to_grid_local, tree_menu_may_open,
-    view_border_drag_width, ChainAction, MouseState, StdinOutcome,
+    view_border_drag_height, view_border_drag_width, ChainAction, MouseState, StdinOutcome,
 };
 use crate::attach;
 use crate::display::attachment::PtyEvent;
@@ -58,6 +58,11 @@ const RECONNECT_MS: u64 = 2000;
 
 pub(crate) const TREE_WIDTH_MIN: u16 = 20;
 pub(crate) const TREE_WIDTH_MAX: u16 = 100;
+
+/// The Top-layout tree height drag range. The min keeps a few tree rows; compute_regions
+/// clamps the max down to the body so the terminal always keeps room.
+pub(crate) const TREE_HEIGHT_MIN: u16 = 3;
+pub(crate) const TREE_HEIGHT_MAX: u16 = 100;
 
 /// The ratatui terminal the app draws into. Loop-local in [`run_app`] (owns stdout);
 /// passed to the `Runtime` methods that draw / resize / dump.
@@ -359,14 +364,19 @@ fn sync_selection_from_switcher(
 /// spans the full width along the bottom, so a shown tree gives the terminal view height
 /// `body_rows` (full height minus the one hint_bar row); the tree-hidden sentinel has no
 /// hint_bar and keeps the full height `body_rows + 1`. Both clamp to at least 1.
-pub(crate) fn terminal_view_size(cols: u16, body_rows: u16, tree_width: u16) -> (u16, u16) {
+pub(crate) fn terminal_view_size(
+    cols: u16,
+    body_rows: u16,
+    tree_width: u16,
+    tree_height: u16,
+) -> (u16, u16) {
     // Derive from the one shared geometry (`compute_regions`) so the PTY size always
     // matches what the renderer draws, in either layout. `body_rows` is full_height - 1
     // (the hint bar row), so the full area is `body_rows + 1` tall; sizing assumes a
     // one-row hint bar. A portrait area stacks the tree on top and shrinks the terminal
     // view height accordingly; `tree_width == 0` gives the full area (tree hidden).
     let area = ratatui::layout::Rect::new(0, 0, cols, body_rows.saturating_add(1));
-    let t = crate::ui::switcher::compute_regions(area, tree_width, 1).terminal;
+    let t = crate::ui::switcher::compute_regions(area, tree_width, tree_height, 1).terminal;
     (t.width.max(1), t.height.max(1))
 }
 
@@ -570,7 +580,11 @@ fn ensure_current_host(
     rows: u16,
     tree_width: u16,
 ) {
-    let (cols, rows) = terminal_view_size(cols, rows, tree_width);
+    // Auto height (0) is fine here: this sizes the host's METADATA control client, not the
+    // displayed grid (that goes through the DriverCtx, which carries the real tree_height),
+    // and on_tick's resize_all reconciles it to the exact height. Avoids threading tree_height
+    // through every ensure_current_host caller for a size the user never sees.
+    let (cols, rows) = terminal_view_size(cols, rows, tree_width, 0);
     if let Some(id) = switcher.current_host() {
         if let Some(host) = hosts.get(&id) {
             if host.detected {
@@ -701,7 +715,9 @@ fn connect_all_sources(
     rows: u16,
     tree_width: u16,
 ) {
-    let (cols, rows) = terminal_view_size(cols, rows, tree_width);
+    // Auto height (0): the initial metadata-client size only; the display PTY and on_tick
+    // resize carry the real tree_height. (See ensure_current_host.)
+    let (cols, rows) = terminal_view_size(cols, rows, tree_width, 0);
     for id in hosts.ids() {
         scan_or_dispatch_host(mgr, hosts, detecting, id, cols, rows);
     }
@@ -1027,6 +1043,9 @@ struct Runtime {
     tree_width: u16,
     /// The tree's natural width (what prefix h/l adjusts; restored when shown again).
     tree_width_natural: u16,
+    /// The Top-layout tree height, set by dragging the horizontal view border. 0 = auto
+    /// (~40% of the body). Only used in the portrait Top layout; ignored in Side.
+    tree_height: u16,
     auto_hide_tree: bool,
     mouse_state: MouseState,
     term_input: crate::display::input::TermInput,

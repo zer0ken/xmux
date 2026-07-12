@@ -120,6 +120,7 @@ impl Runtime {
             detecting,
             panes_requested,
             tree_width_natural,
+            tree_height,
             cols,
             body_rows,
             tree_width,
@@ -141,10 +142,21 @@ impl Runtime {
         // button is released. Sets the NATURAL width; the loop-top reconcile
         // applies it and resizes the PTYs (same path as prefix h/l).
         let col0 = ev.col.saturating_sub(1); // 1-based SGR → 0-based screen col
-                                             // A context menu owns every mouse event until the right
-                                             // button is released (press-hold-release), exactly like the
-                                             // view border drag below. Motion sets the hovered item; button-up
-                                             // acts on it (or cancels if released off-menu).
+        let row0 = ev.row.saturating_sub(1);
+        // The view border rect from the one shared geometry, so the grab / hover works in
+        // either layout: a vertical rule in Side, a horizontal rule in Top. The drag then
+        // resizes the tree WIDTH (Side, by column) or HEIGHT (Top, by row).
+        let full = ratatui::layout::Rect::new(0, 0, cols, body_rows.saturating_add(1));
+        let regions = crate::ui::switcher::compute_regions(full, tree_width, *tree_height, 1);
+        let on_view_border = tree_width > 0
+            && regions
+                .view_border
+                .contains(ratatui::layout::Position { x: col0, y: row0 });
+        let top_layout = regions.layout == crate::ui::switcher::ViewLayout::Top;
+        // A context menu owns every mouse event until the right
+        // button is released (press-hold-release), exactly like the
+        // view border drag below. Motion sets the hovered item; button-up
+        // acts on it (or cancels if released off-menu).
         if state.menu_active() {
             if !ev.pressed {
                 match switcher.menu_release(state) {
@@ -186,15 +198,27 @@ impl Runtime {
         }
         if st.dragging_view_border {
             if !ev.pressed {
-                // Button up ends the drag; persist the final width once
-                // (motion resizes live but does not write per cell).
+                // Button up ends the drag; persist the final size once (motion resizes live
+                // but does not write per cell). Top drags the height, Side the width.
                 st.dragging_view_border = false;
-                crate::prefs::save_tree_width(&env.xmux_dir, *tree_width_natural);
+                if top_layout {
+                    crate::prefs::save_tree_height(&env.xmux_dir, *tree_height);
+                } else {
+                    crate::prefs::save_tree_width(&env.xmux_dir, *tree_width_natural);
+                }
             } else if !is_wheel {
-                let target = view_border_drag_width(ev.col);
-                if target != *tree_width_natural {
-                    *tree_width_natural = target;
-                    dirty = true;
+                if top_layout {
+                    let target = view_border_drag_height(ev.row);
+                    if target != *tree_height {
+                        *tree_height = target;
+                        dirty = true;
+                    }
+                } else {
+                    let target = view_border_drag_width(ev.col);
+                    if target != *tree_width_natural {
+                        *tree_width_natural = target;
+                        dirty = true;
+                    }
                 }
             }
             return dirty;
@@ -223,7 +247,7 @@ impl Runtime {
         if state.is_modal_popup_open() {
             return dirty;
         }
-        if is_left_press && tree_width > 0 && col0 == tree_width {
+        if is_left_press && on_view_border {
             st.dragging_view_border = true; // grabbed the view border
             return dirty;
         }
@@ -234,7 +258,7 @@ impl Runtime {
         // terminal view IS forwarded to the child (the inner app gets hover); over
         // the tree it is harmlessly dropped.
         if ev.pressed && (ev.cb & 0x23) == 0x23 {
-            let over_view_border = tree_width > 0 && col0 == tree_width;
+            let over_view_border = on_view_border;
             if over_view_border != st.hovered_view_border {
                 st.hovered_view_border = over_view_border;
                 dirty = true;
@@ -344,7 +368,9 @@ impl Runtime {
         // what was drawn in either layout (in Top the terminal sits below the tree, not
         // to the right of it).
         let full = ratatui::layout::Rect::new(0, 0, self.cols, self.body_rows.saturating_add(1));
-        let term_area = crate::ui::switcher::compute_regions(full, self.tree_width, 1).terminal;
+        let term_area =
+            crate::ui::switcher::compute_regions(full, self.tree_width, self.tree_height, 1)
+                .terminal;
         let mut non_mouse: Vec<u8> = Vec::with_capacity(bytes.len());
         let mut mouse_focus_toggle = false;
         let mut wheel_scrolled = false;
@@ -377,7 +403,10 @@ impl Runtime {
         // never trapped past the next input.
         if self.mouse_state.dragging_view_border && !non_mouse.is_empty() {
             self.mouse_state.dragging_view_border = false;
+            // The recovery doesn't track which axis was dragging; persist both (a no-op file
+            // write for the unchanged one) so the final size is never lost.
             crate::prefs::save_tree_width(&self.env.xmux_dir, self.tree_width_natural);
+            crate::prefs::save_tree_height(&self.env.xmux_dir, self.tree_height);
         }
         // Watchdog: a keystroke (or any non-mouse byte) during a held menu ends
         // the gesture without acting — mirrors the view border-drag watchdog, so a

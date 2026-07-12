@@ -44,9 +44,10 @@ impl Runtime {
             cols,
             body_rows: rows,
             tree_width,
+            tree_height,
             ..
         } = self;
-        let (cols, rows, tree_width) = (*cols, *rows, *tree_width);
+        let (cols, rows, tree_width, tree_height) = (*cols, *rows, *tree_width, *tree_height);
         match effect {
             EventEffect::ApplyInventory { host, sessions } => {
                 // The reader carried the parsed sessions on the event. Fold them into the
@@ -81,6 +82,7 @@ impl Runtime {
                         cols,
                         body_rows: rows,
                         tree_width,
+                        tree_height,
                     };
                     sync_source_terminals(&host, &sessions, &mut ctx);
                 }
@@ -129,7 +131,7 @@ impl Runtime {
                 // now-detected host onto its metadata channel (control client or poll task).
                 detecting.remove(&source);
                 apply_scan_result(hosts, &source, detected);
-                let (vc, vr) = terminal_view_size(cols, rows, tree_width);
+                let (vc, vr) = terminal_view_size(cols, rows, tree_width, tree_height);
                 dispatch_detected_host(mgr, hosts, &source, vc, vr);
             }
             EventEffect::SyncPollSessions { source, sessions } => {
@@ -157,6 +159,7 @@ impl Runtime {
                     cols,
                     body_rows: rows,
                     tree_width,
+                    tree_height,
                 };
                 sync_source_terminals(&source, &sessions, &mut ctx);
             }
@@ -190,6 +193,9 @@ impl Runtime {
             0,
         );
         let tree_width = tree_width_natural;
+        // Restore the Top-layout tree height (0 = auto ~40%); a stale value is clamped at
+        // render time by compute_regions, so no clamp is needed here.
+        let tree_height = crate::prefs::load_tree_height(&env.xmux_dir).unwrap_or(0);
         let auto_hide_tree = crate::prefs::load_auto_hide_tree(&env.xmux_dir)
             .unwrap_or_else(|| env.cfg.ui_auto_hide_tree());
 
@@ -269,6 +275,7 @@ impl Runtime {
             body_rows,
             tree_width,
             tree_width_natural,
+            tree_height,
             auto_hide_tree,
             mouse_state: MouseState::default(),
             term_input,
@@ -350,7 +357,8 @@ impl Runtime {
             // cell at the new boundary can survive ratatui's diff, so force a full repaint.
             let crossed_hidden = (want_tree_width == 0) != (self.tree_width == 0);
             self.tree_width = want_tree_width;
-            let (vc, vr) = terminal_view_size(self.cols, self.body_rows, self.tree_width);
+            let (vc, vr) =
+                terminal_view_size(self.cols, self.body_rows, self.tree_width, self.tree_height);
             self.registry.resize_all(vc, vr);
             self.mgr.resize_all(vc, vr);
             if crossed_hidden {
@@ -417,6 +425,7 @@ impl Runtime {
                                 cols: self.cols,
                                 body_rows: self.body_rows,
                                 tree_width: self.tree_width,
+                                tree_height: self.tree_height,
                             },
                         );
                         if shown {
@@ -503,6 +512,7 @@ impl Runtime {
                     cols: self.cols,
                     body_rows: self.body_rows,
                     tree_width: self.tree_width,
+                    tree_height: self.tree_height,
                 },
             );
             let terminal_focused = self.state.focus.is_terminal_focused();
@@ -535,9 +545,17 @@ impl Runtime {
                     let switcher = &mut self.switcher;
                     let state = &self.state;
                     let tree_width = self.tree_width;
+                    let tree_height = self.tree_height;
                     term.draw(|f| {
                         let t_render = std::time::Instant::now();
-                        switcher.render(f, guard.as_deref(), terminal_focused, tree_width, state);
+                        switcher.render(
+                            f,
+                            guard.as_deref(),
+                            terminal_focused,
+                            tree_width,
+                            tree_height,
+                            state,
+                        );
                         DrawObserver::slow_step("render", t_render);
                     })
                 }
@@ -545,9 +563,10 @@ impl Runtime {
                     let switcher = &mut self.switcher;
                     let state = &self.state;
                     let tree_width = self.tree_width;
+                    let tree_height = self.tree_height;
                     term.draw(|f| {
                         let t_render = std::time::Instant::now();
-                        switcher.render(f, None, terminal_focused, tree_width, state);
+                        switcher.render(f, None, terminal_focused, tree_width, tree_height, state);
                         DrawObserver::slow_step("render", t_render);
                     })
                 }
@@ -794,6 +813,7 @@ impl Runtime {
                         cols: self.cols,
                         body_rows: self.body_rows,
                         tree_width: self.tree_width,
+                        tree_height: self.tree_height,
                     },
                 );
                 let dump = match &grid_arc {
@@ -860,6 +880,7 @@ impl Runtime {
                             cols: self.cols,
                             body_rows: self.body_rows,
                             tree_width: self.tree_width,
+                            tree_height: self.tree_height,
                         };
                         driver.input(&self.state.displayed, bytes, &ctx);
                     }
@@ -914,7 +935,7 @@ impl Runtime {
                 let body = r.saturating_sub(1);
                 self.cols = c;
                 self.body_rows = body;
-                let (vc, vr) = terminal_view_size(c, body, self.tree_width);
+                let (vc, vr) = terminal_view_size(c, body, self.tree_width, self.tree_height);
                 self.registry.resize_all(vc, vr);
                 self.mgr.resize_all(vc, vr);
                 let _ = term.autoresize();
@@ -945,7 +966,8 @@ impl Runtime {
     /// hosts, re-warm dropped control-host PTYs, capture display ttys, and re-attach the
     /// selected session if its display terminal dropped. The sole automatic retry path.
     pub(super) fn on_reconnect(&mut self) {
-        let (vc, vr) = terminal_view_size(self.cols, self.body_rows, self.tree_width);
+        let (vc, vr) =
+            terminal_view_size(self.cols, self.body_rows, self.tree_width, self.tree_height);
         // Snapshot the ids so the loops can re-borrow `hosts` (incl. &mut) without holding
         // the `ids()` borrow across the body.
         let ids: Vec<String> = self.hosts.ids().to_vec();
@@ -984,6 +1006,7 @@ impl Runtime {
                 cols: self.cols,
                 body_rows: self.body_rows,
                 tree_width: self.tree_width,
+                tree_height: self.tree_height,
             };
             sync_source_terminals(id, &inventory, &mut ctx);
         }
@@ -1021,6 +1044,7 @@ impl Runtime {
                     cols: self.cols,
                     body_rows: self.body_rows,
                     tree_width: self.tree_width,
+                    tree_height: self.tree_height,
                 };
                 select_attach(&self.state.selection, &mut ctx);
             }
