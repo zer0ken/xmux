@@ -2324,6 +2324,36 @@ async fn flash_clears_on_next_key_restoring_the_hint_bar() {
     );
 }
 
+#[test]
+fn compute_regions_side_top_and_hidden() {
+    use ratatui::layout::Rect;
+    // Landscape → Side: tree left, 1-col border, terminal right, hint bar the bottom row.
+    let land = Rect::new(0, 0, 100, 30);
+    let s = compute_regions(land, 48, 1);
+    assert_eq!(s.layout, ViewLayout::Side);
+    assert_eq!(s.tree, Rect::new(0, 0, 48, 29));
+    assert_eq!(s.view_border, Rect::new(48, 0, 1, 29));
+    assert_eq!(s.terminal, Rect::new(49, 0, 51, 29));
+    assert_eq!(s.hint_bar, Rect::new(0, 29, 100, 1));
+    // Portrait → Top: tree on top, 1-row border, terminal below, hint bar the bottom row.
+    let port = Rect::new(0, 0, 40, 100);
+    let t = compute_regions(port, 48, 1);
+    assert_eq!(t.layout, ViewLayout::Top);
+    assert_eq!(t.tree.y, 0);
+    assert_eq!(t.tree.width, 40);
+    let th = t.tree.height;
+    assert_eq!(t.view_border, Rect::new(0, th, 40, 1));
+    assert_eq!(t.terminal.x, 0);
+    assert_eq!(t.terminal.y, th + 1);
+    assert_eq!(t.terminal.width, 40);
+    assert_eq!(t.hint_bar, Rect::new(0, 99, 40, 1));
+    // Tree-hidden sentinel: the terminal owns the whole area, no hint bar / border.
+    let hidden = compute_regions(land, 0, 1);
+    assert_eq!(hidden.terminal, land);
+    assert_eq!(hidden.hint_bar, Rect::default());
+    assert_eq!(hidden.view_border, Rect::default());
+}
+
 #[tokio::test]
 async fn space_folds_and_unfolds_the_selected_host() {
     // Space on the first host row (index 0) collapses it, hiding its child rows and

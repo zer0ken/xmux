@@ -360,22 +360,14 @@ fn sync_selection_from_switcher(
 /// `body_rows` (full height minus the one hint_bar row); the tree-hidden sentinel has no
 /// hint_bar and keeps the full height `body_rows + 1`. Both clamp to at least 1.
 pub(crate) fn terminal_view_size(cols: u16, body_rows: u16, tree_width: u16) -> (u16, u16) {
-    // tree_width == 0 is the "tree hidden" sentinel: the terminal view takes the full width
-    // with no view border column. Otherwise subtract the tree column + the 1-col view border.
-    let view_cols = if tree_width == 0 {
-        cols.max(1)
-    } else {
-        cols.saturating_sub(tree_width + 1).max(1)
-    };
-    let view_rows = if tree_width == 0 {
-        // Tree hidden: no hint_bar, terminal view spans the full terminal height.
-        (body_rows + 1).max(1)
-    } else {
-        // Tree shown: the full-width hint_bar owns the bottom row, so the terminal
-        // view is one row shorter than the terminal (body_rows == full_height - 1).
-        body_rows.max(1)
-    };
-    (view_cols, view_rows)
+    // Derive from the one shared geometry (`compute_regions`) so the PTY size always
+    // matches what the renderer draws, in either layout. `body_rows` is full_height - 1
+    // (the hint bar row), so the full area is `body_rows + 1` tall; sizing assumes a
+    // one-row hint bar. A portrait area stacks the tree on top and shrinks the terminal
+    // view height accordingly; `tree_width == 0` gives the full area (tree hidden).
+    let area = ratatui::layout::Rect::new(0, 0, cols, body_rows.saturating_add(1));
+    let t = crate::ui::switcher::compute_regions(area, tree_width, 1).terminal;
+    (t.width.max(1), t.height.max(1))
 }
 
 /// The `AttachRegistry` key for a selection.

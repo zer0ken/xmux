@@ -33,28 +33,20 @@ impl Switcher {
             self.render_menu(frame, state);
             return;
         }
-        // Split vertically first so the hint_bar spans the full terminal width, not just
-        // the tree column: [body, hint_bar]. The hint_bar is normally one line; a long
-        // flash wraps across several, so size it to the wrapped line count (never clipped).
+        // One geometry source for the whole frame (compute_regions), shared with the PTY
+        // sizing and mouse hit-testing so they never diverge: the hint bar spans the bottom
+        // full width, and the tree / terminal split horizontally (Side) or vertically (Top,
+        // for a portrait screen), parted by the view border. The hint bar is normally one
+        // row; a long flash wraps, so size it to the wrapped line count (never clipped).
         let hint_bar_h = state.chrome.hint_bar_lines(area.width, state).len().max(1) as u16;
-        let rows = Layout::vertical([
-            Constraint::Min(0),             // body: tree | view border | terminal view
-            Constraint::Length(hint_bar_h), // full-width hint_bar (help / status / wrapped flash)
-        ])
-        .split(area);
-        let cols = Layout::horizontal([
-            Constraint::Length(tree_width),
-            Constraint::Length(1),
-            Constraint::Min(0),
-        ])
-        .split(rows[0]);
-        self.render_tree(frame, cols[0], state);
-        state.chrome.render_hint_bar(frame, rows[1], state);
-        // The tree|terminal view border marks focus between those two views.
+        let r = compute_regions(area, tree_width, hint_bar_h);
+        self.render_tree(frame, r.tree, state);
+        state.chrome.render_hint_bar(frame, r.hint_bar, state);
+        // The view border marks focus between the two views (vertical in Side, horizontal in Top).
         state
             .chrome
-            .render_view_border(frame, cols[1], terminal_focused);
-        let term_area = cols[2];
+            .render_view_border(frame, r.view_border, terminal_focused);
+        let term_area = r.terminal;
         // An unreachable host has no live grid; show an info panel (ssh config stanza
         // + failure reason) in the terminal view instead of the blank grid.
         if self.current_host_unreachable() {

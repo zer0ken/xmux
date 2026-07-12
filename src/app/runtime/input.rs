@@ -340,13 +340,11 @@ impl Runtime {
         // or TermInput's prefix logic. Split into: mouse events + non-mouse byte stream.
         // Edge case: a sequence split across reads parses as None and falls into
         // non_mouse — rare in practice; no cross-read buffering in v1.
-        let (vw, vh) = terminal_view_size(self.cols, self.body_rows, self.tree_width);
-        let term_x = if self.tree_width == 0 {
-            0
-        } else {
-            self.tree_width + 1
-        };
-        let term_area = ratatui::layout::Rect::new(term_x, 0, vw, vh);
+        // The terminal region from the one shared geometry, so a click lands on exactly
+        // what was drawn in either layout (in Top the terminal sits below the tree, not
+        // to the right of it).
+        let full = ratatui::layout::Rect::new(0, 0, self.cols, self.body_rows.saturating_add(1));
+        let term_area = crate::ui::switcher::compute_regions(full, self.tree_width, 1).terminal;
         let mut non_mouse: Vec<u8> = Vec::with_capacity(bytes.len());
         let mut mouse_focus_toggle = false;
         let mut wheel_scrolled = false;

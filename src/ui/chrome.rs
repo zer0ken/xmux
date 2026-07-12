@@ -286,6 +286,40 @@ impl Chrome {
     pub(crate) fn render_view_border(&self, frame: &mut Frame, area: Rect, terminal_focused: bool) {
         let active = self.colors.active;
         let inactive = self.colors.inactive;
+        // Top layout: the view border runs HORIZONTALLY between the top tree and the
+        // bottom terminal. Split left/right to cue focus (left lit = tree focus, right =
+        // terminal focus), mirroring the vertical rule's top/bottom split.
+        if area.width > area.height {
+            let g = if self.view_border_hovered {
+                "━"
+            } else if self.auto_hide {
+                "═"
+            } else {
+                "─"
+            };
+            let n = area.width;
+            let cells: Vec<Span> = if self.view_border_hovered {
+                let s = Style::default().fg(self.colors.hover);
+                (0..n).map(|_| Span::styled(g, s)).collect()
+            } else if n <= 1 {
+                vec![Span::styled(g, Style::default().fg(active))]
+            } else {
+                let left_cols = n.div_ceil(2);
+                let (left, right) = if terminal_focused {
+                    (inactive, active)
+                } else {
+                    (active, inactive)
+                };
+                (0..n)
+                    .map(|x| {
+                        let c = if x < left_cols { left } else { right };
+                        Span::styled(g, Style::default().fg(c))
+                    })
+                    .collect()
+            };
+            frame.render_widget(Paragraph::new(Line::from(cells)), area);
+            return;
+        }
         let glyph = if self.auto_hide { "║" } else { "│" };
         // Hover (mouse over the rule, no button): box-drawing rules have no bold form
         // (the BOLD modifier does not thicken them), so swap the glyph itself to the

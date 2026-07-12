@@ -38,6 +38,92 @@ const COLOR_HINT: Color = Color::DarkGray;
 
 pub use crate::ui::chrome::ViewBorderColors;
 
+/// Which way the two views stack. `Side` (default) puts the tree in a left column;
+/// `Top` stacks the tree above the terminal for a portrait (taller-than-wide) screen,
+/// so a narrow phone-shaped terminal stays usable.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ViewLayout {
+    Side,
+    Top,
+}
+
+/// Picks the layout from the area's aspect: a portrait area (taller than wide) uses the
+/// stacked `Top` layout, everything else the `Side` layout.
+pub fn view_layout(area: Rect) -> ViewLayout {
+    if area.height > area.width {
+        ViewLayout::Top
+    } else {
+        ViewLayout::Side
+    }
+}
+
+/// The tree region's height in the `Top` layout: ~40% of the body, clamped so both the
+/// tree and the terminal stay usable.
+fn top_tree_height(body_h: u16) -> u16 {
+    ((body_h as u32 * 2 / 5) as u16).clamp(3, body_h.saturating_sub(3).max(1))
+}
+
+/// The screen regions the switcher draws into, derived ONCE per frame so the renderer,
+/// the PTY sizing, and mouse hit-testing all agree (one geometry, no divergence). The
+/// hint bar always spans the bottom full width; the tree and terminal split horizontally
+/// (`Side`) or vertically (`Top`), parted by the one-cell view border. `tree_width == 0`
+/// is the tree-hidden sentinel: the terminal owns the whole area.
+pub struct Regions {
+    pub layout: ViewLayout,
+    pub tree: Rect,
+    pub view_border: Rect,
+    pub terminal: Rect,
+    pub hint_bar: Rect,
+}
+
+pub fn compute_regions(area: Rect, tree_width: u16, hint_bar_h: u16) -> Regions {
+    let layout = view_layout(area);
+    if tree_width == 0 {
+        return Regions {
+            layout,
+            tree: Rect::default(),
+            view_border: Rect::default(),
+            terminal: area,
+            hint_bar: Rect::default(),
+        };
+    }
+    let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(hint_bar_h)]).split(area);
+    let (body, hint_bar) = (rows[0], rows[1]);
+    match layout {
+        ViewLayout::Side => {
+            let c = Layout::horizontal([
+                Constraint::Length(tree_width),
+                Constraint::Length(1),
+                Constraint::Min(0),
+            ])
+            .split(body);
+            Regions {
+                layout,
+                tree: c[0],
+                view_border: c[1],
+                terminal: c[2],
+                hint_bar,
+            }
+        }
+        ViewLayout::Top => {
+            let th = top_tree_height(body.height);
+            let r = Layout::vertical([
+                Constraint::Length(th),
+                Constraint::Length(1),
+                Constraint::Min(0),
+            ])
+            .split(body);
+            Regions {
+                layout,
+                tree: r[0],
+                view_border: r[1],
+                terminal: r[2],
+                hint_bar,
+            }
+        }
+    }
+}
+
 /// A fully-populated snapshot of the reachable environment.
 #[derive(Clone, Default)]
 pub struct Scan {
