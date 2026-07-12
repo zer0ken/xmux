@@ -101,7 +101,13 @@ struct Harness {
 
 impl Harness {
     fn new(scan: Scan) -> Self {
-        let backend = TestBackend::new(100, 30);
+        Self::new_sized(scan, 100, 30)
+    }
+
+    /// A harness with a specific backend size — used to exercise the portrait Top
+    /// layout (height > width), whose navigation differs from the landscape Side layout.
+    fn new_sized(scan: Scan, w: u16, h_: u16) -> Self {
+        let backend = TestBackend::new(w, h_);
         let term = Terminal::new(backend).unwrap();
         let mut state = crate::state::State::from_scan(scan);
         let mut h = Harness {
@@ -2381,6 +2387,38 @@ fn top_layout_renders_hosts_as_side_by_side_columns() {
     assert!(
         jx >= 24,
         "the second host sits in the second column, got x={jx}"
+    );
+}
+
+#[tokio::test]
+async fn top_layout_arrows_move_within_and_between_hosts() {
+    // Portrait → Top: ↑/↓ move WITHIN the current host's column, ←/→ move BETWEEN host
+    // columns — matching the on-screen columnar layout (unlike Side's tree-shaped nav).
+    let mut h = Harness::new_sized(sample(), 48, 60);
+    assert!(
+        matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "local"),
+        "selection starts on the first host (local)"
+    );
+    // Down stays inside local, descending its column onto a child row.
+    h.key(KeyCode::Down).await;
+    assert_eq!(
+        h.sw.current_source().as_deref(),
+        Some("local"),
+        "↓ stays within the host column"
+    );
+    assert!(h.sw.selected > 0, "↓ moved down the local column");
+    // Right crosses to the next host column, landing on that host's row.
+    h.key(KeyCode::Right).await;
+    assert!(
+        matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "jupiter00"),
+        "→ crosses to the next host column (jupiter00), got {:?}",
+        h.sw.current_source()
+    );
+    // Left returns to the previous host column.
+    h.key(KeyCode::Left).await;
+    assert!(
+        matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "local"),
+        "← returns to the previous host column (local)"
     );
 }
 

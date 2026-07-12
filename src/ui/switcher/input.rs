@@ -79,15 +79,42 @@ impl Switcher {
         // it here so navigation (or any key) restores the normal help
         // hint_bar; actions below may set a fresh one, which survives because this runs first.
         state.chrome.flash.clear();
+        // The arrow / hjkl semantics track the on-screen layout so the keys always follow
+        // what the user sees. Side (a vertical list): ↑/↓ move between siblings at the
+        // current tree level, →/← change level (→ descends to the first child / expands a
+        // folded host, ← ascends / collapses). Top (per-host columns): ↑/↓ move WITHIN the
+        // current host's column, ←/→ move BETWEEN host columns. Space folds in either.
+        let top = self.layout() == ViewLayout::Top;
         match ev.code {
             KeyCode::Enter => {}
-            // ↑/↓ (and k/j) move between SIBLINGS at the current tree level (next/prev
-            // node at the same depth); →/← (and l/h) change level — → descends to the
-            // first child, ← ascends to the parent. hjkl mirror the arrows. (#1, #2)
-            KeyCode::Up | KeyCode::Char('k') => self.move_sibling(-1, state),
-            KeyCode::Down | KeyCode::Char('j') => self.move_sibling(1, state),
-            KeyCode::Right | KeyCode::Char('l') => self.expand_or_descend(state),
-            KeyCode::Left | KeyCode::Char('h') => self.collapse_or_ascend(state),
+            KeyCode::Up | KeyCode::Char('k') => {
+                if top {
+                    self.move_within_host(-1, state)
+                } else {
+                    self.move_sibling(-1, state)
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if top {
+                    self.move_within_host(1, state)
+                } else {
+                    self.move_sibling(1, state)
+                }
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                if top {
+                    self.move_host(1, state)
+                } else {
+                    self.expand_or_descend(state)
+                }
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                if top {
+                    self.move_host(-1, state)
+                } else {
+                    self.collapse_or_ascend(state)
+                }
+            }
             KeyCode::PageUp => self.move_selection(-10, state),
             KeyCode::PageDown => self.move_selection(10, state),
             KeyCode::Home => self.move_to(0, state),

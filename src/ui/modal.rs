@@ -443,6 +443,7 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
             "→/l · ←/h".into(),
             "descend / ascend (on a host: expand / collapse)".into(),
         ),
+        HelpRow::Note("portrait: ↑↓ within a host, ←→ between host columns"),
         HelpRow::Key("Space".into(), "fold / unfold the selected host".into()),
         HelpRow::Key("PgUp/PgDn".into(), "jump by 10".into()),
         HelpRow::Key("Home/End".into(), "first / last node".into()),

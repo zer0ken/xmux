@@ -202,13 +202,7 @@ impl Switcher {
         spinner_glyph: char,
         state: &crate::state::State,
     ) {
-        let starts: Vec<usize> = self
-            .rows
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| matches!(r.reference, RowRef::Host { .. }))
-            .map(|(i, _)| i)
-            .collect();
+        let starts = self.host_starts();
         if starts.is_empty() {
             return;
         }

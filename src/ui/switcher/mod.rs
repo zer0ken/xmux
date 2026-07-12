@@ -332,6 +332,25 @@ impl Switcher {
             .collect()
     }
 
+    /// The row index of each host (indent-0 Host row), in tree order. Each host owns the
+    /// contiguous run of rows from its index to the next host's — its whole subtree — which
+    /// the Top layout paints as one column and the Top-mode navigation moves within/between.
+    fn host_starts(&self) -> Vec<usize> {
+        self.rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| matches!(r.reference, RowRef::Host { .. }))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Which way the two views are stacked right now, derived from the last-rendered
+    /// screen area — the same aspect test `compute_regions` uses, so key handling and the
+    /// render agree on Side vs Top.
+    fn layout(&self) -> ViewLayout {
+        view_layout(self.screen_area)
+    }
+
     fn set_selected(&mut self, idx: usize, state: &crate::state::State) {
         if self.rows.is_empty() {
             return;
@@ -430,6 +449,52 @@ impl Switcher {
             pos as usize
         };
         self.set_selected(sel[idx], state);
+    }
+
+    /// The host segment (start, end) the selection currently sits in — the host's row
+    /// index and the next host's (or the row count) — plus that host's ordinal. `None`
+    /// only when there are no host rows at all.
+    fn current_host_segment(&self) -> Option<(usize, usize, usize)> {
+        let hosts = self.host_starts();
+        let hi = hosts.iter().rposition(|&h| h <= self.selected)?;
+        let start = hosts[hi];
+        let end = hosts.get(hi + 1).copied().unwrap_or(self.rows.len());
+        Some((hi, start, end))
+    }
+
+    /// Top-layout `←`/`→`: move to the previous/next host column, landing on that host's
+    /// row (wraps). In the per-host columnar layout this is the horizontal move between
+    /// columns; the render pages the columns so the newly selected host stays on screen.
+    fn move_host(&mut self, delta: isize, state: &crate::state::State) {
+        let hosts = self.host_starts();
+        if hosts.is_empty() {
+            return;
+        }
+        let cur = hosts.iter().rposition(|&h| h <= self.selected).unwrap_or(0) as isize;
+        self.user_moved = true;
+        let n = hosts.len() as isize;
+        let next = ((cur + delta) % n + n) % n;
+        self.set_selected(hosts[next as usize], state);
+    }
+
+    /// Top-layout `↑`/`↓`: move within the current host's column — the previous/next
+    /// selectable row inside that host's contiguous segment (its host row, sessions, and
+    /// their windows), wrapping within the host. Left/right (`move_host`) crosses columns.
+    fn move_within_host(&mut self, delta: isize, state: &crate::state::State) {
+        let Some((_, start, end)) = self.current_host_segment() else {
+            return;
+        };
+        let within: Vec<usize> = (start..end)
+            .filter(|&i| self.rows[i].selectable())
+            .collect();
+        if within.is_empty() {
+            return;
+        }
+        self.user_moved = true;
+        let pos = within.iter().position(|&i| i == self.selected).unwrap_or(0) as isize;
+        let n = within.len() as isize;
+        let next = ((pos + delta) % n + n) % n;
+        self.set_selected(within[next as usize], state);
     }
 
     /// Sets a host's fold state and re-flattens, then snaps the selection back onto
