@@ -446,6 +446,17 @@ impl Switcher {
         }
     }
 
+    /// Vertical navigation shared by ↑/↓, k/j, AND the plain scroll wheel, so the wheel
+    /// moves the selection exactly as the arrows do. Follows the on-screen shape: prev/next
+    /// SIBLING in the Side list, or within the current host's column in the Top layout.
+    fn nav_vertical(&mut self, delta: isize, state: &crate::state::State) {
+        if self.layout == ViewLayout::Top {
+            self.move_within_host(delta, state);
+        } else {
+            self.move_sibling(delta, state);
+        }
+    }
+
     /// ↑/↓ (or k/j): move to the next/prev sibling at the current tree level — the
     /// next selectable row at the SAME indent level (e.g. session→next session,
     /// skipping windows/panes nested under it). Wraps like `move_selection`.

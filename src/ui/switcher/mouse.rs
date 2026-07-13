@@ -53,9 +53,10 @@ impl Switcher {
         self.mouse_select(col, row, state);
     }
 
-    /// Scroll wheel: move the selection (panes skipped) in the given direction.
+    /// Scroll wheel: move the selection exactly as ↑/↓ do (`nav_vertical`) — siblings in
+    /// Side, within the host column in Top — so the wheel and the arrows never diverge.
     pub fn mouse_scroll(&mut self, down: bool, state: &crate::state::State) {
-        self.move_selection(if down { 1 } else { -1 }, state);
+        self.nav_vertical(if down { 1 } else { -1 }, state);
     }
 
     // --- context menu -------------------------------------------------------

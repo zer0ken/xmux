@@ -2459,6 +2459,31 @@ async fn top_layout_click_selects_row_in_the_clicked_column() {
 }
 
 #[tokio::test]
+async fn wheel_moves_the_selection_like_the_arrow_keys() {
+    // The plain wheel and ↑/↓ share nav_vertical, so one notch lands on the same row as one
+    // arrow press — in either layout (Side siblings / Top within-host).
+    let mut a = Harness::new(sample());
+    a.sw.mouse_scroll(true, &a.state);
+    let by_wheel = a.sw.selected;
+    let mut b = Harness::new(sample());
+    b.key(KeyCode::Down).await;
+    assert_eq!(
+        by_wheel, b.sw.selected,
+        "wheel down lands where ↓ does (Side)"
+    );
+
+    let mut c = Harness::new_sized(sample(), 60, 70);
+    c.sw.mouse_scroll(true, &c.state);
+    let by_wheel_top = c.sw.selected;
+    let mut d = Harness::new_sized(sample(), 60, 70);
+    d.key(KeyCode::Down).await;
+    assert_eq!(
+        by_wheel_top, d.sw.selected,
+        "wheel down lands where ↓ does (Top)"
+    );
+}
+
+#[tokio::test]
 async fn space_folds_and_unfolds_the_selected_host() {
     // Space on the first host row (index 0) collapses it, hiding its child rows and
     // keeping the selection on the host; Space again restores them.

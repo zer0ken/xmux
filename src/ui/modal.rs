@@ -466,8 +466,12 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
         ),
         HelpRow::Key(format!("{p} ← · {p} Esc"), "focus the tree".into()),
         HelpRow::Key(
-            format!("{p} C-←/→ · h/l"),
-            "resize the tree (C-←/→ then repeats briefly)".into(),
+            format!("{p} C-←/→"),
+            "resize tree width (Side); h/l too. repeats briefly".into(),
+        ),
+        HelpRow::Key(
+            format!("{p} C-↑/↓"),
+            "resize tree height (portrait Top)".into(),
         ),
         HelpRow::Key(
             format!("{p} t"),

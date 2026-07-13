@@ -13,7 +13,7 @@ impl Runtime {
         &mut self,
         bytes: &[u8],
         width_changed: &mut bool,
-    ) -> (bool, bool, i32, bool) {
+    ) -> (bool, bool, i32, i32, bool) {
         // Split-borrow the world state into the loose names the body uses (a tree read
         // touches most of it: decoder, switcher/state, host orchestration, width prefs).
         let Self {
@@ -41,6 +41,7 @@ impl Runtime {
         let mut focus_terminal = false;
         let mut quit = false;
         let mut width_delta = 0i32;
+        let mut height_delta = 0i32;
         let mut toggle_auto_hide = false;
         let mut key_cmds: Vec<crate::model::Command> = Vec::new();
         for key in tree_decoder.feed(bytes) {
@@ -57,6 +58,7 @@ impl Runtime {
                 Some(Action::FocusTerminal) => focus_terminal = true,
                 Some(Action::Quit) => quit = true,
                 Some(Action::Width(d)) => width_delta = d,
+                Some(Action::Height(d)) => height_delta = d,
                 Some(Action::ToggleAutoHide) => toggle_auto_hide = true,
                 Some(Action::ShowHelp) => switcher.toggle_help(state),
                 // resolve_tree_key never emits the mux-only or terminal-only variants
@@ -86,7 +88,13 @@ impl Runtime {
         }
         ensure_current_host(mgr, hosts, switcher, cols, rows, tree_width);
         kick_rescan(switcher, hosts, detecting, mgr, panes_requested, cols, rows);
-        (focus_terminal, quit, width_delta, toggle_auto_hide)
+        (
+            focus_terminal,
+            quit,
+            width_delta,
+            height_delta,
+            toggle_auto_hide,
+        )
     }
 }
 
@@ -337,32 +345,51 @@ impl Runtime {
 }
 
 impl Runtime {
-    /// Applies a tree-resize delta (prefix h/l · Ctrl+←/→) to the dimension the CURRENT
-    /// layout resizes: the tree HEIGHT in the portrait Top layout, else the WIDTH. Height is
-    /// seeded from the effective auto height the first time (while `tree_height == 0`) so a
-    /// relative step starts from what is on screen, clamped so the terminal keeps room, and
-    /// persisted immediately. Width defers to `apply_width_delta` (the caller schedules the
-    /// debounced width persist). Returns whether the size changed (caller resizes PTYs + redraws).
-    pub(super) fn apply_tree_resize(&mut self, delta: i32) -> bool {
-        if self.switcher.layout() != crate::ui::switcher::ViewLayout::Top {
-            return apply_width_delta(delta, &mut self.tree_width_natural);
+    /// Applies a tree-resize delta on ONE axis, gated to the layout that actually shows that
+    /// axis so a key never resizes a dimension the user cannot see: `horizontal` (←/→ · h/l)
+    /// resizes the WIDTH only in Side, `!horizontal` (↑/↓) the HEIGHT only in Top; the
+    /// perpendicular axis is a no-op. Height is seeded from the effective auto height the
+    /// first time (while `tree_height == 0`) so a relative step starts from what is on screen,
+    /// clamped so the terminal keeps room, and persisted; width defers to `apply_width_delta`
+    /// (the caller schedules the debounced persist). Returns whether the size changed.
+    pub(super) fn resize_axis(&mut self, horizontal: bool, delta: i32) -> bool {
+        let top = self.switcher.layout() == crate::ui::switcher::ViewLayout::Top;
+        match (horizontal, top) {
+            (true, false) => apply_width_delta(delta, &mut self.tree_width_natural),
+            (false, true) => {
+                let base = if self.tree_height == 0 {
+                    crate::ui::switcher::default_tree_height(self.body_rows)
+                } else {
+                    self.tree_height
+                };
+                let ceil = self
+                    .body_rows
+                    .saturating_sub(2)
+                    .clamp(TREE_HEIGHT_MIN, TREE_HEIGHT_MAX);
+                let next = (base as i32 + delta).clamp(TREE_HEIGHT_MIN as i32, ceil as i32) as u16;
+                if next == self.tree_height {
+                    return false;
+                }
+                self.tree_height = next;
+                crate::prefs::save_tree_height(&self.env.xmux_dir, self.tree_height);
+                true
+            }
+            _ => false, // perpendicular axis for this layout: nothing to resize
         }
-        let base = if self.tree_height == 0 {
-            crate::ui::switcher::default_tree_height(self.body_rows)
-        } else {
-            self.tree_height
-        };
-        let ceil = self
-            .body_rows
-            .saturating_sub(2)
-            .clamp(TREE_HEIGHT_MIN, TREE_HEIGHT_MAX);
-        let next = (base as i32 + delta).clamp(TREE_HEIGHT_MIN as i32, ceil as i32) as u16;
-        if next == self.tree_height {
+    }
+
+    /// A keyboard resize step: apply the delta on its axis (no-op for zero, or for the
+    /// perpendicular axis of the current layout) and open the bare-Ctrl-arrow repeat window
+    /// so the next arrows keep resizing without re-pressing the prefix. Returns whether the
+    /// size changed (for the debounced persist).
+    fn resize_and_repeat(&mut self, horizontal: bool, delta: i32) -> bool {
+        if delta == 0 {
             return false;
         }
-        self.tree_height = next;
-        crate::prefs::save_tree_height(&self.env.xmux_dir, self.tree_height);
-        true
+        let changed = self.resize_axis(horizontal, delta);
+        self.mouse_state.repeat_until =
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(RESIZE_REPEAT_MS));
+        changed
     }
 
     /// The whole `stdin_rx` arm body, lifted. Scans the read for SGR mouse sequences
@@ -483,8 +510,8 @@ impl Runtime {
             && !non_mouse.is_empty()
         {
             let mut n = 0;
-            while let Some((d, len)) = leading_ctrl_arrow(&non_mouse[n..]) {
-                if self.apply_tree_resize(d) {
+            while let Some((horizontal, d, len)) = leading_ctrl_arrow(&non_mouse[n..]) {
+                if self.resize_axis(horizontal, d) {
                     *width_changed = true;
                 }
                 n += len;
@@ -519,17 +546,15 @@ impl Runtime {
             // kill-confirm) opened from EITHER view owns its keys here; the resolver gating
             // in handle_tree_bytes swallows everything but the modal's own keys, so a modal
             // never emits FocusTerminal/quit and the focus toggles below never fire mid-modal.
-            let (ft, q, wd, th) = self.handle_tree_bytes(&non_mouse, width_changed);
+            let (ft, q, wd, hd, th) = self.handle_tree_bytes(&non_mouse, width_changed);
             *focus_terminal = ft;
             *quit = q;
-            if wd != 0 {
-                // A prefix-driven resize: apply it and open the repeat window so the
-                // next bare Ctrl+←/→ keeps resizing without re-pressing the prefix.
-                if self.apply_tree_resize(wd) {
-                    *width_changed = true;
-                }
-                self.mouse_state.repeat_until =
-                    Some(std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS));
+            // A prefix-driven resize: width (←/→ · h/l) or height (↑/↓); each applies only in
+            // its layout, and opens the bare-Ctrl-arrow repeat window.
+            let rw = self.resize_and_repeat(true, wd);
+            let rh = self.resize_and_repeat(false, hd);
+            if rw || rh {
+                *width_changed = true;
             }
             if th {
                 toggle_auto_hide(&mut self.auto_hide_tree, &self.env.xmux_dir);
@@ -555,15 +580,18 @@ impl Runtime {
                         self.switcher.toggle_help(&mut self.state);
                         *dirty = true;
                     }
+                    // Same resize + repeat-window as the tree path, so a resize started from
+                    // the terminal view chains with bare Ctrl-arrows too. Width = ←/→ (Side),
+                    // height = ↑/↓ (Top).
                     Action::Width(d) => {
-                        // Same resize + repeat-window as the tree path, so a resize
-                        // started from the terminal view chains with bare Ctrl+←/→ too.
-                        if self.apply_tree_resize(d) {
+                        if self.resize_and_repeat(true, d) {
                             *width_changed = true;
                         }
-                        self.mouse_state.repeat_until = Some(
-                            std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS),
-                        );
+                    }
+                    Action::Height(d) => {
+                        if self.resize_and_repeat(false, d) {
+                            *width_changed = true;
+                        }
                     }
                     Action::ToggleAutoHide => {
                         toggle_auto_hide(&mut self.auto_hide_tree, &self.env.xmux_dir);
@@ -626,21 +654,18 @@ impl Runtime {
             self.state
                 .apply(crate::model::Action::Focus(crate::model::FocusTarget::Tree));
             if !tree_replay.is_empty() {
-                let (ft, q, wd, th) = self.handle_tree_bytes(tree_replay, width_changed);
+                let (ft, q, wd, hd, th) = self.handle_tree_bytes(tree_replay, width_changed);
                 if ft {
                     self.state.apply(crate::model::Action::Focus(
                         crate::model::FocusTarget::Terminal,
                     ));
                 }
                 *quit = *quit || q;
-                if wd != 0 {
-                    // A prefix-driven resize on the replayed bytes: apply + open the
-                    // repeat window, same as the direct tree-focus path above.
-                    if self.apply_tree_resize(wd) {
-                        *width_changed = true;
-                    }
-                    self.mouse_state.repeat_until =
-                        Some(std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS));
+                // A prefix-driven resize on the replayed bytes: same as the direct path above.
+                let rw = self.resize_and_repeat(true, wd);
+                let rh = self.resize_and_repeat(false, hd);
+                if rw || rh {
+                    *width_changed = true;
                 }
                 if th {
                     toggle_auto_hide(&mut self.auto_hide_tree, &self.env.xmux_dir);

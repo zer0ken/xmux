@@ -87,20 +87,8 @@ impl Switcher {
         let top = self.layout == ViewLayout::Top;
         match ev.code {
             KeyCode::Enter => {}
-            KeyCode::Up | KeyCode::Char('k') => {
-                if top {
-                    self.move_within_host(-1, state)
-                } else {
-                    self.move_sibling(-1, state)
-                }
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if top {
-                    self.move_within_host(1, state)
-                } else {
-                    self.move_sibling(1, state)
-                }
-            }
+            KeyCode::Up | KeyCode::Char('k') => self.nav_vertical(-1, state),
+            KeyCode::Down | KeyCode::Char('j') => self.nav_vertical(1, state),
             KeyCode::Right | KeyCode::Char('l') => {
                 if top {
                     self.move_host(1, state)

@@ -26,17 +26,19 @@ pub(crate) fn view_border_drag_height(row: u16) -> u16 {
         .clamp(TREE_HEIGHT_MIN, TREE_HEIGHT_MAX)
 }
 
-/// If `bytes` STARTS with a Ctrl+←/→ (`ESC [ 1 ; 5 D/C`), the resize delta and the
-/// 6-byte length it consumed; else `None`. Peeling leading Ctrl-arrows (rather than
-/// matching the whole read) lets a coalesced autorepeat burst — several presses
-/// delivered in one stdin read — keep resizing instead of ending the repeat window.
-/// Restricted to Ctrl-arrows (not bare arrows or h/l) so it never hijacks navigation
-/// or typed pane input outside the window.
-pub(crate) fn leading_ctrl_arrow(bytes: &[u8]) -> Option<(i32, usize)> {
+/// If `bytes` STARTS with a Ctrl-arrow (`ESC [ 1 ; 5 A/B/C/D`), returns `(horizontal,
+/// delta, len)`: the axis (true = ←/→ width, false = ↑/↓ height), the signed step (→/↓ = +1,
+/// ←/↑ = -1), and the 6 bytes it consumed; else `None`. Peeling leading Ctrl-arrows (rather
+/// than matching the whole read) lets a coalesced autorepeat burst — several presses in one
+/// stdin read — keep resizing. Restricted to Ctrl-arrows (not bare arrows or h/l) so it never
+/// hijacks navigation or typed pane input outside the repeat window.
+pub(crate) fn leading_ctrl_arrow(bytes: &[u8]) -> Option<(bool, i32, usize)> {
     if bytes.len() >= 6 && bytes[0] == 0x1b && bytes[1] == b'[' && &bytes[2..5] == b"1;5" {
         match bytes[5] {
-            b'C' => return Some((1, 6)),
-            b'D' => return Some((-1, 6)),
+            b'C' => return Some((true, 1, 6)),   // Ctrl+→ : width +
+            b'D' => return Some((true, -1, 6)),  // Ctrl+← : width -
+            b'B' => return Some((false, 1, 6)),  // Ctrl+↓ : height +
+            b'A' => return Some((false, -1, 6)), // Ctrl+↑ : height -
             _ => {}
         }
     }
@@ -157,6 +159,9 @@ pub(crate) fn resolve_tree_key(
             KeyCode::Right if ctrl => Some(Action::Width(1)),
             KeyCode::Char('h') => Some(Action::Width(-1)),
             KeyCode::Char('l') => Some(Action::Width(1)),
+            // prefix Ctrl+↑/↓ resize the tree HEIGHT (the vertical axis, Top layout); ↓ grows.
+            KeyCode::Up if ctrl => Some(Action::Height(-1)),
+            KeyCode::Down if ctrl => Some(Action::Height(1)),
             KeyCode::Char('t') => Some(Action::ToggleAutoHide),
             KeyCode::Char('?') => Some(Action::ShowHelp),
             // prefix Tab cycles focus to the terminal (toggle, mirroring the terminal side's
@@ -287,6 +292,17 @@ mod tests {
             rt(b"\x07\x1b[1;5D", false),
             vec![Action::Width(-1)],
             "prefix Ctrl-Left narrows"
+        );
+        // prefix Ctrl+↑/↓ resize the HEIGHT (vertical axis); the runtime applies it only in Top.
+        assert_eq!(
+            rt(b"\x07\x1b[1;5B", false),
+            vec![Action::Height(1)],
+            "prefix Ctrl-Down grows height"
+        );
+        assert_eq!(
+            rt(b"\x07\x1b[1;5A", false),
+            vec![Action::Height(-1)],
+            "prefix Ctrl-Up shrinks height"
         );
     }
 
@@ -499,24 +515,34 @@ mod tests {
     fn leading_ctrl_arrow_peels_one_and_ignores_others() {
         assert_eq!(
             leading_ctrl_arrow(b"\x1b[1;5C"),
-            Some((1, 6)),
-            "Ctrl-Right widens"
+            Some((true, 1, 6)),
+            "Ctrl-Right widens (horizontal +)"
         );
         assert_eq!(
             leading_ctrl_arrow(b"\x1b[1;5D"),
-            Some((-1, 6)),
-            "Ctrl-Left narrows"
+            Some((true, -1, 6)),
+            "Ctrl-Left narrows (horizontal -)"
+        );
+        assert_eq!(
+            leading_ctrl_arrow(b"\x1b[1;5B"),
+            Some((false, 1, 6)),
+            "Ctrl-Down grows height (vertical +)"
+        );
+        assert_eq!(
+            leading_ctrl_arrow(b"\x1b[1;5A"),
+            Some((false, -1, 6)),
+            "Ctrl-Up shrinks height (vertical -)"
         );
         // A LEADING Ctrl-arrow is peeled even with trailing bytes (the caller loops /
         // routes the remainder) — this is what makes a coalesced autorepeat keep going.
         assert_eq!(
             leading_ctrl_arrow(b"\x1b[1;5C\x1b[1;5C"),
-            Some((1, 6)),
+            Some((true, 1, 6)),
             "peels the first of a burst"
         );
         assert_eq!(
             leading_ctrl_arrow(b"\x1b[1;5Cx"),
-            Some((1, 6)),
+            Some((true, 1, 6)),
             "peels past trailing input"
         );
         // Bare arrows and h/l are not repeat keys.

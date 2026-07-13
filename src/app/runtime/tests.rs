@@ -2032,12 +2032,17 @@ fn resize_keys_adjust_height_in_top_layout() {
     assert_eq!(rt.switcher.layout(), ViewLayout::Top, "portrait → Top");
 
     let auto = crate::ui::switcher::default_tree_height(59);
-    assert!(rt.apply_tree_resize(1), "grow changes the height");
+    // Vertical axis (Ctrl+↓ = grow) resizes HEIGHT in Top; horizontal (Ctrl+→) is a no-op here.
+    assert!(
+        !rt.resize_axis(true, 1),
+        "horizontal resize is a no-op in Top"
+    );
+    assert!(rt.resize_axis(false, 1), "grow changes the height");
     assert_eq!(
         rt.tree_height,
         auto + 1,
         "a resize key grows the Top tree height from the auto seed"
     );
-    assert!(rt.apply_tree_resize(-1), "shrink changes the height");
+    assert!(rt.resize_axis(false, -1), "shrink changes the height");
     assert_eq!(rt.tree_height, auto, "and shrinks it back");
 }

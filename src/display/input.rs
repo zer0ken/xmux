@@ -133,18 +133,24 @@ impl TermInput {
                     i += 1;
                     continue;
                 }
-                // prefix Ctrl+←/→ (ESC [ 1 ; 5 D/C) → resize. Matched before the plain
-                // ESC/arrow focus handling below so the Ctrl-arrow is not read as Esc.
+                // prefix Ctrl-arrow (ESC [ 1 ; 5 A/B/C/D) → resize. ←/→ (D/C) the WIDTH,
+                // ↑/↓ (A/B) the HEIGHT. Matched before the plain ESC/arrow focus handling
+                // below so the Ctrl-arrow is not read as Esc.
                 if b0 == 0x1b
                     && bytes[i..].len() >= 6
                     && bytes[i + 1] == b'['
                     && &bytes[i + 2..i + 5] == b"1;5"
-                    && matches!(bytes[i + 5], b'C' | b'D')
+                    && matches!(bytes[i + 5], b'A' | b'B' | b'C' | b'D')
                 {
                     if !fwd.is_empty() {
                         out.push(Action::Forward(std::mem::take(&mut fwd)));
                     }
-                    out.push(Action::Width(if bytes[i + 5] == b'C' { 1 } else { -1 }));
+                    out.push(match bytes[i + 5] {
+                        b'C' => Action::Width(1),
+                        b'D' => Action::Width(-1),
+                        b'B' => Action::Height(1),
+                        _ => Action::Height(-1), // b'A'
+                    });
                     i += 6;
                     continue;
                 }
@@ -386,6 +392,21 @@ mod tests {
             t2.feed(b"\x1b[1;5D"),
             vec![Action::Width(-1)],
             "Ctrl-Left narrows"
+        );
+        // Ctrl+↑/↓ resize the HEIGHT (vertical axis, Top layout); ↓ grows.
+        let mut t3 = m();
+        t3.feed(&[0x07]);
+        assert_eq!(
+            t3.feed(b"\x1b[1;5B"),
+            vec![Action::Height(1)],
+            "Ctrl-Down grows height"
+        );
+        let mut t4 = m();
+        t4.feed(&[0x07]);
+        assert_eq!(
+            t4.feed(b"\x1b[1;5A"),
+            vec![Action::Height(-1)],
+            "Ctrl-Up shrinks height"
         );
     }
 

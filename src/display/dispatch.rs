@@ -32,8 +32,12 @@ pub enum Action {
     Quit,
     /// `prefix ?` — toggle the keys help modal. Focus stays on the terminal view.
     ShowHelp,
-    /// `prefix h`/`l` or `prefix Ctrl+←/→` — adjust the tree width by this signed delta.
+    /// `prefix h`/`l` or `prefix Ctrl+←/→` — adjust the tree WIDTH by this signed delta
+    /// (the horizontal axis; applied only in the Side layout).
     Width(i32),
+    /// `prefix Ctrl+↑/↓` — adjust the tree HEIGHT by this signed delta (the vertical axis;
+    /// applied only in the portrait Top layout). +1 grows (taller), -1 shrinks.
+    Height(i32),
     /// `prefix t` — toggle auto-hide-tree mode.
     ToggleAutoHide,
 }
@@ -52,9 +56,13 @@ impl Action {
             Action::ToggleAutoHide => Some(DomainAction::ToggleAutoHide),
             Action::FocusTerminal => Some(DomainAction::Focus(FocusTarget::Terminal)),
             Action::FocusTree(_) => Some(DomainAction::Focus(FocusTarget::Tree)),
-            Action::Forward(_) | Action::ShowHelp | Action::TreeKey(_) | Action::KillActivePane => {
-                None
-            }
+            // Height resize is key-driven only (no ctl verb yet); it is applied directly on
+            // the tree-input path, not through a domain action.
+            Action::Height(_)
+            | Action::Forward(_)
+            | Action::ShowHelp
+            | Action::TreeKey(_)
+            | Action::KillActivePane => None,
         }
     }
 }
