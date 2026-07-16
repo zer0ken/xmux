@@ -79,30 +79,14 @@ impl Switcher {
         // it here so navigation (or any key) restores the normal help
         // hint_bar; actions below may set a fresh one, which survives because this runs first.
         state.chrome.flash.clear();
-        // The arrow / hjkl semantics track the on-screen layout so the keys always follow
-        // what the user sees. Side (a vertical list): ↑/↓ move between siblings at the
-        // current tree level, →/← change level (→ descends to the first child / expands a
-        // folded host, ← ascends / collapses). Top (per-host columns): ↑/↓ move WITHIN the
-        // current host's column, ←/→ move BETWEEN host columns. Space folds in either.
-        let top = self.layout == ViewLayout::Top;
+        // The flat card list has no levels or host columns: ↑/↓ (and k/j) step one card,
+        // PageUp/Down jump ten, Home/End go to the ends. Left/right have nothing to move
+        // between, so they are inert here (prefix →/Enter focuses the terminal at the app
+        // layer). `n`/`R`/`x` act on the selected card; digits quick-jump.
         match ev.code {
             KeyCode::Enter => {}
             KeyCode::Up | KeyCode::Char('k') => self.nav_vertical(-1, state),
             KeyCode::Down | KeyCode::Char('j') => self.nav_vertical(1, state),
-            KeyCode::Right | KeyCode::Char('l') => {
-                if top {
-                    self.move_host(1, state)
-                } else {
-                    self.expand_or_descend(state)
-                }
-            }
-            KeyCode::Left | KeyCode::Char('h') => {
-                if top {
-                    self.move_host(-1, state)
-                } else {
-                    self.collapse_or_ascend(state)
-                }
-            }
             KeyCode::PageUp => self.move_selection(-10, state),
             KeyCode::PageDown => self.move_selection(10, state),
             KeyCode::Home => self.move_to(0, state),
@@ -113,10 +97,8 @@ impl Switcher {
                 'R' => self.open_input(InputMode::Rename, state),
                 'x' => self.arm_kill(state),
                 'r' => self.request_rescan(state),
-                // Space folds/unfolds the selected host (a no-op on other rows).
-                ' ' => self.toggle_host_fold(state),
-                // Quick-jump: 1..9 select the Nth selectable row (the dim digit shown on
-                // that row), reusing the normal selection/attach-debounce path.
+                // Quick-jump: 1..9 select the Nth card (the dim digit shown on it),
+                // reusing the normal selection/attach-debounce path.
                 '1'..='9' => self.move_to((c as u8 - b'1') as isize, state),
                 _ => {}
             },
@@ -145,7 +127,20 @@ impl Switcher {
                 Some(RowRef::Host { .. }) => {
                     state.flash("cannot rename a host");
                 }
-                Some(RowRef::Session(sess)) => {
+                // A window card renames the WINDOW (its name is in the card); a loading
+                // card (no window resolved yet) renames the SESSION.
+                Some(RowRef::Window { sess, window, name }) => {
+                    let target = crate::mux::window_target(&sess.name, window);
+                    state.modal = Some(Modal::Input(Input::new(
+                        mode,
+                        " rename window".into(),
+                        name,
+                        Some(sess.source.clone()),
+                        Some(sess),
+                        Some(target),
+                    )));
+                }
+                Some(RowRef::Loading { sess }) => {
                     state.modal = Some(Modal::Input(Input::new(
                         mode,
                         " rename session".into(),
@@ -155,31 +150,16 @@ impl Switcher {
                         None,
                     )));
                 }
-                Some(RowRef::Window { sess, window }) => {
-                    let win_name = self
-                        .window_name(&sess.address(), window, state)
-                        .unwrap_or_default();
-                    let target = crate::mux::window_target(&sess.name, window);
-                    state.modal = Some(Modal::Input(Input::new(
-                        mode,
-                        " rename window".into(),
-                        win_name,
-                        Some(sess.source.clone()),
-                        Some(sess),
-                        Some(target),
-                    )));
-                }
-                _ => {}
+                None => {}
             },
-            // New/NewWindow/SplitWindow are opened by `open_new` (level-aware).
-            InputMode::New | InputMode::NewWindow | InputMode::SplitWindow => {}
+            // New / NewWindow are opened by `open_new`.
+            InputMode::New | InputMode::NewWindow => {}
         }
     }
 
-    /// The level-aware `n` action: a new SESSION on a host row, a new WINDOW on a
-    /// session row, or a new PANE (split) on a window row (prompting the split
-    /// direction). The prompt context is captured up front so a streamed selection
-    /// move cannot retarget it.
+    /// The `n` action: a new SESSION on a host card, or a new WINDOW in the selected
+    /// card's session (a window or loading card). The context is captured up front so a
+    /// streamed selection move cannot retarget it.
     pub(super) fn open_new(&mut self, state: &mut crate::state::State) {
         state.chrome.flash.clear();
         self.dismiss_modals(state);
@@ -199,26 +179,17 @@ impl Switcher {
                 None,
                 None,
             ))),
-            RowRef::Session(sess) => Some(Modal::Input(Input::new(
-                InputMode::NewWindow,
-                format!(" new window in {} (name optional)", sess.name),
-                String::new(),
-                Some(sess.source.clone()),
-                Some(sess),
-                None,
-            ))),
-            RowRef::Window { sess, window } => {
-                let target = crate::mux::window_target(&sess.name, window);
+            // A window or loading card creates a new WINDOW in its session.
+            RowRef::Window { sess, .. } | RowRef::Loading { sess } => {
                 Some(Modal::Input(Input::new(
-                    InputMode::SplitWindow,
-                    " split [v]ertical / [h]orizontal (default v)".into(),
+                    InputMode::NewWindow,
+                    format!(" new window in {} (name optional)", sess.name),
                     String::new(),
                     Some(sess.source.clone()),
                     Some(sess),
-                    Some(target),
+                    None,
                 )))
             }
-            RowRef::Loading => None,
         };
     }
 
@@ -252,7 +223,6 @@ impl Switcher {
                     }
                     InputMode::New => self.queue_create(source, &val, state),
                     InputMode::NewWindow => self.queue_new_window(source, sess, &val, state),
-                    InputMode::SplitWindow => self.queue_split(source, sess, target, &val, state),
                     InputMode::Rename => {
                         if target.is_some() {
                             self.queue_rename_window(source, sess, target, &val, state)
@@ -335,29 +305,6 @@ impl Switcher {
             source,
             session: sess.name,
             name: name.to_string(),
-        })
-    }
-
-    /// Resolves a split of the captured window target (the `n` action on a window
-    /// row) into an [`Action::SplitWindow`]. The direction defaults to vertical
-    /// unless the buffer starts with `h`.
-    fn queue_split(
-        &mut self,
-        source: Option<String>,
-        sess: Option<Session>,
-        target: Option<String>,
-        dir: &str,
-        state: &mut crate::state::State,
-    ) -> Vec<Command> {
-        let (Some(source), Some(sess), Some(target)) = (source, sess, target) else {
-            return Vec::new();
-        };
-        let vertical = !dir.trim().eq_ignore_ascii_case("h");
-        state.apply(Action::SplitWindow {
-            source,
-            target,
-            session: sess.name,
-            vertical,
         })
     }
 
@@ -462,7 +409,7 @@ impl Switcher {
     pub(super) fn row_of_session(&self, address: &str) -> Option<usize> {
         self.rows
             .iter()
-            .position(|r| matches!(&r.reference, RowRef::Session(s) if s.address() == address))
+            .position(|r| session_addr_of(&r.reference).as_deref() == Some(address))
     }
 
     // --- kill (confirm popup) -----------------------------------------------
@@ -473,10 +420,7 @@ impl Switcher {
             Some(RowRef::Host { .. }) => {
                 state.flash("cannot kill a host");
             }
-            Some(RowRef::Session(sess)) => {
-                state.modal = Some(Modal::Kill(PendingKill::Session(sess)));
-            }
-            Some(RowRef::Window { sess, window }) => {
+            Some(RowRef::Window { sess, window, .. }) => {
                 let target = crate::mux::window_target(&sess.name, window);
                 state.modal = Some(Modal::Kill(PendingKill::Window {
                     source: sess.source.clone(),
@@ -484,7 +428,11 @@ impl Switcher {
                     target,
                 }));
             }
-            _ => {}
+            // A loading card (no window resolved) kills the whole session.
+            Some(RowRef::Loading { sess }) => {
+                state.modal = Some(Modal::Kill(PendingKill::Session(sess)));
+            }
+            None => {}
         }
     }
 

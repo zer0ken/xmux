@@ -7,33 +7,18 @@ impl Switcher {
         self.tree_inner.contains(Position { x: col, y: row })
     }
 
-    /// The tree row index under a 0-based screen `(col, row)`, or `None` if it is outside the
-    /// tree or past its rows. Layout-aware: in Side the tree is one scrolled vertical list
-    /// (the `list_state` offset maps the row); in Top it is per-host columns, so the column
-    /// under `col` picks the host segment and the row within it maps to that host's rows.
-    ///
-    /// The Top mapping assumes each column starts at its segment top (offset 0), which holds
-    /// for every column except a selected one tall enough to have scrolled — an edge case,
-    /// since a click usually targets a different column/row than the current selection.
+    /// The card index under a 0-based screen `(col, row)`, or `None` if it is outside the
+    /// nav list or past its cards. Both layouts render one vertically-scrolling list of
+    /// 2-row cards, so the screen-row delta maps to a card via the `list_state` offset (an
+    /// item index) plus the row offset divided by the card height. ratatui never partial-
+    /// scrolls an item, so the first visible card always starts at the region's top edge.
     fn row_at(&self, col: u16, row: u16) -> Option<usize> {
         if !self.in_tree(col, row) {
             return None;
         }
         let row_in = row.saturating_sub(self.tree_inner.y) as usize;
-        match self.layout {
-            ViewLayout::Side => Some(self.list_state.offset() + row_in),
-            ViewLayout::Top => {
-                let (segs, col_w, per_page) = self.top_columns(self.tree_inner);
-                if segs.is_empty() {
-                    return None;
-                }
-                let first = (self.selected_host_index(&segs) / per_page) * per_page;
-                let col_index = (col.saturating_sub(self.tree_inner.x) / col_w) as usize;
-                let &(s, e) = segs.get(first + col_index)?;
-                let idx = s + row_in;
-                (idx < e).then_some(idx)
-            }
-        }
+        let idx = self.list_state.offset() + row_in / CARD_H as usize;
+        (idx < self.rows.len()).then_some(idx)
     }
 
     /// Single click: move the selection to the clicked row (select; never attach).
@@ -53,8 +38,8 @@ impl Switcher {
         self.mouse_select(col, row, state);
     }
 
-    /// Scroll wheel: move the selection exactly as ↑/↓ do (`nav_vertical`) — siblings in
-    /// Side, within the host column in Top — so the wheel and the arrows never diverge.
+    /// Scroll wheel: move the selection exactly as ↑/↓ do (`nav_vertical`) — one card up
+    /// or down the flat list — so the wheel and the arrows never diverge.
     pub fn mouse_scroll(&mut self, down: bool, state: &crate::state::State) {
         self.nav_vertical(if down { 1 } else { -1 }, state);
     }
@@ -138,7 +123,7 @@ impl Switcher {
                 // select-window lands) would yank the selection back to the session's previous
                 // active window — so focusing a different window of the already-displayed
                 // session did nothing. The real select-window follows from the selection.
-                if let RowRef::Window { sess, window } = &menu.target {
+                if let RowRef::Window { sess, window, .. } = &menu.target {
                     self.set_active_window(&sess.source, &sess.name, *window, state);
                 }
                 MenuOutcome::FocusTerminal

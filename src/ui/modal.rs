@@ -164,7 +164,6 @@ pub(crate) enum InputMode {
     Filter,
     New,
     NewWindow,
-    SplitWindow,
     Rename,
 }
 
@@ -181,7 +180,8 @@ pub(crate) struct Input {
     /// moved the selection by the time they pressed Enter.
     pub(crate) source: Option<String>,
     pub(crate) sess: Option<Session>,
-    /// The split target (`session:window`) for [`InputMode::SplitWindow`].
+    /// The window target (`session:window`) for a window rename ([`InputMode::Rename`]
+    /// on a window card); `None` for a session rename.
     pub(crate) target: Option<String>,
 }
 
@@ -353,9 +353,10 @@ pub(crate) fn menu_items(target: &RowRef) -> Vec<MenuItem> {
     use MenuItem::*;
     match target {
         RowRef::Host { .. } => vec![NewSession],
-        RowRef::Session(_) => vec![Focus, NewWindow, Rename, Kill],
-        RowRef::Window { .. } => vec![Focus, Rename, Kill],
-        RowRef::Loading => Vec::new(),
+        RowRef::Window { .. } => vec![Focus, NewWindow, Rename, Kill],
+        // A loading card can only be focused (attach the session); its windows are
+        // not yet resolved, so window-level actions are unavailable.
+        RowRef::Loading { .. } => vec![Focus],
     }
 }
 
@@ -364,9 +365,8 @@ pub(crate) fn menu_items(target: &RowRef) -> Vec<MenuItem> {
 pub(crate) fn menu_title(target: &RowRef) -> String {
     match target {
         RowRef::Host { source, .. } => source.clone(),
-        RowRef::Session(s) => s.name.clone(),
-        RowRef::Window { sess, window } => crate::mux::window_target(&sess.name, *window),
-        RowRef::Loading => String::new(),
+        RowRef::Window { sess, window, .. } => crate::mux::window_target(&sess.name, *window),
+        RowRef::Loading { sess } => sess.name.clone(),
     }
 }
 
@@ -438,21 +438,15 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
     // navigation and the `/` filter stay bare.
     let rows: Vec<HelpRow> = vec![
         HelpRow::Head("tree".into()),
-        HelpRow::Key("↑/↓ · j/k".into(), "move between siblings".into()),
-        HelpRow::Key(
-            "→/l · ←/h".into(),
-            "descend / ascend (on a host: expand / collapse)".into(),
-        ),
-        HelpRow::Note("portrait: ↑↓ within a host, ←→ between host columns"),
-        HelpRow::Key("Space".into(), "fold / unfold the selected host".into()),
+        HelpRow::Key("↑/↓ · j/k".into(), "move up / down the list".into()),
         HelpRow::Key("PgUp/PgDn".into(), "jump by 10".into()),
-        HelpRow::Key("Home/End".into(), "first / last node".into()),
-        HelpRow::Key("1…9".into(), "jump to that numbered row".into()),
-        HelpRow::Key(format!("{p} n"), "new (session / window, by level)".into()),
+        HelpRow::Key("Home/End".into(), "first / last card".into()),
+        HelpRow::Key("1…9".into(), "jump to that numbered card".into()),
         HelpRow::Key(
-            format!("{p} R"),
-            "rename the focused session or window".into(),
+            format!("{p} n"),
+            "new: session (on a host) / window (on a card)".into(),
         ),
+        HelpRow::Key(format!("{p} R"), "rename the window (or session)".into()),
         HelpRow::Key(format!("{p} x"), "kill it (y / n confirm)".into()),
         HelpRow::Key("/".into(), "fuzzy filter <source>/<name>".into()),
         HelpRow::Key(format!("{p} r"), "re-scan every host".into()),
@@ -705,7 +699,6 @@ fn input_title(mode: InputMode) -> &'static str {
         InputMode::Filter => "filter",
         InputMode::New => "new session",
         InputMode::NewWindow => "new window",
-        InputMode::SplitWindow => "split",
         InputMode::Rename => "rename",
     }
 }
@@ -781,7 +774,10 @@ mod tests {
         assert!(is_popup_open(&Some(Modal::Help)));
         assert!(!is_menu_active(&Some(Modal::Help)));
         let menu = Menu {
-            target: RowRef::Loading,
+            target: RowRef::Host {
+                source: String::new(),
+                unreachable: false,
+            },
             title: String::new(),
             rect: Rect::default(),
             items: Vec::new(),

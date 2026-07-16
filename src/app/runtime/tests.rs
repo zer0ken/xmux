@@ -350,7 +350,10 @@ async fn host_exited_with_no_sessions_marks_empty_not_unreachable() {
         "an empty mux is reachable, not unreachable"
     );
     let out = dump_screen(&mut switcher, None, 80, 24, &state);
-    assert!(out.contains("empty"), "an empty host reads (empty):\n{out}");
+    assert!(
+        out.contains("no sessions"),
+        "an empty host reads 'no sessions':\n{out}"
+    );
     assert!(
         !out.contains("unreachable"),
         "must NOT read unreachable:\n{out}"
@@ -395,7 +398,7 @@ async fn refresh_after_a_dropped_host_resolves_instead_of_loading_forever() {
         dump_screen(&mut switcher, None, 80, 24, &state).contains("scanning"),
         "scanning after refresh"
     );
-    // The reconnect fails with "no sessions": it must resolve scanning → (empty).
+    // The reconnect fails with "no sessions": it must resolve scanning → empty.
     note_host_exited(
         &mut switcher,
         &mut state,
@@ -405,8 +408,8 @@ async fn refresh_after_a_dropped_host_resolves_instead_of_loading_forever() {
     );
     let out = dump_screen(&mut switcher, None, 80, 24, &state);
     assert!(
-        out.contains("empty"),
-        "failed reconnect resolves to (empty):\n{out}"
+        out.contains("no sessions"),
+        "failed reconnect resolves to an empty host:\n{out}"
     );
     assert!(
         !out.contains("scanning"),
@@ -1475,9 +1478,11 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
     let dir = std::env::temp_dir().join(format!("xmux-ctl-switch-sync-{}", std::process::id()));
 
     sync_selection_from_switcher(&mut state, &sw);
+    // db (last_attached 2) is the recency-preselected top card, so switch to api to
+    // exercise a real selection move.
     dispatch_action(
         Action::Switch {
-            address: "jup/db".into(),
+            address: "jup/api".into(),
         },
         &mut sw,
         &mut state,
@@ -1487,12 +1492,12 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
         (&ops, &op_tx),
     );
 
-    // The switch moved the selection to db; the loop-top derive routes it through
-    // apply(Select) — selection becomes jup/db and the attach is marked pending
+    // The switch moved the selection to api; the loop-top derive routes it through
+    // apply(Select) — selection becomes jup/api and the attach is marked pending
     // (the deadline is armed by the next Tick, not here).
     assert!(sync_selection_from_switcher(&mut state, &sw));
     assert_eq!(state.selection.source, "jup");
-    assert_eq!(state.selection.session, "db");
+    assert_eq!(state.selection.session, "api");
     assert!(state.attach_pending, "Select marks the attach pending");
     assert!(
         state.attach_deadline.is_none(),

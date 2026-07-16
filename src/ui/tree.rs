@@ -5,8 +5,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use unicode_width::UnicodeWidthStr;
-
 use crate::session::{Session, WindowPanes};
 
 /// The sessions of one source. A non-`None` `err` means the host was
@@ -200,43 +198,46 @@ pub fn rename_session(groups: &[Group], address: &str, new_name: &str) -> Vec<Gr
     out
 }
 
-/// What a tree row references. Hosts, sessions, and windows are selectable; panes
-/// and loading placeholders are shown for context but never selectable, so the
-/// selection skips them.
+/// What a navigation card references. Every card is a selectable target: a window
+/// card attaches to that window, a loading card to its session's active window, a
+/// host-state card selects the host (so its landing / unreachable info panel shows).
 #[derive(Clone)]
 pub(crate) enum RowRef {
-    Host {
-        source: String,
-        unreachable: bool,
-    },
-    Session(Session),
+    /// A window card: line1 `{host}/{session}`, line2 `{window}:{name}`.
     Window {
         sess: Session,
         window: i64,
+        name: String,
     },
-    /// A "panes loading…" placeholder under a session whose detail is in flight.
-    Loading,
+    /// A host with no window to show (scanning / unreachable / empty) — the only
+    /// host-level entry, sunk to the bottom of the list.
+    Host { source: String, unreachable: bool },
+    /// A session whose panes are still in flight: a card standing in for its
+    /// windows until they resolve. Attaches to the session's active window.
+    Loading { sess: Session },
 }
 
-/// One flattened tree row. Colour is not carried here — it is a pure function of the
-/// row's level ([`RowRef`] variant) derived at render time, so this model stays
+/// One navigation card: a two-line entry. Colour is not carried here — it is a pure
+/// function of the card's [`RowRef`] kind derived at render time, so this model stays
 /// terminal-free (no `ratatui` dependency) and unit-testable without a backend.
 pub(crate) struct Row {
-    pub(crate) label: String,
-    /// A trailing dim annotation (scanning…, (empty), ⚠ unreachable: …) — kept
-    /// apart from `label` so the name stays in its level colour and the state
-    /// reads dim.
-    pub(crate) status: Option<String>,
-    pub(crate) indent: usize,
+    /// The context line: `{host}/{session}` for a window/loading card, `{host}` for
+    /// a host-state card.
+    pub(crate) line1: String,
+    /// The detail line: `{window}:{name}` for a window card, the host state
+    /// (scanning… / ⚠ unreachable / no sessions) for a host-state card, `loading…`
+    /// for a loading card.
+    pub(crate) line2: String,
     pub(crate) reference: RowRef,
-    /// The active window / active pane of its session — rendered bold+italic (not a
-    /// trailing "(active)" text marker).
+    /// The active window of its session — rendered bold+italic (not a trailing
+    /// "(active)" text marker).
     pub(crate) active: bool,
 }
 
 impl Row {
+    /// Every card is a selectable target.
     pub(crate) fn selectable(&self) -> bool {
-        !matches!(self.reference, RowRef::Loading)
+        true
     }
 }
 
@@ -285,21 +286,6 @@ pub(crate) fn first_visible_session(group: &Group, filter: &str) -> Option<Sessi
     }
 }
 
-/// The dim trailing annotation for a host row: its scan state when it has no sessions
-/// to show — scanning…, ⚠ (unreachable; the reason is shown in the terminal-view info
-/// panel when the host row is selected), or (empty).
-pub(crate) fn host_status(g: &Group, scanning: bool) -> Option<String> {
-    if scanning {
-        Some("scanning…".into())
-    } else if g.err.is_some() {
-        Some("⚠".into())
-    } else if g.sessions.is_empty() {
-        Some("(empty)".into())
-    } else {
-        None
-    }
-}
-
 /// The (source, target) an active-pane attach on `reference` would land on. `target`
 /// empty ⇒ no terminal view (a pane or loading row, or a host with no visible session).
 /// A window target uses the `session:window` grammar. Pure over the inventory.
@@ -313,140 +299,120 @@ pub(crate) fn target_for(reference: &RowRef, groups: &[Group], filter: &str) -> 
             Some(sess) => (sess.source, sess.name),
             None => (String::new(), String::new()),
         },
-        RowRef::Session(s) => (s.source.clone(), s.name.clone()),
-        RowRef::Window { sess, window } => (
+        RowRef::Window { sess, window, .. } => (
             sess.source.clone(),
             crate::mux::window_target(&sess.name, *window),
         ),
-        RowRef::Loading => (String::new(), String::new()),
+        RowRef::Loading { sess } => (sess.source.clone(), sess.name.clone()),
     }
 }
 
-fn plural(n: i64) -> String {
-    if n == 1 {
-        "1 window".to_string()
-    } else {
-        format!("{n} windows")
+/// Pushes a session's cards: one window card per loaded window, or a single loading
+/// card standing in for the session while its panes are in flight.
+fn push_session_cards(
+    rows: &mut Vec<Row>,
+    sess: &Session,
+    panes: &HashMap<String, Vec<WindowPanes>>,
+    panes_loaded: &HashSet<String>,
+) {
+    let addr = sess.address();
+    if panes_loaded.contains(&addr) {
+        if let Some(windows) = panes.get(&addr) {
+            if !windows.is_empty() {
+                for w in windows {
+                    rows.push(Row {
+                        line1: addr.clone(),
+                        line2: format!("{}:{}", w.index, w.name),
+                        reference: RowRef::Window {
+                            sess: sess.clone(),
+                            window: w.index,
+                            name: w.name.clone(),
+                        },
+                        active: w.active,
+                    });
+                }
+                return;
+            }
+        }
     }
+    rows.push(Row {
+        line1: addr,
+        line2: "loading…".into(),
+        reference: RowRef::Loading { sess: sess.clone() },
+        active: false,
+    });
 }
 
-/// A session row's label: the name left-padded to `name_col_width` display columns so
-/// the trailing window count aligns down the column. No "attached" marker — the app
-/// pre-attaches every session, so it would be noise; the active window/pane is shown
-/// bold+italic instead.
-pub(crate) fn session_label(sess: &Session, name_col_width: usize) -> String {
-    let pad = name_col_width.saturating_sub(UnicodeWidthStr::width(sess.name.as_str()));
-    format!(
-        "{}{}   {}",
-        sess.name,
-        " ".repeat(pad),
-        plural(sess.windows)
-    )
-}
-
-// The active window / pane is shown bold+italic (the `Row::active` flag), not with a
-// trailing "(active)" text marker.
-pub(crate) fn window_label(w: &WindowPanes) -> String {
-    format!("window {}: {}", w.index, w.name)
-}
-
-/// Flattens the inventory into display rows: one Host row per visible group, then
-/// (unless the host is scanning or unreachable) a Session row per session, and under
-/// each loaded session its Window and Pane rows — or a single Loading placeholder while
-/// its panes are still in flight. Session labels are padded to the widest visible name's
-/// display width so their window counts align. Colour is derived at render time from
-/// each row's [`RowRef`] level, so this stays terminal-free. Inputs are not mutated.
+/// Flattens the inventory into a flat list of navigation cards: one window card per
+/// window (or a loading card per not-yet-loaded session), emitted in the frozen MRU
+/// `order` (session addresses) so a routine poll never reshuffles the list under the
+/// user; sessions absent from `order` (just appeared) follow in group order. Hosts
+/// with no window to show (scanning / unreachable / empty) get one host-state card
+/// each, sunk to the bottom. Colour is derived at render time from each card's
+/// [`RowRef`] kind, so this stays terminal-free. Inputs are not mutated.
 pub(crate) fn flatten(
     groups: &[Group],
     panes: &HashMap<String, Vec<WindowPanes>>,
     panes_loaded: &HashSet<String>,
     scanning: &HashSet<String>,
     filter: &str,
-    collapsed: &HashSet<String>,
+    order: &[String],
 ) -> Vec<Row> {
     let groups = visible_groups(groups, filter);
-    // A non-empty filter force-expands every host so a buried match is never hidden;
-    // the manual fold set is untouched and re-applies the moment the filter clears.
-    let force_expand = !filter.is_empty();
-
-    let mut name_col_width = 0;
+    // Reachable sessions indexed by address, so the frozen order can emit them directly.
+    let mut by_addr: HashMap<String, &Session> = HashMap::new();
     for g in &groups {
         if g.err.is_some() {
             continue;
         }
         for sess in &g.sessions {
-            name_col_width = name_col_width.max(UnicodeWidthStr::width(sess.name.as_str()));
+            by_addr.insert(sess.address(), sess);
         }
     }
 
     let mut rows = Vec::new();
+    let mut emitted: HashSet<String> = HashSet::new();
+    // 1. Window / loading cards in the frozen MRU order.
+    for addr in order {
+        if let Some(sess) = by_addr.get(addr) {
+            push_session_cards(&mut rows, sess, panes, panes_loaded);
+            emitted.insert(addr.clone());
+        }
+    }
+    // 2. Sessions that appeared since the order was frozen, in group order.
+    for g in &groups {
+        if g.err.is_some() {
+            continue;
+        }
+        for sess in &g.sessions {
+            if emitted.insert(sess.address()) {
+                push_session_cards(&mut rows, sess, panes, panes_loaded);
+            }
+        }
+    }
+    // 3. Host-state cards for hosts with no window to show — sunk to the bottom.
     for g in &groups {
         let is_scanning = scanning.contains(&g.source);
         let unreachable = g.err.is_some();
-        // Only a reachable, non-empty host folds; scanning / unreachable / empty hosts
-        // have no children, so they get no caret. A folded host shows a ▸ caret and a
-        // session count and hides its sessions; an expanded one shows ▾.
-        let foldable = !is_scanning && !unreachable && !g.sessions.is_empty();
-        let folded = foldable && collapsed.contains(&g.source) && !force_expand;
-        let label = if foldable {
-            format!("{} {}", if folded { '▸' } else { '▾' }, g.source)
+        if !unreachable && !g.sessions.is_empty() {
+            continue;
+        }
+        let line2 = if is_scanning {
+            "scanning…".to_string()
+        } else if unreachable {
+            "⚠ unreachable".to_string()
         } else {
-            g.source.clone()
-        };
-        let status = if folded {
-            let n = g.sessions.len();
-            Some(format!("{n} session{}", if n == 1 { "" } else { "s" }))
-        } else {
-            host_status(g, is_scanning)
+            "no sessions".to_string()
         };
         rows.push(Row {
-            label,
-            status,
-            indent: 0,
+            line1: g.source.clone(),
+            line2,
             reference: RowRef::Host {
                 source: g.source.clone(),
                 unreachable,
             },
             active: false,
         });
-        if is_scanning || unreachable || folded {
-            continue;
-        }
-        for sess in &g.sessions {
-            rows.push(Row {
-                label: session_label(sess, name_col_width),
-                status: None,
-                indent: 2,
-                reference: RowRef::Session(sess.clone()),
-                active: false,
-            });
-            if panes_loaded.contains(&sess.address()) {
-                if let Some(windows) = panes.get(&sess.address()) {
-                    for w in windows {
-                        rows.push(Row {
-                            label: window_label(w),
-                            status: None,
-                            indent: 4,
-                            reference: RowRef::Window {
-                                sess: sess.clone(),
-                                window: w.index,
-                            },
-                            active: w.active,
-                        });
-                    }
-                }
-            } else {
-                // Panes still in flight for this session — a dim placeholder stands
-                // where its windows will appear.
-                rows.push(Row {
-                    label: "loading…".into(),
-                    status: None,
-                    indent: 4,
-                    reference: RowRef::Loading,
-                    active: false,
-                });
-            }
-        }
     }
     rows
 }
@@ -838,9 +804,8 @@ mod tests {
     fn kind(r: &RowRef) -> &'static str {
         match r {
             RowRef::Host { .. } => "host",
-            RowRef::Session(_) => "session",
             RowRef::Window { .. } => "window",
-            RowRef::Loading => "loading",
+            RowRef::Loading { .. } => "loading",
         }
     }
 
@@ -886,118 +851,54 @@ mod tests {
     }
 
     #[test]
-    fn flatten_builds_host_session_window_rows() {
-        // Panes are NOT tree rows — a window is a leaf. The tree stops at the window level.
+    fn flatten_emits_a_card_per_window() {
+        // A flat list: one card per window, line1 "{host}/{session}", line2
+        // "{index}:{name}". No host/session rows (the host has sessions to show).
         let (groups, panes, loaded) = loaded_fixture();
-        let rows = flatten(
-            &groups,
-            &panes,
-            &loaded,
-            &HashSet::new(),
-            "",
-            &HashSet::new(),
-        );
+        let rows = flatten(&groups, &panes, &loaded, &HashSet::new(), "", &[]);
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
-        assert_eq!(kinds, vec!["host", "session", "window", "window"]);
-        let indents: Vec<usize> = rows.iter().map(|r| r.indent).collect();
-        assert_eq!(indents, vec![0, 2, 4, 4]);
+        assert_eq!(kinds, vec!["window", "window"]);
+        assert_eq!(rows[0].line1, "jup/api");
+        assert_eq!(rows[0].line2, "0:w0");
+        assert_eq!(rows[1].line2, "1:w1");
     }
 
     #[test]
     fn flatten_marks_active_window() {
         let (groups, panes, loaded) = loaded_fixture();
-        let rows = flatten(
-            &groups,
-            &panes,
-            &loaded,
-            &HashSet::new(),
-            "",
-            &HashSet::new(),
-        );
-        // window 0 is active; window 1 is not. (Panes are not rows.)
+        let rows = flatten(&groups, &panes, &loaded, &HashSet::new(), "", &[]);
+        // window 0 is active; window 1 is not.
         let active: Vec<bool> = rows.iter().map(|r| r.active).collect();
-        //             host   session w0    w1
-        assert_eq!(active, vec![false, false, true, false]);
+        assert_eq!(active, vec![true, false]);
     }
 
     #[test]
-    fn flatten_folds_a_collapsed_host() {
-        let (groups, panes, loaded) = loaded_fixture();
-        let mut collapsed = HashSet::new();
-        collapsed.insert("jup".to_string());
-        let rows = flatten(&groups, &panes, &loaded, &HashSet::new(), "", &collapsed);
-        // Only the host row remains; its session/window rows are hidden.
-        let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
-        assert_eq!(kinds, vec!["host"]);
-        assert!(
-            rows[0].label.starts_with('▸'),
-            "a collapsed host shows the ▸ caret, got {:?}",
-            rows[0].label
-        );
-        assert_eq!(rows[0].status.as_deref(), Some("1 session"));
-    }
-
-    #[test]
-    fn flatten_expanded_foldable_host_shows_open_caret() {
-        let (groups, panes, loaded) = loaded_fixture();
-        let rows = flatten(
-            &groups,
-            &panes,
-            &loaded,
-            &HashSet::new(),
-            "",
-            &HashSet::new(),
-        );
-        assert!(
-            rows[0].label.starts_with('▾'),
-            "an expanded foldable host shows the ▾ caret, got {:?}",
-            rows[0].label
-        );
-    }
-
-    #[test]
-    fn flatten_filter_force_expands_a_collapsed_host() {
-        let (groups, panes, loaded) = loaded_fixture();
-        let mut collapsed = HashSet::new();
-        collapsed.insert("jup".to_string());
-        // A non-empty filter must surface buried matches, so it overrides the fold.
-        let rows = flatten(&groups, &panes, &loaded, &HashSet::new(), "jup", &collapsed);
-        let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
-        assert_eq!(kinds, vec!["host", "session", "window", "window"]);
-        assert!(
-            rows[0].label.starts_with('▾'),
-            "a filtered host is force-expanded (▾), got {:?}",
-            rows[0].label
-        );
-    }
-
-    #[test]
-    fn flatten_shows_loading_placeholder_when_panes_unloaded() {
+    fn flatten_loading_card_when_panes_unloaded() {
         let groups = vec![Group {
             source: "jup".into(),
             err: None,
             sessions: vec![sess("jup", "api", 0)],
         }];
-        // panes_loaded does not contain the address → a single Loading row under the session.
+        // panes_loaded does not contain the address → one loading card for the session.
         let rows = flatten(
             &groups,
             &HashMap::new(),
             &HashSet::new(),
             &HashSet::new(),
             "",
-            &HashSet::new(),
+            &[],
         );
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
-        assert_eq!(kinds, vec!["host", "session", "loading"]);
-        assert_eq!(rows[2].indent, 4);
+        assert_eq!(kinds, vec!["loading"]);
+        assert_eq!(rows[0].line1, "jup/api");
     }
 
     #[test]
-    fn flatten_skips_session_rows_while_scanning() {
+    fn flatten_scanning_host_gets_a_host_state_card() {
         let groups = vec![Group {
             source: "jup".into(),
             err: None,
-            sessions: vec![sess("jup", "api", 0)],
+            sessions: vec![],
         }];
         let mut scanning = HashSet::new();
         scanning.insert("jup".to_string());
@@ -1007,12 +908,76 @@ mod tests {
             &HashSet::new(),
             &scanning,
             "",
-            &HashSet::new(),
+            &[],
         );
-        // A scanning host shows only its host row; sessions are not expanded.
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["host"]);
-        assert_eq!(rows[0].status.as_deref(), Some("scanning…"));
+        assert_eq!(rows[0].line1, "jup");
+        assert_eq!(rows[0].line2, "scanning…");
+    }
+
+    #[test]
+    fn flatten_empty_and_unreachable_hosts_get_host_state_cards() {
+        let groups = vec![
+            Group {
+                source: "empty".into(),
+                err: None,
+                sessions: vec![],
+            },
+            Group {
+                source: "dead".into(),
+                err: Some("refused".into()),
+                sessions: vec![],
+            },
+        ];
+        let rows = flatten(
+            &groups,
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            "",
+            &[],
+        );
+        let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
+        assert_eq!(kinds, vec!["host", "host"]);
+        assert_eq!(rows[0].line1, "empty");
+        assert_eq!(rows[0].line2, "no sessions");
+        assert_eq!(rows[1].line1, "dead");
+        assert_eq!(rows[1].line2, "⚠ unreachable");
+        assert!(matches!(
+            rows[1].reference,
+            RowRef::Host {
+                unreachable: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn flatten_follows_the_frozen_order() {
+        // Two loaded single-window sessions; the frozen order lists the second before
+        // the first, and the window cards come out in that order (no re-sort).
+        let groups = vec![Group {
+            source: "h".into(),
+            err: None,
+            sessions: vec![sess("h", "a", 0), sess("h", "b", 0)],
+        }];
+        let mut panes = HashMap::new();
+        panes.insert(
+            "h/a".to_string(),
+            vec![win(0, "wa", true, vec![pane(0, true, "sh")])],
+        );
+        panes.insert(
+            "h/b".to_string(),
+            vec![win(0, "wb", true, vec![pane(0, true, "sh")])],
+        );
+        let mut loaded = HashSet::new();
+        loaded.insert("h/a".to_string());
+        loaded.insert("h/b".to_string());
+        let order = vec!["h/b".to_string(), "h/a".to_string()];
+        let rows = flatten(&groups, &panes, &loaded, &HashSet::new(), "", &order);
+        let line1s: Vec<&str> = rows.iter().map(|r| r.line1.as_str()).collect();
+        assert_eq!(line1s, vec!["h/b", "h/a"]);
     }
 
     #[test]
@@ -1035,78 +1000,5 @@ mod tests {
             sessions: vec![sess("jup", "api", 0)],
         };
         assert!(first_visible_session(&dead, "").is_none());
-    }
-
-    #[test]
-    fn host_status_reports_scanning_unreachable_empty() {
-        let g = Group {
-            source: "jup".into(),
-            err: None,
-            sessions: vec![sess("jup", "api", 0)],
-        };
-        assert_eq!(host_status(&g, true).as_deref(), Some("scanning…"));
-        let dead = Group {
-            source: "jup".into(),
-            err: Some("refused".into()),
-            sessions: vec![],
-        };
-        assert_eq!(host_status(&dead, false).as_deref(), Some("⚠"));
-        let empty = Group {
-            source: "jup".into(),
-            err: None,
-            sessions: vec![],
-        };
-        assert_eq!(host_status(&empty, false).as_deref(), Some("(empty)"));
-        assert_eq!(host_status(&g, false), None);
-    }
-
-    #[test]
-    fn session_label_pads_by_display_width_not_char_count() {
-        // "한국" is 2 chars but display width 4; "api" is width 3. The name column
-        // sizes to the WIDER display width (4), so both labels occupy equal width and
-        // their trailing window counts align.
-        let cjk = Session {
-            source: "jup".into(),
-            name: "한국".into(),
-            windows: 2,
-            ..Default::default()
-        };
-        let api = Session {
-            source: "jup".into(),
-            name: "api".into(),
-            windows: 2,
-            ..Default::default()
-        };
-        // Direct: padded to the same column width.
-        assert_eq!(
-            UnicodeWidthStr::width(session_label(&api, 4).as_str()),
-            UnicodeWidthStr::width(session_label(&cjk, 4).as_str()),
-            "both labels occupy the same display width at column width 4"
-        );
-        // Via flatten: it computes the column width from the widest name, so the two
-        // session rows come out equal-width without any explicit width argument.
-        let groups = vec![Group {
-            source: "jup".into(),
-            err: None,
-            sessions: vec![cjk.clone(), api.clone()],
-        }];
-        let rows = flatten(
-            &groups,
-            &HashMap::new(),
-            &HashSet::new(),
-            &HashSet::new(),
-            "",
-            &HashSet::new(),
-        );
-        let labels: Vec<u16> = rows
-            .iter()
-            .filter(|r| matches!(r.reference, RowRef::Session(_)))
-            .map(|r| UnicodeWidthStr::width(r.label.as_str()) as u16)
-            .collect();
-        assert_eq!(labels.len(), 2);
-        assert_eq!(
-            labels[0], labels[1],
-            "flatten pads session labels to a common display width"
-        );
     }
 }

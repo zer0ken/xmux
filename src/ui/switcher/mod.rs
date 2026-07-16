@@ -5,7 +5,7 @@
 //! that draws to either the live terminal or a headless `TestBackend` (the
 //! control channel's `dump`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
@@ -27,6 +27,11 @@ pub use crate::ui::ops::{run_op, OpResult, Ops};
 
 /// Tree pane width: border + 1-cell inner padding each side + content.
 pub const TREE_WIDTH: u16 = 48;
+
+/// A navigation card is two screen rows tall (line1 context, line2 detail). The
+/// renderer emits 2-line list items and mouse hit-testing divides the screen-row
+/// delta by this to map a click to a card.
+pub(super) const CARD_H: u16 = 2;
 
 // Per-level node colours, so the four tree levels read apart at a glance.
 const COLOR_HOST: Color = Color::Yellow;
@@ -167,7 +172,6 @@ pub struct Scan {
 struct PriorFocus {
     reference: Option<RowRef>,
     selected: usize,
-    indent: usize,
 }
 
 /// The terminal-view target whose active pane attaching here would land on.
@@ -192,11 +196,12 @@ pub struct Switcher {
 
     rows: Vec<Row>,
     selected: usize,
-    /// Host sources the user has folded in the tree: their session/window rows are
-    /// hidden and the host row shows a ▸ caret + session count. A non-empty filter
-    /// force-expands everything (see [`tree::flatten`]); the set persists so folds
-    /// return when the filter clears.
-    collapsed: HashSet<String>,
+    /// The frozen MRU order of session addresses the flat card list follows. Rebuilt
+    /// from global recency while any host is still scanning, then held so a routine
+    /// poll never reshuffles cards under the user (xmux pre-attaches sessions, which
+    /// churns `last_attached`); newly-appeared sessions append by recency. See
+    /// [`Switcher::reorder`].
+    nav_order: Vec<String>,
 
     terminal_view_target: TerminalViewTarget,
 
@@ -232,7 +237,7 @@ impl Switcher {
             reattach_kick: false,
             rows: Vec::new(),
             selected: 0,
-            collapsed: HashSet::new(),
+            nav_order: Vec::new(),
             terminal_view_target: TerminalViewTarget::default(),
             list_state: ListState::default(),
             tree_inner: Rect::default(),
@@ -299,19 +304,19 @@ impl Switcher {
                 let addr = sess.address();
                 self.rows
                     .iter()
-                    .any(|r| matches!(&r.reference, RowRef::Session(s) if s.address() == addr))
+                    .any(|r| session_addr_of(&r.reference).as_deref() == Some(addr.as_str()))
             }
             PendingKill::Window { source, target, .. } => self.rows.iter().any(|r| {
-                matches!(&r.reference, RowRef::Window { sess, window }
+                matches!(&r.reference, RowRef::Window { sess, window, .. }
                     if sess.source == *source && crate::mux::window_target(&sess.name, *window) == *target)
             }),
-            // The pane target has no tree row of its own (panes are display-only); the
-            // confirm stays valid while the session it belongs to is still shown.
+            // The pane target has no card of its own (panes are display-only); the
+            // confirm stays valid while a card of the session it belongs to is shown.
             PendingKill::Pane { source, session, .. } => {
                 let addr = crate::session::address_of(source, session);
                 self.rows
                     .iter()
-                    .any(|r| matches!(&r.reference, RowRef::Session(s) if s.address() == addr))
+                    .any(|r| session_addr_of(&r.reference).as_deref() == Some(addr.as_str()))
             }
         }
     }
@@ -328,19 +333,21 @@ impl Switcher {
             .rows
             .get(self.selected)
             .and_then(|r| match &r.reference {
-                RowRef::Session(_) | RowRef::Window { .. } => Some(r.reference.clone()),
-                _ => None,
+                RowRef::Window { .. } | RowRef::Loading { .. } => Some(r.reference.clone()),
+                RowRef::Host { .. } => None,
             });
 
-        // Pure row generation lives in `tree::flatten`; rebuild orchestrates
-        // capture → flatten → preselect → restore around it.
+        // Refresh the frozen MRU order, then flatten follows it. Pure row generation
+        // lives in `tree::flatten`; rebuild orchestrates capture → order → flatten →
+        // preselect → restore around it.
+        self.reorder(state);
         let rows = tree::flatten(
             &state.groups,
             &state.panes,
             &state.panes_loaded,
             &state.scanning,
             &state.filter,
-            &self.collapsed,
+            &self.nav_order,
         );
 
         self.rows = rows;
@@ -364,6 +371,43 @@ impl Switcher {
         self.set_selected(target, state);
     }
 
+    /// Refreshes the frozen MRU order (`nav_order`) the flat card list follows.
+    /// While any host is still scanning the order is rebuilt from global recency each
+    /// time; once every host has settled it is held — existing entries keep their
+    /// positions so a routine poll never reshuffles cards under the user (xmux
+    /// pre-attaches sessions, churning `last_attached`), and sessions that appeared
+    /// since are appended by recency (newest first).
+    fn reorder(&mut self, state: &crate::state::State) {
+        if !state.scanning.is_empty() {
+            self.nav_order.clear();
+        }
+        let mut recency: HashMap<String, i64> = HashMap::new();
+        for g in &state.groups {
+            if g.err.is_some() {
+                continue;
+            }
+            for s in &g.sessions {
+                recency.insert(s.address(), s.last_attached);
+            }
+        }
+        // Existing entries still present keep their positions (no churn on poll).
+        let mut next: Vec<String> = self
+            .nav_order
+            .iter()
+            .filter(|a| recency.contains_key(*a))
+            .cloned()
+            .collect();
+        // Sessions new since the freeze append by recency desc (ties by address).
+        let mut newcomers: Vec<String> = recency
+            .keys()
+            .filter(|a| !next.contains(*a))
+            .cloned()
+            .collect();
+        newcomers.sort_by(|a, b| recency[b].cmp(&recency[a]).then_with(|| a.cmp(b)));
+        next.extend(newcomers);
+        self.nav_order = next;
+    }
+
     // --- selection / navigation --------------------------------------------
 
     fn selectable_indices(&self) -> Vec<usize> {
@@ -371,18 +415,6 @@ impl Switcher {
             .iter()
             .enumerate()
             .filter(|(_, r)| r.selectable())
-            .map(|(i, _)| i)
-            .collect()
-    }
-
-    /// The row index of each host (indent-0 Host row), in tree order. Each host owns the
-    /// contiguous run of rows from its index to the next host's — its whole subtree — which
-    /// the Top layout paints as one column and the Top-mode navigation moves within/between.
-    fn host_starts(&self) -> Vec<usize> {
-        self.rows
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| matches!(r.reference, RowRef::Host { .. }))
             .map(|(i, _)| i)
             .collect()
     }
@@ -409,79 +441,12 @@ impl Switcher {
         self.set_selected(sel[next as usize], state);
     }
 
-    /// `→`: descend to the FIRST child of the selected node (host→its first session,
-    /// session→its first window). The flattened rows place children immediately after
-    /// their parent at a deeper indent, so the child is the next row when its indent
-    /// is greater. A no-op when the only children are non-selectable (a window's
-    /// panes) or there are none.
-    fn descend(&mut self, state: &crate::state::State) {
-        let cur = self.selected;
-        let Some(cur_indent) = self.rows.get(cur).map(|r| r.indent) else {
-            return;
-        };
-        if let Some(child) = self.rows.get(cur + 1) {
-            if child.indent > cur_indent && child.selectable() {
-                self.user_moved = true;
-                self.set_selected(cur + 1, state);
-            }
-        }
-    }
-
-    /// `←`: ascend to the PARENT of the selected node (window→its session, session→its
-    /// host) — the nearest preceding row at a shallower indent. A no-op on a host row.
-    fn ascend(&mut self, state: &crate::state::State) {
-        let cur = self.selected;
-        let Some(cur_indent) = self.rows.get(cur).map(|r| r.indent) else {
-            return;
-        };
-        if cur_indent == 0 {
-            return;
-        }
-        for i in (0..cur).rev() {
-            if self.rows[i].indent < cur_indent {
-                self.user_moved = true;
-                self.set_selected(i, state);
-                return;
-            }
-        }
-    }
-
     /// Vertical navigation shared by ↑/↓, k/j, AND the plain scroll wheel, so the wheel
-    /// moves the selection exactly as the arrows do. Follows the on-screen shape: prev/next
-    /// SIBLING in the Side list, or within the current host's column in the Top layout.
+    /// moves the selection exactly as the arrows do: prev/next card linearly across the
+    /// whole flat list (wraps). The flat card list has no levels, so this is a plain
+    /// linear step — the same as [`Switcher::move_selection`].
     fn nav_vertical(&mut self, delta: isize, state: &crate::state::State) {
-        if self.layout == ViewLayout::Top {
-            self.move_within_host(delta, state);
-        } else {
-            self.move_sibling(delta, state);
-        }
-    }
-
-    /// ↑/↓ (or k/j): move to the next/prev sibling at the current tree level — the
-    /// next selectable row at the SAME indent level (e.g. session→next session,
-    /// skipping windows/panes nested under it). Wraps like `move_selection`.
-    fn move_sibling(&mut self, delta: isize, state: &crate::state::State) {
-        let Some(cur_indent) = self.rows.get(self.selected).map(|r| r.indent) else {
-            return;
-        };
-        let siblings: Vec<usize> = self
-            .rows
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| r.indent == cur_indent && r.selectable())
-            .map(|(i, _)| i)
-            .collect();
-        if siblings.is_empty() {
-            return;
-        }
-        self.user_moved = true;
-        let pos = siblings
-            .iter()
-            .position(|&i| i == self.selected)
-            .unwrap_or(0) as isize;
-        let n = siblings.len() as isize;
-        let next = ((pos + delta) % n + n) % n;
-        self.set_selected(siblings[next as usize], state);
+        self.move_selection(delta, state);
     }
 
     fn move_to(&mut self, pos: isize, state: &crate::state::State) {
@@ -498,125 +463,6 @@ impl Switcher {
         self.set_selected(sel[idx], state);
     }
 
-    /// The host segment (start, end) the selection currently sits in — the host's row
-    /// index and the next host's (or the row count) — plus that host's ordinal. `None`
-    /// only when there are no host rows at all.
-    fn current_host_segment(&self) -> Option<(usize, usize, usize)> {
-        let hosts = self.host_starts();
-        let hi = hosts.iter().rposition(|&h| h <= self.selected)?;
-        let start = hosts[hi];
-        let end = hosts.get(hi + 1).copied().unwrap_or(self.rows.len());
-        Some((hi, start, end))
-    }
-
-    /// Top-layout `←`/`→`: move to the previous/next host column, landing on that host's
-    /// row (wraps). In the per-host columnar layout this is the horizontal move between
-    /// columns; the render pages the columns so the newly selected host stays on screen.
-    fn move_host(&mut self, delta: isize, state: &crate::state::State) {
-        let hosts = self.host_starts();
-        if hosts.is_empty() {
-            return;
-        }
-        let cur = hosts.iter().rposition(|&h| h <= self.selected).unwrap_or(0) as isize;
-        self.user_moved = true;
-        let n = hosts.len() as isize;
-        let next = ((cur + delta) % n + n) % n;
-        self.set_selected(hosts[next as usize], state);
-    }
-
-    /// Top-layout `↑`/`↓`: move within the current host's column — the previous/next
-    /// selectable row inside that host's contiguous segment (its host row, sessions, and
-    /// their windows), wrapping within the host. Left/right (`move_host`) crosses columns.
-    fn move_within_host(&mut self, delta: isize, state: &crate::state::State) {
-        let Some((_, start, end)) = self.current_host_segment() else {
-            return;
-        };
-        let within: Vec<usize> = (start..end)
-            .filter(|&i| self.rows[i].selectable())
-            .collect();
-        if within.is_empty() {
-            return;
-        }
-        self.user_moved = true;
-        let pos = within.iter().position(|&i| i == self.selected).unwrap_or(0) as isize;
-        let n = within.len() as isize;
-        let next = ((pos + delta) % n + n) % n;
-        self.set_selected(within[next as usize], state);
-    }
-
-    /// Sets a host's fold state and re-flattens, then snaps the selection back onto
-    /// that host row (matched by source) since `rebuild` would otherwise re-preselect
-    /// away from it.
-    fn set_host_fold(&mut self, source: String, collapse: bool, state: &mut crate::state::State) {
-        if collapse {
-            self.collapsed.insert(source.clone());
-        } else {
-            self.collapsed.remove(&source);
-        }
-        self.user_moved = true;
-        self.rebuild(state);
-        if let Some(pos) = self
-            .rows
-            .iter()
-            .position(|r| matches!(&r.reference, RowRef::Host { source: s, .. } if *s == source))
-        {
-            self.set_selected(pos, state);
-        }
-    }
-
-    /// The selected row is a host that currently shows child rows (expanded, non-empty):
-    /// the next row is deeper. Decides whether `←` collapses the host or ascends.
-    fn host_has_visible_children(&self) -> bool {
-        match (
-            self.rows.get(self.selected),
-            self.rows.get(self.selected + 1),
-        ) {
-            (Some(cur), Some(next)) => next.indent > cur.indent,
-            _ => false,
-        }
-    }
-
-    /// `→`/`l` on a collapsed host expands it; otherwise descend into the first child.
-    fn expand_or_descend(&mut self, state: &mut crate::state::State) {
-        let expand = match self.current_ref() {
-            Some(RowRef::Host { source, .. }) if self.collapsed.contains(source) => {
-                Some(source.clone())
-            }
-            _ => None,
-        };
-        match expand {
-            Some(source) => self.set_host_fold(source, false, state),
-            None => self.descend(state),
-        }
-    }
-
-    /// `←`/`h` on an expanded host collapses it; otherwise ascend to the parent.
-    fn collapse_or_ascend(&mut self, state: &mut crate::state::State) {
-        let collapse = match self.current_ref() {
-            Some(RowRef::Host { source, .. }) if self.host_has_visible_children() => {
-                Some(source.clone())
-            }
-            _ => None,
-        };
-        match collapse {
-            Some(source) => self.set_host_fold(source, true, state),
-            None => self.ascend(state),
-        }
-    }
-
-    /// Space on a host row toggles its fold.
-    fn toggle_host_fold(&mut self, state: &mut crate::state::State) {
-        let toggle = match self.current_ref() {
-            Some(RowRef::Host { source, .. }) => {
-                Some((source.clone(), !self.collapsed.contains(source)))
-            }
-            _ => None,
-        };
-        if let Some((source, collapse)) = toggle {
-            self.set_host_fold(source, collapse, state);
-        }
-    }
-
     fn current_ref(&self) -> Option<&RowRef> {
         self.rows.get(self.selected).map(|r| &r.reference)
     }
@@ -624,9 +470,8 @@ impl Switcher {
     fn current_source(&self) -> Option<String> {
         match self.current_ref()? {
             RowRef::Host { source, .. } => Some(source.clone()),
-            RowRef::Session(s) => Some(s.source.clone()),
             RowRef::Window { sess, .. } => Some(sess.source.clone()),
-            RowRef::Loading => None,
+            RowRef::Loading { sess } => Some(sess.source.clone()),
         }
     }
 
@@ -635,14 +480,13 @@ impl Switcher {
     /// resolution `target_for` uses. Lets the terminal-view follow descend from a host.
     fn displayed_session(&self, state: &crate::state::State) -> Option<Session> {
         match self.current_ref()? {
-            RowRef::Session(s) => Some(s.clone()),
             RowRef::Window { sess, .. } => Some(sess.clone()),
+            RowRef::Loading { sess } => Some(sess.clone()),
             RowRef::Host { source, .. } => state
                 .groups
                 .iter()
                 .find(|g| &g.source == source)
                 .and_then(|g| tree::first_visible_session(g, &state.filter)),
-            _ => None,
         }
     }
 
@@ -720,17 +564,17 @@ impl Switcher {
         state: &crate::state::State,
     ) -> bool {
         let on_this_session = match self.current_ref() {
-            Some(RowRef::Session(s)) => s.source == source && s.name == session,
             Some(RowRef::Window { sess, .. }) => sess.source == source && sess.name == session,
+            Some(RowRef::Loading { sess }) => sess.source == source && sess.name == session,
             // A host row descends into its displayed (recent) session's active window.
             Some(RowRef::Host { source: src, .. }) => src == source,
-            _ => false,
+            None => false,
         };
         if !on_this_session {
             return false;
         }
         let target = self.rows.iter().position(|r| {
-            matches!(&r.reference, RowRef::Window { sess, window: w }
+            matches!(&r.reference, RowRef::Window { sess, window: w, .. }
                 if sess.source == source && sess.name == session && *w == window)
         });
         match target {
@@ -752,7 +596,7 @@ impl Switcher {
         let target = self
             .rows
             .iter()
-            .position(|r| matches!(&r.reference, RowRef::Session(s) if s.address() == address));
+            .position(|r| session_addr_of(&r.reference).as_deref() == Some(address));
         match target {
             Some(i) if i != self.selected => {
                 self.user_moved = true;
@@ -827,10 +671,10 @@ impl Switcher {
     /// instant that host re-streams.
     pub fn request_rescan(&mut self, state: &mut crate::state::State) {
         let (reselect, parent) = match self.current_ref() {
-            Some(RowRef::Session(s)) => (Some(s.address()), Some(s.source.clone())),
             Some(RowRef::Window { sess, .. }) => (Some(sess.address()), Some(sess.source.clone())),
+            Some(RowRef::Loading { sess }) => (Some(sess.address()), Some(sess.source.clone())),
             Some(RowRef::Host { source, .. }) => (None, Some(source.clone())),
-            _ => (None, None),
+            None => (None, None),
         };
         self.rescan_reselect = reselect;
         state.scanning = state.groups.iter().map(|g| g.source.clone()).collect();
@@ -923,15 +767,13 @@ impl Switcher {
         PriorFocus {
             reference: self.current_ref().cloned(),
             selected: self.selected,
-            indent: self.rows.get(self.selected).map(|r| r.indent).unwrap_or(0),
         }
     }
 
-    /// After a streamed update rebuilds the rows: if the user has driven the
-    /// selection, keep it on the focused node when it survives; if the node
-    /// vanished (killed/removed), land on the previous sibling at the same
-    /// indent or, when there is none, the parent. An untouched selection follows
-    /// the rebuild's recency preselect.
+    /// After a streamed update rebuilds the cards: if the user has driven the
+    /// selection, keep it on the focused card when it survives; if the card
+    /// vanished (killed/removed), land on the previous card. An untouched selection
+    /// follows the rebuild's recency preselect.
     fn restore_focus(&mut self, prior: PriorFocus, state: &crate::state::State) {
         // A pending re-scan reselect returns the selection to its session the instant that
         // session re-streams — but only while the selection still sits where the re-scan
@@ -943,15 +785,15 @@ impl Switcher {
                 Some(RowRef::Host { source, .. }) => {
                     crate::session::source_of(&addr) == source.as_str()
                 }
-                Some(RowRef::Session(s)) => s.address() == addr,
                 Some(RowRef::Window { sess, .. }) => sess.address() == addr,
-                _ => false,
+                Some(RowRef::Loading { sess }) => sess.address() == addr,
+                None => false,
             };
             if parked {
                 if let Some(i) = self
                     .rows
                     .iter()
-                    .position(|r| matches!(&r.reference, RowRef::Session(s) if s.address() == addr))
+                    .position(|r| session_addr_of(&r.reference).as_deref() == Some(addr.as_str()))
                 {
                     self.rescan_reselect = None;
                     self.set_selected(i, state);
@@ -971,32 +813,19 @@ impl Switcher {
             self.set_selected(i, state);
             return;
         }
-        // The focused node vanished (killed/removed): land on the previous sibling
-        // at its level, else the parent.
-        if let Some(i) = self.fallback_after_removal(prior.indent, prior.selected) {
+        // The focused card vanished (killed/removed): land on the previous card.
+        if let Some(i) = self.fallback_after_removal(prior.selected) {
             self.set_selected(i, state);
         }
     }
 
-    /// The row to land on after the focused node vanished: the previous selectable
-    /// sibling at `indent`, else the nearest preceding selectable row at a shallower
-    /// indent (the parent). Operates on the freshly rebuilt `self.rows`.
-    fn fallback_after_removal(&self, indent: usize, prior_selected: usize) -> Option<usize> {
-        let prior = &self.rows[..prior_selected.min(self.rows.len())];
-        let prev_sibling = prior
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, r)| r.indent == indent && r.selectable())
-            .map(|(i, _)| i);
-        prev_sibling.or_else(|| {
-            prior
-                .iter()
-                .enumerate()
-                .rev()
-                .find(|(_, r)| r.indent < indent && r.selectable())
-                .map(|(i, _)| i)
-        })
+    /// The card to land on after the selected card vanished (killed/removed): the
+    /// previous card, clamped into range. Operates on the freshly rebuilt `self.rows`.
+    fn fallback_after_removal(&self, prior_selected: usize) -> Option<usize> {
+        if self.rows.is_empty() {
+            return None;
+        }
+        Some(prior_selected.saturating_sub(1).min(self.rows.len() - 1))
     }
 
     /// The row index targeting the same node as `focus`, if it survives a
@@ -1025,22 +854,40 @@ fn pad_label(s: &str) -> String {
     format!(" {s} ")
 }
 
-/// Whether two row references target the same selectable node (host by source,
-/// session/window by address), used to keep the selection across a re-scan.
+/// The session address a card belongs to (window / loading), or `None` for a
+/// host-state card. Lets selection tracking, kill-confirm survival, and
+/// `select_address` treat any of a session's cards as that session.
+fn session_addr_of(reference: &RowRef) -> Option<String> {
+    match reference {
+        RowRef::Window { sess, .. } | RowRef::Loading { sess } => Some(sess.address()),
+        RowRef::Host { .. } => None,
+    }
+}
+
+/// Whether two card references target the same card across a rebuild (host by source,
+/// window by address+index), so the selection stays put on a poll / re-scan. A loading
+/// card and a window card of the SAME session count as the same node, so the selection
+/// stays on that session as its panes resolve (loading → first window) or clear.
 fn same_node(a: &RowRef, b: &RowRef) -> bool {
     match (a, b) {
         (RowRef::Host { source: x, .. }, RowRef::Host { source: y, .. }) => x == y,
-        (RowRef::Session(x), RowRef::Session(y)) => x.address() == y.address(),
         (
             RowRef::Window {
                 sess: x,
                 window: wx,
+                ..
             },
             RowRef::Window {
                 sess: y,
                 window: wy,
+                ..
             },
         ) => x.address() == y.address() && wx == wy,
+        (RowRef::Loading { sess: x }, RowRef::Loading { sess: y }) => x.address() == y.address(),
+        (RowRef::Loading { sess: x }, RowRef::Window { sess: y, .. })
+        | (RowRef::Window { sess: x, .. }, RowRef::Loading { sess: y }) => {
+            x.address() == y.address()
+        }
         _ => false,
     }
 }
