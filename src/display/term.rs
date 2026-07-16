@@ -130,8 +130,27 @@ pub fn conin_mode() -> u32 {
 /// iteration; it is a cheap mode read and re-applies only on drift. No-op off Windows.
 #[cfg(windows)]
 pub fn ensure_mouse_capture() {
-    use windows_sys::Win32::System::Console::ENABLE_MOUSE_INPUT;
-    if conin_mode() & ENABLE_MOUSE_INPUT == 0 {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use windows_sys::Win32::System::Console::{
+        ENABLE_MOUSE_INPUT, ENABLE_QUICK_EDIT_MODE, ENABLE_VIRTUAL_TERMINAL_INPUT,
+    };
+    // Observe CONIN mode transitions: mouse capture on Windows is fragile (a portable-pty
+    // child spawn can silently clear input bits), so logging exactly which bit drifts —
+    // vt-input / mouse-input / quick-edit — the instant it changes turns an intermittent
+    // "mouse stopped working" report into a pinpointed cause. Logged only on change (silent
+    // in steady state).
+    static LAST: AtomicU32 = AtomicU32::new(u32::MAX);
+    let m = conin_mode();
+    if LAST.swap(m, Ordering::Relaxed) != m {
+        tracing::info!(
+            mode = format!("{m:#010x}"),
+            vt_input = (m & ENABLE_VIRTUAL_TERMINAL_INPUT != 0),
+            mouse_input = (m & ENABLE_MOUSE_INPUT != 0),
+            quick_edit = (m & ENABLE_QUICK_EDIT_MODE != 0),
+            "conin_mode_changed"
+        );
+    }
+    if m & ENABLE_MOUSE_INPUT == 0 {
         let _ = windows_mouse::enable();
     }
 }
