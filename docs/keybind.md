@@ -63,7 +63,7 @@ tree or the live screen holds focus.
 |---|---|
 | `prefix q` | quit xmux (the only quit binding) |
 | `prefix ?` | toggle the keybinding help |
-| `prefix t` | toggle auto-hide-tree (focusing the screen then gives it the full width) |
+| `prefix t` | toggle auto-hide-nav (focusing the screen then gives it the full width) |
 | `prefix h` / `prefix l` | narrow / widen the tree |
 | `prefix Ctrl-←` / `prefix Ctrl-→` | narrow / widen the tree (then a bare `Ctrl-←`/`Ctrl-→` keeps resizing for a moment) |
 | `prefix prefix` | send one literal prefix byte to the focused session's pane |
@@ -111,7 +111,7 @@ mux needs its own mouse mode enabled to use them).
 A running xmux instance listens on a local control socket. Sessions are addressed
 `<source>/<session>` and windows `<source>/<session>:<window>`. It speaks
 navigation/display verbs — `ping`, `status`, `dump`, `rescan`,
-`switch <source>/<session>`, `focus <tree|terminal>`, `width <delta>` (a signed
+`switch <source>/<session>`, `focus <nav|terminal>`, `width <delta>` (a signed
 column delta, not an absolute width), `toggle-auto-hide`, `quit` — and
 session-lifecycle verbs:
 

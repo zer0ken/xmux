@@ -99,7 +99,7 @@ prefix, then:
 |---|---|
 | `prefix q` | quit xmux |
 | `prefix ?` | toggle the keybinding help |
-| `prefix t` | toggle auto-hide-tree (focusing the screen gives it full width) |
+| `prefix t` | toggle auto-hide-nav (focusing the screen gives it full width) |
 | `prefix h` / `prefix l` (or `prefix Ctrl-←/→`) | narrow / widen the tree |
 | `prefix Tab` / arrow / `Esc` | move focus between the tree and the screen |
 | `prefix prefix` | send one literal prefix byte to the focused session |
@@ -131,7 +131,7 @@ exclude = ["bastion"]
 
 [ui]
 prefix = "C-g"                        # xmux's prefix (e.g. C-g, C-Space, C-b)
-auto-hide-tree = false                # initial auto-hide-tree state
+auto-hide-nav = false                # initial auto-hide-nav state
 view-active-border-style = "green"    # focused view-border colour (tmux colour vocabulary)
 view-border-style = "default"         # unfocused view-border colour
 view-border-hover-style = "yellow"    # drag-to-resize hover cue
@@ -142,7 +142,7 @@ Hosts come from `~/.ssh/config` first. Connection details (user, port, key,
 jump host) are taken from there. The config file augments that discovery; it
 never replaces it. Run `xmux doctor` to see the resolved local mux, ssh
 availability, and per-host reachability. Persistent state (last selected
-session, the live auto-hide-tree toggle, logs, and control sockets) lives under
+session, the live auto-hide-nav toggle, logs, and control sockets) lives under
 `~/.xmux/`.
 
 ## Control socket
@@ -150,7 +150,7 @@ session, the live auto-hide-tree toggle, logs, and control sockets) lives under
 A running xmux instance listens on a local socket (`~/.xmux/ctl-<pid>.sock`).
 Sessions are addressed `<source>/<session>` and windows
 `<source>/<session>:<window>`. It speaks navigation/display verbs — `ping`,
-`status`, `dump`, `rescan`, `switch <source>/<session>`, `focus <tree|terminal>`,
+`status`, `dump`, `rescan`, `switch <source>/<session>`, `focus <nav|terminal>`,
 `width <delta>` (adjusts the tree width by a signed column count, a delta rather
 than an absolute width), `toggle-auto-hide`, `quit` — and session-lifecycle verbs:
 
