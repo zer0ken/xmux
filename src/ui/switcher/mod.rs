@@ -650,6 +650,27 @@ impl Switcher {
         matches!(self.current_ref(), Some(RowRef::Host { unreachable, .. }) if *unreachable)
     }
 
+    /// True when the selected row is a REACHABLE host that has finished scanning
+    /// and has no sessions yet. The terminal view then shows a landing panel
+    /// (how to start a session) instead of a blank grid, so a freshly-reachable
+    /// but empty host is never a dead-end blank view.
+    fn current_host_empty(&self, state: &crate::state::State) -> bool {
+        let Some(RowRef::Host {
+            source,
+            unreachable,
+        }) = self.current_ref()
+        else {
+            return false;
+        };
+        if *unreachable || state.scanning.contains(source) {
+            return false;
+        }
+        state
+            .groups
+            .iter()
+            .any(|g| &g.source == source && g.sessions.is_empty())
+    }
+
     // --- preview ------------------------------------------------------------
 
     fn on_focus_changed(&mut self, state: &crate::state::State) {

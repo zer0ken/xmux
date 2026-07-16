@@ -1676,6 +1676,42 @@ async fn create_on_unreachable_host_refused() {
 }
 
 #[tokio::test]
+async fn empty_reachable_host_shows_landing_panel() {
+    // A reachable host with no sessions renders a landing panel (name + how to
+    // start one) in the terminal view, not a blank grid.
+    let scan = Scan {
+        groups: vec![Group {
+            source: "fresh".into(),
+            err: None,
+            sessions: vec![],
+        }],
+        panes: HashMap::new(),
+    };
+    let h = Harness::new(scan);
+    // The lone selectable row is that empty host, so it is auto-selected.
+    assert!(
+        matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "fresh"),
+        "selection is on the empty host row"
+    );
+    assert!(
+        h.text().contains("no sessions yet"),
+        "empty host shows the landing panel:\n{}",
+        h.text()
+    );
+}
+
+#[tokio::test]
+async fn host_with_sessions_has_no_landing_panel() {
+    let mut h = Harness::new(sample());
+    h.key(KeyCode::Home).await; // the local host row (has sessions)
+    assert!(matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "local"));
+    assert!(
+        !h.text().contains("no sessions yet"),
+        "a host with sessions must not show the empty landing"
+    );
+}
+
+#[tokio::test]
 async fn levels_have_distinct_colors() {
     let h = Harness::new(sample());
     assert_eq!(h.tree_fg_of("local"), Some(COLOR_HOST));

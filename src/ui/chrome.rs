@@ -403,6 +403,42 @@ impl Chrome {
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
     }
 
+    /// The terminal-view landing panel for a selected REACHABLE host that has no
+    /// sessions yet: names the host and the keys to start one or rescan, so a
+    /// freshly-reachable but empty host offers a next step rather than a blank grid.
+    pub(crate) fn render_host_landing(&self, frame: &mut Frame, area: Rect, source: &str) {
+        let p = &self.ui_prefix;
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("  {source}"),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "  reachable, no sessions yet",
+                Style::default().add_modifier(Modifier::DIM),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(format!("  {p} n"), Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    "  start a new session",
+                    Style::default().add_modifier(Modifier::DIM),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled(format!("  {p} r"), Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    "  rescan this host",
+                    Style::default().add_modifier(Modifier::DIM),
+                ),
+            ]),
+        ];
+        frame.render_widget(Paragraph::new(Text::from(lines)), area);
+    }
+
     /// The hint_bar's logical text (confirm / flash / scanning / filter / help), fit to
     /// `width`. A flash is returned raw — it may exceed `width`; [`Self::hint_bar_lines`]
     /// wraps it so it never clips.

@@ -73,6 +73,11 @@ impl Switcher {
             state
                 .chrome
                 .render_host_info(frame, term_area, state, &source);
+        } else if self.current_host_empty(state) {
+            // A reachable host with no sessions yet: a calm landing panel (name +
+            // how to start one) rather than a blank grid with no next step.
+            let source = self.current_source().unwrap_or_default();
+            state.chrome.render_host_landing(frame, term_area, &source);
         } else {
             self.render_terminal_view(frame, term_area, grid);
         }
