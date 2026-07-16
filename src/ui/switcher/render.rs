@@ -9,14 +9,14 @@ impl Switcher {
         frame: &mut Frame,
         grid: Option<&crate::display::grid::Grid>,
         terminal_focused: bool,
-        tree_width: u16,
-        tree_height: u16,
+        nav_width: u16,
+        nav_height: u16,
         state: &crate::state::State,
     ) {
         let area = frame.area();
         self.screen_area = area;
         // Cache the stacking so key handling routes the arrows to match what is on screen.
-        self.layout = view_layout(area, tree_width);
+        self.layout = view_layout(area, nav_width);
         // Reset the buffer before painting. The widgets below do not all fill every cell
         // they own — the mux grid only paints its top-left clip (cells past the grid size
         // are skipped), the view border rule sets fg only, and the nav list leaves blank
@@ -25,10 +25,10 @@ impl Switcher {
         // Clearing first makes every unpainted cell default; ratatui still diffs against
         // the last frame, so static content writes nothing (no flicker).
         frame.render_widget(Clear, area);
-        // tree_width == 0 is the "nav hidden" sentinel (terminal view focused + auto-hide):
+        // nav_width == 0 is the "nav hidden" sentinel (terminal view focused + auto-hide):
         // the terminal view owns the whole area — no nav list, no hint_bar, no view border.
-        if tree_width == 0 {
-            self.tree_inner = Rect::default();
+        if nav_width == 0 {
+            self.nav_inner = Rect::default();
             self.render_terminal_view(frame, area, grid);
             if let Some(g) = grid {
                 if !g.hide_cursor() {
@@ -45,8 +45,8 @@ impl Switcher {
         // (Top, for a portrait screen), parted by the view border. The hint bar is normally
         // one row; a long flash wraps, so size it to the wrapped line count (never clipped).
         let hint_bar_h = state.chrome.hint_bar_lines(area.width, state).len().max(1) as u16;
-        let r = compute_regions(area, tree_width, tree_height, hint_bar_h);
-        self.render_tree(frame, r.tree, state);
+        let r = compute_regions(area, nav_width, nav_height, hint_bar_h);
+        self.render_nav(frame, r.tree, state);
         state.chrome.render_hint_bar(frame, r.hint_bar, state);
         // The view border marks focus between the two views (vertical in Side, horizontal in Top).
         state
@@ -85,15 +85,15 @@ impl Switcher {
     /// layouts (the Side column and the portrait Top band differ only in where the region
     /// sits). `list_state` carries the scroll offset so the selected card stays visible;
     /// the selection highlight is ratatui's `highlight_style` over the whole card area.
-    fn render_tree(&mut self, frame: &mut Frame, area: Rect, state: &crate::state::State) {
+    fn render_nav(&mut self, frame: &mut Frame, area: Rect, state: &crate::state::State) {
         // No border box: the list fills its region outright and a single rule
         // (render_view_border) separates it from the terminal view.
-        self.tree_inner = area;
+        self.nav_inner = area;
 
         let spinner_glyph = SPINNER[state.chrome.spinner_frame % SPINNER.len()];
         let jump_digit = self.jump_digits();
         let items: Vec<ListItem> = (0..self.rows.len())
-            .map(|i| self.tree_row_item(i, jump_digit[i], spinner_glyph))
+            .map(|i| self.nav_row_item(i, jump_digit[i], spinner_glyph))
             .collect();
         let list =
             List::new(items).highlight_style(Style::default().add_modifier(Modifier::REVERSED));
@@ -118,7 +118,7 @@ impl Switcher {
     /// card's `{n}:{name}` in window magenta, bold+italic when active; a host-state card's
     /// dim state; a loading card's spinner). The selection highlight comes from the List's
     /// `highlight_style`, so no per-span reverse-video is baked in here.
-    fn tree_row_item(
+    fn nav_row_item(
         &self,
         i: usize,
         digit: Option<char>,

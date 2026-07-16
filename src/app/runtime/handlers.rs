@@ -43,11 +43,11 @@ impl Runtime {
             attach_seq,
             cols,
             body_rows: rows,
-            tree_width,
-            tree_height,
+            nav_width,
+            nav_height,
             ..
         } = self;
-        let (cols, rows, tree_width, tree_height) = (*cols, *rows, *tree_width, *tree_height);
+        let (cols, rows, nav_width, nav_height) = (*cols, *rows, *nav_width, *nav_height);
         match effect {
             EventEffect::ApplyInventory { host, sessions } => {
                 // The reader carried the parsed sessions on the event. Fold them into the
@@ -81,8 +81,8 @@ impl Runtime {
                         attach_seq: &mut *attach_seq,
                         cols,
                         body_rows: rows,
-                        tree_width,
-                        tree_height,
+                        nav_width,
+                        nav_height,
                     };
                     sync_source_terminals(&host, &sessions, &mut ctx);
                 }
@@ -131,7 +131,7 @@ impl Runtime {
                 // now-detected host onto its metadata channel (control client or poll task).
                 detecting.remove(&source);
                 apply_scan_result(hosts, &source, detected);
-                let (vc, vr) = terminal_view_size(cols, rows, tree_width, tree_height);
+                let (vc, vr) = terminal_view_size(cols, rows, nav_width, nav_height);
                 dispatch_detected_host(mgr, hosts, &source, vc, vr);
             }
             EventEffect::SyncPollSessions { source, sessions } => {
@@ -158,8 +158,8 @@ impl Runtime {
                     attach_seq: &mut *attach_seq,
                     cols,
                     body_rows: rows,
-                    tree_width,
-                    tree_height,
+                    nav_width,
+                    nav_height,
                 };
                 sync_source_terminals(&source, &sessions, &mut ctx);
             }
@@ -188,16 +188,16 @@ impl Runtime {
         let (cols, body_rows) = (size.0, size.1.saturating_sub(1)); // status bar = last row
                                                                     // Restore the natural tree width the user last set; clamp a stale out-of-range
                                                                     // value, fall back to the default when none is saved.
-        let tree_width_natural = adjust_tree_width(
-            crate::prefs::load_tree_width(&env.xmux_dir).unwrap_or(crate::ui::switcher::TREE_WIDTH),
+        let nav_width_natural = adjust_nav_width(
+            crate::prefs::load_nav_width(&env.xmux_dir).unwrap_or(crate::ui::switcher::NAV_WIDTH),
             0,
         );
-        let tree_width = tree_width_natural;
+        let nav_width = nav_width_natural;
         // Restore the Top-layout tree height (0 = auto ~40%); a stale value is clamped at
         // render time by compute_regions, so no clamp is needed here.
-        let tree_height = crate::prefs::load_tree_height(&env.xmux_dir).unwrap_or(0);
-        let auto_hide_tree = crate::prefs::load_auto_hide_tree(&env.xmux_dir)
-            .unwrap_or_else(|| env.cfg.ui_auto_hide_tree());
+        let nav_height = crate::prefs::load_nav_height(&env.xmux_dir).unwrap_or(0);
+        let auto_hide_nav = crate::prefs::load_auto_hide_nav(&env.xmux_dir)
+            .unwrap_or_else(|| env.cfg.ui_auto_hide_nav());
 
         // The control-mode metadata clients: one per remote host.
         let (host_tx, host_rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
@@ -273,11 +273,11 @@ impl Runtime {
             op_tx,
             cols,
             body_rows,
-            tree_width,
-            tree_width_natural,
-            tree_height,
-            applied_tree_height: u16::MAX,
-            auto_hide_tree,
+            nav_width,
+            nav_width_natural,
+            nav_height,
+            applied_nav_height: u16::MAX,
+            auto_hide_nav,
             mouse_state: MouseState::default(),
             term_input,
             tree_decoder,
@@ -348,22 +348,22 @@ impl Runtime {
         // The single owner of the effective tree width: reconcile it to the focus + the
         // hide setting + any natural-width change. On a change, resize the PTYs so the
         // mux reflows, and mark dirty.
-        let want_tree_width = reconciled_tree_width(
+        let want_nav_width = reconciled_nav_width(
             self.state.focus.is_terminal_focused(),
-            self.auto_hide_tree,
-            self.tree_width_natural,
+            self.auto_hide_nav,
+            self.nav_width_natural,
         );
         // Resize when EITHER dimension of the split moved: the width (focus / hide / prefix
         // h·l in Side) or the Top height (border drag / resize keys). Both change the mux
         // terminal region, so both must resize the PTYs or the grid mismatches the draw.
-        if want_tree_width != self.tree_width || self.tree_height != self.applied_tree_height {
+        if want_nav_width != self.nav_width || self.nav_height != self.applied_nav_height {
             // Crossing the hidden sentinel (0) flips the column TOPOLOGY; a stale wide-char
             // cell at the new boundary can survive ratatui's diff, so force a full repaint.
-            let crossed_hidden = (want_tree_width == 0) != (self.tree_width == 0);
-            self.tree_width = want_tree_width;
-            self.applied_tree_height = self.tree_height;
+            let crossed_hidden = (want_nav_width == 0) != (self.nav_width == 0);
+            self.nav_width = want_nav_width;
+            self.applied_nav_height = self.nav_height;
             let (vc, vr) =
-                terminal_view_size(self.cols, self.body_rows, self.tree_width, self.tree_height);
+                terminal_view_size(self.cols, self.body_rows, self.nav_width, self.nav_height);
             self.registry.resize_all(vc, vr);
             self.mgr.resize_all(vc, vr);
             if crossed_hidden {
@@ -429,8 +429,8 @@ impl Runtime {
                                 attach_seq: &mut self.attach_seq,
                                 cols: self.cols,
                                 body_rows: self.body_rows,
-                                tree_width: self.tree_width,
-                                tree_height: self.tree_height,
+                                nav_width: self.nav_width,
+                                nav_height: self.nav_height,
                             },
                         );
                         if shown {
@@ -472,7 +472,7 @@ impl Runtime {
                 .width_flush_at
                 .is_some_and(|d| std::time::Instant::now() >= d)
         {
-            crate::prefs::save_tree_width(&self.env.xmux_dir, self.tree_width_natural);
+            crate::prefs::save_nav_width(&self.env.xmux_dir, self.nav_width_natural);
             self.width_dirty = false;
             self.width_flush_at = None;
         }
@@ -516,13 +516,13 @@ impl Runtime {
                     attach_seq: &mut self.attach_seq,
                     cols: self.cols,
                     body_rows: self.body_rows,
-                    tree_width: self.tree_width,
-                    tree_height: self.tree_height,
+                    nav_width: self.nav_width,
+                    nav_height: self.nav_height,
                 },
             );
             let terminal_focused = self.state.focus.is_terminal_focused();
-            // The view border glyph reflects auto-hide-tree mode (║ on, │ off).
-            self.state.chrome.set_auto_hide(self.auto_hide_tree);
+            // The view border glyph reflects auto-hide-nav mode (║ on, │ off).
+            self.state.chrome.set_auto_hide(self.auto_hide_nav);
             let t_draw = std::time::Instant::now();
             if let Err(e) = match &grid_arc {
                 Some(g) => {
@@ -549,16 +549,16 @@ impl Runtime {
                     // of `self` (the fingerprint block's borrows have ended above).
                     let switcher = &mut self.switcher;
                     let state = &self.state;
-                    let tree_width = self.tree_width;
-                    let tree_height = self.tree_height;
+                    let nav_width = self.nav_width;
+                    let nav_height = self.nav_height;
                     term.draw(|f| {
                         let t_render = std::time::Instant::now();
                         switcher.render(
                             f,
                             guard.as_deref(),
                             terminal_focused,
-                            tree_width,
-                            tree_height,
+                            nav_width,
+                            nav_height,
                             state,
                         );
                         DrawObserver::slow_step("render", t_render);
@@ -567,11 +567,11 @@ impl Runtime {
                 None => {
                     let switcher = &mut self.switcher;
                     let state = &self.state;
-                    let tree_width = self.tree_width;
-                    let tree_height = self.tree_height;
+                    let nav_width = self.nav_width;
+                    let nav_height = self.nav_height;
                     term.draw(|f| {
                         let t_render = std::time::Instant::now();
-                        switcher.render(f, None, terminal_focused, tree_width, tree_height, state);
+                        switcher.render(f, None, terminal_focused, nav_width, nav_height, state);
                         DrawObserver::slow_step("render", t_render);
                     })
                 }
@@ -767,8 +767,8 @@ impl Runtime {
                     action,
                     &mut self.switcher,
                     &mut self.state,
-                    &mut self.tree_width_natural,
-                    &mut self.auto_hide_tree,
+                    &mut self.nav_width_natural,
+                    &mut self.auto_hide_nav,
                     &self.env.xmux_dir,
                     (&self.ops, &self.op_tx),
                 );
@@ -787,7 +787,7 @@ impl Runtime {
                     &self.switcher,
                     self.cols,
                     self.body_rows,
-                    self.tree_width,
+                    self.nav_width,
                 );
                 if sync_selection_from_switcher(&mut self.state, &self.switcher) {
                     self.dirty = true;
@@ -796,7 +796,7 @@ impl Runtime {
             Cmd::Status(reply) => {
                 let _ = reply.send(status_line(
                     &self.switcher,
-                    self.state.focus.view_is_tree(),
+                    self.state.focus.view_is_nav(),
                     &self_cwd(),
                     &self_tty(),
                 ));
@@ -817,8 +817,8 @@ impl Runtime {
                         attach_seq: &mut self.attach_seq,
                         cols: self.cols,
                         body_rows: self.body_rows,
-                        tree_width: self.tree_width,
-                        tree_height: self.tree_height,
+                        nav_width: self.nav_width,
+                        nav_height: self.nav_height,
                     },
                 );
                 let dump = match &grid_arc {
@@ -844,8 +844,8 @@ impl Runtime {
                     cmds,
                     &mut self.switcher,
                     &mut self.state,
-                    &mut self.tree_width_natural,
-                    &mut self.auto_hide_tree,
+                    &mut self.nav_width_natural,
+                    &mut self.auto_hide_nav,
                     &self.env.xmux_dir,
                     (&self.ops, &self.op_tx),
                 );
@@ -863,7 +863,7 @@ impl Runtime {
                     &self.switcher,
                     self.cols,
                     self.body_rows,
-                    self.tree_width,
+                    self.nav_width,
                 );
                 if sync_selection_from_switcher(&mut self.state, &self.switcher) {
                     self.dirty = true;
@@ -884,8 +884,8 @@ impl Runtime {
                             attach_seq: &mut self.attach_seq,
                             cols: self.cols,
                             body_rows: self.body_rows,
-                            tree_width: self.tree_width,
-                            tree_height: self.tree_height,
+                            nav_width: self.nav_width,
+                            nav_height: self.nav_height,
                         };
                         driver.input(&self.state.displayed, bytes, &ctx);
                     }
@@ -940,7 +940,7 @@ impl Runtime {
                 let body = r.saturating_sub(1);
                 self.cols = c;
                 self.body_rows = body;
-                let (vc, vr) = terminal_view_size(c, body, self.tree_width, self.tree_height);
+                let (vc, vr) = terminal_view_size(c, body, self.nav_width, self.nav_height);
                 self.registry.resize_all(vc, vr);
                 self.mgr.resize_all(vc, vr);
                 let _ = term.autoresize();
@@ -972,7 +972,7 @@ impl Runtime {
     /// selected session if its display terminal dropped. The sole automatic retry path.
     pub(super) fn on_reconnect(&mut self) {
         let (vc, vr) =
-            terminal_view_size(self.cols, self.body_rows, self.tree_width, self.tree_height);
+            terminal_view_size(self.cols, self.body_rows, self.nav_width, self.nav_height);
         // Snapshot the ids so the loops can re-borrow `hosts` (incl. &mut) without holding
         // the `ids()` borrow across the body.
         let ids: Vec<String> = self.hosts.ids().to_vec();
@@ -1010,8 +1010,8 @@ impl Runtime {
                 attach_seq: &mut self.attach_seq,
                 cols: self.cols,
                 body_rows: self.body_rows,
-                tree_width: self.tree_width,
-                tree_height: self.tree_height,
+                nav_width: self.nav_width,
+                nav_height: self.nav_height,
             };
             sync_source_terminals(id, &inventory, &mut ctx);
         }
@@ -1048,8 +1048,8 @@ impl Runtime {
                     attach_seq: &mut self.attach_seq,
                     cols: self.cols,
                     body_rows: self.body_rows,
-                    tree_width: self.tree_width,
-                    tree_height: self.tree_height,
+                    nav_width: self.nav_width,
+                    nav_height: self.nav_height,
                 };
                 select_attach(&self.state.selection, &mut ctx);
             }

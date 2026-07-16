@@ -19,7 +19,7 @@ use crate::source::Source;
     name = "xmux",
     version,
     about = "cross-environment mux session switcher",
-    long_about = "xmux shows every reachable tmux/psmux session (local + ssh) as one tree and switches between them."
+    long_about = "xmux shows every reachable tmux/psmux session (local + ssh) as one list and switches between them."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -467,6 +467,6 @@ mod tests {
         assert!(reply_is_err("err: unknown command"));
         assert!(!reply_is_err("ok"));
         assert!(!reply_is_err("pong"));
-        assert!(!reply_is_err("focus=tree\ttarget=api"));
+        assert!(!reply_is_err("focus=nav\ttarget=api"));
     }
 }

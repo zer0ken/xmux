@@ -4,7 +4,7 @@ impl Switcher {
     // --- mouse --------------------------------------------------------------
 
     fn in_tree(&self, col: u16, row: u16) -> bool {
-        self.tree_inner.contains(Position { x: col, y: row })
+        self.nav_inner.contains(Position { x: col, y: row })
     }
 
     /// The card index under a 0-based screen `(col, row)`, or `None` if it is outside the
@@ -16,7 +16,7 @@ impl Switcher {
         if !self.in_tree(col, row) {
             return None;
         }
-        let row_in = row.saturating_sub(self.tree_inner.y) as usize;
+        let row_in = row.saturating_sub(self.nav_inner.y) as usize;
         let idx = self.list_state.offset() + row_in / CARD_H as usize;
         (idx < self.rows.len()).then_some(idx)
     }

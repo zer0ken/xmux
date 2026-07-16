@@ -241,7 +241,7 @@ impl Chrome {
         self.spinner_frame = frame;
     }
 
-    /// Sets auto-hide-tree mode (the app owns it; the view border glyph reflects it).
+    /// Sets auto-hide-nav mode (the app owns it; the view border glyph reflects it).
     pub(crate) fn set_auto_hide(&mut self, on: bool) {
         self.auto_hide = on;
     }
@@ -281,7 +281,7 @@ impl Chrome {
     /// top = tree (left), bottom = terminal (right) — and the other half stays dim. A single
     /// vertical rule cannot lean left/right, so the accent half's position carries the
     /// signal (adapting tmux's active-pane border). Replaces the per-pane box borders.
-    /// The glyph also encodes auto-hide-tree mode: ║ (double) when on, │ when off — so
+    /// The glyph also encodes auto-hide-nav mode: ║ (double) when on, │ when off — so
     /// a visible tree that will vanish on blur is distinguishable from a pinned one.
     pub(crate) fn render_view_border(&self, frame: &mut Frame, area: Rect, terminal_focused: bool) {
         let active = self.colors.active;

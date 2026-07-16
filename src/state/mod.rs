@@ -148,9 +148,8 @@ impl State {
                     .set_view_focus(crate::app::focus::ViewFocus::Terminal);
                 Vec::new()
             }
-            Action::Focus(FocusTarget::Tree) => {
-                self.focus
-                    .set_view_focus(crate::app::focus::ViewFocus::Tree);
+            Action::Focus(FocusTarget::Nav) => {
+                self.focus.set_view_focus(crate::app::focus::ViewFocus::Nav);
                 Vec::new()
             }
             Action::FocusToggle => {
@@ -491,7 +490,7 @@ mod tests {
         assert!(s.attach_deadline.is_none());
         assert!(!s.attach_pending);
         assert_eq!(s.last_saved_session, "");
-        assert!(s.focus.is_tree_focused());
+        assert!(s.focus.is_nav_focused());
         assert!(s.modal.is_none());
         assert!(!s.is_modal_popup_open());
         assert!(!s.is_inputting());
@@ -783,11 +782,11 @@ mod tests {
     #[test]
     fn apply_focus_moves_focus_with_no_command() {
         let mut s = State::default();
-        assert!(s.focus.is_tree_focused());
+        assert!(s.focus.is_nav_focused());
         assert!(s.apply(Action::Focus(FocusTarget::Terminal)).is_empty());
         assert_eq!(s.focus, Focus::Terminal);
-        assert!(s.apply(Action::Focus(FocusTarget::Tree)).is_empty());
-        assert_eq!(s.focus, Focus::Tree);
+        assert!(s.apply(Action::Focus(FocusTarget::Nav)).is_empty());
+        assert_eq!(s.focus, Focus::Nav);
     }
 
     #[test]
@@ -800,10 +799,10 @@ mod tests {
         );
         assert_eq!(s.focus, Focus::Terminal, "toggle flips Tree → Terminal");
         s.apply(Action::FocusToggle);
-        assert_eq!(s.focus, Focus::Tree, "toggle flips back Terminal → Tree");
+        assert_eq!(s.focus, Focus::Nav, "toggle flips back Terminal → Tree");
         // During a modal, toggle flips the carried prior and keeps the modal open.
         s.focus = Focus::Popup {
-            prior: ViewFocus::Tree,
+            prior: ViewFocus::Nav,
         };
         s.apply(Action::FocusToggle);
         assert_eq!(
@@ -865,7 +864,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_tree_width_emits_adjust_command() {
+    fn apply_nav_width_emits_adjust_command() {
         let mut s = State::default();
         assert_eq!(
             s.apply(Action::TreeWidth(-2)),
@@ -1036,7 +1035,7 @@ mod tests {
             s.selection, before_sel,
             "kill intent leaves selection alone"
         );
-        assert!(s.focus.is_tree_focused(), "kill intent leaves focus alone");
+        assert!(s.focus.is_nav_focused(), "kill intent leaves focus alone");
         assert!(s.modal.is_none(), "kill intent leaves the popup alone");
     }
 

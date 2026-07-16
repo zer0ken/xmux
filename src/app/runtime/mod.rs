@@ -11,7 +11,7 @@
 //! the single source of truth the display reads — the `Switcher` owns only the tree
 //! and selection. One `select!` loop interleaves stdin, host events, PTY events, the
 //! control socket, terminal resize, and an animation tick. ratatui owns stdout and
-//! draws the SAME split (tree + selected PTY grid) in both focus states — Focus::Tree
+//! draws the SAME split (tree + selected PTY grid) in both focus states — Focus::Nav
 //! (tree focused) and Focus::Terminal (terminal focused) differ only in the view border
 //! colour and where keys go, so toggling focus needs no screen clear.
 
@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::app::input::{
-    leading_ctrl_arrow, resolve_mouse_chain, resolve_tree_key, to_grid_local, tree_menu_may_open,
+    leading_ctrl_arrow, nav_menu_may_open, resolve_mouse_chain, resolve_nav_key, to_grid_local,
     view_border_drag_height, view_border_drag_width, ChainAction, MouseState, StdinOutcome,
 };
 use crate::attach;
@@ -56,13 +56,13 @@ const FRAME_MS: u64 = 33;
 /// backoff so a genuinely-down host is retried at this cadence, never hot-looped.
 const RECONNECT_MS: u64 = 2000;
 
-pub(crate) const TREE_WIDTH_MIN: u16 = 20;
-pub(crate) const TREE_WIDTH_MAX: u16 = 100;
+pub(crate) const NAV_WIDTH_MIN: u16 = 20;
+pub(crate) const NAV_WIDTH_MAX: u16 = 100;
 
 /// The Top-layout tree height drag range. The min keeps a few tree rows; compute_regions
 /// clamps the max down to the body so the terminal always keeps room.
-pub(crate) const TREE_HEIGHT_MIN: u16 = 3;
-pub(crate) const TREE_HEIGHT_MAX: u16 = 100;
+pub(crate) const NAV_HEIGHT_MIN: u16 = 3;
+pub(crate) const NAV_HEIGHT_MAX: u16 = 100;
 
 /// The ratatui terminal the app draws into. Loop-local in [`run_app`] (owns stdout);
 /// passed to the `Runtime` methods that draw / resize / dump.
@@ -78,8 +78,8 @@ const RESIZE_REPEAT_MS: u64 = 400;
 /// at the end, not per tick.
 const WIDTH_FLUSH_MS: u64 = 400;
 
-fn adjust_tree_width(w: u16, delta: i32) -> u16 {
-    (w as i32 + delta).clamp(TREE_WIDTH_MIN as i32, TREE_WIDTH_MAX as i32) as u16
+fn adjust_nav_width(w: u16, delta: i32) -> u16 {
+    (w as i32 + delta).clamp(NAV_WIDTH_MIN as i32, NAV_WIDTH_MAX as i32) as u16
 }
 
 /// Adjusts the natural tree width by `wd`, clamped to the allowed range. Returns
@@ -90,7 +90,7 @@ fn apply_width_delta(wd: i32, natural: &mut u16) -> bool {
     if wd == 0 {
         return false;
     }
-    let next = adjust_tree_width(*natural, wd);
+    let next = adjust_nav_width(*natural, wd);
     if next == *natural {
         return false;
     }
@@ -98,12 +98,12 @@ fn apply_width_delta(wd: i32, natural: &mut u16) -> bool {
     true
 }
 
-/// Flips the auto-hide-tree mode and persists it, so the next launch restores it.
+/// Flips the auto-hide-nav mode and persists it, so the next launch restores it.
 /// Shared by the tree- and terminal-view focus `prefix t` paths. The effective tree width is
-/// reconciled at the next loop top (`reconciled_tree_width`); the caller marks dirty.
+/// reconciled at the next loop top (`reconciled_nav_width`); the caller marks dirty.
 fn toggle_auto_hide(mode: &mut bool, xmux_dir: &std::path::Path) {
     *mode = !*mode;
-    crate::prefs::save_auto_hide_tree(xmux_dir, *mode);
+    crate::prefs::save_auto_hide_nav(xmux_dir, *mode);
 }
 
 /// Folds ONE domain [`Action`] in at the single mutation site ([`State::apply`]) and
@@ -133,8 +133,8 @@ fn dispatch_action(
     action: crate::model::Action,
     switcher: &mut crate::ui::switcher::Switcher,
     state: &mut crate::state::State,
-    tree_width_natural: &mut u16,
-    auto_hide_tree: &mut bool,
+    nav_width_natural: &mut u16,
+    auto_hide_nav: &mut bool,
     xmux_dir: &std::path::Path,
     op_sink: OpSink<'_>,
 ) -> (bool, bool) {
@@ -142,8 +142,8 @@ fn dispatch_action(
         state.apply(action),
         switcher,
         state,
-        tree_width_natural,
-        auto_hide_tree,
+        nav_width_natural,
+        auto_hide_nav,
         xmux_dir,
         op_sink,
     )
@@ -162,8 +162,8 @@ fn dispatch_commands(
     cmds: Vec<crate::model::Command>,
     switcher: &mut crate::ui::switcher::Switcher,
     state: &mut crate::state::State,
-    tree_width_natural: &mut u16,
-    auto_hide_tree: &mut bool,
+    nav_width_natural: &mut u16,
+    auto_hide_nav: &mut bool,
     xmux_dir: &std::path::Path,
     op_sink: OpSink<'_>,
 ) -> (bool, bool) {
@@ -179,11 +179,11 @@ fn dispatch_commands(
                 switcher.request_rescan(state);
             }
             Command::AdjustTreeWidth(d) => {
-                if apply_width_delta(d, tree_width_natural) {
+                if apply_width_delta(d, nav_width_natural) {
                     width_changed = true;
                 }
             }
-            Command::ToggleAutoHide => toggle_auto_hide(auto_hide_tree, xmux_dir),
+            Command::ToggleAutoHide => toggle_auto_hide(auto_hide_nav, xmux_dir),
             Command::Quit => quit = true,
             Command::RunOp(op) => spawn_op(op, op_sink.0, op_sink.1),
             // Settled-selection effects come only from Action::Tick, dispatched by the
@@ -201,12 +201,12 @@ fn dispatch_commands(
 /// cannot drift.
 fn status_line(
     switcher: &crate::ui::switcher::Switcher,
-    tree_focused: bool,
+    nav_focused: bool,
     cwd: &str,
     tty: &str,
 ) -> String {
     crate::control::format_status(&crate::control::StatusFields {
-        focus: if tree_focused { "tree" } else { "terminal" }.to_string(),
+        focus: if nav_focused { "nav" } else { "terminal" }.to_string(),
         target: switcher.terminal_view_target().target.to_string(),
         cwd: cwd.to_string(),
         tty: tty.to_string(),
@@ -246,11 +246,11 @@ fn self_tty() -> String {
 }
 
 /// The EFFECTIVE tree width to render and size the terminal view against. Hidden (0, terminal view
-/// full width) only while the terminal view is focused AND auto-hide-tree mode is on;
+/// full width) only while the terminal view is focused AND auto-hide-nav mode is on;
 /// otherwise the tree's natural width. Pure so the focus/mode interaction is
 /// unit-testable; the loop owns the natural width and the PTY resize on change.
-fn reconciled_tree_width(terminal_focused: bool, auto_hide_tree: bool, natural: u16) -> u16 {
-    if terminal_focused && auto_hide_tree {
+fn reconciled_nav_width(terminal_focused: bool, auto_hide_nav: bool, natural: u16) -> u16 {
+    if terminal_focused && auto_hide_nav {
         0
     } else {
         natural
@@ -359,7 +359,7 @@ fn sync_selection_from_switcher(
 /// view border), NOT the whole terminal. Sizing a session to the full terminal makes
 /// the remote wrap at a width wider than the visible view, so a line overflows the
 /// right edge (and a double-width char straddles the clip boundary). The view width
-/// is `cols - tree_width - 1` (tree + the single view border rule), except `tree_width == 0`
+/// is `cols - nav_width - 1` (tree + the single view border rule), except `nav_width == 0`
 /// (the tree-hidden sentinel) gives the full `cols` with no view border. The hint_bar now
 /// spans the full width along the bottom, so a shown tree gives the terminal view height
 /// `body_rows` (full height minus the one hint_bar row); the tree-hidden sentinel has no
@@ -367,16 +367,16 @@ fn sync_selection_from_switcher(
 pub(crate) fn terminal_view_size(
     cols: u16,
     body_rows: u16,
-    tree_width: u16,
-    tree_height: u16,
+    nav_width: u16,
+    nav_height: u16,
 ) -> (u16, u16) {
     // Derive from the one shared geometry (`compute_regions`) so the PTY size always
     // matches what the renderer draws, in either layout. `body_rows` is full_height - 1
     // (the hint bar row), so the full area is `body_rows + 1` tall; sizing assumes a
     // one-row hint bar. A portrait area stacks the tree on top and shrinks the terminal
-    // view height accordingly; `tree_width == 0` gives the full area (tree hidden).
+    // view height accordingly; `nav_width == 0` gives the full area (tree hidden).
     let area = ratatui::layout::Rect::new(0, 0, cols, body_rows.saturating_add(1));
-    let t = crate::ui::switcher::compute_regions(area, tree_width, tree_height, 1).terminal;
+    let t = crate::ui::switcher::compute_regions(area, nav_width, nav_height, 1).terminal;
     (t.width.max(1), t.height.max(1))
 }
 
@@ -578,13 +578,13 @@ fn ensure_current_host(
     switcher: &crate::ui::switcher::Switcher,
     cols: u16,
     rows: u16,
-    tree_width: u16,
+    nav_width: u16,
 ) {
     // Auto height (0) is fine here: this sizes the host's METADATA control client, not the
-    // displayed grid (that goes through the DriverCtx, which carries the real tree_height),
-    // and on_tick's resize_all reconciles it to the exact height. Avoids threading tree_height
+    // displayed grid (that goes through the DriverCtx, which carries the real nav_height),
+    // and on_tick's resize_all reconciles it to the exact height. Avoids threading nav_height
     // through every ensure_current_host caller for a size the user never sees.
-    let (cols, rows) = terminal_view_size(cols, rows, tree_width, 0);
+    let (cols, rows) = terminal_view_size(cols, rows, nav_width, 0);
     if let Some(id) = switcher.current_host() {
         if let Some(host) = hosts.get(&id) {
             if host.detected {
@@ -713,11 +713,11 @@ fn connect_all_sources(
     detecting: &mut HashSet<String>,
     cols: u16,
     rows: u16,
-    tree_width: u16,
+    nav_width: u16,
 ) {
     // Auto height (0): the initial metadata-client size only; the display PTY and on_tick
-    // resize carry the real tree_height. (See ensure_current_host.)
-    let (cols, rows) = terminal_view_size(cols, rows, tree_width, 0);
+    // resize carry the real nav_height. (See ensure_current_host.)
+    let (cols, rows) = terminal_view_size(cols, rows, nav_width, 0);
     for id in hosts.ids() {
         scan_or_dispatch_host(mgr, hosts, detecting, id, cols, rows);
     }
@@ -903,7 +903,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
         &mut rt.detecting,
         rt.cols,
         rt.body_rows,
-        rt.tree_width,
+        rt.nav_width,
     );
     // Take the worker's reply receiver out so the loop can `select!` on it while `&mut rt`
     // is borrowed for the arm body (the send half stays on `rt.worker`).
@@ -1010,7 +1010,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
     // unreached, so the final width is still pending — persist it on the way out so the
     // tree width the user left with survives the next launch.
     if rt.width_dirty {
-        crate::prefs::save_tree_width(&rt.env.xmux_dir, rt.tree_width_natural);
+        crate::prefs::save_nav_width(&rt.env.xmux_dir, rt.nav_width_natural);
     }
     rt.registry.teardown_all();
     rt.mgr.teardown_all();
@@ -1040,17 +1040,17 @@ struct Runtime {
     cols: u16,
     body_rows: u16,
     /// The EFFECTIVE tree width (0 = tree hidden, terminal full width).
-    tree_width: u16,
+    nav_width: u16,
     /// The tree's natural width (what prefix h/l adjusts; restored when shown again).
-    tree_width_natural: u16,
+    nav_width_natural: u16,
     /// The Top-layout tree height, set by dragging the horizontal view border or the resize
     /// keys. 0 = auto (~40% of the body). Only used in the portrait Top layout; ignored in Side.
-    tree_height: u16,
-    /// The `tree_height` last applied to the PTY sizes, so the loop-top reconcile resizes the
+    nav_height: u16,
+    /// The `nav_height` last applied to the PTY sizes, so the loop-top reconcile resizes the
     /// mux terminals when the Top height changes (not only on a width change). `u16::MAX`
     /// forces the first reconcile to size them.
-    applied_tree_height: u16,
-    auto_hide_tree: bool,
+    applied_nav_height: u16,
+    auto_hide_nav: bool,
     mouse_state: MouseState,
     term_input: crate::display::input::TermInput,
     tree_decoder: crate::display::decode::KeyDecoder,

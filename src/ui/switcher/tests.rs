@@ -145,11 +145,11 @@ impl Harness {
         line.trim_end().to_string()
     }
 
-    /// Only the tree pane (first `TREE_WIDTH` columns) — so a hint assertion
+    /// Only the tree pane (first `NAV_WIDTH` columns) — so a hint assertion
     /// is not satisfied by the preview pane's own loading/reconnecting dialog.
-    fn tree_text(&self) -> String {
+    fn nav_text(&self) -> String {
         let buf = self.buf();
-        let limit = TREE_WIDTH.min(buf.area.width);
+        let limit = NAV_WIDTH.min(buf.area.width);
         let mut out = String::new();
         for y in 0..buf.area.height {
             for x in 0..limit {
@@ -164,7 +164,7 @@ impl Harness {
         let sw = &mut self.sw;
         let state = &self.state;
         self.term
-            .draw(|f| sw.render(f, None, false, TREE_WIDTH, 0, state))
+            .draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, state))
             .unwrap();
     }
 
@@ -196,22 +196,22 @@ impl Harness {
         buffer_text(self.buf())
     }
 
-    fn tree_row_of(&self, text: &str) -> Option<u16> {
-        row_of(self.buf(), text, TREE_WIDTH)
+    fn nav_row_of(&self, text: &str) -> Option<u16> {
+        row_of(self.buf(), text, NAV_WIDTH)
     }
 
-    fn tree_row_reversed(&self, y: u16) -> bool {
+    fn nav_row_reversed(&self, y: u16) -> bool {
         let buf = self.buf();
-        (0..TREE_WIDTH.min(buf.area.width))
+        (0..NAV_WIDTH.min(buf.area.width))
             .any(|x| buf[(x, y)].modifier.contains(Modifier::REVERSED))
     }
 
-    fn tree_fg_of(&self, text: &str) -> Option<Color> {
-        fg_of(self.buf(), text, TREE_WIDTH)
+    fn nav_fg_of(&self, text: &str) -> Option<Color> {
+        fg_of(self.buf(), text, NAV_WIDTH)
     }
 
-    fn tree_modifier_of(&self, text: &str) -> Option<Modifier> {
-        locate(self.buf(), text, TREE_WIDTH).map(|(x, y)| self.buf()[(x, y)].modifier)
+    fn nav_modifier_of(&self, text: &str) -> Option<Modifier> {
+        locate(self.buf(), text, NAV_WIDTH).map(|(x, y)| self.buf()[(x, y)].modifier)
     }
 }
 
@@ -380,12 +380,12 @@ fn active_window_is_bold_italic() {
     // The active window of a session (the one whose live terminal is shown) reads
     // BOLD+ITALIC; an inactive window has neither.
     let h = Harness::new(two_window_scan());
-    let m0 = h.tree_modifier_of("0:w0").expect("window 0 card present");
+    let m0 = h.nav_modifier_of("0:w0").expect("window 0 card present");
     assert!(
         m0.contains(Modifier::BOLD) && m0.contains(Modifier::ITALIC),
         "the active window is bold+italic: {m0:?}"
     );
-    let m1 = h.tree_modifier_of("1:w1").expect("window 1 card present");
+    let m1 = h.nav_modifier_of("1:w1").expect("window 1 card present");
     assert!(
         !m1.contains(Modifier::BOLD) && !m1.contains(Modifier::ITALIC),
         "an inactive window is neither bold nor italic: {m1:?}"
@@ -402,12 +402,12 @@ fn set_active_window_moves_the_marker() {
         "active window moved 0 -> 1"
     );
     h.draw();
-    let m1 = h.tree_modifier_of("1:w1").expect("window 1 card present");
+    let m1 = h.nav_modifier_of("1:w1").expect("window 1 card present");
     assert!(
         m1.contains(Modifier::BOLD) && m1.contains(Modifier::ITALIC),
         "window 1 is now the active window: {m1:?}"
     );
-    let m0 = h.tree_modifier_of("0:w0").expect("window 0 card present");
+    let m0 = h.nav_modifier_of("0:w0").expect("window 0 card present");
     assert!(
         !m0.contains(Modifier::ITALIC),
         "window 0 no longer active: {m0:?}"
@@ -626,7 +626,7 @@ async fn rescan_resets_to_scanning_skeleton() {
         h.sw.take_rescan_kick(),
         "rescan must signal the loop to re-probe"
     );
-    let tree = h.tree_text();
+    let tree = h.nav_text();
     assert!(
         tree.contains("scanning"),
         "hosts return to scanning after rescan:\n{tree}"
@@ -668,7 +668,7 @@ async fn apply_source_result_turns_scanning_into_sessions() {
         &mut h.state,
     );
     h.draw();
-    let out = h.tree_text();
+    let out = h.nav_text();
     assert!(
         out.contains("editor"),
         "session appears after result:\n{out}"
@@ -963,7 +963,7 @@ async fn apply_source_result_unreachable_marks_tree_and_reason_in_info_pane() {
     );
     h.draw();
     // Tree: only the ⚠ marker beside the name — not the verbose reason.
-    let tree = h.tree_text();
+    let tree = h.nav_text();
     assert!(tree.contains('⚠'), "the host row is marked with ⚠:\n{tree}");
     assert!(
         !tree.contains("connection refused"),
@@ -1018,7 +1018,7 @@ async fn apply_panes_attaches_and_clears_loading() {
     );
     h.draw();
     assert!(
-        h.tree_text()
+        h.nav_text()
             .chars()
             .any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)),
         "a progress spinner stands in before panes land"
@@ -1029,7 +1029,7 @@ async fn apply_panes_attaches_and_clears_loading() {
         &mut h.state,
     );
     h.draw();
-    let out = h.tree_text();
+    let out = h.nav_text();
     assert!(
         out.contains("1:shell"),
         "panes attach as window cards:\n{out}"
@@ -1196,7 +1196,7 @@ async fn hint_bar_fits_narrow_width() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     let mut term = Terminal::new(TestBackend::new(30, 30)).unwrap();
-    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, 0, &state))
+    term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, &state))
         .unwrap();
     let buf = term.backend().buffer();
     let y = buf.area.height - 1;
@@ -1223,7 +1223,7 @@ fn hint_bar_has_status_bar_background() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
-    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, 0, &state))
+    term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, &state))
         .unwrap();
     let buf = term.backend().buffer();
     let y = buf.area.height - 1; // the one-line hint bar sits on the last row
@@ -1272,11 +1272,11 @@ fn hint_bar_text_reflects_configured_prefix() {
 async fn selected_node_renders_reverse_video() {
     let mut h = Harness::new(sample());
     h.key(KeyCode::Down).await; // step onto a local/editor window card
-    let sel = h.tree_row_of("editor").expect("editor row");
-    let other = h.tree_row_of("inference").expect("inference row");
-    assert!(h.tree_row_reversed(sel), "selected row must be reversed");
+    let sel = h.nav_row_of("editor").expect("editor row");
+    let other = h.nav_row_of("inference").expect("inference row");
+    assert!(h.nav_row_reversed(sel), "selected row must be reversed");
     assert!(
-        !h.tree_row_reversed(other),
+        !h.nav_row_reversed(other),
         "non-selected row must not be reversed"
     );
 }
@@ -1605,9 +1605,9 @@ async fn host_with_sessions_has_no_landing_panel() {
 #[tokio::test]
 async fn levels_have_distinct_colors() {
     let h = Harness::new(sample());
-    assert_eq!(h.tree_fg_of("local"), Some(COLOR_HOST));
-    assert_eq!(h.tree_fg_of("editor"), Some(COLOR_SESSION));
-    assert_eq!(h.tree_fg_of("1:shell"), Some(COLOR_WINDOW));
+    assert_eq!(h.nav_fg_of("local"), Some(COLOR_HOST));
+    assert_eq!(h.nav_fg_of("editor"), Some(COLOR_SESSION));
+    assert_eq!(h.nav_fg_of("1:shell"), Some(COLOR_WINDOW));
 }
 
 #[tokio::test]
@@ -1670,8 +1670,8 @@ fn menu_items_by_row_type() {
 /// The screen (col,row) of the card at `idx`: its FIRST of two screen rows. Each card
 /// is [`CARD_H`] screen rows tall, so the visible offset is multiplied by it.
 fn row_screen_pos(h: &Harness, idx: usize) -> (u16, u16) {
-    let y = h.sw.tree_inner.y + ((idx - h.sw.list_state.offset()) as u16) * CARD_H;
-    (h.sw.tree_inner.x, y)
+    let y = h.sw.nav_inner.y + ((idx - h.sw.list_state.offset()) as u16) * CARD_H;
+    (h.sw.nav_inner.x, y)
 }
 
 fn row_index<F: Fn(&RowRef) -> bool>(h: &Harness, pred: F) -> usize {
@@ -2183,7 +2183,7 @@ async fn render_terminal_view_draws_live_grid() {
     // Render with the live grid supplied.
     let sw = &mut h.sw;
     h.term
-        .draw(|f| sw.render(f, Some(&g), false, TREE_WIDTH, 0, &h.state))
+        .draw(|f| sw.render(f, Some(&g), false, NAV_WIDTH, 0, &h.state))
         .unwrap();
     let out = buffer_text(h.term.backend().buffer());
     assert!(
@@ -2431,12 +2431,12 @@ async fn view_border_uses_configured_colors() {
         inactive: Color::Gray,
         hover: Color::Red,
     });
-    let x = TREE_WIDTH;
+    let x = NAV_WIDTH;
     let (top, bottom) = (2u16, 27u16);
     let fg = |buf: &Buffer, y: u16| buf[(x, y)].fg;
 
     // Tree focused: top = active(Blue), bottom = inactive(Gray).
-    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, 0, &state))
+    term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(
@@ -2452,7 +2452,7 @@ async fn view_border_uses_configured_colors() {
 
     // Hovering the rule overrides with the configured hover colour.
     state.chrome.set_view_border_hovered(true);
-    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, 0, &state))
+    term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(
@@ -2470,13 +2470,13 @@ async fn view_border_splits_top_bottom_to_mark_focused_side() {
     let mut term = Terminal::new(backend).unwrap();
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
-    let x = TREE_WIDTH;
+    let x = NAV_WIDTH;
     let (top, bottom) = (2u16, 27u16); // within the top / bottom halves of height 30
     let fg = |buf: &Buffer, y: u16| buf[(x, y)].fg;
 
     // Terminal focused: accent on the bottom (terminal side), inactive on top. The inactive
     // half is the tmux default (terminal default = Color::Reset), not a dim grey.
-    term.draw(|f| sw.render(f, None, true, TREE_WIDTH, 0, &state))
+    term.draw(|f| sw.render(f, None, true, NAV_WIDTH, 0, &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(buf[(x, top)].symbol(), "│", "view border still drawn");
@@ -2492,7 +2492,7 @@ async fn view_border_splits_top_bottom_to_mark_focused_side() {
     );
 
     // Tree focused: accent on the top (tree side), inactive on bottom.
-    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, 0, &state))
+    term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(fg(&buf, top), Color::Green, "tree focus: top half accent");
@@ -2510,9 +2510,9 @@ async fn view_border_highlights_on_hover() {
     let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
-    let x = TREE_WIDTH;
+    let x = NAV_WIDTH;
     state.chrome.set_view_border_hovered(true);
-    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, 0, &state))
+    term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     for y in [2u16, 27u16] {
@@ -2536,16 +2536,16 @@ async fn view_border_highlights_on_hover() {
 
 #[tokio::test]
 async fn view_border_glyph_reflects_auto_hide_mode() {
-    // ║ (double) when auto-hide-tree mode is on, │ (single) when off — so a visible
+    // ║ (double) when auto-hide-nav mode is on, │ (single) when off — so a visible
     // tree that will vanish on blur is distinguishable from a pinned one.
     let backend = TestBackend::new(100, 30);
     let mut term = Terminal::new(backend).unwrap();
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
-    let (x, y) = (TREE_WIDTH, 2u16);
+    let (x, y) = (NAV_WIDTH, 2u16);
 
     state.chrome.set_auto_hide(false);
-    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, 0, &state))
+    term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, &state))
         .unwrap();
     assert_eq!(
         term.backend().buffer()[(x, y)].symbol(),
@@ -2554,7 +2554,7 @@ async fn view_border_glyph_reflects_auto_hide_mode() {
     );
 
     state.chrome.set_auto_hide(true);
-    term.draw(|f| sw.render(f, None, false, TREE_WIDTH, 0, &state))
+    term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, &state))
         .unwrap();
     assert_eq!(
         term.backend().buffer()[(x, y)].symbol(),
@@ -2626,7 +2626,7 @@ async fn every_popup_type_is_opaque_over_a_colored_grid() {
     h.ch('/').await;
     let g = blue_grid();
     h.term
-        .draw(|f| h.sw.render(f, Some(&g), false, TREE_WIDTH, 0, &h.state))
+        .draw(|f| h.sw.render(f, Some(&g), false, NAV_WIDTH, 0, &h.state))
         .unwrap();
     assert_eq!(
         interior_blue(h.buf()),
@@ -2644,7 +2644,7 @@ async fn every_popup_type_is_opaque_over_a_colored_grid() {
     h.sw.arm_kill(&mut h.state);
     let g = blue_grid();
     h.term
-        .draw(|f| h.sw.render(f, Some(&g), false, TREE_WIDTH, 0, &h.state))
+        .draw(|f| h.sw.render(f, Some(&g), false, NAV_WIDTH, 0, &h.state))
         .unwrap();
     assert_eq!(
         interior_blue(h.buf()),
@@ -3128,9 +3128,9 @@ fn removed_window_selection_falls_to_previous_sibling_then_parent() {
 }
 
 #[test]
-fn render_tree_width_zero_gives_terminal_full_width() {
+fn render_nav_width_zero_gives_terminal_full_width() {
     use crate::display::grid::Grid;
-    // A two-source skeleton is enough. With tree_width == 0 the tree column and
+    // A two-source skeleton is enough. With nav_width == 0 the tree column and
     // its view border are gone, so the terminal view owns the left edge (x=0): the
     // live grid's content begins at column 0.
     let mut state = crate::state::State::from_sources(vec!["local".into(), "jupiter06".into()]);
@@ -3139,7 +3139,7 @@ fn render_tree_width_zero_gives_terminal_full_width() {
     let mut g = Grid::new(10, 40);
     g.feed(b"EDGE-CONTENT");
 
-    // tree_width == 0 → no tree column, no view border: the terminal view starts at x=0.
+    // nav_width == 0 → no tree column, no view border: the terminal view starts at x=0.
     term.draw(|f| sw.render(f, Some(&g), true, 0, 0, &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
@@ -3163,7 +3163,7 @@ fn render_tree_width_zero_gives_terminal_full_width() {
     assert_eq!(
         buf[(20, 0)].symbol(),
         "│",
-        "view border present at x=tree_width when shown"
+        "view border present at x=nav_width when shown"
     );
 }
 

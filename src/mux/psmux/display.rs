@@ -26,7 +26,7 @@ impl MuxDriver for PsmuxDriver {
             return false;
         }
         let (cols, rows) =
-            terminal_view_size(ctx.cols, ctx.body_rows, ctx.tree_width, ctx.tree_height);
+            terminal_view_size(ctx.cols, ctx.body_rows, ctx.nav_width, ctx.nav_height);
         let control = ctx.mgr.get(&sel.source);
         let Some(host) = ctx.hosts.get_mut(&sel.source) else {
             return false;
@@ -286,8 +286,8 @@ mod tests {
                 attach_seq: &mut attach_seq,
                 cols: 80,
                 body_rows: 24,
-                tree_width: crate::ui::switcher::TREE_WIDTH,
-                tree_height: 0,
+                nav_width: crate::ui::switcher::NAV_WIDTH,
+                nav_height: 0,
             };
             driver.show(&sel, &mut ctx)
         };
@@ -350,8 +350,8 @@ mod tests {
                 attach_seq: &mut attach_seq,
                 cols: 80,
                 body_rows: 24,
-                tree_width: crate::ui::switcher::TREE_WIDTH,
-                tree_height: 0,
+                nav_width: crate::ui::switcher::NAV_WIDTH,
+                nav_height: 0,
             };
             driver.sync(
                 "local",
@@ -378,8 +378,8 @@ mod tests {
                 attach_seq: &mut attach_seq,
                 cols: 80,
                 body_rows: 24,
-                tree_width: crate::ui::switcher::TREE_WIDTH,
-                tree_height: 0,
+                nav_width: crate::ui::switcher::NAV_WIDTH,
+                nav_height: 0,
             };
             driver.sync("local", &[], &mut ctx);
         }
@@ -434,8 +434,8 @@ mod tests {
                 attach_seq: &mut attach_seq,
                 cols: 80,
                 body_rows: 24,
-                tree_width: crate::ui::switcher::TREE_WIDTH,
-                tree_height: 0,
+                nav_width: crate::ui::switcher::NAV_WIDTH,
+                nav_height: 0,
             };
             assert!(driver.show(&sel, &mut ctx));
         }
@@ -499,8 +499,8 @@ mod tests {
                 attach_seq: &mut attach_seq,
                 cols: 80,
                 body_rows: 24,
-                tree_width: crate::ui::switcher::TREE_WIDTH,
-                tree_height: 0,
+                nav_width: crate::ui::switcher::NAV_WIDTH,
+                nav_height: 0,
             };
             assert!(driver.show(&sel, &mut ctx));
         }

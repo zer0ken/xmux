@@ -61,7 +61,7 @@ pub fn dump_screen(
         Err(_) => return String::new(),
     };
     if term
-        .draw(|f| switcher.render(f, grid, false, crate::ui::switcher::TREE_WIDTH, 0, state))
+        .draw(|f| switcher.render(f, grid, false, crate::ui::switcher::NAV_WIDTH, 0, state))
         .is_err()
     {
         return String::new();
@@ -225,10 +225,10 @@ mod tests {
         assert!(
             matches!(rx.recv().await, Some(Cmd::Op(Action::Switch { address })) if address == "jup/api")
         );
-        assert_eq!(dispatch("focus tree", &tx).await, "ok");
+        assert_eq!(dispatch("focus nav", &tx).await, "ok");
         assert!(matches!(
             rx.recv().await,
-            Some(Cmd::Op(Action::Focus(FocusTarget::Tree)))
+            Some(Cmd::Op(Action::Focus(FocusTarget::Nav)))
         ));
         assert_eq!(dispatch("rescan", &tx).await, "ok");
         assert!(matches!(rx.recv().await, Some(Cmd::Op(Action::Rescan))));
@@ -321,7 +321,7 @@ mod tests {
                         let _ = reply.send(dump_switcher(&mut sw, &state, 100, 30));
                     }
                     Cmd::Status(reply) => {
-                        let _ = reply.send("focus=tree target=editor".into());
+                        let _ = reply.send("focus=nav target=editor".into());
                     }
                     Cmd::Op(_) | Cmd::RawBytes(_) => {}
                 }

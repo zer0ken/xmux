@@ -511,8 +511,8 @@ mod tests {
             CtlRequest::Op(Action::Focus(FocusTarget::Terminal))
         );
         assert_eq!(
-            parse_ctl_op("focus tree"),
-            CtlRequest::Op(Action::Focus(FocusTarget::Tree))
+            parse_ctl_op("focus nav"),
+            CtlRequest::Op(Action::Focus(FocusTarget::Nav))
         );
         assert_eq!(
             parse_ctl_op("rescan"),
@@ -663,7 +663,7 @@ mod tests {
         assert!(matches!(parse_ctl_op("key down"), CtlRequest::Unknown(_)));
         assert!(
             matches!(parse_ctl_op("overlay"), CtlRequest::Unknown(_)),
-            "overlay verb retired → focus tree"
+            "overlay verb retired → focus nav"
         );
     }
     #[test]

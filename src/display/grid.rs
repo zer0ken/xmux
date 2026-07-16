@@ -81,7 +81,7 @@ impl Grid {
 
     /// Writes a top-left clip of the grid into `area` of `buf`, mapping each
     /// vt100 cell's symbol + colours + attrs to a ratatui cell. Cells past the
-    /// grid size or `area` are skipped (the terminal view in Focus::Tree is narrower
+    /// grid size or `area` are skipped (the terminal view in Focus::Nav is narrower
     /// than the grid, so it shows a top-left clip).
     pub fn render_into(&self, buf: &mut Buffer, area: Rect) {
         let screen = self.parser.screen();

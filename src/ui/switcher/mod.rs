@@ -1,9 +1,9 @@
-//! The interactive session switcher: a two-pane navigator (a unified
-//! Host·Session·Window tree on the left, a live preview on the right) with a
-//! hidden input row and a hint_bar. ratatui is immediate-mode, so this owns its
-//! state machine, a flattened row model, key/mouse handling, and a render pass
-//! that draws to either the live terminal or a headless `TestBackend` (the
-//! control channel's `dump`).
+//! The interactive session switcher: a two-region navigator (a flat, MRU-ordered
+//! nav list of window cards on one side, the selected session's live terminal view
+//! on the other) with a full-width hint_bar. ratatui is immediate-mode, so this owns
+//! its state machine, the flattened card model, key/mouse handling, and a render pass
+//! that draws to either the live terminal or a headless `TestBackend` (the control
+//! channel's `dump`).
 
 use std::collections::HashMap;
 
@@ -26,7 +26,7 @@ use crate::ui::ops::OpFollow;
 pub use crate::ui::ops::{run_op, OpResult, Ops};
 
 /// Tree pane width: border + 1-cell inner padding each side + content.
-pub const TREE_WIDTH: u16 = 48;
+pub const NAV_WIDTH: u16 = 48;
 
 /// A navigation card is two screen rows tall (line1 context, line2 detail). The
 /// renderer emits 2-line list items and mouse hit-testing divides the screen-row
@@ -53,13 +53,13 @@ pub enum ViewLayout {
 }
 
 /// Picks the layout from the TERMINAL VIEW's aspect, not the whole screen's: putting the
-/// tree in a side column costs the terminal `tree_width + 1` columns, and if that would
+/// tree in a side column costs the terminal `nav_width + 1` columns, and if that would
 /// leave the terminal view taller than wide (portrait), the tree stacks on `Top` instead so
 /// the terminal keeps full width. So a screen that is landscape overall can still go `Top`
-/// once the tree squeezes the terminal into a portrait shape. `tree_width` is the width the
+/// once the tree squeezes the terminal into a portrait shape. `nav_width` is the width the
 /// tree would occupy in `Side` (the natural/unhidden width).
-pub fn view_layout(area: Rect, tree_width: u16) -> ViewLayout {
-    let side_term_w = area.width.saturating_sub(tree_width.saturating_add(1));
+pub fn view_layout(area: Rect, nav_width: u16) -> ViewLayout {
+    let side_term_w = area.width.saturating_sub(nav_width.saturating_add(1));
     if area.height > side_term_w {
         ViewLayout::Top
     } else {
@@ -69,17 +69,17 @@ pub fn view_layout(area: Rect, tree_width: u16) -> ViewLayout {
 
 /// The auto `Top`-layout tree height for a body of `body_rows` rows (before the hint bar row
 /// is removed the caller passes `full_height - 1`). This is the seed a RELATIVE height resize
-/// (prefix h/l in Top) starts from while `tree_height` is still 0 (auto), so the first key
+/// (prefix h/l in Top) starts from while `nav_height` is still 0 (auto), so the first key
 /// adjusts the height the user actually sees.
-pub fn default_tree_height(body_rows: u16) -> u16 {
-    top_tree_height(body_rows)
+pub fn default_nav_height(body_rows: u16) -> u16 {
+    top_nav_height(body_rows)
 }
 
 /// The tree region's height in the `Top` layout: ~40% of the body, at least a few rows, but
 /// never so tall the terminal loses its last rows. Composed with min/max (not `clamp`) so a
 /// tiny body — where the floor would exceed the ceiling and `clamp` would panic — just yields
 /// the small floor instead.
-fn top_tree_height(body_h: u16) -> u16 {
+fn top_nav_height(body_h: u16) -> u16 {
     let want = (body_h as u32 * 2 / 5) as u16;
     let ceil = body_h.saturating_sub(3).max(1);
     want.max(3).min(ceil).max(1)
@@ -88,9 +88,9 @@ fn top_tree_height(body_h: u16) -> u16 {
 /// The screen regions the switcher draws into, derived ONCE per frame so the renderer,
 /// the PTY sizing, and mouse hit-testing all agree (one geometry, no divergence). The
 /// hint bar always spans the bottom full width; the tree and terminal split horizontally
-/// (`Side`, sized by `tree_width`) or vertically (`Top`, sized by `tree_height`), parted by
-/// the one-cell view border. `tree_width == 0` is the tree-hidden sentinel: the terminal
-/// owns the whole area. `tree_height == 0` means the `Top` height is auto (~40% of the body).
+/// (`Side`, sized by `nav_width`) or vertically (`Top`, sized by `nav_height`), parted by
+/// the one-cell view border. `nav_width == 0` is the tree-hidden sentinel: the terminal
+/// owns the whole area. `nav_height == 0` means the `Top` height is auto (~40% of the body).
 pub struct Regions {
     pub layout: ViewLayout,
     pub tree: Rect,
@@ -99,22 +99,22 @@ pub struct Regions {
     pub hint_bar: Rect,
 }
 
-/// The Top-layout tree height: a user-set `tree_height` (dragged border) clamped so both
-/// views keep room, or the auto ~40% when `tree_height == 0`. min/max (not `clamp`) so a
+/// The Top-layout tree height: a user-set `nav_height` (dragged border) clamped so both
+/// views keep room, or the auto ~40% when `nav_height == 0`. min/max (not `clamp`) so a
 /// tiny body cannot panic on inverted bounds.
-fn top_tree_height_for(body_h: u16, tree_height: u16) -> u16 {
-    if tree_height == 0 {
-        top_tree_height(body_h)
+fn top_nav_height_for(body_h: u16, nav_height: u16) -> u16 {
+    if nav_height == 0 {
+        top_nav_height(body_h)
     } else {
-        tree_height.min(body_h.saturating_sub(2)).max(1)
+        nav_height.min(body_h.saturating_sub(2)).max(1)
     }
 }
 
-pub fn compute_regions(area: Rect, tree_width: u16, tree_height: u16, hint_bar_h: u16) -> Regions {
+pub fn compute_regions(area: Rect, nav_width: u16, nav_height: u16, hint_bar_h: u16) -> Regions {
     // The layout is decided from the natural tree width so the terminal-view aspect test is
     // stable; the hidden sentinel (0) below still forces the whole area to the terminal.
-    let layout = view_layout(area, tree_width);
-    if tree_width == 0 {
+    let layout = view_layout(area, nav_width);
+    if nav_width == 0 {
         return Regions {
             layout,
             tree: Rect::default(),
@@ -128,7 +128,7 @@ pub fn compute_regions(area: Rect, tree_width: u16, tree_height: u16, hint_bar_h
     match layout {
         ViewLayout::Side => {
             let c = Layout::horizontal([
-                Constraint::Length(tree_width),
+                Constraint::Length(nav_width),
                 Constraint::Length(1),
                 Constraint::Min(0),
             ])
@@ -142,7 +142,7 @@ pub fn compute_regions(area: Rect, tree_width: u16, tree_height: u16, hint_bar_h
             }
         }
         ViewLayout::Top => {
-            let th = top_tree_height_for(body.height, tree_height);
+            let th = top_nav_height_for(body.height, nav_height);
             let r = Layout::vertical([
                 Constraint::Length(th),
                 Constraint::Length(1),
@@ -206,7 +206,7 @@ pub struct Switcher {
     terminal_view_target: TerminalViewTarget,
 
     list_state: ListState,
-    tree_inner: Rect,
+    nav_inner: Rect,
     /// The view stacking as of the last render (Side vs Top), cached so key handling can
     /// route the arrows to match what is on screen without re-deriving the geometry. Set
     /// each frame by `render` from [`view_layout`].
@@ -240,7 +240,7 @@ impl Switcher {
             nav_order: Vec::new(),
             terminal_view_target: TerminalViewTarget::default(),
             list_state: ListState::default(),
-            tree_inner: Rect::default(),
+            nav_inner: Rect::default(),
             layout: ViewLayout::Side,
             rescan_reselect: None,
             screen_area: Rect::default(),

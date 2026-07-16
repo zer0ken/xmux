@@ -38,7 +38,7 @@ pub enum Action {
     /// `prefix Ctrl+↑/↓` — adjust the tree HEIGHT by this signed delta (the vertical axis;
     /// applied only in the portrait Top layout). +1 grows (taller), -1 shrinks.
     Height(i32),
-    /// `prefix t` — toggle auto-hide-tree mode.
+    /// `prefix t` — toggle auto-hide-nav mode.
     ToggleAutoHide,
 }
 
@@ -55,7 +55,7 @@ impl Action {
             Action::Width(d) => Some(DomainAction::TreeWidth(*d)),
             Action::ToggleAutoHide => Some(DomainAction::ToggleAutoHide),
             Action::FocusTerminal => Some(DomainAction::Focus(FocusTarget::Terminal)),
-            Action::FocusTree(_) => Some(DomainAction::Focus(FocusTarget::Tree)),
+            Action::FocusTree(_) => Some(DomainAction::Focus(FocusTarget::Nav)),
             // Height resize is key-driven only (no ctl verb yet); it is applied directly on
             // the tree-input path, not through a domain action.
             Action::Height(_)
@@ -90,7 +90,7 @@ mod tests {
         );
         assert_eq!(
             Action::FocusTree(vec![]).as_action(),
-            Some(DomainAction::Focus(FocusTarget::Tree))
+            Some(DomainAction::Focus(FocusTarget::Nav))
         );
     }
     #[test]

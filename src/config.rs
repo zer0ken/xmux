@@ -32,14 +32,14 @@ pub struct UiConfig {
     /// `set -g prefix`. Parsed by `display::term::parse_prefix`.
     #[serde(default = "default_prefix")]
     pub prefix: String,
-    /// The INITIAL state of the auto-hide-tree mode (toggled live with `prefix t`,
-    /// then persisted to `~/.xmux/auto_hide_tree`, which wins over this on later
+    /// The INITIAL state of the auto-hide-nav mode (toggled live with `prefix t`,
+    /// then persisted to `~/.xmux/auto_hide_nav`, which wins over this on later
     /// runs). When the mode is on, focusing the terminal view hides the tree and gives it
     /// the full terminal width; the tree returns when focus returns to it. While
     /// hidden the tree has no column to click, so focus returns via the prefix keys
     /// (`prefix Tab`/`←`/`Esc`). Default false keeps the tree shown in both focus states.
-    #[serde(rename = "auto-hide-tree", default)]
-    pub auto_hide_tree: bool,
+    #[serde(rename = "auto-hide-nav", default)]
+    pub auto_hide_nav: bool,
     /// The tree|terminal view border colour OVERRIDES, named after tmux's pane-border
     /// options: the focused side is `view-active-border-style`, the unfocused side
     /// `view-border-style`, the drag-hover cue `view-border-hover-style`. Values use
@@ -70,7 +70,7 @@ impl Default for UiConfig {
     fn default() -> Self {
         UiConfig {
             prefix: default_prefix(),
-            auto_hide_tree: false,
+            auto_hide_nav: false,
             // Empty = unset: the effective colour comes from the live mux
             // pane-*-border-style, falling back to ViewBorderColors::default().
             view_active_border_style: String::new(),
@@ -175,10 +175,10 @@ impl Config {
         &self.ui.prefix
     }
 
-    /// The initial auto-hide-tree mode from config (default false). The live toggle's
-    /// persisted state, when present, overrides this — see `state::load_auto_hide_tree`.
-    pub fn ui_auto_hide_tree(&self) -> bool {
-        self.ui.auto_hide_tree
+    /// The initial auto-hide-nav mode from config (default false). The live toggle's
+    /// persisted state, when present, overrides this — see `state::load_auto_hide_nav`.
+    pub fn ui_auto_hide_nav(&self) -> bool {
+        self.ui.auto_hide_nav
     }
 
     /// Merges ssh-config discovery with the config file. Discovered aliases come
@@ -675,26 +675,26 @@ bogus = "nope"
     }
 
     #[test]
-    fn ui_auto_hide_tree_round_trip() {
+    fn ui_auto_hide_nav_round_trip() {
         // Missing file → false.
         let missing = std::env::temp_dir().join("xmux-autohide-absent-xyz.toml");
-        assert!(!load(&missing).unwrap().ui_auto_hide_tree());
+        assert!(!load(&missing).unwrap().ui_auto_hide_nav());
 
         // [ui] present but key missing → false; prefix still loads.
         let path = write_temp("[ui]\nprefix = \"C-g\"\n", "autohide-missing.toml");
         let cfg = load(&path).unwrap();
-        assert!(!cfg.ui_auto_hide_tree());
+        assert!(!cfg.ui_auto_hide_nav());
         assert_eq!(cfg.ui_prefix(), "C-g");
 
         // Explicit true.
-        let path = write_temp("[ui]\nauto-hide-tree = true\n", "autohide-true.toml");
+        let path = write_temp("[ui]\nauto-hide-nav = true\n", "autohide-true.toml");
         let cfg = load(&path).unwrap();
-        assert!(cfg.ui_auto_hide_tree());
+        assert!(cfg.ui_auto_hide_nav());
         assert_eq!(cfg.ui_prefix(), "C-g"); // prefix unaffected, still defaults
 
         // Explicit false.
-        let path = write_temp("[ui]\nauto-hide-tree = false\n", "autohide-false.toml");
-        assert!(!load(&path).unwrap().ui_auto_hide_tree());
+        let path = write_temp("[ui]\nauto-hide-nav = false\n", "autohide-false.toml");
+        assert!(!load(&path).unwrap().ui_auto_hide_nav());
     }
 
     #[test]

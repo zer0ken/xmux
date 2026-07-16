@@ -24,7 +24,7 @@ impl MuxDriver for TmuxDriver {
             return false;
         }
         let (cols, rows) =
-            terminal_view_size(ctx.cols, ctx.body_rows, ctx.tree_width, ctx.tree_height);
+            terminal_view_size(ctx.cols, ctx.body_rows, ctx.nav_width, ctx.nav_height);
         // The host's open `-CC` control connection, if any. switch-client/select-window
         // ride it instead of a fresh `ssh` per switch (the slow path on Windows, which
         // has no ssh ControlMaster — each exec re-handshakes, ~0.5s; see #2).
@@ -163,7 +163,7 @@ impl MuxDriver for TmuxDriver {
         // One PTY per host. Warm it on the first session if not yet attached; reap it
         // (and forget its session) when the host has no sessions.
         let (cols, rows) =
-            terminal_view_size(ctx.cols, ctx.body_rows, ctx.tree_width, ctx.tree_height);
+            terminal_view_size(ctx.cols, ctx.body_rows, ctx.nav_width, ctx.nav_height);
         let Some(host) = ctx.hosts.get_mut(source) else {
             return;
         };
@@ -302,8 +302,8 @@ mod tests {
                 attach_seq: &mut attach_seq,
                 cols: 80,
                 body_rows: 24,
-                tree_width: crate::ui::switcher::TREE_WIDTH,
-                tree_height: 0,
+                nav_width: crate::ui::switcher::NAV_WIDTH,
+                nav_height: 0,
             };
             driver.show(&sel, &mut ctx)
         };
@@ -357,8 +357,8 @@ mod tests {
                 attach_seq: &mut attach_seq,
                 cols: 80,
                 body_rows: 24,
-                tree_width: crate::ui::switcher::TREE_WIDTH,
-                tree_height: 0,
+                nav_width: crate::ui::switcher::NAV_WIDTH,
+                nav_height: 0,
             };
             driver.sync("local", &sessions, &mut ctx);
         }
@@ -411,8 +411,8 @@ mod tests {
                 attach_seq: &mut attach_seq,
                 cols: 80,
                 body_rows: 24,
-                tree_width: crate::ui::switcher::TREE_WIDTH,
-                tree_height: 0,
+                nav_width: crate::ui::switcher::NAV_WIDTH,
+                nav_height: 0,
             };
             driver.sync("local", &[], &mut ctx);
         }

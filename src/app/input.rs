@@ -1,29 +1,28 @@
 //! The PURE, stateless input-routing core: the decode/resolve functions and the small
-//! value types they use. Tree-focus key resolution ([`resolve_tree_key`]), the mouse
+//! value types they use. Tree-focus key resolution ([`resolve_nav_key`]), the mouse
 //! focus×position router ([`resolve_mouse_chain`]/[`ChainAction`]), the gesture/geometry
 //! predicates ([`to_grid_local`], [`leading_ctrl_arrow`], [`view_border_drag_width`],
-//! [`tree_menu_may_open`]), and the per-read gesture/outcome carriers
+//! [`nav_menu_may_open`]), and the per-read gesture/outcome carriers
 //! ([`MouseState`]/[`StdinOutcome`]). None of these touch app or switcher state, so they
 //! are unit-testable in isolation; the stateful handlers in `runtime.rs` thread the
 //! runtime's world and call into this core.
 
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
-use crate::app::runtime::{TREE_HEIGHT_MAX, TREE_HEIGHT_MIN, TREE_WIDTH_MAX, TREE_WIDTH_MIN};
+use crate::app::runtime::{NAV_HEIGHT_MAX, NAV_HEIGHT_MIN, NAV_WIDTH_MAX, NAV_WIDTH_MIN};
 use crate::display::dispatch::Action;
 
 /// The tree width a view border drag to 1-based screen column `col` sets: the dragged
 /// column becomes the view border position (= the tree width), clamped to the allowed range.
 pub(crate) fn view_border_drag_width(col: u16) -> u16 {
-    col.saturating_sub(1).clamp(TREE_WIDTH_MIN, TREE_WIDTH_MAX)
+    col.saturating_sub(1).clamp(NAV_WIDTH_MIN, NAV_WIDTH_MAX)
 }
 
 /// The Top-layout tree height a horizontal view border drag to 1-based screen row `row`
 /// sets: the dragged row becomes the border position (0-based), which is the tree height,
 /// clamped to the allowed range. compute_regions clamps further to the live body height.
 pub(crate) fn view_border_drag_height(row: u16) -> u16 {
-    row.saturating_sub(1)
-        .clamp(TREE_HEIGHT_MIN, TREE_HEIGHT_MAX)
+    row.saturating_sub(1).clamp(NAV_HEIGHT_MIN, NAV_HEIGHT_MAX)
 }
 
 /// If `bytes` STARTS with a Ctrl-arrow (`ESC [ 1 ; 5 A/B/C/D`), returns `(horizontal,
@@ -70,16 +69,16 @@ fn is_focus_in(code: KeyCode) -> bool {
 /// the view under the selection, and only when that view is focused — the same rule clicks
 /// and motion already follow. A wheel over the terminal view while the tree is focused is not
 /// a tree scroll.
-fn wheel_targets_tree(tree_focused: bool, over_mux: bool) -> bool {
-    tree_focused && !over_mux
+fn wheel_targets_nav(nav_focused: bool, over_mux: bool) -> bool {
+    nav_focused && !over_mux
 }
 
 /// Whether a right-button press may open the tree context menu. Tree-focus only: the
 /// menu operates on a tree row, so it is a tree-view action, not a view-independent
 /// global — it never opens (nor steals focus) while the terminal view is focused. Position-
 /// gated to the tree column; a right-click over the terminal view forwards to the child.
-pub(crate) fn tree_menu_may_open(is_right_press: bool, tree_focused: bool, over_mux: bool) -> bool {
-    is_right_press && tree_focused && !over_mux
+pub(crate) fn nav_menu_may_open(is_right_press: bool, nav_focused: bool, over_mux: bool) -> bool {
+    is_right_press && nav_focused && !over_mux
 }
 
 /// What a mouse event resolves to once the modal/gesture gates (menu, view border drag,
@@ -111,26 +110,26 @@ pub(crate) fn resolve_mouse_chain(
     ctrl: bool,
     down: bool,
     is_left_press: bool,
-    tree_focused: bool,
+    nav_focused: bool,
     over_mux: bool,
 ) -> ChainAction {
-    if is_wheel && wheel_targets_tree(tree_focused, over_mux) {
+    if is_wheel && wheel_targets_nav(nav_focused, over_mux) {
         return if ctrl {
             ChainAction::LevelChange(down)
         } else {
             ChainAction::ScrollTree(down)
         };
     }
-    if is_left_press && tree_focused && over_mux {
+    if is_left_press && nav_focused && over_mux {
         return ChainAction::FocusTerminal;
     }
-    if is_left_press && tree_focused && !over_mux {
+    if is_left_press && nav_focused && !over_mux {
         return ChainAction::SelectRow;
     }
-    if is_left_press && !tree_focused && !over_mux {
+    if is_left_press && !nav_focused && !over_mux {
         return ChainAction::FocusTree;
     }
-    if !tree_focused && over_mux {
+    if !nav_focused && over_mux {
         return ChainAction::ForwardToMux;
     }
     ChainAction::Nothing
@@ -144,7 +143,7 @@ pub(crate) fn resolve_mouse_chain(
 /// per read — because `is_inputting` can flip mid-read (a key that opens the input row
 /// changes how the next key in the same read is treated), so the caller re-queries it
 /// and applies each action before resolving the next key.
-pub(crate) fn resolve_tree_key(
+pub(crate) fn resolve_nav_key(
     key: ratatui::crossterm::event::KeyEvent,
     armed: &mut bool,
     prefix: u8,
@@ -235,7 +234,7 @@ pub(crate) struct StdinOutcome {
 mod tests {
     use super::*;
 
-    // --- resolve_tree_key: pure TREE-focus key resolution -------------------
+    // --- resolve_nav_key: pure TREE-focus key resolution -------------------
     /// Resolve one read at the default prefix (C-g = 0x07), fresh decoder/armed,
     /// folding the per-key resolver over the decoded keys.
     fn rt(bytes: &[u8], is_inputting: bool) -> Vec<Action> {
@@ -243,7 +242,7 @@ mod tests {
         let mut armed = false;
         dec.feed(bytes)
             .into_iter()
-            .filter_map(|k| resolve_tree_key(k, &mut armed, 0x07, is_inputting))
+            .filter_map(|k| resolve_nav_key(k, &mut armed, 0x07, is_inputting))
             .collect()
     }
 
@@ -336,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_tree_enter_focuses_mux_and_nav_is_a_tree_key() {
+    fn resolve_tree_enter_focuses_mux_and_nav_is_a_nav_key() {
         assert_eq!(
             rt(b"\r", false),
             vec![Action::FocusTerminal],
@@ -378,21 +377,21 @@ mod tests {
 
     // --- mouse focus/position rules ----------------------------------------
     #[test]
-    fn wheel_targets_tree_only_when_tree_focused_and_over_tree() {
+    fn wheel_targets_nav_only_when_nav_focused_and_over_tree() {
         assert!(
-            wheel_targets_tree(true, false),
+            wheel_targets_nav(true, false),
             "tree focus + over tree → drive the tree"
         );
         assert!(
-            !wheel_targets_tree(true, true),
+            !wheel_targets_nav(true, true),
             "tree focus + over the MUX pane → NOT the tree"
         );
         assert!(
-            !wheel_targets_tree(false, false),
+            !wheel_targets_nav(false, false),
             "terminal-view focus + over tree → not the tree"
         );
         assert!(
-            !wheel_targets_tree(false, true),
+            !wheel_targets_nav(false, true),
             "terminal-view focus + over the terminal view → the mux child, not the tree"
         );
     }
@@ -435,12 +434,12 @@ mod tests {
         assert_eq!(
             resolve_mouse_chain(false, false, false, true, true, false),
             SelectRow,
-            "left, tree focus, over tree → select row"
+            "left, nav focus, over nav → select row"
         );
         assert_eq!(
             resolve_mouse_chain(false, false, false, true, false, false),
             FocusTree,
-            "left, terminal-view focus, over tree → focus tree"
+            "left, terminal-view focus, over nav → focus nav"
         );
         assert_eq!(
             resolve_mouse_chain(false, false, false, true, false, true),
@@ -462,21 +461,21 @@ mod tests {
     }
 
     #[test]
-    fn tree_menu_opens_only_in_tree_focus_over_the_tree() {
+    fn nav_menu_opens_only_in_tree_focus_over_the_tree() {
         assert!(
-            tree_menu_may_open(true, true, false),
+            nav_menu_may_open(true, true, false),
             "right-press, tree focus, over tree → may open"
         );
         assert!(
-            !tree_menu_may_open(true, false, false),
+            !nav_menu_may_open(true, false, false),
             "right-press while the MUX is focused → never"
         );
         assert!(
-            !tree_menu_may_open(true, true, true),
+            !nav_menu_may_open(true, true, true),
             "right-press over the terminal view → forwards, no tree menu"
         );
         assert!(
-            !tree_menu_may_open(false, true, false),
+            !nav_menu_may_open(false, true, false),
             "a non-right press never opens the menu"
         );
     }
@@ -488,7 +487,7 @@ mod tests {
         let r1: Vec<Action> = dec
             .feed(b"\x07")
             .into_iter()
-            .filter_map(|k| resolve_tree_key(k, &mut armed, 0x07, false))
+            .filter_map(|k| resolve_nav_key(k, &mut armed, 0x07, false))
             .collect();
         assert_eq!(r1, Vec::<Action>::new());
         assert!(
@@ -498,7 +497,7 @@ mod tests {
         let r2: Vec<Action> = dec
             .feed(b"q")
             .into_iter()
-            .filter_map(|k| resolve_tree_key(k, &mut armed, 0x07, false))
+            .filter_map(|k| resolve_nav_key(k, &mut armed, 0x07, false))
             .collect();
         assert_eq!(r2, vec![Action::Quit]);
         assert!(!armed, "the command consumes the armed state");
@@ -561,12 +560,12 @@ mod tests {
         assert_eq!(view_border_drag_width(51), 50);
         assert_eq!(
             view_border_drag_width(5),
-            TREE_WIDTH_MIN,
+            NAV_WIDTH_MIN,
             "too far left clamps to min"
         );
         assert_eq!(
             view_border_drag_width(500),
-            TREE_WIDTH_MAX,
+            NAV_WIDTH_MAX,
             "too far right clamps to max"
         );
     }
@@ -618,7 +617,7 @@ mod tests {
 
     #[test]
     fn to_grid_local_full_width_area_maps_left_edge() {
-        // Tree hidden (auto-hide-tree): the terminal view owns the whole screen, so the
+        // Tree hidden (auto-hide-nav): the terminal view owns the whole screen, so the
         // input handler builds term_area at x=0. The top-left cell SGR (1,1) must map
         // to grid-local (1,1) rather than being rejected as it would in the tree column.
         let area = ratatui::layout::Rect::new(0, 0, 80, 24);

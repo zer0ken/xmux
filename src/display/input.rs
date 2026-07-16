@@ -4,7 +4,7 @@
 //! which is intercepted: `prefix Left|Tab|Esc` returns focus to the tree, `prefix Right`
 //! keeps focus on the (already-focused) terminal view, `prefix q` quits, `prefix ?` toggles
 //! the keys help, `prefix h`/`l` and `prefix Ctrl+←/→` resize the tree, `prefix t`
-//! toggles auto-hide-tree mode, `prefix n`/`R`/`r` run the tree actions
+//! toggles auto-hide-nav mode, `prefix n`/`R`/`r` run the tree actions
 //! (new / rename / re-scan) on the displayed session, `prefix x` kills the ACTIVE pane
 //! of the displayed session (tmux `prefix x` parity — distinct from tree focus, where
 //! `prefix x` kills the selected node), and a doubled
@@ -92,7 +92,7 @@ impl TermInput {
                     i += 1;
                     continue;
                 }
-                // prefix t → toggle auto-hide-tree; keeps terminal-view focus, so the rest of
+                // prefix t → toggle auto-hide-nav; keeps terminal-view focus, so the rest of
                 // the read still forwards to the pane.
                 if b0 == b't' {
                     if !fwd.is_empty() {
@@ -328,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn prefix_then_tree_action_emits_tree_key() {
+    fn prefix_then_tree_action_emits_nav_key() {
         // prefix n/R/r each emit a TreeKey the caller routes to Switcher::handle_key,
         // so the tree actions work from terminal focus too. (prefix x is separate — it
         // kills the active pane; see prefix_then_x_kills_active_pane.)

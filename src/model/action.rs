@@ -42,7 +42,7 @@ pub enum Action {
     Rescan,
     /// Adjust the tree width by a signed delta.
     TreeWidth(i32),
-    /// Toggle auto-hide-tree mode.
+    /// Toggle auto-hide-nav mode.
     ToggleAutoHide,
     /// Quit the app.
     Quit,
@@ -133,7 +133,7 @@ pub enum Command {
     /// Adjust the natural tree width by this signed delta and schedule the debounced
     /// persist.
     AdjustTreeWidth(i32),
-    /// Toggle auto-hide-tree mode and persist it.
+    /// Toggle auto-hide-nav mode and persist it.
     ToggleAutoHide,
     /// Persist this session address as the user's last-selected.
     PersistLastSession(String),
@@ -298,7 +298,7 @@ impl std::fmt::Debug for EventEffect {
 /// focus toggles both resolve to this.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FocusTarget {
-    Tree,
+    Nav,
     Terminal,
 }
 
@@ -308,7 +308,7 @@ impl FocusTarget {
     #[allow(clippy::should_implement_trait)] // intentionally not FromStr: returns Option, not Result
     pub fn from_str(s: &str) -> Option<FocusTarget> {
         match s.trim() {
-            "tree" => Some(FocusTarget::Tree),
+            "nav" => Some(FocusTarget::Nav),
             "terminal" | "mux" => Some(FocusTarget::Terminal),
             _ => None,
         }
@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn focus_target_parses_aliases() {
-        assert_eq!(FocusTarget::from_str("tree"), Some(FocusTarget::Tree));
+        assert_eq!(FocusTarget::from_str("nav"), Some(FocusTarget::Nav));
         assert_eq!(
             FocusTarget::from_str("terminal"),
             Some(FocusTarget::Terminal)
@@ -332,8 +332,8 @@ mod tests {
             "mux is an alias for terminal"
         );
         assert_eq!(
-            FocusTarget::from_str(" tree "),
-            Some(FocusTarget::Tree),
+            FocusTarget::from_str(" nav "),
+            Some(FocusTarget::Nav),
             "trims"
         );
         assert_eq!(FocusTarget::from_str("sideways"), None);

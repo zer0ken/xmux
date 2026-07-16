@@ -13,15 +13,15 @@
 /// The two real views — the only targets a modal can restore to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewFocus {
-    Tree,
+    Nav,
     Terminal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Focus {
-    /// Tree view focused — keys navigate the host/session tree.
+    /// Nav view focused — keys navigate the flat window-card list.
     #[default]
-    Tree,
+    Nav,
     /// Terminal view focused — keys forward to the selected session's active pane.
     Terminal,
     /// A centered modal popup (help / inline input / kill-confirm) owns keys;
@@ -43,8 +43,8 @@ impl Focus {
     /// True only in the bare `Tree` view state — false during any modal, even one
     /// opened from the tree. Gates set-view / mux-active decisions; key-routing
     /// sites add `|| is_modal()` so a modal still receives keys.
-    pub fn is_tree_focused(&self) -> bool {
-        matches!(self, Focus::Tree)
+    pub fn is_nav_focused(&self) -> bool {
+        matches!(self, Focus::Nav)
     }
 
     /// True only in the bare `Terminal` view state — false during any modal.
@@ -59,15 +59,15 @@ impl Focus {
 
     /// The EFFECTIVE view focus: the active view, or — during a modal — the view it
     /// was opened from. Lets `status` report the view behind a modal as the focus.
-    pub fn view_is_tree(&self) -> bool {
+    pub fn view_is_nav(&self) -> bool {
         matches!(
             self,
-            Focus::Tree
+            Focus::Nav
                 | Focus::Popup {
-                    prior: ViewFocus::Tree
+                    prior: ViewFocus::Nav
                 }
                 | Focus::Menu {
-                    prior: ViewFocus::Tree
+                    prior: ViewFocus::Nav
                 }
         )
     }
@@ -78,12 +78,12 @@ impl Focus {
     /// carried `prior` so the modal stays open and restores onto the flipped view.
     pub fn toggle(&mut self) {
         let flip = |p: ViewFocus| match p {
-            ViewFocus::Tree => ViewFocus::Terminal,
-            ViewFocus::Terminal => ViewFocus::Tree,
+            ViewFocus::Nav => ViewFocus::Terminal,
+            ViewFocus::Terminal => ViewFocus::Nav,
         };
         *self = match *self {
-            Focus::Tree => Focus::Terminal,
-            Focus::Terminal => Focus::Tree,
+            Focus::Nav => Focus::Terminal,
+            Focus::Terminal => Focus::Nav,
             Focus::Popup { prior } => Focus::Popup { prior: flip(prior) },
             Focus::Menu { prior } => Focus::Menu { prior: flip(prior) },
         };
@@ -94,8 +94,8 @@ impl Focus {
     /// restore (the context-menu "focus terminal" path).
     pub fn set_view_focus(&mut self, p: ViewFocus) {
         *self = match *self {
-            Focus::Tree | Focus::Terminal => match p {
-                ViewFocus::Tree => Focus::Tree,
+            Focus::Nav | Focus::Terminal => match p {
+                ViewFocus::Nav => Focus::Nav,
                 ViewFocus::Terminal => Focus::Terminal,
             },
             Focus::Popup { .. } => Focus::Popup { prior: p },
@@ -110,8 +110,8 @@ impl Focus {
     /// mid-modal `toggle`).
     pub fn sync_modal(&mut self, kind: Option<ModalKind>) {
         let current_view = || {
-            if self.view_is_tree() {
-                ViewFocus::Tree
+            if self.view_is_nav() {
+                ViewFocus::Nav
             } else {
                 ViewFocus::Terminal
             }
@@ -119,10 +119,10 @@ impl Focus {
         *self = match (kind, *self) {
             // No modal: collapse any open modal back onto its prior view.
             (None, Focus::Popup { prior }) | (None, Focus::Menu { prior }) => match prior {
-                ViewFocus::Tree => Focus::Tree,
+                ViewFocus::Nav => Focus::Nav,
                 ViewFocus::Terminal => Focus::Terminal,
             },
-            (None, s @ (Focus::Tree | Focus::Terminal)) => s,
+            (None, s @ (Focus::Nav | Focus::Terminal)) => s,
             // Already the requested kind: no-op (preserve a mid-modal toggle of prior).
             (Some(ModalKind::Popup), s @ Focus::Popup { .. }) => s,
             (Some(ModalKind::Menu), s @ Focus::Menu { .. }) => s,
@@ -130,10 +130,10 @@ impl Focus {
             (Some(ModalKind::Popup), Focus::Menu { prior }) => Focus::Popup { prior },
             (Some(ModalKind::Menu), Focus::Popup { prior }) => Focus::Menu { prior },
             // Opening from a view: capture the current view as prior.
-            (Some(ModalKind::Popup), Focus::Tree | Focus::Terminal) => Focus::Popup {
+            (Some(ModalKind::Popup), Focus::Nav | Focus::Terminal) => Focus::Popup {
                 prior: current_view(),
             },
-            (Some(ModalKind::Menu), Focus::Tree | Focus::Terminal) => Focus::Menu {
+            (Some(ModalKind::Menu), Focus::Nav | Focus::Terminal) => Focus::Menu {
                 prior: current_view(),
             },
         };
@@ -145,16 +145,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn app_starts_tree_focused_and_toggles() {
+    fn app_starts_nav_focused_and_toggles() {
         let mut focus = Focus::default();
         assert!(
-            focus.is_tree_focused(),
+            focus.is_nav_focused(),
             "starts on the tree (selection preselected)"
         );
         focus.toggle();
         assert_eq!(focus, Focus::Terminal);
         focus.toggle();
-        assert_eq!(focus, Focus::Tree);
+        assert_eq!(focus, Focus::Nav);
     }
 
     #[test]
@@ -182,11 +182,11 @@ mod tests {
         assert_eq!(
             focus,
             Focus::Popup {
-                prior: ViewFocus::Tree
+                prior: ViewFocus::Nav
             }
         );
         focus.sync_modal(None);
-        assert_eq!(focus, Focus::Tree);
+        assert_eq!(focus, Focus::Nav);
     }
 
     #[test]
@@ -196,11 +196,11 @@ mod tests {
         assert_eq!(
             focus,
             Focus::Menu {
-                prior: ViewFocus::Tree
+                prior: ViewFocus::Nav
             }
         );
         focus.sync_modal(None);
-        assert_eq!(focus, Focus::Tree);
+        assert_eq!(focus, Focus::Nav);
     }
 
     #[test]
@@ -253,7 +253,7 @@ mod tests {
     fn set_view_focus_during_a_menu_targets_the_restore_view() {
         // The menu "focus terminal" path: state is Menu{prior:Tree}, focus-terminal requested.
         let mut focus = Focus::Menu {
-            prior: ViewFocus::Tree,
+            prior: ViewFocus::Nav,
         };
         focus.set_view_focus(ViewFocus::Terminal);
         assert_eq!(
@@ -271,30 +271,30 @@ mod tests {
         let mut focus = Focus::default(); // Tree
         focus.set_view_focus(ViewFocus::Terminal);
         assert_eq!(focus, Focus::Terminal);
-        focus.set_view_focus(ViewFocus::Tree);
-        assert_eq!(focus, Focus::Tree);
+        focus.set_view_focus(ViewFocus::Nav);
+        assert_eq!(focus, Focus::Nav);
     }
 
     #[test]
     fn focus_predicates_are_mutually_exclusive_and_exhaustive() {
         for state in [
-            Focus::Tree,
+            Focus::Nav,
             Focus::Terminal,
             Focus::Popup {
-                prior: ViewFocus::Tree,
+                prior: ViewFocus::Nav,
             },
             Focus::Popup {
                 prior: ViewFocus::Terminal,
             },
             Focus::Menu {
-                prior: ViewFocus::Tree,
+                prior: ViewFocus::Nav,
             },
             Focus::Menu {
                 prior: ViewFocus::Terminal,
             },
         ] {
             let n = [
-                state.is_tree_focused(),
+                state.is_nav_focused(),
                 state.is_terminal_focused(),
                 state.is_modal(),
             ]
@@ -306,10 +306,10 @@ mod tests {
                 "exactly one of tree/terminal/modal holds for {state:?}"
             );
         }
-        assert!(Focus::Tree.is_tree_focused());
+        assert!(Focus::Nav.is_nav_focused());
         assert!(Focus::Terminal.is_terminal_focused());
         assert!(Focus::Popup {
-            prior: ViewFocus::Tree
+            prior: ViewFocus::Nav
         }
         .is_modal());
         assert!(Focus::Menu {
@@ -319,24 +319,24 @@ mod tests {
     }
 
     #[test]
-    fn view_is_tree_reports_the_effective_view() {
-        assert!(Focus::Tree.view_is_tree());
+    fn view_is_nav_reports_the_effective_view() {
+        assert!(Focus::Nav.view_is_nav());
         assert!(Focus::Popup {
-            prior: ViewFocus::Tree
+            prior: ViewFocus::Nav
         }
-        .view_is_tree());
+        .view_is_nav());
         assert!(Focus::Menu {
-            prior: ViewFocus::Tree
+            prior: ViewFocus::Nav
         }
-        .view_is_tree());
-        assert!(!Focus::Terminal.view_is_tree());
+        .view_is_nav());
+        assert!(!Focus::Terminal.view_is_nav());
         assert!(!Focus::Popup {
             prior: ViewFocus::Terminal
         }
-        .view_is_tree());
+        .view_is_nav());
         assert!(!Focus::Menu {
             prior: ViewFocus::Terminal
         }
-        .view_is_tree());
+        .view_is_nav());
     }
 }

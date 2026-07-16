@@ -437,7 +437,7 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
     // Tree section — the mutating keys carry the prefix (bare presses are inert);
     // navigation and the `/` filter stay bare.
     let rows: Vec<HelpRow> = vec![
-        HelpRow::Head("tree".into()),
+        HelpRow::Head("navigation".into()),
         HelpRow::Key("↑/↓ · j/k".into(), "move up / down the list".into()),
         HelpRow::Key("PgUp/PgDn".into(), "jump by 10".into()),
         HelpRow::Key("Home/End".into(), "first / last card".into()),
@@ -469,7 +469,7 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
         ),
         HelpRow::Key(
             format!("{p} t"),
-            "toggle auto-hide-tree (║ view border = on)".into(),
+            "toggle auto-hide-nav (║ view border = on)".into(),
         ),
         HelpRow::Key(format!("{p} ?"), "show this help (q / Esc closes)".into()),
         HelpRow::Key("click a view".into(), "focus that view".into()),

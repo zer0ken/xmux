@@ -9,7 +9,7 @@ impl Runtime {
     /// the `r` re-scan. Returns `(focus_terminal, quit, width_delta, toggle_auto_hide)`.
     /// The selection is committed at the loop top, so this only drives navigation +
     /// metadata, not the display. `width_changed` is the caller's out-flag.
-    pub(super) fn handle_tree_bytes(
+    pub(super) fn handle_nav_bytes(
         &mut self,
         bytes: &[u8],
         width_changed: &mut bool,
@@ -27,17 +27,17 @@ impl Runtime {
             panes_requested,
             ops,
             op_tx,
-            tree_width_natural,
-            auto_hide_tree,
+            nav_width_natural,
+            auto_hide_nav,
             cols,
             body_rows: rows,
-            tree_width,
+            nav_width,
             mouse_state,
             prefix,
             ..
         } = self;
         let tree_armed = &mut mouse_state.tree_armed;
-        let (prefix, cols, rows, tree_width) = (*prefix, *cols, *rows, *tree_width);
+        let (prefix, cols, rows, nav_width) = (*prefix, *cols, *rows, *nav_width);
         let mut focus_terminal = false;
         let mut quit = false;
         let mut width_delta = 0i32;
@@ -51,7 +51,7 @@ impl Runtime {
             // kill-confirm swallows prefix/Enter, so `prefix q` can't quit and Enter can't
             // focus the terminal while a confirm is on screen; only y/n/Esc act on it.
             let is_inputting = state.is_modal_popup_open();
-            match resolve_tree_key(key, tree_armed, prefix, is_inputting) {
+            match resolve_nav_key(key, tree_armed, prefix, is_inputting) {
                 // A committed input/kill confirm folds through State::apply, which returns
                 // its Commands; collect them and dispatch the whole batch below.
                 Some(Action::TreeKey(k)) => key_cmds.extend(switcher.handle_key(k, state)),
@@ -61,7 +61,7 @@ impl Runtime {
                 Some(Action::Height(d)) => height_delta = d,
                 Some(Action::ToggleAutoHide) => toggle_auto_hide = true,
                 Some(Action::ShowHelp) => switcher.toggle_help(state),
-                // resolve_tree_key never emits the mux-only or terminal-only variants
+                // resolve_nav_key never emits the mux-only or terminal-only variants
                 // (Forward/FocusTree/KillActivePane); None = armed/consumed.
                 Some(Action::Forward(_))
                 | Some(Action::FocusTree(_))
@@ -77,8 +77,8 @@ impl Runtime {
             key_cmds,
             switcher,
             state,
-            tree_width_natural,
-            auto_hide_tree,
+            nav_width_natural,
+            auto_hide_nav,
             &env.xmux_dir,
             (&*ops, &*op_tx),
         );
@@ -86,7 +86,7 @@ impl Runtime {
         if cmd_width_changed {
             *width_changed = true;
         }
-        ensure_current_host(mgr, hosts, switcher, cols, rows, tree_width);
+        ensure_current_host(mgr, hosts, switcher, cols, rows, nav_width);
         kick_rescan(switcher, hosts, detecting, mgr, panes_requested, cols, rows);
         (
             focus_terminal,
@@ -127,14 +127,14 @@ impl Runtime {
             hosts,
             detecting,
             panes_requested,
-            tree_width_natural,
-            tree_height,
+            nav_width_natural,
+            nav_height,
             cols,
             body_rows,
-            tree_width,
+            nav_width,
             ..
         } = self;
-        let (cols, body_rows, tree_width) = (*cols, *body_rows, *tree_width);
+        let (cols, body_rows, nav_width) = (*cols, *body_rows, *nav_width);
         let mut dirty = false;
         let in_mux = to_grid_local(term_area, ev.col, ev.row);
         // A LEFT-button press in the UNFOCUSED view switches focus to that
@@ -155,8 +155,8 @@ impl Runtime {
         // either layout: a vertical rule in Side, a horizontal rule in Top. The drag then
         // resizes the tree WIDTH (Side, by column) or HEIGHT (Top, by row).
         let full = ratatui::layout::Rect::new(0, 0, cols, body_rows.saturating_add(1));
-        let regions = crate::ui::switcher::compute_regions(full, tree_width, *tree_height, 1);
-        let on_view_border = tree_width > 0
+        let regions = crate::ui::switcher::compute_regions(full, nav_width, *nav_height, 1);
+        let on_view_border = nav_width > 0
             && regions
                 .view_border
                 .contains(ratatui::layout::Position { x: col0, y: row0 });
@@ -172,7 +172,7 @@ impl Runtime {
                         // Connect the target's host (mirrors the left-click
                         // select path) so its control client streams, then
                         // focus the terminal on the now-selected session.
-                        ensure_current_host(mgr, hosts, switcher, cols, body_rows, tree_width);
+                        ensure_current_host(mgr, hosts, switcher, cols, body_rows, nav_width);
                         // Focus state is `Menu{prior}` here; set the restore view to the terminal
                         // so closing the menu (next loop-top sync_modal(None)) lands on it.
                         state.apply(crate::model::Action::Focus(
@@ -193,7 +193,7 @@ impl Runtime {
                             cols,
                             body_rows,
                         );
-                        ensure_current_host(mgr, hosts, switcher, cols, body_rows, tree_width);
+                        ensure_current_host(mgr, hosts, switcher, cols, body_rows, nav_width);
                     }
                     crate::ui::modal::MenuOutcome::None => {}
                 }
@@ -210,21 +210,21 @@ impl Runtime {
                 // but does not write per cell). Top drags the height, Side the width.
                 st.dragging_view_border = false;
                 if top_layout {
-                    crate::prefs::save_tree_height(&env.xmux_dir, *tree_height);
+                    crate::prefs::save_nav_height(&env.xmux_dir, *nav_height);
                 } else {
-                    crate::prefs::save_tree_width(&env.xmux_dir, *tree_width_natural);
+                    crate::prefs::save_nav_width(&env.xmux_dir, *nav_width_natural);
                 }
             } else if !is_wheel {
                 if top_layout {
                     let target = view_border_drag_height(ev.row);
-                    if target != *tree_height {
-                        *tree_height = target;
+                    if target != *nav_height {
+                        *nav_height = target;
                         dirty = true;
                     }
                 } else {
                     let target = view_border_drag_width(ev.col);
-                    if target != *tree_width_natural {
-                        *tree_width_natural = target;
+                    if target != *nav_width_natural {
+                        *nav_width_natural = target;
                         dirty = true;
                     }
                 }
@@ -283,9 +283,9 @@ impl Runtime {
         // kill confirm) thus always run in tree focus, so a confirmed kill
         // can't quit the app out from under the mux.
         let is_right_press = is_press && (ev.cb & 0x03) == 2;
-        if tree_menu_may_open(
+        if nav_menu_may_open(
             is_right_press,
-            state.focus.is_tree_focused(),
+            state.focus.is_nav_focused(),
             in_mux.is_some(),
         ) && switcher.menu_open(col0, ev.row.saturating_sub(1), state)
         {
@@ -299,7 +299,7 @@ impl Runtime {
             ctrl,
             down,
             is_left_press,
-            state.focus.is_tree_focused(),
+            state.focus.is_nav_focused(),
             in_mux.is_some(),
         ) {
             ChainAction::ScrollTree(down) => {
@@ -317,7 +317,7 @@ impl Runtime {
                 non_mouse.extend_from_slice(if down { b"\x1b[C" } else { b"\x1b[D" });
             }
             // The unfocused view was clicked → switch focus to it (no content
-            // delivered); toggle flips Focus::Tree⇄Focus::Terminal either direction.
+            // delivered); toggle flips Focus::Nav⇄Focus::Terminal either direction.
             ChainAction::FocusTerminal | ChainAction::FocusTree => {
                 state.apply(crate::model::Action::FocusToggle);
                 *mouse_focus_toggle = true;
@@ -327,7 +327,7 @@ impl Runtime {
                 // loop top commits the new selection (attach); ensure the
                 // clicked row's host connects so its subtree streams in.
                 switcher.mouse_select(col0, ev.row.saturating_sub(1), state);
-                ensure_current_host(mgr, hosts, switcher, cols, body_rows, tree_width);
+                ensure_current_host(mgr, hosts, switcher, cols, body_rows, nav_width);
                 dirty = true;
             }
             ChainAction::ForwardToMux => {
@@ -349,29 +349,29 @@ impl Runtime {
     /// axis so a key never resizes a dimension the user cannot see: `horizontal` (←/→ · h/l)
     /// resizes the WIDTH only in Side, `!horizontal` (↑/↓) the HEIGHT only in Top; the
     /// perpendicular axis is a no-op. Height is seeded from the effective auto height the
-    /// first time (while `tree_height == 0`) so a relative step starts from what is on screen,
+    /// first time (while `nav_height == 0`) so a relative step starts from what is on screen,
     /// clamped so the terminal keeps room, and persisted; width defers to `apply_width_delta`
     /// (the caller schedules the debounced persist). Returns whether the size changed.
     pub(super) fn resize_axis(&mut self, horizontal: bool, delta: i32) -> bool {
         let top = self.switcher.layout() == crate::ui::switcher::ViewLayout::Top;
         match (horizontal, top) {
-            (true, false) => apply_width_delta(delta, &mut self.tree_width_natural),
+            (true, false) => apply_width_delta(delta, &mut self.nav_width_natural),
             (false, true) => {
-                let base = if self.tree_height == 0 {
-                    crate::ui::switcher::default_tree_height(self.body_rows)
+                let base = if self.nav_height == 0 {
+                    crate::ui::switcher::default_nav_height(self.body_rows)
                 } else {
-                    self.tree_height
+                    self.nav_height
                 };
                 let ceil = self
                     .body_rows
                     .saturating_sub(2)
-                    .clamp(TREE_HEIGHT_MIN, TREE_HEIGHT_MAX);
-                let next = (base as i32 + delta).clamp(TREE_HEIGHT_MIN as i32, ceil as i32) as u16;
-                if next == self.tree_height {
+                    .clamp(NAV_HEIGHT_MIN, NAV_HEIGHT_MAX);
+                let next = (base as i32 + delta).clamp(NAV_HEIGHT_MIN as i32, ceil as i32) as u16;
+                if next == self.nav_height {
                     return false;
                 }
-                self.tree_height = next;
-                crate::prefs::save_tree_height(&self.env.xmux_dir, self.tree_height);
+                self.nav_height = next;
+                crate::prefs::save_nav_height(&self.env.xmux_dir, self.nav_height);
                 true
             }
             _ => false, // perpendicular axis for this layout: nothing to resize
@@ -413,9 +413,9 @@ impl Runtime {
             tree_replay,
             width_changed,
         } = &mut outcome;
-        // Scan for SGR mouse sequences BEFORE routing to Focus::Tree/Focus::Terminal branches.
+        // Scan for SGR mouse sequences BEFORE routing to Focus::Nav/Focus::Terminal branches.
         // Mouse capture is global, so mouse bytes arrive in both states; scanning here
-        // prevents them from reaching handle_tree_bytes (which would mis-decode them)
+        // prevents them from reaching handle_nav_bytes (which would mis-decode them)
         // or TermInput's prefix logic. Split into: mouse events + non-mouse byte stream.
         // Edge case: a sequence split across reads parses as None and falls into
         // non_mouse — rare in practice; no cross-read buffering in v1.
@@ -424,8 +424,7 @@ impl Runtime {
         // to the right of it).
         let full = ratatui::layout::Rect::new(0, 0, self.cols, self.body_rows.saturating_add(1));
         let term_area =
-            crate::ui::switcher::compute_regions(full, self.tree_width, self.tree_height, 1)
-                .terminal;
+            crate::ui::switcher::compute_regions(full, self.nav_width, self.nav_height, 1).terminal;
         let mut non_mouse: Vec<u8> = Vec::with_capacity(bytes.len());
         let mut mouse_focus_toggle = false;
         let mut wheel_scrolled = false;
@@ -460,8 +459,8 @@ impl Runtime {
             self.mouse_state.dragging_view_border = false;
             // The recovery doesn't track which axis was dragging; persist both (a no-op file
             // write for the unchanged one) so the final size is never lost.
-            crate::prefs::save_tree_width(&self.env.xmux_dir, self.tree_width_natural);
-            crate::prefs::save_tree_height(&self.env.xmux_dir, self.tree_height);
+            crate::prefs::save_nav_width(&self.env.xmux_dir, self.nav_width_natural);
+            crate::prefs::save_nav_height(&self.env.xmux_dir, self.nav_height);
         }
         // Watchdog: a keystroke (or any non-mouse byte) during a held menu ends
         // the gesture without acting — mirrors the view border-drag watchdog, so a
@@ -482,14 +481,14 @@ impl Runtime {
         }
         if wheel_scrolled {
             // The plain-wheel scroll moved the selection; connect the host it landed on
-            // so its subtree streams in (mirrors handle_tree_bytes's ensure step).
+            // so its subtree streams in (mirrors handle_nav_bytes's ensure step).
             ensure_current_host(
                 &mut self.mgr,
                 &self.hosts,
                 &self.switcher,
                 self.cols,
                 self.body_rows,
-                self.tree_width,
+                self.nav_width,
             );
         }
         // Resize-repeat: while the window from a prefix-driven resize is open, a
@@ -540,13 +539,13 @@ impl Runtime {
             // tree/terminal split so the behavior is identical regardless of focus.
             *dirty = true;
         } else if !consumed_by_repeat
-            && (self.state.focus.is_tree_focused() || self.state.focus.is_modal())
+            && (self.state.focus.is_nav_focused() || self.state.focus.is_modal())
         {
             // Tree view OR any modal: route to the switcher path. A modal popup (input /
             // kill-confirm) opened from EITHER view owns its keys here; the resolver gating
-            // in handle_tree_bytes swallows everything but the modal's own keys, so a modal
+            // in handle_nav_bytes swallows everything but the modal's own keys, so a modal
             // never emits FocusTerminal/quit and the focus toggles below never fire mid-modal.
-            let (ft, q, wd, hd, th) = self.handle_tree_bytes(&non_mouse, width_changed);
+            let (ft, q, wd, hd, th) = self.handle_nav_bytes(&non_mouse, width_changed);
             *focus_terminal = ft;
             *quit = q;
             // A prefix-driven resize: width (←/→ · h/l) or height (↑/↓); each applies only in
@@ -557,7 +556,7 @@ impl Runtime {
                 *width_changed = true;
             }
             if th {
-                toggle_auto_hide(&mut self.auto_hide_tree, &self.env.xmux_dir);
+                toggle_auto_hide(&mut self.auto_hide_nav, &self.env.xmux_dir);
                 *dirty = true;
             }
         } else if !consumed_by_repeat {
@@ -594,7 +593,7 @@ impl Runtime {
                         }
                     }
                     Action::ToggleAutoHide => {
-                        toggle_auto_hide(&mut self.auto_hide_tree, &self.env.xmux_dir);
+                        toggle_auto_hide(&mut self.auto_hide_nav, &self.env.xmux_dir);
                         *dirty = true;
                     }
                     // prefix n/R/x/r reach here from terminal focus: run them through the
@@ -602,15 +601,15 @@ impl Runtime {
                     // displayed session (n/R/x) or arms the re-scan (r); a committing key
                     // (Enter / y) then routes via the modal path (is_modal) on the next read.
                     // `r` only sets the re-scan flag, so kick_rescan must fire it — the tree
-                    // path (handle_tree_bytes) runs the same tail after every read.
+                    // path (handle_nav_bytes) runs the same tail after every read.
                     Action::TreeKey(k) => {
                         let cmds = self.switcher.handle_key(k, &mut self.state);
                         let (cq, cwc) = dispatch_commands(
                             cmds,
                             &mut self.switcher,
                             &mut self.state,
-                            &mut self.tree_width_natural,
-                            &mut self.auto_hide_tree,
+                            &mut self.nav_width_natural,
+                            &mut self.auto_hide_nav,
                             &self.env.xmux_dir,
                             (&self.ops, &self.op_tx),
                         );
@@ -652,9 +651,9 @@ impl Runtime {
         }
         if *focus_tree {
             self.state
-                .apply(crate::model::Action::Focus(crate::model::FocusTarget::Tree));
+                .apply(crate::model::Action::Focus(crate::model::FocusTarget::Nav));
             if !tree_replay.is_empty() {
-                let (ft, q, wd, hd, th) = self.handle_tree_bytes(tree_replay, width_changed);
+                let (ft, q, wd, hd, th) = self.handle_nav_bytes(tree_replay, width_changed);
                 if ft {
                     self.state.apply(crate::model::Action::Focus(
                         crate::model::FocusTarget::Terminal,
@@ -668,7 +667,7 @@ impl Runtime {
                     *width_changed = true;
                 }
                 if th {
-                    toggle_auto_hide(&mut self.auto_hide_tree, &self.env.xmux_dir);
+                    toggle_auto_hide(&mut self.auto_hide_nav, &self.env.xmux_dir);
                     *dirty = true;
                 }
             }

@@ -174,7 +174,7 @@ async fn connect_all_sources_connects_remote_hosts() {
         &mut detecting,
         80,
         24,
-        crate::ui::switcher::TREE_WIDTH,
+        crate::ui::switcher::NAV_WIDTH,
     );
     assert!(
         mgr.get("jupiter06").is_some(),
@@ -207,7 +207,7 @@ async fn scan_or_dispatch_host_detects_from_hosts_without_env() {
 fn terminal_view_size_zero_tree_is_full_width() {
     // Hidden tree (sentinel 0): full cols, no view border subtracted.
     assert_eq!(terminal_view_size(80, 23, 0, 0), (80, 24));
-    // Shown tree: cols - tree_width - 1 (view border), height = body_rows (bottom row
+    // Shown tree: cols - nav_width - 1 (view border), height = body_rows (bottom row
     // reserved for the full-width hint_bar).
     assert_eq!(terminal_view_size(80, 23, 48, 0), (31, 23));
     // Degenerate widths clamp to at least 1.
@@ -216,13 +216,13 @@ fn terminal_view_size_zero_tree_is_full_width() {
 
 #[test]
 fn terminal_view_size_reserves_full_width_hint_row_when_tree_shown() {
-    use crate::ui::switcher::TREE_WIDTH;
+    use crate::ui::switcher::NAV_WIDTH;
     // Tree hidden (sentinel 0): no hint_bar, terminal view spans the full height.
     let (_, full) = terminal_view_size(120, 39, 0, 0);
     assert_eq!(full, 40);
     // Tree shown: the full-width hint_bar owns the bottom row, so the terminal
     // view is exactly one row shorter.
-    let (_, shown) = terminal_view_size(120, 39, TREE_WIDTH, 0);
+    let (_, shown) = terminal_view_size(120, 39, NAV_WIDTH, 0);
     assert_eq!(
         shown, 39,
         "shown tree reserves one row for the full-width hint_bar"
@@ -230,14 +230,14 @@ fn terminal_view_size_reserves_full_width_hint_row_when_tree_shown() {
 }
 
 #[test]
-fn reconciled_tree_width_hides_only_when_focused_and_enabled() {
+fn reconciled_nav_width_hides_only_when_focused_and_enabled() {
     // Tree focused (terminal_focused = false): always the natural width.
-    assert_eq!(reconciled_tree_width(false, true, 48), 48);
-    assert_eq!(reconciled_tree_width(false, false, 48), 48);
+    assert_eq!(reconciled_nav_width(false, true, 48), 48);
+    assert_eq!(reconciled_nav_width(false, false, 48), 48);
     // Terminal view focused + setting on: hidden (0).
-    assert_eq!(reconciled_tree_width(true, true, 48), 0);
+    assert_eq!(reconciled_nav_width(true, true, 48), 0);
     // Terminal view focused + setting off: stays shown at natural width.
-    assert_eq!(reconciled_tree_width(true, false, 48), 48);
+    assert_eq!(reconciled_nav_width(true, false, 48), 48);
 }
 
 #[test]
@@ -251,12 +251,12 @@ fn apply_width_delta_is_write_free_and_reports_change() {
     );
     assert_eq!(w, 49);
     // Clamp at the max: a delta that cannot move the width reports unchanged.
-    let mut hi = TREE_WIDTH_MAX;
+    let mut hi = NAV_WIDTH_MAX;
     assert!(
         !apply_width_delta(10, &mut hi),
         "a clamped no-op reports unchanged"
     );
-    assert_eq!(hi, TREE_WIDTH_MAX);
+    assert_eq!(hi, NAV_WIDTH_MAX);
 }
 
 #[test]
@@ -271,20 +271,20 @@ fn spinner_frame_advances_with_wall_clock() {
 }
 
 #[test]
-fn tree_width_adjust_clamps() {
-    assert_eq!(adjust_tree_width(48, 1), 49);
-    assert_eq!(adjust_tree_width(48, -1), 47);
-    assert_eq!(adjust_tree_width(20, -1), 20, "clamped at min");
-    assert_eq!(adjust_tree_width(100, 1), 100, "clamped at max");
+fn nav_width_adjust_clamps() {
+    assert_eq!(adjust_nav_width(48, 1), 49);
+    assert_eq!(adjust_nav_width(48, -1), 47);
+    assert_eq!(adjust_nav_width(20, -1), 20, "clamped at min");
+    assert_eq!(adjust_nav_width(100, 1), 100, "clamped at max");
 }
 
 #[test]
 fn terminal_view_size_subtracts_tree_and_view_border() {
-    use crate::ui::switcher::TREE_WIDTH;
-    let (vc, vr) = terminal_view_size(143, 39, TREE_WIDTH, 0);
+    use crate::ui::switcher::NAV_WIDTH;
+    let (vc, vr) = terminal_view_size(143, 39, NAV_WIDTH, 0);
     assert_eq!(
         vc,
-        143 - (TREE_WIDTH + 1),
+        143 - (NAV_WIDTH + 1),
         "cols minus tree minus view border"
     );
     // The full-width hint_bar owns the bottom row, so the terminal view drops one row
@@ -294,11 +294,11 @@ fn terminal_view_size_subtracts_tree_and_view_border() {
 
 #[test]
 fn terminal_view_size_clamps_to_at_least_one() {
-    use crate::ui::switcher::TREE_WIDTH;
+    use crate::ui::switcher::NAV_WIDTH;
     // A 10-col terminal can't fit the 48-col tree beside it, so the layout goes Top and the
     // terminal keeps full width; a zero-row body still clamps the height up to 1. The
     // invariant this guards is that neither dimension is ever 0 (degenerate PTY size).
-    let (vc, vr) = terminal_view_size(10, 0, TREE_WIDTH, 0);
+    let (vc, vr) = terminal_view_size(10, 0, NAV_WIDTH, 0);
     assert!(vc >= 1, "width never zero, got {vc}");
     assert_eq!(vr, 1, "0.max(1) = 1: height clamps up for a zero-row body");
 }
@@ -588,11 +588,11 @@ fn focus_event_updates_marker_without_moving_cursor() {
 fn prefix_s_toggles_state() {
     use crate::app::focus::Focus;
     let mut focus = Focus::default();
-    assert!(focus.is_tree_focused());
+    assert!(focus.is_nav_focused());
     focus.toggle();
     assert_eq!(focus, Focus::Terminal);
     focus.toggle();
-    assert!(focus.is_tree_focused());
+    assert!(focus.is_nav_focused());
 }
 
 // Suppress unused warnings for the test-only env builder kept for future loop tests.
@@ -794,8 +794,8 @@ fn current_grid_returns_none_for_empty_displayed() {
             attach_seq: &mut attach_seq,
             cols: 80,
             body_rows: 24,
-            tree_width: crate::ui::switcher::TREE_WIDTH,
-            tree_height: 0,
+            nav_width: crate::ui::switcher::NAV_WIDTH,
+            nav_height: 0,
         },
     );
     assert!(grid.is_none(), "empty displayed yields no grid");
@@ -854,8 +854,8 @@ async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
             attach_seq: &mut attach_seq,
             cols: 80,
             body_rows: 24,
-            tree_width: crate::ui::switcher::TREE_WIDTH,
-            tree_height: 0,
+            nav_width: crate::ui::switcher::NAV_WIDTH,
+            nav_height: 0,
         }
     ));
     assert_eq!(hosts.get("jup").unwrap().display.shows("jup"), Some("a"));
@@ -877,8 +877,8 @@ async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
             attach_seq: &mut attach_seq,
             cols: 80,
             body_rows: 24,
-            tree_width: crate::ui::switcher::TREE_WIDTH,
-            tree_height: 0,
+            nav_width: crate::ui::switcher::NAV_WIDTH,
+            nav_height: 0,
         }
     ));
     assert_eq!(
@@ -929,8 +929,8 @@ async fn psmux_selection_replaces_the_single_display_attachment() {
             attach_seq: &mut attach_seq,
             cols: 80,
             body_rows: 24,
-            tree_width: crate::ui::switcher::TREE_WIDTH,
-            tree_height: 0,
+            nav_width: crate::ui::switcher::NAV_WIDTH,
+            nav_height: 0,
         }
     ));
     let ready = tokio::time::timeout(std::time::Duration::from_millis(100), worker.recv())
@@ -973,8 +973,8 @@ async fn psmux_selection_replaces_the_single_display_attachment() {
             attach_seq: &mut attach_seq,
             cols: 80,
             body_rows: 24,
-            tree_width: crate::ui::switcher::TREE_WIDTH,
-            tree_height: 0,
+            nav_width: crate::ui::switcher::NAV_WIDTH,
+            nav_height: 0,
         }
     ));
 
@@ -1031,8 +1031,8 @@ async fn psmux_select_attach_does_not_trust_stale_display_bookkeeping() {
             attach_seq: &mut attach_seq,
             cols: 80,
             body_rows: 24,
-            tree_width: crate::ui::switcher::TREE_WIDTH,
-            tree_height: 0,
+            nav_width: crate::ui::switcher::NAV_WIDTH,
+            nav_height: 0,
         }
     ));
 
@@ -1116,8 +1116,8 @@ async fn psmux_select_attach_supersedes_in_flight_attach() {
             attach_seq: &mut attach_seq,
             cols: 80,
             body_rows: 24,
-            tree_width: crate::ui::switcher::TREE_WIDTH,
-            tree_height: 0,
+            nav_width: crate::ui::switcher::NAV_WIDTH,
+            nav_height: 0,
         }
     ));
 
@@ -1171,11 +1171,11 @@ fn test_rt(env: Env) -> Runtime {
         op_tx,
         cols: 80,
         body_rows: 24,
-        tree_width: crate::ui::switcher::TREE_WIDTH,
-        tree_width_natural: crate::ui::switcher::TREE_WIDTH,
-        tree_height: 0,
-        applied_tree_height: u16::MAX,
-        auto_hide_tree: false,
+        nav_width: crate::ui::switcher::NAV_WIDTH,
+        nav_width_natural: crate::ui::switcher::NAV_WIDTH,
+        nav_height: 0,
+        applied_nav_height: u16::MAX,
+        auto_hide_nav: false,
         mouse_state: MouseState::default(),
         term_input: crate::display::input::TermInput::new(prefix),
         tree_decoder: crate::display::decode::KeyDecoder::new(),
@@ -1273,7 +1273,7 @@ async fn client_detached_matching_our_tty_reaps_display_and_rearms() {
 // =========================================================================
 // HUMAN VISUAL-GATE CHECKLIST (run in a REAL terminal — never headless):
 // 1. Launch `xmux`. Confirm it enters the alternate screen cleanly and starts in
-//    Focus::Tree: the Host·Session·Window·Pane tree on the left, the live REAL
+//    Focus::Nav: the Host·Session·Window·Pane tree on the left, the live REAL
 //    terminal of the selection's session on the right (a true attached mux client).
 // 2. Move the selection between sessions. Confirm the terminal view shows each session's
 //    real attached terminal instantly (it is pre-attached + kept alive), with a
@@ -1354,7 +1354,7 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
     );
     assert_eq!(sw.terminal_view_target().target, "db");
     // Focus(Terminal) leaves tree focus → terminal focus.
-    assert!(state.focus.is_tree_focused());
+    assert!(state.focus.is_nav_focused());
     dispatch_action(
         Action::Focus(FocusTarget::Terminal),
         &mut sw,
@@ -1367,7 +1367,7 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
     assert_eq!(state.focus, Focus::Terminal);
     // Focus(Tree) returns to tree focus.
     dispatch_action(
-        Action::Focus(FocusTarget::Tree),
+        Action::Focus(FocusTarget::Nav),
         &mut sw,
         &mut state,
         &mut natural,
@@ -1375,7 +1375,7 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
         &dir,
         (&ops, &op_tx),
     );
-    assert_eq!(state.focus, Focus::Tree);
+    assert_eq!(state.focus, Focus::Nav);
     // TreeWidth adjusts the natural width and signals width_changed; Quit signals quit.
     assert_eq!(
         dispatch_action(
@@ -1431,7 +1431,7 @@ fn status_line_reports_focus_and_address() {
     // the assertion stays deterministic (no real env read).
     assert_eq!(
         status_line(&sw, true, "/tmp/x", "-"),
-        "focus=tree\ttarget=api\tcwd=/tmp/x\ttty=-"
+        "focus=nav\ttarget=api\tcwd=/tmp/x\ttty=-"
     );
     assert_eq!(
         status_line(&sw, false, "/tmp/x", "/dev/pts/3"),
@@ -1556,7 +1556,7 @@ fn rt_terminal_focus_with_session() -> Runtime {
         crate::model::FocusTarget::Terminal,
     ));
     assert!(
-        !rt.state.focus.is_tree_focused() && !rt.state.focus.is_modal(),
+        !rt.state.focus.is_nav_focused() && !rt.state.focus.is_modal(),
         "precondition: the terminal view holds focus (not tree, not modal)"
     );
     rt
@@ -1781,7 +1781,7 @@ fn kill_confirm_owns_keys_so_prefix_q_and_enter_do_not_quit_or_focus_mux() {
     assert_eq!(
         rt.state.focus,
         Focus::Popup {
-            prior: ViewFocus::Tree
+            prior: ViewFocus::Nav
         }
     );
     // prefix q with the confirm armed: routed to the switcher, NOT a quit.
@@ -1793,7 +1793,7 @@ fn kill_confirm_owns_keys_so_prefix_q_and_enter_do_not_quit_or_focus_mux() {
     assert_eq!(
         rt.state.focus,
         Focus::Popup {
-            prior: ViewFocus::Tree
+            prior: ViewFocus::Nav
         },
         "pane focus unchanged"
     );
@@ -1806,7 +1806,7 @@ fn kill_confirm_owns_keys_so_prefix_q_and_enter_do_not_quit_or_focus_mux() {
     assert_eq!(
         rt.state.focus,
         Focus::Popup {
-            prior: ViewFocus::Tree
+            prior: ViewFocus::Nav
         },
         "confirm re-armed"
     );
@@ -1815,7 +1815,7 @@ fn kill_confirm_owns_keys_so_prefix_q_and_enter_do_not_quit_or_focus_mux() {
     assert_eq!(
         rt.state.focus,
         Focus::Popup {
-            prior: ViewFocus::Tree
+            prior: ViewFocus::Nav
         },
         "Enter did not focus the terminal"
     );
@@ -1847,7 +1847,7 @@ fn menu_keyboard_input_is_consumed_without_changing_restore_pane_or_writing_pty(
         let mut state = crate::state::State::from_scan(scan);
         let mut switcher = Switcher::new(&mut state);
         let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        term.draw(|f| switcher.render(f, None, false, crate::ui::switcher::TREE_WIDTH, 0, &state))
+        term.draw(|f| switcher.render(f, None, false, crate::ui::switcher::NAV_WIDTH, 0, &state))
             .unwrap();
         let opened = (0..10).any(|row| switcher.menu_open(1, row, &mut state));
         assert!(opened, "menu opens over a rendered tree row");
@@ -1859,7 +1859,7 @@ fn menu_keyboard_input_is_consumed_without_changing_restore_pane_or_writing_pty(
         assert_eq!(
             state.focus,
             Focus::Menu {
-                prior: ViewFocus::Tree
+                prior: ViewFocus::Nav
             }
         );
 
@@ -1903,13 +1903,13 @@ fn menu_keyboard_input_is_consumed_without_changing_restore_pane_or_writing_pty(
         assert_eq!(
             during,
             Focus::Menu {
-                prior: ViewFocus::Tree
+                prior: ViewFocus::Nav
             },
             "{label} preserves the menu restore view"
         );
         assert_eq!(
             restored,
-            Focus::Tree,
+            Focus::Nav,
             "{label} closes the menu back to the prior tree pane"
         );
         assert_eq!(writes, 0, "{label} over a menu is not forwarded to the PTY");
@@ -1920,7 +1920,7 @@ fn menu_keyboard_input_is_consumed_without_changing_restore_pane_or_writing_pty(
 fn handle_mouse_event_view_border_grab_sets_dragging() {
     use crate::ui::switcher::{Scan, Switcher};
     // A left-press exactly on the view border column sets dragging_view_border, as the
-    // inline gate did (is_left_press && tree_width > 0 && col0 == tree_width).
+    // inline gate did (is_left_press && nav_width > 0 && col0 == nav_width).
     let scan = Scan {
         groups: vec![],
         panes: Default::default(),
@@ -1928,18 +1928,18 @@ fn handle_mouse_event_view_border_grab_sets_dragging() {
     let mut state = crate::state::State::from_scan(scan);
     let switcher = Switcher::new(&mut state);
     let sel = Selection::default();
-    let tree_width = crate::ui::switcher::TREE_WIDTH;
-    // 0-based col0 = ev.col - 1 must equal tree_width to grab the view border rule.
-    let view_border_col = tree_width + 1; // 1-based SGR column of the view border
-                                          // cb=0 → left button, press, no wheel/motion → is_left_press is true.
+    let nav_width = crate::ui::switcher::NAV_WIDTH;
+    // 0-based col0 = ev.col - 1 must equal nav_width to grab the view border rule.
+    let view_border_col = nav_width + 1; // 1-based SGR column of the view border
+                                         // cb=0 → left button, press, no wheel/motion → is_left_press is true.
     let ev = crate::display::mouse::MouseEvent {
         cb: 0,
         col: view_border_col,
         row: 3,
         pressed: true,
     };
-    let (vw, vh) = terminal_view_size(80, 24, tree_width, 0);
-    let term_area = ratatui::layout::Rect::new(tree_width + 1, 0, vw, vh);
+    let (vw, vh) = terminal_view_size(80, 24, nav_width, 0);
+    let term_area = ratatui::layout::Rect::new(nav_width + 1, 0, vw, vh);
     let mut non_mouse: Vec<u8> = Vec::new();
     let mut focus_toggle = false;
     let mut wheel = false;
@@ -1977,7 +1977,7 @@ fn handle_mouse_event_top_layout_border_drag_resizes_height() {
     rt.switcher = switcher;
     rt.cols = 40;
     rt.body_rows = 59;
-    rt.tree_height = 0; // auto
+    rt.nav_height = 0; // auto
 
     let press = crate::display::mouse::MouseEvent {
         cb: 0,
@@ -2003,14 +2003,14 @@ fn handle_mouse_event_top_layout_border_drag_resizes_height() {
     };
     rt.handle_mouse_event(&drag, &sel, &mut non_mouse, &mut ft, &mut wheel, area);
     assert_eq!(
-        rt.tree_height, 29,
+        rt.nav_height, 29,
         "dragging the horizontal border sets the tree HEIGHT to the dragged row"
     );
 }
 
 #[test]
 fn resize_keys_adjust_height_in_top_layout() {
-    use crate::ui::switcher::{Scan, Switcher, ViewLayout, TREE_WIDTH};
+    use crate::ui::switcher::{Scan, Switcher, ViewLayout, NAV_WIDTH};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     // In the portrait Top layout the tree-resize keys (prefix h/l · Ctrl+←/→) adjust the
@@ -2025,18 +2025,18 @@ fn resize_keys_adjust_height_in_top_layout() {
     rt.switcher = switcher;
     rt.cols = 40;
     rt.body_rows = 59;
-    rt.tree_height = 0; // auto
-                        // Render once into a portrait backend so the switcher caches layout = Top.
+    rt.nav_height = 0; // auto
+                       // Render once into a portrait backend so the switcher caches layout = Top.
     let mut term = Terminal::new(TestBackend::new(40, 60)).unwrap();
     {
         let sw = &mut rt.switcher;
         let st = &rt.state;
-        term.draw(|f| sw.render(f, None, false, TREE_WIDTH, 0, st))
+        term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, st))
             .unwrap();
     }
     assert_eq!(rt.switcher.layout(), ViewLayout::Top, "portrait → Top");
 
-    let auto = crate::ui::switcher::default_tree_height(59);
+    let auto = crate::ui::switcher::default_nav_height(59);
     // Vertical axis (Ctrl+↓ = grow) resizes HEIGHT in Top; horizontal (Ctrl+→) is a no-op here.
     assert!(
         !rt.resize_axis(true, 1),
@@ -2044,10 +2044,10 @@ fn resize_keys_adjust_height_in_top_layout() {
     );
     assert!(rt.resize_axis(false, 1), "grow changes the height");
     assert_eq!(
-        rt.tree_height,
+        rt.nav_height,
         auto + 1,
         "a resize key grows the Top tree height from the auto seed"
     );
     assert!(rt.resize_axis(false, -1), "shrink changes the height");
-    assert_eq!(rt.tree_height, auto, "and shrinks it back");
+    assert_eq!(rt.nav_height, auto, "and shrinks it back");
 }
