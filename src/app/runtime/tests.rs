@@ -1270,6 +1270,53 @@ async fn client_detached_matching_our_tty_reaps_display_and_rearms() {
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn client_session_changed_matching_our_tty_syncs_display_belief() {
+    // The mux moved a client to another session (e.g. the user pressed prefix+s in the
+    // terminal view). When that client is OUR display attach (its tty == Host.display_tty),
+    // sync the display belief so the next reconcile's show() guard lowers NO switch-client;
+    // a third party's own client can never match, so it is inert.
+    let mut state = crate::state::State::from_sources(vec!["jup".into()]);
+    let switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    rt.state = state;
+    rt.switcher = switcher;
+
+    rt.hosts.get_mut("jup").unwrap().display_tty =
+        crate::model::DisplayTty(Some("/dev/pts/3".into()));
+    // The one per-host PTY (Shared key == host id) is currently believed on session "api".
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .display
+        .set_shows("jup", "api");
+
+    // An UNRELATED client switched sessions → inert: our display belief is untouched.
+    rt.handle_host_event(HostEvent::ClientSessionChanged {
+        host: "jup".into(),
+        client: "/dev/pts/9".into(),
+        session: "db".into(),
+    });
+    assert_eq!(
+        rt.hosts.get("jup").unwrap().display.shows("jup"),
+        Some("api"),
+        "an unrelated client's switch must not move our display belief"
+    );
+
+    // OUR display client (the captured tty) switched to "db" via the mux → sync the belief.
+    rt.handle_host_event(HostEvent::ClientSessionChanged {
+        host: "jup".into(),
+        client: "/dev/pts/3".into(),
+        session: "db".into(),
+    });
+    assert_eq!(
+        rt.hosts.get("jup").unwrap().display.shows("jup"),
+        Some("db"),
+        "our own client's mux-driven switch syncs the display belief to the new session"
+    );
+}
+
 // =========================================================================
 // HUMAN VISUAL-GATE CHECKLIST (run in a REAL terminal — never headless):
 // 1. Launch `xmux`. Confirm it enters the alternate screen cleanly and starts in

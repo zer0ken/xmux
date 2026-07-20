@@ -42,18 +42,53 @@ pub enum Line<'a> {
 /// Unknown or malformed notifications are represented as `Other`.
 #[derive(Debug, PartialEq)]
 pub enum Notif<'a> {
-    SessionChanged { id: &'a str, name: &'a str },
+    SessionChanged {
+        id: &'a str,
+        name: &'a str,
+    },
+    /// `%client-session-changed <client> <$id> <name>`: ANOTHER client's attached session
+    /// changed (as opposed to `%session-changed`, this control client's own). `client` is
+    /// that client's pty (e.g. `/dev/pts/3`); the app follows only when it matches xmux's
+    /// recorded display tty.
+    ClientSessionChanged {
+        client: &'a str,
+        id: &'a str,
+        name: &'a str,
+    },
     SessionsChanged,
-    WindowAdd { window: &'a str },
-    WindowClose { window: &'a str },
-    WindowRenamed { window: &'a str, name: &'a str },
-    WindowPaneChanged { window: &'a str, pane: &'a str },
-    SessionWindowChanged { session: &'a str, window: &'a str },
-    LayoutChange { window: &'a str },
-    Pause { pane: &'a str },
-    Continue { pane: &'a str },
-    Exit { reason: Option<&'a str> },
-    ClientDetached { client: &'a str },
+    WindowAdd {
+        window: &'a str,
+    },
+    WindowClose {
+        window: &'a str,
+    },
+    WindowRenamed {
+        window: &'a str,
+        name: &'a str,
+    },
+    WindowPaneChanged {
+        window: &'a str,
+        pane: &'a str,
+    },
+    SessionWindowChanged {
+        session: &'a str,
+        window: &'a str,
+    },
+    LayoutChange {
+        window: &'a str,
+    },
+    Pause {
+        pane: &'a str,
+    },
+    Continue {
+        pane: &'a str,
+    },
+    Exit {
+        reason: Option<&'a str>,
+    },
+    ClientDetached {
+        client: &'a str,
+    },
     Other,
 }
 
@@ -129,6 +164,15 @@ pub fn parse_notif(line: &str) -> Notif<'_> {
     match verb {
         "%session-changed" => match (it.next(), it.next()) {
             (Some(id), Some(name)) => Notif::SessionChanged { id, name },
+            _ => Notif::Other,
+        },
+        // `%client-session-changed <client> <$id> <name>` — three args: the client pty, the
+        // session id, and the session name (`splitn(4)` keeps the name whole though tmux
+        // session names carry no spaces). A missing arg is malformed → Other.
+        "%client-session-changed" => match (it.next(), it.next(), it.next()) {
+            (Some(client), Some(id), Some(name)) => {
+                Notif::ClientSessionChanged { client, id, name }
+            }
             _ => Notif::Other,
         },
         "%sessions-changed" => Notif::SessionsChanged,
@@ -273,6 +317,19 @@ mod tests {
                 id: "$1",
                 name: "work"
             }
+        ));
+        assert!(matches!(
+            parse_notif("%client-session-changed /dev/pts/3 $2 work"),
+            Notif::ClientSessionChanged {
+                client: "/dev/pts/3",
+                id: "$2",
+                name: "work"
+            }
+        ));
+        // A missing arg (only client + id, no name) is malformed → Other.
+        assert!(matches!(
+            parse_notif("%client-session-changed /dev/pts/3 $2"),
+            Notif::Other
         ));
         assert!(matches!(
             parse_notif("%sessions-changed"),

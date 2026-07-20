@@ -359,6 +359,20 @@ impl State {
                 // reap are loop-owned; forward the descriptor, mutate no State.
                 vec![EventEffect::ReapDisplayAttach { host, client }]
             }
+            HostEvent::ClientSessionChanged {
+                host,
+                client,
+                session,
+            } => {
+                // The tty match against the host's recorded display tty, the display-belief
+                // sync, and the nav follow are all loop-owned (the tty lives on `Host`);
+                // forward the descriptor, mutate no State here.
+                vec![EventEffect::FollowDisplaySession {
+                    host,
+                    client,
+                    session,
+                }]
+            }
             HostEvent::DisplayTty { host, tty } => {
                 // The tty lives on the Host (behind the loop's reach), so the state
                 // layer forwards it as an effect for the loop to record.
@@ -1261,6 +1275,38 @@ mod tests {
         assert_eq!(state.groups.len(), before_groups);
         assert_eq!(state.groups[0].sessions.len(), before_sessions);
         assert!(state.modal.is_none());
+    }
+
+    #[test]
+    fn apply_event_client_session_changed_forwards_follow_effect_with_no_state_change() {
+        // The tty match against Host.display_tty, the display-belief sync, and the nav
+        // follow all need loop-owned state; apply_event only forwards the descriptor and
+        // touches no State (the selection follow happens in the loop, gated on the match).
+        let (mut state, mut sw) = with_switcher(one_session_scan());
+        let mut connected = HashSet::new();
+        let before_groups = state.groups.len();
+        let before_sessions = state.groups[0].sessions.len();
+        let effects = state.apply_event(
+            HostEvent::ClientSessionChanged {
+                host: "jup".into(),
+                client: "/dev/pts/3".into(),
+                session: "db".into(),
+            },
+            &mut sw,
+            &mut connected,
+        );
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [EventEffect::FollowDisplaySession { host, client, session }]
+                    if host == "jup" && client == "/dev/pts/3" && session == "db"
+            ),
+            "ClientSessionChanged forwards a FollowDisplaySession effect: {effects:?}"
+        );
+        // apply_event mutates no State (the tree group set is untouched); the tty match +
+        // selection follow are loop-owned.
+        assert_eq!(state.groups.len(), before_groups);
+        assert_eq!(state.groups[0].sessions.len(), before_sessions);
     }
 
     #[test]

@@ -175,6 +175,19 @@ impl ControlProtocol for TmuxControl {
                     window_id: window.to_string(),
                 })
             }
+            Notif::ClientSessionChanged { client, name, .. } => {
+                // ANOTHER client's attached session changed. When that client is xmux's OWN
+                // display attach (the app matches `client` against `Host.display_tty`), the
+                // display PTY was moved to `name` by the mux itself — e.g. the user pressed
+                // `prefix`+`s` in the terminal view. Carry the client tty + new session name
+                // so the app can match and follow the nav selection. A third party's own
+                // client can never match the display tty, so it is structurally inert there.
+                Some(HostEvent::ClientSessionChanged {
+                    host: host.to_string(),
+                    client: client.to_string(),
+                    session: name.to_string(),
+                })
+            }
             // `%session-changed` (the metadata client's own auto-attached session) and
             // `%window-pane-changed` (a pane became active) do not affect the tree view
             // tree — the per-session PTY attachments own the live pane — so they are inert.

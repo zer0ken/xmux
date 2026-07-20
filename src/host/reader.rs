@@ -362,6 +362,40 @@ mod tests {
     }
 
     #[test]
+    fn client_session_changed_emits_event_with_client_and_session() {
+        // `%client-session-changed <client> $id <name>`: another client's attached session
+        // switched. Emit ClientSessionChanged carrying the client tty + the new session name
+        // so the supervisor can match the tty against Host.display_tty and follow the nav
+        // selection when it is xmux's OWN display attach. It must NOT collapse to a blanket
+        // Changed (which refetches and leaves the selection behind).
+        let state = test_state(80, 24);
+        let in_flight: InFlight = Default::default();
+        let mut events = Vec::new();
+        run_reader(
+            "jupiter00",
+            test_control_proto(),
+            vec!["%client-session-changed /dev/pts/3 $2 work".to_string()].into_iter(),
+            &state,
+            &in_flight,
+            |e| events.push(e),
+        );
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                HostEvent::ClientSessionChanged { host, client, session }
+                    if host == "jupiter00" && client == "/dev/pts/3" && session == "work"
+            )),
+            "%client-session-changed must emit ClientSessionChanged with the client tty + session"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, HostEvent::Changed { .. })),
+            "%client-session-changed must not collapse to a blanket Changed"
+        );
+    }
+
+    #[test]
     fn reader_resolves_active_window_block_into_focus() {
         // The active-window probe (`display-message -p '#{session_name}\t#{window_index}'`)
         // returns a single line: `<name>\t<index>`. Resolving its block emits Focus

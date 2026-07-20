@@ -231,6 +231,16 @@ pub enum EventEffect {
     /// `client` tty matches the host's recorded display tty. The loop owns the
     /// registry + the recover-from-detach rearm, so the match + reap run there.
     ReapDisplayAttach { host: String, client: String },
+    /// `ClientSessionChanged`: some client's session changed. IFF `client` matches the
+    /// host's recorded display tty, xmux's OWN display PTY was moved to `session` by the
+    /// mux itself (e.g. the user's `prefix`+`s`); the loop syncs the display belief (so no
+    /// spurious switch-client fires) and follows the nav selection to that session. The tty
+    /// match needs `Host.display_tty` (behind the loop's reach), so it runs in the loop.
+    FollowDisplaySession {
+        host: String,
+        client: String,
+        session: String,
+    },
     /// `Scanned`: a detection probe resolved — (re)identify `source`'s mux with
     /// `detected`, then dispatch the now-detected host onto its metadata channel.
     DispatchScanned {
@@ -274,6 +284,16 @@ impl std::fmt::Debug for EventEffect {
                 .debug_struct("ReapDisplayAttach")
                 .field("host", host)
                 .field("client", client)
+                .finish(),
+            EventEffect::FollowDisplaySession {
+                host,
+                client,
+                session,
+            } => f
+                .debug_struct("FollowDisplaySession")
+                .field("host", host)
+                .field("client", client)
+                .field("session", session)
                 .finish(),
             EventEffect::DispatchScanned { source, detected } => f
                 .debug_struct("DispatchScanned")
