@@ -126,6 +126,49 @@ impl Runtime {
                 }
                 return true; // rearm recovery
             }
+            EventEffect::FollowDisplaySession {
+                host,
+                client,
+                session,
+            } => {
+                // Follow ONLY when the switched client is OUR display attach (matched against
+                // Host.display_tty). A third party's own client (e.g. the user's separate tmux
+                // client on a real server) can never match, so it is structurally inert — the
+                // nav never chases someone else's switch. The display tty is captured right
+                // after attach (the record snippet echoes it on the first pump read, before the
+                // user can drive the client), so a real prefix+s always matches; only a switch
+                // in the sub-capture window would be missed, and the next nav move self-heals it.
+                let Some(h) = hosts.get(&host) else {
+                    return false;
+                };
+                if !h.matches_display_tty(&client) {
+                    return false;
+                }
+                let key = host_selection_key(h); // Shared ⇒ key == host id
+                                                 // xmux's own display PTY was moved to `session` by the mux itself (e.g. the
+                                                 // user's prefix+s). Sync the display belief so the next reconcile's show()
+                                                 // guard sees the PTY is already on `session` and lowers NO switch-client.
+                if let Some(h) = hosts.get_mut(&host) {
+                    h.display.set_shows(&key, &session);
+                }
+                // Follow the nav selection to that session's active window, but only in
+                // terminal focus (the user is driving the PTY, not the nav) — mirrors
+                // select_window/select_active_window. In nav focus the selection is the
+                // user's, and xmux's own switch already left it where it belongs.
+                let terminal_focus = state.focus.is_terminal_focused();
+                if terminal_focus {
+                    let addr = crate::session::address_of(&host, &session);
+                    switcher.select_address(&addr, state);
+                    switcher.select_active_window(state);
+                }
+                tracing::info!(
+                    host = %host,
+                    session = %session,
+                    client = %client,
+                    terminal_focus,
+                    "display_client_session_changed"
+                );
+            }
             EventEffect::DispatchScanned { source, detected } => {
                 // A detection probe resolved: (re)identify the mux, then dispatch the
                 // now-detected host onto its metadata channel (control client or poll task).

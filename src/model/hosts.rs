@@ -119,8 +119,9 @@ impl Hosts {
             Changed { .. } | ActiveWindowChanged { .. } | Focus { .. } => {}
             // The tty-matched reap of xmux's own display attach is the supervisor's job (it
             // owns the registry + the recover-from-detach rearm); the Hosts map holds no
-            // per-attach state to fold here.
-            ClientDetached { .. } => {}
+            // per-attach state to fold here. `ClientSessionChanged` is the same: the tty match
+            // + display-belief sync + nav follow run in the supervisor's effect handler.
+            ClientDetached { .. } | ClientSessionChanged { .. } => {}
             // The -CC `list-clients` probe resolved xmux's display-client tty (or None if
             // the display attach has not registered yet). Record it so a session switch is
             // an in-place `switch-client -c <tty>`; None clears any stale tty.

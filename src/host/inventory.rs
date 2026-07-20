@@ -98,6 +98,17 @@ pub enum HostEvent {
     /// supervisor's `Host.display_tty`), so it forwards the client tty; the supervisor
     /// reaps the display attach ONLY when `client` matches `Host.display_tty`.
     ClientDetached { host: String, client: String },
+    /// `%client-session-changed <client> $id <name>` — some client's attached session
+    /// changed (another client, not this -CC metadata connection's own). The reader does
+    /// not know which client is xmux's display attach (that tty lives on `Host.display_tty`),
+    /// so it forwards the client tty + the new session name; the supervisor follows the nav
+    /// selection ONLY when `client` matches `Host.display_tty` — i.e. xmux's OWN display PTY
+    /// was moved to another session by the mux itself (e.g. the user's `prefix`+`s`).
+    ClientSessionChanged {
+        host: String,
+        client: String,
+        session: String,
+    },
     /// A `list-clients` probe over the -CC control connection resolved: this host's
     /// display-client tty — the client the mux protocol identifies as xmux's display
     /// attach — or `None` if it has not registered yet. Captured OUT-OF-BAND over

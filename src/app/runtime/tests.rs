@@ -1270,6 +1270,195 @@ async fn client_detached_matching_our_tty_reaps_display_and_rearms() {
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn client_session_changed_matching_our_tty_syncs_display_belief() {
+    // The mux moved a client to another session (e.g. the user pressed prefix+s in the
+    // terminal view). When that client is OUR display attach (its tty == Host.display_tty),
+    // sync the display belief so the next reconcile's show() guard lowers NO switch-client;
+    // a third party's own client can never match, so it is inert.
+    let mut state = crate::state::State::from_sources(vec!["jup".into()]);
+    let switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    rt.state = state;
+    rt.switcher = switcher;
+
+    rt.hosts.get_mut("jup").unwrap().display_tty =
+        crate::model::DisplayTty(Some("/dev/pts/3".into()));
+    // The one per-host PTY (Shared key == host id) is currently believed on session "api".
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .display
+        .set_shows("jup", "api");
+
+    // An UNRELATED client switched sessions → inert: our display belief is untouched.
+    rt.handle_host_event(HostEvent::ClientSessionChanged {
+        host: "jup".into(),
+        client: "/dev/pts/9".into(),
+        session: "db".into(),
+    });
+    assert_eq!(
+        rt.hosts.get("jup").unwrap().display.shows("jup"),
+        Some("api"),
+        "an unrelated client's switch must not move our display belief"
+    );
+
+    // OUR display client (the captured tty) switched to "db" via the mux → sync the belief.
+    rt.handle_host_event(HostEvent::ClientSessionChanged {
+        host: "jup".into(),
+        client: "/dev/pts/3".into(),
+        session: "db".into(),
+    });
+    assert_eq!(
+        rt.hosts.get("jup").unwrap().display.shows("jup"),
+        Some("db"),
+        "our own client's mux-driven switch syncs the display belief to the new session"
+    );
+}
+
+/// A host `jup` with two loaded sessions: `api` (one window) and `db` (window 1 active).
+/// Lets a follow test assert the selection lands on the mux-moved session's ACTIVE window.
+fn two_session_scan() -> crate::ui::switcher::Scan {
+    use crate::session::{Pane, Session, WindowPanes};
+    use crate::ui::switcher::Scan;
+    use crate::ui::tree::Group;
+    let sess = |name: &str, windows: i64| Session {
+        source: "jup".into(),
+        name: name.into(),
+        windows,
+        attached: false,
+        last_attached: 100,
+    };
+    let pane = || {
+        vec![Pane {
+            index: 0,
+            active: true,
+            command: "bash".into(),
+        }]
+    };
+    let mut panes = std::collections::HashMap::new();
+    panes.insert(
+        "jup/api".to_string(),
+        vec![WindowPanes {
+            index: 0,
+            name: "w0".into(),
+            active: true,
+            panes: pane(),
+        }],
+    );
+    panes.insert(
+        "jup/db".to_string(),
+        vec![
+            WindowPanes {
+                index: 0,
+                name: "w0".into(),
+                active: false,
+                panes: pane(),
+            },
+            WindowPanes {
+                index: 1,
+                name: "w1".into(),
+                active: true,
+                panes: pane(),
+            },
+        ],
+    );
+    Scan {
+        groups: vec![Group {
+            source: "jup".into(),
+            err: None,
+            sessions: vec![sess("api", 1), sess("db", 2)],
+        }],
+        panes,
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn client_session_changed_in_terminal_focus_follows_selection_to_the_new_session() {
+    // The real fix: with the terminal focused (the user drove prefix+s), a matched
+    // %client-session-changed moves the nav selection to the mux-moved session's ACTIVE
+    // window — not just the display belief.
+    let mut state = crate::state::State::from_scan(two_session_scan());
+    let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
+    switcher.select_address("jup/api", &state); // deterministic start (ignore any last_session)
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    rt.hosts.get_mut("jup").unwrap().display_tty =
+        crate::model::DisplayTty(Some("/dev/pts/3".into()));
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .display
+        .set_shows("jup", "api");
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    assert_eq!(
+        rt.switcher.terminal_view_target().target,
+        "api:0",
+        "selection starts on api"
+    );
+
+    rt.handle_host_event(HostEvent::ClientSessionChanged {
+        host: "jup".into(),
+        client: "/dev/pts/3".into(),
+        session: "db".into(),
+    });
+    assert_eq!(
+        rt.switcher.terminal_view_target().target,
+        "db:1",
+        "terminal-focused nav follows the mux switch to db's active window (1)"
+    );
+    assert_eq!(
+        rt.hosts.get("jup").unwrap().display.shows("jup"),
+        Some("db"),
+        "the display belief syncs to the mux-moved session"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn client_session_changed_in_nav_focus_syncs_belief_without_moving_selection() {
+    // In nav focus the user drives the selection with the arrow keys; xmux's own
+    // switch-clients (from rapid navigation) echo back as this notification and would yank
+    // the selection to a stale session if followed. So the follow is gated on terminal
+    // focus: nav focus syncs only the display belief, never the selection.
+    let mut state = crate::state::State::from_scan(two_session_scan());
+    let switcher = crate::ui::switcher::Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    rt.hosts.get_mut("jup").unwrap().display_tty =
+        crate::model::DisplayTty(Some("/dev/pts/3".into()));
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .display
+        .set_shows("jup", "api");
+    rt.state = state;
+    rt.switcher = switcher;
+    // Default focus is Nav (the user is navigating the list).
+    assert!(!rt.state.focus.is_terminal_focused(), "starts in nav focus");
+    let before = rt.switcher.terminal_view_target().target.clone();
+
+    rt.handle_host_event(HostEvent::ClientSessionChanged {
+        host: "jup".into(),
+        client: "/dev/pts/3".into(),
+        session: "db".into(),
+    });
+    assert_eq!(
+        rt.switcher.terminal_view_target().target,
+        before,
+        "nav focus: a mux switch must not yank the user's selection"
+    );
+    assert_eq!(
+        rt.hosts.get("jup").unwrap().display.shows("jup"),
+        Some("db"),
+        "the display belief still syncs regardless of focus"
+    );
+}
+
 // =========================================================================
 // HUMAN VISUAL-GATE CHECKLIST (run in a REAL terminal — never headless):
 // 1. Launch `xmux`. Confirm it enters the alternate screen cleanly and starts in
