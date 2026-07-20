@@ -134,7 +134,10 @@ impl Runtime {
                 // Follow ONLY when the switched client is OUR display attach (matched against
                 // Host.display_tty). A third party's own client (e.g. the user's separate tmux
                 // client on a real server) can never match, so it is structurally inert — the
-                // nav never chases someone else's switch.
+                // nav never chases someone else's switch. The display tty is captured right
+                // after attach (the record snippet echoes it on the first pump read, before the
+                // user can drive the client), so a real prefix+s always matches; only a switch
+                // in the sub-capture window would be missed, and the next nav move self-heals it.
                 let Some(h) = hosts.get(&host) else {
                     return false;
                 };
