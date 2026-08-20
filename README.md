@@ -135,7 +135,7 @@ auto-hide-nav = false                # initial auto-hide-nav state
 view-active-border-style = "green"    # focused view-border colour (tmux colour vocabulary)
 view-border-style = "default"         # unfocused view-border colour
 view-border-hover-style = "yellow"    # drag-to-resize hover cue
-hint-bar-style = "bg=blue,fg=white"   # hint bar colour (tmux status-style; empty = tmux default)
+hint-bar-style = "bg=blue,fg=white"   # hint bar colour (tmux status-style; empty = the built-in dark bar)
 ```
 
 Hosts come from `~/.ssh/config` first. Connection details (user, port, key,
