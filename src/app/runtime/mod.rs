@@ -1,6 +1,6 @@
 //! The app: a persistent supervisor that owns the terminal for the whole
-//! session. It keeps ONE real attached mux client per session — a `tmux attach` /
-//! `psmux attach` running inside a `portable-pty` PTY ([`AttachRegistry`]) — alive
+//! session. It keeps ONE real attached mux client per session - a `tmux attach` /
+//! `psmux attach` running inside a `portable-pty` PTY ([`AttachRegistry`]) - alive
 //! across selections, and renders the SELECTED session's live `Grid` on the right.
 //! A separate control-mode client per remote host ([`HostManager`]) supplies the
 //! tree view inventory, mux-side change events, and programmatic `select-window`;
@@ -8,10 +8,10 @@
 //! session, so a host-level control client cannot see across its sessions).
 //!
 //! State is explicit: [`Selection`] (the canonical `source`/`session`/`window`) is
-//! the single source of truth the display reads — the `Switcher` owns only the tree
+//! the single source of truth the display reads - the `Switcher` owns only the tree
 //! and selection. One `select!` loop interleaves stdin, host events, PTY events, the
 //! control socket, terminal resize, and an animation tick. ratatui owns stdout and
-//! draws the SAME split (tree + selected PTY grid) in both focus states — Focus::Nav
+//! draws the SAME split (tree + selected PTY grid) in both focus states - Focus::Nav
 //! (tree focused) and Focus::Terminal (terminal focused) differ only in the view border
 //! colour and where keys go, so toggling focus needs no screen clear.
 
@@ -46,7 +46,7 @@ const EVENT_DRAIN_BUDGET: usize = 512;
 
 /// Minimum interval between redraws. Drawing is decoupled from events and capped
 /// to this frame rate: rapid input (or a busy PTY) sets a `dirty` flag, and the
-/// loop redraws at most once per frame — so no navigation pattern can flood the
+/// loop redraws at most once per frame - so no navigation pattern can flood the
 /// terminal with full-screen repaints and stall the single-threaded loop. A frame
 /// timer at this cadence flushes a pending dirty draw promptly even with no input.
 const FRAME_MS: u64 = 33;
@@ -69,7 +69,7 @@ pub(crate) const NAV_HEIGHT_MAX: u16 = 100;
 type Term = ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>;
 
 /// How long the resize-repeat window stays open after a prefix-driven tree resize:
-/// during it a bare Ctrl+←/→ (no prefix) keeps resizing and refreshes the window —
+/// during it a bare Ctrl+←/→ (no prefix) keeps resizing and refreshes the window -
 /// tmux's `bind -r` repeat applied to the tree width. Each repeat resets the window.
 const RESIZE_REPEAT_MS: u64 = 400;
 
@@ -107,14 +107,14 @@ fn toggle_auto_hide(mode: &mut bool, xmux_dir: &std::path::Path) {
 }
 
 /// Folds ONE domain [`Action`] in at the single mutation site ([`State::apply`]) and
-/// runs the [`Command`]s it returns — the site both a keypress (via
+/// runs the [`Command`]s it returns - the site both a keypress (via
 /// `display::dispatch::Action::as_action`) and a ctl command resolve through, so the two
 /// surfaces can never take divergent effect. Returns `(quit, width_changed)`: `quit`
 /// signals the loop to exit; `width_changed` signals the loop to schedule the debounced
 /// tree-width persist. `Switch` only moves the selection (a `SelectAddress` command); the
 /// loop-top `Tick`/`select_attach` commits the attach on a later pass.
 ///
-/// Only the synchronous, registry-free commands arise here — `Attach`/
+/// Only the synchronous, registry-free commands arise here - `Attach`/
 /// `PersistLastSession` come exclusively from `Action::Tick`, which the run loop drives
 /// with full registry access. `Action::Quit` is the only quit path through this dispatcher.
 ///
@@ -149,12 +149,12 @@ fn dispatch_action(
     )
 }
 
-/// Runs the [`Command`]s an [`Action`] produced — the sole dispatcher of the
+/// Runs the [`Command`]s an [`Action`] produced - the sole dispatcher of the
 /// synchronous, registry-free effects. `SelectAddress`/`Rescan`/`AdjustTreeWidth`/
 /// `ToggleAutoHide`/`Quit` act on the switcher/width/loop here; `RunOp` is spawned
 /// off-loop against the live mux (its `OpResult` folds back through `op_tx`, the
 /// existing channel). `Attach`/`PersistLastSession` arise only from `Action::Tick`,
-/// dispatched by the run loop with full registry access — never here.
+/// dispatched by the run loop with full registry access - never here.
 ///
 /// [`Action`]: crate::model::Action
 /// [`Command`]: crate::model::Command
@@ -187,7 +187,7 @@ fn dispatch_commands(
             Command::Quit => quit = true,
             Command::RunOp(op) => spawn_op(op, op_sink.0, op_sink.1),
             // Settled-selection effects come only from Action::Tick, dispatched by the
-            // run loop with registry/host access — never from a key/ctl action here.
+            // run loop with registry/host access - never from a key/ctl action here.
             Command::PersistLastSession(_) | Command::Attach(_) => {}
         }
     }
@@ -222,7 +222,7 @@ fn self_cwd() -> String {
 
 /// This process's controlling terminal, for `xmux ctl list`: `/dev/pts/N` on Linux
 /// when stdin is a tty, `-` where there is none (a redirect) or on Windows (a console
-/// has no pts). Best-effort and dependency-free — a `-` never breaks the listing, it
+/// has no pts). Best-effort and dependency-free - a `-` never breaks the listing, it
 /// just leaves that column blank while pid + cwd + displayed session still identify
 /// the instance.
 fn self_tty() -> String {
@@ -268,15 +268,15 @@ struct DrawObserver {
     fingerprints: HashMap<String, (u64, String)>,
 }
 
-/// How a freshly-computed grid fingerprint relates to the last one rendered for its key —
+/// How a freshly-computed grid fingerprint relates to the last one rendered for its key -
 /// the pure classification the draw block turns into a `display_grid_changed` log grade.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FpOutcome {
-    /// Fingerprint unchanged — screen content did not change (no event).
+    /// Fingerprint unchanged - screen content did not change (no event).
     Unchanged,
-    /// Fingerprint changed, same session — a steady-state repaint (TRACE grade).
+    /// Fingerprint changed, same session - a steady-state repaint (TRACE grade).
     Steady,
-    /// Fingerprint changed and the session differs, or first paint for this key — the
+    /// Fingerprint changed and the session differs, or first paint for this key - the
     /// transition's first frame landed (INFO grade).
     Switched,
 }
@@ -300,7 +300,7 @@ impl DrawObserver {
         }
     }
 
-    /// Emits a `slow_step` DEBUG event when a synchronous step took at least 10ms — used
+    /// Emits a `slow_step` DEBUG event when a synchronous step took at least 10ms - used
     /// to locate what stalls the single-threaded event loop during rapid navigation.
     fn slow_step(label: &str, start: std::time::Instant) {
         let ms = start.elapsed().as_millis();
@@ -313,7 +313,7 @@ impl DrawObserver {
 /// Derives a [`Selection`] from the switcher's current terminal-view target. The target
 /// is either `session` or `session:window`; the session part keys the PTY attachment, the
 /// optional window part drives `select-window`. Stays in `app` because it depends on the
-/// ui [`TerminalViewTarget`] — the [`Selection`] value itself is a pure `model` type.
+/// ui [`TerminalViewTarget`] - the [`Selection`] value itself is a pure `model` type.
 fn selection_from_target(t: &TerminalViewTarget) -> Selection {
     if t.target.is_empty() {
         return Selection::default();
@@ -332,7 +332,7 @@ fn selection_from_target(t: &TerminalViewTarget) -> Selection {
 }
 
 /// Derives the selection from the switcher selection and, if it moved, routes it through
-/// the single mutation site as [`Action::Select`] — which records the new selection
+/// the single mutation site as [`Action::Select`] - which records the new selection
 /// and marks the attach pending. It arms NO deadline; the trailing [`Action::Tick`]
 /// arms the debounce (re-armed on every move, so rapid navigation coalesces into one
 /// trailing attach). Returns true when the selection changed (the tree needs a redraw).
@@ -389,10 +389,10 @@ pub(crate) fn display_key(hosts: &crate::model::Hosts, sel: &Selection) -> Strin
 }
 
 /// The display key for a host's selection. Both server models key the live display by
-/// HOST id: tmux keeps one PTY per host (shared, moved by switch-client), and psmux —
-/// though one-server-per-session — is displayed through ONE per-host PTY that is
+/// HOST id: tmux keeps one PTY per host (shared, moved by switch-client), and psmux -
+/// though one-server-per-session - is displayed through ONE per-host PTY that is
 /// reattached on every session change. This is the supervisor/driver authority for the
-/// live attach path — the sole keying authority for both models.
+/// live attach path - the sole keying authority for both models.
 pub(crate) fn host_selection_key(host: &crate::model::Host) -> String {
     host.id().to_string()
 }
@@ -408,7 +408,7 @@ fn host_of_key(key: &str) -> &str {
 /// display PTY is live, and whether an attach for its key is already in flight. The
 /// gate (`should_attach`) lives in `State`; these facts (registry + host bookkeeping)
 /// do not, so the loop computes them just before the Tick. An empty selection yields
-/// `(false, false)` — the gate short-circuits on emptiness anyway.
+/// `(false, false)` - the gate short-circuits on emptiness anyway.
 ///
 /// [`State::apply`]: crate::state::State::apply
 fn selection_attach_facts(
@@ -483,7 +483,7 @@ pub(crate) fn select_attach(sel: &Selection, ctx: &mut crate::driver::DriverCtx)
 /// The grid the supervisor renders for the CONFIRMED display truth (`displayed`), or
 /// `None` when nothing is confirmed (empty selection ⇒ blank terminal on first launch).
 /// Picks the host's driver off its model ([`driver_for`]) and reads back its live attach
-/// grid — the read counterpart to [`select_attach`]'s show. Shared by the draw hot path
+/// grid - the read counterpart to [`select_attach`]'s show. Shared by the draw hot path
 /// and the ctl `dump` path so the two never drift.
 ///
 /// [`driver_for`]: crate::driver::driver_for
@@ -524,7 +524,7 @@ pub(crate) fn run_lowered(lowered: crate::machine::LoweredSwitch) {
 /// Runs a mux's opaque [`crate::mux::SwitchPlan`] BLIND: the driver hands the whole plan
 /// here and this lowers each variant through the host's transport, never naming the mux
 /// type. `Exec` argv(s) run non-interactively in order; a `Shell` command runs over the
-/// host's raw shell (`raw_ssh_argv`). Returns whether the switch was issued — `false` when
+/// host's raw shell (`raw_ssh_argv`). Returns whether the switch was issued - `false` when
 /// a `Shell` plan has no host shell (a local machine), so the caller falls back to a
 /// reattach. The variant→lowering mapping is 1:1 with [`crate::machine::LoweredSwitch`].
 pub(crate) fn run_switch_plan(host: &crate::model::Host, plan: crate::mux::SwitchPlan) -> bool {
@@ -614,7 +614,7 @@ fn spawn_host_detection(
 
 /// Dispatches a DETECTED host onto its metadata channel via the manager, which picks
 /// the channel (control client vs poll task) from the host's `event_source`. Idempotent
-/// — a no-op when the channel is already live.
+/// - a no-op when the channel is already live.
 fn dispatch_detected_host(
     mgr: &mut HostManager,
     hosts: &crate::model::Hosts,
@@ -670,8 +670,8 @@ fn apply_scan_result(
 }
 
 /// Consumes a pending re-scan kick (set by `r` or a menu "reconnect"): re-enumerates
-/// every detected source via the manager — a control host re-lists sessions, a poll
-/// host respawns its task for an immediate re-enumeration — and (re)detects an
+/// every detected source via the manager - a control host re-lists sessions, a poll
+/// host respawns its task for an immediate re-enumeration - and (re)detects an
 /// undetected one. A no-op when no kick is pending. Shared by the key and menu paths.
 fn kick_rescan(
     switcher: &mut crate::ui::switcher::Switcher,
@@ -688,7 +688,7 @@ fn kick_rescan(
     // `request_rescan` cleared every session's panes from `state.panes`; clear the
     // loop-local pane-request dedup in lockstep so each control host's re-`list_sessions`
     // reply actually re-issues `list-panes` (`request_session_panes` only asks for
-    // addresses not already in this set — otherwise the subtree stays "loading…" until a
+    // addresses not already in this set - otherwise the subtree stays "loading…" until a
     // `%`-change or relaunch). A global clear is safe: this set gates only control hosts;
     // poll hosts re-emit their panes regardless.
     panes_requested.clear();
@@ -705,7 +705,7 @@ fn kick_rescan(
 
 /// Starts each host's first scan at startup, so each host's tree streams in without
 /// waiting for a selection move. Control hosts connect a `-CC` client; poll hosts start
-/// their self-looping enumeration task — both owned by the manager. PTYs are attached
+/// their self-looping enumeration task - both owned by the manager. PTYs are attached
 /// as each source's sessions arrive (see [`sync_source_terminals`]).
 fn connect_all_sources(
     mgr: &mut HostManager,
@@ -725,7 +725,7 @@ fn connect_all_sources(
 
 /// Requests `list-panes` for each of a host's sessions whose panes have not been
 /// requested yet, so every session's window/pane subtree loads instead of sitting
-/// on the "loading…" placeholder. The control client never volunteers pane data —
+/// on the "loading…" placeholder. The control client never volunteers pane data -
 /// it must be asked, once per session (`requested` dedupes repeat Inventory events).
 fn request_session_panes(
     client: &crate::host::HostClient,
@@ -741,7 +741,7 @@ fn request_session_panes(
 }
 
 /// Refetches a host's inventory after a `%`-change notification: clears its
-/// pane-request dedup so every session re-lists, then re-runs list-sessions — its
+/// pane-request dedup so every session re-lists, then re-runs list-sessions - its
 /// reply (Connected/Inventory) re-applies the tree, re-requests panes, and re-syncs
 /// the PTY set (a new session attaches, a closed one is reaped). #5 tree view sync.
 fn refetch_host(mgr: &HostManager, panes_requested: &mut HashSet<String>, host: &str) {
@@ -768,7 +768,7 @@ fn record_display_tty(
             h.display_tty = crate::model::DisplayTty(Some(tty));
         }
     } else {
-        // The marker fired but no registry entry has this id yet — diagnostic for a
+        // The marker fired but no registry entry has this id yet - diagnostic for a
         // capture that arrives before the attach is recorded (would silently drop).
         tracing::debug!(id, tty, "tty_record_missed_no_addr");
     }
@@ -792,7 +792,7 @@ fn clear_display_tty_for_attach(
 
 /// Handles a remote host's control client dying. A host that had connected keeps its
 /// last-known tree. A never-connected host that died with "no sessions" / "no server
-/// running" is REACHABLE but has no mux server — it renders "(empty)" (and a session
+/// running" is REACHABLE but has no mux server - it renders "(empty)" (and a session
 /// can be created there), NOT "⚠". Any other never-connected death is a real
 /// transport failure and renders "⚠". Returns `true` only when it marked the host
 /// unreachable.
@@ -806,7 +806,7 @@ pub(crate) fn note_host_exited(
     // Clear the connected mark so this host is no longer pinned to "keep last-known
     // tree". A transient drop of a once-connected host keeps its tree (no unreachable
     // flash) on THIS exit; but a later reconnect that fails (no sessions / unreachable)
-    // must then resolve its real state — otherwise a refresh that set it scanning would
+    // must then resolve its real state - otherwise a refresh that set it scanning would
     // spin on "loading…" forever, since a sticky `connected` made every exit a no-op.
     if connected.remove(host) {
         return false;
@@ -842,6 +842,19 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
     }
     let _ = std::fs::create_dir_all(&env.xmux_dir);
 
+    // Pick the dark or light palette from the terminal's reported background
+    // (an OSC 11 round-trip). Must run BEFORE raw mode / the alternate screen -
+    // the query library manages the terminal itself. Failure (an unsupported
+    // terminal, a timeout) keeps the dark default.
+    match terminal_colorsaurus::theme_mode(terminal_colorsaurus::QueryOptions::default()) {
+        Ok(mode) => crate::ui::palette::init_for_dark_terminal(
+            mode == terminal_colorsaurus::ThemeMode::Dark,
+        ),
+        Err(e) => {
+            tracing::debug!("terminal background query failed ({e}); keeping the dark palette")
+        }
+    }
+
     let _term_guard = match TermGuard::enter() {
         Ok(g) => g,
         Err(e) => {
@@ -855,7 +868,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
     // The restore is main-thread-only: worker threads (PTY pumps) catch+recover
     // their own panics (see Grid::feed); a stray worker panic must not tear the
     // screen down under a still-running app. TermGuard's Drop also restores on
-    // the main-thread unwind — idempotent with this.
+    // the main-thread unwind - idempotent with this.
     {
         let log = env.xmux_dir.join("panic.log");
         let prev_hook = std::panic::take_hook();
@@ -880,15 +893,15 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
                 };
                 let _ = disable_raw_mode();
                 let _ = execute!(std::io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
-                eprintln!("xmux: internal error — {info}");
+                eprintln!("xmux: internal error - {info}");
                 eprintln!("xmux: full detail logged to {}", log.display());
                 // Only the main-thread crash reaches the default hook (stderr/backtrace)
-                // — the terminal is restored above, so the print is safe and useful.
+                // - the terminal is restored above, so the print is safe and useful.
                 prev_hook(info);
             }
             // A worker-thread panic (a PTY pump's vt100 edge case) is caught and
             // recovered by Grid::feed; it is already in the log + panic.log above. Do
-            // NOT forward it to the default hook — its stderr print lands on the live
+            // NOT forward it to the default hook - its stderr print lands on the live
             // TUI's terminal and corrupts the screen (the panic-spam bug).
         }));
     }
@@ -1007,7 +1020,7 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
     }
 
     // A resize within the last WIDTH_FLUSH_MS before quit leaves the debounce deadline
-    // unreached, so the final width is still pending — persist it on the way out so the
+    // unreached, so the final width is still pending - persist it on the way out so the
     // tree width the user left with survives the next launch.
     if rt.width_dirty {
         crate::prefs::save_nav_width(&rt.env.xmux_dir, rt.nav_width_natural);
@@ -1019,8 +1032,8 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
 
 /// The persistent app's WORLD STATE: everything the `select!` loop mutates across
 /// iterations. The `select!` receivers/timers and the ratatui `Terminal` stay
-/// loop-local in [`run_app`] — a receiver cannot be polled from `self.<rx>.recv()`
-/// while an arm body borrows `&mut self` — so `Runtime` owns the long-lived state and
+/// loop-local in [`run_app`] - a receiver cannot be polled from `self.<rx>.recv()`
+/// while an arm body borrows `&mut self` - so `Runtime` owns the long-lived state and
 /// each `select!` arm is one `&mut self` method.
 struct Runtime {
     env: Arc<Env>,
@@ -1070,7 +1083,7 @@ struct Runtime {
     /// Resolved view border colours per displayed source (border-style is server-global
     /// and rarely changes, so one query per host is cached here).
     border_cache: HashMap<String, crate::ui::switcher::ViewBorderColors>,
-    /// Sources with a border-style query in flight — prevents duplicate spawns.
+    /// Sources with a border-style query in flight - prevents duplicate spawns.
     border_inflight: HashSet<String>,
     /// The source whose cached colours are currently applied to the chrome, so the
     /// per-frame trigger re-applies only on a displayed-source change.

@@ -5,6 +5,7 @@
 pub mod chrome;
 pub mod modal;
 pub mod ops;
+pub(crate) mod palette;
 pub mod run;
 pub mod switcher;
 pub mod tree;

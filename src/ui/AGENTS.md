@@ -14,7 +14,7 @@ modal/menu/input BEHAVIOR and rendering, key/mouse handling, operation result
 application, and render state. The open modal itself lives in `State.modal`
 (the `Modal` enum is defined here); the switcher reads/writes it and owns only
 the transient popup geometry (drag offset / drawn rect). `chrome.rs` defines the
-chrome — the view border, the hint bar, and the unreachable-host info — and its
+chrome - the view border, the hint bar, and the unreachable-host info - and its
 view-local state (flash, spinner, view border colours, ui prefix); the `Chrome`
 instance itself lives in `State.chrome` (like `State.modal`), fed by the app each
 frame and rendered from `&State`. `ops.rs`
@@ -30,6 +30,11 @@ renders for `dump`.
 ## Module Seams
 
 - Pure row/group transforms belong in `tree.rs`.
+- UI colours come from the semantic palette in `palette.rs` (accent / surface /
+  muted tiers plus the per-level card colours), so the theme changes in one
+  place. The one exception is the view border: its stock defaults deliberately
+  mirror tmux's pane-border defaults and live with their three-tier resolve
+  logic in `chrome.rs`.
 - Chrome rendering (view border, hint bar, host-info) and its view-local state
   belong in `chrome.rs`; it reads inventory from `&State`, not the switcher.
 - Slow (network) mux effects belong behind `ops.rs` (`Ops`/`run_op`/`OpResult`);
@@ -55,7 +60,7 @@ renders for `dump`.
   behind the `Mux`/`MuxDriver` seam, reached via `Ops`, not decided here.
 - Selection/drag mutators (`select_window` / `select_address` /
   `select_active_window` / `set_active_window` / `menu_open` / `begin_popup_drag`)
-  return a `bool` — "did it actually move / grab?" — by accepted convention: the
+  return a `bool` - "did it actually move / grab?" - by accepted convention: the
   app gates its follow-up (attach, event consumption) on that signal. This
   mutate-and-return-bool shape is deliberate; it is not split into a pure
   command/query pair (the churn would exceed the value).

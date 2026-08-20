@@ -21,6 +21,11 @@ fn fake_env_with_sources(aliases: &[&str]) -> Env {
         .filter(|a| **a != crate::session::LOCAL_SOURCE)
         .map(|a| a.to_string())
         .collect();
+    // A real throwaway dir, not `.`: tests that exercise pref persistence (e.g.
+    // resize_axis saving nav_height) write `<xmux_dir>/<file>`, and `.` would
+    // pollute the repository root with stray pref files.
+    let xmux_dir = std::env::temp_dir().join(format!("xmux-test-env-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&xmux_dir);
     Env {
         cfg: Config::default(),
         cfg_warnings: Vec::new(),
@@ -28,7 +33,7 @@ fn fake_env_with_sources(aliases: &[&str]) -> Env {
         by_alias,
         local_bin: "cmd.exe".into(),
         ui_prefix: "C-g".into(),
-        xmux_dir: std::path::PathBuf::from("."),
+        xmux_dir,
         ssh_aliases,
         local_socket: None,
     }
@@ -76,7 +81,7 @@ fn selection_from_empty_target_is_empty() {
 #[test]
 fn display_key_is_per_host_for_shared_and_reattach_psmux() {
     // Shared tmux and reattach psmux both use one PTY per HOST. The key is shaped
-    // by mux behavior, read off the Host — never the transport's remote flag.
+    // by mux behavior, read off the Host - never the transport's remote flag.
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
         crate::machine::ssh("jup".into(), String::new(), "linux".into()),
@@ -156,7 +161,7 @@ fn scan_result_corrects_psmux_config_to_tmux_control() {
 async fn connect_all_sources_connects_remote_hosts() {
     // Control-event (tmux) hosts get a control client at startup; poll hosts
     // enumerate off the loop (no control client). The gate is the host's
-    // event_source, read off the Host — not the transport remote flag. The cmd.exe
+    // event_source, read off the Host - not the transport remote flag. The cmd.exe
     // binary is a spawnable stand-in for ssh that EOFs at once.
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
     let mut mgr = HostManager::new(tx);
@@ -185,7 +190,7 @@ async fn connect_all_sources_connects_remote_hosts() {
 
 #[tokio::test]
 async fn scan_or_dispatch_host_detects_from_hosts_without_env() {
-    // An UNDETECTED host is routed to detection using ONLY the Hosts registry — no
+    // An UNDETECTED host is routed to detection using ONLY the Hosts registry - no
     // Env/by_alias. The detection branch marks the source in `detecting`; the probe
     // clones the host's transport + mux rather than re-deriving from a Source.
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
@@ -508,7 +513,7 @@ fn active_window_probe_moves_tree_selection() {
 #[test]
 fn focus_event_updates_marker_without_moving_cursor() {
     // handle_host_event(Focus) updates the active-window marker but never moves
-    // the selection — selection follow is a loop-top concern. The selection is left wherever
+    // the selection - selection follow is a loop-top concern. The selection is left wherever
     // the caller placed it (here, window 1) regardless of the Focus payload.
     use crate::session::{Pane, Session, WindowPanes};
     use crate::ui::switcher::{Scan, Switcher};
@@ -641,7 +646,7 @@ fn apply_inventory_effect_folds_sessions_into_host_inventory() {
         sessions: sessions.clone(),
     });
     assert!(!rearm, "ApplyInventory does not rearm detach recovery");
-    // The single owner now holds the carried sessions — folded by the loop.
+    // The single owner now holds the carried sessions - folded by the loop.
     let owned = &rt
         .hosts
         .get("jup")
@@ -666,7 +671,7 @@ fn r_rescan_reloads_control_host_panes() {
     // Regression (S4-M5 follow-up): the client-initiated `r` re-scan must not
     // strand a control host's window/pane subtrees on "loading…". `request_rescan`
     // clears every session's panes from `state.panes`, so the loop-local
-    // `panes_requested` dedup must be cleared in lockstep — otherwise the re-list's
+    // `panes_requested` dedup must be cleared in lockstep - otherwise the re-list's
     // `ApplyInventory` skips `list-panes` for every already-requested address and
     // the panes never reload. `kick_rescan` (the single consumer of the rescan
     // kick) owns that clear.
@@ -752,7 +757,7 @@ fn r_rescan_reloads_control_host_panes() {
     );
 
     // The re-list reply folds in via ApplyInventory, which re-requests each
-    // session's panes — re-inserting the (now-cleared) address, i.e. issuing list-panes.
+    // session's panes - re-inserting the (now-cleared) address, i.e. issuing list-panes.
     let sessions = vec![Session {
         source: "jup".into(),
         name: "api".into(),
@@ -773,7 +778,7 @@ fn r_rescan_reloads_control_host_panes() {
 #[test]
 fn current_grid_returns_none_for_empty_displayed() {
     // An empty `displayed` (source "") misses `hosts.get`, so no driver is
-    // built and no grid is produced — the blank-terminal case on first launch.
+    // built and no grid is produced - the blank-terminal case on first launch.
     let mut hosts = crate::model::Hosts::default();
     let mut registry = AttachRegistry::new();
     let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
@@ -1378,7 +1383,7 @@ fn two_session_scan() -> crate::ui::switcher::Scan {
 async fn client_session_changed_in_terminal_focus_follows_selection_to_the_new_session() {
     // The real fix: with the terminal focused (the user drove prefix+s), a matched
     // %client-session-changed moves the nav selection to the mux-moved session's ACTIVE
-    // window — not just the display belief.
+    // window - not just the display belief.
     let mut state = crate::state::State::from_scan(two_session_scan());
     let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
     switcher.select_address("jup/api", &state); // deterministic start (ignore any last_session)
@@ -1460,31 +1465,31 @@ async fn client_session_changed_in_nav_focus_syncs_belief_without_moving_selecti
 }
 
 // =========================================================================
-// HUMAN VISUAL-GATE CHECKLIST (run in a REAL terminal — never headless):
+// HUMAN VISUAL-GATE CHECKLIST (run in a REAL terminal - never headless):
 // 1. Launch `xmux`. Confirm it enters the alternate screen cleanly and starts in
 //    Focus::Nav: the Host·Session·Window·Pane tree on the left, the live REAL
 //    terminal of the selection's session on the right (a true attached mux client).
 // 2. Move the selection between sessions. Confirm the terminal view shows each session's
 //    real attached terminal instantly (it is pre-attached + kept alive), with a
 //    spinner while a session's attach is still establishing.
-// 3. Select a WINDOW row — confirm the attached client switches to that window.
-// 4. Press Enter (or C-g → / C-g Tab) — focus the terminal (Focus::Terminal); the split
+// 3. Select a WINDOW row - confirm the attached client switches to that window.
+// 4. Press Enter (or C-g → / C-g Tab) - focus the terminal (Focus::Terminal); the split
 //    is unchanged (view border turns green) and keystrokes reach the real attached pane.
 //    C-g ← / C-g Esc / C-g Tab return focus to the tree. Confirm no blank/flash.
-// 5. Create / kill a window or session inside a pane — confirm the tree view
+// 5. Create / kill a window or session inside a pane - confirm the tree view
 //    syncs (remote via control events, local within the poll interval) and the
 //    PTY set follows (new session attaches, killed session's PTY is reaped).
-// 6. C-g then `q` — clean quit, terminal restored.
+// 6. C-g then `q` - clean quit, terminal restored.
 // 7. NEVER attach the session that owns xmux (xmux refuses to run inside a mux,
 //    so in normal use no session mirrors the UI).
 // 8. Mouse: dragging never selects native terminal text (the app captures the
 //    mouse). A LEFT-button press in the UNFOCUSED view switches focus to it (focus
-//    only — the click is not delivered); right-click never moves focus (it opens the
+//    only - the click is not delivered); right-click never moves focus (it opens the
 //    tree context menu). Once the terminal view is focused, clicks/scroll/
 //    right-click reach the mux (status-bar click, pane select, scroll, context menu).
 //    Mux mouse forwarding requires the mux to have `mouse on` (`set -g mouse on`);
 //    xmux only forwards. (Windows: capture needs ENABLE_VIRTUAL_TERMINAL_INPUT +
-//    the SGR DECSET that crossterm's WinAPI path omits — see display::term.)
+//    the SGR DECSET that crossterm's WinAPI path omits - see display::term.)
 // =========================================================================
 
 #[test]
@@ -1682,7 +1687,7 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
     );
 
     // The switch moved the selection to api; the loop-top derive routes it through
-    // apply(Select) — selection becomes jup/api and the attach is marked pending
+    // apply(Select) - selection becomes jup/api and the attach is marked pending
     // (the deadline is armed by the next Tick, not here).
     assert!(sync_selection_from_switcher(&mut state, &sw));
     assert_eq!(state.selection.source, "jup");
@@ -1690,7 +1695,7 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
     assert!(state.attach_pending, "Select marks the attach pending");
     assert!(
         state.attach_deadline.is_none(),
-        "Select arms no deadline — the trailing Tick does"
+        "Select arms no deadline - the trailing Tick does"
     );
 }
 
@@ -1714,7 +1719,7 @@ fn handle_stdin_bytes_quit_on_prefix_q_in_tree_focus() {
 }
 
 /// Builds a `Runtime` with one reachable session on source `jup`, focused on the
-/// TERMINAL view — the setup the focus-independent tree-action tests share.
+/// TERMINAL view - the setup the focus-independent tree-action tests share.
 fn rt_terminal_focus_with_session() -> Runtime {
     use crate::session::Session;
     use crate::ui::switcher::{Scan, Switcher};
@@ -1792,7 +1797,7 @@ fn prefix_x_in_terminal_focus_arms_active_pane_kill() {
 #[test]
 fn prefix_r_in_terminal_focus_kicks_rescan() {
     // prefix r is focus-independent: from the terminal view it re-scans every host. The
-    // re-scan clears each group's sessions and re-arms scanning — and kick_rescan must
+    // re-scan clears each group's sessions and re-arms scanning - and kick_rescan must
     // run for it to fire, which the terminal arm now does.
     let mut rt = rt_terminal_focus_with_session();
     assert!(
@@ -1816,7 +1821,7 @@ fn killing_the_displayed_session_tears_down_the_host_attach_for_reattach() {
     // session a host's display client currently shows invalidates that client (its
     // per-session server is gone) but the PTY need not EOF, so no reap fires and the
     // registry entry lingers. Without teardown the next show() trusts that stale `live`
-    // and switch-client's a dead client — a silent no-op that blanks the whole host.
+    // and switch-client's a dead client - a silent no-op that blanks the whole host.
     // on_op_result must tear the attach down + rearm attach so show() reattaches fresh.
     use crate::session::Session;
     use crate::ui::switcher::{Scan, Switcher};
@@ -1918,7 +1923,7 @@ fn kill_confirm_owns_keys_so_prefix_q_and_enter_do_not_quit_or_focus_mux() {
     // A kill-confirm is a modal popup, so it OWNS every key. With the resolver gated
     // on is_modal_popup_open (true for a confirm, where is_inputting is false),
     // `prefix q` reaches the switcher instead of arming the prefix, and Enter reaches
-    // it instead of resolving to FocusTerminal — so a confirm can neither quit the app
+    // it instead of resolving to FocusTerminal - so a confirm can neither quit the app
     // nor focus the terminal out from under itself. (The first swallowed key cancels the
     // confirm, tmux confirm-before style; the point is the key does not quit/focus.)
     use crate::app::focus::{Focus, ViewFocus};
@@ -2203,7 +2208,7 @@ fn resize_keys_adjust_height_in_top_layout() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     // In the portrait Top layout the tree-resize keys (prefix h/l · Ctrl+←/→) adjust the
-    // HEIGHT, not the width — seeded from the auto height the first time.
+    // HEIGHT, not the width - seeded from the auto height the first time.
     let mut state = crate::state::State::from_scan(Scan {
         groups: vec![],
         panes: Default::default(),

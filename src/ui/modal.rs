@@ -4,13 +4,14 @@
 //! popup geometry; this module owns the modal data model. Side-effect-free.
 
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::session::Session;
+use crate::ui::palette;
 use crate::ui::tree::RowRef;
 
 /// An armed kill confirm (awaiting y/n). One slot enforces "at most one armed".
@@ -24,7 +25,7 @@ pub(crate) enum PendingKill {
         target: String,
     },
     /// The active pane of the terminal view's session. (source, session,
-    /// target="session:window" — the window whose active pane is killed.)
+    /// target="session:window" - the window whose active pane is killed.)
     Pane {
         source: String,
         session: String,
@@ -34,7 +35,7 @@ pub(crate) enum PendingKill {
 
 /// One context-menu entry. The variant drives the action taken on release; the
 /// label is the row text. Words match the rest of the tree UI ("focus the terminal",
-/// "new", "rename", "kill" — never "open"/"split", which are not used elsewhere).
+/// "new", "rename", "kill" - never "open"/"split", which are not used elsewhere).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MenuItem {
     Focus,
@@ -68,7 +69,7 @@ pub enum MenuOutcome {
 /// An open right-click context menu. `target` is the node it acts on, re-located by
 /// identity at release so a tree rebuild during the brief hold cannot misfire on a
 /// stale row. `title` names that node (shown in the box's top border, like tmux's
-/// menu title — so the menu reads as "actions for <this node>"). `rect` is the
+/// menu title - so the menu reads as "actions for <this node>"). `rect` is the
 /// bordered box in 0-based screen coords; `hovered` is the highlighted item.
 pub(crate) struct Menu {
     pub(crate) target: RowRef,
@@ -111,7 +112,7 @@ impl PopupGeometry {
 
     /// A left press on the active modal popup's border begins a move-drag. `open` is
     /// whether a modal popup is live: `rect` is only refreshed on render (frame-gated),
-    /// so a popup closed by a keystroke can leave a stale rect — the caller gates on
+    /// so a popup closed by a keystroke can leave a stale rect - the caller gates on
     /// the live modal state so a press can't grab a popup that no longer exists.
     /// Returns true iff it grabbed (so the app consumes the event).
     pub(crate) fn begin_drag(&mut self, col: u16, row: u16, open: bool) -> bool {
@@ -286,7 +287,7 @@ impl Input {
     }
 }
 
-/// The single open modal, if any — at most one of help / inline input / kill
+/// The single open modal, if any - at most one of help / inline input / kill
 /// confirm / context menu. Modeling it as one `Option` (not four independent
 /// fields) makes the modals' mutual exclusion structural: opening one drops
 /// whatever was open, and the compiler guarantees two can never coexist, so the
@@ -319,7 +320,7 @@ pub(crate) fn is_menu_active(modal: &Option<Modal>) -> bool {
     matches!(modal, Some(Modal::Menu(_)))
 }
 
-/// Which kind of modal is open — the focus machine derives its modal dimension from
+/// Which kind of modal is open - the focus machine derives its modal dimension from
 /// this each loop-top, so focus can never mirror-and-desync from the open popup. A
 /// centered popup and the context menu are mutually exclusive.
 pub(crate) fn modal_kind(modal: &Option<Modal>) -> Option<crate::app::focus::ModalKind> {
@@ -332,7 +333,7 @@ pub(crate) fn modal_kind(modal: &Option<Modal>) -> Option<crate::app::focus::Mod
 }
 
 /// Feeds a raw key read to the help modal, tmux view-mode style. While help is open
-/// every key is consumed (returns true — nothing reaches the tree or the terminal
+/// every key is consumed (returns true - nothing reaches the tree or the terminal
 /// view); `q` or a lone Esc closes it, every other key is swallowed. Returns false
 /// when help is closed, so the read falls through to normal routing.
 pub(crate) fn feed_help(modal: &mut Option<Modal>, bytes: &[u8]) -> bool {
@@ -360,7 +361,7 @@ pub(crate) fn menu_items(target: &RowRef) -> Vec<MenuItem> {
     }
 }
 
-/// The menu's title — the human name of the node it acts on (host alias, session
+/// The menu's title - the human name of the node it acts on (host alias, session
 /// name, or `session:window`), shown in the box's top border.
 pub(crate) fn menu_title(target: &RowRef) -> String {
     match target {
@@ -434,7 +435,7 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
 
     let p = prefix;
 
-    // Tree section — the mutating keys carry the prefix (bare presses are inert);
+    // Tree section - the mutating keys carry the prefix (bare presses are inert);
     // navigation and the `/` filter stay bare.
     let rows: Vec<HelpRow> = vec![
         HelpRow::Head("navigation".into()),
@@ -451,7 +452,7 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
         HelpRow::Key("/".into(), "fuzzy filter <source>/<name>".into()),
         HelpRow::Key(format!("{p} r"), "re-scan every host".into()),
         HelpRow::Gap,
-        // Focus section — prefix rows built from `prefix`.
+        // Focus section - prefix rows built from `prefix`.
         HelpRow::Head(format!("focus ({p} = prefix)")),
         HelpRow::Key(format!("Enter · {p} →"), "focus the terminal".into()),
         HelpRow::Key(
@@ -481,7 +482,7 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
         HelpRow::Key(format!("{p} q"), "quit".into()),
         HelpRow::Key(format!("{p} {p}"), format!("send a literal {p} to the mux")),
         HelpRow::Gap,
-        // Mux section — no configurable keys; keep as literals.
+        // Mux section - no configurable keys; keep as literals.
         HelpRow::Head("mux (focused)".into()),
         HelpRow::Note("keys, scroll & clicks go to the pane"),
         HelpRow::Note("(the mux needs its own mouse mode on)"),
@@ -496,22 +497,24 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
         .max()
         .unwrap_or(0);
     let bold = Style::new().add_modifier(Modifier::BOLD);
+    let accent = Style::default().fg(palette::get().accent);
+    let rule = Span::styled("│ ", Style::default().fg(palette::get().overlay));
     let lines: Vec<Line> = rows
         .into_iter()
         .map(|r| match r {
             HelpRow::Gap => Line::from(""),
             HelpRow::Head(h) => Line::from(Span::styled(
                 format!(" {h}"),
-                bold.add_modifier(Modifier::UNDERLINED),
+                accent.add_modifier(Modifier::BOLD),
             )),
             HelpRow::Key(k, d) => Line::from(vec![
                 Span::styled(format!(" {k:>kw$} "), bold),
-                Span::raw("│ "),
+                rule.clone(),
                 Span::raw(d),
             ]),
             HelpRow::Note(n) => Line::from(vec![
                 Span::raw(format!(" {:>kw$} ", "")),
-                Span::raw("│ "),
+                rule.clone(),
                 Span::raw(n),
             ]),
         })
@@ -537,7 +540,8 @@ pub(crate) fn input_lines(input: &Input) -> (String, Vec<Line<'static>>) {
     let lines = vec![
         Line::from(Span::styled(format!(" {}", input.label.trim()), dim)),
         Line::from(vec![
-            Span::raw(format!(" ❯ {before}")),
+            Span::styled(" ❯ ", Style::default().fg(palette::get().accent)),
+            Span::raw(before),
             Span::styled(at, caret),
             Span::raw(after),
         ]),
@@ -548,7 +552,7 @@ pub(crate) fn input_lines(input: &Input) -> (String, Vec<Line<'static>>) {
 
 /// The armed kill confirm rendered as popup `(title, lines)`, in red.
 pub(crate) fn confirm_lines(armed: &PendingKill) -> (String, Vec<Line<'static>>) {
-    let red = Style::default().fg(Color::Red);
+    let red = Style::default().fg(palette::get().danger);
     let q = match armed {
         PendingKill::Session(sess) => format!(" kill {}?", sess.address()),
         PendingKill::Window { source, target, .. } => format!(" kill {source}/{target}?"),
@@ -568,11 +572,11 @@ pub(crate) fn confirm_lines(armed: &PendingKill) -> (String, Vec<Line<'static>>)
 ///
 /// 1. **Opaque, no margin.** The box is filled with the reset (default) style so the
 ///    mux grid's background colours behind it cannot bleed through, and ONLY `rect`
-///    itself is cleared — there is no blanket one-cell margin around the box, so
+///    itself is cleared - there is no blanket one-cell margin around the box, so
 ///    half-width neighbours sit flush against the border.
 /// 2. **Wide-glyph edge handling.** A double-width (CJK) glyph whose right half the
 ///    LEFT border now covers would otherwise leave its orphaned left half rendering
-///    as a broken glyph just outside the box. That single cell is blanked — and only
+///    as a broken glyph just outside the box. That single cell is blanked - and only
 ///    that cell, only when it is actually a wide glyph. The right edge needs no fixup:
 ///    ratatui stores a wide char as `[glyph][space]`, so a glyph whose lead the box
 ///    covers leaves only its already-blank continuation outside.
@@ -584,8 +588,18 @@ pub(crate) fn render_popup(
     lines: Vec<Line>,
 ) {
     frame.render_widget(Clear, rect);
+    // Rounded corners + a muted border + an accent bold title: the popup reads as a
+    // floating panel over the content rather than a boxed region of it. The reset
+    // base style keeps the interior opaque (see the doc comment above).
     let block = Block::bordered()
-        .title(format!(" {title} "))
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(palette::get().overlay))
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::default()
+                .fg(palette::get().accent)
+                .add_modifier(Modifier::BOLD),
+        ))
         .style(Style::reset());
     frame.render_widget(Paragraph::new(Text::from(lines)).block(block), rect);
     if rect.x > area.x {
@@ -614,7 +628,7 @@ impl Menu {
 
     /// Whether 0-based screen (col,row) is anywhere inside the box (border included).
     /// Used to keep the highlight while the selection is over the title border but off an
-    /// item — only dragging fully outside the box clears it.
+    /// item - only dragging fully outside the box clears it.
     pub(crate) fn contains(&self, col: u16, row: u16) -> bool {
         col >= self.rect.x
             && col < self.rect.x + self.rect.width
@@ -650,7 +664,7 @@ pub(crate) fn menu_rect(col: u16, row: u16, items: &[MenuItem], title: &str, are
     let h = (items.len() as u16 + 2).min(area.height.max(1));
     // Anchor the title row (top border) on the pointer, tmux-style: the pointer lands on
     // the title line, a column left so it sits just inside the box rather than on the left
-    // border. item_at() is None on the title row, so no item is pre-selected — an
+    // border. item_at() is None on the title row, so no item is pre-selected - an
     // accidental right-click releases off every item (cancel), and a deliberate pick is a
     // short drag straight down onto an item.
     let ax = col.saturating_sub(1);
@@ -707,6 +721,7 @@ fn input_title(mode: InputMode) -> &'static str {
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
     use ratatui::Terminal;
 
     fn edit_input(buffer: &str) -> Input {
@@ -907,7 +922,7 @@ mod tests {
         assert_eq!(
             buf[(9u16, 4u16)].symbol(),
             "Y",
-            "a half-width char at the edge stays flush — no margin"
+            "a half-width char at the edge stays flush - no margin"
         );
         assert_eq!(
             buf[(15u16, 4u16)].bg,

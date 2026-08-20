@@ -130,7 +130,7 @@ auto-hide-nav = false                # 트리 자동 숨김 초기 상태
 view-active-border-style = "green"    # 초점 뷰 테두리 색 (tmux 색 표기)
 view-border-style = "default"         # 비초점 뷰 테두리 색
 view-border-hover-style = "yellow"    # 크기 조절 드래그 호버 표시
-hint-bar-style = "bg=blue,fg=white"   # 힌트 바 색 (tmux status-style; 비우면 tmux 기본값)
+hint-bar-style = "bg=blue,fg=white"   # 힌트 바 색 (tmux status-style; 비우면 내장 어두운 바)
 ```
 
 호스트는 먼저 `~/.ssh/config`에서 온다. 접속 정보(사용자, 포트, 키, 점프 호스트)를

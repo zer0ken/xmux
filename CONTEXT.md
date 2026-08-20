@@ -73,16 +73,19 @@ UI elements a user perceives as distinct things:
   a host-state card), line2 `{window-number}:{window-name}` (or the host state / a
   loading spinner). The kinds are the window card, the host-state card (scanning /
   unreachable / empty host), and the loading card.
-- level color — the fixed per-kind card color: host yellow, session green, window
-  magenta, status / loading grey.
+- level color — the fixed per-kind card color, from the palette (`ui::palette`,
+  truecolor): host soft yellow, session soft green, window soft mauve; a host-state
+  card's line2 is colored by state — scanning pending-yellow, unreachable
+  danger-red, settled "no sessions" muted.
 - selection — the nav's current pick (its card index is `selected`), advanced by
   navigation; a routine poll or restream never moves it (only launch / rescan
   re-sorts). `preselect` / `reselect` are the launch and post-rescan selections.
-- selection highlight — the reverse-video rendering of the selected card (ratatui's
-  `highlight_style`, filling the whole card). `selected` + `highlight` follow
-  ratatui's list vocabulary.
-- active marker — the bold + italic styling on a window card whose window is the
-  displayed (active) one of its session.
+- selection highlight — the selected card's rendering: a quiet surface background
+  (ratatui's `highlight_style`, filling the whole card) plus an accent `▌` bar in
+  the gutter of both card lines (replacing that card's jump digit). `selected` +
+  `highlight` follow ratatui's list vocabulary.
+- active marker — the bold styling plus trailing accent `●` dot on a window card
+  whose window is the displayed (active) one of its session.
 - spinner — the braille activity glyph on a loading card (and, historically, a
   connecting session).
 - loading card — a card standing in for a session whose panes are not yet loaded;
@@ -94,18 +97,18 @@ UI elements a user perceives as distinct things:
   action's reason). Never a "toast" or "notice".
 - scan indicator — the `⟳ scanning hosts n/m…` progress shown in the hint bar
   while host probes are in flight; distinct from a row's `scanning…` status.
-- popup — the bordered, opaque, centered (draggable) dialog a `ModalKind::Popup`
-  draws, its title in the top border. The help, input dialog, and kill confirm
-  are popups.
+- popup — the rounded-bordered, opaque, centered (draggable) dialog a
+  `ModalKind::Popup` draws, its accent title in the top border. The help, input
+  dialog, and kill confirm are popups.
 - prompt — the `❯` entry marker on an input dialog's edit line.
 - confirm — the red `[y]es / [n]o` kill-confirmation prompt.
-- menu highlight — the reverse-video context-menu entry under the pointer (the
-  menu's selection highlight).
+- menu highlight — the surface-background context-menu entry under the pointer
+  (the menu's selection highlight, matching the nav's).
 
 `pane` is reserved for a mux window's terminal split (a tmux / psmux pane); it is
 never a screen region — screen regions are "views", and the line between them is
 the `view border`. A transient hint-bar message is a `flash`, never a "toast" or
-"notice". A card's trailing state is a `status`, never a "hint". The reverse-video
+"notice". A card's trailing state is a `status`, never a "hint". The surface-background
 selection is the `selection highlight` (nav) or `menu highlight` (menu); `cursor`
 names only the grid's text cursor. The furniture around the views is the `chrome`
 (owned by `Chrome`), never a "status surface". The switcher's rendered screen is

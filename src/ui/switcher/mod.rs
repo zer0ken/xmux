@@ -33,13 +33,24 @@ pub const NAV_WIDTH: u16 = 48;
 /// delta by this to map a click to a card.
 pub(super) const CARD_H: u16 = 2;
 
-// Per-level node colours, so the four tree levels read apart at a glance.
-const COLOR_HOST: Color = Color::Yellow;
-const COLOR_SESSION: Color = Color::Green;
-const COLOR_WINDOW: Color = Color::Magenta;
-/// Transient per-element status (scanning…, loading…, (empty), unreachable)
-/// renders dim so pending state reads apart from settled content.
-const COLOR_HINT: Color = Color::DarkGray;
+// Per-level node colours (the shared semantic palette), so the tree levels read
+// apart at a glance. Functions, not consts: the active palette (dark / light) is
+// picked at runtime from the terminal background.
+fn color_host() -> Color {
+    crate::ui::palette::get().host
+}
+fn color_session() -> Color {
+    crate::ui::palette::get().session
+}
+fn color_window() -> Color {
+    crate::ui::palette::get().window
+}
+/// Settled per-element status (no sessions) renders muted so it reads apart
+/// from settled content; in-flight and failure states carry their own colours
+/// (the palette's `pending` / `danger`).
+fn color_hint() -> Color {
+    crate::ui::palette::get().overlay
+}
 
 pub use crate::ui::chrome::ViewBorderColors;
 
@@ -77,7 +88,7 @@ pub fn default_nav_height(body_rows: u16) -> u16 {
 
 /// The tree region's height in the `Top` layout: ~40% of the body, at least a few rows, but
 /// never so tall the terminal loses its last rows. Composed with min/max (not `clamp`) so a
-/// tiny body — where the floor would exceed the ceiling and `clamp` would panic — just yields
+/// tiny body - where the floor would exceed the ceiling and `clamp` would panic - just yields
 /// the small floor instead.
 fn top_nav_height(body_h: u16) -> u16 {
     let want = (body_h as u32 * 2 / 5) as u16;
@@ -186,12 +197,12 @@ pub struct Switcher {
     /// Set once the user explicitly moves the selection; while false, streaming
     /// results advance the preselect toward the most-recent session.
     user_moved: bool,
-    /// Signals the event loop to (re)kick the streaming probes — set on the
+    /// Signals the event loop to (re)kick the streaming probes - set on the
     /// initial seed and on an `r` re-scan; the loop reads + clears it.
     rescan_kick: bool,
     /// Signals the event loop to re-attach the CURRENT display: tear the (possibly
     /// detached / dead) attachment down so the next attach re-creates a fresh client.
-    /// Set on an `r` re-scan — explicit, on-demand recovery for the viewed session.
+    /// Set on an `r` re-scan - explicit, on-demand recovery for the viewed session.
     reattach_kick: bool,
 
     rows: Vec<Row>,
@@ -257,7 +268,7 @@ impl Switcher {
         s
     }
 
-    /// Seeds the switcher from the resolved source list alone — no probing — so
+    /// Seeds the switcher from the resolved source list alone - no probing - so
     /// the first frame paints host-skeleton rows, each in a scanning state, in
     /// tens of milliseconds. Streamed [`apply_source_result`]/[`apply_panes`]
     /// calls fill the tree in afterward. The caller seeds `state` via
@@ -281,7 +292,7 @@ impl Switcher {
     }
 
     /// Takes the pending rescan-kick flag (true once after seeding or an `r`
-    /// re-scan) — the event loop spawns the streaming probes when it is set.
+    /// re-scan) - the event loop spawns the streaming probes when it is set.
     pub fn take_rescan_kick(&mut self) -> bool {
         std::mem::take(&mut self.rescan_kick)
     }
@@ -323,7 +334,7 @@ impl Switcher {
 
     fn rebuild(&mut self, state: &mut crate::state::State) {
         // Once the user has moved the selection, hold their current session/window selection
-        // across this rebuild when it survives (matched by identity) — a routine rebuild
+        // across this rebuild when it survives (matched by identity) - a routine rebuild
         // (local poll, remote %-event refetch) must NOT snap the selection back to the top
         // row, which would yank the displayed session out from under the user on every
         // poll (the selection thrash). The user_moved gate at the target below preserves the
@@ -353,7 +364,7 @@ impl Switcher {
         self.rows = rows;
         // Keep an armed kill confirm across this rebuild as long as its target still
         // EXISTS (matched by identity, not row position). Only a tree change that
-        // actually removed the target invalidates it — routine rebuilds (the local
+        // actually removed the target invalidates it - routine rebuilds (the local
         // poll, a remote %-event) must NOT silently cancel it, or answering y/n has a
         // surprise time limit. resolve_kill consumes it; set_selected does not touch it.
         if matches!(&state.modal, Some(Modal::Kill(k)) if !self.kill_target_present(k)) {
@@ -373,7 +384,7 @@ impl Switcher {
 
     /// Refreshes the frozen MRU order (`nav_order`) the flat card list follows.
     /// While any host is still scanning the order is rebuilt from global recency each
-    /// time; once every host has settled it is held — existing entries keep their
+    /// time; once every host has settled it is held - existing entries keep their
     /// positions so a routine poll never reshuffles cards under the user (xmux
     /// pre-attaches sessions, churning `last_attached`), and sessions that appeared
     /// since are appended by recency (newest first).
@@ -444,7 +455,7 @@ impl Switcher {
     /// Vertical navigation shared by ↑/↓, k/j, AND the plain scroll wheel, so the wheel
     /// moves the selection exactly as the arrows do: prev/next card linearly across the
     /// whole flat list (wraps). The flat card list has no levels, so this is a plain
-    /// linear step — the same as [`Switcher::move_selection`].
+    /// linear step - the same as [`Switcher::move_selection`].
     fn nav_vertical(&mut self, delta: isize, state: &crate::state::State) {
         self.move_selection(delta, state);
     }
@@ -476,7 +487,7 @@ impl Switcher {
     }
 
     /// The session the mux is DISPLAYING for the selection's row: the selection's own session
-    /// (session/window row) or, on a host row, the host's recent session — the same
+    /// (session/window row) or, on a host row, the host's recent session - the same
     /// resolution `target_for` uses. Lets the terminal-view follow descend from a host.
     fn displayed_session(&self, state: &crate::state::State) -> Option<Session> {
         match self.current_ref()? {
@@ -550,7 +561,7 @@ impl Switcher {
     }
 
     /// Moves the tree selection to window `window` of `source`/`session` when the
-    /// selection is currently within THAT session's subtree — on its session row OR any
+    /// selection is currently within THAT session's subtree - on its session row OR any
     /// of its window rows. Used to follow the displayed session's active-window
     /// change; the app gates this on TERMINAL focus, where the user is no longer
     /// driving the tree selection (stdin goes to the PTY), so following from the session
@@ -588,7 +599,7 @@ impl Switcher {
     }
 
     /// Moves the tree selection to the session row whose address (`source/session`)
-    /// is `address`. The semantic target of `Action::Switch` — addresses a row by
+    /// is `address`. The semantic target of `Action::Switch` - addresses a row by
     /// identity, not a screen position or a relative step, so an agent driving ctl
     /// lands on the right session regardless of how the tree is currently ordered.
     /// A no-op (returns false) when no such row exists or the selection is already there.
@@ -608,7 +619,7 @@ impl Switcher {
     }
 
     /// Moves the selection to the ACTIVE window row of the DISPLAYED session (read from
-    /// cached pane data) — from a session row, a window row, OR a host row (which
+    /// cached pane data) - from a session row, a window row, OR a host row (which
     /// descends into the host's recent session). Used when focus moves to the terminal
     /// so the tree view mirrors the window the mux is showing (#3). A no-op when the
     /// displayed session or its active window is unknown (e.g. panes not yet loaded, or
@@ -664,7 +675,7 @@ impl Switcher {
     // --- refresh ------------------------------------------------------------
 
     /// Resets every host to its scanning skeleton and signals the event loop to
-    /// re-kick the streaming probes (the `r` re-scan) — sessions and panes stream
+    /// re-kick the streaming probes (the `r` re-scan) - sessions and panes stream
     /// back in exactly as on first launch. The selection does not drift: the selection
     /// parks on the focused node's parent host for the skeleton phase (every session
     /// row just vanished) and `rescan_reselect` returns it to the exact session the
@@ -687,7 +698,7 @@ impl Switcher {
         self.rescan_kick = true;
         self.reattach_kick = true;
         self.rebuild(state);
-        // Park on the parent host, whose row survives the clear — not the last-host
+        // Park on the parent host, whose row survives the clear - not the last-host
         // landing a removal-fallback would pick when every session vanishes at once.
         if let Some(src) = parent {
             if let Some(i) = self
@@ -712,7 +723,7 @@ impl Switcher {
     ) {
         let prior = self.capture_focus();
         // Recency ordering is applied ONLY to a scan-driven result (launch or the `r`
-        // re-scan — the source is still in `state.scanning`). A routine poll / %-event
+        // re-scan - the source is still in `state.scanning`). A routine poll / %-event
         // refetch preserves the established order instead, so the tree does not
         // re-sort under the user: xmux pre-attaches every session, which churns the
         // mux-reported `last_attached`, and re-sorting on it would reshuffle the tree
@@ -747,7 +758,7 @@ impl Switcher {
 
     /// Streams in one session's `list-panes` outcome, clearing its loading
     /// placeholder. An empty `panes` (a failed/timed-out fetch) still resolves the
-    /// session — it shows no children rather than spinning forever.
+    /// session - it shows no children rather than spinning forever.
     pub fn apply_panes(
         &mut self,
         address: String,
@@ -776,7 +787,7 @@ impl Switcher {
     /// follows the rebuild's recency preselect.
     fn restore_focus(&mut self, prior: PriorFocus, state: &crate::state::State) {
         // A pending re-scan reselect returns the selection to its session the instant that
-        // session re-streams — but only while the selection still sits where the re-scan
+        // session re-streams - but only while the selection still sits where the re-scan
         // parked it (that session or its parent host). If the user has navigated
         // elsewhere in the skeleton meanwhile, the pending reselect is dropped so it
         // never yanks them back.
@@ -829,7 +840,7 @@ impl Switcher {
     }
 
     /// The row index targeting the same node as `focus`, if it survives a
-    /// rebuild — so a re-scan keeps the selection in place rather than snapping to
+    /// rebuild - so a re-scan keeps the selection in place rather than snapping to
     /// the recency preselect.
     fn row_matching(&self, focus: &RowRef) -> Option<usize> {
         self.rows

@@ -104,7 +104,7 @@ impl Harness {
         Self::new_sized(scan, 100, 30)
     }
 
-    /// A harness with a specific backend size — used to exercise the portrait Top
+    /// A harness with a specific backend size - used to exercise the portrait Top
     /// layout (height > width), whose navigation differs from the landscape Side layout.
     fn new_sized(scan: Scan, w: u16, h_: u16) -> Self {
         let backend = TestBackend::new(w, h_);
@@ -145,7 +145,7 @@ impl Harness {
         line.trim_end().to_string()
     }
 
-    /// Only the tree pane (first `NAV_WIDTH` columns) — so a hint assertion
+    /// Only the tree pane (first `NAV_WIDTH` columns) - so a hint assertion
     /// is not satisfied by the preview pane's own loading/reconnecting dialog.
     fn nav_text(&self) -> String {
         let buf = self.buf();
@@ -200,10 +200,10 @@ impl Harness {
         row_of(self.buf(), text, NAV_WIDTH)
     }
 
-    fn nav_row_reversed(&self, y: u16) -> bool {
+    fn nav_row_highlighted(&self, y: u16) -> bool {
         let buf = self.buf();
         (0..NAV_WIDTH.min(buf.area.width))
-            .any(|x| buf[(x, y)].modifier.contains(Modifier::REVERSED))
+            .any(|x| buf[(x, y)].bg == crate::ui::palette::get().surface)
     }
 
     fn nav_fg_of(&self, text: &str) -> Option<Color> {
@@ -347,7 +347,7 @@ fn group_order(h: &Harness) -> Vec<String> {
 }
 
 /// The single [`MuxOp`](crate::model::MuxOp) a committing key resolved to, pulled
-/// out of the [`Command`]s `handle_key` returned — the off-loop op the run loop
+/// out of the [`Command`]s `handle_key` returned - the off-loop op the run loop
 /// would spawn. `None` when no op was queued (validation refused / cancelled).
 fn only_run_op(cmds: Vec<Command>) -> Option<crate::model::MuxOp> {
     cmds.into_iter().find_map(|c| match c {
@@ -376,26 +376,34 @@ fn two_window_scan() -> Scan {
 }
 
 #[test]
-fn active_window_is_bold_italic() {
+fn active_window_is_bold_with_accent_dot() {
     // The active window of a session (the one whose live terminal is shown) reads
-    // BOLD+ITALIC; an inactive window has neither.
+    // BOLD with a trailing accent ● marker; an inactive window has neither.
     let h = Harness::new(two_window_scan());
     let m0 = h.nav_modifier_of("0:w0").expect("window 0 card present");
     assert!(
-        m0.contains(Modifier::BOLD) && m0.contains(Modifier::ITALIC),
-        "the active window is bold+italic: {m0:?}"
+        m0.contains(Modifier::BOLD),
+        "the active window is bold: {m0:?}"
+    );
+    assert!(
+        h.text().contains("0:w0 ●"),
+        "the active window carries the ● marker"
     );
     let m1 = h.nav_modifier_of("1:w1").expect("window 1 card present");
     assert!(
-        !m1.contains(Modifier::BOLD) && !m1.contains(Modifier::ITALIC),
-        "an inactive window is neither bold nor italic: {m1:?}"
+        !m1.contains(Modifier::BOLD),
+        "an inactive window is not bold: {m1:?}"
+    );
+    assert!(
+        !h.text().contains("1:w1 ●"),
+        "an inactive window has no ● marker"
     );
 }
 
 #[test]
 fn set_active_window_moves_the_marker() {
     // An external active-window change (resolved via the control-client probe)
-    // moves the bold+italic marker, without a full inventory refetch.
+    // moves the bold + accent-● marker, without a full inventory refetch.
     let mut h = Harness::new(two_window_scan());
     assert!(
         h.sw.set_active_window("jup", "api", 1, &mut h.state),
@@ -404,14 +412,10 @@ fn set_active_window_moves_the_marker() {
     h.draw();
     let m1 = h.nav_modifier_of("1:w1").expect("window 1 card present");
     assert!(
-        m1.contains(Modifier::BOLD) && m1.contains(Modifier::ITALIC),
+        m1.contains(Modifier::BOLD) && h.text().contains("1:w1 ●"),
         "window 1 is now the active window: {m1:?}"
     );
-    let m0 = h.nav_modifier_of("0:w0").expect("window 0 card present");
-    assert!(
-        !m0.contains(Modifier::ITALIC),
-        "window 0 no longer active: {m0:?}"
-    );
+    assert!(!h.text().contains("0:w0 ●"), "window 0 no longer active");
     // Idempotent: re-applying the same active window reports no change.
     assert!(
         !h.sw.set_active_window("jup", "api", 1, &mut h.state),
@@ -542,7 +546,7 @@ fn select_window_no_move_for_another_session() {
 
 #[tokio::test]
 async fn renders_host_session_window_tree() {
-    // Panes are not tree rows — the tree stops at the window level.
+    // Panes are not tree rows - the tree stops at the window level.
     let h = Harness::new(sample());
     let out = h.text();
     for want in [
@@ -563,7 +567,7 @@ async fn renders_host_session_window_tree() {
 
 #[tokio::test]
 async fn launch_preselects_top_row() {
-    // #G: on launch the highlight sits on the very top card (index 0) — the first
+    // #G: on launch the highlight sits on the very top card (index 0) - the first
     // local session (frozen there before any remote streams in); no persisted
     // last_session is consulted and a more-recent remote must not steal the top.
     let mut h = Harness::from_sources(&["local", "jupiter00"]);
@@ -618,7 +622,7 @@ async fn panes_are_not_selectable() {
 #[tokio::test]
 async fn rescan_resets_to_scanning_skeleton() {
     // `r` resets every host to its scanning state and signals the loop to
-    // re-kick the probes — the tree returns to skeletons until results land.
+    // re-kick the probes - the tree returns to skeletons until results land.
     let mut h = Harness::new(sample());
     assert!(h.text().contains("inference"), "sessions before rescan");
     h.ch('r').await;
@@ -686,7 +690,7 @@ async fn apply_source_result_turns_scanning_into_sessions() {
 #[tokio::test]
 async fn poll_preserves_session_order_after_scan() {
     // Scan establishes recency order db(200), web(100). A later poll reports web
-    // freshly attach-bumped (999) — live recency would float it to the top, but a
+    // freshly attach-bumped (999) - live recency would float it to the top, but a
     // routine poll must hold the established order.
     let mut h = Harness::from_sources(&["local"]);
     h.sw.apply_source_result(
@@ -778,7 +782,7 @@ async fn poll_preserves_host_group_order_after_scan() {
         vec!["local", "jupiter00", "jupiter06"],
         "the scan orders hosts local-first then by recency"
     );
-    // A poll reports jupiter06's session freshly bumped (999) — live recency would
+    // A poll reports jupiter06's session freshly bumped (999) - live recency would
     // lift jupiter06 above jupiter00, but the group order is frozen after the scan.
     h.sw.apply_source_result(
         "jupiter06".into(),
@@ -860,7 +864,7 @@ async fn three_hosts_cursor_on_middle() -> Harness {
         None,
         &mut h.state,
     );
-    // infer (recency 300) is the launch preselect — the top card — so a select_address
+    // infer (recency 300) is the launch preselect - the top card - so a select_address
     // to it is a no-op; pin it as a deliberate user selection so a rebuild won't drift it.
     h.sw.select_address("jupiter00/infer", &h.state);
     h.sw.user_moved = true;
@@ -919,7 +923,7 @@ async fn rescan_reselect_dropped_when_user_navigates_away() {
     h.sw.request_rescan(&mut h.state);
     // The user navigates to the last host during the skeleton phase.
     h.key(KeyCode::End).await;
-    // Sessions re-stream — the selection must NOT get yanked back to infer.
+    // Sessions re-stream - the selection must NOT get yanked back to infer.
     h.sw.apply_source_result(
         "local".into(),
         vec![sess("local", "web", 1, false, 100)],
@@ -962,7 +966,7 @@ async fn apply_source_result_unreachable_marks_tree_and_reason_in_info_pane() {
         &mut h.state,
     );
     h.draw();
-    // Tree: only the ⚠ marker beside the name — not the verbose reason.
+    // Tree: only the ⚠ marker beside the name - not the verbose reason.
     let tree = h.nav_text();
     assert!(tree.contains('⚠'), "the host row is marked with ⚠:\n{tree}");
     assert!(
@@ -1217,9 +1221,9 @@ async fn hint_bar_fits_narrow_width() {
 
 #[test]
 fn hint_bar_has_status_bar_background() {
-    // The hint bar is a solid tmux-style status bar (green bg / black fg) spanning the
-    // full width — including cells past the text — so it reads as chrome, clearly set
-    // off from the tree rows above.
+    // The hint bar is a solid dark status bar spanning the full width - including
+    // cells past the text - so it reads as chrome, clearly set off from the tree
+    // rows above. Key tokens carry the accent over that base.
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
@@ -1227,15 +1231,13 @@ fn hint_bar_has_status_bar_background() {
         .unwrap();
     let buf = term.backend().buffer();
     let y = buf.area.height - 1; // the one-line hint bar sits on the last row
-                                 // tmux's default status-style themegreen/themeblack = yellowgreen / gray5 on truecolor.
-    let bg = Color::Rgb(0x9a, 0xcd, 0x32);
-    let fg = Color::Rgb(0x0d, 0x0d, 0x0d);
+    let bg = crate::ui::palette::get().bar_bg;
+    assert_eq!(buf[(1, y)].bg, bg, "a text cell has the dark bar bg");
     assert_eq!(
-        buf[(1, y)].bg,
-        bg,
-        "a text cell has the bar bg (yellowgreen)"
+        buf[(1, y)].fg,
+        crate::ui::palette::get().accent,
+        "the leading key token is accented"
     );
-    assert_eq!(buf[(1, y)].fg, fg, "the hint text is near-black (gray5)");
     assert_eq!(
         buf[(buf.area.width - 1, y)].bg,
         bg,
@@ -1269,16 +1271,22 @@ fn hint_bar_text_reflects_configured_prefix() {
 }
 
 #[tokio::test]
-async fn selected_node_renders_reverse_video() {
+async fn selected_node_renders_surface_highlight() {
     let mut h = Harness::new(sample());
     h.key(KeyCode::Down).await; // step onto a local/editor window card
     let sel = h.nav_row_of("editor").expect("editor row");
     let other = h.nav_row_of("inference").expect("inference row");
-    assert!(h.nav_row_reversed(sel), "selected row must be reversed");
     assert!(
-        !h.nav_row_reversed(other),
-        "non-selected row must not be reversed"
+        h.nav_row_highlighted(sel),
+        "selected row must have the surface background"
     );
+    assert!(
+        !h.nav_row_highlighted(other),
+        "non-selected row must not be highlighted"
+    );
+    // The selected card also carries the accent ▌ bar in its gutter.
+    let buf = h.buf();
+    assert_eq!(buf[(0, sel)].symbol(), "▌", "selection bar on the card");
 }
 
 #[tokio::test]
@@ -1487,7 +1495,7 @@ async fn rename_rejects_leading_dash() {
 
 #[tokio::test]
 async fn filter_leaves_cursor_on_visible_session() {
-    // Filter to a session — selection must land on it after the filter completes.
+    // Filter to a session - selection must land on it after the filter completes.
     let mut h = Harness::from_sources(&["local"]);
     h.sw.apply_source_result(
         "local".into(),
@@ -1514,7 +1522,7 @@ async fn filter_leaves_cursor_on_visible_session() {
 #[tokio::test]
 async fn filter_host_enter_targets_visible_session() {
     // After filtering, the top card is the visible (matching) session, not a
-    // filtered-out one — so current_attach_target yields it.
+    // filtered-out one - so current_attach_target yields it.
     let mut h = Harness::from_sources(&["alpha"]);
     h.sw.apply_source_result(
         "alpha".into(),
@@ -1542,7 +1550,7 @@ async fn filter_host_enter_targets_visible_session() {
 #[tokio::test]
 async fn create_on_unreachable_host_refused() {
     let mut h = Harness::new(sample());
-    // jump to the last host row — the unreachable db-2.
+    // jump to the last host row - the unreachable db-2.
     h.key(KeyCode::End).await;
     assert!(
         matches!(
@@ -1591,7 +1599,7 @@ async fn empty_reachable_host_shows_landing_panel() {
 #[tokio::test]
 async fn host_with_sessions_has_no_landing_panel() {
     let mut h = Harness::new(sample());
-    h.key(KeyCode::Home).await; // the top card — a session of a host that HAS sessions
+    h.key(KeyCode::Home).await; // the top card - a session of a host that HAS sessions
     assert!(
         matches!(h.sw.current_ref(), Some(RowRef::Window { sess, .. }) if sess.source == "jupiter00"),
         "the top card is a window of a reachable host with sessions"
@@ -1605,9 +1613,9 @@ async fn host_with_sessions_has_no_landing_panel() {
 #[tokio::test]
 async fn levels_have_distinct_colors() {
     let h = Harness::new(sample());
-    assert_eq!(h.nav_fg_of("local"), Some(COLOR_HOST));
-    assert_eq!(h.nav_fg_of("editor"), Some(COLOR_SESSION));
-    assert_eq!(h.nav_fg_of("1:shell"), Some(COLOR_WINDOW));
+    assert_eq!(h.nav_fg_of("local"), Some(color_host()));
+    assert_eq!(h.nav_fg_of("editor"), Some(color_session()));
+    assert_eq!(h.nav_fg_of("1:shell"), Some(color_window()));
 }
 
 #[tokio::test]
@@ -1627,7 +1635,7 @@ async fn double_click_selects_node() {
     // inference preselected; double-click inside the tree moves the selection.
     let before = h.sw.selected;
     h.sw.mouse_attach(5, 4, &h.state);
-    // selection moved (or stayed on the same selectable row — just check no panic
+    // selection moved (or stayed on the same selectable row - just check no panic
     // and current_attach_target is populated).
     assert!(
         h.sw.current_attach_target(&h.state).is_some(),
@@ -1663,7 +1671,7 @@ fn menu_items_by_row_type() {
         }),
         vec![Focus, NewWindow, Rename, Kill]
     );
-    // A loading card can only be focused — its windows are not yet resolved.
+    // A loading card can only be focused - its windows are not yet resolved.
     assert_eq!(modal::menu_items(&RowRef::Loading { sess: s }), vec![Focus]);
 }
 
@@ -1743,7 +1751,7 @@ async fn menu_release_in_place_cancels() {
 #[tokio::test]
 async fn menu_title_row_sits_on_the_pointer() {
     // tmux-style: the title row (top border) lands on the click row, and no item is
-    // pre-selected under the pointer — an accidental right-click releases off every item.
+    // pre-selected under the pointer - an accidental right-click releases off every item.
     let mut h = Harness::new(sample());
     let idx = row_index(
         &h,
@@ -1894,7 +1902,7 @@ async fn kill_confirm_survives_a_rebuild_until_the_target_vanishes() {
     h.sw.rebuild(&mut h.state); // a poll/event rebuild
     assert!(
         matches!(h.state.modal, Some(Modal::Kill(_))),
-        "confirm survives a routine rebuild — no time limit"
+        "confirm survives a routine rebuild - no time limit"
     );
     // But once the target is actually gone, the stale confirm is dropped.
     h.state.groups = crate::ui::tree::remove_session(&h.state.groups, "local/build");
@@ -1943,7 +1951,7 @@ async fn menu_focus_window_marks_it_active_so_passthrough_follow_keeps_it() {
 #[tokio::test]
 async fn menu_new_session_opens_input_and_creates() {
     // Regression: 'new session' via the host menu must open the name input and,
-    // on confirm, create the session — the full gesture-to-op path.
+    // on confirm, create the session - the full gesture-to-op path.
     let scan = Scan {
         groups: vec![Group {
             source: "local".into(),
@@ -2005,7 +2013,7 @@ async fn menu_release_window_focus_selects_window() {
         items,
         hovered: Some(at),
     }));
-    // A window row offers focus / rename / kill — no split.
+    // A window row offers focus / rename / kill - no split.
     assert!(!items_have_split(&modal::menu_items(&RowRef::Window {
         sess: sess("local", "editor", 2, true, 200),
         window: 2,
@@ -2112,10 +2120,11 @@ async fn menu_renders_title_and_hovered_item_reversed() {
         "the menu shows its target's name as the title:\n{out}"
     );
 
-    // The hovered row (rename, at box y+1+1 = 4) is reversed across the box interior.
+    // The hovered row (rename, at box y+1+1 = 4) carries the surface highlight
+    // across the box interior (the menu's selection language matches the nav's).
     let buf = h.buf();
-    let reversed = (3..19).any(|x| buf[(x, 4u16)].modifier.contains(Modifier::REVERSED));
-    assert!(reversed, "the hovered item renders reversed");
+    let highlighted = (3..19).any(|x| buf[(x, 4u16)].bg == crate::ui::palette::get().surface);
+    assert!(highlighted, "the hovered item renders highlighted");
 }
 
 #[tokio::test]
@@ -2142,7 +2151,7 @@ async fn help_overlay_renders_and_closes_on_q() {
     );
     assert!(out.contains("fuzzy filter"), "help should list keybindings");
     // Modal dismissal (tmux view-mode): the app routes keys to feed_help_key
-    // above the tree/terminal split — q closes it; other keys are swallowed (no nav).
+    // above the tree/terminal split - q closes it; other keys are swallowed (no nav).
     assert!(
         h.sw.feed_help_key(b"q", &mut h.state),
         "q is consumed while help is open"
@@ -2164,7 +2173,7 @@ async fn terminal_view_target_follows_cursor() {
         (t.source.as_str(), t.target.as_str()),
         ("local", "editor:1")
     );
-    // Step to the next card (editor's window 2) — the target follows the cursor.
+    // Step to the next card (editor's window 2) - the target follows the cursor.
     h.key(KeyCode::Down).await;
     let t = h.sw.terminal_view_target();
     assert_eq!(
@@ -2195,7 +2204,7 @@ async fn render_terminal_view_draws_live_grid() {
 #[test]
 fn render_terminal_view_none_grid_is_blank_not_attaching() {
     // The "(attaching…)" placeholder is removed entirely. A None grid (only at
-    // first launch, before any session is confirmed on screen) renders blank —
+    // first launch, before any session is confirmed on screen) renders blank -
     // never the placeholder. The display keeps the last confirmed session until
     // the next is ready (stale-while-revalidate), so a transitional placeholder
     // has no purpose.
@@ -2234,7 +2243,7 @@ async fn j_k_navigate_like_arrows() {
 #[tokio::test]
 async fn enter_and_bare_q_are_noops() {
     // Enter is consumed by the app (focus the terminal), not the switcher; bare q does
-    // nothing — quit is `prefix q` at the app level. Neither moves the selection or
+    // nothing - quit is `prefix q` at the app level. Neither moves the selection or
     // opens an input here.
     let mut h = Harness::new(sample());
     let before = cur_row_label(&h);
@@ -2349,7 +2358,7 @@ fn compute_regions_side_top_and_hidden() {
 #[tokio::test]
 async fn wheel_moves_the_selection_like_the_arrow_keys() {
     // The plain wheel and ↑/↓ share nav_vertical, so one notch lands on the same row as one
-    // arrow press — in either layout (Side siblings / Top within-host).
+    // arrow press - in either layout (Side siblings / Top within-host).
     let mut a = Harness::new(sample());
     a.sw.mouse_scroll(true, &a.state);
     let by_wheel = a.sw.selected;
@@ -2465,7 +2474,7 @@ async fn view_border_uses_configured_colors() {
 #[tokio::test]
 async fn view_border_splits_top_bottom_to_mark_focused_side() {
     // The rule splits into halves: the accent (green) half marks WHICH pane has
-    // focus — top = tree (left), bottom = terminal (right) — and the other half is dim.
+    // focus - top = tree (left), bottom = terminal (right) - and the other half is dim.
     let backend = TestBackend::new(100, 30);
     let mut term = Terminal::new(backend).unwrap();
     let mut state = crate::state::State::from_scan(sample());
@@ -2505,8 +2514,8 @@ async fn view_border_splits_top_bottom_to_mark_focused_side() {
 
 #[tokio::test]
 async fn view_border_highlights_on_hover() {
-    // Hover swaps the rule to the HEAVY vertical (┃) — box-drawing has no bold form,
-    // so the thicker glyph IS the weight cue — and recolours it brighter. No fill.
+    // Hover swaps the rule to the HEAVY vertical (┃) - box-drawing has no bold form,
+    // so the thicker glyph IS the weight cue - and recolours it brighter. No fill.
     let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
@@ -2536,7 +2545,7 @@ async fn view_border_highlights_on_hover() {
 
 #[tokio::test]
 async fn view_border_glyph_reflects_auto_hide_mode() {
-    // ║ (double) when auto-hide-nav mode is on, │ (single) when off — so a visible
+    // ║ (double) when auto-hide-nav mode is on, │ (single) when off - so a visible
     // tree that will vanish on blur is distinguishable from a pinned one.
     let backend = TestBackend::new(100, 30);
     let mut term = Terminal::new(backend).unwrap();
@@ -2567,7 +2576,7 @@ async fn view_border_glyph_reflects_auto_hide_mode() {
 async fn every_popup_type_is_opaque_over_a_colored_grid() {
     // A grid filled with a blue background; each popup type drawn over it must leave
     // zero interior cells showing the grid's background (the shared render_popup is
-    // opaque — this locks it in across help / input / confirm).
+    // opaque - this locks it in across help / input / confirm).
     fn blue_grid() -> crate::display::grid::Grid {
         let mut g = crate::display::grid::Grid::new(30, 100);
         let mut fill = Vec::from(&b"\x1b[44m"[..]);
@@ -2582,7 +2591,7 @@ async fn every_popup_type_is_opaque_over_a_colored_grid() {
         let mut tl = None;
         'o: for y in 0..buf.area.height {
             for x in 0..buf.area.width {
-                if buf[(x, y)].symbol() == "┌" {
+                if buf[(x, y)].symbol() == "╭" {
                     tl = Some((x, y));
                     break 'o;
                 }
@@ -2592,11 +2601,11 @@ async fn every_popup_type_is_opaque_over_a_colored_grid() {
             return usize::MAX;
         };
         let mut w = 0;
-        while x0 + w < buf.area.width - 1 && buf[(x0 + w, y0)].symbol() != "┐" {
+        while x0 + w < buf.area.width - 1 && buf[(x0 + w, y0)].symbol() != "╮" {
             w += 1;
         }
         let mut hgt = 0;
-        while y0 + hgt < buf.area.height - 1 && buf[(x0, y0 + hgt)].symbol() != "└" {
+        while y0 + hgt < buf.area.height - 1 && buf[(x0, y0 + hgt)].symbol() != "╰" {
             hgt += 1;
         }
         let mut n = 0;
@@ -2869,10 +2878,12 @@ async fn kill_confirm_is_a_centered_red_popup_not_the_hint_bar() {
         !hint_bar.contains("[y]es"),
         "confirm must not be in the hint_bar:\n{hint_bar}"
     );
-    // A red "kill" cell exists in a centered box (not the hint_bar row).
+    // A danger-red "kill" cell exists in a centered box (not the hint_bar row).
     let red_kill = (0..last)
         .flat_map(|y| (0..buf.area.width).map(move |x| (x, y)))
-        .any(|(x, y)| buf[(x, y)].symbol() == "k" && buf[(x, y)].fg == Color::Red);
+        .any(|(x, y)| {
+            buf[(x, y)].symbol() == "k" && buf[(x, y)].fg == crate::ui::palette::get().danger
+        });
     assert!(
         red_kill,
         "the confirm popup shows red 'kill' text above the hint_bar"
@@ -2911,7 +2922,7 @@ async fn kill_on_window_row_targets_the_window() {
 async fn kill_active_pane_targets_the_displayed_sessions_active_window() {
     // prefix-x-in-terminal parity: the kill targets the ACTIVE pane of the session the
     // terminal view is showing (state.displayed), NOT the tree selection. The fixture's
-    // local/editor has window 1 active, so the target is editor:1 (session:window — the
+    // local/editor has window 1 active, so the target is editor:1 (session:window - the
     // mux resolves that window's active pane).
     let mut h = Harness::new(sample());
     h.state.displayed = crate::model::Selection {
@@ -2938,7 +2949,7 @@ async fn kill_active_pane_targets_the_displayed_sessions_active_window() {
 
 #[tokio::test]
 async fn kill_active_pane_is_a_no_op_when_nothing_is_displayed() {
-    // With no session on screen (displayed empty), there is no pane to target — the
+    // With no session on screen (displayed empty), there is no pane to target - the
     // confirm must not arm (a flash is shown instead).
     let mut h = Harness::new(sample());
     assert!(h.state.displayed.is_empty(), "nothing displayed at start");
@@ -2952,7 +2963,7 @@ async fn kill_active_pane_is_a_no_op_when_nothing_is_displayed() {
 #[tokio::test]
 async fn armed_window_kill_survives_a_same_tree_rebuild() {
     // A routine rebuild (streamed panes with the SAME windows) must NOT cancel an
-    // armed window kill — there is no time limit. A later 'y' still kills the right
+    // armed window kill - there is no time limit. A later 'y' still kills the right
     // window. (Only a rebuild that actually removes the target invalidates it; the
     // session case is covered by kill_confirm_survives_a_rebuild_until_the_target_vanishes.)
     let mut h = Harness::new(sample());
@@ -2965,13 +2976,13 @@ async fn armed_window_kill_survives_a_same_tree_rebuild() {
         matches!(h.state.modal, Some(Modal::Kill(PendingKill::Window { .. }))),
         "arm_kill must set a window PendingKill"
     );
-    // Stream the same panes (a rebuild) — the target window still exists.
+    // Stream the same panes (a rebuild) - the target window still exists.
     let s = sample();
     let editor_panes = s.panes["local/editor"].clone();
     h.sw.apply_panes("local/editor".to_string(), editor_panes, &mut h.state);
     assert!(
         matches!(h.state.modal, Some(Modal::Kill(_))),
-        "the confirm survives a same-tree rebuild — no time limit"
+        "the confirm survives a same-tree rebuild - no time limit"
     );
     // 'y' now confirms and queues the kill of the armed window.
     let cmds = h.sw.handle_key(

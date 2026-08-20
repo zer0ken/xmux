@@ -67,9 +67,9 @@ pub fn map_color(s: &str) -> Color {
 
 /// The tree|terminal view border's three colours: `active` marks the focused side,
 /// `inactive` the unfocused side, and `hover` the drag-resize grab cue. Resolved in
-/// three tiers by [`Self::resolve`] — an explicit xmux config override wins, else the
+/// three tiers by [`Self::resolve`] - an explicit xmux config override wins, else the
 /// displayed host's live mux `pane-*-border-style`, else the stock default. Defaults
-/// mirror tmux's own code defaults — `green` / terminal-default / `yellow`.
+/// mirror tmux's own code defaults - `green` / terminal-default / `yellow`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ViewBorderColors {
     pub active: Color,
@@ -92,7 +92,7 @@ impl ViewBorderColors {
     /// else the fg extracted from the displayed host's live mux style (`mux_active`
     /// / `mux_inactive`, e.g. `fg=blue,bg=default`), else the stock default. `hover`
     /// has no mux source (tmux has no `pane-border-hover-style`), so it is config-or-
-    /// default only. An empty config string means "unset" — that is why the config
+    /// default only. An empty config string means "unset" - that is why the config
     /// keys default to empty (see [`crate::config::UiConfig`]); a non-empty stock
     /// default there would mask the mux query.
     pub fn resolve(
@@ -127,16 +127,16 @@ impl ViewBorderColors {
     }
 }
 
-/// The hint bar's built-in default style: tmux's default `status-style`
-/// (`bg=themegreen,fg=themeblack`) as it resolves on a 256+/truecolor terminal —
-/// `yellowgreen` (#9acd32) background, `gray5` (#0d0d0d) foreground. A BRIGHT green
-/// with near-black text; the brightness is what keeps it readable (plain ANSI green
-/// renders too dark on many themes for black text to show). Used when `[ui]
-/// hint-bar-style` is unset.
+/// The hint bar's built-in default style: a quiet bar on the active palette's
+/// `bar_bg` background with `subtext` text, so the cheatsheet reads as chrome
+/// rather than shouting over the content.
+/// Key tokens get the accent on top of this (see [`Chrome::hint_bar_spans`] - only
+/// while this default is in effect, so a `[ui] hint-bar-style` override keeps its
+/// exact colours). Used when `[ui] hint-bar-style` is unset.
 pub(crate) fn hint_bar_default_style() -> Style {
     Style::default()
-        .bg(Color::Rgb(0x9a, 0xcd, 0x32))
-        .fg(Color::Rgb(0x0d, 0x0d, 0x0d))
+        .bg(crate::ui::palette::get().bar_bg)
+        .fg(crate::ui::palette::get().subtext)
 }
 
 /// Parses a `[ui] hint-bar-style` spec into the hint bar [`Style`]. Empty ⇒ the
@@ -162,15 +162,16 @@ pub(crate) fn parse_hint_bar_style(spec: &str) -> Style {
     style
 }
 
-/// The hint bar's refusal style: a solid red bar that breaks hard from the calm
-/// status/default green so a refused action reads as an error at a glance, not as
-/// more of the key cheatsheet. Every flash today is a refusal, so a shown flash
-/// always paints this. Fixed, not configurable: an error must stay legible
-/// regardless of any `[ui] hint-bar-style` override.
+/// The hint bar's refusal style: a solid danger-red bar (the active palette's
+/// `danger` as the background, the `bar_bg` tone as the text) that breaks hard
+/// from the calm default so a refused action reads as an
+/// error at a glance, not as more of the key cheatsheet. Every flash today is a
+/// refusal, so a shown flash always paints this. Fixed, not configurable: an
+/// error must stay legible regardless of any `[ui] hint-bar-style` override.
 pub(crate) fn error_flash_style() -> Style {
     Style::default()
-        .bg(Color::Rgb(0xb0, 0x2a, 0x1f))
-        .fg(Color::Rgb(0xff, 0xff, 0xff))
+        .bg(crate::ui::palette::get().danger)
+        .fg(crate::ui::palette::get().bar_bg)
 }
 
 /// The switcher's chrome view state: the view border/hint_bar/host-info draws and
@@ -179,20 +180,20 @@ pub(crate) fn error_flash_style() -> Style {
 pub struct Chrome {
     pub(crate) flash: String,
     /// Auto-hide-tree mode (set by the app each frame). Drives the view border glyph:
-    /// ║ (double) when on, │ (single) when off — the only on-screen cue, since while
+    /// ║ (double) when on, │ (single) when off - the only on-screen cue, since while
     /// the mode is on but the tree is focused the tree still shows.
     pub(crate) auto_hide: bool,
-    /// True while the mouse is hovering the view border rule — the app sets this from
+    /// True while the mouse is hovering the view border rule - the app sets this from
     /// idle motion so the view border highlights as a grab cue for drag-resize.
     pub(crate) view_border_hovered: bool,
-    /// Session addresses currently connecting / awaiting first output — a braille
+    /// Session addresses currently connecting / awaiting first output - a braille
     /// spinner glyph renders right of their name in the tree.
     pub(crate) spinner: HashSet<String>,
     pub(crate) spinner_frame: usize,
     /// Raw `~/.ssh/config` text (set once by the app). The terminal-view info panel
     /// shows the matching Host/Match stanza for a selected unreachable host. Empty in tests.
     pub(crate) ssh_config_text: String,
-    /// The human-readable prefix string (e.g. `"C-g"`, `"C-Space"`) — set once by
+    /// The human-readable prefix string (e.g. `"C-g"`, `"C-Space"`) - set once by
     /// the app from config so the help modal reflects the active binding.
     pub(crate) ui_prefix: String,
     /// The tree|terminal view border colours (set once by the app from config; tmux defaults
@@ -277,11 +278,11 @@ impl Chrome {
     }
 
     /// The vertical rule between the tree (left) and terminal (right). It splits into
-    /// a top and bottom half: the accent (green) half marks WHICH view holds focus —
-    /// top = tree (left), bottom = terminal (right) — and the other half stays dim. A single
+    /// a top and bottom half: the accent (green) half marks WHICH view holds focus -
+    /// top = tree (left), bottom = terminal (right) - and the other half stays dim. A single
     /// vertical rule cannot lean left/right, so the accent half's position carries the
     /// signal (adapting tmux's active-pane border). Replaces the per-pane box borders.
-    /// The glyph also encodes auto-hide-nav mode: ║ (double) when on, │ when off — so
+    /// The glyph also encodes auto-hide-nav mode: ║ (double) when on, │ when off - so
     /// a visible tree that will vanish on blur is distinguishable from a pinned one.
     pub(crate) fn render_view_border(&self, frame: &mut Frame, area: Rect, terminal_focused: bool) {
         let active = self.colors.active;
@@ -324,7 +325,7 @@ impl Chrome {
         // Hover (mouse over the rule, no button): box-drawing rules have no bold form
         // (the BOLD modifier does not thicken them), so swap the glyph itself to the
         // HEAVY vertical (┃) for a genuinely thicker line and recolour it with the
-        // configured hover colour (tmux's `pane-border-hover-style`) — same single rule,
+        // configured hover colour (tmux's `pane-border-hover-style`) - same single rule,
         // just thicker + lit, as the grab cue.
         if self.view_border_hovered {
             let style = Style::default().fg(self.colors.hover);
@@ -379,7 +380,7 @@ impl Chrome {
         let mut lines = vec![
             Line::from(Span::styled(
                 format!(" ⚠ {alias} unreachable"),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(crate::ui::palette::get().danger),
             )),
             Line::from(""),
             Line::from(format!(" reason: {reason}")),
@@ -408,39 +409,30 @@ impl Chrome {
     /// freshly-reachable but empty host offers a next step rather than a blank grid.
     pub(crate) fn render_host_landing(&self, frame: &mut Frame, area: Rect, source: &str) {
         let p = &self.ui_prefix;
+        let accent = Style::default().fg(crate::ui::palette::get().accent);
+        let prose = Style::default().fg(crate::ui::palette::get().subtext);
         let lines = vec![
             Line::from(""),
             Line::from(Span::styled(
                 format!("  {source}"),
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
+                accent.add_modifier(Modifier::BOLD),
             )),
-            Line::from(Span::styled(
-                "  reachable, no sessions yet",
-                Style::default().add_modifier(Modifier::DIM),
-            )),
+            Line::from(Span::styled("  reachable, no sessions yet", prose)),
             Line::from(""),
             Line::from(vec![
-                Span::styled(format!("  {p} n"), Style::default().fg(Color::Yellow)),
-                Span::styled(
-                    "  start a new session",
-                    Style::default().add_modifier(Modifier::DIM),
-                ),
+                Span::styled(format!("  {p} n"), accent),
+                Span::styled("  start a new session", prose),
             ]),
             Line::from(vec![
-                Span::styled(format!("  {p} r"), Style::default().fg(Color::Yellow)),
-                Span::styled(
-                    "  rescan this host",
-                    Style::default().add_modifier(Modifier::DIM),
-                ),
+                Span::styled(format!("  {p} r"), accent),
+                Span::styled("  rescan this host", prose),
             ]),
         ];
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
     }
 
     /// The hint_bar's logical text (confirm / flash / scanning / filter / help), fit to
-    /// `width`. A flash is returned raw — it may exceed `width`; [`Self::hint_bar_lines`]
+    /// `width`. A flash is returned raw - it may exceed `width`; [`Self::hint_bar_lines`]
     /// wraps it so it never clips.
     pub(crate) fn hint_bar_text(&self, width: u16, state: &crate::state::State) -> String {
         // Use the active prefix so the hint_bar matches the user's configured binding.
@@ -514,6 +506,45 @@ impl Chrome {
         }
     }
 
+    /// One hint-bar line as styled spans: each ` · `-separated segment's leading key
+    /// token (two tokens when the first is the prefix, e.g. `C-g n`) gets the accent,
+    /// the separators go muted, and the rest inherits the bar's base style. Purely
+    /// presentational - the text is exactly the [`Self::hint_bar_lines`] line, so the
+    /// fit / wrap behaviour is untouched.
+    fn hint_bar_line_spans(&self, line: String) -> Line<'static> {
+        let accent = Style::default().fg(crate::ui::palette::get().accent);
+        let sep_style = Style::default().fg(crate::ui::palette::get().overlay);
+        let mut spans: Vec<Span> = Vec::new();
+        for (i, seg) in line.split(" · ").enumerate() {
+            if i > 0 {
+                spans.push(Span::styled(" · ", sep_style));
+            }
+            // The key = the first token, or the first two when the segment starts with
+            // the prefix ("C-g n"). Leading spaces (the bar's left margin) stay raw.
+            let lead_len = seg.len() - seg.trim_start().len();
+            let (lead, body) = seg.split_at(lead_len);
+            if !lead.is_empty() {
+                spans.push(Span::raw(lead.to_string()));
+            }
+            let mut parts = body.splitn(2, ' ');
+            let first = parts.next().unwrap_or_default();
+            let rest = parts.next();
+            let (key, desc) = match rest {
+                Some(rest) if first == self.ui_prefix => {
+                    let mut sub = rest.splitn(2, ' ');
+                    let second = sub.next().unwrap_or_default();
+                    (format!("{first} {second}"), sub.next().map(str::to_string))
+                }
+                _ => (first.to_string(), rest.map(str::to_string)),
+            };
+            spans.push(Span::styled(key, accent));
+            if let Some(desc) = desc {
+                spans.push(Span::raw(format!(" {desc}")));
+            }
+        }
+        Line::from(spans)
+    }
+
     pub(crate) fn render_hint_bar(
         &self,
         frame: &mut Frame,
@@ -521,12 +552,25 @@ impl Chrome {
         state: &crate::state::State,
     ) {
         let lines = self.hint_bar_lines(area.width, state);
-        let text = Text::from(lines.into_iter().map(Line::from).collect::<Vec<_>>());
+        // Key tokens get the accent only on the built-in default style with no flash
+        // showing: a `[ui] hint-bar-style` override keeps its exact colours (uniform,
+        // as configured), and a flash stays solid error-red.
+        let styled = self.flash.is_empty() && self.hint_bar_style == hint_bar_default_style();
+        let text = if styled {
+            Text::from(
+                lines
+                    .into_iter()
+                    .map(|l| self.hint_bar_line_spans(l))
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            Text::from(lines.into_iter().map(Line::from).collect::<Vec<_>>())
+        };
         // The hint bar is a solid status bar: the configured status style
         // (`hint_bar_default_style` / the `[ui] hint-bar-style` override) normally, or the
         // `error_flash_style` while a refusal flash shows. The style fills the whole area,
-        // so the bar spans full width even where the text does not; the plain text lines
-        // carry no style of their own, so they inherit the bar's fg/bg.
+        // so the bar spans full width even where the text does not; unstyled spans
+        // inherit the bar's fg/bg.
         frame.render_widget(
             Paragraph::new(text).style(self.hint_bar_render_style()),
             area,
