@@ -12,6 +12,10 @@ pub struct Session {
     pub source: String,
     /// Session name (may contain `/`).
     pub name: String,
+    /// The kind of the mux serving this session (`"tmux"` / `"psmux"`), stamped by
+    /// the path that enumerated it. Empty when unknown (a parsed target, or a
+    /// just-created session awaiting re-enumeration); the nav omits it then.
+    pub mux: String,
     pub windows: i64,
     pub attached: bool,
     /// Unix seconds; `0` when the mux does not report it.
@@ -25,7 +29,7 @@ impl Session {
     }
 }
 
-/// Joins a source and session name into a `"<source>/<name>"` address — the single
+/// Joins a source and session name into a `"<source>/<name>"` address - the single
 /// spelling of the address grammar (the inverse of [`source_of`] / [`parse_target`]).
 pub fn address_of(source: &str, name: &str) -> String {
     format!("{source}/{name}")
@@ -33,7 +37,7 @@ pub fn address_of(source: &str, name: &str) -> String {
 
 /// The source half of a `"<source>/<name>"` address: everything before the first
 /// `/` (the same split rule as [`parse_target`]). A string with no `/` is returned
-/// whole. Does not validate — use [`parse_target`] when both halves are required.
+/// whole. Does not validate - use [`parse_target`] when both halves are required.
 pub fn source_of(addr: &str) -> &str {
     addr.split('/').next().unwrap_or(addr)
 }

@@ -239,6 +239,7 @@ impl Ops for EnvOps {
         Ok(Session {
             source: source.to_string(),
             name: assigned,
+            mux: host.mux.kind().to_string(),
             windows: 1,
             ..Default::default()
         })
@@ -434,6 +435,7 @@ mod tests {
         Session {
             source: source.into(),
             name: name.into(),
+            mux: String::new(),
             windows,
             attached,
             last_attached: 0,

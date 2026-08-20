@@ -343,8 +343,8 @@ impl State {
                 session,
                 window,
             } => {
-                // The active-window probe resolved — flip the bold+italic marker. A pure
-                // state mutation: selection follow is a loop-top concern, not here.
+                // The active-window probe resolved - refresh the session card's
+                // focused-window line. A pure state mutation.
                 switcher.set_active_window(&host, &session, window, self);
                 Vec::new()
             }
@@ -1099,6 +1099,7 @@ mod tests {
                 sessions: vec![Session {
                     source: "jup".into(),
                     name: "api".into(),
+                    mux: "tmux".into(),
                     windows: 2,
                     attached: false,
                     last_attached: 100,
@@ -1372,6 +1373,7 @@ mod tests {
         let sessions = vec![Session {
             source: "local".into(),
             name: "work".into(),
+            mux: "tmux".into(),
             windows: 1,
             attached: false,
             last_attached: 5,

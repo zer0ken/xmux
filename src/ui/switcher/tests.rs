@@ -3,6 +3,7 @@ use crate::session::Pane;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::style::Modifier;
 use ratatui::Terminal;
 use std::sync::Mutex;
 
@@ -209,10 +210,6 @@ impl Harness {
     fn nav_fg_of(&self, text: &str) -> Option<Color> {
         fg_of(self.buf(), text, NAV_WIDTH)
     }
-
-    fn nav_modifier_of(&self, text: &str) -> Option<Modifier> {
-        locate(self.buf(), text, NAV_WIDTH).map(|(x, y)| self.buf()[(x, y)].modifier)
-    }
 }
 
 fn buffer_text(buf: &Buffer) -> String {
@@ -261,6 +258,7 @@ fn sess(source: &str, name: &str, windows: i64, attached: bool, last: i64) -> Se
     Session {
         source: source.into(),
         name: name.into(),
+        mux: String::new(),
         windows,
         attached,
         last_attached: last,
@@ -326,7 +324,7 @@ fn sample() -> Scan {
 
 fn cur_session_name(h: &Harness) -> Option<String> {
     match h.sw.current_ref()? {
-        RowRef::Window { sess, .. } | RowRef::Loading { sess } => Some(sess.name.clone()),
+        RowRef::Session { sess } | RowRef::Loading { sess } => Some(sess.name.clone()),
         _ => None,
     }
 }
@@ -376,72 +374,41 @@ fn two_window_scan() -> Scan {
 }
 
 #[test]
-fn active_window_is_bold_with_accent_dot() {
-    // The active window of a session (the one whose live terminal is shown) reads
-    // BOLD with a trailing accent ● marker; an inactive window has neither.
+fn session_card_shows_the_focused_window_name() {
+    // ONE card per session; its line2 is the focused (active) window's name. The
+    // inactive window has no card of its own.
     let h = Harness::new(two_window_scan());
-    let m0 = h.nav_modifier_of("0:w0").expect("window 0 card present");
+    let out = h.nav_text();
+    assert!(out.contains("w0"), "line2 shows the focused window:\n{out}");
     assert!(
-        m0.contains(Modifier::BOLD),
-        "the active window is bold: {m0:?}"
+        !out.contains("w1"),
+        "no card for the inactive window:\n{out}"
     );
-    assert!(
-        h.text().contains("0:w0 ●"),
-        "the active window carries the ● marker"
-    );
-    let m1 = h.nav_modifier_of("1:w1").expect("window 1 card present");
-    assert!(
-        !m1.contains(Modifier::BOLD),
-        "an inactive window is not bold: {m1:?}"
-    );
-    assert!(
-        !h.text().contains("1:w1 ●"),
-        "an inactive window has no ● marker"
+    assert_eq!(
+        h.nav_fg_of("w0"),
+        Some(color_window()),
+        "the focused window name reads in the window colour"
     );
 }
 
 #[test]
-fn set_active_window_moves_the_marker() {
+fn set_active_window_refreshes_the_focused_window_line() {
     // An external active-window change (resolved via the control-client probe)
-    // moves the bold + accent-● marker, without a full inventory refetch.
+    // swaps the card's focused-window line, without a full inventory refetch.
     let mut h = Harness::new(two_window_scan());
     assert!(
         h.sw.set_active_window("jup", "api", 1, &mut h.state),
         "active window moved 0 -> 1"
     );
     h.draw();
-    let m1 = h.nav_modifier_of("1:w1").expect("window 1 card present");
-    assert!(
-        m1.contains(Modifier::BOLD) && h.text().contains("1:w1 ●"),
-        "window 1 is now the active window: {m1:?}"
-    );
-    assert!(!h.text().contains("0:w0 ●"), "window 0 no longer active");
+    let out = h.nav_text();
+    assert!(out.contains("w1"), "line2 refreshed to w1:\n{out}");
+    assert!(!out.contains("w0"), "the previous name is gone:\n{out}");
     // Idempotent: re-applying the same active window reports no change.
     assert!(
         !h.sw.set_active_window("jup", "api", 1, &mut h.state),
         "no-op when already active"
     );
-}
-
-#[test]
-fn select_window_follows_external_change_on_a_window_row() {
-    // Selection on window 1's card; an external client switches the session's
-    // active window to 0. The tree selection must follow to window 0's card.
-    let mut state = crate::state::State::from_scan(two_window_scan());
-    let mut sw = Switcher::new(&mut state); // launch preselects window 0
-    sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut state); // ↓ → window 1
-    assert!(matches!(
-        sw.current_ref(),
-        Some(RowRef::Window { window: 1, .. })
-    ));
-    assert!(
-        sw.select_window("jup", "api", 0, &state),
-        "moved to the new active window"
-    );
-    assert!(matches!(
-        sw.current_ref(),
-        Some(RowRef::Window { window: 0, .. })
-    ));
 }
 
 #[test]
@@ -480,89 +447,32 @@ fn up_down_and_hjkl_move_linearly() {
     assert_eq!(sw.selected, start, "h is inert");
 }
 
-#[test]
-fn select_window_follows_from_another_window_card() {
-    // focus→terminal: an active-window change moves the selection to that window even
-    // when the selection sits on ANOTHER window card of the same session (the general
-    // "somewhere in this session" case), so the tree view mirrors the displayed
-    // window (#3).
-    let mut state = crate::state::State::from_scan(two_window_scan());
-    let mut sw = Switcher::new(&mut state); // launch preselects window 0 of api
-    assert!(matches!(
-        sw.current_ref(),
-        Some(RowRef::Window { window: 0, .. })
-    ));
-    assert!(
-        sw.select_window("jup", "api", 1, &state),
-        "follows from window 0's card to window 1"
-    );
-    assert!(matches!(
-        sw.current_ref(),
-        Some(RowRef::Window { window: 1, .. })
-    ));
-}
-
-#[test]
-fn select_active_window_moves_to_cached_active_window() {
-    // focus→terminal: with the selection on a non-active window card, select_active_window
-    // moves it to the session's currently-active window (from cached panes) so the tree
-    // view mirrors the window the mux is displaying (#3). Window 0 is active.
-    let mut state = crate::state::State::from_scan(two_window_scan());
-    let mut sw = Switcher::new(&mut state); // launch preselects window 0 (the active one)
-    sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut state); // ↓ → window 1
-    assert!(matches!(
-        sw.current_ref(),
-        Some(RowRef::Window { window: 1, .. })
-    ));
-    assert!(
-        sw.select_active_window(&mut state),
-        "moved to the cached active window"
-    );
-    assert!(matches!(
-        sw.current_ref(),
-        Some(RowRef::Window { window: 0, .. })
-    ));
-    // Idempotent: re-applying when already on the active window reports no move.
-    assert!(
-        !sw.select_active_window(&mut state),
-        "no-op when already on the active window"
-    );
-}
-
-#[test]
-fn select_window_no_move_for_another_session() {
-    // A window change on a session the selection is NOT on must not move it.
-    let mut state = crate::state::State::from_scan(two_window_scan());
-    let mut sw = Switcher::new(&mut state); // launch preselects window 0
-    sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut state); // ↓ → window 1
-    assert!(!sw.select_window("jup", "other", 0, &state));
-    assert!(matches!(
-        sw.current_ref(),
-        Some(RowRef::Window { window: 1, .. })
-    ));
-}
-
 // --- tests --------------------------------------------------------------
 
 #[tokio::test]
-async fn renders_host_session_window_tree() {
-    // Panes are not tree rows - the tree stops at the window level.
+async fn renders_a_session_card_per_session() {
+    // One card per session: line1 context, line2 the focused window's name. No
+    // per-window rows (editor's inactive "logs" window has no card).
     let h = Harness::new(sample());
     let out = h.text();
     for want in [
         "local",
         "editor",
-        "1:shell",
-        "2:logs",
+        "shell", // editor's focused window
         "build",
+        "make", // build's focused window
         "jupiter00",
         "inference",
-        "1:train",
+        "train", // inference's focused window
         "db-2",
         "⚠", // unreachable host marker (the reason now lives in the info pane)
     ] {
-        assert!(out.contains(want), "tree missing {want:?}\n{out}");
+        assert!(out.contains(want), "nav missing {want:?}\n{out}");
     }
+    assert!(
+        !out.contains("logs"),
+        "an inactive window has no card of its own:\n{out}"
+    );
 }
 
 #[tokio::test]
@@ -595,28 +505,28 @@ async fn launch_preselects_top_row() {
 #[tokio::test]
 async fn panes_are_not_selectable() {
     let mut h = Harness::new(sample());
-    // The flat card list has no pane rows; the launch card is a window card.
+    // The flat card list has no pane rows; the launch card is a session card.
     assert!(
-        matches!(h.sw.current_ref(), Some(RowRef::Window { .. })),
-        "launch lands on a window card"
+        matches!(h.sw.current_ref(), Some(RowRef::Session { .. })),
+        "launch lands on a session card"
     );
     // → is inert (its panes are not selectable rows to descend onto).
     h.key(KeyCode::Right).await;
     assert!(
-        matches!(h.sw.current_ref(), Some(RowRef::Window { .. })),
+        matches!(h.sw.current_ref(), Some(RowRef::Session { .. })),
         "→ is a no-op (its panes are not selectable)"
     );
     // ↓ steps the flat list; the selection always lands on a real card node.
-    let mut saw_window = false;
+    let mut saw_session = false;
     for _ in 0..8 {
         let r = h.sw.current_ref();
         assert!(r.is_some(), "selection landed on a node");
-        if matches!(r, Some(RowRef::Window { .. })) {
-            saw_window = true;
+        if matches!(r, Some(RowRef::Session { .. })) {
+            saw_session = true;
         }
         h.key(KeyCode::Down).await;
     }
-    assert!(saw_window, "navigation reaches window nodes");
+    assert!(saw_session, "navigation reaches session cards");
 }
 
 #[tokio::test]
@@ -1035,8 +945,8 @@ async fn apply_panes_attaches_and_clears_loading() {
     h.draw();
     let out = h.nav_text();
     assert!(
-        out.contains("1:shell"),
-        "panes attach as window cards:\n{out}"
+        out.contains("shell"),
+        "the focused window's name lands on the card:\n{out}"
     );
     assert!(
         !out.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)),
@@ -1273,7 +1183,7 @@ fn hint_bar_text_reflects_configured_prefix() {
 #[tokio::test]
 async fn selected_node_renders_surface_highlight() {
     let mut h = Harness::new(sample());
-    h.key(KeyCode::Down).await; // step onto a local/editor window card
+    h.key(KeyCode::Down).await; // step onto local/editor's card
     let sel = h.nav_row_of("editor").expect("editor row");
     let other = h.nav_row_of("inference").expect("inference row");
     assert!(
@@ -1318,7 +1228,7 @@ async fn filter_narrows() {
 
 #[tokio::test]
 async fn kill_confirm_esc_cancels() {
-    let mut h = Harness::new(sample()); // launch preselects a window card (killable)
+    let mut h = Harness::new(sample()); // launch preselects a session card (killable)
     h.ch('x').await; // arm the kill y/n confirm
     assert!(
         matches!(h.state.modal, Some(Modal::Kill(_))),
@@ -1425,10 +1335,10 @@ async fn slow_op_is_deferred_off_the_key_path() {
 
 #[tokio::test]
 async fn n_on_window_card_creates_a_window() {
-    // The `n` action is card-aware: on a window card it creates a new window in that
+    // The `n` action is card-aware: on a session card it creates a new window in that
     // card's session.
     let mut h = Harness::new(sample());
-    // Land on a window card of local/editor.
+    // Land on local/editor's card.
     assert!(h.sw.select_address("local/editor", &h.state));
     h.ch('n').await;
     h.sw.set_input_text("logs", &mut h.state);
@@ -1436,7 +1346,7 @@ async fn n_on_window_card_creates_a_window() {
     assert_eq!(
         *h.ops.windowed.lock().unwrap(),
         vec!["local/editor:logs"],
-        "n on a window card queues a new window in its session"
+        "n on a session card queues a new window in its session"
     );
     assert!(
         h.ops.created.lock().unwrap().is_empty(),
@@ -1601,8 +1511,8 @@ async fn host_with_sessions_has_no_landing_panel() {
     let mut h = Harness::new(sample());
     h.key(KeyCode::Home).await; // the top card - a session of a host that HAS sessions
     assert!(
-        matches!(h.sw.current_ref(), Some(RowRef::Window { sess, .. }) if sess.source == "jupiter00"),
-        "the top card is a window of a reachable host with sessions"
+        matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.source == "jupiter00"),
+        "the top card is a session of a reachable host with sessions"
     );
     assert!(
         !h.text().contains("no sessions yet"),
@@ -1615,7 +1525,113 @@ async fn levels_have_distinct_colors() {
     let h = Harness::new(sample());
     assert_eq!(h.nav_fg_of("local"), Some(color_host()));
     assert_eq!(h.nav_fg_of("editor"), Some(color_session()));
-    assert_eq!(h.nav_fg_of("1:shell"), Some(color_window()));
+    assert_eq!(h.nav_fg_of("shell"), Some(color_window()));
+}
+
+/// A session stamped with its mux kind, for the context-line tests.
+fn sess_mux(source: &str, name: &str, mux: &str, last: i64) -> Session {
+    Session {
+        source: source.into(),
+        name: name.into(),
+        mux: mux.into(),
+        windows: 1,
+        attached: false,
+        last_attached: last,
+    }
+}
+
+/// One host carrying `sessions`, each with a single loaded window named `w-<session>`.
+fn one_host_scan(source: &str, sessions: Vec<Session>) -> Scan {
+    let mut panes = HashMap::new();
+    for sess in &sessions {
+        panes.insert(
+            sess.address(),
+            vec![win(
+                0,
+                &format!("w-{}", sess.name),
+                true,
+                vec![pane(0, true, "sh")],
+            )],
+        );
+    }
+    Scan {
+        groups: vec![Group {
+            source: source.into(),
+            err: None,
+            sessions,
+        }],
+        panes,
+    }
+}
+
+#[tokio::test]
+async fn session_card_context_shows_host_mux_session() {
+    // line1 is {host}/{mux}/{session}, each segment in its own colour; the mux
+    // segment distinguishes sessions when one host runs several muxes.
+    let h = Harness::new(one_host_scan(
+        "srv",
+        vec![sess_mux("srv", "alpha", "tmux", 100)],
+    ));
+    let out = h.nav_text();
+    assert!(
+        out.contains("srv/tmux/alpha"),
+        "full context on the card:\n{out}"
+    );
+    assert_eq!(h.nav_fg_of("srv"), Some(color_host()));
+    assert_eq!(h.nav_fg_of("tmux"), Some(color_mux()));
+    assert_eq!(h.nav_fg_of("alpha"), Some(color_session()));
+}
+
+#[tokio::test]
+async fn consecutive_cards_elide_repeated_host_and_mux() {
+    // Consecutive cards sharing the previous card's host omit the host; sharing
+    // its mux too omits both - so runs on one server read grouped, and only the
+    // first card of a run carries the full context.
+    let h = Harness::new(one_host_scan(
+        "srv",
+        vec![
+            sess_mux("srv", "alpha", "tmux", 300),
+            sess_mux("srv", "beta", "tmux", 200),
+            sess_mux("srv", "gamma", "zellij", 100),
+        ],
+    ));
+    let out = h.nav_text();
+    assert!(out.contains("srv/tmux/alpha"), "first card is full:\n{out}");
+    let beta_row = h.nav_row_of("beta").expect("beta card");
+    let beta_line: String = (0..NAV_WIDTH)
+        .map(|x| h.buf()[(x, beta_row)].symbol().to_string())
+        .collect::<String>();
+    assert!(
+        !beta_line.contains("srv") && !beta_line.contains("tmux"),
+        "same host+mux elides both: {beta_line:?}"
+    );
+    let gamma_row = h.nav_row_of("gamma").expect("gamma card");
+    let gamma_line: String = (0..NAV_WIDTH)
+        .map(|x| h.buf()[(x, gamma_row)].symbol().to_string())
+        .collect::<String>();
+    assert!(
+        !gamma_line.contains("srv") && gamma_line.contains("zellij/gamma"),
+        "same host but new mux keeps the mux segment: {gamma_line:?}"
+    );
+}
+
+#[tokio::test]
+async fn first_visible_card_keeps_full_context_when_scrolled() {
+    // Elision continues from the PREVIOUS card - offscreen above the viewport top
+    // it would leave the first visible card contextless, so that card is exempt.
+    let sessions: Vec<Session> = (0..12)
+        .map(|i| sess_mux("srv", &format!("s{i:02}"), "tmux", 1000 - i))
+        .collect();
+    let mut h = Harness::new_sized(one_host_scan("srv", sessions), 100, 12);
+    h.key(KeyCode::End).await; // scroll to the bottom - the list offset is now > 0
+    assert!(h.sw.list_state.offset() > 0, "the list actually scrolled");
+    let top_line: String = (0..NAV_WIDTH)
+        .map(|x| h.buf()[(x, 0)].symbol().to_string())
+        .collect::<String>();
+    assert!(
+        top_line.contains("srv/tmux/"),
+        "the first visible card carries full context: {top_line:?}"
+    );
 }
 
 #[tokio::test]
@@ -1663,13 +1679,11 @@ fn menu_items_by_row_type() {
     assert_eq!(modal::menu_items(&host), vec![NewSession]);
 
     let s = sess("h", "api", 1, false, 0);
-    assert_eq!(
-        modal::menu_items(&RowRef::Window {
-            sess: s.clone(),
-            window: 1,
-            name: "sh".into()
-        }),
-        vec![Focus, NewWindow, Rename, Kill]
+    let session_items = modal::menu_items(&RowRef::Session { sess: s.clone() });
+    assert_eq!(session_items, vec![Focus, NewWindow, Rename, Kill]);
+    assert!(
+        !items_have_split(&session_items),
+        "the menu offers no split action"
     );
     // A loading card can only be focused - its windows are not yet resolved.
     assert_eq!(modal::menu_items(&RowRef::Loading { sess: s }), vec![Focus]);
@@ -1695,12 +1709,12 @@ async fn menu_open_on_session_does_not_move_cursor() {
     let before = h.sw.selected;
     let idx = row_index(
         &h,
-        |r| matches!(r, RowRef::Window { sess, .. } if sess.name == "build"),
+        |r| matches!(r, RowRef::Session { sess } if sess.name == "build"),
     );
     let (x, y) = row_screen_pos(&h, idx);
     assert!(
         h.sw.menu_open(x, y, &mut h.state),
-        "menu opens over a window card"
+        "menu opens over a session card"
     );
     assert!(h.state.menu_active());
     assert_eq!(
@@ -1712,7 +1726,7 @@ async fn menu_open_on_session_does_not_move_cursor() {
 #[tokio::test]
 async fn menu_release_off_menu_cancels() {
     let mut h = Harness::new(sample());
-    let idx = row_index(&h, |r| matches!(r, RowRef::Window { .. }));
+    let idx = row_index(&h, |r| matches!(r, RowRef::Session { .. }));
     let (x, y) = row_screen_pos(&h, idx);
     h.sw.menu_open(x, y, &mut h.state);
     // Drag fully outside the box → highlight clears → release cancels.
@@ -1733,7 +1747,7 @@ async fn menu_release_in_place_cancels() {
     let mut h = Harness::new(sample());
     let idx = row_index(
         &h,
-        |r| matches!(r, RowRef::Window { sess, .. } if sess.name == "build"),
+        |r| matches!(r, RowRef::Session { sess } if sess.name == "build"),
     );
     let (x, y) = row_screen_pos(&h, idx);
     assert!(h.sw.menu_open(x, y, &mut h.state));
@@ -1755,7 +1769,7 @@ async fn menu_title_row_sits_on_the_pointer() {
     let mut h = Harness::new(sample());
     let idx = row_index(
         &h,
-        |r| matches!(r, RowRef::Window { sess, .. } if sess.name == "build"),
+        |r| matches!(r, RowRef::Session { sess } if sess.name == "build"),
     );
     let (x, y) = row_screen_pos(&h, idx);
     assert!(h.sw.menu_open(x, y, &mut h.state));
@@ -1769,11 +1783,8 @@ async fn menu_title_row_sits_on_the_pointer() {
 #[tokio::test]
 async fn menu_release_focus_focuses_terminal_and_selects_target() {
     let mut h = Harness::new(sample());
-    let s = sess("local", "build", 1, false, 100);
-    let target = RowRef::Window {
-        sess: s,
-        window: 1,
-        name: "make".into(),
+    let target = RowRef::Session {
+        sess: sess("local", "build", 1, false, 100),
     };
     let items = modal::menu_items(&target);
     let focus_at = items.iter().position(|i| *i == MenuItem::Focus).unwrap();
@@ -1798,10 +1809,8 @@ async fn menu_release_focus_focuses_terminal_and_selects_target() {
 #[tokio::test]
 async fn menu_release_rename_opens_input() {
     let mut h = Harness::new(sample());
-    let target = RowRef::Window {
+    let target = RowRef::Session {
         sess: sess("local", "build", 1, false, 100),
-        window: 1,
-        name: "make".into(),
     };
     let items = modal::menu_items(&target);
     let at = items.iter().position(|i| *i == MenuItem::Rename).unwrap();
@@ -1822,10 +1831,8 @@ async fn menu_release_rename_opens_input() {
 #[tokio::test]
 async fn menu_release_kill_arms_confirm() {
     let mut h = Harness::new(sample());
-    let target = RowRef::Window {
+    let target = RowRef::Session {
         sess: sess("local", "build", 1, false, 100),
-        window: 1,
-        name: "make".into(),
     };
     let items = modal::menu_items(&target);
     let at = items.iter().position(|i| *i == MenuItem::Kill).unwrap();
@@ -1854,15 +1861,13 @@ async fn menu_kill_keeps_the_cursor_so_the_confirm_survives() {
     let mut h = Harness::new(sample());
     let editor = row_index(
         &h,
-        |r| matches!(r, RowRef::Window { sess, .. } if sess.name == "editor"),
+        |r| matches!(r, RowRef::Session { sess } if sess.name == "editor"),
     );
     h.sw.set_selected(editor, &h.state);
     h.sw.user_moved = true;
     // Kill a DIFFERENT session ('build') via the menu.
-    let target = RowRef::Window {
+    let target = RowRef::Session {
         sess: sess("local", "build", 1, false, 100),
-        window: 1,
-        name: "make".into(),
     };
     let items = modal::menu_items(&target);
     let at = items.iter().position(|i| *i == MenuItem::Kill).unwrap();
@@ -1882,7 +1887,7 @@ async fn menu_kill_keeps_the_cursor_so_the_confirm_survives() {
         "kill is armed against the clicked row"
     );
     assert!(
-        matches!(h.sw.current_ref(), Some(RowRef::Window { sess, .. }) if sess.name == "editor"),
+        matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.name == "editor"),
         "the selection stayed put → no selection change to rebuild away the confirm"
     );
 }
@@ -1894,7 +1899,7 @@ async fn kill_confirm_survives_a_rebuild_until_the_target_vanishes() {
     let mut h = Harness::new(sample());
     let build = row_index(
         &h,
-        |r| matches!(r, RowRef::Window { sess, .. } if sess.name == "build"),
+        |r| matches!(r, RowRef::Session { sess } if sess.name == "build"),
     );
     h.sw.set_selected(build, &h.state);
     h.sw.arm_kill(&mut h.state);
@@ -1910,41 +1915,6 @@ async fn kill_confirm_survives_a_rebuild_until_the_target_vanishes() {
     assert!(
         !matches!(h.state.modal, Some(Modal::Kill(_))),
         "a vanished target invalidates the confirm"
-    );
-}
-
-#[tokio::test]
-async fn menu_focus_window_marks_it_active_so_passthrough_follow_keeps_it() {
-    // Regression: focusing a different window of the already-displayed session must
-    // move there. Without optimistically marking it active, select_active_window
-    // (the terminal-view follow) yanks the selection back to the old active window.
-    let mut h = Harness::new(sample());
-    let s = sess("local", "editor", 2, true, 200); // editor: win 1 active, win 2 not
-    let target = RowRef::Window {
-        sess: s,
-        window: 2,
-        name: "logs".into(),
-    };
-    let items = modal::menu_items(&target);
-    let at = items.iter().position(|i| *i == MenuItem::Focus).unwrap();
-    h.state.modal = Some(Modal::Menu(Menu {
-        target,
-        title: String::new(),
-        rect: Rect::new(0, 0, 20, 5),
-        items,
-        hovered: Some(at),
-    }));
-    assert!(matches!(
-        h.sw.menu_release(&mut h.state),
-        MenuOutcome::FocusTerminal
-    ));
-    assert!(
-        matches!(h.sw.current_ref(), Some(RowRef::Window { window, .. }) if *window == 2),
-        "selection is on the focused window"
-    );
-    assert!(
-        !h.sw.select_active_window(&mut h.state),
-        "window 2 is now active → no yank back to window 1"
     );
 }
 
@@ -1993,36 +1963,6 @@ async fn menu_new_session_opens_input_and_creates() {
         "the session is created: {:?}",
         h.ops.created.lock().unwrap()
     );
-}
-
-#[tokio::test]
-async fn menu_release_window_focus_selects_window() {
-    let mut h = Harness::new(sample());
-    let s = sess("local", "editor", 2, true, 200);
-    let target = RowRef::Window {
-        sess: s,
-        window: 2,
-        name: "logs".into(),
-    };
-    let items = modal::menu_items(&target);
-    let at = items.iter().position(|i| *i == MenuItem::Focus).unwrap();
-    h.state.modal = Some(Modal::Menu(Menu {
-        target,
-        title: String::new(),
-        rect: Rect::new(0, 0, 20, 7),
-        items,
-        hovered: Some(at),
-    }));
-    // A window row offers focus / rename / kill - no split.
-    assert!(!items_have_split(&modal::menu_items(&RowRef::Window {
-        sess: sess("local", "editor", 2, true, 200),
-        window: 2,
-        name: "logs".into(),
-    })));
-    assert!(matches!(
-        h.sw.menu_release(&mut h.state),
-        MenuOutcome::FocusTerminal
-    ));
 }
 
 fn items_have_split(items: &[MenuItem]) -> bool {
@@ -2095,10 +2035,8 @@ async fn menu_release_stale_target_cancels() {
 async fn menu_renders_title_and_hovered_item_reversed() {
     use super::MenuItem::*;
     let mut h = Harness::new(sample());
-    let target = RowRef::Window {
+    let target = RowRef::Session {
         sess: sess("local", "build", 1, false, 100),
-        window: 1,
-        name: "make".into(),
     };
     let items = vec![Focus, Rename, Kill, NewWindow];
     // Box at a known spot; hover the second item (rename).
@@ -2166,20 +2104,14 @@ async fn help_overlay_renders_and_closes_on_q() {
 #[tokio::test]
 async fn terminal_view_target_follows_cursor() {
     let mut h = Harness::new(sample());
-    // On a window card, the target is that session:window.
-    assert!(h.sw.select_address("local/editor", &h.state)); // → editor's first window card
+    // On a session card, the target is that session (its active window follows).
+    assert!(h.sw.select_address("local/editor", &h.state));
     let t = h.sw.terminal_view_target();
-    assert_eq!(
-        (t.source.as_str(), t.target.as_str()),
-        ("local", "editor:1")
-    );
-    // Step to the next card (editor's window 2) - the target follows the cursor.
+    assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "editor"));
+    // Step to the next card (the next session) - the target follows the cursor.
     h.key(KeyCode::Down).await;
     let t = h.sw.terminal_view_target();
-    assert_eq!(
-        (t.source.as_str(), t.target.as_str()),
-        ("local", "editor:2")
-    );
+    assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "build"));
 }
 
 #[tokio::test]
@@ -2225,7 +2157,13 @@ fn render_terminal_view_none_grid_is_blank_not_attaching() {
 fn cur_row_label(h: &Harness) -> String {
     h.sw.rows
         .get(h.sw.selected)
-        .map(|r| format!("{}|{}", r.line1, r.line2))
+        .map(|r| {
+            let id = match &r.reference {
+                RowRef::Session { sess } | RowRef::Loading { sess } => sess.address(),
+                RowRef::Host { source, .. } => source.clone(),
+            };
+            format!("{}|{}", id, r.line2)
+        })
         .unwrap_or_default()
 }
 
@@ -2255,29 +2193,26 @@ async fn enter_and_bare_q_are_noops() {
 
 #[tokio::test]
 async fn cursor_move_yields_attach_target() {
-    let mut h = Harness::new(sample()); // launch on the most-recent session's window card
+    let mut h = Harness::new(sample()); // launch on the most-recent session's card
     let t =
         h.sw.current_attach_target(&h.state)
-            .expect("a window card yields a target");
+            .expect("a session card yields a target");
     assert_eq!(
         (t.source.as_str(), t.target.as_str()),
-        ("jupiter00", "inference:1")
+        ("jupiter00", "inference")
     );
-    h.key(KeyCode::Down).await; // ↓ to a local session's window card
+    h.key(KeyCode::Down).await; // ↓ to a local session's card
     let t =
         h.sw.current_attach_target(&h.state)
             .expect("still a target");
-    assert_eq!(
-        (t.source.as_str(), t.target.as_str()),
-        ("local", "editor:1")
-    );
+    assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "editor"));
 }
 
 #[tokio::test]
 async fn current_host_tracks_cursor_source() {
     // The app ensures this host on every move; every card yields its source, so the
     // host's tree can be fetched.
-    let mut h = Harness::new(sample()); // launch on jupiter00/inference's window card
+    let mut h = Harness::new(sample()); // launch on jupiter00/inference's card
     assert_eq!(h.sw.current_host().as_deref(), Some("jupiter00"));
     h.key(KeyCode::End).await; // jump to the last card (the db-2 host card)
     assert_eq!(h.sw.current_host().as_deref(), Some("db-2"));
@@ -2646,7 +2581,7 @@ async fn every_popup_type_is_opaque_over_a_colored_grid() {
     let mut h = Harness::new(sample());
     let build = row_index(
         &h,
-        |r| matches!(r, RowRef::Window { sess, .. } if sess.name == "build"),
+        |r| matches!(r, RowRef::Session { sess } if sess.name == "build"),
     );
     h.sw.set_selected(build, &h.state);
     h.sw.user_moved = true;
@@ -2690,7 +2625,7 @@ fn modals_are_mutually_exclusive() {
     // Opening any modal closes the others, so the drawn popup always matches where
     // keystrokes route (the context menu can open input/confirm bypassing handle_key).
     let mut state = crate::state::State::from_scan(sample());
-    let mut sw = Switcher::new(&mut state); // launch preselects a killable window card
+    let mut sw = Switcher::new(&mut state); // launch preselects a killable session card
     sw.arm_kill(&mut state);
     assert!(matches!(state.modal, Some(Modal::Kill(_))));
     sw.open_input(InputMode::Rename, &mut state); // as the menu's Rename would
@@ -2864,7 +2799,7 @@ async fn kill_confirm_is_a_centered_red_popup_not_the_hint_bar() {
     let mut h = Harness::new(sample());
     let build = row_index(
         &h,
-        |r| matches!(r, RowRef::Window { sess, .. } if sess.name == "build"),
+        |r| matches!(r, RowRef::Session { sess } if sess.name == "build"),
     );
     h.sw.set_selected(build, &h.state);
     h.sw.user_moved = true;
@@ -2891,30 +2826,26 @@ async fn kill_confirm_is_a_centered_red_popup_not_the_hint_bar() {
 }
 
 #[tokio::test]
-async fn kill_on_window_row_targets_the_window() {
+async fn kill_on_session_card_targets_the_session() {
     let mut h = Harness::new(sample());
-    h.key(KeyCode::Down).await; // → local/editor's first window card (window 1)
+    h.key(KeyCode::Down).await; // → local/editor's card
     h.sw.handle_key(
         KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
         &mut h.state,
     ); // arm kill (raw, not pumped)
-    assert!(
-        matches!(h.state.modal, Some(Modal::Kill(PendingKill::Window { .. }))),
-        "kill on window row must set a window PendingKill"
-    );
-    let target = match &h.state.modal {
-        Some(Modal::Kill(PendingKill::Window { target, .. })) => target.clone(),
-        _ => panic!("expected Window variant"),
+    let armed = match &h.state.modal {
+        Some(Modal::Kill(PendingKill::Session(sess))) => sess.address(),
+        other => panic!("expected a session PendingKill, got {:?}", other.is_some()),
     };
-    assert_eq!(target, "editor:1");
+    assert_eq!(armed, "local/editor");
     // confirm with y
     let cmds = h.sw.handle_key(
         KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
         &mut h.state,
     );
-    let op = only_run_op(cmds).expect("kill window queued");
+    let op = only_run_op(cmds).expect("kill queued");
     assert!(
-        matches!(op, crate::model::MuxOp::KillWindow { ref target, .. } if target == "editor:1")
+        matches!(op, crate::model::MuxOp::Kill { ref sess } if sess.address() == "local/editor")
     );
 }
 
@@ -2961,96 +2892,56 @@ async fn kill_active_pane_is_a_no_op_when_nothing_is_displayed() {
 }
 
 #[tokio::test]
-async fn armed_window_kill_survives_a_same_tree_rebuild() {
-    // A routine rebuild (streamed panes with the SAME windows) must NOT cancel an
-    // armed window kill - there is no time limit. A later 'y' still kills the right
-    // window. (Only a rebuild that actually removes the target invalidates it; the
-    // session case is covered by kill_confirm_survives_a_rebuild_until_the_target_vanishes.)
+async fn rename_on_session_card_targets_the_session() {
     let mut h = Harness::new(sample());
-    h.key(KeyCode::Down).await; // → local/editor's first window card (window 1, name "shell")
-    h.sw.handle_key(
-        KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
-        &mut h.state,
-    ); // arm kill (raw)
-    assert!(
-        matches!(h.state.modal, Some(Modal::Kill(PendingKill::Window { .. }))),
-        "arm_kill must set a window PendingKill"
-    );
-    // Stream the same panes (a rebuild) - the target window still exists.
-    let s = sample();
-    let editor_panes = s.panes["local/editor"].clone();
-    h.sw.apply_panes("local/editor".to_string(), editor_panes, &mut h.state);
-    assert!(
-        matches!(h.state.modal, Some(Modal::Kill(_))),
-        "the confirm survives a same-tree rebuild - no time limit"
-    );
-    // 'y' now confirms and queues the kill of the armed window.
-    let cmds = h.sw.handle_key(
-        KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
-        &mut h.state,
-    );
-    let op = only_run_op(cmds).expect("kill queued after surviving rebuild");
-    assert!(
-        matches!(op, crate::model::MuxOp::KillWindow { ref target, .. } if target == "editor:1")
-    );
-}
-
-#[tokio::test]
-async fn rename_on_window_row_targets_the_window() {
-    let mut h = Harness::new(sample());
-    h.key(KeyCode::Down).await; // → local/editor's first window card (window 1, name "shell")
+    h.key(KeyCode::Down).await; // → local/editor's card
     h.sw.handle_key(
         KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE),
         &mut h.state,
     ); // open rename (raw)
-       // input should be open for window rename
     assert!(
         h.state.is_inputting(),
-        "rename on window row must open input"
-    );
-    assert!(
-        matches!(&h.state.modal, Some(Modal::Input(i)) if i.target.is_some()),
-        "rename on window must have a target"
+        "rename on a session card must open input"
     );
     h.sw.set_input_text("newname", &mut h.state);
     let cmds = h.sw.handle_key(
         KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
         &mut h.state,
     ); // confirm (raw)
-    let op = only_run_op(cmds).expect("rename window queued");
+    let op = only_run_op(cmds).expect("rename queued");
     assert!(
-        matches!(op, crate::model::MuxOp::RenameWindow { ref target, ref new_name, .. }
-            if target == "editor:1" && new_name == "newname")
+        matches!(op, crate::model::MuxOp::Rename { ref sess, ref new_name }
+            if sess.address() == "local/editor" && new_name == "newname")
     );
 }
 
 #[tokio::test]
-async fn rename_window_unchanged_name_is_ignored() {
+async fn rename_session_unchanged_name_is_ignored() {
     let mut h = Harness::new(sample());
-    h.key(KeyCode::Down).await; // → local/editor's first window card (window 1, name "shell")
+    h.key(KeyCode::Down).await; // → local/editor's card
     h.sw.handle_key(
         KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE),
         &mut h.state,
     ); // open rename (raw)
     assert!(
         h.state.is_inputting(),
-        "rename on window row must open input"
+        "rename on a session card must open input"
     );
-    h.sw.set_input_text("shell", &mut h.state); // same as current name
+    h.sw.set_input_text("editor", &mut h.state); // same as current name
     let cmds = h.sw.handle_key(
         KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
         &mut h.state,
     );
     assert!(
         only_run_op(cmds).is_none(),
-        "unchanged window name must not queue a RenameWindow op"
+        "unchanged session name must not queue a Rename op"
     );
 }
 
 #[tokio::test]
 async fn rename_window_rejects_leading_dash() {
     let mut h = Harness::new(sample());
-    h.key(KeyCode::Down).await; // → local/editor's first window card (window 1)
+    h.key(KeyCode::Down).await; // → local/editor's card
     h.sw.handle_key(
         KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE),
         &mut h.state,
@@ -3109,32 +3000,34 @@ async fn rename_on_host_row_flashes_error() {
 }
 
 #[test]
-fn removed_window_selection_falls_to_previous_sibling_then_parent() {
-    // two window cards under jup/api; selection on window 1. Remove window 1 → selection to
-    // window 0 (previous sibling). Remove window 0 too (no windows left) → selection to the
-    // session's loading card (its stand-in when no window is shown).
+fn window_removal_keeps_the_selection_on_the_session_card() {
+    // Selection on jup/api's card. Removing windows never removes the card: the
+    // focused-window line falls back to the surviving window, and with no windows
+    // at all the card degrades to the session's loading stand-in (the same node,
+    // so the selection stays put).
     let mut state = crate::state::State::from_scan(two_window_scan());
-    let mut sw = Switcher::new(&mut state); // launch preselects window 0
-    sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut state); // ↓ window 1
-    assert!(matches!(
-        sw.current_ref(),
-        Some(RowRef::Window { window: 1, .. })
-    ));
-    // simulate window 1 removed: re-apply panes without window 1.
+    let mut sw = Switcher::new(&mut state); // launch preselects the api card
+    sw.user_moved = true;
+    assert!(matches!(sw.current_ref(), Some(RowRef::Session { .. })));
+    // The active window 0 vanishes; only w1 remains.
     sw.apply_panes(
         "jup/api".into(),
-        vec![win(0, "w0", true, vec![pane(0, true, "bash")])],
+        vec![win(1, "w1", true, vec![pane(0, true, "bash")])],
         &mut state,
     );
     assert!(
-        matches!(sw.current_ref(), Some(RowRef::Window { window: 0, .. })),
-        "removed window → previous sibling"
+        matches!(sw.current_ref(), Some(RowRef::Session { sess }) if sess.name == "api"),
+        "the card survives a window removal"
     );
-    // remove window 0 too (session now has no window cards): selection to its loading card.
+    assert_eq!(
+        sw.rows[sw.selected].line2, "w1",
+        "line2 follows the survivor"
+    );
+    // Every window gone: the card degrades to loading, the selection stays.
     sw.apply_panes("jup/api".into(), vec![], &mut state);
     assert!(
         matches!(sw.current_ref(), Some(RowRef::Loading { sess }) if sess.name == "api"),
-        "topmost removed → the session's card"
+        "no windows → the session's loading stand-in, selection kept"
     );
 }
 
@@ -3234,6 +3127,7 @@ fn select_address_moves_cursor_to_named_session() {
                 Session {
                     source: "jup".into(),
                     name: "api".into(),
+                    mux: String::new(),
                     windows: 1,
                     attached: false,
                     last_attached: 200,
@@ -3241,6 +3135,7 @@ fn select_address_moves_cursor_to_named_session() {
                 Session {
                     source: "jup".into(),
                     name: "db".into(),
+                    mux: String::new(),
                     windows: 1,
                     attached: false,
                     last_attached: 100,

@@ -55,7 +55,13 @@ impl Mux for Psmux {
         // Folding the local registry into it would inject local session names as phantoms
         // and (worse) swallow an ssh failure into a fake empty/populated list.
         if !transport.local_registry_scope() {
-            return crate::mux::enumerate_via_list_sessions(&self.bin, transport, runner).await;
+            return crate::mux::enumerate_via_list_sessions(
+                &self.bin,
+                self.kind(),
+                transport,
+                runner,
+            )
+            .await;
         }
         // Local psmux: the registry (`~/.psmux/<name>.port`) is the authoritative
         // existence set; one list-sessions supplies display detail (empty on a
@@ -63,7 +69,11 @@ impl Mux for Psmux {
         let names = registry::read_psmux_registry_dir(&registry::psmux_registry_dir());
         let (name, args) = transport.exec_argv(false, &mux::list_sessions(&self.bin));
         let detail = match runner.run(&name, &args).await {
-            Ok(out) => mux::parse_sessions(transport.host_id(), &String::from_utf8_lossy(&out)),
+            Ok(out) => mux::parse_sessions(
+                transport.host_id(),
+                self.kind(),
+                &String::from_utf8_lossy(&out),
+            ),
             Err(_) => Vec::new(),
         };
         Ok(registry::merge_psmux_sessions(

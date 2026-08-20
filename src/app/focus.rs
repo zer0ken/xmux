@@ -19,7 +19,7 @@ pub enum ViewFocus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Focus {
-    /// Nav view focused — keys navigate the flat window-card list.
+    /// Nav view focused — keys navigate the flat session-card list.
     #[default]
     Nav,
     /// Terminal view focused — keys forward to the selected session's active pane.

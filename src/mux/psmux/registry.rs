@@ -65,6 +65,7 @@ pub(crate) fn merge_psmux_sessions(
             out.push(Session {
                 source: source.to_string(),
                 name,
+                mux: "psmux".to_string(),
                 windows: 1,
                 attached: false,
                 last_attached: 0,
@@ -142,6 +143,7 @@ mod tests {
         let detail = vec![Session {
             source: "local".into(),
             name: "editor".into(),
+            mux: "psmux".into(),
             windows: 3,
             attached: true,
             last_attached: 200,
@@ -167,6 +169,7 @@ mod tests {
         let detail = vec![Session {
             source: "local".into(),
             name: "only".into(),
+            mux: "psmux".into(),
             windows: 1,
             attached: false,
             last_attached: 5,

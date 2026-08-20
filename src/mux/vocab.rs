@@ -25,7 +25,7 @@ pub fn is_mux_var(key: &str) -> bool {
     matches!(key, "TMUX" | "TMUX_PANE") || key.starts_with("PSMUX")
 }
 
-/// From a set of env var names, the subset that are mux session vars — the keys a
+/// From a set of env var names, the subset that are mux session vars - the keys a
 /// child spawned by xmux must have cleared. Lets a spawner strip mux vars from its
 /// environment without itself naming any mux var (the vocabulary stays here).
 pub fn mux_env_keys_to_clear(keys: impl IntoIterator<Item = String>) -> Vec<String> {
@@ -121,7 +121,7 @@ pub fn session_name(target: &str) -> &str {
 /// Quotes a `-t` target for a CONTROL-MODE command line (the tmux/psmux command
 /// parser, not a shell). A name of only safe characters passes through bare;
 /// anything else (space, quote, metachar) is single-quoted with embedded single
-/// quotes escaped as `'\''` — the parser reads a backslash-escaped quote outside
+/// quotes escaped as `'\''` - the parser reads a backslash-escaped quote outside
 /// quotes as a literal, so `a'b` becomes `'a'\''b'`.
 pub fn quote_target(t: &str) -> String {
     let safe = !t.is_empty()
@@ -146,8 +146,8 @@ pub fn kill_session(bin: &str, name: &str) -> Vec<String> {
 }
 
 /// Creates a new window in `session` (optionally named). The target is
-/// `<session>:` (trailing colon) so a numeric session name — `"0"`, the
-/// tmux/psmux default — is parsed as the SESSION, not a window index: a bare
+/// `<session>:` (trailing colon) so a numeric session name - `"0"`, the
+/// tmux/psmux default - is parsed as the SESSION, not a window index: a bare
 /// `-t 0` is read as "create at window index 0" and fails with "index 0 in use".
 pub fn new_window(bin: &str, session: &str, name: &str) -> Vec<String> {
     let target = format!("{session}:");
@@ -201,11 +201,11 @@ fn split_lines(out: &str) -> Vec<&str> {
 }
 
 /// Parses `list-sessions` output ([`SESSION_FORMAT`]) into sessions tagged with
-/// `source`. Malformed lines (short, non-numeric numeric columns, or empty name)
-/// are skipped so banners and garbage cannot poison the list. The name is
-/// rejoined from `fields[3..]` so a tab inside a name survives. Order is
-/// preserved.
-pub fn parse_sessions(source: &str, out: &str) -> Vec<Session> {
+/// `source` and the enumerating mux's `mux` kind. Malformed lines (short,
+/// non-numeric numeric columns, or empty name) are skipped so banners and garbage
+/// cannot poison the list. The name is rejoined from `fields[3..]` so a tab
+/// inside a name survives. Order is preserved.
+pub fn parse_sessions(source: &str, mux: &str, out: &str) -> Vec<Session> {
     let mut sessions = Vec::new();
     for ln in split_lines(out) {
         let fields: Vec<&str> = ln.split('\t').collect();
@@ -233,6 +233,7 @@ pub fn parse_sessions(source: &str, out: &str) -> Vec<Session> {
         sessions.push(Session {
             source: source.to_string(),
             name,
+            mux: mux.to_string(),
             windows,
             attached: attached_n > 0,
             last_attached,
@@ -329,7 +330,7 @@ mod tests {
         assert!(is_mux_var("PSMUX_SESSION"));
         // Keeps unrelated vars that merely share the TMUX prefix.
         assert!(!is_mux_var("TMUXP_LAYOUT")); // tmuxp, a different tool
-        assert!(!is_mux_var("TMUX_TMPDIR")); // selects the socket dir — must survive
+        assert!(!is_mux_var("TMUX_TMPDIR")); // selects the socket dir - must survive
         assert!(!is_mux_var("PATH"));
     }
 
@@ -479,7 +480,7 @@ mod tests {
     #[test]
     fn new_window_targets_session_unambiguously() {
         // The target carries a trailing `:` so a numeric session name (e.g. "0",
-        // the tmux/psmux default) is parsed as the SESSION, not a window index — a
+        // the tmux/psmux default) is parsed as the SESSION, not a window index - a
         // bare `-t 0` is read as "window index 0" and fails "index 0 in use".
         assert_eq!(
             new_window("tmux", "0", ""),
@@ -502,13 +503,14 @@ mod tests {
     #[test]
     fn parse_sessions_basic() {
         let out = "3\t1\t1700000000\tmain\n2\t0\t1699999999\tother\n";
-        let got = parse_sessions("local", out);
+        let got = parse_sessions("local", "tmux", out);
         assert_eq!(
             got,
             vec![
                 Session {
                     source: "local".into(),
                     name: "main".into(),
+                    mux: "tmux".into(),
                     windows: 3,
                     attached: true,
                     last_attached: 1700000000
@@ -516,6 +518,7 @@ mod tests {
                 Session {
                     source: "local".into(),
                     name: "other".into(),
+                    mux: "tmux".into(),
                     windows: 2,
                     attached: false,
                     last_attached: 1699999999
@@ -527,7 +530,7 @@ mod tests {
     #[test]
     fn parse_sessions_crlf() {
         let out = "1\t1\t100\ta\r\n1\t0\t200\tb\r\n";
-        let got = parse_sessions("local", out);
+        let got = parse_sessions("local", "tmux", out);
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].name, "a");
         assert_eq!(got[1].name, "b");
@@ -536,11 +539,12 @@ mod tests {
     #[test]
     fn parse_sessions_name_with_tab_and_slash() {
         let out = "4\t1\t1700000000\tproj/a\tb\n";
-        let got = parse_sessions("ssh-host", out);
+        let got = parse_sessions("ssh-host", "tmux", out);
         assert_eq!(
             got,
             vec![Session {
                 source: "ssh-host".into(),
+                mux: "tmux".into(),
                 name: "proj/a\tb".into(),
                 windows: 4,
                 attached: true,
@@ -552,12 +556,13 @@ mod tests {
     #[test]
     fn parse_sessions_empty_last_attached() {
         let out = "1\t0\t\tlegacy\n";
-        let got = parse_sessions("local", out);
+        let got = parse_sessions("local", "tmux", out);
         assert_eq!(
             got,
             vec![Session {
                 source: "local".into(),
                 name: "legacy".into(),
+                mux: "tmux".into(),
                 windows: 1,
                 attached: false,
                 last_attached: 0
@@ -576,12 +581,13 @@ mod tests {
             "1\t1\t100\t\n",
             "2\t1\t300\tgood\n",
         );
-        let got = parse_sessions("local", out);
+        let got = parse_sessions("local", "tmux", out);
         assert_eq!(
             got,
             vec![Session {
                 source: "local".into(),
                 name: "good".into(),
+                mux: "tmux".into(),
                 windows: 2,
                 attached: true,
                 last_attached: 300
@@ -591,13 +597,13 @@ mod tests {
 
     #[test]
     fn parse_sessions_empty_output() {
-        assert!(parse_sessions("local", "").is_empty());
+        assert!(parse_sessions("local", "tmux", "").is_empty());
     }
 
     #[test]
     fn parse_sessions_order_preserved() {
         let out = "1\t0\t1\tz\n1\t0\t2\ta\n1\t0\t3\tm\n";
-        let got = parse_sessions("local", out);
+        let got = parse_sessions("local", "tmux", out);
         let names: Vec<&str> = got.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["z", "a", "m"]);
     }

@@ -151,15 +151,14 @@ impl Runtime {
                 if let Some(h) = hosts.get_mut(&host) {
                     h.display.set_shows(&key, &session);
                 }
-                // Follow the nav selection to that session's active window, but only in
-                // terminal focus (the user is driving the PTY, not the nav) — mirrors
-                // select_window/select_active_window. In nav focus the selection is the
-                // user's, and xmux's own switch already left it where it belongs.
+                // Follow the nav selection to that session's card, but only in
+                // terminal focus (the user is driving the PTY, not the nav). In nav
+                // focus the selection is the user's, and xmux's own switch already
+                // left it where it belongs.
                 let terminal_focus = state.focus.is_terminal_focused();
                 if terminal_focus {
                     let addr = crate::session::address_of(&host, &session);
                     switcher.select_address(&addr, state);
-                    switcher.select_active_window(state);
                 }
                 tracing::info!(
                     host = %host,
@@ -432,11 +431,6 @@ impl Runtime {
             self.state.apply(crate::model::Action::RearmAttachNow {
                 now: std::time::Instant::now(),
             });
-        }
-        // In terminal focus the tree selection tracks the displayed session's active
-        // window (idempotent, so calling it each iteration is cheap).
-        if self.state.focus.is_terminal_focused() {
-            self.switcher.select_active_window(&mut self.state);
         }
         if sync_selection_from_switcher(&mut self.state, &self.switcher) {
             // The selection moved → the tree needs a redraw. The attach is NOT issued

@@ -671,6 +671,7 @@ mod tests {
                 .map(|n| Session {
                     source: "h".into(),
                     name: (*n).into(),
+                    mux: String::new(),
                     windows: 1,
                     attached: false,
                     last_attached: 0,

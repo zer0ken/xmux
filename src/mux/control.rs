@@ -13,6 +13,10 @@ pub use crate::mux::tmux::control_proto::{Line, Notif};
 /// The tmux-flavored control-mode protocol. Stateless: every method is a pure
 /// function of its arguments, so the implementor is a unit struct shared `'static`.
 pub trait ControlProtocol: Send + Sync {
+    /// The canonical identity of the mux this protocol speaks for — stamped onto
+    /// the sessions parsed out of its control-mode replies.
+    fn mux_kind(&self) -> &'static str;
+
     /// Classifies one control-mode stdout line (trailing `\n` already stripped) by
     /// frame shape. The caller's IDLE/IN-BLOCK state machine decides what to do with
     /// each shape; this only determines the shape.

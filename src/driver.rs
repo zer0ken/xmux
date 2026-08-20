@@ -164,6 +164,7 @@ pub(crate) mod tests {
         crate::session::Session {
             source: source.into(),
             name: name.into(),
+            mux: String::new(),
             windows: 1,
             attached: false,
             last_attached: 0,

@@ -7,6 +7,18 @@ use crate::ui::palette;
 /// Braille spinner frames for pending states (connecting session, loading panes).
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
+/// The line1 context parts of a card: `(host, mux, session)`. A host-state card
+/// carries only its host; a session/loading card names its session's host, mux
+/// kind (empty when not yet known), and session name.
+fn context_of(reference: &RowRef) -> (&str, &str, &str) {
+    match reference {
+        RowRef::Host { source, .. } => (source, "", ""),
+        RowRef::Session { sess } | RowRef::Loading { sess } => {
+            (&sess.source, &sess.mux, &sess.name)
+        }
+    }
+}
+
 impl Switcher {
     pub fn render(
         &mut self,
@@ -94,6 +106,24 @@ impl Switcher {
         // (render_view_border) separates it from the terminal view.
         self.nav_inner = area;
 
+        // Settle the scroll offset BEFORE building the items: the first-visible
+        // card's elision exemption reads it, and ratatui adjusts the offset only
+        // DURING render (which would leave the exemption one frame behind on a
+        // scroll). Mirrors the List's keep-selected-visible policy.
+        let visible = (area.height / CARD_H).max(1) as usize;
+        let mut first = self
+            .list_state
+            .offset()
+            .min(self.rows.len().saturating_sub(1));
+        if let Some(sel) = self.list_state.selected() {
+            if sel < first {
+                first = sel;
+            } else if sel >= first + visible {
+                first = sel + 1 - visible;
+            }
+        }
+        *self.list_state.offset_mut() = first;
+
         let spinner_glyph = SPINNER[state.chrome.spinner_frame % SPINNER.len()];
         let jump_digit = self.jump_digits();
         let items: Vec<ListItem> = (0..self.rows.len())
@@ -144,12 +174,15 @@ impl Switcher {
     }
 
     /// Builds one navigation card as a 2-line [`ListItem`]. Line 1 is the gutter +
-    /// context (`{host}/{session}` in the host / session level colours, or just
-    /// `{host}` for a host-state card). Line 2 is the gutter + detail (a window card's
-    /// `{n}:{name}` in the window level colour, bold with a trailing accent ● when
-    /// active; a host-state card's state coloured by kind - pending / danger / muted;
-    /// a loading card's spinner). The gutter carries the selected card's accent ▌ bar
-    /// on both lines (replacing its jump digit - the selection needs no jump target);
+    /// context: `{host}/{mux}/{session}` in the host / mux / session colours (or just
+    /// `{host}` for a host-state card), with consecutive-context elision - a card
+    /// whose host matches the previous card's omits the host, and matching mux too
+    /// omits both, so runs on one server read grouped. The first VISIBLE card is
+    /// never elided (the card it would continue from is offscreen). Line 2 is the
+    /// gutter + detail (a session card's focused window name in the window colour; a
+    /// host-state card's state coloured by kind - pending / danger / muted; a loading
+    /// card's spinner). The gutter carries the selected card's accent ▌ bar on both
+    /// lines (replacing its jump digit - the selection needs no jump target);
     /// unselected cards show their dim digit. The surface background comes from the
     /// List's `highlight_style`, so no per-span background is baked in here.
     fn nav_row_item(
@@ -173,48 +206,58 @@ impl Switcher {
             }
         };
 
-        // Line 1: the {host}/{session} (or {host}) context.
+        // Line 1: the {host}/{mux}/{session} (or {host}) context.
         let mut line1: Vec<Span> = vec![gutter(true)];
         if matches!(row.reference, RowRef::Host { .. }) {
+            let (host, _, _) = context_of(&row.reference);
             line1.push(Span::styled(
-                pad_label(&row.line1),
+                pad_label(host),
                 Style::default().fg(color_host()),
             ));
         } else {
-            let (host, sess) = row
-                .line1
-                .split_once('/')
-                .unwrap_or((row.line1.as_str(), ""));
+            let (host, mux, sess) = context_of(&row.reference);
+            // The previous card's context, for elision - treated as absent at the
+            // viewport top so the first visible card always carries full context.
+            let prev = (i > self.list_state.offset())
+                .then(|| self.rows.get(i - 1))
+                .flatten()
+                .map(|r| context_of(&r.reference));
+            let same_host = prev.is_some_and(|(h, _, _)| h == host);
+            let same_mux = same_host && prev.is_some_and(|(_, m, _)| m == mux);
             line1.push(Span::raw(" "));
-            line1.push(Span::styled(
-                host.to_string(),
-                Style::default().fg(color_host()),
-            ));
-            if !sess.is_empty() {
-                line1.push(Span::styled("/", muted));
+            if !same_host {
                 line1.push(Span::styled(
-                    sess.to_string(),
-                    Style::default().fg(color_session()),
+                    host.to_string(),
+                    Style::default().fg(color_host()),
                 ));
+                line1.push(Span::styled("/", muted));
             }
+            // The mux segment renders only when known (a just-created session is
+            // stamped by the next enumeration).
+            if !same_mux && !mux.is_empty() {
+                line1.push(Span::styled(
+                    mux.to_string(),
+                    Style::default().fg(color_mux()),
+                ));
+                line1.push(Span::styled("/", muted));
+            }
+            line1.push(Span::styled(
+                sess.to_string(),
+                Style::default().fg(color_session()),
+            ));
             line1.push(Span::raw(" "));
         }
 
         // Line 2: the detail line, under the gutter (bar when selected, blank otherwise).
         let mut line2: Vec<Span> = vec![gutter(false)];
         match &row.reference {
-            RowRef::Window { .. } => {
-                let mut style = Style::default().fg(color_window());
-                if row.active {
-                    style = style.add_modifier(Modifier::BOLD);
-                }
-                line2.push(Span::styled(format!(" {}", row.line2), style));
-                if row.active {
-                    // The active-window marker: an accent dot after the name (bold alone
-                    // is too subtle at a glance, and italics render unreliably).
-                    line2.push(Span::styled(" ●", bar));
-                }
-                line2.push(Span::raw(" "));
+            RowRef::Session { .. } => {
+                // The focused (active) window's name - what the mux shows on attach -
+                // so the card needs no per-window active marker.
+                line2.push(Span::styled(
+                    format!(" {} ", row.line2),
+                    Style::default().fg(color_window()),
+                ));
             }
             RowRef::Loading { .. } => {
                 line2.push(Span::styled(

@@ -117,17 +117,7 @@ impl Switcher {
         self.user_moved = true;
         self.set_selected(idx, state);
         match item {
-            MenuItem::Focus => {
-                // For a window, optimistically mark it active in the cache. Otherwise the
-                // terminal-view selection-follow (`select_active_window`, run before the attach's
-                // select-window lands) would yank the selection back to the session's previous
-                // active window — so focusing a different window of the already-displayed
-                // session did nothing. The real select-window follows from the selection.
-                if let RowRef::Window { sess, window, .. } = &menu.target {
-                    self.set_active_window(&sess.source, &sess.name, *window, state);
-                }
-                MenuOutcome::FocusTerminal
-            }
+            MenuItem::Focus => MenuOutcome::FocusTerminal,
             MenuItem::NewSession | MenuItem::NewWindow => {
                 self.open_new(state);
                 self.restore_focus(prior, state);
