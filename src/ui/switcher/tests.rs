@@ -202,7 +202,8 @@ impl Harness {
 
     fn nav_row_highlighted(&self, y: u16) -> bool {
         let buf = self.buf();
-        (0..NAV_WIDTH.min(buf.area.width)).any(|x| buf[(x, y)].bg == crate::ui::palette::SURFACE)
+        (0..NAV_WIDTH.min(buf.area.width))
+            .any(|x| buf[(x, y)].bg == crate::ui::palette::get().surface)
     }
 
     fn nav_fg_of(&self, text: &str) -> Option<Color> {
@@ -1230,11 +1231,11 @@ fn hint_bar_has_status_bar_background() {
         .unwrap();
     let buf = term.backend().buffer();
     let y = buf.area.height - 1; // the one-line hint bar sits on the last row
-    let bg = crate::ui::palette::BAR_BG;
+    let bg = crate::ui::palette::get().bar_bg;
     assert_eq!(buf[(1, y)].bg, bg, "a text cell has the dark bar bg");
     assert_eq!(
         buf[(1, y)].fg,
-        crate::ui::palette::ACCENT,
+        crate::ui::palette::get().accent,
         "the leading key token is accented"
     );
     assert_eq!(
@@ -1612,9 +1613,9 @@ async fn host_with_sessions_has_no_landing_panel() {
 #[tokio::test]
 async fn levels_have_distinct_colors() {
     let h = Harness::new(sample());
-    assert_eq!(h.nav_fg_of("local"), Some(COLOR_HOST));
-    assert_eq!(h.nav_fg_of("editor"), Some(COLOR_SESSION));
-    assert_eq!(h.nav_fg_of("1:shell"), Some(COLOR_WINDOW));
+    assert_eq!(h.nav_fg_of("local"), Some(color_host()));
+    assert_eq!(h.nav_fg_of("editor"), Some(color_session()));
+    assert_eq!(h.nav_fg_of("1:shell"), Some(color_window()));
 }
 
 #[tokio::test]
@@ -2122,7 +2123,7 @@ async fn menu_renders_title_and_hovered_item_reversed() {
     // The hovered row (rename, at box y+1+1 = 4) carries the surface highlight
     // across the box interior (the menu's selection language matches the nav's).
     let buf = h.buf();
-    let highlighted = (3..19).any(|x| buf[(x, 4u16)].bg == crate::ui::palette::SURFACE);
+    let highlighted = (3..19).any(|x| buf[(x, 4u16)].bg == crate::ui::palette::get().surface);
     assert!(highlighted, "the hovered item renders highlighted");
 }
 
@@ -2880,7 +2881,9 @@ async fn kill_confirm_is_a_centered_red_popup_not_the_hint_bar() {
     // A danger-red "kill" cell exists in a centered box (not the hint_bar row).
     let red_kill = (0..last)
         .flat_map(|y| (0..buf.area.width).map(move |x| (x, y)))
-        .any(|(x, y)| buf[(x, y)].symbol() == "k" && buf[(x, y)].fg == crate::ui::palette::DANGER);
+        .any(|(x, y)| {
+            buf[(x, y)].symbol() == "k" && buf[(x, y)].fg == crate::ui::palette::get().danger
+        });
     assert!(
         red_kill,
         "the confirm popup shows red 'kill' text above the hint_bar"

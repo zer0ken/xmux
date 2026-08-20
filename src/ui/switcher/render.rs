@@ -102,7 +102,7 @@ impl Switcher {
         // The selection highlight is a quiet raised surface (plus the accent ▌ bar the
         // card itself draws in its gutter), not reverse video: the card's own level
         // colours stay readable while selected.
-        let list = List::new(items).highlight_style(Style::default().bg(palette::SURFACE));
+        let list = List::new(items).highlight_style(Style::default().bg(palette::get().surface));
         frame.render_stateful_widget(list, area, &mut self.list_state);
         self.render_nav_scrollbar(frame, area);
     }
@@ -125,7 +125,7 @@ impl Switcher {
                 .end_symbol(None)
                 .track_symbol(None)
                 .thumb_symbol("▐")
-                .thumb_style(Style::default().fg(palette::OVERLAY)),
+                .thumb_style(Style::default().fg(palette::get().overlay)),
             area,
             &mut sb,
         );
@@ -159,9 +159,9 @@ impl Switcher {
         spinner_glyph: char,
     ) -> ListItem<'static> {
         let row = &self.rows[i];
-        let muted = Style::default().fg(COLOR_HINT);
+        let muted = Style::default().fg(color_hint());
         let selected = self.list_state.selected() == Some(i);
-        let bar = Style::default().fg(palette::ACCENT);
+        let bar = Style::default().fg(palette::get().accent);
         let gutter = |line1: bool| -> Span<'static> {
             if selected {
                 Span::styled("▌ ", bar)
@@ -178,7 +178,7 @@ impl Switcher {
         if matches!(row.reference, RowRef::Host { .. }) {
             line1.push(Span::styled(
                 pad_label(&row.line1),
-                Style::default().fg(COLOR_HOST),
+                Style::default().fg(color_host()),
             ));
         } else {
             let (host, sess) = row
@@ -188,13 +188,13 @@ impl Switcher {
             line1.push(Span::raw(" "));
             line1.push(Span::styled(
                 host.to_string(),
-                Style::default().fg(COLOR_HOST),
+                Style::default().fg(color_host()),
             ));
             if !sess.is_empty() {
                 line1.push(Span::styled("/", muted));
                 line1.push(Span::styled(
                     sess.to_string(),
-                    Style::default().fg(COLOR_SESSION),
+                    Style::default().fg(color_session()),
                 ));
             }
             line1.push(Span::raw(" "));
@@ -204,7 +204,7 @@ impl Switcher {
         let mut line2: Vec<Span> = vec![gutter(false)];
         match &row.reference {
             RowRef::Window { .. } => {
-                let mut style = Style::default().fg(COLOR_WINDOW);
+                let mut style = Style::default().fg(color_window());
                 if row.active {
                     style = style.add_modifier(Modifier::BOLD);
                 }
@@ -219,7 +219,7 @@ impl Switcher {
             RowRef::Loading { .. } => {
                 line2.push(Span::styled(
                     format!(" {spinner_glyph} "),
-                    Style::default().fg(palette::PENDING),
+                    Style::default().fg(palette::get().pending),
                 ));
             }
             RowRef::Host { unreachable, .. } => {
@@ -227,9 +227,9 @@ impl Switcher {
                 // (soft yellow), a dead host is danger (soft red), a settled empty
                 // host is muted.
                 let style = if *unreachable {
-                    Style::default().fg(palette::DANGER)
+                    Style::default().fg(palette::get().danger)
                 } else if row.line2.starts_with("scanning") {
-                    Style::default().fg(palette::PENDING)
+                    Style::default().fg(palette::get().pending)
                 } else {
                     muted
                 };
@@ -304,7 +304,7 @@ impl Switcher {
                 // The menu highlight matches the nav's selection language: a quiet
                 // surface background, not reverse video.
                 let style = if menu.hovered == Some(i) {
-                    Style::default().bg(palette::SURFACE)
+                    Style::default().bg(palette::get().surface)
                 } else {
                     Style::default()
                 };

@@ -127,16 +127,16 @@ impl ViewBorderColors {
     }
 }
 
-/// The hint bar's built-in default style: a quiet dark bar (the palette's
-/// [`BAR_BG`](crate::ui::palette::BAR_BG) background, [`SUBTEXT`](crate::ui::palette::SUBTEXT)
-/// text) so the cheatsheet reads as chrome rather than shouting over the content.
+/// The hint bar's built-in default style: a quiet bar on the active palette's
+/// `bar_bg` background with `subtext` text, so the cheatsheet reads as chrome
+/// rather than shouting over the content.
 /// Key tokens get the accent on top of this (see [`Chrome::hint_bar_spans`] - only
 /// while this default is in effect, so a `[ui] hint-bar-style` override keeps its
 /// exact colours). Used when `[ui] hint-bar-style` is unset.
 pub(crate) fn hint_bar_default_style() -> Style {
     Style::default()
-        .bg(crate::ui::palette::BAR_BG)
-        .fg(crate::ui::palette::SUBTEXT)
+        .bg(crate::ui::palette::get().bar_bg)
+        .fg(crate::ui::palette::get().subtext)
 }
 
 /// Parses a `[ui] hint-bar-style` spec into the hint bar [`Style`]. Empty ⇒ the
@@ -162,16 +162,16 @@ pub(crate) fn parse_hint_bar_style(spec: &str) -> Style {
     style
 }
 
-/// The hint bar's refusal style: a solid danger-red bar (the palette's
-/// [`DANGER`](crate::ui::palette::DANGER) as the background, near-black text)
-/// that breaks hard from the calm dark default so a refused action reads as an
+/// The hint bar's refusal style: a solid danger-red bar (the active palette's
+/// `danger` as the background, the `bar_bg` tone as the text) that breaks hard
+/// from the calm default so a refused action reads as an
 /// error at a glance, not as more of the key cheatsheet. Every flash today is a
 /// refusal, so a shown flash always paints this. Fixed, not configurable: an
 /// error must stay legible regardless of any `[ui] hint-bar-style` override.
 pub(crate) fn error_flash_style() -> Style {
     Style::default()
-        .bg(crate::ui::palette::DANGER)
-        .fg(crate::ui::palette::BAR_BG)
+        .bg(crate::ui::palette::get().danger)
+        .fg(crate::ui::palette::get().bar_bg)
 }
 
 /// The switcher's chrome view state: the view border/hint_bar/host-info draws and
@@ -380,7 +380,7 @@ impl Chrome {
         let mut lines = vec![
             Line::from(Span::styled(
                 format!(" ⚠ {alias} unreachable"),
-                Style::default().fg(crate::ui::palette::DANGER),
+                Style::default().fg(crate::ui::palette::get().danger),
             )),
             Line::from(""),
             Line::from(format!(" reason: {reason}")),
@@ -409,8 +409,8 @@ impl Chrome {
     /// freshly-reachable but empty host offers a next step rather than a blank grid.
     pub(crate) fn render_host_landing(&self, frame: &mut Frame, area: Rect, source: &str) {
         let p = &self.ui_prefix;
-        let accent = Style::default().fg(crate::ui::palette::ACCENT);
-        let prose = Style::default().fg(crate::ui::palette::SUBTEXT);
+        let accent = Style::default().fg(crate::ui::palette::get().accent);
+        let prose = Style::default().fg(crate::ui::palette::get().subtext);
         let lines = vec![
             Line::from(""),
             Line::from(Span::styled(
@@ -512,8 +512,8 @@ impl Chrome {
     /// presentational - the text is exactly the [`Self::hint_bar_lines`] line, so the
     /// fit / wrap behaviour is untouched.
     fn hint_bar_line_spans(&self, line: String) -> Line<'static> {
-        let accent = Style::default().fg(crate::ui::palette::ACCENT);
-        let sep_style = Style::default().fg(crate::ui::palette::OVERLAY);
+        let accent = Style::default().fg(crate::ui::palette::get().accent);
+        let sep_style = Style::default().fg(crate::ui::palette::get().overlay);
         let mut spans: Vec<Span> = Vec::new();
         for (i, seg) in line.split(" · ").enumerate() {
             if i > 0 {

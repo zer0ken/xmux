@@ -497,8 +497,8 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
         .max()
         .unwrap_or(0);
     let bold = Style::new().add_modifier(Modifier::BOLD);
-    let accent = Style::default().fg(palette::ACCENT);
-    let rule = Span::styled("│ ", Style::default().fg(palette::OVERLAY));
+    let accent = Style::default().fg(palette::get().accent);
+    let rule = Span::styled("│ ", Style::default().fg(palette::get().overlay));
     let lines: Vec<Line> = rows
         .into_iter()
         .map(|r| match r {
@@ -540,7 +540,7 @@ pub(crate) fn input_lines(input: &Input) -> (String, Vec<Line<'static>>) {
     let lines = vec![
         Line::from(Span::styled(format!(" {}", input.label.trim()), dim)),
         Line::from(vec![
-            Span::styled(" ❯ ", Style::default().fg(palette::ACCENT)),
+            Span::styled(" ❯ ", Style::default().fg(palette::get().accent)),
             Span::raw(before),
             Span::styled(at, caret),
             Span::raw(after),
@@ -552,7 +552,7 @@ pub(crate) fn input_lines(input: &Input) -> (String, Vec<Line<'static>>) {
 
 /// The armed kill confirm rendered as popup `(title, lines)`, in red.
 pub(crate) fn confirm_lines(armed: &PendingKill) -> (String, Vec<Line<'static>>) {
-    let red = Style::default().fg(palette::DANGER);
+    let red = Style::default().fg(palette::get().danger);
     let q = match armed {
         PendingKill::Session(sess) => format!(" kill {}?", sess.address()),
         PendingKill::Window { source, target, .. } => format!(" kill {source}/{target}?"),
@@ -593,11 +593,11 @@ pub(crate) fn render_popup(
     // base style keeps the interior opaque (see the doc comment above).
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(palette::OVERLAY))
+        .border_style(Style::default().fg(palette::get().overlay))
         .title(Span::styled(
             format!(" {title} "),
             Style::default()
-                .fg(palette::ACCENT)
+                .fg(palette::get().accent)
                 .add_modifier(Modifier::BOLD),
         ))
         .style(Style::reset());

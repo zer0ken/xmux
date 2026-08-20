@@ -34,14 +34,23 @@ pub const NAV_WIDTH: u16 = 48;
 pub(super) const CARD_H: u16 = 2;
 
 // Per-level node colours (the shared semantic palette), so the tree levels read
-// apart at a glance.
-const COLOR_HOST: Color = crate::ui::palette::HOST;
-const COLOR_SESSION: Color = crate::ui::palette::SESSION;
-const COLOR_WINDOW: Color = crate::ui::palette::WINDOW;
+// apart at a glance. Functions, not consts: the active palette (dark / light) is
+// picked at runtime from the terminal background.
+fn color_host() -> Color {
+    crate::ui::palette::get().host
+}
+fn color_session() -> Color {
+    crate::ui::palette::get().session
+}
+fn color_window() -> Color {
+    crate::ui::palette::get().window
+}
 /// Settled per-element status (no sessions) renders muted so it reads apart
 /// from settled content; in-flight and failure states carry their own colours
-/// ([`crate::ui::palette::PENDING`] / [`crate::ui::palette::DANGER`]).
-const COLOR_HINT: Color = crate::ui::palette::OVERLAY;
+/// (the palette's `pending` / `danger`).
+fn color_hint() -> Color {
+    crate::ui::palette::get().overlay
+}
 
 pub use crate::ui::chrome::ViewBorderColors;
 
