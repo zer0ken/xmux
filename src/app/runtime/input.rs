@@ -338,6 +338,11 @@ impl Runtime {
         selection: &Selection,
     ) -> StdinOutcome {
         use std::time::Duration;
+        // The hint bar swaps between the resting prefix and the armed cheatsheet, so an
+        // arm/disarm is a VISIBLE change even when the read moves nothing else. Snapshot
+        // it here and mark the frame dirty below if it flipped, or the cheatsheet would
+        // only appear on the next unrelated redraw (a poll tick).
+        let armed_before = self.armed();
         let mut outcome = StdinOutcome::default();
         let StdinOutcome {
             quit,
@@ -566,6 +571,9 @@ impl Runtime {
             // No term.clear(): both states draw the SAME split layout (only the
             // view border colour changes), so clearing would blank the screen and
             // force a full repaint for nothing.
+        }
+        if self.armed() != armed_before {
+            *dirty = true;
         }
         if *focus_tree {
             self.state

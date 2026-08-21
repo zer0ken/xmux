@@ -98,6 +98,9 @@ xmux version
 | `prefix Tab` / 화살표 / `Esc` | 트리와 화면 사이 초점 이동 |
 | `prefix prefix` | prefix 바이트 하나를 초점 세션에 그대로 보내기 |
 
+nav의 맨 아래 줄이 상태 표시줄이다. 평소에는 prefix만 보여준다. prefix를 누르면 창
+전체 폭으로 넓어져 실시간 화면 위에 떠서, 그 prefix가 여는 키 목록을 보여준다.
+
 prefix에 관한 자세한 내용은 [`docs/keybind.md`](docs/keybind.md)를 참고한다.
 
 ## 설정

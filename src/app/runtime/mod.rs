@@ -360,10 +360,10 @@ fn sync_selection_from_switcher(
 /// the remote wrap at a width wider than the visible view, so a line overflows the
 /// right edge (and a double-width char straddles the clip boundary). The view width
 /// is `cols - nav_width - 1` (tree + the single view border rule), except `nav_width == 0`
-/// (the tree-hidden sentinel) gives the full `cols` with no view border. The hint_bar now
-/// spans the full width along the bottom, so a shown tree gives the terminal view height
-/// `body_rows` (full height minus the one hint_bar row); the tree-hidden sentinel has no
-/// hint_bar and keeps the full height `body_rows + 1`. Both clamp to at least 1.
+/// (the tree-hidden sentinel) gives the full `cols` with no view border. The hint bar
+/// lives INSIDE the nav region, so it costs the terminal view no height in `Side`: the
+/// view gets the full `body_rows + 1`. In `Top` the terminal view is what is left below
+/// the nav band. Both clamp to at least 1.
 pub(crate) fn terminal_view_size(
     cols: u16,
     body_rows: u16,
@@ -371,10 +371,10 @@ pub(crate) fn terminal_view_size(
     nav_height: u16,
 ) -> (u16, u16) {
     // Derive from the one shared geometry (`compute_regions`) so the PTY size always
-    // matches what the renderer draws, in either layout. `body_rows` is full_height - 1
-    // (the hint bar row), so the full area is `body_rows + 1` tall; sizing assumes a
-    // one-row hint bar. A portrait area stacks the tree on top and shrinks the terminal
-    // view height accordingly; `nav_width == 0` gives the full area (tree hidden).
+    // matches what the renderer draws, in either layout. `body_rows` is full_height - 1,
+    // so the full area is `body_rows + 1` tall; sizing assumes a one-row hint bar inside
+    // the nav. A portrait area stacks the tree on top and shrinks the terminal view
+    // height accordingly; `nav_width == 0` gives the full area (tree hidden).
     let area = ratatui::layout::Rect::new(0, 0, cols, body_rows.saturating_add(1));
     let t = crate::ui::switcher::compute_regions(area, nav_width, nav_height, 1).terminal;
     (t.width.max(1), t.height.max(1))

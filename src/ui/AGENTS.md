@@ -15,7 +15,9 @@ application, and render state. The open modal itself lives in `State.modal`
 (the `Modal` enum is defined here); the switcher reads/writes it and owns only
 the transient popup geometry (drag offset / drawn rect). `chrome.rs` defines the
 chrome - the view border, the hint bar, and the unreachable-host info - and its
-view-local state (flash, spinner, view border colours, ui prefix); the `Chrome`
+view-local state (flash, spinner, view border colours, ui prefix, armed);
+the hint bar is the NAV's bottom row(s), not a full-width strip, and shows the
+prefix alone until it is armed; the `Chrome`
 instance itself lives in `State.chrome` (like `State.modal`), fed by the app each
 frame and rendered from `&State`. `ops.rs`
 holds the off-loop mux-action boundary: the `Ops` trait over the live mux (one

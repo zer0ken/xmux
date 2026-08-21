@@ -212,25 +212,25 @@ async fn scan_or_dispatch_host_detects_from_hosts_without_env() {
 fn terminal_view_size_zero_tree_is_full_width() {
     // Hidden tree (sentinel 0): full cols, no view border subtracted.
     assert_eq!(terminal_view_size(80, 23, 0, 0), (80, 24));
-    // Shown tree: cols - nav_width - 1 (view border), height = body_rows (bottom row
-    // reserved for the full-width hint_bar).
-    assert_eq!(terminal_view_size(80, 23, 48, 0), (31, 23));
+    // Shown tree: cols - nav_width - 1 (view border). The hint bar lives inside the nav
+    // column, so the terminal view keeps every row.
+    assert_eq!(terminal_view_size(80, 23, 48, 0), (31, 24));
     // Degenerate widths clamp to at least 1.
     assert_eq!(terminal_view_size(0, 0, 0, 0), (1, 1));
 }
 
 #[test]
-fn terminal_view_size_reserves_full_width_hint_row_when_tree_shown() {
+fn terminal_view_size_keeps_full_height_when_the_tree_is_shown() {
     use crate::ui::switcher::NAV_WIDTH;
-    // Tree hidden (sentinel 0): no hint_bar, terminal view spans the full height.
+    // Tree hidden (sentinel 0): terminal view spans the full height.
     let (_, full) = terminal_view_size(120, 39, 0, 0);
     assert_eq!(full, 40);
-    // Tree shown: the full-width hint_bar owns the bottom row, so the terminal
-    // view is exactly one row shorter.
+    // Tree shown in Side: the hint bar is the NAV column's bottom row, not a full-width
+    // strip, so the terminal view costs nothing in height.
     let (_, shown) = terminal_view_size(120, 39, NAV_WIDTH, 0);
     assert_eq!(
-        shown, 39,
-        "shown tree reserves one row for the full-width hint_bar"
+        shown, 40,
+        "the nav-local hint bar costs the terminal view no rows"
     );
 }
 
@@ -292,9 +292,9 @@ fn terminal_view_size_subtracts_tree_and_view_border() {
         143 - (NAV_WIDTH + 1),
         "cols minus tree minus view border"
     );
-    // The full-width hint_bar owns the bottom row, so the terminal view drops one row
-    // below the full terminal height (height == body_rows).
-    assert_eq!(vr, 39, "height drops one row for the full-width hint_bar");
+    // The hint bar sits inside the nav column, so the terminal view keeps the full
+    // terminal height (body_rows + 1).
+    assert_eq!(vr, 40, "the nav-local hint bar costs no terminal rows");
 }
 
 #[test]
@@ -1722,6 +1722,33 @@ fn handle_stdin_bytes_quit_on_prefix_q_in_tree_focus() {
     assert!(out.quit, "prefix+q in tree focus quits");
 }
 
+#[test]
+fn arming_the_prefix_marks_the_frame_dirty_so_the_hint_bar_swaps() {
+    use crate::ui::switcher::{Scan, Switcher};
+    // The hint bar shows the prefix at rest and its keys once armed, so the bare prefix
+    // read is a VISIBLE change even though it moves no selection and runs no action. If
+    // it did not mark the frame dirty the cheatsheet would only appear on the next
+    // unrelated redraw (a poll tick), which reads as the prefix doing nothing.
+    let scan = Scan {
+        groups: vec![],
+        panes: Default::default(),
+    };
+    let mut state = crate::state::State::from_scan(scan); // tree focus
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.hosts = crate::model::Hosts::default();
+    rt.state = state;
+    rt.switcher = switcher;
+    assert!(!rt.armed(), "starts unarmed");
+    let out = rt.handle_stdin_bytes(b"\x07", &Selection::default());
+    assert!(rt.armed(), "the bare prefix arms");
+    assert!(out.dirty, "arming redraws, so the cheatsheet shows at once");
+    // Disarming (the command key lands) is equally visible.
+    let out = rt.handle_stdin_bytes(b"t", &Selection::default());
+    assert!(!rt.armed(), "the command key consumes the arm");
+    assert!(out.dirty, "disarming redraws too");
+}
+
 /// Builds a `Runtime` with one reachable session on source `jup`, focused on the
 /// TERMINAL view - the setup the focus-independent tree-action tests share.
 fn rt_terminal_focus_with_session() -> Runtime {
@@ -1830,8 +1857,9 @@ fn handle_mouse_event_view_border_grab_sets_dragging() {
 fn handle_mouse_event_top_layout_border_drag_resizes_height() {
     use crate::ui::switcher::{Scan, Switcher};
     // In the portrait Top layout the view border is a HORIZONTAL rule; a left-press on that
-    // row grabs it and a drag sets the tree HEIGHT (not width). 40x60 → Top; auto height is
-    // ~40% of the 59-row body = 23, so the border sits at row 23 (0-based) = SGR row 24.
+    // row grabs it and a drag sets the tree HEIGHT (not width). 40x60 → Top; the nav band
+    // carries its own hint bar, so its auto height is ~40% of the whole 60-row area = 24,
+    // putting the border at row 24 (0-based) = SGR row 25.
     let mut state = crate::state::State::from_scan(Scan {
         groups: vec![],
         panes: Default::default(),
@@ -1848,7 +1876,7 @@ fn handle_mouse_event_top_layout_border_drag_resizes_height() {
     let press = crate::display::mouse::MouseEvent {
         cb: 0,
         col: 5,
-        row: 24,
+        row: 25,
         pressed: true,
     };
     let mut non_mouse: Vec<u8> = Vec::new();

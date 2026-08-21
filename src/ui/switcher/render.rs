@@ -4,6 +4,22 @@ use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState};
 
 use crate::ui::palette;
 
+/// Where the hint bar actually paints. At rest it is the nav-local rect
+/// `compute_regions` derived; while the prefix is ARMED it spans the whole window width
+/// on those same rows, so the cheatsheet reads as one bar floating over the whole app
+/// rather than a column note - and it can say more than a nav column has room for.
+/// Only the paint widens; the layout is untouched, so nothing reflows on arm.
+fn hint_bar_rect(nav_local: Rect, area: Rect, state: &crate::state::State) -> Rect {
+    if !state.chrome.armed || nav_local.height == 0 {
+        return nav_local;
+    }
+    Rect {
+        x: area.x,
+        width: area.width,
+        ..nav_local
+    }
+}
+
 /// Braille spinner frames for pending states (connecting session, loading panes).
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -43,14 +59,20 @@ impl Switcher {
             return;
         }
         // One geometry source for the whole frame (compute_regions), shared with the PTY
-        // sizing and mouse hit-testing so they never diverge: the hint bar spans the bottom
-        // full width, and the nav list / terminal split horizontally (Side) or vertically
-        // (Top, for a portrait screen), parted by the view border. The hint bar is normally
-        // one row; a long flash wraps, so size it to the wrapped line count (never clipped).
-        let hint_bar_h = state.chrome.hint_bar_lines(area.width, state).len().max(1) as u16;
+        // sizing and mouse hit-testing so they never diverge: the nav list / terminal split
+        // horizontally (Side) or vertically (Top, for a portrait screen), parted by the view
+        // border, and the hint bar takes the nav's bottom rows. The hint bar is normally one
+        // row; a long flash wraps, so size it to the wrapped line count (never clipped).
+        // Measured at the width it will RENDER at: the nav column normally, the whole
+        // window while the prefix is armed (see `hint_bar_rect`).
+        let bar_w = if state.chrome.armed {
+            area.width
+        } else {
+            nav_width
+        };
+        let hint_bar_h = state.chrome.hint_bar_lines(bar_w, state).len().max(1) as u16;
         let r = compute_regions(area, nav_width, nav_height, hint_bar_h);
         self.render_nav(frame, r.tree, state);
-        state.chrome.render_hint_bar(frame, r.hint_bar, state);
         // The view border marks focus between the two views (vertical in Side, horizontal in Top).
         state
             .chrome
@@ -71,6 +93,14 @@ impl Switcher {
         } else {
             self.render_terminal_view(frame, term_area, grid);
         }
+        // The hint bar paints LAST of the two views, so an armed bar can float over the
+        // terminal view. At rest it stays inside the nav (its own status line); armed it
+        // widens to the whole window on the same row, covering the view border and the
+        // grid beneath it - the layout never reflows, only the paint reaches further, so
+        // arming the prefix cannot shift a single card.
+        state
+            .chrome
+            .render_hint_bar(frame, hint_bar_rect(r.hint_bar, area, state), state);
         // In the terminal view, place the real cursor at the grid's cursor so typing in the
         // mux is visible and tracks. Skipped when the child hid its cursor.
         if terminal_focused {
