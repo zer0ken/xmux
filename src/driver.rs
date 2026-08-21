@@ -194,8 +194,14 @@ pub(crate) mod tests {
             crate::model::Host::new(crate::machine::local(None), crate::mux::for_binary("tmux"));
         let psmux_host =
             crate::model::Host::new(crate::machine::local(None), crate::mux::for_binary("psmux"));
+        let zellij_host = crate::model::Host::new(
+            crate::machine::local(None),
+            crate::mux::for_binary("zellij"),
+        );
         let _t: Box<dyn MuxDriver> = driver_for(&tmux_host);
         let _p: Box<dyn MuxDriver> = driver_for(&psmux_host);
+        let z: Box<dyn MuxDriver> = driver_for(&zellij_host);
+        assert_eq!(z.kind(), "zellij", "each mux constructs its own driver");
     }
 
     /// The decision is a Mux method, not a `match` in the app: a Shared host is

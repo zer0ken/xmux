@@ -25,7 +25,7 @@ use crate::source::Source;
     name = "xmux",
     version,
     about = "cross-environment mux session switcher",
-    long_about = "xmux shows every reachable tmux/psmux session (local + ssh) as one list and switches between them."
+    long_about = "xmux shows every reachable tmux/psmux/zellij session (local + ssh) as one list and switches between them."
 )]
 struct Cli {
     /// Name this instance (default: an auto-generated `<adjective>-<noun>`). Lowercase

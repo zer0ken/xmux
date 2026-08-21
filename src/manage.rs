@@ -7,7 +7,6 @@
 //! config and pass the source's runner.
 
 use crate::model::Host;
-use crate::mux;
 use crate::session::WindowPanes;
 use crate::source::{RunError, Runner};
 
@@ -22,12 +21,18 @@ async fn run_plan(
     runner.run(&name, &args).await
 }
 
-/// Creates-or-attaches a DETACHED session on the host and returns its assigned
-/// name (the mux prints it; auto-named when `name` is empty). The trailing
-/// whitespace is trimmed.
+/// Creates a DETACHED session on the host and returns its assigned name (the mux
+/// prints it; tmux auto-names when `name` is empty). The trailing whitespace is
+/// trimmed. A mux that creates SILENTLY (zellij's `attach -b` prints nothing) yields
+/// the requested name, which is the name it just created.
 pub async fn create(host: &Host, runner: &dyn Runner, name: &str) -> Result<String, RunError> {
     let out = run_plan(host, runner, &host.mux.new_session_plan(name)).await?;
-    Ok(String::from_utf8_lossy(&out).trim().to_string())
+    let printed = String::from_utf8_lossy(&out).trim().to_string();
+    Ok(if printed.is_empty() {
+        name.to_string()
+    } else {
+        printed
+    })
 }
 
 /// Returns the host session's windows-with-panes (for the tree's child loading
@@ -38,19 +43,26 @@ pub async fn panes(
     name: &str,
 ) -> Result<Vec<WindowPanes>, RunError> {
     let out = run_plan(host, runner, &host.mux.list_panes_plan(name)).await?;
-    Ok(mux::parse_panes(&String::from_utf8_lossy(&out)))
+    Ok(host.mux.parse_panes(&String::from_utf8_lossy(&out)))
 }
 
 /// Reads one global mux server option's trimmed value (`show -gv <name>`). Used to
 /// match the view border colours to the displayed session's live `pane-*-border-style`.
+/// A mux with no server options returns an EMPTY plan, and the value is empty without
+/// a command being run.
 pub async fn show_option(host: &Host, runner: &dyn Runner, name: &str) -> Result<String, RunError> {
-    let out = run_plan(host, runner, &host.mux.show_option_plan(name)).await?;
+    let plan = host.mux.show_option_plan(name);
+    if plan.is_empty() {
+        return Ok(String::new());
+    }
+    let out = run_plan(host, runner, &plan).await?;
     Ok(String::from_utf8_lossy(&out).trim().to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mux;
     use crate::source::Runner;
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};

@@ -147,6 +147,10 @@ UI elements a user perceives as distinct things:
   input dialog are popups.
 - prompt - the `❯` entry marker on an input dialog's edit line.
 
+A zellij TAB is a `window` and a zellij SESSION is a `session`: xmux's vocabulary is
+one set of words for every mux, so a mux's own naming is translated at its family
+boundary and nowhere above it.
+
 `pane` is reserved for a mux window's terminal split (a tmux / psmux pane); it is
 never a screen region - screen regions are "views", and the line between them is
 the `view border`. A transient hint-bar message is a `flash`, never a "toast" or
@@ -187,11 +191,14 @@ Two orthogonal axes describe every connection, and no module conflates them:
   `match`. Shared shell vocabulary (`quote` / `remote_command`) lives in
   `src/machine/vocab.rs`. `Transport` owns where a command runs and how its argv is
   executed; it knows nothing about the mux.
-- MUX - `src/mux/<kind>/`. Each mux family (`tmux/`, `psmux/`) owns its metadata
-  and command plans in `mod.rs` (behind the `Mux` trait) and its display
+- MUX - `src/mux/<kind>/`. Each mux family (`tmux/`, `psmux/`, `zellij/`) owns its
+  metadata and command plans in `mod.rs` (behind the `Mux` trait) and its display
   driver in `display.rs`. A mux builds its OWN driver via `Mux::driver()`,
   so mux selection lives in the mux family, never a central `match`. Shared mux
-  vocabulary lives in `src/mux/vocab.rs`.
+  vocabulary lives in `src/mux/vocab.rs`. The trait's command plans default to
+  tmux-compatible argv, so a tmux-compatible mux is identity plus a few methods; a
+  mux that shares no argv (zellij) overrides every plan AND the shape of what each
+  plan prints, since a plan and its output are one decision.
 
 Attach argv is composed from a host's own `mux` + `transport` (the two axes
 together), so the two families are combined without either knowing the other.

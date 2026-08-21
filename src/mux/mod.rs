@@ -14,17 +14,19 @@ use crate::machine::Transport;
 use crate::model::plan::{DeathSignal, EventSource};
 use crate::model::server_model::ServerModel;
 use crate::mux::vocab as mux;
-use crate::session::Session;
+use crate::session::{Session, WindowPanes};
 use crate::source::{RunError, Runner};
 
 mod control;
 mod psmux;
 mod tmux;
 pub mod vocab;
+mod zellij;
 
 pub use control::{ControlProtocol, Line, Notif};
 pub use psmux::Psmux;
 pub use tmux::{Tmux, TmuxControl};
+pub use zellij::Zellij;
 // Re-export the pure mux vocabulary at the crate::mux root so `crate::mux::<fn>`
 // call sites resolve unchanged whether the item is the Mux trait/factory or a
 // vocab builder/parser.
@@ -79,7 +81,10 @@ pub(crate) async fn enumerate_via_list_sessions(
 pub(crate) fn reason_is_no_sessions(text: &str) -> bool {
     text.to_lowercase().split('\n').any(|line| {
         let line = line.trim();
-        line.starts_with("no server running") || line.starts_with("no sessions")
+        line.starts_with("no server running")
+            || line.starts_with("no sessions")
+            // zellij's idle message, on stderr with a plain non-zero exit.
+            || line.starts_with("no active zellij sessions")
     })
 }
 
@@ -206,7 +211,7 @@ pub trait Mux: Send + Sync {
             let argv = self.list_panes_plan(&name);
             let (cmd, args) = transport.exec_argv(false, &argv);
             if let Ok(out) = runner.run(&cmd, &args).await {
-                let panes = mux::parse_panes(&String::from_utf8_lossy(&out));
+                let panes = self.parse_panes(&String::from_utf8_lossy(&out));
                 emit(HostEvent::Panes { address, panes });
             }
         }
@@ -218,6 +223,19 @@ pub trait Mux: Send + Sync {
     fn list_panes_plan(&self, session: &str) -> Vec<String> {
         mux::list_panes(self.bin(), session)
     }
+
+    /// Reads the output of [`Self::list_panes_plan`] as windows-and-panes. A plan and
+    /// the shape of what it prints are one decision, so they are overridden together: a
+    /// mux whose argv diverges from tmux's usually prints something else too (zellij
+    /// answers in JSON). The default is the tmux tab-delimited [`mux::PANE_FORMAT`]
+    /// parser, which every tmux-compatible mux inherits.
+    fn parse_panes(&self, out: &str) -> Vec<WindowPanes> {
+        mux::parse_panes(out)
+    }
+
+    /// Reads one global server option. An EMPTY plan means the mux has no server
+    /// options at all, and the caller yields no value without running anything - the
+    /// honest answer for a mux configured only by a file its server never reports.
     fn show_option_plan(&self, name: &str) -> Vec<String> {
         mux::show_option(self.bin(), name)
     }
@@ -241,10 +259,16 @@ struct MuxKind {
 // `name` is the canonical identity, help-output marker, and conventional binary
 // name. tmux is the implicit fallback because tmux has no positive help signal.
 fn known_muxes() -> &'static [MuxKind] {
-    &[MuxKind {
-        name: "psmux",
-        make: |bin| Box::new(Psmux { bin }),
-    }]
+    &[
+        MuxKind {
+            name: "psmux",
+            make: |bin| Box::new(Psmux { bin }),
+        },
+        MuxKind {
+            name: "zellij",
+            make: |bin| Box::new(Zellij { bin }),
+        },
+    ]
 }
 
 /// The implicit tmux fallback — the single place that names tmux as the mux any
@@ -602,6 +626,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn detect_backend_classifies_zellij_by_help_marker() {
+        // zellij names itself in its help banner, the same positive signal psmux gives,
+        // so it is identified without ever reaching the `-V` tmux fallback.
+        let transport = crate::machine::local(None);
+        let runner = ProbeRunner::new(
+            Some(
+                "A terminal workspace with batteries included
+
+Usage: zellij [OPTIONS]",
+            ),
+            Some("tmux 3.5a"),
+        );
+        let got = detect_backend(&transport, "zellij", &runner).await.unwrap();
+        assert_eq!(got.kind(), "zellij");
+        assert_eq!(got.server_model(), ServerModel::PerSession);
+        assert_eq!(got.attach_plan("api"), argv(&["zellij", "attach", "api"]));
+    }
+
+    #[tokio::test]
     async fn detect_backend_classifies_real_tmux_via_version_when_help_errors() {
         // Regression: real tmux has no `help` command (`tmux help` exits non-zero), so
         // the help probe errors. The `-V` fallback must still identify it as tmux —
@@ -688,10 +731,21 @@ mod tests {
     }
 
     #[test]
+    fn zellij_resolves_by_binary_name_and_by_kind() {
+        // The registry is what makes a mux reachable from config: a `mux = "zellij"`
+        // entry and a `zellij` binary must both land on the zellij impl, and the
+        // invoked binary is preserved either way.
+        assert_eq!(for_binary("zellij").kind(), "zellij");
+        assert_eq!(for_kind("zellij", "zellij-nightly").kind(), "zellij");
+        assert_eq!(for_kind("zellij", "zellij-nightly").bin(), "zellij-nightly");
+    }
+
+    #[test]
     fn is_recognized_covers_tmux_and_known_muxes() {
         assert!(is_recognized("tmux"));
         assert!(is_recognized("psmux"));
-        assert!(!is_recognized("zellij"));
+        assert!(is_recognized("zellij"));
+        assert!(!is_recognized("byobu"));
         assert!(!is_recognized(""));
     }
 

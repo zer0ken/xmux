@@ -28,6 +28,12 @@ its display driver) and is re-exported from `mod.rs`:
   (`MuxDriver` impl) and its tty-capture/refresh helpers; `psmux/registry.rs` is the
   `~/.psmux` per-machine session registry that backs psmux `enumerate` (one server per
   session, no aggregate `list-sessions`). See `psmux/AGENTS.md`.
+- `zellij/mod.rs` — `Zellij` and its `Mux` impl, its poll cadence constant
+  (`ZELLIJ_POLL_MS`), and the `--session <name> action <verb>` argv every zellij query
+  is addressed with; `zellij/display.rs` — `ZellijDriver` (`MuxDriver` impl), which
+  reattaches on every session change because no client can be named from outside its
+  own session; `zellij/parse.rs` holds its two output shapes (a human session line and
+  a JSON tab listing). See `zellij/AGENTS.md`.
 
 Sub-modules pull the shared trait, value types, and imports from the parent via
 `use super::*;`. `crate::mux::{Tmux, Psmux}` resolve through the re-exports; a
@@ -41,8 +47,13 @@ execution. The `MuxDriver` trait (`src/driver.rs`) is the mux-agnostic display s
 each mux's concrete driver lives in its own family directory and is constructed by
 `Mux::driver()`, so a mux owns BOTH its argv/server-model/enumeration AND its
 display orchestration. Shared muxes such as tmux use one aggregate server and a
-host-level control stream. Per-session muxes such as psmux enumerate differently and
-supply a per-session attach plan.
+host-level control stream. Per-session muxes such as psmux and zellij enumerate
+differently and supply a per-session attach plan.
+
+The command-plan verbs default to tmux-compatible argv, so a tmux-compatible mux is
+identity plus a few methods. A mux that shares no argv with tmux overrides every verb,
+and overrides `parse_panes` with it: a plan and the shape of what it prints are one
+decision, so they move together.
 
 ## Module Seams
 
@@ -86,7 +97,9 @@ supply a per-session attach plan.
 
 - Identify whether the new behavior is mux semantics, machine transport, or UI
   policy.
-- Check both tmux and psmux behavior when changing trait methods.
+- Check tmux, psmux, AND zellij behavior when changing trait methods. A new verb with a
+  tmux-compatible default is silently wrong for zellij, which refuses tmux's flags
+  outright.
 - Keep trait additions tied to an end-to-end caller.
 
 ## Verification

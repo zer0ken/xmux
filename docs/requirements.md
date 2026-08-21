@@ -1,8 +1,8 @@
 # xmux — functional requirements & use cases
 
 xmux is a stateless cross-environment session switcher: one terminal that sees and
-moves between every reachable tmux/psmux session — local and over ssh — regardless
-of OS or mux kind. Its reason to exist is to deliver tmux's `prefix + s`
+moves between every reachable tmux/psmux/zellij session — local and over ssh —
+regardless of OS or mux kind. Its reason to exist is to deliver tmux's `prefix + s`
 (choose-tree / switch-client) experience **across hosts**: instant, in-place
 switching to any host's session.
 
@@ -35,6 +35,24 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   `the_dns_label_wins_over_hostname`, `a_provider_that_cannot_answer_yields_nothing`,
   `a_label_that_is_not_a_dns_label_is_refused`,
   `merge_keeps_first_seen_order_and_drops_duplicates`.
+
+- **FR-A6** — A host's mux is identified by what its binary answers as, not by the
+  name it was invoked under, so tmux, psmux, and zellij mix freely across hosts with no
+  configuration. Each mux is one family behind the `Mux` trait: the command plans
+  default to tmux-compatible argv (so a tmux-compatible mux is identity plus a few
+  methods), and a mux that shares no argv with tmux overrides every plan together with
+  the shape of what each plan prints. zellij is that case: it is enumerated from
+  `list-sessions`, its windows come from its tab listing, and its sessions are polled
+  because it offers no push channel. **Tests:**
+  `detect_backend_classifies_zellij_by_help_marker`,
+  `zellij_resolves_by_binary_name_and_by_kind`,
+  `zellij_is_per_session_polled_and_dies_by_eof`,
+  `the_window_query_is_the_tab_listing_and_it_reads_json`,
+  `an_idle_zellij_is_empty_and_an_unreachable_host_is_an_error`,
+  `a_session_carries_its_name_kind_and_creation_recency`,
+  `a_resurrectable_session_is_not_offered`, `tabs_are_windows_in_tab_bar_order`.
+  **Live-verified** (real zellij over ssh: attach, cross-session switch, input, and the
+  window row following the session's focused tab).
 
 ## B. The switcher — "see the list, decide whether & where to move"
 
