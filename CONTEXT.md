@@ -104,7 +104,7 @@ UI elements a user perceives as distinct things:
   re-sorts). `preselect` / `reselect` are the launch and post-rescan selections.
 - selection highlight - the selected card's rendering: a quiet surface background
   (ratatui's `highlight_style`, filling the whole card) plus an accent `▌` bar in
-  the gutter of both card lines (replacing that card's jump digit). `selected` +
+  the gutter of both card lines, in its own column left of the number. `selected` +
   `highlight` follow ratatui's list vocabulary.
 - spinner - the braille activity glyph on a loading card (and, historically, a
   connecting session).
@@ -113,12 +113,13 @@ UI elements a user perceives as distinct things:
 - status - a host-state card's detail-line state text (`scanning…` / `no sessions` /
   `⚠ unreachable`). Not to be confused with the hint bar (below) or the `chrome`.
 - card number - the dim 0-based index in a card's left gutter, and the address
-  `prefix <digit>` jumps to. EVERY card carries one, the selected card included (an
-  address that vanished when you landed on it could not be read back); the accent bar
-  sits in its own column to the left of it. It sits on the DETAIL line, beside the
-  session it addresses, so a collapsed card puts it in the same place as an expanded
-  one. The number column is one width per frame, so the names stay aligned and the
-  numbers line up by units place as the count crosses 10.
+  `prefix <digit>` jumps to. Every UNSELECTED card carries one; the selected card shows
+  none, because its number is the address you would type to reach where you already are
+  and the accent bar in the column beside it says so. The column is still spent, blank,
+  so a card's name never moves as the selection passes over it. It sits on the DETAIL
+  line, beside the session it addresses, so a collapsed card puts it in the same place
+  as an expanded one. The number column is one width per frame, so the names stay
+  aligned and the numbers line up by units place as the count crosses 10.
 - jump - the digits-only popup `prefix <digit>` opens. It acts WHILE open: each edit
   moves the selection, so Enter only closes it and Esc restores where it started. It
   accepts only a digit that keeps the number addressing a real card, so one-, two-,

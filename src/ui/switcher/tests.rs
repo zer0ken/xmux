@@ -1594,8 +1594,9 @@ async fn focused_collapsed_card_expands_to_two_rows() {
         "the expanded card shows its full context: {context:?}"
     );
     assert!(
-        !nav_line(&h, beta_row).contains("└") && !nav_line(&h, beta_row).contains("├"),
-        "the selected card drops the connector"
+        nav_line(&h, beta_row).contains("└"),
+        "the selected card KEEPS the connector, so its session name stays in the column          every other name is in: {:?}",
+        nav_line(&h, beta_row)
     );
     // The selection bar marks both rows of the expanded card.
     assert_eq!(h.buf()[(0, beta_row - 1)].symbol(), "▌");
@@ -1964,8 +1965,41 @@ async fn a_jump_past_the_last_card_is_inert() {
     assert_eq!(h.sw.selected, one, "a non-digit is ignored");
 }
 
+#[tokio::test]
+async fn selecting_a_card_never_moves_its_session_name() {
+    // The point of hiding the number and keeping the connector: a card's session name
+    // must sit in the same screen column whether or not it is selected. Anything that
+    // shifts it makes the list twitch as the cursor runs down it, which is exactly what
+    // dropping two columns of connector did.
+    let mut h = Harness::new(one_host_scan(
+        "srv",
+        vec![
+            sess_mux("srv", "alpha", "tmux", 300),
+            sess_mux("srv", "beta", "tmux", 200),
+        ],
+    ));
+    // The COLUMN, not the byte offset: the gutter holds `▌` and `└`, which are three
+    // bytes each, so a byte index would report a shift that is not on screen.
+    let col_of = |h: &Harness, name: &str| -> Option<usize> {
+        let row = h.nav_row_of(&format!("{name}/0:w-{name}"))?;
+        let line = nav_line(h, row);
+        let at = line.find(name)?;
+        Some(line[..at].chars().count())
+    };
+    let unselected = col_of(&h, "beta").expect("beta unselected");
+    h.key(KeyCode::Down).await; // select beta
+    let selected = col_of(&h, "beta").expect("beta selected");
+    assert_eq!(
+        selected, unselected,
+        "the session name holds its column across selection"
+    );
+    // And the name still lines up with the OTHER card's name, which never moved.
+    let alpha = col_of(&h, "alpha").expect("alpha");
+    assert_eq!(selected, alpha, "both names share one column");
+}
+
 #[test]
-fn every_card_carries_its_0_based_number_beside_its_session() {
+fn every_unselected_card_carries_its_0_based_number_beside_its_session() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
@@ -1974,7 +2008,9 @@ fn every_card_carries_its_0_based_number_beside_its_session() {
     let buf = term.backend().buffer();
     // Column 0 is the selection bar's own column; the number follows it, right-aligned
     // in one width for the whole frame, and sits on the card's DETAIL line - the row
-    // carrying the session it addresses, not the host/mux context above it.
+    // carrying the session it addresses, not the host/mux context above it. The SELECTED
+    // card shows no number: it is the address you would type to get where you already
+    // are, and the accent bar beside it says so.
     let selected = sw.list_state.selected().unwrap();
     let num_w = sw.rows.len().saturating_sub(1).to_string().len().max(1) as u16;
     let read =
@@ -1982,10 +2018,15 @@ fn every_card_carries_its_0_based_number_beside_its_session() {
     let mut top = 0u16;
     for i in 0..sw.rows.len() {
         let detail = top + sw.card_height(i) - 1;
+        let want = if i == selected {
+            String::new()
+        } else {
+            i.to_string()
+        };
         assert_eq!(
             read(1, detail, num_w).trim(),
-            i.to_string(),
-            "card {i} shows its number on its detail row {detail}"
+            want,
+            "card {i} number on its detail row {detail} (selected={selected})"
         );
         if sw.card_height(i) > 1 {
             assert_eq!(

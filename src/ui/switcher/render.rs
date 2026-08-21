@@ -224,13 +224,19 @@ impl Switcher {
     /// what the mux shows on attach - in the session / window colours, a loading
     /// card's `{session}/` + spinner, a host-state card's state coloured by kind
     /// (pending / danger / muted). The gutter is the selection bar column, then the
-    /// card's dim 0-based number, then a space: EVERY card shows its number, the
-    /// selected one included, because the number is the card's address and an address
-    /// that disappears when you land on it cannot be read back. The number sits on the
-    /// DETAIL line, never the context line: the number addresses a session, so it reads
-    /// beside the session it names, and a collapsed card (detail line only) then puts it
-    /// in the same place as an expanded one. The surface background comes from the List's
-    /// `highlight_style`, so no per-span background is baked in here.
+    /// card's dim 0-based number, then a space. The number sits on the DETAIL line,
+    /// never the context line: the number addresses a session, so it reads beside the
+    /// session it names, and a collapsed card (detail line only) then puts it in the
+    /// same place as an expanded one.
+    ///
+    /// The SELECTED card shows no number. Its number is the address you would type to
+    /// reach it, and you are already there; the accent bar in the column beside it says
+    /// so. The column is still spent, blank, because every card's name has to start at
+    /// the same screen column - moving the selected card's text is what makes a list
+    /// twitch as the cursor runs down it.
+    ///
+    /// The surface background comes from the List's `highlight_style`, so no per-span
+    /// background is baked in here.
     fn nav_row_item(&self, i: usize, num_w: usize, spinner_glyph: char) -> ListItem<'static> {
         let row = &self.rows[i];
         let muted = Style::default().fg(color_hint());
@@ -244,7 +250,7 @@ impl Switcher {
             } else {
                 Span::raw(" ")
             };
-            let number = if numbered {
+            let number = if numbered && !selected {
                 Span::styled(format!("{i:>num_w$} "), muted)
             } else {
                 Span::raw(" ".repeat(num_w + 1))
@@ -311,17 +317,17 @@ impl Switcher {
         // The connector hangs the detail line under its context line; on a
         // collapsed card it hangs under the SHARED context above, so a run of
         // collapsed cards reads as siblings of one context: ├ while a collapsed
-        // sibling follows below, └ on the run's last line. The selected card
-        // drops it - the accent bar and surface already bind its two lines.
+        // sibling follows below, └ on the run's last line. The SELECTED card keeps it:
+        // the accent bar and surface already say which card is selected, and dropping
+        // two columns of connector would slide the session name left of every name
+        // above and below it.
         let mut detail = gutter(true);
-        if !selected {
-            let connector = if self.card_collapsed(i + 1) {
-                "├ "
-            } else {
-                "└ "
-            };
-            detail.push(Span::styled(connector, muted));
-        }
+        let connector = if self.card_collapsed(i + 1) {
+            "├ "
+        } else {
+            "└ "
+        };
+        detail.push(Span::styled(connector, muted));
         detail.push(Span::styled(
             sess.to_string(),
             Style::default().fg(color_session()),
