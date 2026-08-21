@@ -31,8 +31,8 @@ sessions from one terminal.
 - **Metadata without polling where it counts.** tmux hosts are tracked over
   control mode (`-CC`); psmux hosts are polled. Either way the tree reflects the
   servers, which remain the source of truth.
-- **Switching, not editing.** Navigate, filter, and start a session on an empty
-  host. Renaming, killing, and window/pane work stay in the mux that already does
+- **Switching, not editing.** Navigate, filter, jump by number, and start a
+  session on an empty host. Renaming, killing, and window/pane work stay in the mux that already does
   them well.
 - **A control socket.** A local socket exposes semantic verbs for scripting and
   headless driving (see [Control socket](#control-socket)).
@@ -83,6 +83,7 @@ screen. Keyboard focus is on one region at a time.
 | `Home` / `End` | jump to the first / last row |
 | `PageUp` / `PageDown` | jump ten rows |
 | `Enter` | move focus into the selected session's live screen |
+| `prefix 0`-`prefix 9` | jump to a session by the number in its gutter (keep typing for 10+) |
 | `prefix n` | start a new session on the selected host |
 | `/` | fuzzy-filter the tree |
 | `prefix r` | re-scan every host |

@@ -112,6 +112,19 @@ UI elements a user perceives as distinct things:
   its detail line is `{session}/` + a spinner rather than a window part.
 - status - a host-state card's detail-line state text (`scanning…` / `no sessions` /
   `⚠ unreachable`). Not to be confused with the hint bar (below) or the `chrome`.
+- card number - the dim 0-based index in a card's left gutter, and the address
+  `prefix <digit>` jumps to. EVERY card carries one, the selected card included (an
+  address that vanished when you landed on it could not be read back); the accent bar
+  sits in its own column to the left of it. It sits on the DETAIL line, beside the
+  session it addresses, so a collapsed card puts it in the same place as an expanded
+  one. The number column is one width per frame, so the names stay aligned and the
+  numbers line up by units place as the count crosses 10.
+- jump - the digits-only popup `prefix <digit>` opens. It acts WHILE open: each edit
+  moves the selection, so Enter only closes it and Esc restores where it started. It
+  accepts only a digit that keeps the number addressing a real card, so one-, two-,
+  and three-digit numbers behave identically and the buffer never shows a number you
+  cannot land on. User-facing text calls this "jump to a session" (see the naming rule
+  below).
 - filter - the type-to-filter input over the nav list.
 - flash - a transient notice or error line shown in the hint bar (e.g. a refused
   action's reason). Never a "toast" or "notice".

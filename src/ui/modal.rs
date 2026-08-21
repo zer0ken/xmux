@@ -10,6 +10,7 @@ use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::ui::palette;
+use crate::ui::tree::RowRef;
 
 /// An active border-drag of a modal popup: the grabbed screen cell and the
 /// popup offset at grab time, so motion can compute the new offset.
@@ -96,6 +97,12 @@ impl PopupGeometry {
 pub(crate) enum InputMode {
     Filter,
     New,
+    /// Jump to a session by its number (the user-facing name: a `card` is the visual
+    /// row, the session is what it stands for). Unlike the other modes this one acts
+    /// WHILE it is open: every edit moves the selection, so the number is a live cursor
+    /// rather than a value submitted at the end. Enter therefore only closes the popup,
+    /// and Esc restores where the jump started.
+    Jump,
 }
 
 pub(crate) struct Input {
@@ -110,6 +117,11 @@ pub(crate) struct Input {
     /// host the user was on, not wherever streaming results moved the selection by
     /// the time they pressed Enter.
     pub(crate) source: Option<String>,
+    /// [`InputMode::Jump`] only: the card the selection was on when the popup opened,
+    /// held by IDENTITY (not row index) so a rebuild during the jump cannot restore
+    /// onto the wrong card. Esc returns here; Enter leaves the selection where the
+    /// live jump already put it.
+    pub(crate) restore: Option<RowRef>,
 }
 
 impl Input {
@@ -129,7 +141,17 @@ impl Input {
             buffer,
             cursor,
             source,
+            restore: None,
         }
+    }
+
+    /// What [`Self::insert`] would make the buffer, without changing anything. Lets a
+    /// mode veto a keystroke by its RESULT rather than guessing from the caret: the jump
+    /// only accepts a digit that keeps the number addressing a real session.
+    pub(crate) fn buffer_with(&self, c: char) -> String {
+        let mut v: Vec<char> = self.buffer.chars().collect();
+        v.insert(self.cursor.min(v.len()), c);
+        v.into_iter().collect()
     }
 
     /// Inserts `c` at the caret and advances past it. Char-indexed so multi-byte
@@ -327,7 +349,10 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
         HelpRow::Key("↑/↓ · j/k".into(), "move up / down the list".into()),
         HelpRow::Key("PgUp/PgDn".into(), "jump by 10".into()),
         HelpRow::Key("Home/End".into(), "first / last card".into()),
-        HelpRow::Key("1…9".into(), "jump to that numbered card".into()),
+        HelpRow::Key(
+            format!("{p} 0-9"),
+            "jump to a session by its number (keep typing for 10+)".into(),
+        ),
         HelpRow::Key(format!("{p} n"), "new session on the selected host".into()),
         HelpRow::Key("/".into(), "fuzzy filter <source>/<name>".into()),
         HelpRow::Key(format!("{p} r"), "re-scan every host".into()),
@@ -506,6 +531,7 @@ fn input_title(mode: InputMode) -> &'static str {
     match mode {
         InputMode::Filter => "filter",
         InputMode::New => "new session",
+        InputMode::Jump => "jump",
     }
 }
 

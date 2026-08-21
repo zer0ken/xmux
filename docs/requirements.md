@@ -72,6 +72,16 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   `armed_hint_bar_fits_a_narrow_nav`,
   `arming_the_prefix_marks_the_frame_dirty_so_the_hint_bar_swaps`,
   `long_flash_wraps_in_narrow_hint_bar_instead_of_clipping`.
+- **FR-B10** — Every card carries a 0-based number in its gutter, on the row of the
+  session it addresses, and `prefix <digit>` jumps to it. The popup stays open so the
+  number can grow, and accepts a digit only while the result still addresses a real
+  session, so one-, two-, and three-digit numbers behave identically. Each edit moves
+  the selection; `Enter` keeps it, `Esc` returns to where the jump started.
+  **Tests:** `every_card_carries_its_0_based_number_beside_its_session`,
+  `a_digit_opens_the_jump_popup_and_lands_on_that_card`,
+  `a_jump_walks_into_a_two_digit_number`,
+  `a_jump_never_holds_a_number_no_session_carries`,
+  `cancelling_a_jump_restores_the_starting_card`, `a_jump_past_the_last_card_is_inert`.
 
 ## C. Switching (the keystone)
 
@@ -244,6 +254,9 @@ nothing to switch to until one exists.
 - **UC-10 — Switch in either direction, local↔remote↔local.** The app re-attaches
   whatever the next target is, local or remote, in any order, with no picker between.
   *(FR-C2, FR-D1)*
+- **UC-11 — Go straight to the session I can already see.** Read the number off the
+  card, `prefix <digit>`, and the selection is there; keep typing for a number past 9.
+  *(FR-B10, FR-C1)*
 
 ## Out of scope (documented elsewhere)
 

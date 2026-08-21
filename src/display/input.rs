@@ -102,13 +102,14 @@ impl TermInput {
                     i += 1;
                     continue;
                 }
-                // prefix n/r → the tree actions (new session / re-scan), so they are
-                // reachable from the terminal view too, not only tree focus. Emitted as a
-                // TreeKey the caller hands to Switcher::handle_key: n opens the new-session
-                // input, r kicks a re-scan. Focus stays on the terminal view (the modal
+                // prefix n/r and prefix <digit> → the tree actions (new session, re-scan,
+                // card jump), so they are reachable from the terminal view too, not only
+                // tree focus. Emitted as a TreeKey the caller hands to
+                // Switcher::handle_key: n opens the new-session input, r kicks a re-scan,
+                // a digit opens the jump popup. Focus stays on the terminal view (the modal
                 // draws over it and owns the NEXT read), so the rest of THIS read still
                 // forwards to the pane, same shape as prefix ?/t above.
-                if matches!(b0, b'n' | b'r') {
+                if matches!(b0, b'n' | b'r') || b0.is_ascii_digit() {
                     if !fwd.is_empty() {
                         out.push(Action::Forward(std::mem::take(&mut fwd)));
                     }

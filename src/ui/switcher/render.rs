@@ -126,9 +126,9 @@ impl Switcher {
         self.nav_inner = area;
 
         let spinner_glyph = SPINNER[state.chrome.spinner_frame % SPINNER.len()];
-        let jump_digit = self.jump_digits();
+        let num_w = self.number_width();
         let items: Vec<ListItem> = (0..self.rows.len())
-            .map(|i| self.nav_row_item(i, jump_digit[i], spinner_glyph))
+            .map(|i| self.nav_row_item(i, num_w, spinner_glyph))
             .collect();
         // The selection highlight is a quiet raised surface (plus the accent ▌ bar the
         // card itself draws in its gutter), not reverse video: the card's own level
@@ -174,16 +174,12 @@ impl Switcher {
         );
     }
 
-    /// The quick-jump digit for each card: the first nine cards (in list order, matching
-    /// `move_to`) get a dim 1..9; the rest `None`. A 2-col gutter is reserved on every
-    /// card so numbering never reflows the list.
-    fn jump_digits(&self) -> Vec<Option<char>> {
-        let sel = self.selectable_indices();
-        let mut jump_digit: Vec<Option<char>> = vec![None; self.rows.len()];
-        for (pos, &ri) in sel.iter().enumerate().take(9) {
-            jump_digit[ri] = Some((b'1' + pos as u8) as char);
-        }
-        jump_digit
+    /// How many columns the card numbers need: the digit count of the highest number
+    /// in the list. One width for the whole frame, so the names stay aligned with each
+    /// other instead of stepping right as the numbers gain a digit, and the numbers
+    /// themselves line up by units place.
+    fn number_width(&self) -> usize {
+        self.rows.len().saturating_sub(1).to_string().len().max(1)
     }
 
     /// Builds one navigation card as a [`ListItem`]: a context line over a detail
@@ -195,30 +191,33 @@ impl Switcher {
     /// card's `{session}/{index}:{window-name}` - the focused (active) window,
     /// what the mux shows on attach - in the session / window colours, a loading
     /// card's `{session}/` + spinner, a host-state card's state coloured by kind
-    /// (pending / danger / muted). The gutter carries the selected card's accent ▌
-    /// bar on every line (replacing its jump digit - the selection needs no jump
-    /// target); an unselected card shows its dim digit on its first line. The
-    /// surface background comes from the List's `highlight_style`, so no per-span
-    /// background is baked in here.
-    fn nav_row_item(
-        &self,
-        i: usize,
-        digit: Option<char>,
-        spinner_glyph: char,
-    ) -> ListItem<'static> {
+    /// (pending / danger / muted). The gutter is the selection bar column, then the
+    /// card's dim 0-based number, then a space: EVERY card shows its number, the
+    /// selected one included, because the number is the card's address and an address
+    /// that disappears when you land on it cannot be read back. The number sits on the
+    /// DETAIL line, never the context line: the number addresses a session, so it reads
+    /// beside the session it names, and a collapsed card (detail line only) then puts it
+    /// in the same place as an expanded one. The surface background comes from the List's
+    /// `highlight_style`, so no per-span background is baked in here.
+    fn nav_row_item(&self, i: usize, num_w: usize, spinner_glyph: char) -> ListItem<'static> {
         let row = &self.rows[i];
         let muted = Style::default().fg(color_hint());
         let selected = self.list_state.selected() == Some(i);
         let bar = Style::default().fg(palette::get().accent);
-        let gutter = |first: bool| -> Span<'static> {
-            if selected {
-                Span::styled("▌ ", bar)
+        // `numbered` is the detail line: the selection bar runs down every line of the
+        // card, the number appears once, next to the session it addresses.
+        let gutter = move |numbered: bool| -> Vec<Span<'static>> {
+            let mark = if selected {
+                Span::styled("▌", bar)
             } else {
-                match digit.filter(|_| first) {
-                    Some(d) => Span::styled(format!("{d} "), muted),
-                    None => Span::raw("  "),
-                }
-            }
+                Span::raw(" ")
+            };
+            let number = if numbered {
+                Span::styled(format!("{i:>num_w$} "), muted)
+            } else {
+                Span::raw(" ".repeat(num_w + 1))
+            };
+            vec![mark, number]
         };
 
         // Host-state card: the host name over its status, coloured by kind -
@@ -226,10 +225,11 @@ impl Switcher {
         // (soft red), a settled empty host is muted.
         if let RowRef::Host { unreachable, .. } = &row.reference {
             let (host, _, _) = context_of(&row.reference);
-            let line1 = vec![
-                gutter(true),
-                Span::styled(pad_label(host), Style::default().fg(color_host())),
-            ];
+            let mut line1 = gutter(false);
+            line1.push(Span::styled(
+                pad_label(host),
+                Style::default().fg(color_host()),
+            ));
             let style = if *unreachable {
                 Style::default().fg(palette::get().danger)
             } else if row.line2.starts_with("scanning") {
@@ -237,7 +237,8 @@ impl Switcher {
             } else {
                 muted
             };
-            let line2 = vec![gutter(false), Span::styled(pad_label(&row.line2), style)];
+            let mut line2 = gutter(true);
+            line2.push(Span::styled(pad_label(&row.line2), style));
             return ListItem::new(vec![Line::from(line1), Line::from(line2)]);
         }
 
@@ -246,7 +247,7 @@ impl Switcher {
         let collapsed = self.card_collapsed(i);
         let mut lines: Vec<Line> = Vec::new();
         if !collapsed {
-            let mut context: Vec<Span> = vec![gutter(true), Span::raw(" ")];
+            let mut context: Vec<Span> = gutter(false);
             context.push(Span::styled(
                 host.to_string(),
                 Style::default().fg(color_host()),
@@ -273,7 +274,7 @@ impl Switcher {
         // collapsed cards reads as siblings of one context: ├ while a collapsed
         // sibling follows below, └ on the run's last line. The selected card
         // drops it - the accent bar and surface already bind its two lines.
-        let mut detail = vec![gutter(collapsed), Span::raw(" ")];
+        let mut detail = gutter(true);
         if !selected {
             let connector = if self.card_collapsed(i + 1) {
                 "├ "

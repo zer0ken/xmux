@@ -45,11 +45,26 @@ while the live screen is focused:
 | Key | Action |
 |---|---|
 | `/` | fuzzy-filter the tree by `<source>/<name>` (no prefix) |
+| `prefix 0`-`prefix 9` | jump to a session by its number |
 | `prefix n` | start a new session on the selected host |
 | `prefix r` | re-scan every host |
 
 `prefix n` needs a host row: a session row has nothing to create, and it says so
 with a brief message. Creating under an unreachable host is likewise refused.
+
+### Jumping by number
+
+Every card carries a dim 0-based number in its left gutter, on the same row as the
+session it names, the selected card included. `prefix <digit>` jumps straight there
+and leaves a small popup open holding the number, so anything past 9 is reached by
+typing the rest of it (`prefix 1` then `2` lands on 12, then `7` on 127).
+
+The popup only accepts a digit that keeps the number addressing a real entry, so
+one, two, and three digit numbers behave identically: whatever the buffer shows is
+somewhere you can land. With ten sessions, `prefix 9` is refused outright with a
+brief message, and after `prefix 1` a second `9` is simply not taken. `Enter` closes
+the popup and keeps the selection; `Esc` closes it and returns to where you started.
+Digits are prefix-gated, so a bare digit never jumps by accident.
 
 ## Prefix commands
 
@@ -95,6 +110,9 @@ forwarded raw to the session's active pane, so programs running inside the mux
   any other key is swallowed while it is open.
 - **Input dialogs** (filter, new session): type into the buffer, `Backspace`
   deletes, `Enter` submits, `Esc` cancels.
+- **Jump** (`prefix <digit>`): digits only, and only digits that keep the number in
+  range. It acts while open (each edit moves the selection), so `Enter` merely closes
+  it and `Esc` restores where you started.
 
 ## Mouse
 
