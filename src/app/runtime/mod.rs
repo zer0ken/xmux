@@ -850,15 +850,10 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     // foreground roles are ANSI-16 and need no query. Must run BEFORE raw mode /
     // the alternate screen - the query library manages the terminal itself.
     // Failure (an unsupported terminal, a timeout) keeps the fixed fallbacks.
-    match terminal_colorsaurus::background_color(terminal_colorsaurus::QueryOptions::default()) {
-        // Channels are the full u16 range; the high byte is the 8-bit value.
-        Ok(bg) => crate::ui::palette::init_for_terminal_background((
-            (bg.r >> 8) as u8,
-            (bg.g >> 8) as u8,
-            (bg.b >> 8) as u8,
-        )),
-        Err(e) => {
-            tracing::debug!("terminal background query failed ({e}); keeping the fallback surfaces")
+    match crate::ui::palette::query_terminal_background() {
+        Some(bg) => crate::ui::palette::init_for_terminal_background(bg),
+        None => {
+            tracing::debug!("terminal background query failed; keeping the fallback surfaces")
         }
     }
 

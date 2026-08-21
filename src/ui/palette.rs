@@ -106,9 +106,68 @@ pub(crate) fn get() -> &'static Palette {
     ACTIVE.get().unwrap_or(&FALLBACK)
 }
 
+/// Asks the terminal for its background over an OSC 11 round-trip. `None` when the
+/// terminal does not answer (an unsupported terminal, a timeout, a pipe). Must run
+/// BEFORE raw mode / the alternate screen: the query library manages the terminal
+/// itself. Lives here so the app and `xmux doctor` ask the same question the same way.
+pub(crate) fn query_terminal_background() -> Option<(u8, u8, u8)> {
+    // Channels are the full u16 range; the high byte is the 8-bit value.
+    terminal_colorsaurus::background_color(terminal_colorsaurus::QueryOptions::default())
+        .ok()
+        .map(|bg| ((bg.r >> 8) as u8, (bg.g >> 8) as u8, (bg.b >> 8) as u8))
+}
+
+/// A human line describing where the two xmux-own backgrounds come from, for
+/// `xmux doctor`. `bg` is the terminal's reported background, or `None` when the
+/// terminal did not answer the query.
+///
+/// Worth reporting because the answer is invisible from the screen and decides how the
+/// selected card is painted: a terminal that answers gets a surface stepped out of its
+/// OWN background, and one that does not gets a fixed dark-leaning tone that is simply
+/// wrong on a light theme. "My colours look off" has no other way to be told apart from
+/// "my theme is unusual".
+pub(crate) fn source_report(bg: Option<(u8, u8, u8)>) -> String {
+    match bg {
+        Some((r, g, b)) => {
+            let (surface, _) = derive_backgrounds((r, g, b));
+            format!(
+                "terminal background: #{r:02x}{g:02x}{b:02x} (queried) — selection surface derived from it{}",
+                match surface {
+                    Color::Rgb(sr, sg, sb) => format!(" (#{sr:02x}{sg:02x}{sb:02x})"),
+                    _ => String::new(),
+                }
+            )
+        }
+        None => {
+            let fixed = match base().surface {
+                Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+                other => format!("{other:?}"),
+            };
+            format!(
+                "terminal background: UNKNOWN (this terminal does not answer the query) — selection surface falls back to a fixed dark tone ({fixed}), which does not follow a light theme"
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_report_says_which_background_the_surface_came_from() {
+        // The whole point of the line: a user whose colours look wrong can tell a
+        // derived surface from the fixed fallback, which is invisible on screen.
+        let queried = source_report(Some((0x1e, 0x1e, 0x2e)));
+        assert!(queried.contains("#1e1e2e"), "{queried}");
+        assert!(queried.contains("queried"), "{queried}");
+        let unknown = source_report(None);
+        assert!(unknown.contains("UNKNOWN"), "{unknown}");
+        assert!(
+            unknown.contains("#313244"),
+            "names the fixed tone it actually paints: {unknown}"
+        );
+    }
 
     #[test]
     fn derive_backgrounds_raises_on_dark_and_lowers_on_light() {
