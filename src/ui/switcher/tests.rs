@@ -2111,6 +2111,69 @@ async fn a_jump_walks_into_a_two_digit_number() {
     assert_eq!(h.sw.selected, 19, "and keeps where the jump landed");
 }
 
+#[test]
+fn a_hidden_nav_keeps_no_status_line_until_it_has_something_to_say() {
+    // Auto-hide with the terminal focused gives the mux the whole screen (nav_width 0).
+    // At rest that includes the bottom row: xmux takes none of it.
+    let mut state = crate::state::State::from_scan(sample());
+    let mut sw = Switcher::new(&mut state);
+    let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
+    let mut grid = crate::display::grid::Grid::new(30, 140);
+    let mut fill = Vec::new();
+    for r in 0..30u16 {
+        fill.extend(format!("\x1b[{};1H", r + 1).bytes());
+        fill.extend(std::iter::repeat_n(b'X', 140));
+    }
+    grid.feed(&fill);
+    let row = |term: &Terminal<TestBackend>| -> String {
+        let buf = term.backend().buffer();
+        let y = buf.area.height - 1;
+        (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+    };
+    let draw =
+        |term: &mut Terminal<TestBackend>, sw: &mut Switcher, state: &crate::state::State| {
+            term.draw(|f| sw.render(f, Some(&grid), true, 0, 0, state))
+                .unwrap();
+        };
+
+    draw(&mut term, &mut sw, &state);
+    assert!(
+        row(&term).chars().all(|c| c == 'X'),
+        "at rest a hidden nav leaves the bottom row to the mux: {:?}",
+        row(&term)
+    );
+
+    // Armed: the prefix must still answer, so the bar floats on the window's bottom row.
+    state.chrome.set_armed(true);
+    draw(&mut term, &mut sw, &state);
+    let armed = row(&term);
+    assert!(
+        armed.contains("C-g") && !armed.contains('X'),
+        "an armed prefix floats the bar over the full width even with the nav hidden: {armed:?}"
+    );
+    state.chrome.set_armed(false);
+
+    // A refusal is the other thing that must be seen: with no nav row to hold it, it
+    // floats too. A flash the user cannot see is worse than a row borrowed for a moment.
+    state.flash("nope".to_string());
+    draw(&mut term, &mut sw, &state);
+    let flashed = row(&term);
+    assert!(
+        flashed.contains("nope") && !flashed.contains('X'),
+        "a refusal floats over a hidden nav: {flashed:?}"
+    );
+    state.chrome.flash.clear();
+
+    // Scan progress does NOT float: it persists, and the user asked for the whole screen.
+    state.scanning.insert("local".to_string());
+    draw(&mut term, &mut sw, &state);
+    assert!(
+        row(&term).chars().all(|c| c == 'X'),
+        "persistent states stay out of a hidden nav: {:?}",
+        row(&term)
+    );
+}
+
 #[tokio::test]
 async fn hint_bar_and_help_reflect_new_model() {
     let mut h = Harness::new(sample());

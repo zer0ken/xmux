@@ -4,14 +4,38 @@ use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState};
 
 use crate::ui::palette;
 
+/// Whether the hint bar floats over the whole window this frame instead of sitting in
+/// the nav column.
+///
+/// Two states make it float, and they are the two where xmux must speak RIGHT NOW: the
+/// prefix is armed (the cheatsheet is wanted, and says more than a nav column fits), or
+/// a refusal flash is showing while the nav is hidden (there is no nav row to put it in,
+/// and a refusal the user cannot see is worse than a row borrowed for a moment).
+///
+/// Scan progress and the active filter deliberately do NOT float: they persist, and a
+/// hidden nav means the user asked for the whole screen to be the mux.
+fn hint_bar_floats(nav_width: u16, state: &crate::state::State) -> bool {
+    state.chrome.armed || (nav_width == 0 && !state.chrome.flash.is_empty())
+}
+
 /// Where the hint bar actually paints. At rest it is the nav-local rect
-/// `compute_regions` derived; while the prefix is ARMED it spans the whole window width
-/// on those same rows, so the cheatsheet reads as one bar floating over the whole app
-/// rather than a column note - and it can say more than a nav column has room for.
-/// Only the paint widens; the layout is untouched, so nothing reflows on arm.
-fn hint_bar_rect(nav_local: Rect, area: Rect, state: &crate::state::State) -> Rect {
-    if !state.chrome.armed || nav_local.height == 0 {
+/// `compute_regions` derived (empty when the nav is hidden, so the mux keeps every row).
+/// Floating, it spans the whole window width: on the nav's own rows when the nav is
+/// visible, and on the window's bottom rows when the nav is hidden and the layout
+/// reserved none. Only the paint moves; the layout is untouched, so nothing reflows.
+fn hint_bar_rect(nav_local: Rect, area: Rect, hint_bar_h: u16, floating: bool) -> Rect {
+    if !floating {
         return nav_local;
+    }
+    if nav_local.height == 0 {
+        // Nav hidden: no row was reserved, so borrow the window's bottom rows.
+        let h = hint_bar_h.min(area.height);
+        return Rect {
+            x: area.x,
+            y: area.y + area.height - h,
+            width: area.width,
+            height: h,
+        };
     }
     Rect {
         x: area.x,
@@ -46,7 +70,8 @@ impl Switcher {
         // the last frame, so static content writes nothing (no flicker).
         frame.render_widget(Clear, area);
         // nav_width == 0 is the "nav hidden" sentinel (terminal view focused + auto-hide):
-        // the terminal view owns the whole area - no nav list, no hint_bar, no view border.
+        // the terminal view owns the whole area - no nav list, no view border, and no
+        // status line of its own, since the user asked for the whole screen to be the mux.
         if nav_width == 0 {
             self.nav_inner = Rect::default();
             self.render_terminal_view(frame, area, grid);
@@ -55,6 +80,15 @@ impl Switcher {
                     frame.set_cursor_position(terminal_cursor_pos(area, g.cursor()));
                 }
             }
+            // The bar still floats for the two states that must be seen even here: the
+            // armed prefix and a refusal flash. Hiding the nav hides the status line, not
+            // xmux's ability to answer a keypress.
+            if hint_bar_floats(nav_width, state) {
+                let h = state.chrome.hint_bar_lines(area.width, state).len().max(1) as u16;
+                let rect = hint_bar_rect(Rect::default(), area, h, true);
+                state.chrome.render_hint_bar(frame, rect, state);
+            }
+            // The modal stacks above the bar: a popup is a stronger claim on the screen.
             self.render_modal_popup(frame, area, state);
             return;
         }
@@ -64,12 +98,9 @@ impl Switcher {
         // border, and the hint bar takes the nav's bottom rows. The hint bar is normally one
         // row; a long flash wraps, so size it to the wrapped line count (never clipped).
         // Measured at the width it will RENDER at: the nav column normally, the whole
-        // window while the prefix is armed (see `hint_bar_rect`).
-        let bar_w = if state.chrome.armed {
-            area.width
-        } else {
-            nav_width
-        };
+        // window whenever the bar floats (see `hint_bar_floats` / `hint_bar_rect`).
+        let floating = hint_bar_floats(nav_width, state);
+        let bar_w = if floating { area.width } else { nav_width };
         let hint_bar_h = state.chrome.hint_bar_lines(bar_w, state).len().max(1) as u16;
         let r = compute_regions(area, nav_width, nav_height, hint_bar_h);
         self.render_nav(frame, r.tree, state);
@@ -93,14 +124,15 @@ impl Switcher {
         } else {
             self.render_terminal_view(frame, term_area, grid);
         }
-        // The hint bar paints LAST of the two views, so an armed bar can float over the
-        // terminal view. At rest it stays inside the nav (its own status line); armed it
-        // widens to the whole window on the same row, covering the view border and the
-        // grid beneath it - the layout never reflows, only the paint reaches further, so
-        // arming the prefix cannot shift a single card.
-        state
-            .chrome
-            .render_hint_bar(frame, hint_bar_rect(r.hint_bar, area, state), state);
+        // The hint bar paints LAST of the two views, so a floating bar can cover the
+        // terminal view. At rest it stays inside the nav (its own status line); floating,
+        // it widens to the whole window - the layout never reflows, only the paint reaches
+        // further, so arming the prefix cannot shift a single card.
+        state.chrome.render_hint_bar(
+            frame,
+            hint_bar_rect(r.hint_bar, area, hint_bar_h, floating),
+            state,
+        );
         // In the terminal view, place the real cursor at the grid's cursor so typing in the
         // mux is visible and tracks. Skipped when the child hid its cursor.
         if terminal_focused {
