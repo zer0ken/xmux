@@ -67,13 +67,14 @@ tree or the live screen holds focus.
 
 ## The status line
 
-The nav's bottom row is its status line. It stops at the view border, so the live
-screen keeps every row it has. At rest it shows one thing: the prefix. Press the
-prefix and it becomes the list of keys that prefix unlocks, then returns once the
-command key lands. Four states outrank the prefix while they apply, in order: a
-refusal message (in red), the host-scan progress, the active filter, and then the
-resting prefix. A refusal too long for the nav width wraps onto more rows rather
-than clipping.
+The nav's bottom row is its status line. At rest it shows one thing, the prefix, and
+stops at the view border so the live screen keeps every row it has. Press the prefix
+and the same row widens to the whole window, floating over the border and the live
+screen to list the keys that prefix unlocks; it shrinks back once the command key
+lands. Only the paint moves, never the layout, so arming the prefix never shifts a
+card. Four states outrank the prefix while they apply, in order: a refusal message
+(in red), the host-scan progress, the active filter, and then the resting prefix. A
+refusal too long for the nav width wraps onto more rows rather than clipping.
 
 ## Focus
 

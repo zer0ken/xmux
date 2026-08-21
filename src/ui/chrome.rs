@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::ui::modal::wrap_text;
@@ -593,6 +593,12 @@ impl Chrome {
         // `error_flash_style` while a refusal flash shows. The style fills the whole area,
         // so the bar spans full width even where the text does not; unstyled spans
         // inherit the bar's fg/bg.
+        //
+        // `Clear` first, because a style only recolours cells - it does not blank them.
+        // An armed bar floats over the live grid, so without this the grid's own
+        // characters survive in the columns the bar's text does not reach and the bar
+        // reads as text spilled across the screen instead of a bar covering it.
+        frame.render_widget(Clear, area);
         frame.render_widget(
             Paragraph::new(text).style(self.hint_bar_render_style()),
             area,

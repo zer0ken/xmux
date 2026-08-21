@@ -103,6 +103,10 @@ prefix, then:
 | `prefix Tab` / arrow / `Esc` | move focus between the tree and the screen |
 | `prefix prefix` | send one literal prefix byte to the focused session |
 
+The nav's bottom row is its status line. At rest it shows just the prefix; press the
+prefix and it widens to the whole window, floating over the live screen to list the
+keys that prefix unlocks.
+
 See [`docs/keybind.md`](docs/keybind.md) for more on the prefix.
 
 ## Configuration

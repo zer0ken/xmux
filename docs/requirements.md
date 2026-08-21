@@ -62,6 +62,16 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   This is prevented structurally, not by a runtime check: the nest guard (FR-D3)
   refuses to run xmux inside a mux, so no attachable session can be running xmux.
   **Tests:** `nest_guard_inside`, `nest_guard_outside`, `in_mux_value_cases`.
+- **FR-B9** — The nav's bottom row is a status line, not a screen-wide footer. At
+  rest it names only the prefix; the states that outrank it (a refusal, scan progress,
+  an active filter) take the row while they apply. Arming the prefix widens the PAINT
+  to the whole window so the cheatsheet floats over the view border and the live grid,
+  leaving the layout alone so no card shifts. **Tests:**
+  `hint_bar_shows_the_prefix_at_rest_and_its_keys_when_armed`,
+  `the_armed_hint_bar_floats_across_the_whole_window`,
+  `armed_hint_bar_fits_a_narrow_nav`,
+  `arming_the_prefix_marks_the_frame_dirty_so_the_hint_bar_swaps`,
+  `long_flash_wraps_in_narrow_hint_bar_instead_of_clipping`.
 
 ## C. Switching (the keystone)
 

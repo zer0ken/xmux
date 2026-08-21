@@ -85,12 +85,17 @@ impl Harness {
         h
     }
 
-    /// The hint bar lives at the bottom of the NAV region, not across the screen,
-    /// so read the nav column's last row (and only its width).
+    /// The hint bar's row, read at the width it actually paints: the nav column at
+    /// rest, the whole window while the prefix is armed (the armed bar floats over the
+    /// view). Reading the nav width unconditionally would clip the armed cheatsheet.
     fn hint_bar_text(&self) -> String {
         let buf = self.buf();
         let y = buf.area.height - 1;
-        let limit = NAV_WIDTH.min(buf.area.width);
+        let limit = if self.state.chrome.armed {
+            buf.area.width
+        } else {
+            NAV_WIDTH.min(buf.area.width)
+        };
         let mut line = String::new();
         for x in 0..limit {
             line.push_str(buf[(x, y)].symbol());
@@ -1896,6 +1901,65 @@ async fn digit_keys_quick_jump_to_selectable_rows() {
     assert_eq!(
         h.sw.selected, first,
         "digit 1 returns to the first selectable row"
+    );
+}
+
+#[test]
+fn the_armed_hint_bar_floats_across_the_whole_window() {
+    let mut state = crate::state::State::from_scan(sample());
+    let mut sw = Switcher::new(&mut state);
+    let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
+    // A grid packed edge to edge, so any cell the bar fails to cover shows an `X`.
+    let mut grid = crate::display::grid::Grid::new(30, 140);
+    let mut fill = Vec::new();
+    for r in 0..30u16 {
+        fill.extend(format!("[{};1H", r + 1).bytes());
+        fill.extend(std::iter::repeat_n(b'X', 140));
+    }
+    grid.feed(&fill);
+    let g = grid;
+    let draw =
+        |term: &mut Terminal<TestBackend>, sw: &mut Switcher, state: &crate::state::State| {
+            term.draw(|f| sw.render(f, Some(&g), false, NAV_WIDTH, 0, state))
+                .unwrap();
+        };
+    draw(&mut term, &mut sw, &state);
+    let y = term.backend().buffer().area.height - 1;
+    let row = |term: &Terminal<TestBackend>, y: u16| -> String {
+        let buf = term.backend().buffer();
+        (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+    };
+    // At rest the bar is the nav's own status line, so the columns past the nav belong
+    // to the view below it - the bar does not reach them.
+    let resting = row(&term, y);
+    assert!(
+        resting[NAV_WIDTH as usize..].trim().is_empty() || !resting.trim_end().ends_with("quit"),
+        "the resting bar stays in the nav column: {resting:?}"
+    );
+    // Where the cards sit is what must not move when the prefix is armed.
+    let cards_before = row(&term, 0);
+    state.chrome.set_armed(true);
+    draw(&mut term, &mut sw, &state);
+    let armed = row(&term, y);
+    assert!(
+        armed.contains("quit") || armed.contains("q "),
+        "the armed bar spans past the nav column: {armed:?}"
+    );
+    assert!(
+        armed.len() > NAV_WIDTH as usize && !armed[NAV_WIDTH as usize..].trim().is_empty(),
+        "and paints over the view beneath it: {armed:?}"
+    );
+    // Covering, not just recolouring: a style alone leaves the grid's own characters in
+    // the columns the bar's text does not reach, which reads as text spilled across the
+    // screen rather than a bar over it.
+    assert!(
+        !armed.contains('X'),
+        "the armed bar covers the grid across its whole row: {armed:?}"
+    );
+    assert_eq!(
+        row(&term, 0),
+        cards_before,
+        "arming the prefix only widens the paint, so no card moves"
     );
 }
 
