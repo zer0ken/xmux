@@ -1,5 +1,8 @@
-//! Minimal raw-byte → crossterm KeyEvent decoder for Picker mode. Covers only the
-//! keys the switcher uses. A lone ESC that is not followed by `[<final>` is Esc.
+//! Minimal raw-byte → crossterm KeyEvent decoder for the switcher. It must cover
+//! every key the UI ADVERTISES: a key the status line or the help modal names, but
+//! that this decoder drops, is a feature the user cannot reach from the keyboard even
+//! though the handler for it exists. A lone ESC that is not followed by `[<final>` or
+//! `O<final>` is Esc.
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[derive(Default)]
@@ -38,24 +41,71 @@ impl KeyDecoder {
                                                  // Arrows, bare (`ESC[A`) or with a modifier (`ESC[1;5A` =
                                                  // Ctrl-Up): the params between `[` and the final byte carry the
                                                  // modifier code in their 2nd `;`-field.
+                                                 //
+                                                 // Home/End/PageUp/PageDown/Delete come in two encodings and
+                                                 // terminals disagree about which: a letter final (`ESC[H`,
+                                                 // `ESC[F`) or a numbered tilde (`ESC[1~`, `ESC[4~`, `ESC[5~`,
+                                                 // `ESC[6~`, `ESC[3~`). Decode both, since the nav advertises
+                                                 // Home/End and PgUp/PgDn and the input row uses Home/End/Delete.
+                        let params = &self.buf[seq_start..j];
                         let code = match final_byte {
                             b'A' => Some(KeyCode::Up),
                             b'B' => Some(KeyCode::Down),
                             b'C' => Some(KeyCode::Right),
                             b'D' => Some(KeyCode::Left),
+                            b'H' => Some(KeyCode::Home),
+                            b'F' => Some(KeyCode::End),
+                            b'Z' => Some(KeyCode::BackTab),
+                            b'~' => match csi_first_param(params) {
+                                Some(1) | Some(7) => Some(KeyCode::Home),
+                                Some(2) => Some(KeyCode::Insert),
+                                Some(3) => Some(KeyCode::Delete),
+                                Some(4) | Some(8) => Some(KeyCode::End),
+                                Some(5) => Some(KeyCode::PageUp),
+                                Some(6) => Some(KeyCode::PageDown),
+                                _ => None,
+                            },
                             _ => None,
                         };
                         if let Some(c) = code {
-                            let mods = csi_modifiers(&self.buf[seq_start..j]);
+                            let mods = csi_modifiers(params);
                             out.push(KeyEvent::new(c, mods));
                             i += csi_len;
                             continue;
                         }
                         // Any other complete CSI — consume silently (no Esc spurion).
+                        // Mouse reports and cursor-position replies land here.
                         i += csi_len;
                         continue;
                     }
-                    // Lone ESC (no following byte) or ESC followed by non-`[`: emit Esc.
+                    // SS3 (`ESC O<final>`): what a terminal sends for the arrows and
+                    // Home/End in application cursor mode. Without this the three bytes
+                    // decode as Esc + 'O' + a letter, which cancels a modal and types a
+                    // stray letter instead of moving the cursor.
+                    if i + 2 < self.buf.len() && self.buf[i + 1] == b'O' {
+                        let code = match self.buf[i + 2] {
+                            b'A' => Some(KeyCode::Up),
+                            b'B' => Some(KeyCode::Down),
+                            b'C' => Some(KeyCode::Right),
+                            b'D' => Some(KeyCode::Left),
+                            b'H' => Some(KeyCode::Home),
+                            b'F' => Some(KeyCode::End),
+                            _ => None,
+                        };
+                        if let Some(c) = code {
+                            out.push(KeyEvent::new(c, KeyModifiers::NONE));
+                            i += 3;
+                            continue;
+                        }
+                    }
+                    // `ESC O` with no third byte yet: keep the tail buffered rather than
+                    // emitting an Esc that a later byte would have completed.
+                    if i + 1 < self.buf.len() && self.buf[i + 1] == b'O' && i + 2 >= self.buf.len()
+                    {
+                        break;
+                    }
+                    // Lone ESC (no following byte) or ESC followed by neither `[` nor `O`:
+                    // emit Esc.
                     out.push(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
                     i += 1;
                 }
@@ -106,6 +156,18 @@ fn utf8_len(lead: u8) -> usize {
     } else {
         4
     }
+}
+
+/// The first `;`-separated parameter of a CSI sequence, which is what selects the key
+/// for a `~`-final sequence (`ESC[5~` = PageUp). Absent params read as `None`, so a
+/// bare `ESC[~` decodes to nothing rather than to an arbitrary key.
+fn csi_first_param(params: &[u8]) -> Option<u16> {
+    std::str::from_utf8(params)
+        .ok()?
+        .split(';')
+        .next()?
+        .parse::<u16>()
+        .ok()
 }
 
 /// Decodes the modifier from a CSI arrow's params (`1;<m>` → bitfield in `m-1`:
@@ -198,23 +260,49 @@ mod tests {
     }
 
     #[test]
+    fn every_advertised_navigation_key_decodes() {
+        // The nav's status line and help modal name Home/End and PgUp/PgDn, and the
+        // input row uses Home/End/Delete. A key the UI advertises but this decoder
+        // drops is unreachable from the keyboard however complete its handler is.
+        assert_eq!(codes(b"\x1b[H"), vec![KeyCode::Home], "Home, letter final");
+        assert_eq!(codes(b"\x1b[1~"), vec![KeyCode::Home], "Home, tilde form");
+        assert_eq!(codes(b"\x1b[F"), vec![KeyCode::End], "End, letter final");
+        assert_eq!(codes(b"\x1b[4~"), vec![KeyCode::End], "End, tilde form");
+        assert_eq!(codes(b"\x1b[5~"), vec![KeyCode::PageUp], "PageUp");
+        assert_eq!(codes(b"\x1b[6~"), vec![KeyCode::PageDown], "PageDown");
+        assert_eq!(codes(b"\x1b[3~"), vec![KeyCode::Delete], "Delete");
+    }
+
+    #[test]
+    fn ss3_arrows_and_home_end_decode() {
+        // Application cursor mode sends SS3, not CSI. Decoding it as Esc + letters would
+        // cancel a modal and type a stray character instead of moving the cursor.
+        assert_eq!(codes(b"\x1bOA"), vec![KeyCode::Up]);
+        assert_eq!(codes(b"\x1bOD"), vec![KeyCode::Left]);
+        assert_eq!(codes(b"\x1bOH"), vec![KeyCode::Home]);
+        assert_eq!(codes(b"\x1bOF"), vec![KeyCode::End]);
+        // A split read must not turn the pending `ESC O` into an Esc.
+        let mut d = KeyDecoder::new();
+        assert!(d.feed(b"\x1bO").is_empty(), "incomplete SS3 stays buffered");
+        assert_eq!(
+            d.feed(b"B").into_iter().map(|e| e.code).collect::<Vec<_>>(),
+            vec![KeyCode::Down]
+        );
+    }
+
+    #[test]
     fn unrecognized_csi_consumed_silently() {
-        // Delete (ESC[3~), PgDn (ESC[6~), and Home (ESC[H) must produce no events —
-        // never a spurious Esc that would cancel the picker.
+        // A CSI the switcher has no key for (a mouse report here) must produce no
+        // events, and never a spurious Esc that would cancel a modal.
         assert_eq!(
-            codes(b"\x1b[3~"),
+            codes(b"\x1b[<0;10;5M"),
             Vec::<KeyCode>::new(),
-            "Delete should be silent"
+            "an SGR mouse report should be silent"
         );
         assert_eq!(
-            codes(b"\x1b[6~"),
+            codes(b"\x1b[~"),
             Vec::<KeyCode>::new(),
-            "PgDn should be silent"
-        );
-        assert_eq!(
-            codes(b"\x1b[H"),
-            Vec::<KeyCode>::new(),
-            "Home (ESC[H) should be silent"
+            "a tilde sequence with no parameter names no key"
         );
     }
 

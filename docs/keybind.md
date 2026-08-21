@@ -32,7 +32,7 @@ These act on the tree while it holds focus.
 | `↑` / `↓` (or `k` / `j`) | move between siblings at the current level |
 | `→` / `l` | descend into the selected node's first child |
 | `←` / `h` | ascend to the parent node |
-| `PageUp` / `PageDown` | jump ten rows |
+| `PageUp` / `PageDown` | jump ten cards (wraps, like the arrows) |
 | `Home` / `End` | jump to the first / last node |
 
 ## Tree actions
