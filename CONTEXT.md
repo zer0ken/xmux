@@ -129,6 +129,11 @@ UI elements a user perceives as distinct things:
   (or `--name`), owning `ctl-<name>.sock` for its lifetime. `xmux send <name>` and
   `xmux instances` address instances by it; a unique name prefix resolves, and `-`
   means the sole live instance.
+- roster - the list of ssh targets xmux offers as sources, assembled from
+  PROVIDERS: `~/.ssh/config` aliases and, when `[discovery]` enables it, the online
+  peers of this machine's tailnet. Every provider yields plain ssh target names, so
+  nothing downstream can tell where a name came from. Distinct from `discovery`, which
+  scans a source for sessions, and from `machine/`, which reaches one.
 - filter - the type-to-filter input over the nav list.
 - flash - a transient notice or error line shown in the hint bar (e.g. a refused
   action's reason). Never a "toast" or "notice".

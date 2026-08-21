@@ -25,6 +25,16 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   `list_sessions_*`; the doctor print wiring is in `cli.rs` (`run_doctor`, not unit-tested).
 - **FR-A4** — Sessions are ordered by recency (most-recently-attached first).
   **Tests:** `to_groups_sorts_sessions_by_recency`, `sort_by_recency_orders` (tree).
+- **FR-A5** — The roster (which ssh targets are offered) comes from providers the
+  `[discovery]` table selects: `~/.ssh/config` aliases (on by default) and this
+  machine's tailnet peers (off by default, since it runs an external CLI). A tailnet
+  peer is offered under its DNS label; this machine and offline peers are skipped. A
+  provider that cannot answer contributes nothing instead of failing the run, and
+  ssh-config names keep their position when a provider repeats them. **Tests:**
+  `takes_online_peers_by_their_dns_label`, `skips_self_and_offline_peers`,
+  `the_dns_label_wins_over_hostname`, `a_provider_that_cannot_answer_yields_nothing`,
+  `a_label_that_is_not_a_dns_label_is_refused`,
+  `merge_keeps_first_seen_order_and_drops_duplicates`.
 
 ## B. The switcher — "see the list, decide whether & where to move"
 

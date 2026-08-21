@@ -16,6 +16,38 @@ pub struct Config {
     pub exclude: Vec<String>,
     #[serde(default)]
     pub ui: UiConfig,
+    #[serde(default)]
+    pub discovery: DiscoveryConfig,
+}
+
+/// The optional `[discovery]` table: which providers contribute ssh targets to the
+/// roster (see [`crate::roster`]).
+///
+/// `ssh-config` is on by default because it is where the host list has always come
+/// from; turning it off is how a user who keeps no ssh config opts out. The network
+/// providers are OFF by default: they run an external CLI and would otherwise change
+/// the host list of an existing install without being asked.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DiscoveryConfig {
+    /// Read host aliases from `~/.ssh/config`.
+    #[serde(rename = "ssh-config", default = "default_true")]
+    pub ssh_config: bool,
+    /// Offer the online peers of this machine's tailnet, by their DNS label.
+    #[serde(default)]
+    pub tailscale: bool,
+}
+
+impl Default for DiscoveryConfig {
+    fn default() -> Self {
+        DiscoveryConfig {
+            ssh_config: true,
+            tailscale: false,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Configures the mux used on the local machine.
