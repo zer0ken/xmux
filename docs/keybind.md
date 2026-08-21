@@ -37,22 +37,19 @@ These act on the tree while it holds focus.
 
 ## Tree actions
 
-These act on the selected node. `/` filter needs tree focus; `prefix n`/`R`/`x`/`r`
-also work while the live screen is focused (they act on the displayed session, so you
-can create, rename, kill, or re-scan without returning to the tree first):
+xmux aggregates and switches; it does not edit what a mux already edits. There is
+no rename, no kill, and no window or pane command — do those in the mux itself.
+Two actions remain. `/` filter needs tree focus; `prefix n` / `prefix r` also work
+while the live screen is focused:
 
 | Key | Action |
 |---|---|
 | `/` | fuzzy-filter the tree by `<source>/<name>` (no prefix) |
-| `prefix n` | create — a session on a host, a window on a session, or a split (pane) on a window |
-| `prefix R` | rename the selected session or window |
-| `prefix x` | kill the selected session or window (with a `y`/`n` confirm) |
+| `prefix n` | start a new session on the selected host |
 | `prefix r` | re-scan every host |
 
-`prefix n`, `prefix R`, and `prefix x` are level-aware — they act on the host,
-session, or window the selection is on. Renaming or killing a host row is refused
-with a brief message; creating under an unreachable host is likewise refused. The
-prefix guards these so a stray keystroke cannot destroy or disrupt a session.
+`prefix n` needs a host row: a session row has nothing to create, and it says so
+with a brief message. Creating under an unreachable host is likewise refused.
 
 ## Prefix commands
 
@@ -85,9 +82,8 @@ forwarded raw to the session's active pane, so programs running inside the mux
 
 - **Help** (`prefix ?`): a scrollless key reference. `q` or `Esc` closes it;
   any other key is swallowed while it is open.
-- **Input dialogs** (filter, new, rename, split): type into the buffer,
-  `Backspace` deletes, `Enter` submits, `Esc` cancels.
-- **Kill confirm**: `y` (or `Y`) confirms; `n`, `Esc`, or any other key cancels.
+- **Input dialogs** (filter, new session): type into the buffer, `Backspace`
+  deletes, `Enter` submits, `Esc` cancels.
 
 ## Mouse
 
@@ -97,31 +93,26 @@ forwarded raw to the session's active pane, so programs running inside the mux
 | left-click a view | focus that view |
 | wheel over the tree | move the selection (tree focused) |
 | `Ctrl`+wheel over the tree | change the tree level — descend / ascend (tree focused) |
-| right-click a tree row | press-hold to open its context menu, release on an item to run it; release off the menu to cancel |
 | drag the view border | resize the tree |
 | drag a modal's border | move the modal |
 
-The context menu offers the same level-aware actions as the keyboard — focus,
-new session / new window, rename, kill — as applicable to the clicked row. While
-the live screen is focused, mouse events over it are forwarded to the pane (the
-mux needs its own mouse mode enabled to use them).
+There is no context menu: every action a right-click could offer is either a
+plain click (focus, select) or a prefix chord. While the live screen is focused,
+mouse events over it are forwarded to the pane (the mux needs its own mouse mode
+enabled to use them).
 
 ## Automation
 
 A running xmux instance listens on a local control socket. Sessions are addressed
-`<source>/<session>` and windows `<source>/<session>:<window>`. It speaks
-navigation/display verbs — `ping`, `status`, `dump`, `rescan`,
-`switch <source>/<session>`, `focus <nav|terminal>`, `width <delta>` (a signed
-column delta, not an absolute width), `toggle-auto-hide`, `quit` — and
-session-lifecycle verbs:
+`<source>/<session>`. It speaks navigation/display verbs — `ping`, `status`,
+`dump`, `rescan`, `switch <source>/<session>`, `focus <nav|terminal>`,
+`width <delta>` (a signed column delta, not an absolute width),
+`toggle-auto-hide`, `quit` — and one session-lifecycle verb:
 
 - `new-session <source> [name]`
-- `kill-session <source>/<session>`
-- `rename-session <source>/<session> <name>`
-- `new-window <source>/<session> [name]`
-- `split-window <source>/<session>:<window> [v|h]` — vertical by default
-- `kill-window <source>/<session>:<window>`
-- `rename-window <source>/<session>:<window> <name>`
+
+The wire carries no kill/rename/window verbs, for the same reason the keys do
+not: the mux owns editing a session.
 
 Drive it with `xmux ctl <verb>`, e.g. `xmux ctl switch prod/api`. A low-level `raw:`
 namespace (`raw:key`, `raw:keys`, `raw:text`) injects keystrokes or bytes for

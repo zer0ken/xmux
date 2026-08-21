@@ -30,9 +30,9 @@ One concept, one word. The two axes and the runtime:
   `app/runtime.rs`, entry `run_app`). There is no `App`/`Cockpit` struct yet:
   the app is the module and its run function until the runtime is decomposed.
 - `ViewFocus` - which screen region holds focus (`Nav` / `Terminal`).
-- `Modal` - the mutually-exclusive focus-grabbing UI (`Help`, an input dialog,
-  a kill confirm, a context `Menu`). `ModalKind::{Popup, Menu}` are its two
-  focus sub-kinds: popup = a draggable centered dialog, menu = the context menu.
+- `Modal` - the mutually-exclusive focus-grabbing UI (`Help` and an input
+  dialog). `ModalKind::Popup` is its one focus sub-kind: a draggable centered
+  dialog.
 
 UI elements a user perceives as distinct things:
 
@@ -115,19 +115,16 @@ UI elements a user perceives as distinct things:
 - scan indicator - the `⟳ scanning hosts n/m…` progress shown in the hint bar
   while host probes are in flight; distinct from a row's `scanning…` status.
 - popup - the rounded-bordered, opaque, centered (draggable) dialog a
-  `ModalKind::Popup` draws, its accent title in the top border. The help, input
-  dialog, and kill confirm are popups.
+  `ModalKind::Popup` draws, its accent title in the top border. The help and the
+  input dialog are popups.
 - prompt - the `❯` entry marker on an input dialog's edit line.
-- confirm - the red `[y]es / [n]o` kill-confirmation prompt.
-- menu highlight - the surface-background context-menu entry under the pointer
-  (the menu's selection highlight, matching the nav's).
 
 `pane` is reserved for a mux window's terminal split (a tmux / psmux pane); it is
 never a screen region - screen regions are "views", and the line between them is
 the `view border`. A transient hint-bar message is a `flash`, never a "toast" or
 "notice". A card's trailing state is a `status`, never a "hint". The surface-background
-selection is the `selection highlight` (nav) or `menu highlight` (menu); `cursor`
-names only the grid's text cursor. The furniture around the views is the `chrome`
+selection is the `selection highlight`; `cursor` names only the grid's text
+cursor. The furniture around the views is the `chrome`
 (owned by `Chrome`), never a "status surface". The switcher's rendered screen is
 the "switcher screen" (`dump_screen`), never an "overlay".
 

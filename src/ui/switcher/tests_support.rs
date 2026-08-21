@@ -15,38 +15,7 @@ impl Ops for NoopOps {
     async fn new_session(&self, _source: &str, _name: &str) -> anyhow::Result<Session> {
         unreachable!("noop_ops is only constructed, never called")
     }
-    async fn new_window(&self, _source: &str, _session: &str, _name: &str) -> anyhow::Result<()> {
-        unreachable!("noop_ops is only constructed, never called")
-    }
-    async fn split_window(
-        &self,
-        _source: &str,
-        _target: &str,
-        _vertical: bool,
-    ) -> anyhow::Result<()> {
-        unreachable!("noop_ops is only constructed, never called")
-    }
-    async fn kill(&self, _s: &Session) -> anyhow::Result<()> {
-        unreachable!("noop_ops is only constructed, never called")
-    }
-    async fn rename(&self, _s: &Session, _new_name: &str) -> anyhow::Result<()> {
-        unreachable!("noop_ops is only constructed, never called")
-    }
     async fn panes(&self, _s: &Session) -> anyhow::Result<Vec<WindowPanes>> {
-        unreachable!("noop_ops is only constructed, never called")
-    }
-    async fn kill_window(&self, _source: &str, _target: &str) -> anyhow::Result<()> {
-        unreachable!("noop_ops is only constructed, never called")
-    }
-    async fn kill_pane(&self, _source: &str, _target: &str) -> anyhow::Result<()> {
-        unreachable!("noop_ops is only constructed, never called")
-    }
-    async fn rename_window(
-        &self,
-        _source: &str,
-        _target: &str,
-        _new_name: &str,
-    ) -> anyhow::Result<()> {
         unreachable!("noop_ops is only constructed, never called")
     }
 }

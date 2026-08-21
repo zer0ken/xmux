@@ -72,9 +72,6 @@ impl Switcher {
         if matches!(state.modal, Some(Modal::Input(_))) {
             return self.handle_input_key(ev, state);
         }
-        if matches!(state.modal, Some(Modal::Kill(_))) {
-            return self.resolve_kill(ev, state);
-        }
         // A flash is a transient error/message - it lives only until the next key. Clear
         // it here so navigation (or any key) restores the normal help
         // hint_bar; actions below may set a fresh one, which survives because this runs first.
@@ -82,7 +79,7 @@ impl Switcher {
         // The flat card list has no levels or host columns: ↑/↓ (and k/j) step one card,
         // PageUp/Down jump ten, Home/End go to the ends. Left/right have nothing to move
         // between, so they are inert here (prefix →/Enter focuses the terminal at the app
-        // layer). `n`/`R`/`x` act on the selected card; digits quick-jump.
+        // layer). `n` starts a session on the selected host; digits quick-jump.
         match ev.code {
             KeyCode::Enter => {}
             KeyCode::Up | KeyCode::Char('k') => self.nav_vertical(-1, state),
@@ -94,8 +91,6 @@ impl Switcher {
             KeyCode::Char(c) => match c {
                 '/' => self.open_input(InputMode::Filter, state),
                 'n' => self.open_new(state),
-                'R' => self.open_input(InputMode::Rename, state),
-                'x' => self.arm_kill(state),
                 'r' => self.request_rescan(state),
                 // Quick-jump: 1..9 select the Nth card (the dim digit shown on it),
                 // reusing the normal selection/attach-debounce path.
@@ -109,6 +104,9 @@ impl Switcher {
 
     // --- input row ----------------------------------------------------------
 
+    /// Opens the fuzzy filter input. The only inline input the switcher opens by
+    /// mode; `new session` is opened by [`Switcher::open_new`], which needs the
+    /// selected host captured up front.
     pub(super) fn open_input(&mut self, mode: InputMode, state: &mut crate::state::State) {
         state.chrome.flash.clear();
         self.dismiss_modals(state);
@@ -119,33 +117,16 @@ impl Switcher {
                     " filter sessions".into(),
                     state.filter.clone(),
                     None,
-                    None,
                 )));
             }
-            InputMode::Rename => match self.current_ref().cloned() {
-                Some(RowRef::Host { .. }) => {
-                    state.flash("cannot rename a host");
-                }
-                // A card names a session, so renaming it renames the SESSION.
-                Some(RowRef::Session { sess } | RowRef::Loading { sess }) => {
-                    state.modal = Some(Modal::Input(Input::new(
-                        mode,
-                        " rename session".into(),
-                        sess.name.clone(),
-                        None,
-                        Some(sess),
-                    )));
-                }
-                None => {}
-            },
-            // New / NewWindow are opened by `open_new`.
-            InputMode::New | InputMode::NewWindow => {}
+            // New is opened by `open_new`.
+            InputMode::New => {}
         }
     }
 
-    /// The `n` action: a new SESSION on a host card, or a new WINDOW in the selected
-    /// card's session. The context is captured up front so a streamed selection move
-    /// cannot retarget it.
+    /// The `n` action: a new SESSION on a host card. A session card has nothing to
+    /// create - xmux does not edit a session's windows - so it refuses with a flash.
+    /// The host is captured up front so a streamed selection move cannot retarget it.
     pub(super) fn open_new(&mut self, state: &mut crate::state::State) {
         state.chrome.flash.clear();
         self.dismiss_modals(state);
@@ -156,23 +137,19 @@ impl Switcher {
         let Some(reference) = self.current_ref().cloned() else {
             return;
         };
-        state.modal = match reference {
-            RowRef::Host { source, .. } => Some(Modal::Input(Input::new(
-                InputMode::New,
-                " new session name (empty = auto)".into(),
-                String::new(),
-                Some(source),
-                None,
-            ))),
-            // A session or loading card creates a new WINDOW in its session.
-            RowRef::Session { sess } | RowRef::Loading { sess } => Some(Modal::Input(Input::new(
-                InputMode::NewWindow,
-                format!(" new window in {} (name optional)", sess.name),
-                String::new(),
-                Some(sess.source.clone()),
-                Some(sess),
-            ))),
-        };
+        match reference {
+            RowRef::Host { source, .. } => {
+                state.modal = Some(Modal::Input(Input::new(
+                    InputMode::New,
+                    " new session name (empty = auto)".into(),
+                    String::new(),
+                    Some(source),
+                )));
+            }
+            RowRef::Session { .. } | RowRef::Loading { .. } => {
+                state.flash("select a host card to start a session");
+            }
+        }
     }
 
     pub(super) fn close_input(&mut self, state: &mut crate::state::State) {
@@ -182,7 +159,7 @@ impl Switcher {
     fn handle_input_key(&mut self, ev: KeyEvent, state: &mut crate::state::State) -> Vec<Command> {
         match ev.code {
             KeyCode::Enter => {
-                let (mode, val, source, sess) = {
+                let (mode, val, source) = {
                     let Some(Modal::Input(input)) = &state.modal else {
                         return Vec::new();
                     };
@@ -190,7 +167,6 @@ impl Switcher {
                         input.mode,
                         input.buffer.trim().to_string(),
                         input.source.clone(),
-                        input.sess.clone(),
                     )
                 };
                 // Close the input first so a queue helper that early-returns on a
@@ -203,8 +179,6 @@ impl Switcher {
                         Vec::new()
                     }
                     InputMode::New => self.queue_create(source, &val, state),
-                    InputMode::NewWindow => self.queue_new_window(source, sess, &val, state),
-                    InputMode::Rename => self.queue_rename(sess, &val, state),
                 }
             }
             KeyCode::Esc => {
@@ -264,51 +238,6 @@ impl Switcher {
         })
     }
 
-    /// Resolves a new-window in the captured session (the `n` action on a session
-    /// row) into an [`Action::NewWindow`]. An empty name lets the mux auto-name it.
-    fn queue_new_window(
-        &mut self,
-        source: Option<String>,
-        sess: Option<Session>,
-        name: &str,
-        state: &mut crate::state::State,
-    ) -> Vec<Command> {
-        let (Some(source), Some(sess)) = (source, sess) else {
-            return Vec::new();
-        };
-        state.apply(Action::NewWindow {
-            source,
-            session: sess.name,
-            name: name.to_string(),
-        })
-    }
-
-    /// Resolves a rename into an [`Action::RenameSession`] after the synchronous
-    /// validation that needs no network. See [`Switcher::queue_create`] for why the
-    /// op is deferred off-loop.
-    fn queue_rename(
-        &mut self,
-        sess: Option<Session>,
-        new_name: &str,
-        state: &mut crate::state::State,
-    ) -> Vec<Command> {
-        let Some(sess) = sess else {
-            return Vec::new();
-        };
-        if new_name.is_empty() || new_name == sess.name {
-            return Vec::new();
-        }
-        if new_name.starts_with('-') {
-            // the mux silently no-ops a '-'-leading name (getopt eats it) - refuse.
-            state.flash("rename: name cannot start with '-'");
-            return Vec::new();
-        }
-        state.apply(Action::RenameSession {
-            sess,
-            new_name: new_name.to_string(),
-        })
-    }
-
     /// Applies a completed [`MuxOp`](crate::model::MuxOp)'s [`OpResult`] to the
     /// in-memory tree. The result is applied on the event loop after `run_op`
     /// returns off-loop, so a slow ssh round-trip never blocks rendering. State
@@ -324,12 +253,6 @@ impl Switcher {
                     self.set_selected(i, state);
                 }
             }
-            OpFollow::Rebuild => self.rebuild(state),
-            OpFollow::RebuildPreservingFocus => {
-                let prior = self.capture_focus();
-                self.rebuild(state);
-                self.restore_focus(prior, state);
-            }
             OpFollow::Flash(message) => {
                 state.flash(message);
             }
@@ -340,79 +263,5 @@ impl Switcher {
         self.rows
             .iter()
             .position(|r| session_addr_of(&r.reference).as_deref() == Some(address))
-    }
-
-    // --- kill (confirm popup) -----------------------------------------------
-
-    pub(super) fn arm_kill(&mut self, state: &mut crate::state::State) {
-        self.dismiss_modals(state);
-        match self.current_ref().cloned() {
-            Some(RowRef::Host { .. }) => {
-                state.flash("cannot kill a host");
-            }
-            // A card names a session, so the kill targets the SESSION.
-            Some(RowRef::Session { sess } | RowRef::Loading { sess }) => {
-                state.modal = Some(Modal::Kill(PendingKill::Session(sess)));
-            }
-            None => {}
-        }
-    }
-
-    fn resolve_kill(&mut self, ev: KeyEvent, state: &mut crate::state::State) -> Vec<Command> {
-        // tmux confirm-before semantics: only y/Y confirms; any other key - n, Esc, or
-        // anything else - cancels (the pending confirm is taken either way).
-        let confirmed = matches!(ev.code, KeyCode::Char('y') | KeyCode::Char('Y'));
-        let Some(Modal::Kill(armed)) = state.modal.take() else {
-            return Vec::new();
-        };
-        if !confirmed {
-            return Vec::new();
-        }
-        let action = match armed {
-            PendingKill::Session(sess) => Action::KillSession { sess },
-            PendingKill::Pane {
-                source,
-                session,
-                target,
-            } => Action::KillPane {
-                source,
-                session,
-                target,
-            },
-        };
-        state.apply(action)
-    }
-
-    /// Arms a kill confirm for the ACTIVE pane of the DISPLAYED session - the pane the
-    /// terminal view is showing (tmux `prefix x` parity). Unlike [`arm_kill`], which
-    /// targets the tree SELECTION, this reads `state.displayed` and resolves that
-    /// session's active window from the cached pane data, so the confirmed kill hits the
-    /// pane on screen regardless of where the tree cursor sits. A no-op flash when no
-    /// session is displayed or its active pane is not yet known.
-    pub fn arm_kill_active_pane(&mut self, state: &mut crate::state::State) {
-        self.dismiss_modals(state);
-        let sel = state.displayed.clone();
-        if sel.is_empty() {
-            state.flash("no session displayed");
-            return;
-        }
-        let addr = crate::session::address_of(&sel.source, &sel.session);
-        let Some(window) = state
-            .panes
-            .get(&addr)
-            .and_then(|ws| ws.iter().find(|w| w.active))
-            .map(|w| w.index)
-        else {
-            state.flash("no active pane to kill");
-            return;
-        };
-        // session:window (not a bare session) so a numeric session name can't be
-        // mis-parsed as a window index - the mux resolves the window's active pane.
-        let target = crate::mux::window_target(&sel.session, window);
-        state.modal = Some(Modal::Kill(PendingKill::Pane {
-            source: sel.source,
-            session: sel.session,
-            target,
-        }));
     }
 }

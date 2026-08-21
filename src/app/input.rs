@@ -1,8 +1,8 @@
 //! The PURE, stateless input-routing core: the decode/resolve functions and the small
 //! value types they use. Tree-focus key resolution ([`resolve_nav_key`]), the mouse
 //! focus×position router ([`resolve_mouse_chain`]/[`ChainAction`]), the gesture/geometry
-//! predicates ([`to_grid_local`], [`leading_ctrl_arrow`], [`view_border_drag_width`],
-//! [`nav_menu_may_open`]), and the per-read gesture/outcome carriers
+//! predicates ([`to_grid_local`], [`leading_ctrl_arrow`], [`view_border_drag_width`]),
+//! and the per-read gesture/outcome carriers
 //! ([`MouseState`]/[`StdinOutcome`]). None of these touch app or switcher state, so they
 //! are unit-testable in isolation; the stateful handlers in `runtime.rs` thread the
 //! runtime's world and call into this core.
@@ -71,14 +71,6 @@ fn is_focus_in(code: KeyCode) -> bool {
 /// a tree scroll.
 fn wheel_targets_nav(nav_focused: bool, over_mux: bool) -> bool {
     nav_focused && !over_mux
-}
-
-/// Whether a right-button press may open the tree context menu. Tree-focus only: the
-/// menu operates on a tree row, so it is a tree-view action, not a view-independent
-/// global — it never opens (nor steals focus) while the terminal view is focused. Position-
-/// gated to the tree column; a right-click over the terminal view forwards to the child.
-pub(crate) fn nav_menu_may_open(is_right_press: bool, nav_focused: bool, over_mux: bool) -> bool {
-    is_right_press && nav_focused && !over_mux
 }
 
 /// What a mouse event resolves to once the modal/gesture gates (menu, view border drag,
@@ -457,26 +449,6 @@ mod tests {
             resolve_mouse_chain(false, false, false, false, true, false),
             Nothing,
             "right-press, tree focus, over tree → nothing"
-        );
-    }
-
-    #[test]
-    fn nav_menu_opens_only_in_tree_focus_over_the_tree() {
-        assert!(
-            nav_menu_may_open(true, true, false),
-            "right-press, tree focus, over tree → may open"
-        );
-        assert!(
-            !nav_menu_may_open(true, false, false),
-            "right-press while the MUX is focused → never"
-        );
-        assert!(
-            !nav_menu_may_open(true, true, true),
-            "right-press over the terminal view → forwards, no tree menu"
-        );
-        assert!(
-            !nav_menu_may_open(false, true, false),
-            "a non-right press never opens the menu"
         );
     }
 

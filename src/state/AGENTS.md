@@ -51,13 +51,13 @@ once-connected host is a transient drop that keeps the last-known tree. The
 into `model::Host.inventory` (the single owner) via `ApplyInventory` — the fold
 needs the `hosts` registry the state layer does not hold, so it is the loop's job.
 
-`modal` is one `Option<ui::modal::Modal>` — at most one of help / inline
-input / kill confirm / context menu. A single Option (not four independent
-fields) makes the modals' mutual exclusion structural: opening one drops
-whatever was open. The query helpers `is_modal_popup_open` / `is_inputting` /
-`menu_active` / `modal_kind` read it (delegating to `ui::modal`). `ui::modal`
+`modal` is one `Option<ui::modal::Modal>` — at most one of help / inline input.
+A single Option (not two independent fields) makes the modals' mutual exclusion
+structural: opening one drops whatever was open. The query helpers
+`is_modal_popup_open` / `is_inputting` / `modal_kind` read it (delegating to
+`ui::modal`). `ui::modal`
 owns the modal types, classifiers, and self-contained behavior (help feed /
-menu hover / popup-drag geometry); the switcher holds the modal state plus its
+popup-drag geometry); the switcher holds the modal state plus its
 `PopupGeometry` and forwards to `ui::modal`.
 
 ## Module Seams

@@ -40,7 +40,6 @@ impl Switcher {
                 }
             }
             self.render_modal_popup(frame, area, state);
-            self.render_menu(frame, state);
             return;
         }
         // One geometry source for the whole frame (compute_regions), shared with the PTY
@@ -82,7 +81,6 @@ impl Switcher {
             }
         }
         self.render_modal_popup(frame, area, state);
-        self.render_menu(frame, state);
     }
 
     /// The navigation list: one flat, vertically-scrolling list of cards in both
@@ -290,13 +288,12 @@ impl Switcher {
     /// Draws the active centered modal popup (help / confirm / input) shifted by
     /// `popup_offset`, through the shared opaque `render_popup`, and caches its rect
     /// for drag hit-testing. The single `popup` Option makes these mutually
-    /// exclusive; the context menu is drawn separately by `render_menu`.
+    /// exclusive.
     fn render_modal_popup(&mut self, frame: &mut Frame, area: Rect, state: &crate::state::State) {
         let (title, lines) = match &state.modal {
             Some(Modal::Help) => modal::help_lines(&state.chrome.ui_prefix),
-            Some(Modal::Kill(armed)) => modal::confirm_lines(armed),
             Some(Modal::Input(input)) => modal::input_lines(input),
-            _ => {
+            None => {
                 self.popup_geo.rect = Rect::default();
                 return;
             }
@@ -309,32 +306,5 @@ impl Switcher {
         let rect = modal::offset_centered(w, h, area, self.popup_geo.offset);
         self.popup_geo.rect = rect;
         modal::render_popup(frame, area, rect, &title, lines);
-    }
-
-    /// Draws the open context menu as a bordered popup at its anchored rect: the target's
-    /// name in the title (like tmux's menu title), the hovered item reversed. Shares the
-    /// opaque, tmux-edge popup renderer with the help modal.
-    fn render_menu(&self, frame: &mut Frame, state: &crate::state::State) {
-        let Some(Modal::Menu(menu)) = &state.modal else {
-            return;
-        };
-        let rect = menu.rect;
-        let pad = rect.width.saturating_sub(4) as usize;
-        let lines: Vec<Line> = menu
-            .items
-            .iter()
-            .enumerate()
-            .map(|(i, it)| {
-                // The menu highlight matches the nav's selection language: a quiet
-                // surface background, not reverse video.
-                let style = if menu.hovered == Some(i) {
-                    Style::default().bg(palette::get().surface)
-                } else {
-                    Style::default()
-                };
-                Line::from(Span::styled(format!(" {:<pad$} ", it.label()), style))
-            })
-            .collect();
-        modal::render_popup(frame, self.screen_area, rect, &menu.title, lines);
     }
 }

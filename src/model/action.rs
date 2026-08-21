@@ -1,20 +1,24 @@
 //! The unidirectional-flow core: [`Action`] (intent) and [`Command`] (effect).
 //!
-//! Every input surface — keys, the `xmux ctl` socket, the loop-top selection
-//! derive — resolves to an `Action`. `State::apply(Action) -> Vec<Command>` is the
+//! Every input surface - keys, the `xmux ctl` socket, the loop-top selection
+//! derive - resolves to an `Action`. `State::apply(Action) -> Vec<Command>` is the
 //! single site that mutates domain state, and it returns the side effects to run as
 //! `Command`s. The app run loop dispatches each `Command` (switcher selection move,
-//! attach, prefs persist, quit) — `apply` itself touches only `State`, so the
+//! attach, prefs persist, quit) - `apply` itself touches only `State`, so the
 //! intent → state-change → effect flow is one direction with one mutation point.
 //!
 //! `Action` is the DOMAIN vocabulary, distinct from `display::dispatch::Action` (the
 //! app's raw-byte input vocabulary, which projects INTO this via `as_action`).
 //! The display/navigation intents (Switch/Focus/Rescan/TreeWidth/ToggleAutoHide/Quit),
-//! the selection/attach-debounce intents (`Select`/`Tick`), and the async
-//! session-lifecycle intents (`CreateSession`/`NewWindow`/`SplitWindow`/`RenameSession`/
-//! `KillSession`/`KillWindow`/`RenameWindow`) all live here. A lifecycle intent folds
+//! the selection/attach-debounce intents (`Select`/`Tick`), and the one async
+//! session-lifecycle intent (`CreateSession`) all live here. A lifecycle intent folds
 //! into a [`Command::RunOp`] carrying the [`MuxOp`] descriptor the run loop runs
 //! off-loop against the live mux.
+//!
+//! xmux aggregates and switches; it does not edit what a mux already edits. So the
+//! vocabulary carries no rename/kill/window intents - those belong to the mux itself.
+//! The one creating intent that survives is `CreateSession`, because a host with no
+//! sessions has nothing to switch TO until one exists.
 
 use crate::model::Selection;
 use crate::session::Session;
@@ -26,14 +30,14 @@ use std::time::Instant;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     /// Move the display target to this `source/session` address (the ctl `switch`
-    /// verb — its only producer). Selects the addressed SESSION; a `:window` suffix is
+    /// verb - its only producer). Selects the addressed SESSION; a `:window` suffix is
     /// not honored, since the switcher matches session rows by their `source/session`
     /// address. Moves the selection; the attach commits on a later `Tick` once the
     /// selection settles.
     Switch { address: String },
     /// Move focus between the tree view and the terminal view.
     Focus(FocusTarget),
-    /// Flip the view focus (Tree ⇄ Terminal) — produced only by a left click on the
+    /// Flip the view focus (Tree ⇄ Terminal) - produced only by a left click on the
     /// unfocused view. (Prefix-key focus moves resolve to a DIRECTED `Focus` instead.)
     /// During a modal it flips the carried `prior` so the modal stays open and restores
     /// onto the flipped view.
@@ -47,7 +51,7 @@ pub enum Action {
     /// Quit the app.
     Quit,
     /// The settled selection target. Updates `state.selection` and arms the attach
-    /// debounce; emits NO attach `Command` — the trailing `Tick` fires the attach
+    /// debounce; emits NO attach `Command` - the trailing `Tick` fires the attach
     /// once the selection stops moving.
     Select(Selection),
     /// The loop cadence beat, carrying the clock and the runtime attach facts as
@@ -62,63 +66,27 @@ pub enum Action {
         /// Whether an attach for the selected session's key is already in flight.
         in_flight: bool,
     },
-    /// Advance the display truth (`state.displayed`) to this selection — the
+    /// Advance the display truth (`state.displayed`) to this selection - the
     /// confirmation of a synchronous in-place switch or a `DisplayReady`. The loop
     /// makes the confirmation DECISION (a live grid exists, no reattach in flight)
     /// and folds the resulting truth here so `apply` owns the mutation.
     ConfirmDisplay(Selection),
-    /// Blank the display truth — the `r` reattach-kick tears the current display
+    /// Blank the display truth - the `r` reattach-kick tears the current display
     /// down, so nothing is confirmed until the fresh attach lands.
     ClearDisplay,
-    /// Re-arm the attach debounce one interval out from `now` — the recovery rearm
+    /// Re-arm the attach debounce one interval out from `now` - the recovery rearm
     /// (a matched-client detach-reap, or the viewed session's PTY exiting). Carries
     /// the same debounce arithmetic `apply(Tick)` owns, so the two arming paths
     /// cannot drift. `now` is injected (apply never reads the clock itself).
     RearmAttach { now: Instant },
     /// Arm the attach deadline at `now` itself (already elapsed) so the trailing
-    /// `Tick` re-attaches immediately — the `r` reattach-kick, which re-attaches the
+    /// `Tick` re-attaches immediately - the `r` reattach-kick, which re-attaches the
     /// current display with no debounce.
     RearmAttachNow { now: Instant },
-    /// Create a new session named `name` (empty = mux auto-name) on `source`.
+    /// Create a new session named `name` (empty = mux auto-name) on `source`. The one
+    /// mutating intent xmux keeps: a reachable host with no sessions offers nothing to
+    /// switch to, so starting the first one is part of switching, not mux editing.
     CreateSession { source: String, name: String },
-    /// Create a new window named `name` (empty = mux auto-name) in `session` on `source`.
-    NewWindow {
-        source: String,
-        session: String,
-        name: String,
-    },
-    /// Split window `target` (`session:window`) of `session` on `source` into a new pane.
-    SplitWindow {
-        source: String,
-        target: String,
-        session: String,
-        vertical: bool,
-    },
-    /// Rename `sess` to `new_name`.
-    RenameSession { sess: Session, new_name: String },
-    /// Kill `sess`.
-    KillSession { sess: Session },
-    /// Kill window `target` (`session:window`) of `session` on `source`.
-    KillWindow {
-        source: String,
-        session: String,
-        target: String,
-    },
-    /// Kill the active pane of `target` (`session:window`) of `session` on `source` —
-    /// the pane shown in the terminal view. `session` is carried so the tree refetches
-    /// after the kill.
-    KillPane {
-        source: String,
-        session: String,
-        target: String,
-    },
-    /// Rename window `target` (`session:window`) of `session` on `source` to `new_name`.
-    RenameWindow {
-        source: String,
-        session: String,
-        target: String,
-        new_name: String,
-    },
 }
 
 /// A side effect for the run loop to carry out. `apply` returns these; the loop is
@@ -137,7 +105,7 @@ pub enum Command {
     ToggleAutoHide,
     /// Persist this session address as the user's last-selected.
     PersistLastSession(String),
-    /// Attach (or switch to) the selected session — the settled-selection effect.
+    /// Attach (or switch to) the selected session - the settled-selection effect.
     Attach(Selection),
     /// Exit the app run loop.
     Quit,
@@ -148,49 +116,12 @@ pub enum Command {
     RunOp(MuxOp),
 }
 
-/// A slow (network) mux action — the descriptor [`Command::RunOp`] carries and
+/// A slow (network) mux action - the descriptor [`Command::RunOp`] carries and
 /// [`run_op`](crate::ui::switcher::run_op) executes against the live mux. Built by
 /// `State::apply` from a session-lifecycle [`Action`]; pure data, no I/O.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MuxOp {
-    Create {
-        source: String,
-        name: String,
-    },
-    NewWindow {
-        source: String,
-        session: String,
-        name: String,
-    },
-    SplitWindow {
-        source: String,
-        target: String,
-        session: String,
-        vertical: bool,
-    },
-    Rename {
-        sess: Session,
-        new_name: String,
-    },
-    Kill {
-        sess: Session,
-    },
-    KillWindow {
-        source: String,
-        session: String,
-        target: String,
-    },
-    KillPane {
-        source: String,
-        session: String,
-        target: String,
-    },
-    RenameWindow {
-        source: String,
-        session: String,
-        target: String,
-        new_name: String,
-    },
+    Create { source: String, name: String },
 }
 
 /// A mux follow-up a [`HostEvent`](crate::host::HostEvent) requires after
@@ -198,15 +129,15 @@ pub enum MuxOp {
 /// self-contained state mutation. `apply_event` owns the domain-state changes (tree
 /// rebuild, marker move, unreachable mark); these effects carry the mux I/O the
 /// state layer must not perform itself (the AGENTS rule: no IO/registry mutation in
-/// `state`). The app run loop is the sole executor — it holds the host clients,
+/// `state`). The app run loop is the sole executor - it holds the host clients,
 /// the attach registry, and the display worker the effects act on.
 ///
-/// The events whose payload is self-contained (`Focus`/`Panes`) produce NO effect —
+/// The events whose payload is self-contained (`Focus`/`Panes`) produce NO effect -
 /// `apply_event` mutates the tree directly and returns an empty `Vec`. The events
 /// that need a mux handle (the single-owner inventory fold into `model::Host`, a
 /// control-mode probe, the registry, the detection box) return the matching effect
 /// for the loop to run.
-/// Not `Clone`/`Eq` — `DispatchScanned` carries a `Box<dyn Mux>`; tests match
+/// Not `Clone`/`Eq` - `DispatchScanned` carries a `Box<dyn Mux>`; tests match
 /// structurally.
 pub enum EventEffect {
     /// `Connected`/`Inventory`: fold the carried `sessions` into `host`'s
@@ -217,10 +148,10 @@ pub enum EventEffect {
         host: String,
         sessions: Vec<Session>,
     },
-    /// `Changed`: the server's session/window STRUCTURE changed — refetch `host`'s
+    /// `Changed`: the server's session/window STRUCTURE changed - refetch `host`'s
     /// inventory (re-run list-sessions + re-list panes).
     Refetch { host: String },
-    /// `ActiveWindowChanged`: a session's active window switched — probe `session_ref`
+    /// `ActiveWindowChanged`: a session's active window switched - probe `session_ref`
     /// (the tmux SESSION id from the notification payload) over `host`'s control
     /// connection (no refetch). Targets THAT SPECIFIC session, not a displayed guess.
     ProbeActiveWindow { host: String, session_ref: String },
@@ -241,7 +172,7 @@ pub enum EventEffect {
         client: String,
         session: String,
     },
-    /// `Scanned`: a detection probe resolved — (re)identify `source`'s mux with
+    /// `Scanned`: a detection probe resolved - (re)identify `source`'s mux with
     /// `detected`, then dispatch the now-detected host onto its metadata channel.
     DispatchScanned {
         source: String,

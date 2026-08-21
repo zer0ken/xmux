@@ -1,6 +1,5 @@
 //! The switcher's modal surfaces: the single open-modal enum ([`Modal`]) and its
-//! variants (help / inline input / kill confirm / context menu), plus the data
-//! types they carry. The switcher owns the modal *behavior* and the transient
+//! variants (the keys help and the inline input), plus the data types they carry. The switcher owns the modal *behavior* and the transient
 //! popup geometry; this module owns the modal data model. Side-effect-free.
 
 use ratatui::layout::Rect;
@@ -10,68 +9,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-use crate::session::Session;
 use crate::ui::palette;
-use crate::ui::tree::RowRef;
-
-/// An armed kill confirm (awaiting y/n). One slot enforces "at most one armed".
-#[derive(Debug, Clone)]
-pub(crate) enum PendingKill {
-    Session(Session),
-    /// The active pane of the terminal view's session. (source, session,
-    /// target="session:window" - the window whose active pane is killed.)
-    Pane {
-        source: String,
-        session: String,
-        target: String,
-    },
-}
-
-/// One context-menu entry. The variant drives the action taken on release; the
-/// label is the row text. Words match the rest of the tree UI ("focus the terminal",
-/// "new", "rename", "kill" - never "open"/"split", which are not used elsewhere).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum MenuItem {
-    Focus,
-    NewSession,
-    NewWindow,
-    Rename,
-    Kill,
-}
-
-impl MenuItem {
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            MenuItem::Focus => "focus",
-            MenuItem::NewSession => "new session",
-            MenuItem::NewWindow => "new window",
-            MenuItem::Rename => "rename",
-            MenuItem::Kill => "kill",
-        }
-    }
-}
-
-/// What the app must do after a menu release. Most items are handled inside the
-/// switcher (they open an input or arm a kill); `FocusTerminal` is the one outcome the
-/// app owns (the "focus" item moves focus to the terminal view).
-pub enum MenuOutcome {
-    None,
-    Handled,
-    FocusTerminal,
-}
-
-/// An open right-click context menu. `target` is the node it acts on, re-located by
-/// identity at release so a tree rebuild during the brief hold cannot misfire on a
-/// stale row. `title` names that node (shown in the box's top border, like tmux's
-/// menu title - so the menu reads as "actions for <this node>"). `rect` is the
-/// bordered box in 0-based screen coords; `hovered` is the highlighted item.
-pub(crate) struct Menu {
-    pub(crate) target: RowRef,
-    pub(crate) title: String,
-    pub(crate) rect: Rect,
-    pub(crate) items: Vec<MenuItem>,
-    pub(crate) hovered: Option<usize>,
-}
 
 /// An active border-drag of a modal popup: the grabbed screen cell and the
 /// popup offset at grab time, so motion can compute the new offset.
@@ -158,8 +96,6 @@ impl PopupGeometry {
 pub(crate) enum InputMode {
     Filter,
     New,
-    NewWindow,
-    Rename,
 }
 
 pub(crate) struct Input {
@@ -170,11 +106,10 @@ pub(crate) struct Input {
     /// edit and movement keeps it in range; the entry line renders a block caret at
     /// this column, so editing is no longer append-only.
     pub(crate) cursor: usize,
-    /// The create source / rename target captured when the input opened, so the
-    /// action lands on the node the user was on, not wherever streaming results
-    /// moved the selection by the time they pressed Enter.
+    /// The create source captured when the input opened, so the action lands on the
+    /// host the user was on, not wherever streaming results moved the selection by
+    /// the time they pressed Enter.
     pub(crate) source: Option<String>,
-    pub(crate) sess: Option<Session>,
 }
 
 impl Input {
@@ -186,7 +121,6 @@ impl Input {
         label: String,
         buffer: String,
         source: Option<String>,
-        sess: Option<Session>,
     ) -> Self {
         let cursor = buffer.chars().count();
         Input {
@@ -195,7 +129,6 @@ impl Input {
             buffer,
             cursor,
             source,
-            sess,
         }
     }
 
@@ -276,49 +209,35 @@ impl Input {
     }
 }
 
-/// The single open modal, if any - at most one of help / inline input / kill
-/// confirm / context menu. Modeling it as one `Option` (not four independent
-/// fields) makes the modals' mutual exclusion structural: opening one drops
-/// whatever was open, and the compiler guarantees two can never coexist, so the
-/// hand-maintained "clear the others" invariant cannot drift. Lives on
-/// [`crate::state::State`]; the switcher owns only the behavior and the transient
-/// popup geometry (drag offset / drawn rect).
+/// The single open modal, if any - at most one of the keys help and the inline
+/// input. Modeling it as one `Option` (not two independent fields) makes the
+/// modals' mutual exclusion structural: opening one drops whatever was open, and
+/// the compiler guarantees two can never coexist, so the hand-maintained "clear
+/// the others" invariant cannot drift. Lives on [`crate::state::State`]; the
+/// switcher owns only the behavior and the transient popup geometry (drag offset
+/// / drawn rect).
 pub(crate) enum Modal {
     Help,
     Input(Input),
-    Kill(PendingKill),
-    Menu(Menu),
 }
 
-/// True while a centered modal popup (help / inline input / kill confirm) is open.
-/// These three are draggable and drive [`ModalKind::Popup`]; the context menu is
-/// separate (pointer-anchored).
-///
-/// [`ModalKind::Popup`]: crate::app::focus::ModalKind::Popup
+/// True while a centered modal popup is open. Every modal is one today, so this
+/// is `is_some()`; it stays a named predicate because callers ask the QUESTION
+/// ("is a draggable popup on screen?"), not the representation.
 pub(crate) fn is_popup_open(modal: &Option<Modal>) -> bool {
-    matches!(modal, Some(Modal::Help | Modal::Input(_) | Modal::Kill(_)))
+    modal.is_some()
 }
 
-/// True while an inline input (filter / rename / new) is open.
+/// True while an inline input (filter / new session) is open.
 pub(crate) fn is_inputting(modal: &Option<Modal>) -> bool {
     matches!(modal, Some(Modal::Input(_)))
 }
 
-/// True while the right-click context menu is open.
-pub(crate) fn is_menu_active(modal: &Option<Modal>) -> bool {
-    matches!(modal, Some(Modal::Menu(_)))
-}
-
 /// Which kind of modal is open - the focus machine derives its modal dimension from
-/// this each loop-top, so focus can never mirror-and-desync from the open popup. A
-/// centered popup and the context menu are mutually exclusive.
+/// this each loop-top, so focus can never mirror-and-desync from the open popup.
 pub(crate) fn modal_kind(modal: &Option<Modal>) -> Option<crate::app::focus::ModalKind> {
     use crate::app::focus::ModalKind;
-    match modal {
-        Some(Modal::Help | Modal::Input(_) | Modal::Kill(_)) => Some(ModalKind::Popup),
-        Some(Modal::Menu(_)) => Some(ModalKind::Menu),
-        None => None,
-    }
+    modal.as_ref().map(|_| ModalKind::Popup)
 }
 
 /// Feeds a raw key read to the help modal, tmux view-mode style. While help is open
@@ -335,28 +254,6 @@ pub(crate) fn feed_help(modal: &mut Option<Modal>, bytes: &[u8]) -> bool {
         *modal = None;
     }
     true
-}
-
-/// The menu entries for a node, by type. Non-selectable rows (pane/loading) get none.
-/// `focus` is first so a press-release with no drag falls on the safe default.
-pub(crate) fn menu_items(target: &RowRef) -> Vec<MenuItem> {
-    use MenuItem::*;
-    match target {
-        RowRef::Host { .. } => vec![NewSession],
-        RowRef::Session { .. } => vec![Focus, NewWindow, Rename, Kill],
-        // A loading card can only be focused (attach the session); its windows are
-        // not yet resolved, so the window-creating action is unavailable.
-        RowRef::Loading { .. } => vec![Focus],
-    }
-}
-
-/// The menu's title - the human name of the node it acts on (host alias, session
-/// name, or `session:window`), shown in the box's top border.
-pub(crate) fn menu_title(target: &RowRef) -> String {
-    match target {
-        RowRef::Host { source, .. } => source.clone(),
-        RowRef::Session { sess } | RowRef::Loading { sess } => sess.name.clone(),
-    }
 }
 
 /// Greedily word-wraps `text` to lines no wider than `width` display columns
@@ -431,12 +328,7 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
         HelpRow::Key("PgUp/PgDn".into(), "jump by 10".into()),
         HelpRow::Key("Home/End".into(), "first / last card".into()),
         HelpRow::Key("1…9".into(), "jump to that numbered card".into()),
-        HelpRow::Key(
-            format!("{p} n"),
-            "new: session (on a host) / window (on a card)".into(),
-        ),
-        HelpRow::Key(format!("{p} R"), "rename the session".into()),
-        HelpRow::Key(format!("{p} x"), "kill the session (y / n confirm)".into()),
+        HelpRow::Key(format!("{p} n"), "new session on the selected host".into()),
         HelpRow::Key("/".into(), "fuzzy filter <source>/<name>".into()),
         HelpRow::Key(format!("{p} r"), "re-scan every host".into()),
         HelpRow::Gap,
@@ -463,10 +355,6 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
         HelpRow::Key(format!("{p} ?"), "show this help (q / Esc closes)".into()),
         HelpRow::Key("click a view".into(), "focus that view".into()),
         HelpRow::Key("drag the view border".into(), "resize the tree".into()),
-        HelpRow::Key(
-            "right-click a row".into(),
-            "hold for its menu, release on an item".into(),
-        ),
         HelpRow::Key(format!("{p} q"), "quit".into()),
         HelpRow::Key(format!("{p} {p}"), format!("send a literal {p} to the mux")),
         HelpRow::Gap,
@@ -538,22 +426,6 @@ pub(crate) fn input_lines(input: &Input) -> (String, Vec<Line<'static>>) {
     (input_title(input.mode).to_string(), lines)
 }
 
-/// The armed kill confirm rendered as popup `(title, lines)`, in red.
-pub(crate) fn confirm_lines(armed: &PendingKill) -> (String, Vec<Line<'static>>) {
-    let red = Style::default().fg(palette::get().danger);
-    let q = match armed {
-        PendingKill::Session(sess) => format!(" kill {}?", sess.address()),
-        PendingKill::Pane { source, target, .. } => {
-            format!(" kill active pane of {source}/{target}?")
-        }
-    };
-    let lines = vec![
-        Line::from(Span::styled(q, red)),
-        Line::from(Span::styled(" [y]es / [n]o · Esc cancel", red)),
-    ];
-    ("kill?".to_string(), lines)
-}
-
 /// Renders an opaque bordered popup at `rect` (titled, content `lines`), in tmux's
 /// edge style. Two things make it tmux-consistent:
 ///
@@ -601,71 +473,6 @@ pub(crate) fn render_popup(
     }
 }
 
-impl Menu {
-    /// The item index at 0-based screen (col,row), or None if outside the item area
-    /// (the box's bordered interior, one row per item below the top border).
-    pub(crate) fn item_at(&self, col: u16, row: u16) -> Option<usize> {
-        let inside_x = col > self.rect.x && col + 1 < self.rect.x + self.rect.width;
-        if !inside_x || row <= self.rect.y {
-            return None;
-        }
-        let i = (row - self.rect.y - 1) as usize;
-        (i < self.items.len()).then_some(i)
-    }
-
-    /// Whether 0-based screen (col,row) is anywhere inside the box (border included).
-    /// Used to keep the highlight while the selection is over the title border but off an
-    /// item - only dragging fully outside the box clears it.
-    pub(crate) fn contains(&self, col: u16, row: u16) -> bool {
-        col >= self.rect.x
-            && col < self.rect.x + self.rect.width
-            && row >= self.rect.y
-            && row < self.rect.y + self.rect.height
-    }
-}
-
-/// Mouse moved while the menu is held: highlight the item under the pointer. Over the
-/// box but off an item (the title border) keeps the current highlight; only dragging
-/// fully OUTSIDE the box clears it, so releasing there cancels. No-op when no menu.
-pub(crate) fn menu_hover(modal: &mut Option<Modal>, col: u16, row: u16) {
-    if let Some(Modal::Menu(menu)) = modal.as_mut() {
-        if let Some(i) = menu.item_at(col, row) {
-            menu.hovered = Some(i);
-        } else if !menu.contains(col, row) {
-            menu.hovered = None;
-        }
-    }
-}
-
-/// The bordered menu box for an anchor at 0-based screen (col,row): sized to the wider
-/// of the widest item label (+ a pad cell each side) and the title, plus borders, and
-/// the item count; clamped so it stays fully inside `area` (shifts up/left near an edge).
-pub(crate) fn menu_rect(col: u16, row: u16, items: &[MenuItem], title: &str, area: Rect) -> Rect {
-    let item_w = items
-        .iter()
-        .map(|it| UnicodeWidthStr::width(it.label()))
-        .max()
-        .unwrap_or(0);
-    let content_w = (item_w + 2).max(UnicodeWidthStr::width(title)) as u16;
-    let w = (content_w + 2).min(area.width.max(1));
-    let h = (items.len() as u16 + 2).min(area.height.max(1));
-    // Anchor the title row (top border) on the pointer, tmux-style: the pointer lands on
-    // the title line, a column left so it sits just inside the box rather than on the left
-    // border. item_at() is None on the title row, so no item is pre-selected - an
-    // accidental right-click releases off every item (cancel), and a deliberate pick is a
-    // short drag straight down onto an item.
-    let ax = col.saturating_sub(1);
-    let ay = row;
-    let max_x = (area.x + area.width).saturating_sub(w).max(area.x);
-    let max_y = (area.y + area.height).saturating_sub(h).max(area.y);
-    Rect {
-        x: ax.clamp(area.x, max_x),
-        y: ay.clamp(area.y, max_y),
-        width: w,
-        height: h,
-    }
-}
-
 fn centered_rect(w: u16, h: u16, area: Rect) -> Rect {
     let w = w.min(area.width);
     let h = h.min(area.height);
@@ -699,8 +506,6 @@ fn input_title(mode: InputMode) -> &'static str {
     match mode {
         InputMode::Filter => "filter",
         InputMode::New => "new session",
-        InputMode::NewWindow => "new window",
-        InputMode::Rename => "rename",
     }
 }
 
@@ -712,13 +517,7 @@ mod tests {
     use ratatui::Terminal;
 
     fn edit_input(buffer: &str) -> Input {
-        Input::new(
-            InputMode::Rename,
-            "t".into(),
-            buffer.to_string(),
-            None,
-            None,
-        )
+        Input::new(InputMode::New, "t".into(), buffer.to_string(), None)
     }
 
     #[test]
@@ -768,23 +567,12 @@ mod tests {
     }
 
     #[test]
-    fn modal_kind_classifies_help_input_kill_as_popup_menu_as_menu() {
+    fn modal_kind_classifies_every_modal_as_a_popup() {
         use crate::app::focus::ModalKind;
         assert_eq!(modal_kind(&None), None);
         assert_eq!(modal_kind(&Some(Modal::Help)), Some(ModalKind::Popup));
         assert!(is_popup_open(&Some(Modal::Help)));
-        assert!(!is_menu_active(&Some(Modal::Help)));
-        let menu = Menu {
-            target: RowRef::Host {
-                source: String::new(),
-                unreachable: false,
-            },
-            title: String::new(),
-            rect: Rect::default(),
-            items: Vec::new(),
-            hovered: None,
-        };
-        assert_eq!(modal_kind(&Some(Modal::Menu(menu))), Some(ModalKind::Menu));
+        assert!(!is_popup_open(&None));
     }
 
     #[test]
@@ -811,43 +599,6 @@ mod tests {
         m = Some(Modal::Help);
         assert!(feed_help(&mut m, b"\x1b"), "lone Esc → consumed");
         assert!(m.is_none(), "Esc closes help");
-    }
-
-    #[test]
-    fn menu_rect_clamps_into_screen() {
-        use super::MenuItem::*;
-        let area = Rect::new(0, 0, 80, 24);
-        let items = [Focus, Rename, Kill];
-        // Anchored near the bottom-right corner → shifted up/left to stay on-screen.
-        let r = menu_rect(78, 23, &items, "editor", area);
-        assert!(
-            r.x + r.width <= area.width,
-            "box stays within the right edge"
-        );
-        assert!(
-            r.y + r.height <= area.height,
-            "box stays within the bottom edge"
-        );
-    }
-
-    #[test]
-    fn menu_rect_fits_a_title_wider_than_the_items() {
-        use super::MenuItem::*;
-        let area = Rect::new(0, 0, 80, 24);
-        let r = menu_rect(0, 0, &[Focus], "a-very-long-session-name", area);
-        assert!(
-            r.width as usize >= "a-very-long-session-name".len() + 2,
-            "title fits in the box"
-        );
-    }
-
-    #[test]
-    fn menu_rect_measures_cjk_title_by_display_width() {
-        use super::MenuItem::*;
-        let area = Rect::new(0, 0, 80, 24);
-        let title = "한국한국한국한국";
-        let r = menu_rect(0, 0, &[Focus], title, area);
-        assert_eq!(r.width as usize, UnicodeWidthStr::width(title) + 2);
     }
 
     #[test]

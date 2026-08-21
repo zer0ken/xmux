@@ -22,12 +22,8 @@ pub enum Action {
     FocusTree(Vec<u8>),
     /// Move focus to the terminal view (tree `Enter`, or `prefix` Right/Tab in tree focus).
     FocusTerminal,
-    /// A tree key to hand to `Switcher::handle_key` (navigation / input row / kill).
+    /// A tree key to hand to `Switcher::handle_key` (navigation / input row).
     TreeKey(KeyEvent),
-    /// `prefix x` in TERMINAL focus — arm a kill confirm for the active pane of the
-    /// displayed session (the pane on screen). Distinct from tree focus, where `prefix x`
-    /// kills the selected node; handed to `Switcher::arm_kill_active_pane`.
-    KillActivePane,
     /// `prefix` then `q` — quit the app.
     Quit,
     /// `prefix ?` — toggle the keys help modal. Focus stays on the terminal view.
@@ -58,11 +54,7 @@ impl Action {
             Action::FocusTree(_) => Some(DomainAction::Focus(FocusTarget::Nav)),
             // Height resize is key-driven only (no ctl verb yet); it is applied directly on
             // the tree-input path, not through a domain action.
-            Action::Height(_)
-            | Action::Forward(_)
-            | Action::ShowHelp
-            | Action::TreeKey(_)
-            | Action::KillActivePane => None,
+            Action::Height(_) | Action::Forward(_) | Action::ShowHelp | Action::TreeKey(_) => None,
         }
     }
 }
