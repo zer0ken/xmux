@@ -1,4 +1,5 @@
-//! The picker control socket: a per-pid local socket the headless driver dials to
+//! The picker control socket: a per-instance local socket (`ctl-<name>.sock`) the
+//! headless driver dials to
 //! inject keys/text and dump the rendered switcher screen. Each request line is
 //! dispatched into the app's command channel; the app's `select!` loop
 //! folds the [`Cmd`]s in. The `dump_switcher` helper flattens a switcher render to
@@ -97,7 +98,7 @@ impl Drop for ControlHandle {
     }
 }
 
-/// Binds the per-pid control socket at `path` and serves it, forwarding injected
+/// Binds the instance control socket at `path` and serves it, forwarding injected
 /// keys/text into `cmd_tx` and answering `ping`/`dump`. A bind failure returns
 /// `None` (the UI runs without a control channel rather than failing).
 pub fn serve_control(path: PathBuf, cmd_tx: mpsc::Sender<Cmd>) -> Option<ControlHandle> {
@@ -112,7 +113,7 @@ pub fn serve_control(path: PathBuf, cmd_tx: mpsc::Sender<Cmd>) -> Option<Control
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
     // On Windows the endpoint is a named pipe (no filesystem presence); drop a
-    // marker file so `discover` can still find this instance by pid. On unix the
+    // marker file so `discover` can still find this instance by name. On unix the
     // bind already created the socket file at `path`.
     #[cfg(windows)]
     let _ = std::fs::write(&path, b"");
@@ -282,9 +283,9 @@ mod tests {
     async fn control_handle_drop_removes_socket() {
         let dir = std::env::temp_dir().join(format!("xmux-ctl-drop-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
-        // A distinct pid so the Windows pipe endpoint (xmux-ctl-<pid>) does not
+        // A distinct name so the Windows pipe endpoint (xmux-ctl-<name>) does not
         // collide with the concurrently-running control_end_to_end test.
-        let sock = control::socket_path(&dir, std::process::id().wrapping_add(7));
+        let sock = control::socket_path(&dir, &format!("drop-{}", std::process::id()));
         let (tx, _rx) = mpsc::channel::<Cmd>(8);
         let handle = serve_control(sock.clone(), tx).expect("bind control socket");
         assert!(sock.exists(), "socket/marker present while serving");
@@ -300,7 +301,7 @@ mod tests {
     async fn control_end_to_end() {
         let dir = std::env::temp_dir().join(format!("xmux-ctl-e2e-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
-        let sock = control::socket_path(&dir, std::process::id());
+        let sock = control::socket_path(&dir, &format!("e2e-{}", std::process::id()));
 
         let (tx, mut rx) = mpsc::channel::<Cmd>(64);
         let handle = serve_control(sock.clone(), tx.clone()).expect("bind control socket");
@@ -359,7 +360,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("xmux-ctl-perm-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
-        let sock = control::socket_path(&dir, std::process::id().wrapping_add(11));
+        let sock = control::socket_path(&dir, &format!("perm-{}", std::process::id()));
         let (tx, _rx) = mpsc::channel::<Cmd>(8);
         let handle = serve_control(sock.clone(), tx).expect("bind control socket");
         let mode = std::fs::metadata(&sock).unwrap().permissions().mode() & 0o777;

@@ -125,6 +125,10 @@ UI elements a user perceives as distinct things:
   and three-digit numbers behave identically and the buffer never shows a number you
   cannot land on. User-facing text calls this "jump to a session" (see the naming rule
   below).
+- instance name - a running app's identity: an auto-generated `<adjective>-<noun>`
+  (or `--name`), owning `ctl-<name>.sock` for its lifetime. `xmux send <name>` and
+  `xmux instances` address instances by it; a unique name prefix resolves, and `-`
+  means the sole live instance.
 - filter - the type-to-filter input over the nav list.
 - flash - a transient notice or error line shown in the hint bar (e.g. a refused
   action's reason). Never a "toast" or "notice".

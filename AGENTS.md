@@ -5,7 +5,8 @@
 This repository is a Rust terminal multiplexer switcher. The running app owns
 the terminal, keeps mux display attachments alive, renders the split view (a
 tree view plus the selected session's live PTY grid), and exposes a local
-control socket for headless driving.
+control socket for headless driving. Each instance is addressed by NAME
+(`ctl-<name>.sock`), which is what `xmux send <name> <command>` dials.
 
 ## Mental Model
 

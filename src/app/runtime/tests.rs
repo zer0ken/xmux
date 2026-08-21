@@ -1161,6 +1161,7 @@ fn test_rt(env: Env) -> Runtime {
     let (border_tx, _border_rx) = tokio::sync::mpsc::unbounded_channel();
     let prefix = crate::display::term::parse_prefix(Some(&env.ui_prefix));
     Runtime {
+        instance_name: "test".into(),
         env,
         ops,
         hosts,
@@ -1625,13 +1626,16 @@ fn status_line_reports_focus_and_address() {
     let sw = Switcher::new(&mut state);
     // Tab-separated so a cwd containing spaces survives; cwd/tty are injected so
     // the assertion stays deterministic (no real env read).
+    let pid = std::process::id();
     assert_eq!(
-        status_line(&sw, true, "/tmp/x", "-"),
-        "focus=nav\ttarget=api\tcwd=/tmp/x\ttty=-"
+        status_line(&sw, "amber-otter", true, "/tmp/x", "-"),
+        format!("name=amber-otter\tpid={pid}\tfocus=nav\ttarget=api\tcwd=/tmp/x\ttty=-")
     );
     assert_eq!(
-        status_line(&sw, false, "/tmp/x", "/dev/pts/3"),
-        "focus=terminal\ttarget=api\tcwd=/tmp/x\ttty=/dev/pts/3"
+        status_line(&sw, "amber-otter", false, "/tmp/x", "/dev/pts/3"),
+        format!(
+            "name=amber-otter\tpid={pid}\tfocus=terminal\ttarget=api\tcwd=/tmp/x\ttty=/dev/pts/3"
+        )
     );
 }
 

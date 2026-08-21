@@ -301,6 +301,9 @@ impl Runtime {
 
         let rt = Runtime {
             env,
+            // Replaced in `run_app` once the free name is resolved (that needs a dial,
+            // so it cannot happen in this synchronous constructor).
+            instance_name: String::new(),
             ops,
             hosts,
             mgr,
@@ -834,6 +837,7 @@ impl Runtime {
             Cmd::Status(reply) => {
                 let _ = reply.send(status_line(
                     &self.switcher,
+                    &self.instance_name,
                     self.state.focus.view_is_nav(),
                     &self_cwd(),
                     &self_tty(),
