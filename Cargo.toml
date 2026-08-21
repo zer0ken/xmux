@@ -48,5 +48,10 @@ portable-pty = "0.9"
 unicode-width = "0.2"
 terminal-colorsaurus = "1.0.3"
 
+[dev-dependencies]
+# `test-util` gives the paused clock the poll-budget tests use: they let a 6s timeout
+# elapse instantly instead of sleeping the suite.
+tokio = { version = "1.52.3", features = ["test-util"] }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_Console", "Win32_Foundation"] }

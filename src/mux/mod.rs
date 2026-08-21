@@ -88,6 +88,29 @@ pub(crate) fn reason_is_no_sessions(text: &str) -> bool {
     })
 }
 
+/// The per-command budget for one poll sweep. The poll loop's ticker only advances
+/// after `poll_once` RETURNS, so a single mux command that never answers freezes that
+/// host's whole inventory: every card stays on its loading spinner and no later sweep
+/// ever runs. A command that outlives this is abandoned (the child is killed on drop)
+/// and retried on the next sweep. Exceeds the ssh connect timeout (5s) so a slow remote
+/// is not mistaken for a hung one.
+pub(crate) const POLL_CMD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
+
+/// Runs `fut` under [`POLL_CMD_TIMEOUT`], mapping a timeout to a [`RunError`] naming
+/// the budget it blew.
+async fn within_poll_budget<T>(
+    what: &str,
+    fut: impl std::future::Future<Output = Result<T, RunError>>,
+) -> Result<T, RunError> {
+    match tokio::time::timeout(POLL_CMD_TIMEOUT, fut).await {
+        Ok(r) => r,
+        Err(_) => Err(RunError::Other(format!(
+            "{what} did not answer within {}s",
+            POLL_CMD_TIMEOUT.as_secs()
+        ))),
+    }
+}
+
 /// An opaque, mux-authored plan for an in-place display-client switch. The driver runs
 /// it BLIND through the host's transport and never inspects which variant it is — the
 /// variant↔lowering mapping is `run_switch_plan`'s job, not the driver's. Each variant
@@ -194,10 +217,11 @@ pub trait Mux: Send + Sync {
         runner: &dyn Runner,
         emit: &mut (dyn FnMut(HostEvent) + Send),
     ) {
-        let (sessions, err) = match self.enumerate(transport, runner).await {
-            Ok(s) => (s, None),
-            Err(e) => (Vec::new(), Some(e.to_string())),
-        };
+        let (sessions, err) =
+            match within_poll_budget("list-sessions", self.enumerate(transport, runner)).await {
+                Ok(s) => (s, None),
+                Err(e) => (Vec::new(), Some(e.to_string())),
+            };
         let names: Vec<(String, String)> = sessions
             .iter()
             .map(|s| (s.name.clone(), s.address()))
@@ -210,10 +234,18 @@ pub trait Mux: Send + Sync {
         for (name, address) in names {
             let argv = self.list_panes_plan(&name);
             let (cmd, args) = transport.exec_argv(false, &argv);
-            if let Ok(out) = runner.run(&cmd, &args).await {
-                let panes = self.parse_panes(&String::from_utf8_lossy(&out));
-                emit(HostEvent::Panes { address, panes });
-            }
+            // A session whose window list cannot be read still gets a `Panes` event, with
+            // no windows in it. Emitting nothing would leave the card on its loading
+            // spinner forever; an empty answer is the truth (xmux could not read them)
+            // and the nav shows the session without a window row.
+            let panes = match within_poll_budget("list-panes", runner.run(&cmd, &args)).await {
+                Ok(out) => self.parse_panes(&String::from_utf8_lossy(&out)),
+                Err(e) => {
+                    tracing::warn!(host = %source, session = %name, error = %e, "panes_unreadable");
+                    Vec::new()
+                }
+            };
+            emit(HostEvent::Panes { address, panes });
         }
     }
 
@@ -608,6 +640,91 @@ mod tests {
                 &self.help
             };
             probe.clone().ok_or_else(|| RunError::Other("down".into()))
+        }
+    }
+
+    /// Answers `list-sessions` and then NEVER answers the pane query - the shape a
+    /// hung mux command takes (a zellij session whose server is gone, an ssh that
+    /// stalls after the handshake).
+    struct HangingPanesRunner;
+
+    #[async_trait]
+    impl Runner for HangingPanesRunner {
+        async fn run(&self, _name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
+            if args.iter().any(|a| a.contains("list-panes")) {
+                std::future::pending::<()>().await;
+            }
+            Ok(b"1	0	0	api
+"
+            .to_vec())
+        }
+    }
+
+    /// Never answers anything.
+    struct HangingRunner;
+
+    #[async_trait]
+    impl Runner for HangingRunner {
+        async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
+            std::future::pending::<()>().await;
+            unreachable!()
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_hung_pane_query_ends_the_sweep_with_an_empty_answer() {
+        // The poll loop's ticker only advances after a sweep RETURNS, so a command that
+        // never answers would freeze the host's whole inventory. The sweep must end, and
+        // the session must still get a `Panes` event - an empty one - because emitting
+        // nothing leaves the card on a loading spinner no later sweep resolves.
+        // Reaching the assertions at all is the proof that the sweep returned.
+        let m = tmux();
+        let transport = crate::machine::local(None);
+        let mut events = Vec::new();
+        m.poll_once("local", &transport, &HangingPanesRunner, &mut |ev| {
+            events.push(ev)
+        })
+        .await;
+        assert_eq!(events.len(), 2, "one Sessions, one Panes");
+        match &events[0] {
+            HostEvent::Sessions { sessions, err, .. } => {
+                assert_eq!(sessions.len(), 1);
+                assert!(err.is_none(), "the listing answered");
+            }
+            _ => panic!("want Sessions first"),
+        }
+        match &events[1] {
+            HostEvent::Panes { address, panes } => {
+                assert_eq!(address, "local/api");
+                assert!(panes.is_empty(), "no windows could be read");
+            }
+            _ => panic!("want Panes second"),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_hung_listing_ends_the_sweep_as_an_error_not_a_freeze() {
+        // Same budget on the other half of the sweep: an unanswered listing surfaces as
+        // the host's error, which the nav shows as unreachable, instead of stalling the
+        // loop forever with nothing on screen.
+        let m = tmux();
+        let transport = crate::machine::local(None);
+        let mut events = Vec::new();
+        m.poll_once("local", &transport, &HangingRunner, &mut |ev| {
+            events.push(ev)
+        })
+        .await;
+        assert_eq!(events.len(), 1, "no session to ask panes for");
+        match &events[0] {
+            HostEvent::Sessions { sessions, err, .. } => {
+                assert!(sessions.is_empty());
+                let err = err.as_deref().unwrap_or_default();
+                assert!(
+                    err.contains("list-sessions") && err.contains("did not answer"),
+                    "the error names what went quiet: {err:?}"
+                );
+            }
+            _ => panic!("want Sessions"),
         }
     }
 

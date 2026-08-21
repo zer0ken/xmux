@@ -2642,8 +2642,8 @@ async fn input_esc_cancels_without_acting() {
 fn window_removal_keeps_the_selection_on_the_session_card() {
     // Selection on jup/api's card. Removing windows never removes the card: the
     // focused-window line falls back to the surviving window, and with no windows
-    // at all the card degrades to the session's loading stand-in (the same node,
-    // so the selection stays put).
+    // at all the card keeps the session with no window row (the same node, so the
+    // selection stays put).
     let mut state = crate::state::State::from_scan(two_window_scan());
     let mut sw = Switcher::new(&mut state); // launch preselects the api card
     sw.user_moved = true;
@@ -2662,12 +2662,15 @@ fn window_removal_keeps_the_selection_on_the_session_card() {
         sw.rows[sw.selected].line2, "1:w1",
         "line2 follows the survivor"
     );
-    // Every window gone: the card degrades to loading, the selection stays.
+    // Every window gone: the card keeps the session and drops the window row. It must
+    // NOT fall back to the loading stand-in - the windows were READ and there were
+    // none, and a spinner would promise an answer that no later sweep brings.
     sw.apply_panes("jup/api".into(), vec![], &mut state);
     assert!(
-        matches!(sw.current_ref(), Some(RowRef::Loading { sess }) if sess.name == "api"),
-        "no windows → the session's loading stand-in, selection kept"
+        matches!(sw.current_ref(), Some(RowRef::Session { sess }) if sess.name == "api"),
+        "no windows is an answer, not a wait: still a session card, selection kept"
     );
+    assert_eq!(sw.rows[sw.selected].line2, "", "no window row to name");
 }
 
 #[test]

@@ -311,17 +311,22 @@ fn push_session_card(
     let addr = sess.address();
     if panes_loaded.contains(&addr) {
         if let Some(windows) = panes.get(&addr) {
-            if let Some(focused) = windows
+            // A READ window list that is EMPTY is an answer, not a wait: the mux was
+            // asked and reported nothing it could name. The card drops its window row
+            // rather than spinning forever on a spinner that no later sweep resolves.
+            let line2 = match windows
                 .iter()
                 .find(|w| w.active)
                 .or_else(|| windows.first())
             {
-                rows.push(Row {
-                    line2: format!("{}:{}", focused.index, focused.name),
-                    reference: RowRef::Session { sess: sess.clone() },
-                });
-                return;
-            }
+                Some(focused) => format!("{}:{}", focused.index, focused.name),
+                None => String::new(),
+            };
+            rows.push(Row {
+                line2,
+                reference: RowRef::Session { sess: sess.clone() },
+            });
+            return;
         }
     }
     rows.push(Row {

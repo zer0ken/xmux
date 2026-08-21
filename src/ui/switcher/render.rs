@@ -315,12 +315,17 @@ impl Switcher {
             };
             detail.push(Span::styled(connector, muted));
         }
-        detail.extend([
-            Span::styled(sess.to_string(), Style::default().fg(color_session())),
-            Span::styled("/", muted),
-            window_part,
-            Span::raw(" "),
-        ]);
+        detail.push(Span::styled(
+            sess.to_string(),
+            Style::default().fg(color_session()),
+        ));
+        // No window row to show (the mux named none): the card is the session alone,
+        // without a trailing separator standing in for something absent.
+        if !matches!(&row.reference, RowRef::Session { .. }) || !row.line2.is_empty() {
+            detail.push(Span::styled("/", muted));
+            detail.push(window_part);
+        }
+        detail.push(Span::raw(" "));
         lines.push(Line::from(detail));
         ListItem::new(lines)
     }
