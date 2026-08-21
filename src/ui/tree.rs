@@ -165,11 +165,10 @@ pub fn reorder_preserving(mut incoming: Vec<Session>, existing: &[Session]) -> V
 /// `last_attached` descending (a group with no sessions sorts last; ties by
 /// source name ascending). Inputs are not mutated.
 pub fn order_groups(groups: &[Group]) -> Vec<Group> {
-    use crate::session::LOCAL_SOURCE;
     let mut local: Vec<Group> = Vec::new();
     let mut remote: Vec<Group> = Vec::new();
     for g in groups {
-        if g.source == LOCAL_SOURCE {
+        if crate::session::is_local_source(&g.source) {
             local.push(g.clone());
         } else {
             remote.push(g.clone());
@@ -782,6 +781,37 @@ mod tests {
         // local first; then remotes by max last_attached desc (jupiter06=300,
         // jupiter00=100); the empty/unreachable deadhost (no sessions) sorts last.
         assert_eq!(order, vec!["local", "jupiter06", "jupiter00", "deadhost"]);
+    }
+
+    #[test]
+    fn every_mux_on_this_box_pins_ahead_of_every_remote() {
+        // Two muxes on this box are two sources with QUALIFIED ids. Both are local and
+        // both must stay ahead of the remotes: a comparison against the bare "local"
+        // would sink them in among the ssh hosts.
+        let groups = vec![
+            Group {
+                source: "jupiter06".into(),
+                err: None,
+                sessions: vec![sess("jupiter06", "b", 300)],
+            },
+            Group {
+                source: "local:zellij".into(),
+                err: None,
+                sessions: vec![sess("local:zellij", "z", 10)],
+            },
+            Group {
+                source: "local:psmux".into(),
+                err: None,
+                sessions: vec![sess("local:psmux", "p", 20)],
+            },
+        ];
+        let out = order_groups(&groups);
+        let order: Vec<&str> = out.iter().map(|g| g.source.as_str()).collect();
+        assert_eq!(
+            order,
+            vec!["local:zellij", "local:psmux", "jupiter06"],
+            "both local sources first, in their original relative order"
+        );
     }
 
     #[test]

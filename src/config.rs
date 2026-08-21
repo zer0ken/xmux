@@ -54,7 +54,61 @@ fn default_true() -> bool {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct LocalConfig {
     #[serde(default)]
-    pub mux: String,
+    pub mux: MuxSpec,
+}
+
+/// The `mux` value of a machine: ONE mux or SEVERAL. A machine can run more than one
+/// mux at a time (a Windows box with psmux and zellij both up), and each is its own
+/// source, so the value is a list as readily as a name. A bare string stays valid and
+/// means exactly one.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum MuxSpec {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl Default for MuxSpec {
+    fn default() -> Self {
+        MuxSpec::One(String::new())
+    }
+}
+
+impl From<&str> for MuxSpec {
+    fn from(s: &str) -> Self {
+        MuxSpec::One(s.to_string())
+    }
+}
+
+impl From<Vec<&str>> for MuxSpec {
+    fn from(v: Vec<&str>) -> Self {
+        MuxSpec::Many(v.into_iter().map(str::to_string).collect())
+    }
+}
+
+impl MuxSpec {
+    /// The mux names this value asks for, in order, without the empty entries a
+    /// hand-written list picks up. An unset value yields nothing, which is what lets the
+    /// caller apply its own default.
+    pub fn names(&self) -> Vec<String> {
+        let raw: Vec<&String> = match self {
+            MuxSpec::One(s) => vec![s],
+            MuxSpec::Many(v) => v.iter().collect(),
+        };
+        let mut out: Vec<String> = Vec::new();
+        for name in raw {
+            let name = name.trim();
+            if !name.is_empty() && !out.iter().any(|k| k == name) {
+                out.push(name.to_string());
+            }
+        }
+        out
+    }
+
+    /// True when this value names NO mux, so the caller's default applies.
+    pub fn is_unset(&self) -> bool {
+        self.names().is_empty()
+    }
 }
 
 /// The optional `[ui]` table: xmux's own prefix.
@@ -122,12 +176,15 @@ pub struct HostConfig {
     #[serde(default)]
     pub ssh: String,
     #[serde(default)]
-    pub mux: String,
+    pub mux: MuxSpec,
 }
 
-/// A resolved remote host: its ssh alias and the mux binary to run.
+/// A resolved remote SOURCE: one mux on one machine. `id` is the source id the rest of
+/// the app keys everything by, `alias` is the ssh destination it is reached at (several
+/// sources share it when a machine runs several muxes), and `bin` is the mux binary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostSpec {
+    pub id: String,
     pub alias: String,
     pub bin: String,
 }
@@ -163,17 +220,22 @@ pub fn load_verbose(path: &Path) -> anyhow::Result<(Config, Vec<String>)> {
 }
 
 impl Config {
-    /// Returns the mux binary to run on the local machine for the given `os`. An
-    /// empty or `"auto"` setting picks psmux on Windows and tmux elsewhere; any
-    /// other value is returned verbatim.
-    pub fn local_bin(&self, os: &str) -> String {
-        if self.local.mux.is_empty() || self.local.mux == "auto" {
-            if os == "windows" {
-                return "psmux".to_string();
-            }
-            return "tmux".to_string();
+    /// The mux binaries to run on the local machine for the given `os`, in order. An
+    /// unset or `"auto"` setting picks the one conventional mux (psmux on Windows, tmux
+    /// elsewhere); any other value is taken verbatim, and a LIST yields one source per
+    /// entry.
+    pub fn local_muxes(&self, os: &str) -> Vec<String> {
+        let named = self.local.mux.names();
+        if named.len() == 1 && named[0] == "auto" || named.is_empty() {
+            return vec![if os == "windows" { "psmux" } else { "tmux" }.to_string()];
         }
-        self.local.mux.clone()
+        named
+    }
+
+    /// The single local mux binary, for the one-line `xmux doctor` summary. The first
+    /// of [`local_muxes`](Self::local_muxes) when several are configured.
+    pub fn local_bin(&self, os: &str) -> String {
+        self.local_muxes(os).remove(0)
     }
 
     /// Advisory warnings for `mux` values that DECODE but name no mux xmux knows
@@ -182,21 +244,21 @@ impl Config {
     /// documented defaults `""`/`"auto"` never warn.
     pub fn value_warnings(&self) -> Vec<String> {
         let mut warnings = Vec::new();
-        if !self.local.mux.is_empty()
-            && self.local.mux != "auto"
-            && !crate::mux::is_recognized(&self.local.mux)
-        {
-            warnings.push(format!(
-                "local mux {:?} is not a recognized mux (tmux/psmux/zellij); treating it as tmux-compatible",
-                self.local.mux
-            ));
+        for name in self.local.mux.names() {
+            if name != "auto" && !crate::mux::is_recognized(&name) {
+                warnings.push(format!(
+                    "local mux {name:?} is not a recognized mux (tmux/psmux/zellij); treating it as tmux-compatible"
+                ));
+            }
         }
         for h in &self.hosts {
-            if !h.mux.is_empty() && !crate::mux::is_recognized(&h.mux) {
-                warnings.push(format!(
-                    "host {:?} mux {:?} is not a recognized mux (tmux/psmux/zellij); treating it as tmux-compatible",
-                    h.ssh, h.mux
-                ));
+            for name in h.mux.names() {
+                if !crate::mux::is_recognized(&name) {
+                    warnings.push(format!(
+                        "host {:?} mux {name:?} is not a recognized mux (tmux/psmux/zellij); treating it as tmux-compatible",
+                        h.ssh
+                    ));
+                }
             }
         }
         warnings
@@ -219,49 +281,49 @@ impl Config {
     /// defaulting to `"tmux"`. Config-only hosts (`hosts` entries whose ssh alias
     /// was not discovered) are appended afterwards. Config augments discovery; it
     /// never replaces it.
+    ///
+    /// A machine configured with SEVERAL muxes yields one spec per mux, all sharing the
+    /// ssh alias and each carrying its own qualified source id. `exclude` names
+    /// MACHINES, so excluding one drops every mux on it.
     pub fn host_specs(&self, ssh_aliases: &[String]) -> Vec<HostSpec> {
         use std::collections::HashSet;
 
         let excluded: HashSet<&str> = self.exclude.iter().map(String::as_str).collect();
 
-        let mut override_mux: std::collections::HashMap<&str, &str> =
+        let mut override_mux: std::collections::HashMap<&str, &MuxSpec> =
             std::collections::HashMap::new();
         for h in &self.hosts {
             if h.ssh.is_empty() {
                 continue;
             }
-            // First entry wins; a later duplicate with an empty mux must never
+            // First entry wins; a later duplicate with an unset mux must never
             // clobber an explicit one already recorded for the same alias.
             let replace = match override_mux.get(h.ssh.as_str()) {
                 None => true,
-                Some(existing) => existing.is_empty() && !h.mux.is_empty(),
+                Some(existing) => existing.is_unset() && !h.mux.is_unset(),
             };
             if replace {
-                override_mux.insert(h.ssh.as_str(), h.mux.as_str());
+                override_mux.insert(h.ssh.as_str(), &h.mux);
             }
         }
 
         let mut specs = Vec::new();
         let mut seen: HashSet<&str> = HashSet::new();
-        // "local" is reserved for the local mux source; pre-seeding it makes both
+        // "local" is reserved for this box's sources; pre-seeding it makes both
         // the discovered-alias and config-host loops skip any host named "local"
-        // so a remote can never shadow the local source.
+        // so a remote can never shadow them.
         seen.insert(crate::session::LOCAL_SOURCE);
 
         for alias in ssh_aliases {
             if excluded.contains(alias.as_str()) || seen.contains(alias.as_str()) {
                 continue;
             }
-            let mut bin = "tmux";
-            if let Some(&m) = override_mux.get(alias.as_str()) {
-                if !m.is_empty() {
-                    bin = m;
-                }
-            }
-            specs.push(HostSpec {
-                alias: alias.clone(),
-                bin: bin.to_string(),
-            });
+            let muxes = override_mux
+                .get(alias.as_str())
+                .map(|m| m.names())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| vec!["tmux".to_string()]);
+            specs.extend(host_specs_for(alias, &muxes));
             seen.insert(alias.as_str());
         }
 
@@ -272,16 +334,31 @@ impl Config {
             {
                 continue;
             }
-            let bin = if h.mux.is_empty() { "tmux" } else { &h.mux };
-            specs.push(HostSpec {
-                alias: h.ssh.clone(),
-                bin: bin.to_string(),
-            });
+            let muxes = if h.mux.is_unset() {
+                vec!["tmux".to_string()]
+            } else {
+                h.mux.names()
+            };
+            specs.extend(host_specs_for(&h.ssh, &muxes));
             seen.insert(h.ssh.as_str());
         }
 
         specs
     }
+}
+
+/// One [`HostSpec`] per mux on `alias`. The id is qualified only when the machine
+/// serves more than one, so a single-mux host keeps the bare alias it always had.
+fn host_specs_for(alias: &str, muxes: &[String]) -> Vec<HostSpec> {
+    let qualified = muxes.len() > 1;
+    muxes
+        .iter()
+        .map(|bin| HostSpec {
+            id: crate::session::source_id(alias, bin, qualified),
+            alias: alias.to_string(),
+            bin: bin.clone(),
+        })
+        .collect()
 }
 
 /// Parses an OpenSSH client config at `path` and returns the concrete host
@@ -380,7 +457,7 @@ mod tests {
         let cfg = load(&missing).unwrap();
         assert!(cfg.hosts.is_empty());
         assert!(cfg.exclude.is_empty());
-        assert_eq!(cfg.local.mux, "");
+        assert!(cfg.local.mux.is_unset());
     }
 
     #[test]
@@ -402,12 +479,12 @@ ssh = "stage"
             "round-trip.toml",
         );
         let cfg = load(&path).unwrap();
-        assert_eq!(cfg.local.mux, "tmux");
+        assert_eq!(cfg.local.mux.names(), vec!["tmux"]);
         assert_eq!(cfg.hosts.len(), 2);
         assert_eq!(cfg.hosts[0].ssh, "prod");
-        assert_eq!(cfg.hosts[0].mux, "psmux");
+        assert_eq!(cfg.hosts[0].mux.names(), vec!["psmux"]);
         assert_eq!(cfg.hosts[1].ssh, "stage");
-        assert_eq!(cfg.hosts[1].mux, "");
+        assert!(cfg.hosts[1].mux.is_unset());
         assert_eq!(cfg.exclude, vec!["foo", "bar"]);
     }
 
@@ -422,7 +499,7 @@ ssh = "stage"
         let missing = std::env::temp_dir().join("xmux-nope-xyz.toml");
         let (cfg, warnings) = load_verbose(&missing).unwrap();
         assert!(warnings.is_empty());
-        assert_eq!(cfg.local.mux, "");
+        assert!(cfg.local.mux.is_unset());
     }
 
     #[test]
@@ -436,7 +513,7 @@ bogus = "nope"
             "unknown-key.toml",
         );
         let (cfg, warnings) = load_verbose(&path).unwrap();
-        assert_eq!(cfg.local.mux, "tmux");
+        assert_eq!(cfg.local.mux.names(), vec!["tmux"]);
         assert_eq!(warnings.len(), 1, "warnings = {warnings:?}");
         assert_eq!(warnings[0], r#"unknown key "local.bogus""#);
     }
@@ -473,18 +550,22 @@ bogus = "nope"
         let got = cfg.host_specs(&ssh_aliases);
         let want = vec![
             HostSpec {
+                id: "prod".into(),
                 alias: "prod".into(),
                 bin: "psmux".into(),
             },
             HostSpec {
+                id: "stage".into(),
                 alias: "stage".into(),
                 bin: "tmux".into(),
             },
             HostSpec {
+                id: "extra".into(),
                 alias: "extra".into(),
                 bin: "zellij".into(),
             },
             HostSpec {
+                id: "noMuxOnly".into(),
                 alias: "noMuxOnly".into(),
                 bin: "tmux".into(),
             },
@@ -504,7 +585,7 @@ bogus = "nope"
                 },
                 HostConfig {
                     ssh: "prod".into(),
-                    mux: String::new(),
+                    mux: MuxSpec::default(),
                 },
             ],
             ..Default::default()
@@ -570,6 +651,109 @@ bogus = "nope"
             };
             assert_eq!(c.local_bin(os), want, "mux={mux:?} os={os:?}");
         }
+    }
+
+    #[test]
+    fn a_machine_can_be_given_several_muxes() {
+        // The point of the list: one machine, several muxes, each its own source. The
+        // ids say which mux, and they all reach the same ssh destination.
+        let cfg = Config {
+            local: LocalConfig {
+                mux: vec!["psmux", "zellij"].into(),
+            },
+            hosts: vec![HostConfig {
+                ssh: "prod".into(),
+                mux: vec!["tmux", "zellij"].into(),
+            }],
+            ..Default::default()
+        };
+        assert_eq!(cfg.local_muxes("windows"), vec!["psmux", "zellij"]);
+        let got = cfg.host_specs(&["prod".to_string()]);
+        assert_eq!(
+            got,
+            vec![
+                HostSpec {
+                    id: "prod:tmux".into(),
+                    alias: "prod".into(),
+                    bin: "tmux".into(),
+                },
+                HostSpec {
+                    id: "prod:zellij".into(),
+                    alias: "prod".into(),
+                    bin: "zellij".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn one_mux_on_a_machine_keeps_the_bare_id() {
+        // A single-mux machine must be spelled exactly as before, whether it was named
+        // with a bare string or a one-entry list: the id is what the user types and what
+        // saved state is keyed by.
+        for spec in [MuxSpec::from("zellij"), MuxSpec::from(vec!["zellij"])] {
+            let cfg = Config {
+                hosts: vec![HostConfig {
+                    ssh: "prod".into(),
+                    mux: spec.clone(),
+                }],
+                ..Default::default()
+            };
+            let got = cfg.host_specs(&["prod".to_string()]);
+            assert_eq!(got.len(), 1, "spec={spec:?}");
+            assert_eq!(got[0].id, "prod", "spec={spec:?}");
+            assert_eq!(got[0].bin, "zellij", "spec={spec:?}");
+        }
+        // Same for this box.
+        let cfg = Config {
+            local: LocalConfig {
+                mux: "zellij".into(),
+            },
+            ..Default::default()
+        };
+        assert_eq!(cfg.local_muxes("windows"), vec!["zellij"]);
+    }
+
+    #[test]
+    fn excluding_a_machine_drops_every_mux_on_it() {
+        // `exclude` names MACHINES, so it cannot half-exclude one.
+        let cfg = Config {
+            exclude: vec!["prod".into()],
+            hosts: vec![HostConfig {
+                ssh: "prod".into(),
+                mux: vec!["tmux", "zellij"].into(),
+            }],
+            ..Default::default()
+        };
+        assert!(cfg.host_specs(&["prod".to_string()]).is_empty());
+    }
+
+    #[test]
+    fn a_mux_list_parses_from_toml_beside_a_bare_name() {
+        let path = write_temp(
+            r#"
+[local]
+mux = ["psmux", "zellij"]
+
+[[hosts]]
+ssh = "prod"
+mux = "tmux"
+"#,
+            "mux-list.toml",
+        );
+        let cfg = load(&path).unwrap();
+        assert_eq!(cfg.local.mux.names(), vec!["psmux", "zellij"]);
+        assert_eq!(cfg.hosts[0].mux.names(), vec!["tmux"]);
+    }
+
+    #[test]
+    fn a_mux_list_drops_blanks_and_repeats() {
+        // A hand-written list picks up empty entries and duplicates; neither may become
+        // a source (a duplicate would collide on its own id).
+        let spec = MuxSpec::from(vec!["tmux", "", "  ", "tmux", "zellij"]);
+        assert_eq!(spec.names(), vec!["tmux", "zellij"]);
+        assert!(MuxSpec::from(vec!["", " "]).is_unset());
+        assert!(MuxSpec::from("").is_unset());
     }
 
     #[test]

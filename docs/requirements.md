@@ -54,6 +54,26 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   **Live-verified** (real zellij over ssh: attach, cross-session switch, input, and the
   window row following the session's focused tab).
 
+- **FR-A7** — A SOURCE is one mux on one machine, so a machine running several
+  muxes at once contributes one source per mux and every one of them is listed. A `mux`
+  value is a name or a LIST of names, in `[local]` and in `[[hosts]]` alike. A machine
+  given several muxes has its sources named `<machine>:<mux>`; a machine given one keeps
+  the bare machine alias, so an existing setup's ids, addresses, and typed targets do
+  not move. `exclude` names machines, so it drops every mux on one. A listed mux that is
+  not installed there surfaces as unreachable rather than being dropped, because a name
+  the user wrote is a name they meant. **Tests:**
+  `a_machine_can_be_given_several_muxes`, `one_mux_on_a_machine_keeps_the_bare_id`,
+  `excluding_a_machine_drops_every_mux_on_it`,
+  `a_mux_list_parses_from_toml_beside_a_bare_name`,
+  `a_mux_list_drops_blanks_and_repeats`,
+  `a_source_id_names_its_mux_only_when_the_machine_serves_several`,
+  `the_machine_half_and_localness_survive_qualification`,
+  `a_qualified_source_still_addresses_a_session`,
+  `a_qualified_transport_keeps_reaching_the_same_machine`,
+  `a_qualified_local_transport_is_still_this_box`,
+  `every_mux_on_this_box_pins_ahead_of_every_remote`. **Live-verified** (local psmux and
+  local zellij listed side by side, switching between them in place).
+
 ## B. The switcher — "see the list, decide whether & where to move"
 
 - **FR-B1** — The tree renders a `Hosts · Sessions · Windows · Panes` tree of all

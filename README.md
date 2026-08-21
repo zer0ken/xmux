@@ -116,6 +116,31 @@ keys that prefix unlocks.
 
 See [`docs/keybind.md`](docs/keybind.md) for more on the prefix.
 
+## Several muxes on one machine
+
+A machine can run more than one mux at a time, and xmux offers each as its own
+source. Name them in a list, on this machine or a remote:
+
+```toml
+[local]
+mux = ["psmux", "zellij"]
+
+[[hosts]]
+ssh = "prod"
+mux = ["tmux", "zellij"]
+```
+
+Both then appear in the list, `local/psmux` over its sessions and `local/zellij` over
+its own, and moving between them is the same keystroke as moving between hosts. A
+machine given several muxes has its sources named `local:psmux` and `local:zellij`, and
+that is the name `xmux ls` prints and `xmux send switch` takes; a machine given one
+keeps its bare name (`local`, `prod`) exactly as before. `exclude` names machines, so
+excluding one drops every mux on it.
+
+Listing a mux that is not installed on that machine is not silently ignored: the source
+appears as unreachable with the mux's own message, because a name you wrote is a name
+you meant.
+
 ## Where the host list comes from
 
 By default xmux offers the `Host` aliases in `~/.ssh/config`, plus `local`. A tailnet
@@ -141,10 +166,12 @@ Configuration is entirely optional. Zero-config is the default. xmux reads
 `~/.config/xmux/config.toml`:
 
 ```toml
-# The mux used on the local machine.
+# The mux used on the local machine. A LIST runs several at once: each is its own
+# source, and both appear side by side in the list.
 [local]
 mux = "auto"          # "auto" (default): psmux on Windows, tmux elsewhere.
-                      # Also accepts "tmux", "psmux", "zellij".
+                      # Also accepts "tmux", "psmux", "zellij",
+                      # or a list: ["psmux", "zellij"]
 
 # Override the mux for a discovered ssh host, or add a host ssh-config
 # discovery did not surface.

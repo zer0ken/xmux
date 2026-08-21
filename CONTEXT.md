@@ -129,6 +129,14 @@ UI elements a user perceives as distinct things:
   (or `--name`), owning `ctl-<name>.sock` for its lifetime. `xmux send <name>` and
   `xmux instances` address instances by it; a unique name prefix resolves, and `-`
   means the sole live instance.
+- source - ONE MUX ON ONE MACHINE, and the thing every session address names. A
+  machine running several muxes at once contributes one source per mux, all reached
+  through the same `Transport`. A source id is the bare machine alias (`local`, `prod`)
+  when its machine serves a single mux, and `<machine>:<mux>` (`local:zellij`) when it
+  serves several, so a one-mux setup is spelled exactly as it always was. `machine_of`
+  / `mux_of` / `is_local_source` read the two halves back; nothing compares a source id
+  to `local` directly. The nav renders the halves separately (`local/zellij`), so the id
+  never appears with its mux twice.
 - roster - the list of ssh targets xmux offers as sources, assembled from
   PROVIDERS: `~/.ssh/config` aliases and, when `[discovery]` enables it, the online
   peers of this machine's tailnet. Every provider yields plain ssh target names, so

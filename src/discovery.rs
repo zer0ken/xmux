@@ -134,6 +134,7 @@ mod tests {
             alias: alias.into(),
             binary: "tmux".into(),
             kind: crate::machine::MachineKind::Ssh {
+                id: String::new(),
                 alias: alias.into(),
                 control_path: String::new(),
                 os: "linux".into(),

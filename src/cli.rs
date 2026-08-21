@@ -208,7 +208,7 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
         println!("config.toml: ok");
     }
 
-    println!("local mux: {}", env.local_bin);
+    println!("local mux: {}", env.local_muxes.join(", "));
     if ssh_on_path() {
         println!("ssh: ok");
     } else {

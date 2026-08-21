@@ -256,10 +256,17 @@ impl Switcher {
         // in-flight scanning is pending (soft yellow), a dead host is danger
         // (soft red), a settled empty host is muted.
         if let RowRef::Host { unreachable, .. } = &row.reference {
-            let (host, _, _) = context_of(&row.reference);
+            let (host, mux, _) = context_of(&row.reference);
             let mut line1 = gutter(false);
+            // A machine serving several muxes has one host card per mux, so the mux has
+            // to be on the line or the two cards read identically.
+            let label = if mux.is_empty() {
+                host.to_string()
+            } else {
+                format!("{host}/{mux}")
+            };
             line1.push(Span::styled(
-                pad_label(host),
+                pad_label(&label),
                 Style::default().fg(color_host()),
             ));
             let style = if *unreachable {

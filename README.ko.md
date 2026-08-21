@@ -108,6 +108,29 @@ nav의 맨 아래 줄이 상태 표시줄이다. 평소에는 prefix만 보여�
 
 prefix에 관한 자세한 내용은 [`docs/keybind.md`](docs/keybind.md)를 참고한다.
 
+## 한 머신에 여러 mux
+
+머신 하나가 mux를 여러 개 동시에 띄울 수 있고, xmux는 그 각각을 별도 소스로 다룬다.
+이 머신이든 원격이든 목록으로 적으면 된다.
+
+```toml
+[local]
+mux = ["psmux", "zellij"]
+
+[[hosts]]
+ssh = "prod"
+mux = ["tmux", "zellij"]
+```
+
+그러면 목록에 `local/psmux`가 자기 세션들 위에, `local/zellij`가 자기 세션들 위에 나란히
+올라온다. 둘 사이를 오가는 것은 호스트 사이를 오가는 것과 같은 키다. mux를 여러 개 준
+머신의 소스 이름은 `local:psmux`, `local:zellij`가 되고, 이 이름이 `xmux ls`가 찍고
+`xmux send switch`가 받는 이름이다. mux를 하나만 준 머신은 예전 그대로 맨 이름(`local`,
+`prod`)을 지킨다. `exclude`는 머신을 가리키므로, 하나를 빼면 그 위의 mux가 전부 빠진다.
+
+그 머신에 깔려 있지 않은 mux를 적었다면 조용히 넘기지 않는다. 그 소스는 mux가 낸 메시지와
+함께 닿을 수 없는 것으로 뜬다. 적어 넣은 이름은 뜻이 있는 이름이기 때문이다.
+
 ## 호스트 목록의 출처
 
 기본값은 `~/.ssh/config`의 `Host` 별칭과 `local`이다. tailnet에서 목록을 받아올 수도
@@ -134,7 +157,8 @@ tailnet 피어는 DNS 라벨(`jupiter00`)로 올라온다. 실제로 이름이 �
 # 로컬 머신에서 쓸 mux.
 [local]
 mux = "auto"          # "auto"(기본값): Windows는 psmux, 그 외는 tmux.
-                      # "tmux", "psmux", "zellij"도 받는다.
+                      # "tmux", "psmux", "zellij"도 받고,
+                      # ["psmux", "zellij"]처럼 목록도 받는다.
 
 # 발견된 ssh 호스트의 mux를 바꾸거나, ssh-config 발견이
 # 잡아내지 못한 호스트를 더한다.

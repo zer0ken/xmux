@@ -7,7 +7,10 @@ fn fake_source(alias: &str) -> Source {
     Source {
         alias: alias.into(),
         binary: "cmd.exe".into(),
-        kind: crate::machine::MachineKind::Local { socket: None },
+        kind: crate::machine::MachineKind::Local {
+            id: String::new(),
+            socket: None,
+        },
         runner: None,
     }
 }
@@ -31,7 +34,7 @@ fn fake_env_with_sources(aliases: &[&str]) -> Env {
         cfg_warnings: Vec::new(),
         srcs,
         by_alias,
-        local_bin: "cmd.exe".into(),
+        local_muxes: vec!["cmd.exe".into()],
         ui_prefix: "C-g".into(),
         xmux_dir,
         ssh_aliases,
