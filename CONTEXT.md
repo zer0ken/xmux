@@ -69,21 +69,23 @@ UI elements a user perceives as distinct things:
 - cursor - the real terminal cursor placed over the grid at the mux's cursor cell
   while the terminal view is focused. "cursor" always means this text cursor,
   never the nav selection.
-- card - one nav entry, two screen rows: line1 the `{host}/{mux}/{session}`
-  context (or `{host}` on a host-state card), line2 the focused (active) window's
-  name (or the host state / a loading spinner). One card per SESSION; the mux
-  segment names the mux kind serving it (`Session.mux`, stamped at enumeration),
-  so several muxes on one host stay distinguishable. The kinds are the session
-  card, the host-state card (scanning / unreachable / empty host), and the
-  loading card.
-- context elision - a card whose host matches the previous card's omits the host
-  segment, and matching mux too omits both, so runs on one server read grouped.
-  The first visible card is exempt (the card it would continue from is
-  offscreen), which the renderer guarantees by settling the list offset before
-  building the items.
+- card - one nav entry: a context line (`{host}/{mux}`, or `{host}` on a
+  host-state card) over a detail line (`{session}/{index}:{window-name}` of the
+  focused (active) window; the host state; or `{session}/` + a loading spinner).
+  One card per SESSION; the mux segment names the mux kind serving it
+  (`Session.mux`, stamped at enumeration), so several muxes on one host stay
+  distinguishable. The kinds are the session card, the host-state card
+  (scanning / unreachable / empty host), and the loading card.
+- card collapse - a session/loading card whose `{host}/{mux}` repeats the
+  previous card's drops its context line and renders one row tall, so runs on
+  one server read grouped. The SELECTED card never collapses (focus expands it
+  to the full two-row card, so its context is always readable in place); the
+  renderer and mouse hit-testing share one `card_height` so the screen-row
+  mapping never diverges.
 - level color - the fixed per-segment card color, from the palette (`ui::palette`,
-  truecolor): host soft yellow, mux muted subtext, session soft green, the
-  focused-window line soft mauve; a host-state card's line2 is colored by state -
+  truecolor): host soft yellow, mux soft green, session soft mauve, the window
+  part (`{index}:{name}`) muted gray - the quietest level, so the session name
+  anchors the detail line; a host-state card's detail line is colored by state -
   scanning pending-yellow, unreachable danger-red, settled "no sessions" muted.
 - selection - the nav's current pick (its card index is `selected`), advanced by
   navigation; a routine poll or restream never moves it (only launch / rescan
@@ -95,8 +97,8 @@ UI elements a user perceives as distinct things:
 - spinner - the braille activity glyph on a loading card (and, historically, a
   connecting session).
 - loading card - a card standing in for a session whose panes are not yet loaded;
-  its line2 is a spinner rather than a focused-window name.
-- status - a host-state card's line2 state text (`scanning…` / `no sessions` /
+  its detail line is `{session}/` + a spinner rather than a window part.
+- status - a host-state card's detail-line state text (`scanning…` / `no sessions` /
   `⚠ unreachable`). Not to be confused with the hint bar (below) or the `chrome`.
 - filter - the type-to-filter input over the nav list.
 - flash - a transient notice or error line shown in the hint bar (e.g. a refused

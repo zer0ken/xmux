@@ -375,19 +375,22 @@ fn two_window_scan() -> Scan {
 
 #[test]
 fn session_card_shows_the_focused_window_name() {
-    // ONE card per session; its line2 is the focused (active) window's name. The
-    // inactive window has no card of its own.
+    // ONE card per session; its detail line is `{session}/{index}:{name}` of the
+    // focused (active) window. The inactive window has no card of its own.
     let h = Harness::new(two_window_scan());
     let out = h.nav_text();
-    assert!(out.contains("w0"), "line2 shows the focused window:\n{out}");
+    assert!(
+        out.contains("api/0:w0"),
+        "the detail line shows the focused window:\n{out}"
+    );
     assert!(
         !out.contains("w1"),
         "no card for the inactive window:\n{out}"
     );
     assert_eq!(
-        h.nav_fg_of("w0"),
+        h.nav_fg_of("0:w0"),
         Some(color_window()),
-        "the focused window name reads in the window colour"
+        "the window part reads in the window colour"
     );
 }
 
@@ -402,7 +405,10 @@ fn set_active_window_refreshes_the_focused_window_line() {
     );
     h.draw();
     let out = h.nav_text();
-    assert!(out.contains("w1"), "line2 refreshed to w1:\n{out}");
+    assert!(
+        out.contains("1:w1"),
+        "the detail line refreshed to w1:\n{out}"
+    );
     assert!(!out.contains("w0"), "the previous name is gone:\n{out}");
     // Idempotent: re-applying the same active window reports no change.
     assert!(
@@ -451,8 +457,9 @@ fn up_down_and_hjkl_move_linearly() {
 
 #[tokio::test]
 async fn renders_a_session_card_per_session() {
-    // One card per session: line1 context, line2 the focused window's name. No
-    // per-window rows (editor's inactive "logs" window has no card).
+    // One card per session: a `{host}/{mux}` context line over a
+    // `{session}/{index}:{window-name}` detail line. No per-window rows
+    // (editor's inactive "logs" window has no card).
     let h = Harness::new(sample());
     let out = h.text();
     for want in [
@@ -1566,27 +1573,38 @@ fn one_host_scan(source: &str, sessions: Vec<Session>) -> Scan {
 
 #[tokio::test]
 async fn session_card_context_shows_host_mux_session() {
-    // line1 is {host}/{mux}/{session}, each segment in its own colour; the mux
-    // segment distinguishes sessions when one host runs several muxes.
+    // The context line is {host}/{mux}, each segment in its own colour (the mux
+    // segment distinguishes sessions when one host runs several muxes); the
+    // detail line under it is {session}/{index}:{window-name}.
     let h = Harness::new(one_host_scan(
         "srv",
         vec![sess_mux("srv", "alpha", "tmux", 100)],
     ));
     let out = h.nav_text();
+    assert!(out.contains("srv/tmux"), "context line on the card:\n{out}");
     assert!(
-        out.contains("srv/tmux/alpha"),
-        "full context on the card:\n{out}"
+        out.contains("alpha/0:w-alpha"),
+        "detail line on the card:\n{out}"
     );
     assert_eq!(h.nav_fg_of("srv"), Some(color_host()));
     assert_eq!(h.nav_fg_of("tmux"), Some(color_mux()));
     assert_eq!(h.nav_fg_of("alpha"), Some(color_session()));
+    assert_eq!(h.nav_fg_of("0:w-alpha"), Some(color_window()));
+}
+
+/// The full content of screen row `y`, across the nav width.
+fn nav_line(h: &Harness, y: u16) -> String {
+    (0..NAV_WIDTH.min(h.buf().area.width))
+        .map(|x| h.buf()[(x, y)].symbol().to_string())
+        .collect()
 }
 
 #[tokio::test]
-async fn consecutive_cards_elide_repeated_host_and_mux() {
-    // Consecutive cards sharing the previous card's host omit the host; sharing
-    // its mux too omits both - so runs on one server read grouped, and only the
-    // first card of a run carries the full context.
+async fn repeated_host_mux_collapses_the_card_to_one_row() {
+    // A card whose {host}/{mux} repeats the previous card's drops its context
+    // line outright - a one-row card - so runs on one server read grouped. A
+    // different mux on the same host keeps the full context line (only an exact
+    // host+mux repeat collapses).
     let h = Harness::new(one_host_scan(
         "srv",
         vec![
@@ -1596,41 +1614,65 @@ async fn consecutive_cards_elide_repeated_host_and_mux() {
         ],
     ));
     let out = h.nav_text();
-    assert!(out.contains("srv/tmux/alpha"), "first card is full:\n{out}");
-    let beta_row = h.nav_row_of("beta").expect("beta card");
-    let beta_line: String = (0..NAV_WIDTH)
-        .map(|x| h.buf()[(x, beta_row)].symbol().to_string())
-        .collect::<String>();
+    assert!(
+        out.contains("srv/tmux"),
+        "the first card carries the context line:\n{out}"
+    );
+    // beta collapses: its single row is the detail line, directly under alpha's.
+    let alpha_row = h.nav_row_of("alpha/0:w-alpha").expect("alpha detail");
+    let beta_row = h.nav_row_of("beta/0:w-beta").expect("beta detail");
+    assert_eq!(
+        beta_row,
+        alpha_row + 1,
+        "beta has no context line of its own"
+    );
+    let beta_line = nav_line(&h, beta_row);
     assert!(
         !beta_line.contains("srv") && !beta_line.contains("tmux"),
-        "same host+mux elides both: {beta_line:?}"
+        "the collapsed row is the detail alone: {beta_line:?}"
     );
-    let gamma_row = h.nav_row_of("gamma").expect("gamma card");
-    let gamma_line: String = (0..NAV_WIDTH)
-        .map(|x| h.buf()[(x, gamma_row)].symbol().to_string())
-        .collect::<String>();
+    // gamma runs a different mux: a full context line, host included.
+    let gamma_row = h.nav_row_of("gamma/0:w-gamma").expect("gamma detail");
+    let gamma_context = nav_line(&h, gamma_row - 1);
     assert!(
-        !gamma_line.contains("srv") && gamma_line.contains("zellij/gamma"),
-        "same host but new mux keeps the mux segment: {gamma_line:?}"
+        gamma_context.contains("srv/zellij"),
+        "a mux change keeps the full context: {gamma_context:?}"
     );
 }
 
 #[tokio::test]
-async fn first_visible_card_keeps_full_context_when_scrolled() {
-    // Elision continues from the PREVIOUS card - offscreen above the viewport top
-    // it would leave the first visible card contextless, so that card is exempt.
-    let sessions: Vec<Session> = (0..12)
-        .map(|i| sess_mux("srv", &format!("s{i:02}"), "tmux", 1000 - i))
-        .collect();
-    let mut h = Harness::new_sized(one_host_scan("srv", sessions), 100, 12);
-    h.key(KeyCode::End).await; // scroll to the bottom - the list offset is now > 0
-    assert!(h.sw.list_state.offset() > 0, "the list actually scrolled");
-    let top_line: String = (0..NAV_WIDTH)
-        .map(|x| h.buf()[(x, 0)].symbol().to_string())
-        .collect::<String>();
+async fn focused_collapsed_card_expands_to_two_rows() {
+    // Focus expands: the selection landing on a collapsed card regains its
+    // context line (no elision on the selected card, wherever it scrolled to),
+    // and the card collapses again once the selection moves off.
+    let mut h = Harness::new(one_host_scan(
+        "srv",
+        vec![
+            sess_mux("srv", "alpha", "tmux", 300),
+            sess_mux("srv", "beta", "tmux", 200),
+        ],
+    ));
+    assert_eq!(
+        h.nav_row_of("beta/0:w-beta"),
+        Some(2),
+        "unselected, beta is a one-row card under alpha's two"
+    );
+    h.key(KeyCode::Down).await; // select beta
+    let beta_row = h.nav_row_of("beta/0:w-beta").expect("beta detail");
+    assert_eq!(beta_row, 3, "selected, beta regains its context line");
+    let context = nav_line(&h, beta_row - 1);
     assert!(
-        top_line.contains("srv/tmux/"),
-        "the first visible card carries full context: {top_line:?}"
+        context.contains("srv/tmux"),
+        "the expanded card shows its full context: {context:?}"
+    );
+    // The selection bar marks both rows of the expanded card.
+    assert_eq!(h.buf()[(0, beta_row - 1)].symbol(), "▌");
+    assert_eq!(h.buf()[(0, beta_row)].symbol(), "▌");
+    h.key(KeyCode::Up).await; // move off - beta collapses again
+    assert_eq!(
+        h.nav_row_of("beta/0:w-beta"),
+        Some(2),
+        "unselected again, beta collapses back to one row"
     );
 }
 
@@ -1689,10 +1731,14 @@ fn menu_items_by_row_type() {
     assert_eq!(modal::menu_items(&RowRef::Loading { sess: s }), vec![Focus]);
 }
 
-/// The screen (col,row) of the card at `idx`: its FIRST of two screen rows. Each card
-/// is [`CARD_H`] screen rows tall, so the visible offset is multiplied by it.
+/// The screen (col,row) of the card at `idx`: its FIRST screen row. Card heights
+/// vary (a collapsed card is one row), so this walks `card_height` from the
+/// visible offset - the same mapping the renderer and mouse hit-testing use.
 fn row_screen_pos(h: &Harness, idx: usize) -> (u16, u16) {
-    let y = h.sw.nav_inner.y + ((idx - h.sw.list_state.offset()) as u16) * CARD_H;
+    let mut y = h.sw.nav_inner.y;
+    for i in h.sw.list_state.offset()..idx {
+        y += h.sw.card_height(i);
+    }
     (h.sw.nav_inner.x, y)
 }
 
@@ -3020,7 +3066,7 @@ fn window_removal_keeps_the_selection_on_the_session_card() {
         "the card survives a window removal"
     );
     assert_eq!(
-        sw.rows[sw.selected].line2, "w1",
+        sw.rows[sw.selected].line2, "1:w1",
         "line2 follows the survivor"
     );
     // Every window gone: the card degrades to loading, the selection stays.

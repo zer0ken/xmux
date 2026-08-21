@@ -9,16 +9,23 @@ impl Switcher {
 
     /// The card index under a 0-based screen `(col, row)`, or `None` if it is outside the
     /// nav list or past its cards. Both layouts render one vertically-scrolling list of
-    /// 2-row cards, so the screen-row delta maps to a card via the `list_state` offset (an
-    /// item index) plus the row offset divided by the card height. ratatui never partial-
-    /// scrolls an item, so the first visible card always starts at the region's top edge.
+    /// cards whose heights VARY (two rows expanded, one collapsed), so the screen-row
+    /// delta walks `card_height` from the `list_state` offset (an item index). ratatui
+    /// never partial-scrolls an item, so the first visible card always starts at the
+    /// region's top edge.
     fn row_at(&self, col: u16, row: u16) -> Option<usize> {
         if !self.in_tree(col, row) {
             return None;
         }
-        let row_in = row.saturating_sub(self.nav_inner.y) as usize;
-        let idx = self.list_state.offset() + row_in / CARD_H as usize;
-        (idx < self.rows.len()).then_some(idx)
+        let mut row_in = row.saturating_sub(self.nav_inner.y);
+        for i in self.list_state.offset()..self.rows.len() {
+            let h = self.card_height(i);
+            if row_in < h {
+                return Some(i);
+            }
+            row_in -= h;
+        }
+        None
     }
 
     /// Single click: move the selection to the clicked row (select; never attach).
@@ -38,8 +45,8 @@ impl Switcher {
         self.mouse_select(col, row, state);
     }
 
-    /// Scroll wheel: move the selection exactly as ↑/↓ do (`nav_vertical`) — one card up
-    /// or down the flat list — so the wheel and the arrows never diverge.
+    /// Scroll wheel: move the selection exactly as ↑/↓ do (`nav_vertical`) - one card up
+    /// or down the flat list - so the wheel and the arrows never diverge.
     pub fn mouse_scroll(&mut self, down: bool, state: &crate::state::State) {
         self.nav_vertical(if down { 1 } else { -1 }, state);
     }
@@ -47,7 +54,7 @@ impl Switcher {
     // --- context menu -------------------------------------------------------
 
     /// Right-button press at 0-based screen (col,row): opens that tree row's menu if
-    /// it lands on a selectable row that has items. Does NOT move the tree selection —
+    /// it lands on a selectable row that has items. Does NOT move the tree selection -
     /// the gesture only remembers the target, so no background attach fires mid-hold.
     /// Returns true iff a menu opened (so the app knows to consume the event).
     pub fn menu_open(&mut self, col: u16, row: u16, state: &mut crate::state::State) -> bool {
@@ -69,7 +76,7 @@ impl Switcher {
         let title = modal::menu_title(&target);
         let rect = modal::menu_rect(col, row, &items, &title, self.screen_area);
         // No item is pre-highlighted, and the box opens just below the pointer (see
-        // menu_rect) — so an accidental right-click that releases without dragging onto
+        // menu_rect) - so an accidental right-click that releases without dragging onto
         // an item does nothing. Selecting is a deliberate move down onto an item.
         state.modal = Some(Modal::Menu(Menu {
             target,
@@ -137,7 +144,7 @@ impl Switcher {
     }
 
     /// Close the menu without acting (app watchdog: a keystroke ends the gesture).
-    /// Only a menu is cleared — a centered popup, if somehow open, is left intact.
+    /// Only a menu is cleared - a centered popup, if somehow open, is left intact.
     pub fn menu_cancel(&mut self, state: &mut crate::state::State) {
         if matches!(state.modal, Some(Modal::Menu(_))) {
             state.modal = None;

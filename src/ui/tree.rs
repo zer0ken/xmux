@@ -94,7 +94,7 @@ pub fn filter_groups(groups: &[Group], pattern: &str) -> Vec<Group> {
 /// Returns groups with `s` placed in the group whose source matches `s.source`,
 /// replacing any existing session of the same name in place (dedup by name) or, when
 /// new, appending it at the group's end. It does NOT re-sort: a session created
-/// mid-session must not reshuffle the frozen tree order — ordering is applied only at
+/// mid-session must not reshuffle the frozen tree order - ordering is applied only at
 /// scan time (see [`sort_by_recency`] / [`reorder_preserving`]). If no group has the
 /// source, a new group is appended. Inputs are not mutated.
 pub fn add_session(groups: &[Group], s: Session) -> Vec<Group> {
@@ -145,7 +145,7 @@ pub fn remove_session(groups: &[Group], address: &str) -> Vec<Group> {
 /// sessions present in both keep `existing`'s relative order (carrying the fresh
 /// `incoming` data), sessions new since then are appended in `incoming` order, and
 /// sessions absent from `incoming` are dropped. Used on a routine poll so the tree
-/// stays put under the user — recency ordering ([`sort_by_recency`]) is applied only
+/// stays put under the user - recency ordering ([`sort_by_recency`]) is applied only
 /// at scan time (launch / re-scan), never on a live poll whose `last_attached` values
 /// xmux's own pre-attaching would otherwise churn.
 pub fn reorder_preserving(mut incoming: Vec<Session>, existing: &[Session]) -> Vec<Session> {
@@ -204,9 +204,10 @@ pub fn rename_session(groups: &[Group], address: &str, new_name: &str) -> Vec<Gr
 /// info panel shows).
 #[derive(Clone)]
 pub(crate) enum RowRef {
-    /// A session card: line1 `{host}/{mux}/{session}`, line2 its focused window's name.
+    /// A session card: a `{host}/{mux}` context line over a
+    /// `{session}/{index}:{window-name}` detail line (the focused window).
     Session { sess: Session },
-    /// A host with no session to show (scanning / unreachable / empty) — the only
+    /// A host with no session to show (scanning / unreachable / empty) - the only
     /// host-level entry, sunk to the bottom of the list.
     Host { source: String, unreachable: bool },
     /// A session whose panes are still in flight: its card shows a spinner until
@@ -214,15 +215,17 @@ pub(crate) enum RowRef {
     Loading { sess: Session },
 }
 
-/// One navigation card: a two-line entry. The context line (line1) is derived at
-/// render time from the card's [`RowRef`] - `{host}/{mux}/{session}` for a
-/// session/loading card, `{host}` for a host-state card - as is colour, so this
+/// One navigation card: a context line over a detail line (or the detail line
+/// alone when collapsed under the previous card's identical context). The context
+/// line is derived at render time from the card's [`RowRef`] - `{host}/{mux}` for
+/// a session/loading card, `{host}` for a host-state card - as is colour, so this
 /// model stays terminal-free (no `ratatui` dependency) and unit-testable without
 /// a backend.
 pub(crate) struct Row {
-    /// The detail line: the focused (active) window's name for a session card, the
-    /// host state (scanning… / ⚠ unreachable / no sessions) for a host-state card,
-    /// `loading…` for a loading card.
+    /// The detail line's variable part: the focused (active) window's
+    /// `{index}:{name}` for a session card (the renderer prefixes the session
+    /// name), the host state (scanning… / ⚠ unreachable / no sessions) for a
+    /// host-state card, unused for a loading card (a spinner renders instead).
     pub(crate) line2: String,
     pub(crate) reference: RowRef,
 }
@@ -234,7 +237,7 @@ impl Row {
     }
 }
 
-/// The groups to render, in `groups` order — that order is authoritative (established
+/// The groups to render, in `groups` order - that order is authoritative (established
 /// by recency at scan time via [`order_groups`], then frozen so a routine poll never
 /// reshuffles the tree). An empty filter returns the input unchanged. A non-matching
 /// filter must not be a dead end (XM-01): it falls back to header-only groups (every
@@ -263,7 +266,7 @@ pub(crate) fn visible_groups(groups: &[Group], filter: &str) -> Vec<Group> {
 /// is empty or the source itself matches (all sessions are kept), otherwise the first
 /// session whose address matches. An unreachable group (`err` set) yields `None`, since
 /// its sessions carry no meaning. Mirrors [`filter_groups`] for a single group without
-/// cloning every host's sessions — used on the navigation hot path.
+/// cloning every host's sessions - used on the navigation hot path.
 pub(crate) fn first_visible_session(group: &Group, filter: &str) -> Option<Session> {
     if group.err.is_some() {
         return None;
@@ -297,8 +300,8 @@ pub(crate) fn target_for(reference: &RowRef, groups: &[Group], filter: &str) -> 
     }
 }
 
-/// Pushes a session's card: line2 carries its focused (active) window's name, or a
-/// loading card stands in while the panes are in flight.
+/// Pushes a session's card: line2 carries its focused (active) window's
+/// `{index}:{name}`, or a loading card stands in while the panes are in flight.
 fn push_session_card(
     rows: &mut Vec<Row>,
     sess: &Session,
@@ -314,7 +317,7 @@ fn push_session_card(
                 .or_else(|| windows.first())
             {
                 rows.push(Row {
-                    line2: focused.name.clone(),
+                    line2: format!("{}:{}", focused.index, focused.name),
                     reference: RowRef::Session { sess: sess.clone() },
                 });
                 return;
@@ -332,7 +335,7 @@ fn push_session_card(
 /// MRU `order` (session addresses) so a routine poll never reshuffles the list under
 /// the user; sessions absent from `order` (just appeared) follow in group order.
 /// Hosts with no session to show (scanning / unreachable / empty) get one host-state
-/// card each, sunk to the bottom. Colour and the line1 context are derived at render
+/// card each, sunk to the bottom. Colour and the context line are derived at render
 /// time from each card's [`RowRef`], so this stays terminal-free. Inputs are not
 /// mutated.
 pub(crate) fn flatten(
@@ -375,7 +378,7 @@ pub(crate) fn flatten(
             }
         }
     }
-    // 3. Host-state cards for hosts with no session to show — sunk to the bottom.
+    // 3. Host-state cards for hosts with no session to show - sunk to the bottom.
     for g in &groups {
         let is_scanning = scanning.contains(&g.source);
         let unreachable = g.err.is_some();
@@ -678,7 +681,7 @@ mod tests {
     #[test]
     fn reorder_preserving_keeps_existing_order() {
         // Established display order is b, a. A poll arrives recency-sorted (a, b) with
-        // a bumped — the poll must NOT re-sort; the b, a order holds.
+        // a bumped - the poll must NOT re-sort; the b, a order holds.
         let existing = vec![sess("h", "b", 0), sess("h", "a", 0)];
         let incoming = vec![sess("h", "a", 999), sess("h", "b", 500)];
         let out = reorder_preserving(incoming, &existing);
@@ -844,13 +847,16 @@ mod tests {
     #[test]
     fn flatten_emits_a_card_per_session() {
         // A flat list: ONE card per session, line2 the focused (active) window's
-        // name. No host rows (the host has sessions to show).
+        // `{index}:{name}`. No host rows (the host has sessions to show).
         let (groups, panes, loaded) = loaded_fixture();
         let rows = flatten(&groups, &panes, &loaded, &HashSet::new(), "", &[]);
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["session"]);
         assert_eq!(addr_of(&rows[0].reference), "jup/api");
-        assert_eq!(rows[0].line2, "w0", "line2 is the ACTIVE window's name");
+        assert_eq!(
+            rows[0].line2, "0:w0",
+            "line2 is the ACTIVE window's index:name"
+        );
     }
 
     #[test]
@@ -862,7 +868,7 @@ mod tests {
             w.active = false;
         }
         let rows = flatten(&groups, &panes, &loaded, &HashSet::new(), "", &[]);
-        assert_eq!(rows[0].line2, "w0");
+        assert_eq!(rows[0].line2, "0:w0");
     }
 
     #[test]

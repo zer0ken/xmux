@@ -28,9 +28,10 @@ pub use crate::ui::ops::{run_op, OpResult, Ops};
 /// Tree pane width: border + 1-cell inner padding each side + content.
 pub const NAV_WIDTH: u16 = 48;
 
-/// A navigation card is two screen rows tall (line1 context, line2 detail). The
-/// renderer emits 2-line list items and mouse hit-testing divides the screen-row
-/// delta by this to map a click to a card.
+/// A navigation card's EXPANDED height: two screen rows (a context line over a
+/// detail line). A collapsed card (see [`Switcher::card_collapsed`]) drops the
+/// context line and is one row tall; the renderer and mouse hit-testing share
+/// [`Switcher::card_height`] so the screen-row-to-card mapping never diverges.
 pub(super) const CARD_H: u16 = 2;
 
 // Per-level node colours (the shared semantic palette), so the tree levels read
@@ -45,10 +46,8 @@ fn color_session() -> Color {
 fn color_window() -> Color {
     crate::ui::palette::get().window
 }
-/// The mux segment of a card's context line: quiet metadata between the host and
-/// the session name, so it disambiguates without competing with either.
 fn color_mux() -> Color {
-    crate::ui::palette::get().subtext
+    crate::ui::palette::get().mux
 }
 /// Settled per-element status (no sessions) renders muted so it reads apart
 /// from settled content; in-flight and failure states carry their own colours
@@ -433,6 +432,41 @@ impl Switcher {
             .collect()
     }
 
+    /// Whether card `i` renders collapsed to its detail line alone: a session /
+    /// loading card whose `{host}/{mux}` context repeats the previous card's, so a
+    /// run of sessions on one server reads grouped without restating the context.
+    /// The SELECTED card never collapses - focus expands it to the full two-row
+    /// card, so its context is always readable in place - and a host-state card
+    /// never collapses (its host name IS the content).
+    fn card_collapsed(&self, i: usize) -> bool {
+        if self.list_state.selected() == Some(i) {
+            return false;
+        }
+        let (Some(row), Some(prev)) = (
+            self.rows.get(i),
+            i.checked_sub(1).and_then(|p| self.rows.get(p)),
+        ) else {
+            return false;
+        };
+        if matches!(row.reference, RowRef::Host { .. })
+            || matches!(prev.reference, RowRef::Host { .. })
+        {
+            return false;
+        }
+        let (host, mux, _) = context_of(&row.reference);
+        let (prev_host, prev_mux, _) = context_of(&prev.reference);
+        host == prev_host && mux == prev_mux
+    }
+
+    /// The screen rows card `i` occupies: [`CARD_H`] expanded, one when collapsed.
+    fn card_height(&self, i: usize) -> u16 {
+        if self.card_collapsed(i) {
+            1
+        } else {
+            CARD_H
+        }
+    }
+
     fn set_selected(&mut self, idx: usize, state: &crate::state::State) {
         if self.rows.is_empty() {
             return;
@@ -790,6 +824,18 @@ pub(crate) fn fit(candidates: &[String], width: u16) -> String {
 /// Adds a space each side so the reverse-video selection has breathing room.
 fn pad_label(s: &str) -> String {
     format!(" {s} ")
+}
+
+/// The context parts of a card: `(host, mux, session)`. A host-state card
+/// carries only its host; a session/loading card names its session's host, mux
+/// kind (empty when not yet known), and session name.
+fn context_of(reference: &RowRef) -> (&str, &str, &str) {
+    match reference {
+        RowRef::Host { source, .. } => (source, "", ""),
+        RowRef::Session { sess } | RowRef::Loading { sess } => {
+            (&sess.source, &sess.mux, &sess.name)
+        }
+    }
 }
 
 /// The session address a card belongs to (session / loading), or `None` for a
