@@ -10,6 +10,7 @@ use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::ui::palette;
+use crate::ui::tree::RowRef;
 
 /// An active border-drag of a modal popup: the grabbed screen cell and the
 /// popup offset at grab time, so motion can compute the new offset.
@@ -96,6 +97,11 @@ impl PopupGeometry {
 pub(crate) enum InputMode {
     Filter,
     New,
+    /// Jump to a card by its number. Unlike the other modes this one acts WHILE it is
+    /// open: every edit moves the selection to the typed card, so the number is a live
+    /// cursor rather than a value submitted at the end. Enter therefore only closes the
+    /// popup, and Esc restores the card the jump started from.
+    Jump,
 }
 
 pub(crate) struct Input {
@@ -110,6 +116,11 @@ pub(crate) struct Input {
     /// host the user was on, not wherever streaming results moved the selection by
     /// the time they pressed Enter.
     pub(crate) source: Option<String>,
+    /// [`InputMode::Jump`] only: the card the selection was on when the popup opened,
+    /// held by IDENTITY (not row index) so a rebuild during the jump cannot restore
+    /// onto the wrong card. Esc returns here; Enter leaves the selection where the
+    /// live jump already put it.
+    pub(crate) restore: Option<RowRef>,
 }
 
 impl Input {
@@ -129,6 +140,7 @@ impl Input {
             buffer,
             cursor,
             source,
+            restore: None,
         }
     }
 
@@ -327,7 +339,10 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
         HelpRow::Key("↑/↓ · j/k".into(), "move up / down the list".into()),
         HelpRow::Key("PgUp/PgDn".into(), "jump by 10".into()),
         HelpRow::Key("Home/End".into(), "first / last card".into()),
-        HelpRow::Key("1…9".into(), "jump to that numbered card".into()),
+        HelpRow::Key(
+            format!("{p} 0-9"),
+            "jump to a card by its number (keep typing for 10+)".into(),
+        ),
         HelpRow::Key(format!("{p} n"), "new session on the selected host".into()),
         HelpRow::Key("/".into(), "fuzzy filter <source>/<name>".into()),
         HelpRow::Key(format!("{p} r"), "re-scan every host".into()),
@@ -506,6 +521,7 @@ fn input_title(mode: InputMode) -> &'static str {
     match mode {
         InputMode::Filter => "filter",
         InputMode::New => "new session",
+        InputMode::Jump => "jump",
     }
 }
 

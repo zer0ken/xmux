@@ -126,9 +126,9 @@ impl Switcher {
         self.nav_inner = area;
 
         let spinner_glyph = SPINNER[state.chrome.spinner_frame % SPINNER.len()];
-        let jump_digit = self.jump_digits();
+        let gutter_w = self.gutter_width();
         let items: Vec<ListItem> = (0..self.rows.len())
-            .map(|i| self.nav_row_item(i, jump_digit[i], spinner_glyph))
+            .map(|i| self.nav_row_item(i, gutter_w, spinner_glyph))
             .collect();
         // The selection highlight is a quiet raised surface (plus the accent ▌ bar the
         // card itself draws in its gutter), not reverse video: the card's own level
@@ -174,16 +174,13 @@ impl Switcher {
         );
     }
 
-    /// The quick-jump digit for each card: the first nine cards (in list order, matching
-    /// `move_to`) get a dim 1..9; the rest `None`. A 2-col gutter is reserved on every
-    /// card so numbering never reflows the list.
-    fn jump_digits(&self) -> Vec<Option<char>> {
-        let sel = self.selectable_indices();
-        let mut jump_digit: Vec<Option<char>> = vec![None; self.rows.len()];
-        for (pos, &ri) in sel.iter().enumerate().take(9) {
-            jump_digit[ri] = Some((b'1' + pos as u8) as char);
-        }
-        jump_digit
+    /// The gutter width every card reserves: the widest card number plus a separating
+    /// space, never under 2 (so a short list looks the same as it always did). One width
+    /// for the whole frame keeps the names left-aligned with each other - a per-card
+    /// width would step the text right as the numbers gain a digit.
+    fn gutter_width(&self) -> usize {
+        let widest = self.rows.len().saturating_sub(1).to_string().len();
+        widest.max(1) + 1
     }
 
     /// Builds one navigation card as a [`ListItem`]: a context line over a detail
@@ -196,28 +193,22 @@ impl Switcher {
     /// what the mux shows on attach - in the session / window colours, a loading
     /// card's `{session}/` + spinner, a host-state card's state coloured by kind
     /// (pending / danger / muted). The gutter carries the selected card's accent ▌
-    /// bar on every line (replacing its jump digit - the selection needs no jump
-    /// target); an unselected card shows its dim digit on its first line. The
-    /// surface background comes from the List's `highlight_style`, so no per-span
-    /// background is baked in here.
-    fn nav_row_item(
-        &self,
-        i: usize,
-        digit: Option<char>,
-        spinner_glyph: char,
-    ) -> ListItem<'static> {
+    /// bar on every line (replacing its number - the selection needs no jump
+    /// target); an unselected card shows its dim 0-based number on its first line,
+    /// which is what `prefix <digit>` addresses. The surface background comes from
+    /// the List's `highlight_style`, so no per-span background is baked in here.
+    fn nav_row_item(&self, i: usize, gutter_w: usize, spinner_glyph: char) -> ListItem<'static> {
         let row = &self.rows[i];
         let muted = Style::default().fg(color_hint());
         let selected = self.list_state.selected() == Some(i);
         let bar = Style::default().fg(palette::get().accent);
         let gutter = |first: bool| -> Span<'static> {
             if selected {
-                Span::styled("▌ ", bar)
+                Span::styled(format!("{:<gutter_w$}", "▌"), bar)
+            } else if first {
+                Span::styled(format!("{i:<gutter_w$}"), muted)
             } else {
-                match digit.filter(|_| first) {
-                    Some(d) => Span::styled(format!("{d} "), muted),
-                    None => Span::raw("  "),
-                }
+                Span::raw(" ".repeat(gutter_w))
             }
         };
 

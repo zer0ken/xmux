@@ -79,7 +79,8 @@ impl Switcher {
         // The flat card list has no levels or host columns: ↑/↓ (and k/j) step one card,
         // PageUp/Down jump ten, Home/End go to the ends. Left/right have nothing to move
         // between, so they are inert here (prefix →/Enter focuses the terminal at the app
-        // layer). `n` starts a session on the selected host; digits quick-jump.
+        // layer). `n` starts a session on the selected host; a digit opens the jump popup
+        // seeded with it (the app only forwards a digit here behind the prefix).
         match ev.code {
             KeyCode::Enter => {}
             KeyCode::Up | KeyCode::Char('k') => self.nav_vertical(-1, state),
@@ -92,9 +93,9 @@ impl Switcher {
                 '/' => self.open_input(InputMode::Filter, state),
                 'n' => self.open_new(state),
                 'r' => self.request_rescan(state),
-                // Quick-jump: 1..9 select the Nth card (the dim digit shown on it),
-                // reusing the normal selection/attach-debounce path.
-                '1'..='9' => self.move_to((c as u8 - b'1') as isize, state),
+                // Jump: the digit opens the jump popup already holding it, so the
+                // number can be extended (4 → 41) without a second keystroke.
+                '0'..='9' => self.open_jump(c, state),
                 _ => {}
             },
             _ => {}
@@ -119,8 +120,9 @@ impl Switcher {
                     None,
                 )));
             }
-            // New is opened by `open_new`.
-            InputMode::New => {}
+            // New is opened by `open_new`, Jump by `open_jump` (both capture context
+            // the mode alone does not carry).
+            InputMode::New | InputMode::Jump => {}
         }
     }
 
@@ -152,6 +154,56 @@ impl Switcher {
         }
     }
 
+    /// Opens the jump popup seeded with `digit`, remembering the card to return to.
+    /// The seeding digit is applied immediately, so `prefix 4` lands on card 4 and the
+    /// popup stays open only to let the number grow (4 → 41) or be cancelled.
+    pub(super) fn open_jump(&mut self, digit: char, state: &mut crate::state::State) {
+        state.chrome.flash.clear();
+        let restore = self.current_ref().cloned();
+        self.dismiss_modals(state);
+        let mut input = Input::new(
+            InputMode::Jump,
+            format!(
+                " jump to a card (0 - {})",
+                self.rows.len().saturating_sub(1)
+            ),
+            digit.to_string(),
+            None,
+        );
+        input.restore = restore;
+        state.modal = Some(Modal::Input(input));
+        self.apply_jump(state);
+    }
+
+    /// Moves the selection to the card the open jump popup's buffer names. Out of range
+    /// (or an empty buffer) leaves the selection alone, so typing past the last card is
+    /// inert rather than snapping to an edge - the number is still being typed.
+    fn apply_jump(&mut self, state: &mut crate::state::State) {
+        let Some(Modal::Input(input)) = &state.modal else {
+            return;
+        };
+        let Ok(n) = input.buffer.trim().parse::<usize>() else {
+            return;
+        };
+        if n >= self.rows.len() {
+            return;
+        }
+        self.user_moved = true;
+        self.set_selected(n, state);
+    }
+
+    /// Returns the selection to the card a cancelled jump started from, matched by
+    /// identity so a rebuild mid-jump cannot land on the wrong card. A card that
+    /// vanished meanwhile leaves the selection where the jump put it.
+    fn restore_jump(&mut self, restore: Option<RowRef>, state: &mut crate::state::State) {
+        let Some(target) = restore else {
+            return;
+        };
+        if let Some(i) = self.row_matching(&target) {
+            self.set_selected(i, state);
+        }
+    }
+
     pub(super) fn close_input(&mut self, state: &mut crate::state::State) {
         state.modal = None;
     }
@@ -179,10 +231,20 @@ impl Switcher {
                         Vec::new()
                     }
                     InputMode::New => self.queue_create(source, &val, state),
+                    // The jump already happened on every edit, so Enter just commits by
+                    // closing - there is nothing left to apply.
+                    InputMode::Jump => Vec::new(),
                 }
             }
             KeyCode::Esc => {
+                // A cancelled jump must undo the moves it already made; every other mode
+                // has changed nothing yet, so closing is the whole cancel.
+                let restore = match &state.modal {
+                    Some(Modal::Input(i)) if i.mode == InputMode::Jump => i.restore.clone(),
+                    _ => None,
+                };
                 self.close_input(state);
+                self.restore_jump(restore, state);
                 Vec::new()
             }
             // All other keys edit the buffer at the caret. Grab the input once so each
@@ -190,7 +252,9 @@ impl Switcher {
             // Ctrl-letters as their control char (like the C-g prefix), so Ctrl-U / Ctrl-W
             // match the raw NAK / ETB bytes, not Char('u')/Char('w') + a modifier.
             code => {
+                let mut jumping = false;
                 if let Some(Modal::Input(input)) = state.modal.as_mut() {
+                    jumping = input.mode == InputMode::Jump;
                     match code {
                         KeyCode::Backspace => input.backspace(),
                         KeyCode::Delete => input.delete(),
@@ -200,10 +264,22 @@ impl Switcher {
                         KeyCode::End => input.end(),
                         KeyCode::Char('\u{15}') => input.clear_line(),
                         KeyCode::Char('\u{17}') => input.delete_word_before(),
-                        // Ignore control chars so a stray C-g etc. never lands as text.
+                        // A card number is digits only, so a stray letter is dropped
+                        // rather than making the buffer unparseable. Control chars are
+                        // ignored in every mode so a stray C-g never lands as text.
+                        KeyCode::Char(c) if jumping => {
+                            if c.is_ascii_digit() {
+                                input.insert(c);
+                            }
+                        }
                         KeyCode::Char(c) if !c.is_control() => input.insert(c),
                         _ => {}
                     }
+                }
+                // The jump acts WHILE open: re-target after every edit so the selection
+                // tracks the number being typed.
+                if jumping {
+                    self.apply_jump(state);
                 }
                 Vec::new()
             }

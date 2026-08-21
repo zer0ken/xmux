@@ -1887,20 +1887,34 @@ async fn wheel_moves_the_selection_like_the_arrow_keys() {
 }
 
 #[tokio::test]
-async fn digit_keys_quick_jump_to_selectable_rows() {
-    // 1..9 jump straight to the Nth selectable row (the dim digit rendered on it),
-    // reusing the normal selection path. Robust to the sample's exact shape: a
-    // different digit lands on a different row, and 1 returns to the first.
+async fn a_digit_opens_the_jump_popup_and_lands_on_that_card() {
+    // The digit is applied at once (so `prefix 2` IS the jump) and the popup stays open
+    // holding it, ready to grow into a two-digit number.
     let mut h = Harness::new(sample());
-    h.key(KeyCode::Char('1')).await;
-    let first = h.sw.selected;
     h.key(KeyCode::Char('2')).await;
-    let second = h.sw.selected;
-    assert_ne!(first, second, "a different digit selects a different row");
+    assert_eq!(h.sw.selected, 2, "the seeding digit jumps immediately");
+    assert!(h.state.is_inputting(), "the popup stays open to extend it");
+    // Editing the number re-targets live: 2 → 1 moves without submitting anything.
+    h.key(KeyCode::Backspace).await;
     h.key(KeyCode::Char('1')).await;
+    assert_eq!(h.sw.selected, 1, "each edit re-targets the selection");
+    // Enter only closes; the selection is already where the live jump put it.
+    h.key(KeyCode::Enter).await;
+    assert!(!h.state.is_inputting(), "Enter closes the popup");
+    assert_eq!(h.sw.selected, 1, "Enter is a no-op on the selection");
+}
+
+#[tokio::test]
+async fn cancelling_a_jump_restores_the_starting_card() {
+    let mut h = Harness::new(sample());
+    let start = h.sw.selected;
+    h.key(KeyCode::Char('3')).await;
+    assert_ne!(h.sw.selected, start, "the jump moved");
+    h.key(KeyCode::Esc).await;
+    assert!(!h.state.is_inputting(), "Esc closes the popup");
     assert_eq!(
-        h.sw.selected, first,
-        "digit 1 returns to the first selectable row"
+        h.sw.selected, start,
+        "Esc returns to the card the jump started from"
     );
 }
 
@@ -1961,6 +1975,50 @@ fn the_armed_hint_bar_floats_across_the_whole_window() {
         cards_before,
         "arming the prefix only widens the paint, so no card moves"
     );
+}
+
+#[tokio::test]
+async fn a_jump_past_the_last_card_is_inert() {
+    // Typing a number that does not exist yet must not snap to an edge - the number is
+    // still being typed, and `9` on the way to `95` should not jerk the selection.
+    let mut h = Harness::new(sample());
+    let n = h.sw.rows.len();
+    h.key(KeyCode::Char('1')).await;
+    let one = h.sw.selected;
+    for c in n.to_string().chars() {
+        h.key(KeyCode::Char(c)).await;
+    }
+    assert_eq!(
+        h.sw.selected, one,
+        "an out-of-range number leaves the selection alone"
+    );
+    // A letter typed into a card number is dropped rather than breaking the parse.
+    h.key(KeyCode::Char('x')).await;
+    assert_eq!(h.sw.selected, one, "a non-digit is ignored");
+}
+
+#[test]
+fn every_card_carries_its_0_based_number_in_the_gutter() {
+    let mut state = crate::state::State::from_scan(sample());
+    let mut sw = Switcher::new(&mut state);
+    let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
+    term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, &state))
+        .unwrap();
+    let buf = term.backend().buffer();
+    // The selected card shows the accent bar instead of its number; every OTHER card's
+    // first row starts with its own 0-based index.
+    let selected = sw.list_state.selected().unwrap();
+    let mut y = 0u16;
+    for i in 0..sw.rows.len() {
+        if i != selected {
+            assert_eq!(
+                buf[(0u16, y)].symbol(),
+                i.to_string(),
+                "card {i} shows its number at row {y}"
+            );
+        }
+        y += sw.card_height(i);
+    }
 }
 
 #[tokio::test]
