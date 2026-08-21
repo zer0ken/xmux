@@ -463,7 +463,7 @@ impl Chrome {
             // drops the rarer chords rather than clipping mid-word.
             fit(
                 &[
-                    format!(" {p} 0-9 jump · n new · r rescan · / filter · Tab terminal · t hide · h/l size · ? help · q quit"),
+                    format!(" {p} 0-9 jump to a session · n new session · r rescan · / filter · Tab terminal · t hide · h/l size · ? help · q quit"),
                     format!(" {p} 0-9 jump · n new · r rescan · Tab term · t hide · ? help · q quit"),
                     format!(" {p} 0-9 · n · r · Tab · t · h/l · ? · q"),
                     format!(" {p} 0-9 n r Tab t ? q"),

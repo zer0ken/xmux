@@ -154,6 +154,15 @@ impl Harness {
         buffer_text(self.buf())
     }
 
+    /// What the open input popup holds, or `""` when none is open - the jump's buffer
+    /// is the number under edit, so a test can assert a refused digit never landed.
+    fn input_buffer(&self) -> String {
+        match &self.state.modal {
+            Some(crate::ui::modal::Modal::Input(i)) => i.buffer.clone(),
+            _ => String::new(),
+        }
+    }
+
     fn nav_row_of(&self, text: &str) -> Option<u16> {
         row_of(self.buf(), text, NAV_WIDTH)
     }
@@ -277,6 +286,23 @@ fn sample() -> Scan {
         vec![win(1, "train", true, vec![pane(1, true, "python")])],
     );
     Scan { groups, panes }
+}
+
+/// One reachable source carrying `n` sessions, so the nav holds exactly `n` cards
+/// numbered `0..n`. Used where the card COUNT is the point (a two-digit jump needs
+/// more cards than [`sample`] has).
+fn scan_with_sessions(n: usize) -> Scan {
+    let sessions = (0..n)
+        .map(|i| sess("local", &format!("s{i}"), 1, false, (n - i) as i64))
+        .collect();
+    Scan {
+        groups: vec![Group {
+            source: "local".into(),
+            err: None,
+            sessions,
+        }],
+        panes: HashMap::new(),
+    }
 }
 
 fn cur_session_name(h: &Harness) -> Option<String> {
@@ -1918,6 +1944,65 @@ async fn cancelling_a_jump_restores_the_starting_card() {
     );
 }
 
+#[tokio::test]
+async fn a_jump_past_the_last_card_is_inert() {
+    // Typing a number that does not exist yet must not snap to an edge - the number is
+    // still being typed, and `9` on the way to `95` should not jerk the selection.
+    let mut h = Harness::new(sample());
+    let n = h.sw.rows.len();
+    h.key(KeyCode::Char('1')).await;
+    let one = h.sw.selected;
+    for c in n.to_string().chars() {
+        h.key(KeyCode::Char(c)).await;
+    }
+    assert_eq!(
+        h.sw.selected, one,
+        "an out-of-range number leaves the selection alone"
+    );
+    // A letter typed into a card number is dropped rather than breaking the parse.
+    h.key(KeyCode::Char('x')).await;
+    assert_eq!(h.sw.selected, one, "a non-digit is ignored");
+}
+
+#[test]
+fn every_card_carries_its_0_based_number_beside_its_session() {
+    let mut state = crate::state::State::from_scan(sample());
+    let mut sw = Switcher::new(&mut state);
+    let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
+    term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, &state))
+        .unwrap();
+    let buf = term.backend().buffer();
+    // Column 0 is the selection bar's own column; the number follows it, right-aligned
+    // in one width for the whole frame, and sits on the card's DETAIL line - the row
+    // carrying the session it addresses, not the host/mux context above it.
+    let selected = sw.list_state.selected().unwrap();
+    let num_w = sw.rows.len().saturating_sub(1).to_string().len().max(1) as u16;
+    let read =
+        |x: u16, y: u16, w: u16| -> String { (x..x + w).map(|c| buf[(c, y)].symbol()).collect() };
+    let mut top = 0u16;
+    for i in 0..sw.rows.len() {
+        let detail = top + sw.card_height(i) - 1;
+        assert_eq!(
+            read(1, detail, num_w).trim(),
+            i.to_string(),
+            "card {i} shows its number on its detail row {detail}"
+        );
+        if sw.card_height(i) > 1 {
+            assert_eq!(
+                read(1, top, num_w).trim(),
+                "",
+                "card {i}'s context row leaves the number column blank"
+            );
+        }
+        assert_eq!(
+            buf[(0u16, detail)].symbol() == "▌",
+            i == selected,
+            "only the selected card marks column 0 with the accent bar"
+        );
+        top += sw.card_height(i);
+    }
+}
+
 #[test]
 fn the_armed_hint_bar_floats_across_the_whole_window() {
     let mut state = crate::state::State::from_scan(sample());
@@ -1978,47 +2063,52 @@ fn the_armed_hint_bar_floats_across_the_whole_window() {
 }
 
 #[tokio::test]
-async fn a_jump_past_the_last_card_is_inert() {
-    // Typing a number that does not exist yet must not snap to an edge - the number is
-    // still being typed, and `9` on the way to `95` should not jerk the selection.
+async fn a_jump_never_holds_a_number_no_session_carries() {
+    // One, two, and three digit numbers behave identically because the popup only takes
+    // a digit that keeps the number in range, so the buffer always names a real session.
     let mut h = Harness::new(sample());
     let n = h.sw.rows.len();
-    h.key(KeyCode::Char('1')).await;
-    let one = h.sw.selected;
-    for c in n.to_string().chars() {
-        h.key(KeyCode::Char(c)).await;
-    }
-    assert_eq!(
-        h.sw.selected, one,
-        "an out-of-range number leaves the selection alone"
+    assert!(n < 10, "sample() is a single-digit list");
+    // The seeding digit itself is vetted: no popup opens for a number nothing carries.
+    h.key(KeyCode::Char(char::from_digit(n as u32, 10).unwrap()))
+        .await;
+    assert!(
+        !h.state.is_inputting(),
+        "an out-of-range digit opens nothing"
     );
-    // A letter typed into a card number is dropped rather than breaking the parse.
-    h.key(KeyCode::Char('x')).await;
-    assert_eq!(h.sw.selected, one, "a non-digit is ignored");
+    assert!(
+        h.state.chrome.flash.contains("no session"),
+        "and says so: {}",
+        h.state.chrome.flash
+    );
+    // In range, the popup opens and each further digit is taken only if it stays in range.
+    h.key(KeyCode::Char('1')).await;
+    assert!(h.state.is_inputting(), "an in-range digit opens the popup");
+    h.key(KeyCode::Char('0')).await;
+    assert_eq!(
+        h.sw.selected, 1,
+        "10 is out of range, so the digit is dropped"
+    );
+    assert_eq!(h.input_buffer(), "1", "and the buffer never showed it");
 }
 
-#[test]
-fn every_card_carries_its_0_based_number_in_the_gutter() {
-    let mut state = crate::state::State::from_scan(sample());
-    let mut sw = Switcher::new(&mut state);
-    let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
-    term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, &state))
-        .unwrap();
-    let buf = term.backend().buffer();
-    // The selected card shows the accent bar instead of its number; every OTHER card's
-    // first row starts with its own 0-based index.
-    let selected = sw.list_state.selected().unwrap();
-    let mut y = 0u16;
-    for i in 0..sw.rows.len() {
-        if i != selected {
-            assert_eq!(
-                buf[(0u16, y)].symbol(),
-                i.to_string(),
-                "card {i} shows its number at row {y}"
-            );
-        }
-        y += sw.card_height(i);
-    }
+#[tokio::test]
+async fn a_jump_walks_into_a_two_digit_number() {
+    let mut h = Harness::new(scan_with_sessions(24));
+    h.key(KeyCode::Char('1')).await;
+    assert_eq!(h.sw.selected, 1, "the seeding digit lands immediately");
+    h.key(KeyCode::Char('7')).await;
+    assert_eq!(
+        h.sw.selected, 17,
+        "the second digit extends the number live"
+    );
+    h.key(KeyCode::Backspace).await;
+    assert_eq!(h.sw.selected, 1, "backspace walks it back");
+    h.key(KeyCode::Char('9')).await;
+    assert_eq!(h.sw.selected, 19, "a different second digit re-lands");
+    h.key(KeyCode::Enter).await;
+    assert!(!h.state.is_inputting(), "Enter closes the popup");
+    assert_eq!(h.sw.selected, 19, "and keeps where the jump landed");
 }
 
 #[tokio::test]

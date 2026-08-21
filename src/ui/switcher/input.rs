@@ -154,20 +154,46 @@ impl Switcher {
         }
     }
 
-    /// Opens the jump popup seeded with `digit`, remembering the card to return to.
-    /// The seeding digit is applied immediately, so `prefix 4` lands on card 4 and the
-    /// popup stays open only to let the number grow (4 → 41) or be cancelled.
+    /// The row `number` addresses, or `None` when no card carries it. The numbers run
+    /// `0..rows.len()`, so a number that names nothing today can never be extended into
+    /// one either (any extra digit only makes it larger). That is what lets the jump
+    /// VET a keystroke instead of holding a dead number: see [`Switcher::jump_accepts`].
+    fn jump_row(&self, number: &str) -> Option<usize> {
+        let n = number.trim().parse::<usize>().ok()?;
+        (n < self.rows.len()).then_some(n)
+    }
+
+    /// Whether the jump would accept `number`, i.e. some card carries it. An empty
+    /// buffer is not acceptable as a jump target but is a legal editing state, so it is
+    /// handled by the caller, not here.
+    fn jump_accepts(&self, number: &str) -> bool {
+        self.jump_row(number).is_some()
+    }
+
+    /// Opens the jump popup seeded with `digit`, remembering the session to return to.
+    /// The digit is applied immediately, so `prefix 4` lands on 4 and the popup stays
+    /// open only to let the number grow (4 → 41 → 417) or be cancelled. A digit no
+    /// card carries never opens it at all: with nine sessions, `prefix 9` is refused
+    /// with a flash rather than opening a popup that cannot go anywhere.
     pub(super) fn open_jump(&mut self, digit: char, state: &mut crate::state::State) {
         state.chrome.flash.clear();
+        let seed = digit.to_string();
+        if !self.jump_accepts(&seed) {
+            state.flash(format!(
+                "no session {seed} (0 - {})",
+                self.rows.len().saturating_sub(1)
+            ));
+            return;
+        }
         let restore = self.current_ref().cloned();
         self.dismiss_modals(state);
         let mut input = Input::new(
             InputMode::Jump,
             format!(
-                " jump to a card (0 - {})",
+                " jump to a session (0 - {})",
                 self.rows.len().saturating_sub(1)
             ),
-            digit.to_string(),
+            seed,
             None,
         );
         input.restore = restore;
@@ -175,19 +201,17 @@ impl Switcher {
         self.apply_jump(state);
     }
 
-    /// Moves the selection to the card the open jump popup's buffer names. Out of range
-    /// (or an empty buffer) leaves the selection alone, so typing past the last card is
-    /// inert rather than snapping to an edge - the number is still being typed.
+    /// Moves the selection to the session the open jump popup's buffer names. Only an
+    /// empty buffer leaves the selection alone: every digit the popup accepted keeps the
+    /// number addressing a real card, so one, two, and three digit numbers all behave
+    /// the same - the buffer is never showing a number you cannot land on.
     fn apply_jump(&mut self, state: &mut crate::state::State) {
         let Some(Modal::Input(input)) = &state.modal else {
             return;
         };
-        let Ok(n) = input.buffer.trim().parse::<usize>() else {
+        let Some(n) = self.jump_row(&input.buffer.clone()) else {
             return;
         };
-        if n >= self.rows.len() {
-            return;
-        }
         self.user_moved = true;
         self.set_selected(n, state);
     }
@@ -253,6 +277,11 @@ impl Switcher {
             // match the raw NAK / ETB bytes, not Char('u')/Char('w') + a modifier.
             code => {
                 let mut jumping = false;
+                // Vetting a digit needs the row count while `state.modal` is mutably
+                // borrowed, so capture the predicate's input up front.
+                let rows = self.rows.len();
+                let accepts =
+                    |buf: String| matches!(buf.trim().parse::<usize>(), Ok(n) if n < rows);
                 if let Some(Modal::Input(input)) = state.modal.as_mut() {
                     jumping = input.mode == InputMode::Jump;
                     match code {
@@ -264,11 +293,15 @@ impl Switcher {
                         KeyCode::End => input.end(),
                         KeyCode::Char('\u{15}') => input.clear_line(),
                         KeyCode::Char('\u{17}') => input.delete_word_before(),
-                        // A card number is digits only, so a stray letter is dropped
-                        // rather than making the buffer unparseable. Control chars are
-                        // ignored in every mode so a stray C-g never lands as text.
+                        // A session number is digits only, so a stray letter is
+                        // dropped rather than making the buffer unparseable. A digit is
+                        // vetted by its RESULT: one that would take the number past the
+                        // last card is refused, so the buffer always names a session you
+                        // can land on and a two- or three-digit number behaves exactly
+                        // like a one-digit one. Control chars are ignored in every mode
+                        // so a stray C-g never lands as text.
                         KeyCode::Char(c) if jumping => {
-                            if c.is_ascii_digit() {
+                            if c.is_ascii_digit() && accepts(input.buffer_with(c)) {
                                 input.insert(c);
                             }
                         }
