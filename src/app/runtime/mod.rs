@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::app::input::{
-    leading_ctrl_arrow, nav_menu_may_open, resolve_mouse_chain, resolve_nav_key, to_grid_local,
+    leading_ctrl_arrow, resolve_mouse_chain, resolve_nav_key, to_grid_local,
     view_border_drag_height, view_border_drag_width, ChainAction, MouseState, StdinOutcome,
 };
 use crate::attach;
@@ -194,18 +194,21 @@ fn dispatch_commands(
     (quit, width_changed)
 }
 
-/// The `status` verb reply: focus side, displayed session, and this instance's
-/// working directory + controlling tty. A flat, TAB-separated `key=value` line an
-/// agent reads to confirm a `switch`/`focus` landed and that `xmux ctl list` parses to
-/// tell instances apart. The wire format lives in `control` so producer and parser
-/// cannot drift.
+/// The `status` verb reply: this instance's name and pid, the focus side, the
+/// displayed session, and its working directory + controlling tty. A flat,
+/// TAB-separated `key=value` line an agent reads to confirm a `switch`/`focus` landed
+/// and that `xmux instances` parses to tell instances apart. The wire format lives in
+/// `control` so producer and parser cannot drift.
 fn status_line(
     switcher: &crate::ui::switcher::Switcher,
+    name: &str,
     nav_focused: bool,
     cwd: &str,
     tty: &str,
 ) -> String {
     crate::control::format_status(&crate::control::StatusFields {
+        name: name.to_string(),
+        pid: std::process::id().to_string(),
         focus: if nav_focused { "nav" } else { "terminal" }.to_string(),
         target: switcher.terminal_view_target().target.to_string(),
         cwd: cwd.to_string(),
@@ -360,10 +363,10 @@ fn sync_selection_from_switcher(
 /// the remote wrap at a width wider than the visible view, so a line overflows the
 /// right edge (and a double-width char straddles the clip boundary). The view width
 /// is `cols - nav_width - 1` (tree + the single view border rule), except `nav_width == 0`
-/// (the tree-hidden sentinel) gives the full `cols` with no view border. The hint_bar now
-/// spans the full width along the bottom, so a shown tree gives the terminal view height
-/// `body_rows` (full height minus the one hint_bar row); the tree-hidden sentinel has no
-/// hint_bar and keeps the full height `body_rows + 1`. Both clamp to at least 1.
+/// (the tree-hidden sentinel) gives the full `cols` with no view border. The hint bar
+/// lives INSIDE the nav region, so it costs the terminal view no height in `Side`: the
+/// view gets the full `body_rows + 1`. In `Top` the terminal view is what is left below
+/// the nav band. Both clamp to at least 1.
 pub(crate) fn terminal_view_size(
     cols: u16,
     body_rows: u16,
@@ -371,10 +374,10 @@ pub(crate) fn terminal_view_size(
     nav_height: u16,
 ) -> (u16, u16) {
     // Derive from the one shared geometry (`compute_regions`) so the PTY size always
-    // matches what the renderer draws, in either layout. `body_rows` is full_height - 1
-    // (the hint bar row), so the full area is `body_rows + 1` tall; sizing assumes a
-    // one-row hint bar. A portrait area stacks the tree on top and shrinks the terminal
-    // view height accordingly; `nav_width == 0` gives the full area (tree hidden).
+    // matches what the renderer draws, in either layout. `body_rows` is full_height - 1,
+    // so the full area is `body_rows + 1` tall; sizing assumes a one-row hint bar inside
+    // the nav. A portrait area stacks the tree on top and shrinks the terminal view
+    // height accordingly; `nav_width == 0` gives the full area (tree hidden).
     let area = ratatui::layout::Rect::new(0, 0, cols, body_rows.saturating_add(1));
     let t = crate::ui::switcher::compute_regions(area, nav_width, nav_height, 1).terminal;
     (t.width.max(1), t.height.max(1))
@@ -827,7 +830,7 @@ pub(crate) fn note_host_exited(
 /// mux client per session alive and renders the selected one, with a control-mode
 /// client per remote host for inventory/events/window-switch. It serves a picker
 /// control socket so a headless driver can inject keys/text and dump the screen.
-pub async fn run_app(env: Arc<Env>) -> i32 {
+pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     use crate::display::term::TermGuard;
     use crate::ui::run::{serve_control, Cmd};
     use std::io::Read;
@@ -842,16 +845,20 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
     }
     let _ = std::fs::create_dir_all(&env.xmux_dir);
 
-    // Pick the dark or light palette from the terminal's reported background
-    // (an OSC 11 round-trip). Must run BEFORE raw mode / the alternate screen -
-    // the query library manages the terminal itself. Failure (an unsupported
-    // terminal, a timeout) keeps the dark default.
-    match terminal_colorsaurus::theme_mode(terminal_colorsaurus::QueryOptions::default()) {
-        Ok(mode) => crate::ui::palette::init_for_dark_terminal(
-            mode == terminal_colorsaurus::ThemeMode::Dark,
-        ),
+    // Derive the palette's xmux-own backgrounds (selection surface, hint bar)
+    // from the terminal's reported background (an OSC 11 round-trip); the
+    // foreground roles are ANSI-16 and need no query. Must run BEFORE raw mode /
+    // the alternate screen - the query library manages the terminal itself.
+    // Failure (an unsupported terminal, a timeout) keeps the fixed fallbacks.
+    match terminal_colorsaurus::background_color(terminal_colorsaurus::QueryOptions::default()) {
+        // Channels are the full u16 range; the high byte is the 8-bit value.
+        Ok(bg) => crate::ui::palette::init_for_terminal_background((
+            (bg.r >> 8) as u8,
+            (bg.g >> 8) as u8,
+            (bg.b >> 8) as u8,
+        )),
         Err(e) => {
-            tracing::debug!("terminal background query failed ({e}); keeping the dark palette")
+            tracing::debug!("terminal background query failed ({e}); keeping the fallback surfaces")
         }
     }
 
@@ -954,16 +961,29 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
         tracing::warn!(error = %e, "term_clear_failed");
     }
 
-    // The picker control socket: serves headless key/text/dump.
+    // The picker control socket: serves headless key/text/dump, and IS this instance's
+    // identity - `xmux send <name>` dials exactly this path. An explicit `--name` is
+    // taken as given (the user will type it again); otherwise walk the generated names
+    // until one no live instance holds, seeded by the pid so two simultaneous starts
+    // rarely probe the same name first.
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<Cmd>(256);
-    let control = pick_control_path(&rt.env);
+    let instance_name = match requested_name {
+        Some(n) => n,
+        None => {
+            let _ = std::fs::create_dir_all(&rt.env.xmux_dir);
+            crate::control::pick_free_name(&rt.env.xmux_dir, std::process::id() as u64).await
+        }
+    };
+    rt.instance_name = instance_name.clone();
+    let control = pick_control_path(&rt.env, &instance_name);
     let _control_handle = control.and_then(|p| serve_control(p, cmd_tx));
     // Off the startup path, sweep `ctl-*.sock` markers left by crashed instances (a
     // clean exit removes its own on drop; a hard-kill does not) so discovery does not
     // over-count dead instances.
     {
         let dir = rt.env.xmux_dir.clone();
-        tokio::spawn(async move { crate::control::prune_stale(&dir, std::process::id()).await });
+        let keep = instance_name.clone();
+        tokio::spawn(async move { crate::control::prune_stale(&dir, &keep).await });
     }
 
     let mut tick = tokio::time::interval(Duration::from_millis(SPINNER_FRAME_MS));
@@ -1037,6 +1057,9 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
 /// each `select!` arm is one `&mut self` method.
 struct Runtime {
     env: Arc<Env>,
+    /// This instance's name: its identity on the control socket (`ctl-<name>.sock`) and
+    /// the address `xmux send` uses. Resolved once in `run_app`, then only read.
+    instance_name: String,
     ops: Arc<dyn crate::ui::switcher::Ops>,
     hosts: crate::model::Hosts,
     mgr: HostManager,
@@ -1123,16 +1146,13 @@ fn spinner_frame_at(elapsed: std::time::Duration) -> usize {
     (elapsed.as_millis() / SPINNER_FRAME_MS as u128) as usize
 }
 
-/// The picker's control socket path (`ctl-<pid>.sock`), unless `XMUX_CONTROL=0`.
-fn pick_control_path(env: &Env) -> Option<PathBuf> {
+/// The picker's control socket path (`ctl-<name>.sock`), unless `XMUX_CONTROL=0`.
+fn pick_control_path(env: &Env, name: &str) -> Option<PathBuf> {
     if std::env::var("XMUX_CONTROL").as_deref() == Ok("0") {
         return None;
     }
     let _ = std::fs::create_dir_all(&env.xmux_dir);
-    Some(crate::control::socket_path(
-        &env.xmux_dir,
-        std::process::id(),
-    ))
+    Some(crate::control::socket_path(&env.xmux_dir, name))
 }
 
 mod handlers;

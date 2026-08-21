@@ -221,23 +221,8 @@ pub trait Mux: Send + Sync {
     fn show_option_plan(&self, name: &str) -> Vec<String> {
         mux::show_option(self.bin(), name)
     }
-    fn new_window_plan(&self, session: &str, name: &str) -> Vec<String> {
-        mux::new_window(self.bin(), session, name)
-    }
-    fn split_window_plan(&self, target: &str, vertical: bool) -> Vec<String> {
-        mux::split_window(self.bin(), target, vertical)
-    }
     fn select_window_plan(&self, target: &str) -> Vec<String> {
         mux::select_window(self.bin(), target)
-    }
-    fn kill_window_plan(&self, target: &str) -> Vec<String> {
-        mux::kill_window(self.bin(), target)
-    }
-    fn kill_pane_plan(&self, target: &str) -> Vec<String> {
-        mux::kill_pane(self.bin(), target)
-    }
-    fn rename_window_plan(&self, target: &str, new: &str) -> Vec<String> {
-        mux::rename_window(self.bin(), target, new)
     }
 
     /// The `new-session` argv that creates-or-attaches a DETACHED session (auto-named
@@ -245,14 +230,6 @@ pub trait Mux: Send + Sync {
     /// the host's `Transport` and reads back the assigned name.
     fn new_session_plan(&self, name: &str) -> Vec<String> {
         mux::new_session(self.bin(), name)
-    }
-    /// The `kill-session` argv for session `name`.
-    fn kill_session_plan(&self, name: &str) -> Vec<String> {
-        mux::kill_session(self.bin(), name)
-    }
-    /// The `rename-session` argv moving `old` to `new`.
-    fn rename_session_plan(&self, old: &str, new: &str) -> Vec<String> {
-        mux::rename_session(self.bin(), old, new)
     }
 }
 
@@ -395,29 +372,12 @@ mod tests {
     }
 
     #[test]
-    fn tmux_window_plans_match_mux_builders() {
+    fn tmux_read_plans_match_mux_builders() {
         let m = tmux();
         assert_eq!(m.list_panes_plan("work"), mux::list_panes("tmux", "work"));
         assert_eq!(
             m.select_window_plan("api:2"),
             mux::select_window("tmux", "api:2")
-        );
-        assert_eq!(
-            m.new_window_plan("work", "logs"),
-            mux::new_window("tmux", "work", "logs")
-        );
-        assert_eq!(
-            m.split_window_plan("work:1", true),
-            mux::split_window("tmux", "work:1", true)
-        );
-        assert_eq!(
-            m.kill_window_plan("api:2"),
-            mux::kill_window("tmux", "api:2")
-        );
-        assert_eq!(m.kill_pane_plan("api:2"), mux::kill_pane("tmux", "api:2"));
-        assert_eq!(
-            m.rename_window_plan("api:2", "logs"),
-            mux::rename_window("tmux", "api:2", "logs")
         );
     }
 
@@ -426,11 +386,6 @@ mod tests {
         let m = tmux();
         assert_eq!(m.new_session_plan("dev"), mux::new_session("tmux", "dev"));
         assert_eq!(m.new_session_plan(""), mux::new_session("tmux", ""));
-        assert_eq!(m.kill_session_plan("old"), mux::kill_session("tmux", "old"));
-        assert_eq!(
-            m.rename_session_plan("old", "new"),
-            mux::rename_session("tmux", "old", "new")
-        );
     }
 
     /// A minimal tmux-compatible mux that implements ONLY the required `Mux` methods
@@ -561,16 +516,12 @@ mod tests {
     }
 
     #[test]
-    fn psmux_window_plans_use_the_psmux_binary() {
+    fn psmux_read_plans_use_the_psmux_binary() {
         let m = psmux();
         assert_eq!(m.list_panes_plan("work"), mux::list_panes("psmux", "work"));
         assert_eq!(
             m.select_window_plan("work:1"),
             mux::select_window("psmux", "work:1")
-        );
-        assert_eq!(
-            m.new_window_plan("work", "logs"),
-            mux::new_window("psmux", "work", "logs")
         );
     }
 
@@ -579,14 +530,6 @@ mod tests {
         let m = psmux();
         assert_eq!(m.new_session_plan("dev"), mux::new_session("psmux", "dev"));
         assert_eq!(m.new_session_plan(""), mux::new_session("psmux", ""));
-        assert_eq!(
-            m.kill_session_plan("old"),
-            mux::kill_session("psmux", "old")
-        );
-        assert_eq!(
-            m.rename_session_plan("old", "new"),
-            mux::rename_session("psmux", "old", "new")
-        );
     }
 
     #[test]

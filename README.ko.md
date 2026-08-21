@@ -28,10 +28,12 @@ ssh 너머의 tmux 세션이든 똑같다. 떼었다 다시 붙이는 절차도,
 - **꼭 필요한 곳은 폴링 없이.** tmux 호스트는 컨트롤 모드(`-CC`)로 추적하고, psmux
   호스트는 폴링한다. 어느 쪽이든 트리는 서버를 그대로 비춘다. 판단 기준은 늘 서버
   쪽에 있다.
-- **마우스도 키보드도.** 세션을 오가고 거르고 만들고 이름 바꾸고 없애는 일 모두
-  키보드로 한다. 클릭·스크롤·우클릭도 된다.
-- **컨트롤 소켓.** 로컬 소켓이 스크립팅과 헤드리스 구동을 위한 의미 단위 명령을
-  노출한다([컨트롤 소켓](#컨트롤-소켓) 참고).
+- **넘나들기에만 집중한다.** 세션을 오가고 거르고 번호로 뛰어가고, 세션이 없는
+  호스트에 새 세션 하나를 만든다. 이름 바꾸기와 없애기, 창과 pane 작업은 그걸 이미 잘하는 mux에
+  남겨 둔다.
+- **이름 붙은 인스턴스.** 실행 중인 인스턴스마다 이름이 있어서
+  `xmux send <name> <command>`로 특정 인스턴스를 골라 구동한다
+  ([컨트롤 소켓](#컨트롤-소켓) 참고).
 
 ## 설치
 
@@ -60,7 +62,8 @@ xmux                          # 대화형 트리 + 실시간 화면 앱
 xmux ls                       # 닿을 수 있는 모든 세션 나열 (스크립트용)
 xmux attach <source>/<name>   # 세션 하나에 바로 연결, 예: xmux attach prod/api
 xmux doctor                   # 설정과 호스트별 접속 가능 여부 점검
-xmux ctl <command…>           # 실행 중인 인스턴스를 컨트롤 소켓으로 구동
+xmux instances                # 실행 중인 인스턴스 목록
+xmux send <name> <command…>  # 그중 하나를 컨트롤 소켓으로 구동
 xmux version
 ```
 
@@ -78,14 +81,13 @@ xmux version
 | `Home` / `End` | 첫 행 / 마지막 행으로 |
 | `PageUp` / `PageDown` | 열 행씩 이동 |
 | `Enter` | 고른 세션의 실시간 화면으로 초점 옮기기 |
-| `prefix n` | 만들기 (고른 단계에 따라 세션 / 창 / 분할) |
-| `prefix R` | 고른 세션이나 창 이름 바꾸기 |
-| `prefix x` | 고른 세션이나 창 없애기 (확인 창이 뜬다) |
+| `prefix 0`~`prefix 9` | 왼쪽에 붙은 번호로 세션 바로 이동 (10 이상은 이어서 입력) |
+| `prefix n` | 고른 호스트에 새 세션 만들기 |
 | `/` | 트리 퍼지 필터 |
 | `prefix r` | 모든 호스트 다시 훑기 |
 
 마우스도 된다. 행을 클릭하면 선택되고, 오른쪽 창을 클릭하면 그쪽으로 초점이 간다.
-트리 위에서 휠을 굴려 스크롤하고, 행을 우클릭하면 컨텍스트 메뉴가 뜬다.
+트리 위에서 휠을 굴리면 스크롤한다.
 
 **Prefix 키.** xmux는 tmux의 `set -g prefix`처럼 자체 prefix를 둔다. 기본값은
 `Ctrl-g`이고 `[ui] prefix`로 바꾼다(아래 참고). prefix를 누른 다음:
@@ -99,9 +101,8 @@ xmux version
 | `prefix Tab` / 화살표 / `Esc` | 트리와 화면 사이 초점 이동 |
 | `prefix prefix` | prefix 바이트 하나를 초점 세션에 그대로 보내기 |
 
-`prefix x`는 초점에 따라 다르게 동작한다. 트리에서는 고른 세션이나 창을 없애고,
-화면에 초점이 있으면 그 세션의 **활성 pane**, 즉 지금 보고 있는 pane을 없앤다.
-tmux의 `prefix x`와 같다.
+nav의 맨 아래 줄이 상태 표시줄이다. 평소에는 prefix만 보여준다. prefix를 누르면 창
+전체 폭으로 넓어져 실시간 화면 위에 떠서, 그 prefix가 여는 키 목록을 보여준다.
 
 prefix에 관한 자세한 내용은 [`docs/keybind.md`](docs/keybind.md)를 참고한다.
 
@@ -141,36 +142,27 @@ hint-bar-style = "bg=blue,fg=white"   # 힌트 바 색 (tmux status-style; 비�
 
 ## 컨트롤 소켓
 
-실행 중인 xmux 인스턴스는 로컬 소켓(`~/.xmux/ctl-<pid>.sock`)을 듣는다. 세션은
-`<source>/<session>`으로, 창은 `<source>/<session>:<window>`로 지정한다. 이 소켓은
-이동·표시 명령을 받는다. `ping`, `status`, `dump`, `rescan`,
-`switch <source>/<session>`, `focus <nav|terminal>`, `width <delta>`(트리 폭을
-부호 있는 열 수만큼 조정한다. 절대 폭이 아니라 증분이다), `toggle-auto-hide`,
-`quit`이 있고, 세션 수명을 다루는 명령도 있다:
+실행 중인 인스턴스마다 이름이 있다. 시작할 때 `<형용사>-<명사>` 꼴로 자동 생성되고,
+`xmux --name <name>`으로 직접 지정할 수도 있다. 그 이름으로
+`~/.xmux/ctl-<name>.sock`을 듣는다. 세션은 `<source>/<session>`으로 지정한다.
 
-- `new-session <source> [name]`
-- `kill-session <source>/<session>`
-- `rename-session <source>/<session> <name>`
-- `new-window <source>/<session> [name]`
-- `split-window <source>/<session>:<window> [v|h]` — 기본은 세로
-- `kill-window <source>/<session>:<window>`
-- `rename-window <source>/<session>:<window> <name>`
-
-저수준 키·바이트 주입용으로 불안정한 `raw:` 네임스페이스를 예약해 두었다. 이렇게
-쓴다:
+이동과 표시 명령은 `ping`, `status`, `dump`, `rescan`, `switch <source>/<session>`,
+`focus <nav|terminal>`, `width <delta>`(트리 폭을 부호 있는 열 수만큼 조정한다. 절대
+폭이 아니라 증분이다), `toggle-auto-hide`, `quit`이다. 세션 수명을 다루는 명령은
+`new-session <source> [name]` 하나뿐이다. 없애기·이름 바꾸기·창 관련 명령은
+없다. 키를 없앤 이유와 같다. 세션을 고치는 일은 mux가 한다. 저수준 키·바이트
+주입용으로 불안정한 `raw:` 네임스페이스를 예약해 두었다.
 
 ```sh
-xmux ctl status
-xmux ctl switch prod/api
+xmux instances                       # NAME · PID · CWD · TTY · 표시 중 · 초점
+xmux send amber-otter switch prod/api
+xmux send am focus terminal          # 겹치지 않는 이름 앞부분이면 된다
+xmux send - dump                     # 하나만 돌고 있을 때는 `-`
 ```
 
-인스턴스가 하나만 돌고 있으면 `xmux ctl`이 알아서 그것을 겨냥한다. 여럿이 돌고
-있으면 함부로 짐작하지 않는다. 목록을 보고 pid로 하나를 짚는다.
-
-```sh
-xmux ctl list                 # PID · CWD · TTY · 표시 중 세션 · 초점
-xmux ctl --pid 51907 switch local/logs
-```
+없는 이름, 여러 개에 걸리는 앞부분, 여럿이 돌고 있을 때의 `-`는 모두 후보를 알려주는
+에러다. 짐작해서 보내지 않는다. 명령을 주지 않으면 stdin에서 한 줄씩 읽는다. 거부된
+명령은 0이 아닌 코드로 끝난다.
 
 ## 구조
 

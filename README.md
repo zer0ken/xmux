@@ -31,10 +31,12 @@ sessions from one terminal.
 - **Metadata without polling where it counts.** tmux hosts are tracked over
   control mode (`-CC`); psmux hosts are polled. Either way the tree reflects the
   servers, which remain the source of truth.
-- **Mouse and keyboard.** Navigate, filter, create, rename, and kill sessions
-  from the keyboard; click, scroll, and right-click work too.
-- **A control socket.** A local socket exposes semantic verbs for scripting and
-  headless driving (see [Control socket](#control-socket)).
+- **Switching, not editing.** Navigate, filter, jump by number, and start a
+  session on an empty host. Renaming, killing, and window/pane work stay in the mux that already does
+  them well.
+- **Named instances.** Every running instance takes a name, so
+  `xmux send <name> <command>` drives a specific one (see
+  [Control socket](#control-socket)).
 
 ## Install
 
@@ -64,7 +66,8 @@ xmux                          # the interactive tree + live-screen app
 xmux ls                       # list every reachable session (scriptable)
 xmux attach <source>/<name>   # attach one session directly, e.g. xmux attach prod/api
 xmux doctor                   # check config and per-host reachability
-xmux ctl <command…>           # drive a running instance over its control socket
+xmux instances                # list running instances
+xmux send <name> <command…>  # drive one of them over its control socket
 xmux version
 ```
 
@@ -82,14 +85,13 @@ screen. Keyboard focus is on one region at a time.
 | `Home` / `End` | jump to the first / last row |
 | `PageUp` / `PageDown` | jump ten rows |
 | `Enter` | move focus into the selected session's live screen |
-| `prefix n` | create (session / window / split, depending on the selected level) |
-| `prefix R` | rename the selected session or window |
-| `prefix x` | kill the selected session or window (with a confirm prompt) |
+| `prefix 0`-`prefix 9` | jump to a session by the number in its gutter (keep typing for 10+) |
+| `prefix n` | start a new session on the selected host |
 | `/` | fuzzy-filter the tree |
 | `prefix r` | re-scan every host |
 
 The mouse works too: click a row to select it, click the right pane to focus it,
-scroll the wheel over the tree, and right-click a row for a context menu.
+and scroll the wheel over the tree.
 
 **Prefix keys.** xmux has its own prefix, like tmux's `set -g prefix`. The
 default is `Ctrl-g`, configurable via `[ui] prefix` (see below). Press the
@@ -104,9 +106,9 @@ prefix, then:
 | `prefix Tab` / arrow / `Esc` | move focus between the tree and the screen |
 | `prefix prefix` | send one literal prefix byte to the focused session |
 
-`prefix x` is focus-aware: in the tree it kills the selected session or window;
-with the screen focused it kills that session's **active pane** — the one you're
-looking at — like tmux's own `prefix x`.
+The nav's bottom row is its status line. At rest it shows just the prefix; press the
+prefix and it widens to the whole window, floating over the live screen to list the
+keys that prefix unlocks.
 
 See [`docs/keybind.md`](docs/keybind.md) for more on the prefix.
 
@@ -147,36 +149,28 @@ session, the live auto-hide-nav toggle, logs, and control sockets) lives under
 
 ## Control socket
 
-A running xmux instance listens on a local socket (`~/.xmux/ctl-<pid>.sock`).
-Sessions are addressed `<source>/<session>` and windows
-`<source>/<session>:<window>`. It speaks navigation/display verbs — `ping`,
-`status`, `dump`, `rescan`, `switch <source>/<session>`, `focus <nav|terminal>`,
-`width <delta>` (adjusts the tree width by a signed column count, a delta rather
-than an absolute width), `toggle-auto-hide`, `quit` — and session-lifecycle verbs:
+Every running instance has a name — an auto-generated `<adjective>-<noun>`, or
+whatever `xmux --name <name>` says — and listens on `~/.xmux/ctl-<name>.sock`.
+Sessions are addressed `<source>/<session>`.
 
-- `new-session <source> [name]`
-- `kill-session <source>/<session>`
-- `rename-session <source>/<session> <name>`
-- `new-window <source>/<session> [name]`
-- `split-window <source>/<session>:<window> [v|h]` — vertical by default
-- `kill-window <source>/<session>:<window>`
-- `rename-window <source>/<session>:<window> <name>`
-
-An unstable `raw:` namespace is reserved for low-level key/byte injection. Drive it
-with:
+It speaks navigation/display verbs — `ping`, `status`, `dump`, `rescan`,
+`switch <source>/<session>`, `focus <nav|terminal>`, `width <delta>` (adjusts the
+tree width by a signed column count, a delta rather than an absolute width),
+`toggle-auto-hide`, `quit` — and one session-lifecycle verb,
+`new-session <source> [name]`. There are no kill/rename/window verbs, for the same
+reason the keys are gone: the mux owns editing a session. An unstable `raw:`
+namespace is reserved for low-level key/byte injection.
 
 ```sh
-xmux ctl status
-xmux ctl switch prod/api
+xmux instances                       # NAME · PID · CWD · TTY · displayed · focus
+xmux send amber-otter switch prod/api
+xmux send am focus terminal          # any unambiguous name prefix
+xmux send - dump                     # `-` when exactly one is running
 ```
 
-With one instance running, `xmux ctl` targets it automatically. When several are
-running it refuses to guess: list them and target one by pid.
-
-```sh
-xmux ctl list                 # PID · CWD · TTY · displayed session · focus
-xmux ctl --pid 51907 switch local/logs
-```
+An unknown name, an ambiguous prefix, or `-` with several instances running is an
+error naming the candidates, never a guess. With no command, `send` reads them from
+stdin, one per line; a refused command exits non-zero.
 
 ## Architecture
 

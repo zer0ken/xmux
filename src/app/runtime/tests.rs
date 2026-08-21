@@ -212,25 +212,25 @@ async fn scan_or_dispatch_host_detects_from_hosts_without_env() {
 fn terminal_view_size_zero_tree_is_full_width() {
     // Hidden tree (sentinel 0): full cols, no view border subtracted.
     assert_eq!(terminal_view_size(80, 23, 0, 0), (80, 24));
-    // Shown tree: cols - nav_width - 1 (view border), height = body_rows (bottom row
-    // reserved for the full-width hint_bar).
-    assert_eq!(terminal_view_size(80, 23, 48, 0), (31, 23));
+    // Shown tree: cols - nav_width - 1 (view border). The hint bar lives inside the nav
+    // column, so the terminal view keeps every row.
+    assert_eq!(terminal_view_size(80, 23, 48, 0), (31, 24));
     // Degenerate widths clamp to at least 1.
     assert_eq!(terminal_view_size(0, 0, 0, 0), (1, 1));
 }
 
 #[test]
-fn terminal_view_size_reserves_full_width_hint_row_when_tree_shown() {
+fn terminal_view_size_keeps_full_height_when_the_tree_is_shown() {
     use crate::ui::switcher::NAV_WIDTH;
-    // Tree hidden (sentinel 0): no hint_bar, terminal view spans the full height.
+    // Tree hidden (sentinel 0): terminal view spans the full height.
     let (_, full) = terminal_view_size(120, 39, 0, 0);
     assert_eq!(full, 40);
-    // Tree shown: the full-width hint_bar owns the bottom row, so the terminal
-    // view is exactly one row shorter.
+    // Tree shown in Side: the hint bar is the NAV column's bottom row, not a full-width
+    // strip, so the terminal view costs nothing in height.
     let (_, shown) = terminal_view_size(120, 39, NAV_WIDTH, 0);
     assert_eq!(
-        shown, 39,
-        "shown tree reserves one row for the full-width hint_bar"
+        shown, 40,
+        "the nav-local hint bar costs the terminal view no rows"
     );
 }
 
@@ -292,9 +292,9 @@ fn terminal_view_size_subtracts_tree_and_view_border() {
         143 - (NAV_WIDTH + 1),
         "cols minus tree minus view border"
     );
-    // The full-width hint_bar owns the bottom row, so the terminal view drops one row
-    // below the full terminal height (height == body_rows).
-    assert_eq!(vr, 39, "height drops one row for the full-width hint_bar");
+    // The hint bar sits inside the nav column, so the terminal view keeps the full
+    // terminal height (body_rows + 1).
+    assert_eq!(vr, 40, "the nav-local hint bar costs no terminal rows");
 }
 
 #[test]
@@ -1161,6 +1161,7 @@ fn test_rt(env: Env) -> Runtime {
     let (border_tx, _border_rx) = tokio::sync::mpsc::unbounded_channel();
     let prefix = crate::display::term::parse_prefix(Some(&env.ui_prefix));
     Runtime {
+        instance_name: "test".into(),
         env,
         ops,
         hosts,
@@ -1625,13 +1626,16 @@ fn status_line_reports_focus_and_address() {
     let sw = Switcher::new(&mut state);
     // Tab-separated so a cwd containing spaces survives; cwd/tty are injected so
     // the assertion stays deterministic (no real env read).
+    let pid = std::process::id();
     assert_eq!(
-        status_line(&sw, true, "/tmp/x", "-"),
-        "focus=nav\ttarget=api\tcwd=/tmp/x\ttty=-"
+        status_line(&sw, "amber-otter", true, "/tmp/x", "-"),
+        format!("name=amber-otter\tpid={pid}\tfocus=nav\ttarget=api\tcwd=/tmp/x\ttty=-")
     );
     assert_eq!(
-        status_line(&sw, false, "/tmp/x", "/dev/pts/3"),
-        "focus=terminal\ttarget=api\tcwd=/tmp/x\ttty=/dev/pts/3"
+        status_line(&sw, "amber-otter", false, "/tmp/x", "/dev/pts/3"),
+        format!(
+            "name=amber-otter\tpid={pid}\tfocus=terminal\ttarget=api\tcwd=/tmp/x\ttty=/dev/pts/3"
+        )
     );
 }
 
@@ -1722,6 +1726,33 @@ fn handle_stdin_bytes_quit_on_prefix_q_in_tree_focus() {
     assert!(out.quit, "prefix+q in tree focus quits");
 }
 
+#[test]
+fn arming_the_prefix_marks_the_frame_dirty_so_the_hint_bar_swaps() {
+    use crate::ui::switcher::{Scan, Switcher};
+    // The hint bar shows the prefix at rest and its keys once armed, so the bare prefix
+    // read is a VISIBLE change even though it moves no selection and runs no action. If
+    // it did not mark the frame dirty the cheatsheet would only appear on the next
+    // unrelated redraw (a poll tick), which reads as the prefix doing nothing.
+    let scan = Scan {
+        groups: vec![],
+        panes: Default::default(),
+    };
+    let mut state = crate::state::State::from_scan(scan); // tree focus
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.hosts = crate::model::Hosts::default();
+    rt.state = state;
+    rt.switcher = switcher;
+    assert!(!rt.armed(), "starts unarmed");
+    let out = rt.handle_stdin_bytes(b"\x07", &Selection::default());
+    assert!(rt.armed(), "the bare prefix arms");
+    assert!(out.dirty, "arming redraws, so the cheatsheet shows at once");
+    // Disarming (the command key lands) is equally visible.
+    let out = rt.handle_stdin_bytes(b"t", &Selection::default());
+    assert!(!rt.armed(), "the command key consumes the arm");
+    assert!(out.dirty, "disarming redraws too");
+}
+
 /// Builds a `Runtime` with one reachable session on source `jup`, focused on the
 /// TERMINAL view - the setup the focus-independent tree-action tests share.
 fn rt_terminal_focus_with_session() -> Runtime {
@@ -1762,44 +1793,6 @@ fn rt_terminal_focus_with_session() -> Runtime {
 }
 
 #[test]
-fn prefix_x_in_terminal_focus_arms_active_pane_kill() {
-    // prefix x is focus-AWARE: from the terminal view it arms a kill confirm for the
-    // ACTIVE pane of the DISPLAYED session (tmux prefix-x parity), not the tree
-    // selection. (TermInput → KillActivePane → Switcher::arm_kill_active_pane, which
-    // reads state.displayed + its cached active window.)
-    let mut rt = rt_terminal_focus_with_session();
-    // The terminal view shows jup/api; give it an active window so the active pane resolves.
-    rt.state.panes.insert(
-        "jup/api".into(),
-        vec![crate::session::WindowPanes {
-            index: 0,
-            name: "w".into(),
-            active: true,
-            panes: vec![crate::session::Pane {
-                index: 0,
-                active: true,
-                command: "bash".into(),
-            }],
-        }],
-    );
-    rt.state.displayed = Selection {
-        source: "jup".into(),
-        session: "api".into(),
-        window: None,
-    };
-    rt.handle_stdin_bytes(b"\x07x", &Selection::default());
-    assert!(
-        matches!(
-            rt.state.modal,
-            Some(crate::ui::modal::Modal::Kill(
-                crate::ui::modal::PendingKill::Pane { .. }
-            ))
-        ),
-        "prefix x in terminal focus arms a kill confirm for the displayed session's active pane"
-    );
-}
-
-#[test]
 fn prefix_r_in_terminal_focus_kicks_rescan() {
     // prefix r is focus-independent: from the terminal view it re-scans every host. The
     // re-scan clears each group's sessions and re-arms scanning - and kick_rescan must
@@ -1818,305 +1811,6 @@ fn prefix_r_in_terminal_focus_kicks_rescan() {
         rt.state.scanning.contains("jup"),
         "and re-armed scanning for the source"
     );
-}
-
-#[test]
-fn killing_the_displayed_session_tears_down_the_host_attach_for_reattach() {
-    // Regression (psmux "kill the shown session → host blanks forever"): killing the
-    // session a host's display client currently shows invalidates that client (its
-    // per-session server is gone) but the PTY need not EOF, so no reap fires and the
-    // registry entry lingers. Without teardown the next show() trusts that stale `live`
-    // and switch-client's a dead client - a silent no-op that blanks the whole host.
-    // on_op_result must tear the attach down + rearm attach so show() reattaches fresh.
-    use crate::session::Session;
-    use crate::ui::switcher::{Scan, Switcher};
-    use crate::ui::tree::Group;
-    let sess = |n: &str, r: i64| Session {
-        mux: String::new(),
-        source: "local".into(),
-        name: n.into(),
-        windows: 1,
-        attached: false,
-        last_attached: r,
-    };
-    let scan = Scan {
-        groups: vec![Group {
-            source: "local".into(),
-            err: None,
-            sessions: vec![sess("A", 2), sess("B", 1)],
-        }],
-        panes: Default::default(),
-    };
-    let mut state = crate::state::State::from_scan(scan);
-    let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
-    rt.state = state;
-    rt.switcher = switcher;
-    // A live display attach showing session A (key = host id = "local").
-    rt.registry.insert_fake("local", 1);
-    rt.hosts
-        .get_mut("local")
-        .unwrap()
-        .display
-        .set_shows("local", "A");
-    assert!(
-        rt.registry.contains("local"),
-        "precondition: the host has a live display attach"
-    );
-
-    // Kill the DISPLAYED session A.
-    rt.on_op_result(crate::ui::switcher::OpResult::Killed {
-        address: "local/A".into(),
-    });
-
-    assert!(
-        !rt.registry.contains("local"),
-        "the stale attach that showed the killed session is torn down"
-    );
-    assert!(
-        rt.state.attach_deadline.is_some(),
-        "a reattach is armed so the next show() reattaches the new selection"
-    );
-}
-
-#[test]
-fn killing_a_background_session_keeps_the_displayed_attach() {
-    // The teardown is scoped: killing a session the display client is NOT showing must
-    // leave the live attach intact (no needless blank/reattach).
-    use crate::session::Session;
-    use crate::ui::switcher::{Scan, Switcher};
-    use crate::ui::tree::Group;
-    let sess = |n: &str, r: i64| Session {
-        mux: String::new(),
-        source: "local".into(),
-        name: n.into(),
-        windows: 1,
-        attached: false,
-        last_attached: r,
-    };
-    let scan = Scan {
-        groups: vec![Group {
-            source: "local".into(),
-            err: None,
-            sessions: vec![sess("A", 2), sess("B", 1)],
-        }],
-        panes: Default::default(),
-    };
-    let mut state = crate::state::State::from_scan(scan);
-    let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
-    rt.state = state;
-    rt.switcher = switcher;
-    rt.registry.insert_fake("local", 1);
-    rt.hosts
-        .get_mut("local")
-        .unwrap()
-        .display
-        .set_shows("local", "A"); // showing A
-
-    // Kill the BACKGROUND session B (not the one on screen).
-    rt.on_op_result(crate::ui::switcher::OpResult::Killed {
-        address: "local/B".into(),
-    });
-
-    assert!(
-        rt.registry.contains("local"),
-        "killing a background session leaves the displayed attach alone"
-    );
-}
-
-#[test]
-fn kill_confirm_owns_keys_so_prefix_q_and_enter_do_not_quit_or_focus_mux() {
-    // A kill-confirm is a modal popup, so it OWNS every key. With the resolver gated
-    // on is_modal_popup_open (true for a confirm, where is_inputting is false),
-    // `prefix q` reaches the switcher instead of arming the prefix, and Enter reaches
-    // it instead of resolving to FocusTerminal - so a confirm can neither quit the app
-    // nor focus the terminal out from under itself. (The first swallowed key cancels the
-    // confirm, tmux confirm-before style; the point is the key does not quit/focus.)
-    use crate::app::focus::{Focus, ViewFocus};
-    use crate::session::Session;
-    use crate::ui::switcher::{Scan, Switcher};
-    use crate::ui::tree::Group;
-    let scan = Scan {
-        groups: vec![Group {
-            source: "jup".into(),
-            err: None,
-            sessions: vec![Session {
-                mux: String::new(),
-                source: "jup".into(),
-                name: "api".into(),
-                windows: 1,
-                attached: false,
-                last_attached: 1,
-            }],
-        }],
-        panes: Default::default(),
-    };
-    let mut state = crate::state::State::from_scan(scan); // tree focus
-    let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_sources(&["jup"]));
-    rt.hosts = crate::model::Hosts::default();
-    rt.state = state;
-    rt.switcher = switcher;
-    macro_rules! feed {
-        ($bytes:expr) => {
-            rt.handle_stdin_bytes($bytes, &Selection::default())
-        };
-    }
-    // Launch preselects the host row; `l` (== →) descends to the api session row.
-    feed!(b"l");
-    // `prefix x` on the session row arms the y/n confirm (a modal popup, not an inline input).
-    feed!(b"\x07x");
-    assert!(
-        rt.state.is_modal_popup_open(),
-        "x armed the kill-confirm popup"
-    );
-    assert!(
-        !rt.state.is_inputting(),
-        "a kill-confirm is NOT an inline input"
-    );
-    // The loop-top reconciler makes Focus a modal carrying the prior pane.
-    {
-        let mk = rt.state.modal_kind();
-        rt.state.focus.sync_modal(mk);
-    }
-    assert_eq!(
-        rt.state.focus,
-        Focus::Popup {
-            prior: ViewFocus::Nav
-        }
-    );
-    // prefix q with the confirm armed: routed to the switcher, NOT a quit.
-    let out = feed!(b"\x07q");
-    assert!(
-        !out.quit,
-        "prefix q is owned by the kill-confirm, does not quit"
-    );
-    assert_eq!(
-        rt.state.focus,
-        Focus::Popup {
-            prior: ViewFocus::Nav
-        },
-        "pane focus unchanged"
-    );
-    // Re-arm and feed Enter: routed to the switcher, NOT a terminal-view focus.
-    feed!(b"\x07x");
-    {
-        let mk = rt.state.modal_kind();
-        rt.state.focus.sync_modal(mk);
-    }
-    assert_eq!(
-        rt.state.focus,
-        Focus::Popup {
-            prior: ViewFocus::Nav
-        },
-        "confirm re-armed"
-    );
-    let out = feed!(b"\r");
-    assert!(!out.quit);
-    assert_eq!(
-        rt.state.focus,
-        Focus::Popup {
-            prior: ViewFocus::Nav
-        },
-        "Enter did not focus the terminal"
-    );
-}
-
-#[test]
-fn menu_keyboard_input_is_consumed_without_changing_restore_pane_or_writing_pty() {
-    use crate::app::focus::{Focus, ViewFocus};
-    use crate::session::Session;
-    use crate::ui::switcher::{Scan, Switcher};
-    use crate::ui::tree::Group;
-    use ratatui::{backend::TestBackend, Terminal};
-
-    fn run_case(bytes: &[u8]) -> (StdinOutcome, Focus, Focus, usize) {
-        let scan = Scan {
-            groups: vec![Group {
-                source: "local".into(),
-                err: None,
-                sessions: vec![Session {
-                    mux: String::new(),
-                    source: "local".into(),
-                    name: "api".into(),
-                    windows: 1,
-                    attached: false,
-                    last_attached: 1,
-                }],
-            }],
-            panes: Default::default(),
-        };
-        let mut state = crate::state::State::from_scan(scan);
-        let mut switcher = Switcher::new(&mut state);
-        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        term.draw(|f| switcher.render(f, None, false, crate::ui::switcher::NAV_WIDTH, 0, &state))
-            .unwrap();
-        let opened = (0..10).any(|row| switcher.menu_open(1, row, &mut state));
-        assert!(opened, "menu opens over a rendered tree row");
-
-        {
-            let mk = state.modal_kind();
-            state.focus.sync_modal(mk);
-        }
-        assert_eq!(
-            state.focus,
-            Focus::Menu {
-                prior: ViewFocus::Nav
-            }
-        );
-
-        let (att, input_log) = crate::display::attachment::fake_attachment_with_input_log(1);
-        let selection = Selection {
-            source: "local".into(),
-            session: "api".into(),
-            window: None,
-        };
-        let mut rt = test_rt(fake_env_with_sources(&["local"]));
-        rt.hosts = crate::model::Hosts::default();
-        rt.hosts.insert(crate::model::Host::new(
-            crate::machine::local(None),
-            crate::mux::for_binary("psmux"),
-        ));
-        rt.registry.insert("local/api", att);
-        rt.state = state;
-        rt.switcher = switcher;
-
-        let out = rt.handle_stdin_bytes(bytes, &selection);
-        let during = rt.state.focus;
-        {
-            let mk = rt.state.modal_kind();
-            rt.state.focus.sync_modal(mk);
-        }
-        let restored = rt.state.focus;
-        let writes = input_log.lock().unwrap().len();
-        (out, during, restored, writes)
-    }
-
-    for (bytes, label) in [
-        (b"\r".as_slice(), "Enter"),
-        (b"\x07\t".as_slice(), "prefix Tab"),
-    ] {
-        let (out, during, restored, writes) = run_case(bytes);
-        assert!(!out.quit, "{label} over a menu does not quit");
-        assert!(
-            !out.focus_terminal,
-            "{label} over a menu does not request terminal-view focus"
-        );
-        assert_eq!(
-            during,
-            Focus::Menu {
-                prior: ViewFocus::Nav
-            },
-            "{label} preserves the menu restore view"
-        );
-        assert_eq!(
-            restored,
-            Focus::Nav,
-            "{label} closes the menu back to the prior tree pane"
-        );
-        assert_eq!(writes, 0, "{label} over a menu is not forwarded to the PTY");
-    }
 }
 
 #[test]
@@ -2167,8 +1861,9 @@ fn handle_mouse_event_view_border_grab_sets_dragging() {
 fn handle_mouse_event_top_layout_border_drag_resizes_height() {
     use crate::ui::switcher::{Scan, Switcher};
     // In the portrait Top layout the view border is a HORIZONTAL rule; a left-press on that
-    // row grabs it and a drag sets the tree HEIGHT (not width). 40x60 → Top; auto height is
-    // ~40% of the 59-row body = 23, so the border sits at row 23 (0-based) = SGR row 24.
+    // row grabs it and a drag sets the tree HEIGHT (not width). 40x60 → Top; the nav band
+    // carries its own hint bar, so its auto height is ~40% of the whole 60-row area = 24,
+    // putting the border at row 24 (0-based) = SGR row 25.
     let mut state = crate::state::State::from_scan(Scan {
         groups: vec![],
         panes: Default::default(),
@@ -2185,7 +1880,7 @@ fn handle_mouse_event_top_layout_border_drag_resizes_height() {
     let press = crate::display::mouse::MouseEvent {
         cb: 0,
         col: 5,
-        row: 24,
+        row: 25,
         pressed: true,
     };
     let mut non_mouse: Vec<u8> = Vec::new();

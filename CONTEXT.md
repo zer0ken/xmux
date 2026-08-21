@@ -30,9 +30,9 @@ One concept, one word. The two axes and the runtime:
   `app/runtime.rs`, entry `run_app`). There is no `App`/`Cockpit` struct yet:
   the app is the module and its run function until the runtime is decomposed.
 - `ViewFocus` - which screen region holds focus (`Nav` / `Terminal`).
-- `Modal` - the mutually-exclusive focus-grabbing UI (`Help`, an input dialog,
-  a kill confirm, a context `Menu`). `ModalKind::{Popup, Menu}` are its two
-  focus sub-kinds: popup = a draggable centered dialog, menu = the context menu.
+- `Modal` - the mutually-exclusive focus-grabbing UI (`Help` and an input
+  dialog). `ModalKind::Popup` is its one focus sub-kind: a draggable centered
+  dialog.
 
 UI elements a user perceives as distinct things:
 
@@ -58,9 +58,12 @@ UI elements a user perceives as distinct things:
   `heavy ┃` (hover - the drag-resize grab cue).
 - chrome - the furniture around the two views, owned by the `Chrome` type: the
   view border, the hint bar, and the host info.
-- hint bar - the bottom line spanning the full terminal width (key hints, flash,
-  the scan indicator, filter text), not just the nav column, so a long flash wraps
-  across it instead of clipping. A shown flash paints it in the error style.
+- hint bar - the nav's own status line: the bottom row(s) of the nav region, ending
+  at the view border rather than spanning the screen, so the terminal view keeps
+  every row it owns. At rest it shows only the prefix; while the prefix is ARMED it
+  shows the keys that prefix unlocks. A flash, the scan indicator, and the active
+  filter outrank both, in that order. A long flash wraps across as many nav rows as
+  it needs instead of clipping. A shown flash paints it in the error style.
 - host info - the unreachable-host detail shown in the terminal-view region.
 - landing - the empty-state panel shown in the terminal-view region for a selected
   reachable host that has no sessions yet (its name + the keys to start one).
@@ -87,12 +90,15 @@ UI elements a user perceives as distinct things:
   to the full two-row card, so its context is always readable in place); the
   renderer and mouse hit-testing share one `card_height` so the screen-row
   mapping never diverges.
-- level color - the fixed per-segment card color, from the palette (`ui::palette`,
-  truecolor): host and session soft mauve (the two name levels share one color),
-  mux soft green, the window part (`{index}:{name}`) muted gray - the quietest
-  level, so the session name anchors the detail line; a host-state card's detail
-  line is colored by state - scanning pending-yellow, unreachable danger-red,
-  settled "no sessions" muted.
+- level color - the per-segment card color, from the palette (`ui::palette`).
+  Every foreground role is ANSI-16, so the terminal theme resolves the hue: host
+  and session cyan (the two name levels share one color), mux green, the
+  window part (`{index}:{name}`) bright-black - the quietest level, so the
+  session name anchors the detail line; a host-state card's detail line is
+  colored by state - scanning yellow, unreachable red, settled "no sessions"
+  muted. The two xmux-own backgrounds (selection surface, hint bar) are derived
+  at startup from the terminal's reported background (OSC 11), so they follow
+  the theme too.
 - selection - the nav's current pick (its card index is `selected`), advanced by
   navigation; a routine poll or restream never moves it (only launch / rescan
   re-sorts). `preselect` / `reselect` are the launch and post-rescan selections.
@@ -106,25 +112,42 @@ UI elements a user perceives as distinct things:
   its detail line is `{session}/` + a spinner rather than a window part.
 - status - a host-state card's detail-line state text (`scanning…` / `no sessions` /
   `⚠ unreachable`). Not to be confused with the hint bar (below) or the `chrome`.
+- card number - the dim 0-based index in a card's left gutter, and the address
+  `prefix <digit>` jumps to. EVERY card carries one, the selected card included (an
+  address that vanished when you landed on it could not be read back); the accent bar
+  sits in its own column to the left of it. It sits on the DETAIL line, beside the
+  session it addresses, so a collapsed card puts it in the same place as an expanded
+  one. The number column is one width per frame, so the names stay aligned and the
+  numbers line up by units place as the count crosses 10.
+- jump - the digits-only popup `prefix <digit>` opens. It acts WHILE open: each edit
+  moves the selection, so Enter only closes it and Esc restores where it started. It
+  accepts only a digit that keeps the number addressing a real card, so one-, two-,
+  and three-digit numbers behave identically and the buffer never shows a number you
+  cannot land on. User-facing text calls this "jump to a session" (see the naming rule
+  below).
+- instance name - a running app's identity: an auto-generated `<adjective>-<noun>`
+  (or `--name`), owning `ctl-<name>.sock` for its lifetime. `xmux send <name>` and
+  `xmux instances` address instances by it; a unique name prefix resolves, and `-`
+  means the sole live instance.
 - filter - the type-to-filter input over the nav list.
 - flash - a transient notice or error line shown in the hint bar (e.g. a refused
   action's reason). Never a "toast" or "notice".
 - scan indicator - the `⟳ scanning hosts n/m…` progress shown in the hint bar
   while host probes are in flight; distinct from a row's `scanning…` status.
+- armed - the state between pressing the prefix and its command key. The hint bar
+  reads it to swap from the resting prefix to the cheatsheet, so arming is a
+  visible change and redraws the frame.
 - popup - the rounded-bordered, opaque, centered (draggable) dialog a
-  `ModalKind::Popup` draws, its accent title in the top border. The help, input
-  dialog, and kill confirm are popups.
+  `ModalKind::Popup` draws, its accent title in the top border. The help and the
+  input dialog are popups.
 - prompt - the `❯` entry marker on an input dialog's edit line.
-- confirm - the red `[y]es / [n]o` kill-confirmation prompt.
-- menu highlight - the surface-background context-menu entry under the pointer
-  (the menu's selection highlight, matching the nav's).
 
 `pane` is reserved for a mux window's terminal split (a tmux / psmux pane); it is
 never a screen region - screen regions are "views", and the line between them is
 the `view border`. A transient hint-bar message is a `flash`, never a "toast" or
 "notice". A card's trailing state is a `status`, never a "hint". The surface-background
-selection is the `selection highlight` (nav) or `menu highlight` (menu); `cursor`
-names only the grid's text cursor. The furniture around the views is the `chrome`
+selection is the `selection highlight`; `cursor` names only the grid's text
+cursor. The furniture around the views is the `chrome`
 (owned by `Chrome`), never a "status surface". The switcher's rendered screen is
 the "switcher screen" (`dump_screen`), never an "overlay".
 

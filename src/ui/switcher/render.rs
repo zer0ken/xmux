@@ -4,6 +4,22 @@ use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState};
 
 use crate::ui::palette;
 
+/// Where the hint bar actually paints. At rest it is the nav-local rect
+/// `compute_regions` derived; while the prefix is ARMED it spans the whole window width
+/// on those same rows, so the cheatsheet reads as one bar floating over the whole app
+/// rather than a column note - and it can say more than a nav column has room for.
+/// Only the paint widens; the layout is untouched, so nothing reflows on arm.
+fn hint_bar_rect(nav_local: Rect, area: Rect, state: &crate::state::State) -> Rect {
+    if !state.chrome.armed || nav_local.height == 0 {
+        return nav_local;
+    }
+    Rect {
+        x: area.x,
+        width: area.width,
+        ..nav_local
+    }
+}
+
 /// Braille spinner frames for pending states (connecting session, loading panes).
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -40,18 +56,23 @@ impl Switcher {
                 }
             }
             self.render_modal_popup(frame, area, state);
-            self.render_menu(frame, state);
             return;
         }
         // One geometry source for the whole frame (compute_regions), shared with the PTY
-        // sizing and mouse hit-testing so they never diverge: the hint bar spans the bottom
-        // full width, and the nav list / terminal split horizontally (Side) or vertically
-        // (Top, for a portrait screen), parted by the view border. The hint bar is normally
-        // one row; a long flash wraps, so size it to the wrapped line count (never clipped).
-        let hint_bar_h = state.chrome.hint_bar_lines(area.width, state).len().max(1) as u16;
+        // sizing and mouse hit-testing so they never diverge: the nav list / terminal split
+        // horizontally (Side) or vertically (Top, for a portrait screen), parted by the view
+        // border, and the hint bar takes the nav's bottom rows. The hint bar is normally one
+        // row; a long flash wraps, so size it to the wrapped line count (never clipped).
+        // Measured at the width it will RENDER at: the nav column normally, the whole
+        // window while the prefix is armed (see `hint_bar_rect`).
+        let bar_w = if state.chrome.armed {
+            area.width
+        } else {
+            nav_width
+        };
+        let hint_bar_h = state.chrome.hint_bar_lines(bar_w, state).len().max(1) as u16;
         let r = compute_regions(area, nav_width, nav_height, hint_bar_h);
         self.render_nav(frame, r.tree, state);
-        state.chrome.render_hint_bar(frame, r.hint_bar, state);
         // The view border marks focus between the two views (vertical in Side, horizontal in Top).
         state
             .chrome
@@ -72,6 +93,14 @@ impl Switcher {
         } else {
             self.render_terminal_view(frame, term_area, grid);
         }
+        // The hint bar paints LAST of the two views, so an armed bar can float over the
+        // terminal view. At rest it stays inside the nav (its own status line); armed it
+        // widens to the whole window on the same row, covering the view border and the
+        // grid beneath it - the layout never reflows, only the paint reaches further, so
+        // arming the prefix cannot shift a single card.
+        state
+            .chrome
+            .render_hint_bar(frame, hint_bar_rect(r.hint_bar, area, state), state);
         // In the terminal view, place the real cursor at the grid's cursor so typing in the
         // mux is visible and tracks. Skipped when the child hid its cursor.
         if terminal_focused {
@@ -82,7 +111,6 @@ impl Switcher {
             }
         }
         self.render_modal_popup(frame, area, state);
-        self.render_menu(frame, state);
     }
 
     /// The navigation list: one flat, vertically-scrolling list of cards in both
@@ -98,9 +126,9 @@ impl Switcher {
         self.nav_inner = area;
 
         let spinner_glyph = SPINNER[state.chrome.spinner_frame % SPINNER.len()];
-        let jump_digit = self.jump_digits();
+        let num_w = self.number_width();
         let items: Vec<ListItem> = (0..self.rows.len())
-            .map(|i| self.nav_row_item(i, jump_digit[i], spinner_glyph))
+            .map(|i| self.nav_row_item(i, num_w, spinner_glyph))
             .collect();
         // The selection highlight is a quiet raised surface (plus the accent ▌ bar the
         // card itself draws in its gutter), not reverse video: the card's own level
@@ -146,16 +174,12 @@ impl Switcher {
         );
     }
 
-    /// The quick-jump digit for each card: the first nine cards (in list order, matching
-    /// `move_to`) get a dim 1..9; the rest `None`. A 2-col gutter is reserved on every
-    /// card so numbering never reflows the list.
-    fn jump_digits(&self) -> Vec<Option<char>> {
-        let sel = self.selectable_indices();
-        let mut jump_digit: Vec<Option<char>> = vec![None; self.rows.len()];
-        for (pos, &ri) in sel.iter().enumerate().take(9) {
-            jump_digit[ri] = Some((b'1' + pos as u8) as char);
-        }
-        jump_digit
+    /// How many columns the card numbers need: the digit count of the highest number
+    /// in the list. One width for the whole frame, so the names stay aligned with each
+    /// other instead of stepping right as the numbers gain a digit, and the numbers
+    /// themselves line up by units place.
+    fn number_width(&self) -> usize {
+        self.rows.len().saturating_sub(1).to_string().len().max(1)
     }
 
     /// Builds one navigation card as a [`ListItem`]: a context line over a detail
@@ -167,30 +191,33 @@ impl Switcher {
     /// card's `{session}/{index}:{window-name}` - the focused (active) window,
     /// what the mux shows on attach - in the session / window colours, a loading
     /// card's `{session}/` + spinner, a host-state card's state coloured by kind
-    /// (pending / danger / muted). The gutter carries the selected card's accent ▌
-    /// bar on every line (replacing its jump digit - the selection needs no jump
-    /// target); an unselected card shows its dim digit on its first line. The
-    /// surface background comes from the List's `highlight_style`, so no per-span
-    /// background is baked in here.
-    fn nav_row_item(
-        &self,
-        i: usize,
-        digit: Option<char>,
-        spinner_glyph: char,
-    ) -> ListItem<'static> {
+    /// (pending / danger / muted). The gutter is the selection bar column, then the
+    /// card's dim 0-based number, then a space: EVERY card shows its number, the
+    /// selected one included, because the number is the card's address and an address
+    /// that disappears when you land on it cannot be read back. The number sits on the
+    /// DETAIL line, never the context line: the number addresses a session, so it reads
+    /// beside the session it names, and a collapsed card (detail line only) then puts it
+    /// in the same place as an expanded one. The surface background comes from the List's
+    /// `highlight_style`, so no per-span background is baked in here.
+    fn nav_row_item(&self, i: usize, num_w: usize, spinner_glyph: char) -> ListItem<'static> {
         let row = &self.rows[i];
         let muted = Style::default().fg(color_hint());
         let selected = self.list_state.selected() == Some(i);
         let bar = Style::default().fg(palette::get().accent);
-        let gutter = |first: bool| -> Span<'static> {
-            if selected {
-                Span::styled("▌ ", bar)
+        // `numbered` is the detail line: the selection bar runs down every line of the
+        // card, the number appears once, next to the session it addresses.
+        let gutter = move |numbered: bool| -> Vec<Span<'static>> {
+            let mark = if selected {
+                Span::styled("▌", bar)
             } else {
-                match digit.filter(|_| first) {
-                    Some(d) => Span::styled(format!("{d} "), muted),
-                    None => Span::raw("  "),
-                }
-            }
+                Span::raw(" ")
+            };
+            let number = if numbered {
+                Span::styled(format!("{i:>num_w$} "), muted)
+            } else {
+                Span::raw(" ".repeat(num_w + 1))
+            };
+            vec![mark, number]
         };
 
         // Host-state card: the host name over its status, coloured by kind -
@@ -198,10 +225,11 @@ impl Switcher {
         // (soft red), a settled empty host is muted.
         if let RowRef::Host { unreachable, .. } = &row.reference {
             let (host, _, _) = context_of(&row.reference);
-            let line1 = vec![
-                gutter(true),
-                Span::styled(pad_label(host), Style::default().fg(color_host())),
-            ];
+            let mut line1 = gutter(false);
+            line1.push(Span::styled(
+                pad_label(host),
+                Style::default().fg(color_host()),
+            ));
             let style = if *unreachable {
                 Style::default().fg(palette::get().danger)
             } else if row.line2.starts_with("scanning") {
@@ -209,7 +237,8 @@ impl Switcher {
             } else {
                 muted
             };
-            let line2 = vec![gutter(false), Span::styled(pad_label(&row.line2), style)];
+            let mut line2 = gutter(true);
+            line2.push(Span::styled(pad_label(&row.line2), style));
             return ListItem::new(vec![Line::from(line1), Line::from(line2)]);
         }
 
@@ -218,7 +247,7 @@ impl Switcher {
         let collapsed = self.card_collapsed(i);
         let mut lines: Vec<Line> = Vec::new();
         if !collapsed {
-            let mut context: Vec<Span> = vec![gutter(true), Span::raw(" ")];
+            let mut context: Vec<Span> = gutter(false);
             context.push(Span::styled(
                 host.to_string(),
                 Style::default().fg(color_host()),
@@ -245,7 +274,7 @@ impl Switcher {
         // collapsed cards reads as siblings of one context: ├ while a collapsed
         // sibling follows below, └ on the run's last line. The selected card
         // drops it - the accent bar and surface already bind its two lines.
-        let mut detail = vec![gutter(collapsed), Span::raw(" ")];
+        let mut detail = gutter(true);
         if !selected {
             let connector = if self.card_collapsed(i + 1) {
                 "├ "
@@ -290,13 +319,12 @@ impl Switcher {
     /// Draws the active centered modal popup (help / confirm / input) shifted by
     /// `popup_offset`, through the shared opaque `render_popup`, and caches its rect
     /// for drag hit-testing. The single `popup` Option makes these mutually
-    /// exclusive; the context menu is drawn separately by `render_menu`.
+    /// exclusive.
     fn render_modal_popup(&mut self, frame: &mut Frame, area: Rect, state: &crate::state::State) {
         let (title, lines) = match &state.modal {
             Some(Modal::Help) => modal::help_lines(&state.chrome.ui_prefix),
-            Some(Modal::Kill(armed)) => modal::confirm_lines(armed),
             Some(Modal::Input(input)) => modal::input_lines(input),
-            _ => {
+            None => {
                 self.popup_geo.rect = Rect::default();
                 return;
             }
@@ -309,32 +337,5 @@ impl Switcher {
         let rect = modal::offset_centered(w, h, area, self.popup_geo.offset);
         self.popup_geo.rect = rect;
         modal::render_popup(frame, area, rect, &title, lines);
-    }
-
-    /// Draws the open context menu as a bordered popup at its anchored rect: the target's
-    /// name in the title (like tmux's menu title), the hovered item reversed. Shares the
-    /// opaque, tmux-edge popup renderer with the help modal.
-    fn render_menu(&self, frame: &mut Frame, state: &crate::state::State) {
-        let Some(Modal::Menu(menu)) = &state.modal else {
-            return;
-        };
-        let rect = menu.rect;
-        let pad = rect.width.saturating_sub(4) as usize;
-        let lines: Vec<Line> = menu
-            .items
-            .iter()
-            .enumerate()
-            .map(|(i, it)| {
-                // The menu highlight matches the nav's selection language: a quiet
-                // surface background, not reverse video.
-                let style = if menu.hovered == Some(i) {
-                    Style::default().bg(palette::get().surface)
-                } else {
-                    Style::default()
-                };
-                Line::from(Span::styled(format!(" {:<pad$} ", it.label()), style))
-            })
-            .collect();
-        modal::render_popup(frame, self.screen_area, rect, &menu.title, lines);
     }
 }

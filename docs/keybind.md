@@ -37,22 +37,34 @@ These act on the tree while it holds focus.
 
 ## Tree actions
 
-These act on the selected node. `/` filter needs tree focus; `prefix n`/`R`/`x`/`r`
-also work while the live screen is focused (they act on the displayed session, so you
-can create, rename, kill, or re-scan without returning to the tree first):
+xmux aggregates and switches; it does not edit what a mux already edits. There is
+no rename, no kill, and no window or pane command — do those in the mux itself.
+Two actions remain. `/` filter needs tree focus; `prefix n` / `prefix r` also work
+while the live screen is focused:
 
 | Key | Action |
 |---|---|
 | `/` | fuzzy-filter the tree by `<source>/<name>` (no prefix) |
-| `prefix n` | create — a session on a host, a window on a session, or a split (pane) on a window |
-| `prefix R` | rename the selected session or window |
-| `prefix x` | kill the selected session or window (with a `y`/`n` confirm) |
+| `prefix 0`-`prefix 9` | jump to a session by its number |
+| `prefix n` | start a new session on the selected host |
 | `prefix r` | re-scan every host |
 
-`prefix n`, `prefix R`, and `prefix x` are level-aware — they act on the host,
-session, or window the selection is on. Renaming or killing a host row is refused
-with a brief message; creating under an unreachable host is likewise refused. The
-prefix guards these so a stray keystroke cannot destroy or disrupt a session.
+`prefix n` needs a host row: a session row has nothing to create, and it says so
+with a brief message. Creating under an unreachable host is likewise refused.
+
+### Jumping by number
+
+Every card carries a dim 0-based number in its left gutter, on the same row as the
+session it names, the selected card included. `prefix <digit>` jumps straight there
+and leaves a small popup open holding the number, so anything past 9 is reached by
+typing the rest of it (`prefix 1` then `2` lands on 12, then `7` on 127).
+
+The popup only accepts a digit that keeps the number addressing a real entry, so
+one, two, and three digit numbers behave identically: whatever the buffer shows is
+somewhere you can land. With ten sessions, `prefix 9` is refused outright with a
+brief message, and after `prefix 1` a second `9` is simply not taken. `Enter` closes
+the popup and keeps the selection; `Esc` closes it and returns to where you started.
+Digits are prefix-gated, so a bare digit never jumps by accident.
 
 ## Prefix commands
 
@@ -67,6 +79,17 @@ tree or the live screen holds focus.
 | `prefix h` / `prefix l` | narrow / widen the tree |
 | `prefix Ctrl-←` / `prefix Ctrl-→` | narrow / widen the tree (then a bare `Ctrl-←`/`Ctrl-→` keeps resizing for a moment) |
 | `prefix prefix` | send one literal prefix byte to the focused session's pane |
+
+## The status line
+
+The nav's bottom row is its status line. At rest it shows one thing, the prefix, and
+stops at the view border so the live screen keeps every row it has. Press the prefix
+and the same row widens to the whole window, floating over the border and the live
+screen to list the keys that prefix unlocks; it shrinks back once the command key
+lands. Only the paint moves, never the layout, so arming the prefix never shifts a
+card. Four states outrank the prefix while they apply, in order: a refusal message
+(in red), the host-scan progress, the active filter, and then the resting prefix. A
+refusal too long for the nav width wraps onto more rows rather than clipping.
 
 ## Focus
 
@@ -85,9 +108,11 @@ forwarded raw to the session's active pane, so programs running inside the mux
 
 - **Help** (`prefix ?`): a scrollless key reference. `q` or `Esc` closes it;
   any other key is swallowed while it is open.
-- **Input dialogs** (filter, new, rename, split): type into the buffer,
-  `Backspace` deletes, `Enter` submits, `Esc` cancels.
-- **Kill confirm**: `y` (or `Y`) confirms; `n`, `Esc`, or any other key cancels.
+- **Input dialogs** (filter, new session): type into the buffer, `Backspace`
+  deletes, `Enter` submits, `Esc` cancels.
+- **Jump** (`prefix <digit>`): digits only, and only digits that keep the number in
+  range. It acts while open (each edit moves the selection), so `Enter` merely closes
+  it and `Esc` restores where you started.
 
 ## Mouse
 
@@ -97,37 +122,46 @@ forwarded raw to the session's active pane, so programs running inside the mux
 | left-click a view | focus that view |
 | wheel over the tree | move the selection (tree focused) |
 | `Ctrl`+wheel over the tree | change the tree level — descend / ascend (tree focused) |
-| right-click a tree row | press-hold to open its context menu, release on an item to run it; release off the menu to cancel |
 | drag the view border | resize the tree |
 | drag a modal's border | move the modal |
 
-The context menu offers the same level-aware actions as the keyboard — focus,
-new session / new window, rename, kill — as applicable to the clicked row. While
-the live screen is focused, mouse events over it are forwarded to the pane (the
-mux needs its own mouse mode enabled to use them).
+There is no context menu: every action a right-click could offer is either a
+plain click (focus, select) or a prefix chord. While the live screen is focused,
+mouse events over it are forwarded to the pane (the mux needs its own mouse mode
+enabled to use them).
 
 ## Automation
 
 A running xmux instance listens on a local control socket. Sessions are addressed
-`<source>/<session>` and windows `<source>/<session>:<window>`. It speaks
-navigation/display verbs — `ping`, `status`, `dump`, `rescan`,
-`switch <source>/<session>`, `focus <nav|terminal>`, `width <delta>` (a signed
-column delta, not an absolute width), `toggle-auto-hide`, `quit` — and
-session-lifecycle verbs:
+`<source>/<session>`. It speaks navigation/display verbs — `ping`, `status`,
+`dump`, `rescan`, `switch <source>/<session>`, `focus <nav|terminal>`,
+`width <delta>` (a signed column delta, not an absolute width),
+`toggle-auto-hide`, `quit` — and one session-lifecycle verb:
 
 - `new-session <source> [name]`
-- `kill-session <source>/<session>`
-- `rename-session <source>/<session> <name>`
-- `new-window <source>/<session> [name]`
-- `split-window <source>/<session>:<window> [v|h]` — vertical by default
-- `kill-window <source>/<session>:<window>`
-- `rename-window <source>/<session>:<window> <name>`
 
-Drive it with `xmux ctl <verb>`, e.g. `xmux ctl switch prod/api`. A low-level `raw:`
-namespace (`raw:key`, `raw:keys`, `raw:text`) injects keystrokes or bytes for
-tests; it is unstable and not part of the supported surface.
+The wire carries no kill/rename/window verbs, for the same reason the keys do
+not: the mux owns editing a session.
 
-With one instance running `xmux ctl` targets it automatically; with several it
-refuses to guess. `xmux ctl list` prints each instance (pid, working directory,
-tty, displayed session, focus) so you can drive a specific one with
-`xmux ctl --pid <pid> <verb>`.
+Every running instance has a NAME. It takes one at startup - an auto-generated
+`<adjective>-<noun>`, or whatever `xmux --name <name>` says (lowercase letters,
+digits, and `-`, up to 32 characters) - and owns `ctl-<name>.sock` while it lives.
+
+`xmux instances` lists the live ones with their name, pid, working directory, tty,
+displayed session, and focus. `xmux send <name> <command>` drives one:
+
+```
+xmux instances
+xmux send amber-otter switch prod/api
+xmux send am focus terminal          # any unambiguous name prefix works
+xmux send - dump                     # `-` when exactly one is running
+printf 'switch prod/api\nfocus terminal\n' | xmux send amber-otter
+```
+
+An unknown name, an ambiguous prefix, or `-` with several instances running is an
+error naming the candidates, never a guess: sending a command to the wrong instance
+switches the wrong terminal. With no command, `send` reads them from stdin, one per
+line. A refused command exits non-zero so a script can detect it.
+
+A low-level `raw:` namespace (`raw:key`, `raw:keys`, `raw:text`) injects keystrokes
+or bytes for tests; it is unstable and not part of the supported surface.

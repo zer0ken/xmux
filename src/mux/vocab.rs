@@ -140,58 +140,6 @@ pub fn select_window(bin: &str, target: &str) -> Vec<String> {
     argv(&[bin, "select-window", "-t", target])
 }
 
-/// Kills session `name`.
-pub fn kill_session(bin: &str, name: &str) -> Vec<String> {
-    argv(&[bin, "kill-session", "-t", name])
-}
-
-/// Creates a new window in `session` (optionally named). The target is
-/// `<session>:` (trailing colon) so a numeric session name - `"0"`, the
-/// tmux/psmux default - is parsed as the SESSION, not a window index: a bare
-/// `-t 0` is read as "create at window index 0" and fails with "index 0 in use".
-pub fn new_window(bin: &str, session: &str, name: &str) -> Vec<String> {
-    let target = format!("{session}:");
-    let mut v = argv(&[bin, "new-window", "-t", &target]);
-    if !name.is_empty() {
-        v.push("-n".to_string());
-        v.push(name.to_string());
-    }
-    v
-}
-
-/// Splits `target` (a `session` or `session:window`): `-v` stacks the new pane
-/// below, `-h` puts it to the right.
-pub fn split_window(bin: &str, target: &str, vertical: bool) -> Vec<String> {
-    argv(&[
-        bin,
-        "split-window",
-        if vertical { "-v" } else { "-h" },
-        "-t",
-        target,
-    ])
-}
-
-/// Renames session `old_name` to `new_name`.
-pub fn rename_session(bin: &str, old_name: &str, new_name: &str) -> Vec<String> {
-    argv(&[bin, "rename-session", "-t", old_name, new_name])
-}
-
-/// Kills the window `target` (`session:window`).
-pub fn kill_window(bin: &str, target: &str) -> Vec<String> {
-    argv(&[bin, "kill-window", "-t", target])
-}
-
-/// Kills the pane `target` addresses. A `session:window` target resolves to that
-/// window's ACTIVE pane; a `session:window.pane` target names one exactly.
-pub fn kill_pane(bin: &str, target: &str) -> Vec<String> {
-    argv(&[bin, "kill-pane", "-t", target])
-}
-
-/// Renames the window `target` (`session:window`) to `new_name`.
-pub fn rename_window(bin: &str, target: &str, new_name: &str) -> Vec<String> {
-    argv(&[bin, "rename-window", "-t", target, new_name])
-}
-
 /// Splits raw mux output into non-blank lines, tolerating both `\r\n` and `\n`.
 fn split_lines(out: &str) -> Vec<&str> {
     out.split('\n')
@@ -424,47 +372,6 @@ mod tests {
     }
 
     #[test]
-    fn kill_session_argv() {
-        assert_eq!(
-            kill_session("tmux", "old"),
-            sv(&["tmux", "kill-session", "-t", "old"])
-        );
-    }
-
-    #[test]
-    fn rename_session_argv() {
-        assert_eq!(
-            rename_session("tmux", "old", "new"),
-            sv(&["tmux", "rename-session", "-t", "old", "new"])
-        );
-    }
-
-    #[test]
-    fn kill_and_rename_window_argv() {
-        assert_eq!(
-            kill_window("tmux", "api:2"),
-            sv(&["tmux", "kill-window", "-t", "api:2"])
-        );
-        assert_eq!(
-            rename_window("tmux", "api:2", "logs"),
-            sv(&["tmux", "rename-window", "-t", "api:2", "logs"])
-        );
-    }
-
-    #[test]
-    fn kill_pane_argv() {
-        // A session:window target lets the mux resolve the window's active pane.
-        assert_eq!(
-            kill_pane("tmux", "api:2"),
-            sv(&["tmux", "kill-pane", "-t", "api:2"])
-        );
-        assert_eq!(
-            kill_pane("psmux", "work:0"),
-            sv(&["psmux", "kill-pane", "-t", "work:0"])
-        );
-    }
-
-    #[test]
     fn target_builders() {
         assert_eq!(window_target("editor", 2), "editor:2");
     }
@@ -475,21 +382,6 @@ mod tests {
         assert_eq!(session_name("api:2"), "api");
         assert_eq!(session_name("0:1"), "0");
         assert_eq!(session_name(""), "");
-    }
-
-    #[test]
-    fn new_window_targets_session_unambiguously() {
-        // The target carries a trailing `:` so a numeric session name (e.g. "0",
-        // the tmux/psmux default) is parsed as the SESSION, not a window index - a
-        // bare `-t 0` is read as "window index 0" and fails "index 0 in use".
-        assert_eq!(
-            new_window("tmux", "0", ""),
-            sv(&["tmux", "new-window", "-t", "0:"])
-        );
-        assert_eq!(
-            new_window("tmux", "work", "logs"),
-            sv(&["tmux", "new-window", "-t", "work:", "-n", "logs"])
-        );
     }
 
     #[test]

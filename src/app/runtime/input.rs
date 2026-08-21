@@ -47,9 +47,9 @@ impl Runtime {
         for key in tree_decoder.feed(bytes) {
             // Re-query per key: opening a modal popup (via a TreeKey applied below) flips
             // this, which changes how the next key in this same read resolves. Gating on
-            // ANY modal popup (not just the inline input) makes a modal OWN its keys — a
-            // kill-confirm swallows prefix/Enter, so `prefix q` can't quit and Enter can't
-            // focus the terminal while a confirm is on screen; only y/n/Esc act on it.
+            // ANY modal popup (not just the inline input) makes a modal OWN its keys: the
+            // help modal and the inline input both swallow prefix/Enter, so `prefix q`
+            // can't quit and Enter can't focus the terminal while one is on screen.
             let is_inputting = state.is_modal_popup_open();
             match resolve_nav_key(key, tree_armed, prefix, is_inputting) {
                 // A committed input/kill confirm folds through State::apply, which returns
@@ -62,11 +62,8 @@ impl Runtime {
                 Some(Action::ToggleAutoHide) => toggle_auto_hide = true,
                 Some(Action::ShowHelp) => switcher.toggle_help(state),
                 // resolve_nav_key never emits the mux-only or terminal-only variants
-                // (Forward/FocusTree/KillActivePane); None = armed/consumed.
-                Some(Action::Forward(_))
-                | Some(Action::FocusTree(_))
-                | Some(Action::KillActivePane)
-                | None => {}
+                // (Forward/FocusTree); None = armed/consumed.
+                Some(Action::Forward(_)) | Some(Action::FocusTree(_)) | None => {}
             }
         }
         // Route the FULL command batch through the single dispatcher (not just RunOp): a
@@ -100,8 +97,8 @@ impl Runtime {
 
 /// Applies ONE parsed SGR mouse event to the gesture state + tree/registry — the body
 /// of the inline `while i < bytes.len()` mouse branch, lifted verbatim. Runs the modal/
-/// gesture gates (menu, view border drag, popup drag, modal swallow, view border grab, idle
-/// hover, menu open) in the SAME order, then the focus×position routing. Mutates `st`
+/// gesture gates (view border drag, popup drag, modal swallow, view border grab, idle
+/// hover) in the SAME order, then the focus×position routing. Mutates `st`
 /// (the gesture latches), `state.focus` (mid-loop focus toggles — routing re-reads focus
 /// per event, so deferring would change behavior), and the byte-loop accumulators
 /// (`non_mouse`, `mouse_focus_toggle`, `wheel_scrolled`). Returns whether a redraw is
@@ -125,8 +122,6 @@ impl Runtime {
             mgr,
             env,
             hosts,
-            detecting,
-            panes_requested,
             nav_width_natural,
             nav_height,
             cols,
@@ -138,9 +133,8 @@ impl Runtime {
         let mut dirty = false;
         let in_mux = to_grid_local(term_area, ev.col, ev.row);
         // A LEFT-button press in the UNFOCUSED view switches focus to that
-        // view — focus only; the click is not delivered. Right-click is
-        // reserved for the tree context menu, so it never moves focus.
-        // Within the focused terminal view, the click forwards.
+        // view: focus only, the click is not delivered. Within the focused
+        // terminal view, the click forwards.
         let is_press = ev.pressed && (ev.cb & 0x60) == 0;
         // Wheel events carry the 0x40 bit (cb 64=up, 65=down; +16=Ctrl).
         let is_wheel = ev.pressed && (ev.cb & 0x40) != 0;
@@ -161,49 +155,6 @@ impl Runtime {
                 .view_border
                 .contains(ratatui::layout::Position { x: col0, y: row0 });
         let top_layout = regions.layout == crate::ui::switcher::ViewLayout::Top;
-        // A context menu owns every mouse event until the right
-        // button is released (press-hold-release), exactly like the
-        // view border drag below. Motion sets the hovered item; button-up
-        // acts on it (or cancels if released off-menu).
-        if state.menu_active() {
-            if !ev.pressed {
-                match switcher.menu_release(state) {
-                    crate::ui::modal::MenuOutcome::FocusTerminal => {
-                        // Connect the target's host (mirrors the left-click
-                        // select path) so its control client streams, then
-                        // focus the terminal on the now-selected session.
-                        ensure_current_host(mgr, hosts, switcher, cols, body_rows, nav_width);
-                        // Focus state is `Menu{prior}` here; set the restore view to the terminal
-                        // so closing the menu (next loop-top sync_modal(None)) lands on it.
-                        state.apply(crate::model::Action::Focus(
-                            crate::model::FocusTarget::Terminal,
-                        ));
-                    }
-                    crate::ui::modal::MenuOutcome::Handled => {
-                        // A menu item only OPENS the next modal (input / kill confirm) — the
-                        // actual mux op is committed later from that modal (Enter / y), which
-                        // returns its RunOp through handle_key. Here just consume any re-scan
-                        // (reconnect) kick and ensure the target's host is connected.
-                        kick_rescan(
-                            switcher,
-                            hosts,
-                            detecting,
-                            mgr,
-                            panes_requested,
-                            cols,
-                            body_rows,
-                        );
-                        ensure_current_host(mgr, hosts, switcher, cols, body_rows, nav_width);
-                    }
-                    crate::ui::modal::MenuOutcome::None => {}
-                }
-                dirty = true;
-            } else if !is_wheel {
-                switcher.menu_hover(col0, ev.row.saturating_sub(1), state);
-                dirty = true;
-            }
-            return dirty;
-        }
         if st.dragging_view_border {
             if !ev.pressed {
                 // Button up ends the drag; persist the final size once (motion resizes live
@@ -234,7 +185,7 @@ impl Runtime {
         let is_left_press = is_press && (ev.cb & 0x03) == 0;
         // A modal popup (help/input/confirm) moves when its border is
         // dragged. Once grabbed it owns every mouse event until release,
-        // like the view border drag / menu hold above.
+        // like the view border drag above.
         if switcher.popup_drag_active() {
             if !ev.pressed {
                 switcher.end_popup_drag();
@@ -274,23 +225,6 @@ impl Runtime {
             if over_view_border {
                 return dirty;
             }
-        }
-        // Right-button press over a selectable tree row opens its context
-        // menu (press-hold-release). Tree-focus only: the menu acts on a
-        // tree row, so it is tree-view input, not a global — a right-click
-        // while the terminal view is focused (or over the terminal view) does not open it
-        // and does not move focus. The menu's keyboard actions (rename input,
-        // kill confirm) thus always run in tree focus, so a confirmed kill
-        // can't quit the app out from under the mux.
-        let is_right_press = is_press && (ev.cb & 0x03) == 2;
-        if nav_menu_may_open(
-            is_right_press,
-            state.focus.is_nav_focused(),
-            in_mux.is_some(),
-        ) && switcher.menu_open(col0, ev.row.saturating_sub(1), state)
-        {
-            dirty = true;
-            return dirty;
         }
         let down = (ev.cb & 0x01) != 0;
         let ctrl = (ev.cb & 0x10) != 0;
@@ -404,6 +338,11 @@ impl Runtime {
         selection: &Selection,
     ) -> StdinOutcome {
         use std::time::Duration;
+        // The hint bar swaps between the resting prefix and the armed cheatsheet, so an
+        // arm/disarm is a VISIBLE change even when the read moves nothing else. Snapshot
+        // it here and mark the frame dirty below if it flipped, or the cheatsheet would
+        // only appear on the next unrelated redraw (a poll tick).
+        let armed_before = self.armed();
         let mut outcome = StdinOutcome::default();
         let StdinOutcome {
             quit,
@@ -461,14 +400,6 @@ impl Runtime {
             // write for the unchanged one) so the final size is never lost.
             crate::prefs::save_nav_width(&self.env.xmux_dir, self.nav_width_natural);
             crate::prefs::save_nav_height(&self.env.xmux_dir, self.nav_height);
-        }
-        // Watchdog: a keystroke (or any non-mouse byte) during a held menu ends
-        // the gesture without acting — mirrors the view border-drag watchdog, so a
-        // missed button-up can't strand the menu and eat later input.
-        if self.state.menu_active() && !non_mouse.is_empty() {
-            self.switcher.menu_cancel(&mut self.state);
-            non_mouse.clear();
-            *dirty = true;
         }
         // Watchdog: same recovery for a popup border-drag — a lost button-up
         // must not strand `popup_drag` and eat all later mouse input.
@@ -541,10 +472,10 @@ impl Runtime {
         } else if !consumed_by_repeat
             && (self.state.focus.is_nav_focused() || self.state.focus.is_modal())
         {
-            // Tree view OR any modal: route to the switcher path. A modal popup (input /
-            // kill-confirm) opened from EITHER view owns its keys here; the resolver gating
-            // in handle_nav_bytes swallows everything but the modal's own keys, so a modal
-            // never emits FocusTerminal/quit and the focus toggles below never fire mid-modal.
+            // Tree view OR any modal: route to the switcher path. A modal popup opened
+            // from EITHER view owns its keys here; the resolver gating in handle_nav_bytes
+            // swallows everything but the modal's own keys, so a modal never emits
+            // FocusTerminal/quit and the focus toggles below never fire mid-modal.
             let (ft, q, wd, hd, th) = self.handle_nav_bytes(&non_mouse, width_changed);
             *focus_terminal = ft;
             *quit = q;
@@ -596,12 +527,12 @@ impl Runtime {
                         toggle_auto_hide(&mut self.auto_hide_nav, &self.env.xmux_dir);
                         *dirty = true;
                     }
-                    // prefix n/R/x/r reach here from terminal focus: run them through the
-                    // switcher exactly like the tree path. handle_key opens the modal on the
-                    // displayed session (n/R/x) or arms the re-scan (r); a committing key
-                    // (Enter / y) then routes via the modal path (is_modal) on the next read.
-                    // `r` only sets the re-scan flag, so kick_rescan must fire it — the tree
-                    // path (handle_nav_bytes) runs the same tail after every read.
+                    // prefix n/r reach here from terminal focus: run them through the
+                    // switcher exactly like the tree path. handle_key opens the new-session
+                    // input (n) or arms the re-scan (r); Enter then routes via the modal
+                    // path (is_modal) on the next read. `r` only sets the re-scan flag, so
+                    // kick_rescan must fire it: the tree path (handle_nav_bytes) runs the
+                    // same tail after every read.
                     Action::TreeKey(k) => {
                         let cmds = self.switcher.handle_key(k, &mut self.state);
                         let (cq, cwc) = dispatch_commands(
@@ -628,14 +559,6 @@ impl Runtime {
                         );
                         *dirty = true;
                     }
-                    // prefix x from the terminal view: arm a kill confirm for the ACTIVE
-                    // pane of the displayed session (not the tree selection). The confirm
-                    // draws over the terminal view and owns the next read; y/n routes
-                    // through the modal path like any other kill confirm.
-                    Action::KillActivePane => {
-                        self.switcher.arm_kill_active_pane(&mut self.state);
-                        *dirty = true;
-                    }
                     // TermInput never emits FocusTerminal (that is the tree-focus path).
                     Action::FocusTerminal => {}
                 }
@@ -648,6 +571,9 @@ impl Runtime {
             // No term.clear(): both states draw the SAME split layout (only the
             // view border colour changes), so clearing would blank the screen and
             // force a full repaint for nothing.
+        }
+        if self.armed() != armed_before {
+            *dirty = true;
         }
         if *focus_tree {
             self.state

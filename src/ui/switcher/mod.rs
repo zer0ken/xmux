@@ -1,6 +1,7 @@
 //! The interactive session switcher: a two-region navigator (a flat, MRU-ordered
 //! nav list of session cards on one side, the selected session's live terminal view
-//! on the other) with a full-width hint_bar. ratatui is immediate-mode, so this owns
+//! on the other), the nav carrying its own status line along its bottom. ratatui is
+//! immediate-mode, so this owns
 //! its state machine, the flattened card model, key/mouse handling, and a render pass
 //! that draws to either the live terminal or a headless `TestBackend` (the control
 //! channel's `dump`).
@@ -17,9 +18,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::model::{Action, Command};
 use crate::session::{Session, WindowPanes};
-use crate::ui::modal::{
-    self, Input, InputMode, Menu, MenuItem, MenuOutcome, Modal, PendingKill, PopupGeometry,
-};
+use crate::ui::modal::{self, Input, InputMode, Modal, PopupGeometry};
 use crate::ui::tree::{self, Group, Row, RowRef};
 
 use crate::ui::ops::OpFollow;
@@ -102,10 +101,13 @@ fn top_nav_height(body_h: u16) -> u16 {
 
 /// The screen regions the switcher draws into, derived ONCE per frame so the renderer,
 /// the PTY sizing, and mouse hit-testing all agree (one geometry, no divergence). The
-/// hint bar always spans the bottom full width; the tree and terminal split horizontally
-/// (`Side`, sized by `nav_width`) or vertically (`Top`, sized by `nav_height`), parted by
-/// the one-cell view border. `nav_width == 0` is the tree-hidden sentinel: the terminal
-/// owns the whole area. `nav_height == 0` means the `Top` height is auto (~40% of the body).
+/// tree and terminal split the whole area horizontally (`Side`, sized by `nav_width`)
+/// or vertically (`Top`, sized by `nav_height`), parted by the one-cell view border;
+/// the hint bar is the BOTTOM of the nav region, not a full-width strip, so it reads
+/// as the nav's own status line and the terminal view keeps every row it owns.
+/// `nav_width == 0` is the tree-hidden sentinel: the terminal owns the whole area (and
+/// there is no nav to carry a hint bar). `nav_height == 0` means the `Top` height is
+/// auto (~40% of the area).
 pub struct Regions {
     pub layout: ViewLayout,
     pub tree: Rect,
@@ -125,6 +127,17 @@ fn top_nav_height_for(body_h: u16, nav_height: u16) -> u16 {
     }
 }
 
+/// Splits a nav region into `(card list, hint bar)`: the hint bar takes the bottom
+/// `hint_bar_h` rows, and the cards keep the rest. A nav too short to hold both gives
+/// the whole region to the cards and no hint bar, so a tiny terminal still navigates.
+fn split_nav(nav: Rect, hint_bar_h: u16) -> (Rect, Rect) {
+    if nav.height <= hint_bar_h {
+        return (nav, Rect::default());
+    }
+    let r = Layout::vertical([Constraint::Min(0), Constraint::Length(hint_bar_h)]).split(nav);
+    (r[0], r[1])
+}
+
 pub fn compute_regions(area: Rect, nav_width: u16, nav_height: u16, hint_bar_h: u16) -> Regions {
     // The layout is decided from the natural tree width so the terminal-view aspect test is
     // stable; the hidden sentinel (0) below still forces the whole area to the terminal.
@@ -138,8 +151,6 @@ pub fn compute_regions(area: Rect, nav_width: u16, nav_height: u16, hint_bar_h: 
             hint_bar: Rect::default(),
         };
     }
-    let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(hint_bar_h)]).split(area);
-    let (body, hint_bar) = (rows[0], rows[1]);
     match layout {
         ViewLayout::Side => {
             let c = Layout::horizontal([
@@ -147,26 +158,28 @@ pub fn compute_regions(area: Rect, nav_width: u16, nav_height: u16, hint_bar_h: 
                 Constraint::Length(1),
                 Constraint::Min(0),
             ])
-            .split(body);
+            .split(area);
+            let (tree, hint_bar) = split_nav(c[0], hint_bar_h);
             Regions {
                 layout,
-                tree: c[0],
+                tree,
                 view_border: c[1],
                 terminal: c[2],
                 hint_bar,
             }
         }
         ViewLayout::Top => {
-            let th = top_nav_height_for(body.height, nav_height);
+            let th = top_nav_height_for(area.height, nav_height);
             let r = Layout::vertical([
                 Constraint::Length(th),
                 Constraint::Length(1),
                 Constraint::Min(0),
             ])
-            .split(body);
+            .split(area);
+            let (tree, hint_bar) = split_nav(r[0], hint_bar_h);
             Regions {
                 layout,
-                tree: r[0],
+                tree,
                 view_border: r[1],
                 terminal: r[2],
                 hint_bar,
@@ -309,31 +322,6 @@ impl Switcher {
 
     // --- tree model ---------------------------------------------------------
 
-    /// Whether the node an armed kill targets still exists in the current rows,
-    /// matched by identity (session address) rather than row position. Lets
-    /// [`Switcher::rebuild`] keep the confirm alive across routine tree updates and
-    /// drop it only when the target genuinely vanished.
-    fn kill_target_present(&self, kill: &PendingKill) -> bool {
-        match kill {
-            PendingKill::Session(sess) => {
-                let addr = sess.address();
-                self.rows
-                    .iter()
-                    .any(|r| session_addr_of(&r.reference).as_deref() == Some(addr.as_str()))
-            }
-            // The pane target has no card of its own (panes are display-only); the
-            // confirm stays valid while its session's card is shown.
-            PendingKill::Pane {
-                source, session, ..
-            } => {
-                let addr = crate::session::address_of(source, session);
-                self.rows
-                    .iter()
-                    .any(|r| session_addr_of(&r.reference).as_deref() == Some(addr.as_str()))
-            }
-        }
-    }
-
     fn rebuild(&mut self, state: &mut crate::state::State) {
         // Once the user has moved the selection, hold their current session selection
         // across this rebuild when it survives (matched by identity) - a routine rebuild
@@ -364,14 +352,6 @@ impl Switcher {
         );
 
         self.rows = rows;
-        // Keep an armed kill confirm across this rebuild as long as its target still
-        // EXISTS (matched by identity, not row position). Only a tree change that
-        // actually removed the target invalidates it - routine rebuilds (the local
-        // poll, a remote %-event) must NOT silently cancel it, or answering y/n has a
-        // surprise time limit. resolve_kill consumes it; set_selected does not touch it.
-        if matches!(&state.modal, Some(Modal::Kill(k)) if !self.kill_target_present(k)) {
-            state.modal = None;
-        }
         let target = self
             .user_moved
             .then(|| {

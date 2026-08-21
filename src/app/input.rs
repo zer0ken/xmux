@@ -1,8 +1,8 @@
 //! The PURE, stateless input-routing core: the decode/resolve functions and the small
 //! value types they use. Tree-focus key resolution ([`resolve_nav_key`]), the mouse
 //! focus×position router ([`resolve_mouse_chain`]/[`ChainAction`]), the gesture/geometry
-//! predicates ([`to_grid_local`], [`leading_ctrl_arrow`], [`view_border_drag_width`],
-//! [`nav_menu_may_open`]), and the per-read gesture/outcome carriers
+//! predicates ([`to_grid_local`], [`leading_ctrl_arrow`], [`view_border_drag_width`]),
+//! and the per-read gesture/outcome carriers
 //! ([`MouseState`]/[`StdinOutcome`]). None of these touch app or switcher state, so they
 //! are unit-testable in isolation; the stateful handlers in `runtime.rs` thread the
 //! runtime's world and call into this core.
@@ -71,14 +71,6 @@ fn is_focus_in(code: KeyCode) -> bool {
 /// a tree scroll.
 fn wheel_targets_nav(nav_focused: bool, over_mux: bool) -> bool {
     nav_focused && !over_mux
-}
-
-/// Whether a right-button press may open the tree context menu. Tree-focus only: the
-/// menu operates on a tree row, so it is a tree-view action, not a view-independent
-/// global — it never opens (nor steals focus) while the terminal view is focused. Position-
-/// gated to the tree column; a right-click over the terminal view forwards to the child.
-pub(crate) fn nav_menu_may_open(is_right_press: bool, nav_focused: bool, over_mux: bool) -> bool {
-    is_right_press && nav_focused && !over_mux
 }
 
 /// What a mouse event resolves to once the modal/gesture gates (menu, view border drag,
@@ -168,11 +160,12 @@ pub(crate) fn resolve_nav_key(
             // Char('\t') for Tab, never KeyCode::Tab, so match both. (prefix ←/Esc focus
             // the tree, where we already are — a no-op that resolves to nothing.)
             KeyCode::Right | KeyCode::Tab | KeyCode::Char('\t') => Some(Action::FocusTerminal),
-            // Tier A: destructive/state-changing tree actions are prefix-gated. The prefix
-            // arms them; they then resolve to the tree executor via the existing TreeKey path.
-            KeyCode::Char('x') | KeyCode::Char('r') | KeyCode::Char('n') | KeyCode::Char('R') => {
-                Some(Action::TreeKey(key))
-            }
+            // Tier A: the state-changing tree actions are prefix-gated. The prefix arms
+            // them; they then resolve to the tree executor via the existing TreeKey path.
+            // A digit joins them: `prefix <digit>` opens the card-jump popup seeded with
+            // it, so a bare digit stays free for the pane and cannot jump by accident.
+            KeyCode::Char('r') | KeyCode::Char('n') => Some(Action::TreeKey(key)),
+            KeyCode::Char(c) if c.is_ascii_digit() => Some(Action::TreeKey(key)),
             _ => None,
         };
     }
@@ -184,14 +177,12 @@ pub(crate) fn resolve_nav_key(
     if !is_inputting && is_focus_in(key.code) {
         return Some(Action::FocusTerminal);
     }
-    // Tier A: bare (unprefixed) x/r/n/R are inert — they require the prefix. Navigation,
-    // Enter, and `/` filter stay bare. Only applies when not inputting, so every key is
-    // still literal text while an input row (filter/new/rename) is open.
+    // Tier A: bare (unprefixed) r/n and bare digits are inert — they require the prefix.
+    // Navigation, Enter, and `/` filter stay bare. Only applies when not inputting, so
+    // every key is still literal text while an input row (filter / new / jump) is open.
     if !is_inputting
-        && matches!(
-            key.code,
-            KeyCode::Char('x') | KeyCode::Char('r') | KeyCode::Char('n') | KeyCode::Char('R')
-        )
+        && (matches!(key.code, KeyCode::Char('r') | KeyCode::Char('n'))
+            || matches!(key.code, KeyCode::Char(c) if c.is_ascii_digit()))
     {
         return None;
     }
@@ -310,8 +301,9 @@ mod tests {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let tk = |c: char| Action::TreeKey(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
 
-        // Bare destructive/state-changing keys are inert without the prefix.
-        for k in [b"x" as &[u8], b"r", b"n", b"R"] {
+        // Bare state-changing keys are inert without the prefix. Digits are in that
+        // tier too: a card jump is a deliberate chord, not a stray keystroke.
+        for k in [b"r" as &[u8], b"n", b"0", b"4", b"9"] {
             assert_eq!(
                 rt(k, false),
                 Vec::<Action>::new(),
@@ -319,18 +311,26 @@ mod tests {
             );
         }
         // The prefix arms them → they resolve to the tree executor (TreeKey).
-        assert_eq!(rt(b"\x07x", false), vec![tk('x')], "prefix x arms kill");
         assert_eq!(rt(b"\x07r", false), vec![tk('r')], "prefix r arms rescan");
         assert_eq!(rt(b"\x07n", false), vec![tk('n')], "prefix n arms new");
-        assert_eq!(rt(b"\x07R", false), vec![tk('R')], "prefix R arms rename");
+        assert_eq!(
+            rt(b"\x070", false),
+            vec![tk('0')],
+            "prefix 0 opens the jump popup"
+        );
+        assert_eq!(
+            rt(b"\x077", false),
+            vec![tk('7')],
+            "prefix 7 opens the jump popup"
+        );
         // Bare navigation and `/` filter stay bare (fast-switcher identity preserved).
         assert_eq!(rt(b"/", false), vec![tk('/')], "/ filter stays bare");
         assert_eq!(rt(b"j", false), vec![tk('j')], "navigation stays bare");
         // While an input row is open the keys are literal text again.
         assert_eq!(
-            rt(b"x", true),
-            vec![tk('x')],
-            "x is literal while inputting"
+            rt(b"4", true),
+            vec![tk('4')],
+            "a digit is literal while inputting"
         );
     }
 
@@ -457,26 +457,6 @@ mod tests {
             resolve_mouse_chain(false, false, false, false, true, false),
             Nothing,
             "right-press, tree focus, over tree → nothing"
-        );
-    }
-
-    #[test]
-    fn nav_menu_opens_only_in_tree_focus_over_the_tree() {
-        assert!(
-            nav_menu_may_open(true, true, false),
-            "right-press, tree focus, over tree → may open"
-        );
-        assert!(
-            !nav_menu_may_open(true, false, false),
-            "right-press while the MUX is focused → never"
-        );
-        assert!(
-            !nav_menu_may_open(true, true, true),
-            "right-press over the terminal view → forwards, no tree menu"
-        );
-        assert!(
-            !nav_menu_may_open(false, true, false),
-            "a non-right press never opens the menu"
         );
     }
 

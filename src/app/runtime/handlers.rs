@@ -301,6 +301,9 @@ impl Runtime {
 
         let rt = Runtime {
             env,
+            // Replaced in `run_app` once the free name is resolved (that needs a dial,
+            // so it cannot happen in this synchronous constructor).
+            instance_name: String::new(),
             ops,
             hosts,
             mgr,
@@ -383,6 +386,7 @@ impl Runtime {
         self.state
             .chrome
             .set_view_border_hovered(self.mouse_state.hovered_view_border);
+        self.state.chrome.set_armed(self.armed());
         // Derive the modal dimension of focus from the open-modal kind (single owner of
         // the modal/view reconciliation).
         let modal_kind = self.state.modal_kind();
@@ -833,6 +837,7 @@ impl Runtime {
             Cmd::Status(reply) => {
                 let _ = reply.send(status_line(
                     &self.switcher,
+                    &self.instance_name,
                     self.state.focus.view_is_nav(),
                     &self_cwd(),
                     &self_tty(),
@@ -932,40 +937,17 @@ impl Runtime {
         false
     }
 
-    /// The op-result arm: fold a finished mutate op back into the tree/state.
+    /// Whether the prefix is armed, in EITHER focus: the nav path latches it on
+    /// `mouse_state.tree_armed`, the terminal path inside `TermInput`. The hint bar asks
+    /// one question ("is a command key expected?"), so the two latches are OR'd here
+    /// rather than making the chrome know about focus.
+    pub(super) fn armed(&self) -> bool {
+        self.mouse_state.tree_armed || self.term_input.is_armed()
+    }
+
+    /// The op-result arm: fold a finished create back into the tree/state.
     pub(super) fn on_op_result(&mut self, result: crate::ui::switcher::OpResult) {
-        // Killing the session a host's display client currently shows invalidates that
-        // client (psmux: its per-session server is gone; tmux: detach-on-destroy) WITHOUT
-        // necessarily EOF'ing the PTY — so no reap fires and the registry entry lingers.
-        // The next show() would then trust that stale `live` and take the in-place
-        // switch-client path against a dead client: a silent no-op that leaves the whole
-        // host blank forever. Tear the attachment down (+ rearm the attach) so show() takes
-        // the safe reattach path for the new selection instead.
-        let killed = match &result {
-            crate::ui::switcher::OpResult::Killed { address } => address
-                .split_once('/')
-                .map(|(s, n)| (s.to_string(), n.to_string())),
-            _ => None,
-        };
         self.switcher.apply_op_result(result, &mut self.state);
-        if let Some((source, session)) = killed {
-            let shows_killed = self
-                .hosts
-                .get(&source)
-                .map(|h| h.display.shows(&host_selection_key(h)) == Some(session.as_str()))
-                .unwrap_or(false);
-            if shows_killed {
-                if let Some(host) = self.hosts.get_mut(&source) {
-                    let key = host_selection_key(host);
-                    self.registry.remove(&key);
-                    host.display.clear(&key);
-                }
-                self.state.apply(crate::model::Action::RearmAttachNow {
-                    now: std::time::Instant::now(),
-                });
-                self.dirty = true;
-            }
-        }
     }
 
     /// The animation-tick arm: detect a console resize (push the new size to PTYs +

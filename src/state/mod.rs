@@ -10,9 +10,9 @@ use std::time::Instant;
 /// The app's canonical runtime state.
 #[derive(Default)]
 pub struct State {
-    /// Inventory — hosts → sessions → windows → panes (all reachable). The single
+    /// Inventory - hosts → sessions → windows → panes (all reachable). The single
     /// source of truth every component reads, instead of reaching into the tree.
-    // ponytail: flat fields, not an Inventory sub-struct — bundle them if a reader
+    // ponytail: flat fields, not an Inventory sub-struct - bundle them if a reader
     // ever needs the whole group at once.
     pub groups: Vec<Group>,
     pub panes: HashMap<String, Vec<WindowPanes>>,
@@ -22,9 +22,9 @@ pub struct State {
     pub panes_loaded: HashSet<String>,
     /// Active fuzzy-filter text (drives the visible tree + the hint_bar).
     pub filter: String,
-    /// What the tree selection points at — the session/window to show.
+    /// What the tree selection points at - the session/window to show.
     pub selection: Selection,
-    /// The address whose content is confirmed live in the on-screen terminal view —
+    /// The address whose content is confirmed live in the on-screen terminal view -
     /// the single display truth, and the target of both rendering and input. The
     /// terminal view always shows THIS session's grid; on a switch it stays on the
     /// prior session until the new one is confirmed (stale-while-revalidate), then
@@ -34,18 +34,18 @@ pub struct State {
     /// When set, a settled selection is attached once this instant passes.
     pub attach_deadline: Option<Instant>,
     /// A selection moved and has not yet armed its debounce deadline. The next
-    /// [`Action::Tick`] (re)arms `attach_deadline` from this — re-armed on EVERY
+    /// [`Action::Tick`] (re)arms `attach_deadline` from this - re-armed on EVERY
     /// pending selection so rapid navigation coalesces into one trailing attach
     /// instead of a per-step storm of switch-client repaints (the freeze).
     pub attach_pending: bool,
     /// The session address last persisted as the user's last-selected, so it is
     /// not rewritten on every window step within the same session.
     pub last_saved_session: String,
-    /// The app's focus state machine — which pane keys go to and whether a
+    /// The app's focus state machine - which pane keys go to and whether a
     /// modal is open. The single source of truth for focus.
     pub focus: crate::app::focus::Focus,
     /// The single open modal, if any (help / inline input / kill confirm / context
-    /// menu). One Option — not four independent fields — so the modals' mutual
+    /// menu). One Option - not four independent fields - so the modals' mutual
     /// exclusion is structural: opening one drops whatever was open, and two can
     /// never coexist. The switcher owns the modal behavior and the transient popup
     /// geometry (drag offset / drawn rect); this owns which modal is open + its content.
@@ -75,12 +75,7 @@ impl State {
         crate::ui::modal::is_inputting(&self.modal)
     }
 
-    /// True while the right-click context menu is open.
-    pub fn menu_active(&self) -> bool {
-        crate::ui::modal::is_menu_active(&self.modal)
-    }
-
-    /// Which kind of modal is open — the focus machine derives its modal dimension
+    /// Which kind of modal is open - the focus machine derives its modal dimension
     /// from this each loop-top, so [`Focus`] can never mirror-and-desync from the
     /// open popup. A centered popup and the context menu are mutually exclusive.
     ///
@@ -106,7 +101,7 @@ impl State {
         }
     }
 
-    /// Seeds the inventory from the resolved source list alone — no probing — so
+    /// Seeds the inventory from the resolved source list alone - no probing - so
     /// the first frame paints host-skeleton rows, each in a scanning state. Other
     /// state fields stay default.
     pub fn from_sources(aliases: Vec<String>) -> State {
@@ -127,10 +122,10 @@ impl State {
     }
 
     /// The single domain-mutation site. Folds one [`Action`] into the state and
-    /// returns the side effects to run as [`Command`]s. `apply` touches only `State`
-    /// — every external effect (switcher selection move, attach, prefs persist, quit)
-    /// is returned for the run loop to dispatch, so the intent → state → effect flow
-    /// has exactly one mutation point.
+    /// returns the side effects to run as [`Command`]s. `apply` touches only `State`;
+    /// every external effect (switcher selection move, attach, prefs persist, quit) is
+    /// returned for the run loop to dispatch, so the intent → state → effect flow has
+    /// exactly one mutation point.
     ///
     /// The clock and the runtime attach facts enter ONLY as data on [`Action::Tick`]
     /// (`now`/`key_live`/`in_flight`); `apply` never reads `Instant::now()` or any
@@ -190,7 +185,7 @@ impl State {
             } => {
                 // RE-ARM on every pending selection: a fresh Select between ticks
                 // pushes the deadline out, so only the trailing selection attaches
-                // (one switch, not a per-step storm — the freeze fix). Re-arming and
+                // (one switch, not a per-step storm - the freeze fix). Re-arming and
                 // firing are mutually exclusive on a tick: a just-armed deadline is
                 // always in the future, so the elapsed check below cannot fire it.
                 if self.attach_pending {
@@ -207,7 +202,7 @@ impl State {
                     return Vec::new();
                 }
                 let mut cmds = Vec::new();
-                // Persist the settled session as last-selected — INDEPENDENT of the
+                // Persist the settled session as last-selected - INDEPENDENT of the
                 // attach gate, so it records even when the attach is suppressed (e.g.
                 // an in-flight attach on the same shared host while the selection moves to
                 // another of its sessions). Only on an address change, so stepping
@@ -218,88 +213,35 @@ impl State {
                     cmds.push(Command::PersistLastSession(addr));
                 }
                 // Fire the attach only when the gate holds (selection differs from the
-                // confirmed display, or its PTY is gone) and nothing is in flight — the
+                // confirmed display, or its PTY is gone) and nothing is in flight - the
                 // freeze invariant depends on this gate, so it stays exactly as is.
                 if self.should_attach(key_live, in_flight) {
                     cmds.push(Command::Attach(self.selection.clone()));
                 }
                 cmds
             }
-            // Session-lifecycle intents are pure effect emitters: they fold into the
-            // MuxOp the run loop runs off-loop. `apply` mutates no domain state — the
+            // The session-lifecycle intent is a pure effect emitter: it folds into the
+            // MuxOp the run loop runs off-loop. `apply` mutates no domain state - the
             // inventory change arrives later as the OpResult.
             Action::CreateSession { source, name } => {
                 vec![Command::RunOp(MuxOp::Create { source, name })]
             }
-            Action::NewWindow {
-                source,
-                session,
-                name,
-            } => vec![Command::RunOp(MuxOp::NewWindow {
-                source,
-                session,
-                name,
-            })],
-            Action::SplitWindow {
-                source,
-                target,
-                session,
-                vertical,
-            } => vec![Command::RunOp(MuxOp::SplitWindow {
-                source,
-                target,
-                session,
-                vertical,
-            })],
-            Action::RenameSession { sess, new_name } => {
-                vec![Command::RunOp(MuxOp::Rename { sess, new_name })]
-            }
-            Action::KillSession { sess } => vec![Command::RunOp(MuxOp::Kill { sess })],
-            Action::KillWindow {
-                source,
-                session,
-                target,
-            } => vec![Command::RunOp(MuxOp::KillWindow {
-                source,
-                session,
-                target,
-            })],
-            Action::KillPane {
-                source,
-                session,
-                target,
-            } => vec![Command::RunOp(MuxOp::KillPane {
-                source,
-                session,
-                target,
-            })],
-            Action::RenameWindow {
-                source,
-                session,
-                target,
-                new_name,
-            } => vec![Command::RunOp(MuxOp::RenameWindow {
-                source,
-                session,
-                target,
-                new_name,
-            })],
         }
     }
 
     /// The single event-driven mutation site: folds one mux [`HostEvent`] into the
     /// domain state and returns the mux follow-ups as [`EventEffect`]s. The mirror
-    /// of [`apply`](State::apply) for the inbound (mux → state) direction — every
+    /// of [`apply`](State::apply) for the inbound (mux → state) direction - every
     /// `%`-notification, metadata reply, poll result, and reap routes through here, so
     /// State owns the event-driven mutations just as `apply` owns the intent-driven ones.
     ///
     /// `apply_event` performs only the mutations whose data is SELF-CONTAINED in the
     /// event (the active-window marker, a pane subtree, a poll enumeration, the
-    /// unreachable mark) — driven through the switcher, which rebuilds the tree against
+    /// unreachable mark) - driven through the switcher, which rebuilds the tree against
     /// `&mut State`. The follow-ups that need a mux handle the state layer must not
     /// hold (the single-owner inventory fold into `model::Host`, a control-mode probe,
     /// the attach registry, the detection dispatch) are returned as [`EventEffect`]s for
-    /// the run loop — the sole executor — to carry out (the AGENTS rule: no IO/registry
+    /// the run loop - the sole executor - to carry out (the AGENTS rule: no IO/registry
     /// mutation here).
     ///
     /// `connected` (the run loop's once-connected set) enters as data, like the clock on
@@ -330,7 +272,7 @@ impl State {
                 session_id,
                 window_id: _,
             } => {
-                // Probe the SPECIFIC session the payload names (its tmux id) — never a
+                // Probe the SPECIFIC session the payload names (its tmux id) - never a
                 // guessed displayed session. The reply resolves the session name + new
                 // active window index and drives the marker for THAT session.
                 vec![EventEffect::ProbeActiveWindow {
@@ -406,7 +348,7 @@ impl State {
 
     /// Whether to (re)issue an attach for the settled selection. Fire when the
     /// selection differs from what is confirmed on screen, or when its display PTY is
-    /// gone (`!key_live` — exited / reaped while the selection was elsewhere) — but never
+    /// gone (`!key_live` - exited / reaped while the selection was elsewhere) - but never
     /// while an attach for the key is already in flight, so the async-attach window
     /// cannot spawn a storm of duplicates. The clock and these runtime facts enter as
     /// data on the Tick, never read here directly.
@@ -415,12 +357,12 @@ impl State {
     }
 
     /// Folds a completed [`MuxOp`](crate::model::MuxOp)'s [`OpResult`] into the
-    /// inventory — the single owner of `groups`/`panes`/`panes_loaded` — and returns
+    /// inventory - the single owner of `groups`/`panes`/`panes_loaded` - and returns
     /// an [`OpFollow`] telling the switcher how to rebuild its rows (and, for a create,
     /// which session to reselect). State owns the domain mutation here just as
     /// [`apply`](State::apply) / [`apply_event`](State::apply_event) own the intent- and
     /// event-driven ones; the row rebuild + cursor restore stay in the switcher. A
-    /// `Failed` op mutates no inventory — its message is returned to flash.
+    /// `Failed` op mutates no inventory - its message is returned to flash.
     ///
     /// [`OpResult`]: crate::ui::ops::OpResult
     /// [`OpFollow`]: crate::ui::ops::OpFollow
@@ -438,35 +380,6 @@ impl State {
                 self.groups = tree::add_session(&self.groups, session);
                 OpFollow::Reselect(addr)
             }
-            OpResult::Renamed {
-                source,
-                old_name,
-                new_name,
-            } => {
-                let old_addr = format!("{source}/{old_name}");
-                let new_addr = format!("{source}/{new_name}");
-                if let Some(wins) = self.panes.remove(&old_addr) {
-                    self.panes.insert(new_addr.clone(), wins);
-                }
-                if self.panes_loaded.remove(&old_addr) {
-                    self.panes_loaded.insert(new_addr);
-                }
-                self.groups = tree::rename_session(&self.groups, &old_addr, &new_name);
-                OpFollow::Rebuild
-            }
-            OpResult::Killed { address } => {
-                self.panes.remove(&address);
-                self.panes_loaded.remove(&address);
-                self.groups = tree::remove_session(&self.groups, &address);
-                OpFollow::Rebuild
-            }
-            OpResult::PanesRefreshed { address, panes } => {
-                // A new window or split: replace the session's subtree so the new
-                // window/pane shows. The switcher rebuilds preserving the cursor.
-                self.panes_loaded.insert(address.clone());
-                self.panes.insert(address, panes);
-                OpFollow::RebuildPreservingFocus
-            }
             OpResult::Failed { message } => OpFollow::Flash(message),
         }
     }
@@ -482,7 +395,7 @@ impl State {
 /// Debounce before a settled selection move attaches/switches its session+window.
 /// Rapid navigation must NOT switch-client / select-window per step: each switch
 /// makes the remote mux send a full-screen repaint, and a storm of repaints floods
-/// the draw — the single-threaded loop then spends all its time redrawing, which IS
+/// the draw - the single-threaded loop then spends all its time redrawing, which IS
 /// the freeze. Deferring the attach until the selection settles keeps per-step redraws
 /// to a cheap tree-only diff. The single source of this value: both `apply`'s `Tick`
 /// re-arm and its [`Action::RearmAttach`](crate::model::Action::RearmAttach) recovery
@@ -508,7 +421,6 @@ mod tests {
         assert!(s.modal.is_none());
         assert!(!s.is_modal_popup_open());
         assert!(!s.is_inputting());
-        assert!(!s.menu_active());
         assert!(s.modal_kind().is_none());
     }
 
@@ -528,7 +440,7 @@ mod tests {
         assert!(s.attach_pending, "Select marks the attach pending");
         assert!(
             s.attach_deadline.is_none(),
-            "Select does NOT arm the deadline — the trailing Tick does"
+            "Select does NOT arm the deadline - the trailing Tick does"
         );
         assert!(cmds.is_empty(), "Select emits no attach command");
     }
@@ -538,7 +450,7 @@ mod tests {
         let mut s = State::default();
         let t0 = Instant::now();
         s.apply(Action::Select(sel("api")));
-        // Tick at t0 arms the deadline (no fire yet — now < deadline).
+        // Tick at t0 arms the deadline (no fire yet - now < deadline).
         let armed = s.apply(Action::Tick {
             now: t0,
             key_live: true,
@@ -671,7 +583,7 @@ mod tests {
     #[test]
     fn apply_tick_does_not_fire_attach_while_in_flight_but_still_persists() {
         // The attach is suppressed while one is in flight (no storm), but the settled
-        // session is still recorded as last-selected — the persist is independent of
+        // session is still recorded as last-selected - the persist is independent of
         // the attach gate.
         let t0 = Instant::now();
         let mut s = State {
@@ -830,7 +742,7 @@ mod tests {
 
     #[test]
     fn apply_confirm_display_sets_displayed() {
-        // ConfirmDisplay advances the display truth to the given selection — the
+        // ConfirmDisplay advances the display truth to the given selection - the
         // in-place-attach / DisplayReady confirmation, folded at the single site.
         let mut s = State::default();
         assert!(s.displayed.is_empty());
@@ -845,7 +757,7 @@ mod tests {
 
     #[test]
     fn apply_clear_display_empties_displayed() {
-        // ClearDisplay blanks the display truth — the reattach-kick path (nothing
+        // ClearDisplay blanks the display truth - the reattach-kick path (nothing
         // confirmed yet → blank view until the fresh attach lands).
         let mut s = State {
             displayed: sel("api"),
@@ -931,126 +843,21 @@ mod tests {
     }
 
     #[test]
-    fn apply_new_window_emits_run_op_new_window() {
-        use crate::model::MuxOp;
-        let mut s = State::default();
-        assert_eq!(
-            s.apply(Action::NewWindow {
-                source: "jup".into(),
-                session: "api".into(),
-                name: "logs".into(),
-            }),
-            vec![Command::RunOp(MuxOp::NewWindow {
-                source: "jup".into(),
-                session: "api".into(),
-                name: "logs".into(),
-            })]
-        );
-    }
-
-    #[test]
-    fn apply_split_window_emits_run_op_split() {
-        use crate::model::MuxOp;
-        let mut s = State::default();
-        assert_eq!(
-            s.apply(Action::SplitWindow {
-                source: "jup".into(),
-                target: "api:1".into(),
-                session: "api".into(),
-                vertical: false,
-            }),
-            vec![Command::RunOp(MuxOp::SplitWindow {
-                source: "jup".into(),
-                target: "api:1".into(),
-                session: "api".into(),
-                vertical: false,
-            })]
-        );
-    }
-
-    #[test]
-    fn apply_rename_session_emits_run_op_rename() {
-        use crate::model::MuxOp;
-        let mut s = State::default();
-        assert_eq!(
-            s.apply(Action::RenameSession {
-                sess: a_sess("api"),
-                new_name: "svc".into(),
-            }),
-            vec![Command::RunOp(MuxOp::Rename {
-                sess: a_sess("api"),
-                new_name: "svc".into(),
-            })]
-        );
-    }
-
-    #[test]
-    fn apply_kill_session_emits_run_op_kill() {
-        use crate::model::MuxOp;
-        let mut s = State::default();
-        assert_eq!(
-            s.apply(Action::KillSession {
-                sess: a_sess("api")
-            }),
-            vec![Command::RunOp(MuxOp::Kill {
-                sess: a_sess("api")
-            })]
-        );
-    }
-
-    #[test]
-    fn apply_kill_window_emits_run_op_kill_window() {
-        use crate::model::MuxOp;
-        let mut s = State::default();
-        assert_eq!(
-            s.apply(Action::KillWindow {
-                source: "jup".into(),
-                session: "api".into(),
-                target: "api:1".into(),
-            }),
-            vec![Command::RunOp(MuxOp::KillWindow {
-                source: "jup".into(),
-                session: "api".into(),
-                target: "api:1".into(),
-            })]
-        );
-    }
-
-    #[test]
-    fn apply_rename_window_emits_run_op_rename_window() {
-        use crate::model::MuxOp;
-        let mut s = State::default();
-        assert_eq!(
-            s.apply(Action::RenameWindow {
-                source: "jup".into(),
-                session: "api".into(),
-                target: "api:1".into(),
-                new_name: "logs".into(),
-            }),
-            vec![Command::RunOp(MuxOp::RenameWindow {
-                source: "jup".into(),
-                session: "api".into(),
-                target: "api:1".into(),
-                new_name: "logs".into(),
-            })]
-        );
-    }
-
-    #[test]
     fn apply_lifecycle_action_does_not_touch_selection_or_focus() {
-        // Lifecycle intents are pure effect emitters: they leave domain state alone
+        // The lifecycle intent is a pure effect emitter: it leaves domain state alone
         // (the OpResult that follows mutates the inventory, not apply).
         let mut s = State::default();
         let before_sel = s.selection.clone();
-        s.apply(Action::KillSession {
-            sess: a_sess("api"),
+        s.apply(Action::CreateSession {
+            source: "jup".into(),
+            name: "api".into(),
         });
         assert_eq!(
             s.selection, before_sel,
-            "kill intent leaves selection alone"
+            "create intent leaves selection alone"
         );
-        assert!(s.focus.is_nav_focused(), "kill intent leaves focus alone");
-        assert!(s.modal.is_none(), "kill intent leaves the popup alone");
+        assert!(s.focus.is_nav_focused(), "create intent leaves focus alone");
+        assert!(s.modal.is_none(), "create intent leaves the popup alone");
     }
 
     // --- apply_event(HostEvent) -----------------------------------------------
@@ -1133,7 +940,7 @@ mod tests {
         );
         assert!(
             effects.is_empty(),
-            "Focus is a pure state mutation — no mux effect"
+            "Focus is a pure state mutation - no mux effect"
         );
         let windows = state.panes.get("jup/api").unwrap();
         assert!(windows.iter().find(|w| w.index == 1).unwrap().active);
@@ -1172,7 +979,7 @@ mod tests {
     fn apply_event_connected_marks_connected_and_emits_apply_inventory() {
         // The reader carries the parsed sessions on Connected/Inventory; apply_event
         // records the connected mark and hands the sessions to the loop as an effect
-        // (which folds them into `model::Host.inventory` — the single owner).
+        // (which folds them into `model::Host.inventory` - the single owner).
         let (mut state, mut sw) = with_switcher(one_session_scan());
         let mut connected = HashSet::new();
         let sessions = vec![crate::session::Session {
@@ -1225,7 +1032,7 @@ mod tests {
     #[test]
     fn apply_event_active_window_changed_probes_the_payload_session() {
         // The payload-bearing ActiveWindowChanged must forward the notification's session
-        // id INTO the probe effect — probing that SPECIFIC session, never a guessed
+        // id INTO the probe effect - probing that SPECIFIC session, never a guessed
         // displayed one.
         let (mut state, mut sw) = with_switcher(one_session_scan());
         let mut connected = HashSet::new();
@@ -1406,7 +1213,7 @@ mod tests {
     #[test]
     fn apply_event_sessions_with_error_applies_tree_but_emits_no_sync() {
         // A transient enumeration failure shows the error in the tree but keeps
-        // attachments (the keep-alive guarantee) — no sync effect.
+        // attachments (the keep-alive guarantee) - no sync effect.
         let mut state = State::from_sources(vec!["local".into()]);
         let mut sw = Switcher::from_sources(&mut state);
         let mut connected = HashSet::new();
@@ -1423,7 +1230,7 @@ mod tests {
         assert_eq!(g.err.as_deref(), Some("poll failed"));
         assert!(
             effects.is_empty(),
-            "a failed enumeration keeps attachments — no sync effect: {effects:?}"
+            "a failed enumeration keeps attachments - no sync effect: {effects:?}"
         );
     }
 
@@ -1492,97 +1299,6 @@ mod tests {
     }
 
     #[test]
-    fn fold_op_result_killed_removes_session() {
-        use crate::ui::ops::{OpFollow, OpResult};
-        let mut s = State::default();
-        let session = a_sess("api");
-        let addr = session.address();
-        s.fold_op_result(OpResult::Created {
-            session,
-            panes: vec![a_win("w0")],
-        });
-        let follow = s.fold_op_result(OpResult::Killed {
-            address: addr.clone(),
-        });
-        assert!(
-            !s.groups
-                .iter()
-                .any(|g| g.sessions.iter().any(|se| se.address() == addr)),
-            "the killed session is gone from the tree"
-        );
-        assert!(!s.panes.contains_key(&addr), "its panes are dropped");
-        assert!(
-            !s.panes_loaded.contains(&addr),
-            "its loaded mark is dropped"
-        );
-        assert!(matches!(follow, OpFollow::Rebuild));
-    }
-
-    #[test]
-    fn fold_op_result_renamed_moves_panes_and_renames() {
-        use crate::ui::ops::{OpFollow, OpResult};
-        let mut s = State::default();
-        let session = a_sess("api"); // jup/api
-        let old_addr = session.address();
-        s.fold_op_result(OpResult::Created {
-            session,
-            panes: vec![a_win("w0")],
-        });
-        let follow = s.fold_op_result(OpResult::Renamed {
-            source: "jup".into(),
-            old_name: "api".into(),
-            new_name: "svc".into(),
-        });
-        let new_addr = "jup/svc".to_string();
-        assert!(
-            s.groups
-                .iter()
-                .any(|g| g.sessions.iter().any(|se| se.address() == new_addr)),
-            "the renamed session is in the tree under its new address"
-        );
-        assert!(
-            !s.groups
-                .iter()
-                .any(|g| g.sessions.iter().any(|se| se.address() == old_addr)),
-            "the old address is gone"
-        );
-        assert!(
-            s.panes.contains_key(&new_addr),
-            "panes moved to new address"
-        );
-        assert!(
-            !s.panes.contains_key(&old_addr),
-            "old-address panes dropped"
-        );
-        assert!(s.panes_loaded.contains(&new_addr));
-        assert!(!s.panes_loaded.contains(&old_addr));
-        assert!(matches!(follow, OpFollow::Rebuild));
-    }
-
-    #[test]
-    fn fold_op_result_panes_refreshed_replaces_subtree_preserving_focus() {
-        use crate::ui::ops::{OpFollow, OpResult};
-        let mut s = State::default();
-        let session = a_sess("api");
-        let addr = session.address();
-        s.fold_op_result(OpResult::Created {
-            session,
-            panes: vec![a_win("w0")],
-        });
-        let follow = s.fold_op_result(OpResult::PanesRefreshed {
-            address: addr.clone(),
-            panes: vec![a_win("w0"), a_win("w1")],
-        });
-        assert_eq!(
-            s.panes.get(&addr).map(|w| w.len()),
-            Some(2),
-            "the session's window/pane subtree is replaced"
-        );
-        assert!(s.panes_loaded.contains(&addr));
-        assert!(matches!(follow, OpFollow::RebuildPreservingFocus));
-    }
-
-    #[test]
     fn fold_op_result_failed_flashes_and_leaves_inventory_untouched() {
         use crate::ui::ops::{OpFollow, OpResult};
         let mut s = State::default();
@@ -1593,12 +1309,12 @@ mod tests {
         let before_groups = s.groups.len();
         let before_panes = s.panes.len();
         let follow = s.fold_op_result(OpResult::Failed {
-            message: "kill failed: boom".into(),
+            message: "create failed: boom".into(),
         });
         assert_eq!(s.groups.len(), before_groups, "a failure mutates no groups");
         assert_eq!(s.panes.len(), before_panes, "a failure mutates no panes");
         assert!(
-            matches!(follow, OpFollow::Flash(m) if m == "kill failed: boom"),
+            matches!(follow, OpFollow::Flash(m) if m == "create failed: boom"),
             "a failure carries its message to the switcher's flash"
         );
     }
