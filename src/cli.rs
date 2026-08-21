@@ -320,6 +320,15 @@ fn reply_is_err(resp: &str) -> bool {
     resp.starts_with("err:")
 }
 
+/// Whether a transport failure AFTER the request went out means the command
+/// succeeded. Only `quit` qualifies: it asks the instance to exit, so the socket
+/// closing under the reply is the instance doing exactly that. Reporting it as a
+/// failure would make the one verb whose success is indistinguishable from a crash
+/// always exit non-zero.
+fn closing_is_success(line: &str) -> bool {
+    line.trim().eq_ignore_ascii_case("quit")
+}
+
 async fn send_one(client: &mut control::Client, line: &str) -> i32 {
     match client.do_cmd(line).await {
         Ok(resp) => {
@@ -335,6 +344,10 @@ async fn send_one(client: &mut control::Client, line: &str) -> i32 {
                 println!("{text}");
                 0
             }
+        }
+        Err(_) if closing_is_success(line) => {
+            println!("ok");
+            0
         }
         Err(e) => {
             eprintln!("xmux send: {e}");
@@ -446,6 +459,20 @@ mod tests {
     /// A live-instance entry keyed by name, as `live_instances` returns.
     fn inst(name: &str) -> (PathBuf, String) {
         (PathBuf::from(format!("ctl-{name}.sock")), name.to_string())
+    }
+
+    #[test]
+    fn only_quit_treats_a_closing_socket_as_success() {
+        // `quit` asks the instance to exit, so losing the socket under the reply IS the
+        // success signal; every other verb must still report a lost socket as a failure.
+        assert!(closing_is_success("quit"));
+        assert!(closing_is_success("  QUIT  "));
+        for line in ["status", "dump", "switch local/api", "quitter", ""] {
+            assert!(
+                !closing_is_success(line),
+                "{line:?} must not swallow an error"
+            );
+        }
     }
 
     #[test]
