@@ -70,8 +70,11 @@ UI elements a user perceives as distinct things:
   while the terminal view is focused. "cursor" always means this text cursor,
   never the nav selection.
 - card - one nav entry: a context line (`{host}/{mux}`, or `{host}` on a
-  host-state card) over a detail line (`{session}/{index}:{window-name}` of the
-  focused (active) window; the host state; or `{session}/` + a loading spinner).
+  host-state card) over a detail line (`└ {session}/{index}:{window-name}` of
+  the focused (active) window; the host state; or `└ {session}/` + a loading
+  spinner). The `└` connector hangs the detail under its context line - on a
+  collapsed card, under the shared context above; the selected card drops the
+  connector (the accent bar and surface already bind its lines).
   One card per SESSION; the mux segment names the mux kind serving it
   (`Session.mux`, stamped at enumeration), so several muxes on one host stay
   distinguishable. The kinds are the session card, the host-state card
@@ -83,10 +86,11 @@ UI elements a user perceives as distinct things:
   renderer and mouse hit-testing share one `card_height` so the screen-row
   mapping never diverges.
 - level color - the fixed per-segment card color, from the palette (`ui::palette`,
-  truecolor): host soft yellow, mux soft green, session soft mauve, the window
-  part (`{index}:{name}`) muted gray - the quietest level, so the session name
-  anchors the detail line; a host-state card's detail line is colored by state -
-  scanning pending-yellow, unreachable danger-red, settled "no sessions" muted.
+  truecolor): host and session soft mauve (the two name levels share one color),
+  mux soft green, the window part (`{index}:{name}`) muted gray - the quietest
+  level, so the session name anchors the detail line; a host-state card's detail
+  line is colored by state - scanning pending-yellow, unreachable danger-red,
+  settled "no sessions" muted.
 - selection - the nav's current pick (its card index is `selected`), advanced by
   navigation; a routine poll or restream never moves it (only launch / rescan
   re-sorts). `preselect` / `reselect` are the launch and post-rescan selections.

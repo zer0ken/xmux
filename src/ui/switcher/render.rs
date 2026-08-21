@@ -240,14 +240,20 @@ impl Switcher {
             ),
             _ => Span::styled(row.line2.clone(), Style::default().fg(color_window())),
         };
-        let detail = vec![
-            gutter(collapsed),
-            Span::raw(" "),
+        // The └ connector hangs the detail line under its context line; on a
+        // collapsed card it hangs under the SHARED context above, so a run of
+        // collapsed cards reads as siblings of one context. The selected card
+        // drops it - the accent bar and surface already bind its two lines.
+        let mut detail = vec![gutter(collapsed), Span::raw(" ")];
+        if !selected {
+            detail.push(Span::styled("└ ", muted));
+        }
+        detail.extend([
             Span::styled(sess.to_string(), Style::default().fg(color_session())),
             Span::styled("/", muted),
             window_part,
             Span::raw(" "),
-        ];
+        ]);
         lines.push(Line::from(detail));
         ListItem::new(lines)
     }

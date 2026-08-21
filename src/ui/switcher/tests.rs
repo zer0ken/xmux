@@ -1528,7 +1528,7 @@ async fn host_with_sessions_has_no_landing_panel() {
 }
 
 #[tokio::test]
-async fn levels_have_distinct_colors() {
+async fn levels_render_in_their_level_colors() {
     let h = Harness::new(sample());
     assert_eq!(h.nav_fg_of("local"), Some(color_host()));
     assert_eq!(h.nav_fg_of("editor"), Some(color_session()));
@@ -1657,6 +1657,10 @@ async fn focused_collapsed_card_expands_to_two_rows() {
         Some(2),
         "unselected, beta is a one-row card under alpha's two"
     );
+    assert!(
+        nav_line(&h, 2).contains("└"),
+        "an unselected detail line carries the └ connector"
+    );
     h.key(KeyCode::Down).await; // select beta
     let beta_row = h.nav_row_of("beta/0:w-beta").expect("beta detail");
     assert_eq!(beta_row, 3, "selected, beta regains its context line");
@@ -1664,6 +1668,10 @@ async fn focused_collapsed_card_expands_to_two_rows() {
     assert!(
         context.contains("srv/tmux"),
         "the expanded card shows its full context: {context:?}"
+    );
+    assert!(
+        !nav_line(&h, beta_row).contains("└"),
+        "the selected card drops the └ connector"
     );
     // The selection bar marks both rows of the expanded card.
     assert_eq!(h.buf()[(0, beta_row - 1)].symbol(), "▌");
