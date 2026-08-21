@@ -191,6 +191,7 @@ mod tests {
                 sessions: vec![Session {
                     source: "local".into(),
                     name: "editor".into(),
+                    mux: "tmux".into(),
                     windows: 1,
                     attached: false,
                     last_attached: 100,

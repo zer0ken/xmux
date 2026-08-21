@@ -83,7 +83,7 @@ impl Mux for Tmux {
         transport: &dyn Transport,
         runner: &dyn Runner,
     ) -> Result<Vec<Session>, RunError> {
-        crate::mux::enumerate_via_list_sessions(&self.bin, transport, runner).await
+        crate::mux::enumerate_via_list_sessions(&self.bin, self.kind(), transport, runner).await
     }
 
     fn attach_plan(&self, session: &str) -> Vec<String> {
@@ -137,6 +137,10 @@ static TMUX_CONTROL: TmuxControl = TmuxControl;
 pub struct TmuxControl;
 
 impl ControlProtocol for TmuxControl {
+    fn mux_kind(&self) -> &'static str {
+        "tmux"
+    }
+
     fn classify<'a>(&self, line: &'a str) -> Line<'a> {
         classify(line)
     }

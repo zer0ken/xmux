@@ -30,9 +30,12 @@ pub(crate) struct Palette {
     pub bar_bg: Color,
     /// Level colour: host.
     pub host: Color,
+    /// Level colour: mux.
+    pub mux: Color,
     /// Level colour: session.
     pub session: Color,
-    /// Level colour: window.
+    /// Level colour: window (the `{index}:{name}` part of the detail line) - the
+    /// quietest level, so the session name reads as the detail line's anchor.
     pub window: Color,
     /// In-flight state: the scanning status and the loading spinner.
     pub pending: Color,
@@ -47,9 +50,10 @@ static DARK: Palette = Palette {
     overlay: Color::Rgb(0x6c, 0x70, 0x86),
     surface: Color::Rgb(0x31, 0x32, 0x44),
     bar_bg: Color::Rgb(0x18, 0x18, 0x25),
-    host: Color::Rgb(0xf9, 0xe2, 0xaf),
-    session: Color::Rgb(0xa6, 0xe3, 0xa1),
-    window: Color::Rgb(0xcb, 0xa6, 0xf7),
+    host: Color::Rgb(0xcb, 0xa6, 0xf7),
+    mux: Color::Rgb(0xa6, 0xe3, 0xa1),
+    session: Color::Rgb(0xcb, 0xa6, 0xf7),
+    window: Color::Rgb(0xa6, 0xad, 0xc8),
     pending: Color::Rgb(0xf9, 0xe2, 0xaf),
     danger: Color::Rgb(0xf3, 0x8b, 0xa8),
 };
@@ -63,9 +67,10 @@ static LIGHT: Palette = Palette {
     overlay: Color::Rgb(0x9c, 0xa0, 0xb0),
     surface: Color::Rgb(0xcc, 0xd0, 0xda),
     bar_bg: Color::Rgb(0xe6, 0xe9, 0xef),
-    host: Color::Rgb(0xdf, 0x8e, 0x1d),
-    session: Color::Rgb(0x40, 0xa0, 0x2b),
-    window: Color::Rgb(0x88, 0x39, 0xef),
+    host: Color::Rgb(0x88, 0x39, 0xef),
+    mux: Color::Rgb(0x40, 0xa0, 0x2b),
+    session: Color::Rgb(0x88, 0x39, 0xef),
+    window: Color::Rgb(0x6c, 0x6f, 0x85),
     pending: Color::Rgb(0xdf, 0x8e, 0x1d),
     danger: Color::Rgb(0xd2, 0x0f, 0x39),
 };

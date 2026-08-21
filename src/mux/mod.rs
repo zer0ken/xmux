@@ -55,6 +55,7 @@ pub(crate) fn is_no_sessions(err: &RunError) -> bool {
 /// LOCAL-psmux behavior — `~/.psmux` has no remote awareness).
 pub(crate) async fn enumerate_via_list_sessions(
     bin: &str,
+    kind: &str,
     transport: &dyn Transport,
     runner: &dyn Runner,
 ) -> Result<Vec<Session>, RunError> {
@@ -62,6 +63,7 @@ pub(crate) async fn enumerate_via_list_sessions(
     match runner.run(&name, &args).await {
         Ok(out) => Ok(mux::parse_sessions(
             transport.host_id(),
+            kind,
             &String::from_utf8_lossy(&out),
         )),
         Err(e) if is_no_sessions(&e) => Ok(Vec::new()),
@@ -463,7 +465,7 @@ mod tests {
             transport: &dyn Transport,
             runner: &dyn Runner,
         ) -> Result<Vec<Session>, RunError> {
-            enumerate_via_list_sessions(&self.bin, transport, runner).await
+            enumerate_via_list_sessions(&self.bin, "bare", transport, runner).await
         }
         fn attach_plan(&self, session: &str) -> Vec<String> {
             mux::attach(&self.bin, session)

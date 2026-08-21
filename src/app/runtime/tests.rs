@@ -423,15 +423,15 @@ async fn refresh_after_a_dropped_host_resolves_instead_of_loading_forever() {
 }
 
 #[test]
-fn active_window_probe_moves_tree_selection() {
-    // A resolved active-window probe (HostEvent::Focus) sets the cached active-window
-    // marker; the loop-top select_active_window then moves the selection. Selection starts
-    // on window 1's row; Focus to window 0 sets the marker, and select_active_window
-    // (simulating the loop-top call) lands the selection on window 0.
+fn active_window_probe_refreshes_focused_window_line() {
+    // A resolved active-window probe (HostEvent::Focus) flips the cached active
+    // window, which is the session card's line2 (the focused window's name). The
+    // selection and the attach target (the session) never move: the card is the
+    // session, so a window change within it is a text refresh, not a navigation.
     use crate::session::{Pane, Session, WindowPanes};
+    use crate::ui::run::dump_screen;
     use crate::ui::switcher::{Scan, Switcher};
     use crate::ui::tree::Group;
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     let mut panes = std::collections::HashMap::new();
     panes.insert(
@@ -464,6 +464,7 @@ fn active_window_probe_moves_tree_selection() {
             source: "jup".into(),
             err: None,
             sessions: vec![Session {
+                mux: String::new(),
                 source: "jup".into(),
                 name: "api".into(),
                 windows: 2,
@@ -474,51 +475,47 @@ fn active_window_probe_moves_tree_selection() {
         panes,
     };
     let mut state = crate::state::State::from_scan(scan);
-    let mut switcher = Switcher::new(&mut state);
-    // host row -> (→ descend) api session -> (→ descend) window 0 -> (↓ sibling) window 1.
-    switcher.handle_key(
-        KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
-        &mut state,
-    );
-    switcher.handle_key(
-        KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
-        &mut state,
-    );
-    switcher.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut state);
+    let switcher = Switcher::new(&mut state);
     assert_eq!(
         switcher.terminal_view_target().target,
-        "api:1",
-        "selection on window 1"
+        "api",
+        "a session card targets the session (the mux lands on its active window)"
     );
 
-    // Focus sets the cached active-window marker (window 0).
     let mut rt = test_rt(fake_env_with_sources(&[]));
     rt.hosts = crate::model::Hosts::default();
     rt.state = state;
     rt.switcher = switcher;
+    assert!(
+        dump_screen(&mut rt.switcher, None, 80, 24, &rt.state).contains("w0"),
+        "line2 shows the focused window w0"
+    );
     let _ = rt.handle_host_event(HostEvent::Focus {
         host: "jup".into(),
         session: "api".into(),
-        window: 0,
+        window: 1,
     });
-    // The loop-top follow (simulated here) consumes the marker and moves the selection.
-    rt.switcher.select_active_window(&mut rt.state);
+    let out = dump_screen(&mut rt.switcher, None, 80, 24, &rt.state);
+    assert!(out.contains("w1"), "line2 refreshed to w1:\n{out}");
+    assert!(
+        !out.contains("w0"),
+        "the previous focused window is gone:\n{out}"
+    );
     assert_eq!(
         rt.switcher.terminal_view_target().target,
-        "api:0",
-        "loop-top follow moved selection to active window 0"
+        "api",
+        "the attach target stays the session"
     );
 }
 
 #[test]
 fn focus_event_updates_marker_without_moving_cursor() {
-    // handle_host_event(Focus) updates the active-window marker but never moves
-    // the selection - selection follow is a loop-top concern. The selection is left wherever
-    // the caller placed it (here, window 1) regardless of the Focus payload.
+    // handle_host_event(Focus) refreshes the cached active window but never moves
+    // the selection - it may target a session other than the selected one, and
+    // yanking the user's selection to it would be the selection thrash.
     use crate::session::{Pane, Session, WindowPanes};
     use crate::ui::switcher::{Scan, Switcher};
     use crate::ui::tree::Group;
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     let mut panes = std::collections::HashMap::new();
     panes.insert(
@@ -551,6 +548,7 @@ fn focus_event_updates_marker_without_moving_cursor() {
             source: "jup".into(),
             err: None,
             sessions: vec![Session {
+                mux: String::new(),
                 source: "jup".into(),
                 name: "api".into(),
                 windows: 2,
@@ -561,17 +559,8 @@ fn focus_event_updates_marker_without_moving_cursor() {
         panes,
     };
     let mut state = crate::state::State::from_scan(scan);
-    let mut switcher = Switcher::new(&mut state);
-    switcher.handle_key(
-        KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
-        &mut state,
-    ); // → api (session): launch preselects the host row
-    switcher.handle_key(
-        KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
-        &mut state,
-    ); // → window 0
-    switcher.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut state); // ↓ → window 1
-    assert_eq!(switcher.terminal_view_target().target, "api:1");
+    let switcher = Switcher::new(&mut state);
+    assert_eq!(switcher.terminal_view_target().target, "api");
 
     let mut rt = test_rt(fake_env_with_sources(&[]));
     rt.hosts = crate::model::Hosts::default();
@@ -580,12 +569,18 @@ fn focus_event_updates_marker_without_moving_cursor() {
     let _ = rt.handle_host_event(HostEvent::Focus {
         host: "jup".into(),
         session: "api".into(),
-        window: 0,
+        window: 1,
     });
     assert_eq!(
         rt.switcher.terminal_view_target().target,
-        "api:1",
+        "api",
         "handler alone must not move the selection"
+    );
+    assert!(
+        rt.state.panes["jup/api"]
+            .iter()
+            .any(|w| w.index == 1 && w.active),
+        "the cached active window flipped to 1"
     );
 }
 
@@ -637,6 +632,7 @@ fn apply_inventory_effect_folds_sessions_into_host_inventory() {
     rt.switcher = switcher;
 
     let sessions = vec![crate::session::Session {
+        mux: String::new(),
         source: "jup".into(),
         name: "api".into(),
         ..Default::default()
@@ -698,6 +694,7 @@ fn r_rescan_reloads_control_host_panes() {
             source: "jup".into(),
             err: None,
             sessions: vec![Session {
+                mux: String::new(),
                 source: "jup".into(),
                 name: "api".into(),
                 windows: 1,
@@ -759,6 +756,7 @@ fn r_rescan_reloads_control_host_panes() {
     // The re-list reply folds in via ApplyInventory, which re-requests each
     // session's panes - re-inserting the (now-cleared) address, i.e. issuing list-panes.
     let sessions = vec![Session {
+        mux: String::new(),
         source: "jup".into(),
         name: "api".into(),
         windows: 1,
@@ -1329,6 +1327,7 @@ fn two_session_scan() -> crate::ui::switcher::Scan {
     use crate::ui::switcher::Scan;
     use crate::ui::tree::Group;
     let sess = |name: &str, windows: i64| Session {
+        mux: String::new(),
         source: "jup".into(),
         name: name.into(),
         windows,
@@ -1403,7 +1402,7 @@ async fn client_session_changed_in_terminal_focus_follows_selection_to_the_new_s
         .set_view_focus(crate::app::focus::ViewFocus::Terminal);
     assert_eq!(
         rt.switcher.terminal_view_target().target,
-        "api:0",
+        "api",
         "selection starts on api"
     );
 
@@ -1414,8 +1413,8 @@ async fn client_session_changed_in_terminal_focus_follows_selection_to_the_new_s
     });
     assert_eq!(
         rt.switcher.terminal_view_target().target,
-        "db:1",
-        "terminal-focused nav follows the mux switch to db's active window (1)"
+        "db",
+        "terminal-focused nav follows the mux switch to db's card"
     );
     assert_eq!(
         rt.hosts.get("jup").unwrap().display.shows("jup"),
@@ -1505,6 +1504,7 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
             err: None,
             sessions: vec![
                 Session {
+                    mux: String::new(),
                     source: "jup".into(),
                     name: "api".into(),
                     windows: 1,
@@ -1512,6 +1512,7 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
                     last_attached: 200,
                 },
                 Session {
+                    mux: String::new(),
                     source: "jup".into(),
                     name: "db".into(),
                     windows: 1,
@@ -1610,6 +1611,7 @@ fn status_line_reports_focus_and_address() {
             source: "jup".into(),
             err: None,
             sessions: vec![Session {
+                mux: String::new(),
                 source: "jup".into(),
                 name: "api".into(),
                 windows: 1,
@@ -1646,6 +1648,7 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
             err: None,
             sessions: vec![
                 Session {
+                    mux: String::new(),
                     source: "jup".into(),
                     name: "api".into(),
                     windows: 1,
@@ -1653,6 +1656,7 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
                     last_attached: 1,
                 },
                 Session {
+                    mux: String::new(),
                     source: "jup".into(),
                     name: "db".into(),
                     windows: 1,
@@ -1729,6 +1733,7 @@ fn rt_terminal_focus_with_session() -> Runtime {
             source: "jup".into(),
             err: None,
             sessions: vec![Session {
+                mux: String::new(),
                 source: "jup".into(),
                 name: "api".into(),
                 windows: 1,
@@ -1827,6 +1832,7 @@ fn killing_the_displayed_session_tears_down_the_host_attach_for_reattach() {
     use crate::ui::switcher::{Scan, Switcher};
     use crate::ui::tree::Group;
     let sess = |n: &str, r: i64| Session {
+        mux: String::new(),
         source: "local".into(),
         name: n.into(),
         windows: 1,
@@ -1881,6 +1887,7 @@ fn killing_a_background_session_keeps_the_displayed_attach() {
     use crate::ui::switcher::{Scan, Switcher};
     use crate::ui::tree::Group;
     let sess = |n: &str, r: i64| Session {
+        mux: String::new(),
         source: "local".into(),
         name: n.into(),
         windows: 1,
@@ -1935,6 +1942,7 @@ fn kill_confirm_owns_keys_so_prefix_q_and_enter_do_not_quit_or_focus_mux() {
             source: "jup".into(),
             err: None,
             sessions: vec![Session {
+                mux: String::new(),
                 source: "jup".into(),
                 name: "api".into(),
                 windows: 1,
@@ -2029,6 +2037,7 @@ fn menu_keyboard_input_is_consumed_without_changing_restore_pane_or_writing_pty(
                 source: "local".into(),
                 err: None,
                 sessions: vec![Session {
+                    mux: String::new(),
                     source: "local".into(),
                     name: "api".into(),
                     windows: 1,

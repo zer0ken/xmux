@@ -85,10 +85,13 @@ impl Switcher {
         self.render_menu(frame, state);
     }
 
-    /// The navigation list: one flat, vertically-scrolling list of 2-row cards in both
-    /// layouts (the Side column and the portrait Top band differ only in where the region
-    /// sits). `list_state` carries the scroll offset so the selected card stays visible;
-    /// the selection highlight is ratatui's `highlight_style` over the whole card area.
+    /// The navigation list: one flat, vertically-scrolling list of cards in both
+    /// layouts (the Side column and the portrait Top band differ only in where the
+    /// region sits). Card heights vary - two rows expanded, one collapsed (see
+    /// [`Switcher::card_collapsed`]) - which ratatui's `List` handles per item;
+    /// `list_state` carries the scroll offset so the selected card stays visible,
+    /// and the selection highlight is ratatui's `highlight_style` over the whole
+    /// card area.
     fn render_nav(&mut self, frame: &mut Frame, area: Rect, state: &crate::state::State) {
         // No border box: the list fills its region outright and a single rule
         // (render_view_border) separates it from the terminal view.
@@ -110,11 +113,23 @@ impl Switcher {
     /// A minimal scrollbar on the nav list's right edge, drawn only when the cards
     /// overflow the region - the offscreen-content cue the flat list otherwise lacks.
     /// Thumb only (no track / arrows) so it reads as a position marker, not furniture.
+    /// Counted in cards (not screen rows) over the variable card heights, reading the
+    /// offset ratatui settled while rendering the list just before.
     fn render_nav_scrollbar(&mut self, frame: &mut Frame, area: Rect) {
-        let visible = (area.height / CARD_H) as usize;
         let total = self.rows.len();
-        if total <= visible || area.width == 0 {
+        let total_h: u16 = (0..total).map(|i| self.card_height(i)).sum();
+        if total_h <= area.height || area.width == 0 {
             return;
+        }
+        // The cards fully visible from the settled offset.
+        let mut visible = 0usize;
+        let mut used = 0u16;
+        for i in self.list_state.offset()..total {
+            used += self.card_height(i);
+            if used > area.height {
+                break;
+            }
+            visible += 1;
         }
         let mut sb = ScrollbarState::new(total.saturating_sub(visible))
             .position(self.list_state.offset())
@@ -143,15 +158,20 @@ impl Switcher {
         jump_digit
     }
 
-    /// Builds one navigation card as a 2-line [`ListItem`]. Line 1 is the gutter +
-    /// context (`{host}/{session}` in the host / session level colours, or just
-    /// `{host}` for a host-state card). Line 2 is the gutter + detail (a window card's
-    /// `{n}:{name}` in the window level colour, bold with a trailing accent ● when
-    /// active; a host-state card's state coloured by kind - pending / danger / muted;
-    /// a loading card's spinner). The gutter carries the selected card's accent ▌ bar
-    /// on both lines (replacing its jump digit - the selection needs no jump target);
-    /// unselected cards show their dim digit. The surface background comes from the
-    /// List's `highlight_style`, so no per-span background is baked in here.
+    /// Builds one navigation card as a [`ListItem`]: a context line over a detail
+    /// line, or the detail line alone when the card is collapsed (see
+    /// [`Switcher::card_collapsed`]). The context line is the gutter +
+    /// `{host}/{mux}` in the host / mux colours (the mux segment only when known -
+    /// a just-created session is stamped by the next enumeration; just `{host}` on
+    /// a host-state card). The detail line is the gutter + detail: a session
+    /// card's `{session}/{index}:{window-name}` - the focused (active) window,
+    /// what the mux shows on attach - in the session / window colours, a loading
+    /// card's `{session}/` + spinner, a host-state card's state coloured by kind
+    /// (pending / danger / muted). The gutter carries the selected card's accent ▌
+    /// bar on every line (replacing its jump digit - the selection needs no jump
+    /// target); an unselected card shows its dim digit on its first line. The
+    /// surface background comes from the List's `highlight_style`, so no per-span
+    /// background is baked in here.
     fn nav_row_item(
         &self,
         i: usize,
@@ -162,82 +182,86 @@ impl Switcher {
         let muted = Style::default().fg(color_hint());
         let selected = self.list_state.selected() == Some(i);
         let bar = Style::default().fg(palette::get().accent);
-        let gutter = |line1: bool| -> Span<'static> {
+        let gutter = |first: bool| -> Span<'static> {
             if selected {
                 Span::styled("▌ ", bar)
             } else {
-                match digit.filter(|_| line1) {
+                match digit.filter(|_| first) {
                     Some(d) => Span::styled(format!("{d} "), muted),
                     None => Span::raw("  "),
                 }
             }
         };
 
-        // Line 1: the {host}/{session} (or {host}) context.
-        let mut line1: Vec<Span> = vec![gutter(true)];
-        if matches!(row.reference, RowRef::Host { .. }) {
-            line1.push(Span::styled(
-                pad_label(&row.line1),
-                Style::default().fg(color_host()),
-            ));
-        } else {
-            let (host, sess) = row
-                .line1
-                .split_once('/')
-                .unwrap_or((row.line1.as_str(), ""));
-            line1.push(Span::raw(" "));
-            line1.push(Span::styled(
+        // Host-state card: the host name over its status, coloured by kind -
+        // in-flight scanning is pending (soft yellow), a dead host is danger
+        // (soft red), a settled empty host is muted.
+        if let RowRef::Host { unreachable, .. } = &row.reference {
+            let (host, _, _) = context_of(&row.reference);
+            let line1 = vec![
+                gutter(true),
+                Span::styled(pad_label(host), Style::default().fg(color_host())),
+            ];
+            let style = if *unreachable {
+                Style::default().fg(palette::get().danger)
+            } else if row.line2.starts_with("scanning") {
+                Style::default().fg(palette::get().pending)
+            } else {
+                muted
+            };
+            let line2 = vec![gutter(false), Span::styled(pad_label(&row.line2), style)];
+            return ListItem::new(vec![Line::from(line1), Line::from(line2)]);
+        }
+
+        // Session / loading card.
+        let (host, mux, sess) = context_of(&row.reference);
+        let collapsed = self.card_collapsed(i);
+        let mut lines: Vec<Line> = Vec::new();
+        if !collapsed {
+            let mut context: Vec<Span> = vec![gutter(true), Span::raw(" ")];
+            context.push(Span::styled(
                 host.to_string(),
                 Style::default().fg(color_host()),
             ));
-            if !sess.is_empty() {
-                line1.push(Span::styled("/", muted));
-                line1.push(Span::styled(
-                    sess.to_string(),
-                    Style::default().fg(color_session()),
+            if !mux.is_empty() {
+                context.push(Span::styled("/", muted));
+                context.push(Span::styled(
+                    mux.to_string(),
+                    Style::default().fg(color_mux()),
                 ));
             }
-            line1.push(Span::raw(" "));
+            context.push(Span::raw(" "));
+            lines.push(Line::from(context));
         }
-
-        // Line 2: the detail line, under the gutter (bar when selected, blank otherwise).
-        let mut line2: Vec<Span> = vec![gutter(false)];
-        match &row.reference {
-            RowRef::Window { .. } => {
-                let mut style = Style::default().fg(color_window());
-                if row.active {
-                    style = style.add_modifier(Modifier::BOLD);
-                }
-                line2.push(Span::styled(format!(" {}", row.line2), style));
-                if row.active {
-                    // The active-window marker: an accent dot after the name (bold alone
-                    // is too subtle at a glance, and italics render unreliably).
-                    line2.push(Span::styled(" ●", bar));
-                }
-                line2.push(Span::raw(" "));
-            }
-            RowRef::Loading { .. } => {
-                line2.push(Span::styled(
-                    format!(" {spinner_glyph} "),
-                    Style::default().fg(palette::get().pending),
-                ));
-            }
-            RowRef::Host { unreachable, .. } => {
-                // The host-state colour language: in-flight scanning is pending
-                // (soft yellow), a dead host is danger (soft red), a settled empty
-                // host is muted.
-                let style = if *unreachable {
-                    Style::default().fg(palette::get().danger)
-                } else if row.line2.starts_with("scanning") {
-                    Style::default().fg(palette::get().pending)
-                } else {
-                    muted
-                };
-                line2.push(Span::styled(pad_label(&row.line2), style));
-            }
+        let window_part = match &row.reference {
+            RowRef::Loading { .. } => Span::styled(
+                spinner_glyph.to_string(),
+                Style::default().fg(palette::get().pending),
+            ),
+            _ => Span::styled(row.line2.clone(), Style::default().fg(color_window())),
+        };
+        // The connector hangs the detail line under its context line; on a
+        // collapsed card it hangs under the SHARED context above, so a run of
+        // collapsed cards reads as siblings of one context: ├ while a collapsed
+        // sibling follows below, └ on the run's last line. The selected card
+        // drops it - the accent bar and surface already bind its two lines.
+        let mut detail = vec![gutter(collapsed), Span::raw(" ")];
+        if !selected {
+            let connector = if self.card_collapsed(i + 1) {
+                "├ "
+            } else {
+                "└ "
+            };
+            detail.push(Span::styled(connector, muted));
         }
-
-        ListItem::new(vec![Line::from(line1), Line::from(line2)])
+        detail.extend([
+            Span::styled(sess.to_string(), Style::default().fg(color_session())),
+            Span::styled("/", muted),
+            window_part,
+            Span::raw(" "),
+        ]);
+        lines.push(Line::from(detail));
+        ListItem::new(lines)
     }
 
     fn render_terminal_view(

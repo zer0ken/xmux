@@ -53,10 +53,10 @@ impl Switcher {
     }
 
     /// Modal help input, tmux view-mode style. While the modal is open it captures
-    /// the whole key read (returns true ⇒ consumed — nothing reaches the tree or the
+    /// the whole key read (returns true ⇒ consumed - nothing reaches the tree or the
     /// terminal view); `q` or Esc closes it, every other key is swallowed. Returns false
     /// when help is closed, so the read falls through to normal routing. The single
-    /// owner of help dismissal — the app calls it above the tree/terminal split, so the
+    /// owner of help dismissal - the app calls it above the tree/terminal split, so the
     /// behavior is identical in both focuses.
     pub fn feed_help_key(&mut self, bytes: &[u8], state: &mut crate::state::State) -> bool {
         modal::feed_help(&mut state.modal, bytes)
@@ -75,7 +75,7 @@ impl Switcher {
         if matches!(state.modal, Some(Modal::Kill(_))) {
             return self.resolve_kill(ev, state);
         }
-        // A flash is a transient error/message — it lives only until the next key. Clear
+        // A flash is a transient error/message - it lives only until the next key. Clear
         // it here so navigation (or any key) restores the normal help
         // hint_bar; actions below may set a fresh one, which survives because this runs first.
         state.chrome.flash.clear();
@@ -120,34 +120,20 @@ impl Switcher {
                     state.filter.clone(),
                     None,
                     None,
-                    None,
                 )));
             }
             InputMode::Rename => match self.current_ref().cloned() {
                 Some(RowRef::Host { .. }) => {
                     state.flash("cannot rename a host");
                 }
-                // A window card renames the WINDOW (its name is in the card); a loading
-                // card (no window resolved yet) renames the SESSION.
-                Some(RowRef::Window { sess, window, name }) => {
-                    let target = crate::mux::window_target(&sess.name, window);
-                    state.modal = Some(Modal::Input(Input::new(
-                        mode,
-                        " rename window".into(),
-                        name,
-                        Some(sess.source.clone()),
-                        Some(sess),
-                        Some(target),
-                    )));
-                }
-                Some(RowRef::Loading { sess }) => {
+                // A card names a session, so renaming it renames the SESSION.
+                Some(RowRef::Session { sess } | RowRef::Loading { sess }) => {
                     state.modal = Some(Modal::Input(Input::new(
                         mode,
                         " rename session".into(),
                         sess.name.clone(),
                         None,
                         Some(sess),
-                        None,
                     )));
                 }
                 None => {}
@@ -158,8 +144,8 @@ impl Switcher {
     }
 
     /// The `n` action: a new SESSION on a host card, or a new WINDOW in the selected
-    /// card's session (a window or loading card). The context is captured up front so a
-    /// streamed selection move cannot retarget it.
+    /// card's session. The context is captured up front so a streamed selection move
+    /// cannot retarget it.
     pub(super) fn open_new(&mut self, state: &mut crate::state::State) {
         state.chrome.flash.clear();
         self.dismiss_modals(state);
@@ -177,19 +163,15 @@ impl Switcher {
                 String::new(),
                 Some(source),
                 None,
-                None,
             ))),
-            // A window or loading card creates a new WINDOW in its session.
-            RowRef::Window { sess, .. } | RowRef::Loading { sess } => {
-                Some(Modal::Input(Input::new(
-                    InputMode::NewWindow,
-                    format!(" new window in {} (name optional)", sess.name),
-                    String::new(),
-                    Some(sess.source.clone()),
-                    Some(sess),
-                    None,
-                )))
-            }
+            // A session or loading card creates a new WINDOW in its session.
+            RowRef::Session { sess } | RowRef::Loading { sess } => Some(Modal::Input(Input::new(
+                InputMode::NewWindow,
+                format!(" new window in {} (name optional)", sess.name),
+                String::new(),
+                Some(sess.source.clone()),
+                Some(sess),
+            ))),
         };
     }
 
@@ -200,7 +182,7 @@ impl Switcher {
     fn handle_input_key(&mut self, ev: KeyEvent, state: &mut crate::state::State) -> Vec<Command> {
         match ev.code {
             KeyCode::Enter => {
-                let (mode, val, source, sess, target) = {
+                let (mode, val, source, sess) = {
                     let Some(Modal::Input(input)) = &state.modal else {
                         return Vec::new();
                     };
@@ -209,7 +191,6 @@ impl Switcher {
                         input.buffer.trim().to_string(),
                         input.source.clone(),
                         input.sess.clone(),
-                        input.target.clone(),
                     )
                 };
                 // Close the input first so a queue helper that early-returns on a
@@ -223,13 +204,7 @@ impl Switcher {
                     }
                     InputMode::New => self.queue_create(source, &val, state),
                     InputMode::NewWindow => self.queue_new_window(source, sess, &val, state),
-                    InputMode::Rename => {
-                        if target.is_some() {
-                            self.queue_rename_window(source, sess, target, &val, state)
-                        } else {
-                            self.queue_rename(sess, &val, state)
-                        }
-                    }
+                    InputMode::Rename => self.queue_rename(sess, &val, state),
                 }
             }
             KeyCode::Esc => {
@@ -308,20 +283,6 @@ impl Switcher {
         })
     }
 
-    /// The current name of window `index` under the session at `sess_addr`, if its panes are loaded.
-    fn window_name(
-        &self,
-        sess_addr: &str,
-        index: i64,
-        state: &crate::state::State,
-    ) -> Option<String> {
-        state
-            .panes
-            .get(sess_addr)
-            .and_then(|ws| ws.iter().find(|w| w.index == index))
-            .map(|w| w.name.clone())
-    }
-
     /// Resolves a rename into an [`Action::RenameSession`] after the synchronous
     /// validation that needs no network. See [`Switcher::queue_create`] for why the
     /// op is deferred off-loop.
@@ -338,43 +299,12 @@ impl Switcher {
             return Vec::new();
         }
         if new_name.starts_with('-') {
-            // the mux silently no-ops a '-'-leading name (getopt eats it) — refuse.
+            // the mux silently no-ops a '-'-leading name (getopt eats it) - refuse.
             state.flash("rename: name cannot start with '-'");
             return Vec::new();
         }
         state.apply(Action::RenameSession {
             sess,
-            new_name: new_name.to_string(),
-        })
-    }
-
-    fn queue_rename_window(
-        &mut self,
-        source: Option<String>,
-        sess: Option<Session>,
-        target: Option<String>,
-        new_name: &str,
-        state: &mut crate::state::State,
-    ) -> Vec<Command> {
-        let (Some(source), Some(sess), Some(target)) = (source, sess, target) else {
-            return Vec::new();
-        };
-        let cur = target
-            .rsplit(':')
-            .next()
-            .and_then(|i| i.parse::<i64>().ok())
-            .and_then(|idx| self.window_name(&sess.address(), idx, state));
-        if new_name.is_empty() || cur.as_deref() == Some(new_name) {
-            return Vec::new();
-        }
-        if new_name.starts_with('-') {
-            state.flash("rename: name cannot start with '-'");
-            return Vec::new();
-        }
-        state.apply(Action::RenameWindow {
-            source,
-            session: sess.name,
-            target,
             new_name: new_name.to_string(),
         })
     }
@@ -420,16 +350,8 @@ impl Switcher {
             Some(RowRef::Host { .. }) => {
                 state.flash("cannot kill a host");
             }
-            Some(RowRef::Window { sess, window, .. }) => {
-                let target = crate::mux::window_target(&sess.name, window);
-                state.modal = Some(Modal::Kill(PendingKill::Window {
-                    source: sess.source.clone(),
-                    session: sess.name.clone(),
-                    target,
-                }));
-            }
-            // A loading card (no window resolved) kills the whole session.
-            Some(RowRef::Loading { sess }) => {
+            // A card names a session, so the kill targets the SESSION.
+            Some(RowRef::Session { sess } | RowRef::Loading { sess }) => {
                 state.modal = Some(Modal::Kill(PendingKill::Session(sess)));
             }
             None => {}
@@ -437,8 +359,8 @@ impl Switcher {
     }
 
     fn resolve_kill(&mut self, ev: KeyEvent, state: &mut crate::state::State) -> Vec<Command> {
-        // tmux confirm-before semantics: only y/Y confirms; any other key — n, Esc, or
-        // anything else — cancels (the pending confirm is taken either way).
+        // tmux confirm-before semantics: only y/Y confirms; any other key - n, Esc, or
+        // anything else - cancels (the pending confirm is taken either way).
         let confirmed = matches!(ev.code, KeyCode::Char('y') | KeyCode::Char('Y'));
         let Some(Modal::Kill(armed)) = state.modal.take() else {
             return Vec::new();
@@ -448,15 +370,6 @@ impl Switcher {
         }
         let action = match armed {
             PendingKill::Session(sess) => Action::KillSession { sess },
-            PendingKill::Window {
-                source,
-                session,
-                target,
-            } => Action::KillWindow {
-                source,
-                session,
-                target,
-            },
             PendingKill::Pane {
                 source,
                 session,
@@ -470,7 +383,7 @@ impl Switcher {
         state.apply(action)
     }
 
-    /// Arms a kill confirm for the ACTIVE pane of the DISPLAYED session — the pane the
+    /// Arms a kill confirm for the ACTIVE pane of the DISPLAYED session - the pane the
     /// terminal view is showing (tmux `prefix x` parity). Unlike [`arm_kill`], which
     /// targets the tree SELECTION, this reads `state.displayed` and resolves that
     /// session's active window from the cached pane data, so the confirmed kill hits the
@@ -494,7 +407,7 @@ impl Switcher {
             return;
         };
         // session:window (not a bare session) so a numeric session name can't be
-        // mis-parsed as a window index — the mux resolves the window's active pane.
+        // mis-parsed as a window index - the mux resolves the window's active pane.
         let target = crate::mux::window_target(&sel.session, window);
         state.modal = Some(Modal::Kill(PendingKill::Pane {
             source: sel.source,

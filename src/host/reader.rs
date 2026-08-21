@@ -114,7 +114,7 @@ fn resolve_block<E: FnMut(HostEvent)>(
     match kind {
         PendingReply::ListSessions => {
             let out = body.join("\n");
-            let sessions = parse_sessions(host, &out);
+            let sessions = parse_sessions(host, proto.mux_kind(), &out);
             clear_connecting(state);
             emit(HostEvent::Connected {
                 host: host.to_string(),

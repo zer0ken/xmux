@@ -1,5 +1,5 @@
 //! The interactive session switcher: a two-region navigator (a flat, MRU-ordered
-//! nav list of window cards on one side, the selected session's live terminal view
+//! nav list of session cards on one side, the selected session's live terminal view
 //! on the other) with a full-width hint_bar. ratatui is immediate-mode, so this owns
 //! its state machine, the flattened card model, key/mouse handling, and a render pass
 //! that draws to either the live terminal or a headless `TestBackend` (the control
@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, List, ListItem, ListState};
 use ratatui::Frame;
@@ -28,9 +28,10 @@ pub use crate::ui::ops::{run_op, OpResult, Ops};
 /// Tree pane width: border + 1-cell inner padding each side + content.
 pub const NAV_WIDTH: u16 = 48;
 
-/// A navigation card is two screen rows tall (line1 context, line2 detail). The
-/// renderer emits 2-line list items and mouse hit-testing divides the screen-row
-/// delta by this to map a click to a card.
+/// A navigation card's EXPANDED height: two screen rows (a context line over a
+/// detail line). A collapsed card (see [`Switcher::card_collapsed`]) drops the
+/// context line and is one row tall; the renderer and mouse hit-testing share
+/// [`Switcher::card_height`] so the screen-row-to-card mapping never diverges.
 pub(super) const CARD_H: u16 = 2;
 
 // Per-level node colours (the shared semantic palette), so the tree levels read
@@ -44,6 +45,9 @@ fn color_session() -> Color {
 }
 fn color_window() -> Color {
     crate::ui::palette::get().window
+}
+fn color_mux() -> Color {
+    crate::ui::palette::get().mux
 }
 /// Settled per-element status (no sessions) renders muted so it reads apart
 /// from settled content; in-flight and failure states carry their own colours
@@ -306,9 +310,9 @@ impl Switcher {
     // --- tree model ---------------------------------------------------------
 
     /// Whether the node an armed kill targets still exists in the current rows,
-    /// matched by identity (session address / window source+target) rather than row
-    /// position. Lets [`Switcher::rebuild`] keep the confirm alive across routine tree
-    /// updates and drop it only when the target genuinely vanished.
+    /// matched by identity (session address) rather than row position. Lets
+    /// [`Switcher::rebuild`] keep the confirm alive across routine tree updates and
+    /// drop it only when the target genuinely vanished.
     fn kill_target_present(&self, kill: &PendingKill) -> bool {
         match kill {
             PendingKill::Session(sess) => {
@@ -317,13 +321,11 @@ impl Switcher {
                     .iter()
                     .any(|r| session_addr_of(&r.reference).as_deref() == Some(addr.as_str()))
             }
-            PendingKill::Window { source, target, .. } => self.rows.iter().any(|r| {
-                matches!(&r.reference, RowRef::Window { sess, window, .. }
-                    if sess.source == *source && crate::mux::window_target(&sess.name, *window) == *target)
-            }),
             // The pane target has no card of its own (panes are display-only); the
-            // confirm stays valid while a card of the session it belongs to is shown.
-            PendingKill::Pane { source, session, .. } => {
+            // confirm stays valid while its session's card is shown.
+            PendingKill::Pane {
+                source, session, ..
+            } => {
                 let addr = crate::session::address_of(source, session);
                 self.rows
                     .iter()
@@ -333,7 +335,7 @@ impl Switcher {
     }
 
     fn rebuild(&mut self, state: &mut crate::state::State) {
-        // Once the user has moved the selection, hold their current session/window selection
+        // Once the user has moved the selection, hold their current session selection
         // across this rebuild when it survives (matched by identity) - a routine rebuild
         // (local poll, remote %-event refetch) must NOT snap the selection back to the top
         // row, which would yank the displayed session out from under the user on every
@@ -344,7 +346,7 @@ impl Switcher {
             .rows
             .get(self.selected)
             .and_then(|r| match &r.reference {
-                RowRef::Window { .. } | RowRef::Loading { .. } => Some(r.reference.clone()),
+                RowRef::Session { .. } | RowRef::Loading { .. } => Some(r.reference.clone()),
                 RowRef::Host { .. } => None,
             });
 
@@ -430,6 +432,41 @@ impl Switcher {
             .collect()
     }
 
+    /// Whether card `i` renders collapsed to its detail line alone: a session /
+    /// loading card whose `{host}/{mux}` context repeats the previous card's, so a
+    /// run of sessions on one server reads grouped without restating the context.
+    /// The SELECTED card never collapses - focus expands it to the full two-row
+    /// card, so its context is always readable in place - and a host-state card
+    /// never collapses (its host name IS the content).
+    fn card_collapsed(&self, i: usize) -> bool {
+        if self.list_state.selected() == Some(i) {
+            return false;
+        }
+        let (Some(row), Some(prev)) = (
+            self.rows.get(i),
+            i.checked_sub(1).and_then(|p| self.rows.get(p)),
+        ) else {
+            return false;
+        };
+        if matches!(row.reference, RowRef::Host { .. })
+            || matches!(prev.reference, RowRef::Host { .. })
+        {
+            return false;
+        }
+        let (host, mux, _) = context_of(&row.reference);
+        let (prev_host, prev_mux, _) = context_of(&prev.reference);
+        host == prev_host && mux == prev_mux
+    }
+
+    /// The screen rows card `i` occupies: [`CARD_H`] expanded, one when collapsed.
+    fn card_height(&self, i: usize) -> u16 {
+        if self.card_collapsed(i) {
+            1
+        } else {
+            CARD_H
+        }
+    }
+
     fn set_selected(&mut self, idx: usize, state: &crate::state::State) {
         if self.rows.is_empty() {
             return;
@@ -481,23 +518,7 @@ impl Switcher {
     fn current_source(&self) -> Option<String> {
         match self.current_ref()? {
             RowRef::Host { source, .. } => Some(source.clone()),
-            RowRef::Window { sess, .. } => Some(sess.source.clone()),
-            RowRef::Loading { sess } => Some(sess.source.clone()),
-        }
-    }
-
-    /// The session the mux is DISPLAYING for the selection's row: the selection's own session
-    /// (session/window row) or, on a host row, the host's recent session - the same
-    /// resolution `target_for` uses. Lets the terminal-view follow descend from a host.
-    fn displayed_session(&self, state: &crate::state::State) -> Option<Session> {
-        match self.current_ref()? {
-            RowRef::Window { sess, .. } => Some(sess.clone()),
-            RowRef::Loading { sess } => Some(sess.clone()),
-            RowRef::Host { source, .. } => state
-                .groups
-                .iter()
-                .find(|g| &g.source == source)
-                .and_then(|g| tree::first_visible_session(g, &state.filter)),
+            RowRef::Session { sess } | RowRef::Loading { sess } => Some(sess.source.clone()),
         }
     }
 
@@ -538,10 +559,9 @@ impl Switcher {
         };
     }
 
-    /// The session/window the selection is currently on, used by the app to
+    /// The session the selection is currently on, used by the app to
     /// `switch-client` on every selection move (`select = attach`). Returns `Some`
-    /// only for session, window, or host-with-session rows; `None` for pane,
-    /// loading, and empty-host rows.
+    /// for session, loading, and host-with-session rows; `None` for empty-host rows.
     pub fn current_attach_target(&self, state: &crate::state::State) -> Option<TerminalViewTarget> {
         let r = self.current_ref()?;
         let (source, target) = tree::target_for(r, &state.groups, &state.filter);
@@ -552,50 +572,12 @@ impl Switcher {
         }
     }
 
-    /// The host (source alias) the selection is on, or `None` on a pane/loading row.
+    /// The host (source alias) the selection is on.
     /// The app ensures this host's control-mode client is connected on every
     /// selection move, so the host's `list-sessions` populates the tree even before
     /// any session is selected (a control-mode client is the only session source).
     pub fn current_host(&self) -> Option<String> {
         self.current_source()
-    }
-
-    /// Moves the tree selection to window `window` of `source`/`session` when the
-    /// selection is currently within THAT session's subtree - on its session row OR any
-    /// of its window rows. Used to follow the displayed session's active-window
-    /// change; the app gates this on TERMINAL focus, where the user is no longer
-    /// driving the tree selection (stdin goes to the PTY), so following from the session
-    /// row mirrors the mux without yanking a tree-navigating user. A no-op when the
-    /// selection is on a different host/session. Returns whether it moved.
-    pub fn select_window(
-        &mut self,
-        source: &str,
-        session: &str,
-        window: i64,
-        state: &crate::state::State,
-    ) -> bool {
-        let on_this_session = match self.current_ref() {
-            Some(RowRef::Window { sess, .. }) => sess.source == source && sess.name == session,
-            Some(RowRef::Loading { sess }) => sess.source == source && sess.name == session,
-            // A host row descends into its displayed (recent) session's active window.
-            Some(RowRef::Host { source: src, .. }) => src == source,
-            None => false,
-        };
-        if !on_this_session {
-            return false;
-        }
-        let target = self.rows.iter().position(|r| {
-            matches!(&r.reference, RowRef::Window { sess, window: w, .. }
-                if sess.source == source && sess.name == session && *w == window)
-        });
-        match target {
-            Some(i) if i != self.selected => {
-                self.user_moved = true;
-                self.set_selected(i, state);
-                true
-            }
-            _ => false,
-        }
     }
 
     /// Moves the tree selection to the session row whose address (`source/session`)
@@ -618,33 +600,12 @@ impl Switcher {
         }
     }
 
-    /// Moves the selection to the ACTIVE window row of the DISPLAYED session (read from
-    /// cached pane data) - from a session row, a window row, OR a host row (which
-    /// descends into the host's recent session). Used when focus moves to the terminal
-    /// so the tree view mirrors the window the mux is showing (#3). A no-op when the
-    /// displayed session or its active window is unknown (e.g. panes not yet loaded, or
-    /// an unreachable host). Returns whether it moved.
-    pub fn select_active_window(&mut self, state: &mut crate::state::State) -> bool {
-        let Some(sess) = self.displayed_session(state) else {
-            return false;
-        };
-        let addr = sess.address();
-        let Some(window) = state
-            .panes
-            .get(&addr)
-            .and_then(|ws| ws.iter().find(|w| w.active))
-            .map(|w| w.index)
-        else {
-            return false;
-        };
-        self.select_window(&sess.source, &sess.name, window, state)
-    }
-
     /// Marks `window` as the active window of `source`/`session` in the cached
-    /// pane data, flipping the bold/italic marker WITHOUT a full inventory refetch
-    /// (the control-client probe resolves an external `%session-window-changed` to
-    /// the new active window; a blanket refetch per change would storm the loop).
-    /// Returns whether the active window actually changed.
+    /// pane data, refreshing the session card's focused-window line WITHOUT a full
+    /// inventory refetch (the control-client probe resolves an external
+    /// `%session-window-changed` to the new active window; a blanket refetch per
+    /// change would storm the loop). Returns whether the active window actually
+    /// changed.
     pub fn set_active_window(
         &mut self,
         source: &str,
@@ -682,8 +643,9 @@ impl Switcher {
     /// instant that host re-streams.
     pub fn request_rescan(&mut self, state: &mut crate::state::State) {
         let (reselect, parent) = match self.current_ref() {
-            Some(RowRef::Window { sess, .. }) => (Some(sess.address()), Some(sess.source.clone())),
-            Some(RowRef::Loading { sess }) => (Some(sess.address()), Some(sess.source.clone())),
+            Some(RowRef::Session { sess } | RowRef::Loading { sess }) => {
+                (Some(sess.address()), Some(sess.source.clone()))
+            }
             Some(RowRef::Host { source, .. }) => (None, Some(source.clone())),
             None => (None, None),
         };
@@ -796,8 +758,7 @@ impl Switcher {
                 Some(RowRef::Host { source, .. }) => {
                     crate::session::source_of(&addr) == source.as_str()
                 }
-                Some(RowRef::Window { sess, .. }) => sess.address() == addr,
-                Some(RowRef::Loading { sess }) => sess.address() == addr,
+                Some(RowRef::Session { sess } | RowRef::Loading { sess }) => sess.address() == addr,
                 None => false,
             };
             if parked {
@@ -865,41 +826,37 @@ fn pad_label(s: &str) -> String {
     format!(" {s} ")
 }
 
-/// The session address a card belongs to (window / loading), or `None` for a
+/// The context parts of a card: `(host, mux, session)`. A host-state card
+/// carries only its host; a session/loading card names its session's host, mux
+/// kind (empty when not yet known), and session name.
+fn context_of(reference: &RowRef) -> (&str, &str, &str) {
+    match reference {
+        RowRef::Host { source, .. } => (source, "", ""),
+        RowRef::Session { sess } | RowRef::Loading { sess } => {
+            (&sess.source, &sess.mux, &sess.name)
+        }
+    }
+}
+
+/// The session address a card belongs to (session / loading), or `None` for a
 /// host-state card. Lets selection tracking, kill-confirm survival, and
-/// `select_address` treat any of a session's cards as that session.
+/// `select_address` treat either of a session's card forms as that session.
 fn session_addr_of(reference: &RowRef) -> Option<String> {
     match reference {
-        RowRef::Window { sess, .. } | RowRef::Loading { sess } => Some(sess.address()),
+        RowRef::Session { sess } | RowRef::Loading { sess } => Some(sess.address()),
         RowRef::Host { .. } => None,
     }
 }
 
-/// Whether two card references target the same card across a rebuild (host by source,
-/// window by address+index), so the selection stays put on a poll / re-scan. A loading
-/// card and a window card of the SAME session count as the same node, so the selection
-/// stays on that session as its panes resolve (loading → first window) or clear.
+/// Whether two card references target the same card across a rebuild (host by
+/// source, session by address), so the selection stays put on a poll / re-scan. A
+/// loading card and a session card of the SAME session count as the same node, so
+/// the selection stays on that session as its panes resolve or clear.
 fn same_node(a: &RowRef, b: &RowRef) -> bool {
     match (a, b) {
         (RowRef::Host { source: x, .. }, RowRef::Host { source: y, .. }) => x == y,
-        (
-            RowRef::Window {
-                sess: x,
-                window: wx,
-                ..
-            },
-            RowRef::Window {
-                sess: y,
-                window: wy,
-                ..
-            },
-        ) => x.address() == y.address() && wx == wy,
-        (RowRef::Loading { sess: x }, RowRef::Loading { sess: y }) => x.address() == y.address(),
-        (RowRef::Loading { sess: x }, RowRef::Window { sess: y, .. })
-        | (RowRef::Window { sess: x, .. }, RowRef::Loading { sess: y }) => {
-            x.address() == y.address()
-        }
-        _ => false,
+        (RowRef::Host { .. }, _) | (_, RowRef::Host { .. }) => false,
+        _ => session_addr_of(a) == session_addr_of(b),
     }
 }
 

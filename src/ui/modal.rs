@@ -18,12 +18,6 @@ use crate::ui::tree::RowRef;
 #[derive(Debug, Clone)]
 pub(crate) enum PendingKill {
     Session(Session),
-    /// (source, session, target="session:window")
-    Window {
-        source: String,
-        session: String,
-        target: String,
-    },
     /// The active pane of the terminal view's session. (source, session,
     /// target="session:window" - the window whose active pane is killed.)
     Pane {
@@ -181,9 +175,6 @@ pub(crate) struct Input {
     /// moved the selection by the time they pressed Enter.
     pub(crate) source: Option<String>,
     pub(crate) sess: Option<Session>,
-    /// The window target (`session:window`) for a window rename ([`InputMode::Rename`]
-    /// on a window card); `None` for a session rename.
-    pub(crate) target: Option<String>,
 }
 
 impl Input {
@@ -196,7 +187,6 @@ impl Input {
         buffer: String,
         source: Option<String>,
         sess: Option<Session>,
-        target: Option<String>,
     ) -> Self {
         let cursor = buffer.chars().count();
         Input {
@@ -206,7 +196,6 @@ impl Input {
             cursor,
             source,
             sess,
-            target,
         }
     }
 
@@ -354,9 +343,9 @@ pub(crate) fn menu_items(target: &RowRef) -> Vec<MenuItem> {
     use MenuItem::*;
     match target {
         RowRef::Host { .. } => vec![NewSession],
-        RowRef::Window { .. } => vec![Focus, NewWindow, Rename, Kill],
+        RowRef::Session { .. } => vec![Focus, NewWindow, Rename, Kill],
         // A loading card can only be focused (attach the session); its windows are
-        // not yet resolved, so window-level actions are unavailable.
+        // not yet resolved, so the window-creating action is unavailable.
         RowRef::Loading { .. } => vec![Focus],
     }
 }
@@ -366,8 +355,7 @@ pub(crate) fn menu_items(target: &RowRef) -> Vec<MenuItem> {
 pub(crate) fn menu_title(target: &RowRef) -> String {
     match target {
         RowRef::Host { source, .. } => source.clone(),
-        RowRef::Window { sess, window, .. } => crate::mux::window_target(&sess.name, *window),
-        RowRef::Loading { sess } => sess.name.clone(),
+        RowRef::Session { sess } | RowRef::Loading { sess } => sess.name.clone(),
     }
 }
 
@@ -447,8 +435,8 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
             format!("{p} n"),
             "new: session (on a host) / window (on a card)".into(),
         ),
-        HelpRow::Key(format!("{p} R"), "rename the window (or session)".into()),
-        HelpRow::Key(format!("{p} x"), "kill it (y / n confirm)".into()),
+        HelpRow::Key(format!("{p} R"), "rename the session".into()),
+        HelpRow::Key(format!("{p} x"), "kill the session (y / n confirm)".into()),
         HelpRow::Key("/".into(), "fuzzy filter <source>/<name>".into()),
         HelpRow::Key(format!("{p} r"), "re-scan every host".into()),
         HelpRow::Gap,
@@ -555,7 +543,6 @@ pub(crate) fn confirm_lines(armed: &PendingKill) -> (String, Vec<Line<'static>>)
     let red = Style::default().fg(palette::get().danger);
     let q = match armed {
         PendingKill::Session(sess) => format!(" kill {}?", sess.address()),
-        PendingKill::Window { source, target, .. } => format!(" kill {source}/{target}?"),
         PendingKill::Pane { source, target, .. } => {
             format!(" kill active pane of {source}/{target}?")
         }
@@ -729,7 +716,6 @@ mod tests {
             InputMode::Rename,
             "t".into(),
             buffer.to_string(),
-            None,
             None,
             None,
         )
