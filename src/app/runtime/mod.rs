@@ -842,16 +842,20 @@ pub async fn run_app(env: Arc<Env>) -> i32 {
     }
     let _ = std::fs::create_dir_all(&env.xmux_dir);
 
-    // Pick the dark or light palette from the terminal's reported background
-    // (an OSC 11 round-trip). Must run BEFORE raw mode / the alternate screen -
-    // the query library manages the terminal itself. Failure (an unsupported
-    // terminal, a timeout) keeps the dark default.
-    match terminal_colorsaurus::theme_mode(terminal_colorsaurus::QueryOptions::default()) {
-        Ok(mode) => crate::ui::palette::init_for_dark_terminal(
-            mode == terminal_colorsaurus::ThemeMode::Dark,
-        ),
+    // Derive the palette's xmux-own backgrounds (selection surface, hint bar)
+    // from the terminal's reported background (an OSC 11 round-trip); the
+    // foreground roles are ANSI-16 and need no query. Must run BEFORE raw mode /
+    // the alternate screen - the query library manages the terminal itself.
+    // Failure (an unsupported terminal, a timeout) keeps the fixed fallbacks.
+    match terminal_colorsaurus::background_color(terminal_colorsaurus::QueryOptions::default()) {
+        // Channels are the full u16 range; the high byte is the 8-bit value.
+        Ok(bg) => crate::ui::palette::init_for_terminal_background((
+            (bg.r >> 8) as u8,
+            (bg.g >> 8) as u8,
+            (bg.b >> 8) as u8,
+        )),
         Err(e) => {
-            tracing::debug!("terminal background query failed ({e}); keeping the dark palette")
+            tracing::debug!("terminal background query failed ({e}); keeping the fallback surfaces")
         }
     }
 

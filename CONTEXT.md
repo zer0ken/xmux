@@ -87,12 +87,15 @@ UI elements a user perceives as distinct things:
   to the full two-row card, so its context is always readable in place); the
   renderer and mouse hit-testing share one `card_height` so the screen-row
   mapping never diverges.
-- level color - the fixed per-segment card color, from the palette (`ui::palette`,
-  truecolor): host and session soft mauve (the two name levels share one color),
-  mux soft green, the window part (`{index}:{name}`) muted gray - the quietest
-  level, so the session name anchors the detail line; a host-state card's detail
-  line is colored by state - scanning pending-yellow, unreachable danger-red,
-  settled "no sessions" muted.
+- level color - the per-segment card color, from the palette (`ui::palette`).
+  Every foreground role is ANSI-16, so the terminal theme resolves the hue: host
+  and session cyan (the two name levels share one color), mux green, the
+  window part (`{index}:{name}`) bright-black - the quietest level, so the
+  session name anchors the detail line; a host-state card's detail line is
+  colored by state - scanning yellow, unreachable red, settled "no sessions"
+  muted. The two xmux-own backgrounds (selection surface, hint bar) are derived
+  at startup from the terminal's reported background (OSC 11), so they follow
+  the theme too.
 - selection - the nav's current pick (its card index is `selected`), advanced by
   navigation; a routine poll or restream never moves it (only launch / rescan
   re-sorts). `preselect` / `reselect` are the launch and post-rescan selections.
