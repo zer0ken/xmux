@@ -176,6 +176,9 @@ view-active-border-style = "green"    # 초점 뷰 테두리 색 (tmux 색 표�
 view-border-style = "default"         # 비초점 뷰 테두리 색
 view-border-hover-style = "yellow"    # 크기 조절 드래그 호버 표시
 hint-bar-style = "bg=blue,fg=white"   # 힌트 바 색 (tmux status-style; 비우면 내장 어두운 바)
+selection-style = "#2d4f6b"           # 선택된 카드의 배경. 비우면(기본값) 터미널이 알려 주는 배경에서
+                                      # 계산하고, 터미널이 알려 주지 않으면 아무것도 칠하지 않는다.
+                                      # 그때는 accent 바가 선택을 표시한다.
 ```
 
 호스트는 먼저 `~/.ssh/config`에서 온다. 접속 정보(사용자, 포트, 키, 점프 호스트)를

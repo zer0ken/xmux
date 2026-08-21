@@ -162,6 +162,25 @@ pub(crate) fn parse_hint_bar_style(spec: &str) -> Style {
     style
 }
 
+/// Parses a `[ui] selection-style` spec into the selected card's background. Empty ⇒
+/// `None`, leaving the surface to the terminal's reported background (and to nothing at
+/// all when the terminal reports none). Accepts the same colour vocabulary as the view
+/// border ([`map_color`]): `bg=<colour>`, or a bare colour token, since a selection
+/// surface IS a background and naming it twice would be noise. A `fg=` token is
+/// ignored - the card's text keeps its per-level roles.
+pub(crate) fn parse_selection_bg(spec: &str) -> Option<Color> {
+    for tok in spec.split(',') {
+        let tok = tok.trim();
+        if let Some(c) = tok.strip_prefix("bg=") {
+            return Some(map_color(c));
+        }
+        if !tok.is_empty() && !tok.starts_with("fg=") {
+            return Some(map_color(tok));
+        }
+    }
+    None
+}
+
 /// The hint bar's refusal style: a solid danger-red bar (the active palette's
 /// `danger` as the background, the `bar_bg` tone as the text) that breaks hard
 /// from the calm default so a refused action reads as an
@@ -609,6 +628,31 @@ impl Chrome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_selection_style_names_one_background() {
+        // A selection surface IS a background, so a bare colour token is it; `bg=` is
+        // accepted for symmetry with the other [ui] colour keys, and an `fg=` token is
+        // not a surface and must not become one.
+        assert_eq!(parse_selection_bg(""), None);
+        assert_eq!(parse_selection_bg("   "), None);
+        assert_eq!(parse_selection_bg("blue"), Some(Color::Blue));
+        assert_eq!(parse_selection_bg("bg=blue"), Some(Color::Blue));
+        assert_eq!(
+            parse_selection_bg("#204060"),
+            Some(Color::Rgb(0x20, 0x40, 0x60))
+        );
+        assert_eq!(
+            parse_selection_bg("fg=red"),
+            None,
+            "a foreground is not a surface"
+        );
+        assert_eq!(
+            parse_selection_bg("fg=red,bg=blue"),
+            Some(Color::Blue),
+            "the background wins wherever it sits in the list"
+        );
+    }
 
     #[test]
     fn parse_hint_bar_style_default_and_override() {
