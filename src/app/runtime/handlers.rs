@@ -383,6 +383,7 @@ impl Runtime {
         self.state
             .chrome
             .set_view_border_hovered(self.mouse_state.hovered_view_border);
+        self.state.chrome.set_armed(self.armed());
         // Derive the modal dimension of focus from the open-modal kind (single owner of
         // the modal/view reconciliation).
         let modal_kind = self.state.modal_kind();
@@ -930,6 +931,14 @@ impl Runtime {
             }
         }
         false
+    }
+
+    /// Whether the prefix is armed, in EITHER focus: the nav path latches it on
+    /// `mouse_state.tree_armed`, the terminal path inside `TermInput`. The hint bar asks
+    /// one question ("is a command key expected?"), so the two latches are OR'd here
+    /// rather than making the chrome know about focus.
+    pub(super) fn armed(&self) -> bool {
+        self.mouse_state.tree_armed || self.term_input.is_armed()
     }
 
     /// The op-result arm: fold a finished create back into the tree/state.

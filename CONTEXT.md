@@ -58,9 +58,12 @@ UI elements a user perceives as distinct things:
   `heavy ┃` (hover - the drag-resize grab cue).
 - chrome - the furniture around the two views, owned by the `Chrome` type: the
   view border, the hint bar, and the host info.
-- hint bar - the bottom line spanning the full terminal width (key hints, flash,
-  the scan indicator, filter text), not just the nav column, so a long flash wraps
-  across it instead of clipping. A shown flash paints it in the error style.
+- hint bar - the nav's own status line: the bottom row(s) of the nav region, ending
+  at the view border rather than spanning the screen, so the terminal view keeps
+  every row it owns. At rest it shows only the prefix; while the prefix is ARMED it
+  shows the keys that prefix unlocks. A flash, the scan indicator, and the active
+  filter outrank both, in that order. A long flash wraps across as many nav rows as
+  it needs instead of clipping. A shown flash paints it in the error style.
 - host info - the unreachable-host detail shown in the terminal-view region.
 - landing - the empty-state panel shown in the terminal-view region for a selected
   reachable host that has no sessions yet (its name + the keys to start one).
@@ -114,6 +117,9 @@ UI elements a user perceives as distinct things:
   action's reason). Never a "toast" or "notice".
 - scan indicator - the `⟳ scanning hosts n/m…` progress shown in the hint bar
   while host probes are in flight; distinct from a row's `scanning…` status.
+- armed - the state between pressing the prefix and its command key. The hint bar
+  reads it to swap from the resting prefix to the cheatsheet, so arming is a
+  visible change and redraws the frame.
 - popup - the rounded-bordered, opaque, centered (draggable) dialog a
   `ModalKind::Popup` draws, its accent title in the top border. The help and the
   input dialog are popups.

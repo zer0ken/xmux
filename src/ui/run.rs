@@ -257,9 +257,9 @@ mod tests {
         let mut sw = Switcher::new(&mut state);
         let out = dump_switcher(&mut sw, &state, 100, 30);
         assert!(out.contains("editor"));
-        // The dump renders the full screen (tree + hint_bar); the hint_bar's nav hint
-        // is always present (the screen carries no chrome titles).
-        assert!(out.contains("quit"), "hint_bar hint present:\n{out}");
+        // The dump renders the full screen (tree + hint bar); at rest the bar shows the
+        // prefix alone, which is the one thing always present.
+        assert!(out.contains("C-g"), "hint bar prefix present:\n{out}");
     }
 
     #[tokio::test]

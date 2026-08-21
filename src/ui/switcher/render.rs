@@ -43,11 +43,12 @@ impl Switcher {
             return;
         }
         // One geometry source for the whole frame (compute_regions), shared with the PTY
-        // sizing and mouse hit-testing so they never diverge: the hint bar spans the bottom
-        // full width, and the nav list / terminal split horizontally (Side) or vertically
-        // (Top, for a portrait screen), parted by the view border. The hint bar is normally
-        // one row; a long flash wraps, so size it to the wrapped line count (never clipped).
-        let hint_bar_h = state.chrome.hint_bar_lines(area.width, state).len().max(1) as u16;
+        // sizing and mouse hit-testing so they never diverge: the nav list / terminal split
+        // horizontally (Side) or vertically (Top, for a portrait screen), parted by the view
+        // border, and the hint bar takes the nav's bottom rows. The hint bar is normally one
+        // row; a long flash wraps, so size it to the wrapped line count (never clipped).
+        // Measured at the NAV width, since that is the width it will render at.
+        let hint_bar_h = state.chrome.hint_bar_lines(nav_width, state).len().max(1) as u16;
         let r = compute_regions(area, nav_width, nav_height, hint_bar_h);
         self.render_nav(frame, r.tree, state);
         state.chrome.render_hint_bar(frame, r.hint_bar, state);

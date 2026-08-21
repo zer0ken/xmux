@@ -65,6 +65,16 @@ tree or the live screen holds focus.
 | `prefix Ctrl-←` / `prefix Ctrl-→` | narrow / widen the tree (then a bare `Ctrl-←`/`Ctrl-→` keeps resizing for a moment) |
 | `prefix prefix` | send one literal prefix byte to the focused session's pane |
 
+## The status line
+
+The nav's bottom row is its status line. It stops at the view border, so the live
+screen keeps every row it has. At rest it shows one thing: the prefix. Press the
+prefix and it becomes the list of keys that prefix unlocks, then returns once the
+command key lands. Four states outrank the prefix while they apply, in order: a
+refusal message (in red), the host-scan progress, the active filter, and then the
+resting prefix. A refusal too long for the nav width wraps onto more rows rather
+than clipping.
+
 ## Focus
 
 | Key | Action |

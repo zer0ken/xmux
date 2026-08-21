@@ -6,6 +6,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Modifier;
 use ratatui::Terminal;
 use std::sync::Mutex;
+use unicode_width::UnicodeWidthStr;
 
 // --- mock ops -----------------------------------------------------------
 
@@ -84,11 +85,14 @@ impl Harness {
         h
     }
 
+    /// The hint bar lives at the bottom of the NAV region, not across the screen,
+    /// so read the nav column's last row (and only its width).
     fn hint_bar_text(&self) -> String {
         let buf = self.buf();
         let y = buf.area.height - 1;
+        let limit = NAV_WIDTH.min(buf.area.width);
         let mut line = String::new();
-        for x in 0..buf.area.width {
+        for x in 0..limit {
             line.push_str(buf[(x, y)].symbol());
         }
         line.trim_end().to_string()
@@ -1054,48 +1058,56 @@ async fn hint_bar_shows_scanning_progress_then_clears() {
         !hint_bar.contains("scanning"),
         "the scanning indicator clears once all hosts settle:\n{hint_bar:?}"
     );
-    assert!(
-        hint_bar.contains("filter") || hint_bar.contains("help") || hint_bar.contains("quit"),
-        "the hint_bar returns to the help line:\n{hint_bar:?}"
+    assert_eq!(
+        hint_bar.trim(),
+        "C-g",
+        "the hint bar returns to the resting prefix indicator:\n{hint_bar:?}"
     );
 }
 
 #[tokio::test]
-async fn hint_bar_fits_narrow_width() {
+async fn armed_hint_bar_fits_a_narrow_nav() {
+    // The armed cheatsheet is the widest thing the bar ever shows, and it now has only
+    // the nav column to fit in, so it must degrade to a shorter candidate, never clip.
     let mut state = crate::state::State::from_scan(sample());
+    state.chrome.set_armed(true);
     let mut sw = Switcher::new(&mut state);
-    let mut term = Terminal::new(TestBackend::new(30, 30)).unwrap();
-    term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, &state))
+    let nav_w = 24u16;
+    let mut term = Terminal::new(TestBackend::new(60, 30)).unwrap();
+    term.draw(|f| sw.render(f, None, false, nav_w, 0, &state))
         .unwrap();
     let buf = term.backend().buffer();
     let y = buf.area.height - 1;
     let mut hint_bar = String::new();
-    for x in 0..buf.area.width {
+    for x in 0..nav_w {
         hint_bar.push_str(buf[(x, y)].symbol());
     }
     let hint_bar = hint_bar.trim_end().to_string();
     assert!(
-        hint_bar.chars().count() <= 30,
-        "hint_bar fits a 30-column terminal:\n{hint_bar:?}"
+        UnicodeWidthStr::width(hint_bar.as_str()) <= nav_w as usize,
+        "the armed cheatsheet fits the nav column:\n{hint_bar:?}"
     );
     assert!(
-        hint_bar.contains("help") || hint_bar.contains("quit"),
-        "hint_bar still offers help/quit hints:\n{hint_bar:?}"
+        hint_bar.contains("C-g"),
+        "it still names the armed prefix:\n{hint_bar:?}"
     );
 }
 
 #[test]
 fn hint_bar_has_status_bar_background() {
-    // The hint bar is a solid dark status bar spanning the full width - including
-    // cells past the text - so it reads as chrome, clearly set off from the tree
-    // rows above. Key tokens carry the accent over that base.
+    // The hint bar is a solid dark status bar spanning the NAV column - including
+    // cells past the text - so it reads as the nav's own status line, clearly set off
+    // from the cards above and stopping at the view border. Key tokens carry the
+    // accent over that base.
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
-    let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
+    // Wide enough that the terminal view stays landscape, so the layout is Side and the
+    // nav column runs the full height (its last row IS the hint bar).
+    let mut term = Terminal::new(TestBackend::new(140, 20)).unwrap();
     term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, &state))
         .unwrap();
     let buf = term.backend().buffer();
-    let y = buf.area.height - 1; // the one-line hint bar sits on the last row
+    let y = buf.area.height - 1; // the one-line hint bar sits on the nav's last row
     let bg = crate::ui::palette::get().bar_bg;
     assert_eq!(buf[(1, y)].bg, bg, "a text cell has the dark bar bg");
     assert_eq!(
@@ -1104,9 +1116,14 @@ fn hint_bar_has_status_bar_background() {
         "the leading key token is accented"
     );
     assert_eq!(
-        buf[(buf.area.width - 1, y)].bg,
+        buf[(NAV_WIDTH - 1, y)].bg,
         bg,
-        "a trailing cell past the text is also the bar bg (fills full width)"
+        "a trailing cell past the text is also the bar bg (fills the nav width)"
+    );
+    assert_ne!(
+        buf[(NAV_WIDTH + 1, y)].bg,
+        bg,
+        "the bar stops at the view border - the terminal view keeps that row"
     );
 }
 
@@ -1804,31 +1821,34 @@ async fn flash_clears_on_next_key_restoring_the_hint_bar() {
 #[test]
 fn compute_regions_side_top_and_hidden() {
     use ratatui::layout::Rect;
-    // Landscape → Side: tree left, 1-col border, terminal right, hint bar the bottom row.
+    // Landscape → Side: tree left, 1-col border, terminal right. The hint bar is the
+    // NAV column's bottom row, so the border and the terminal keep the full height.
     let land = Rect::new(0, 0, 100, 30);
     let s = compute_regions(land, 48, 0, 1);
     assert_eq!(s.layout, ViewLayout::Side);
     assert_eq!(s.tree, Rect::new(0, 0, 48, 29));
-    assert_eq!(s.view_border, Rect::new(48, 0, 1, 29));
-    assert_eq!(s.terminal, Rect::new(49, 0, 51, 29));
-    assert_eq!(s.hint_bar, Rect::new(0, 29, 100, 1));
+    assert_eq!(s.view_border, Rect::new(48, 0, 1, 30));
+    assert_eq!(s.terminal, Rect::new(49, 0, 51, 30));
+    assert_eq!(s.hint_bar, Rect::new(0, 29, 48, 1));
     // A landscape SCREEN can still be Top when the side tree would squeeze the terminal
     // view into a portrait shape: 100 wide, tree 48 → terminal view ~51 wide vs 80 tall, so
     // Top wins even though the screen itself is wider than tall.
     let squeezed = compute_regions(Rect::new(0, 0, 100, 80), 48, 0, 1);
     assert_eq!(squeezed.layout, ViewLayout::Top);
-    // Portrait → Top: tree on top, 1-row border, terminal below, hint bar the bottom row.
+    // Portrait → Top: tree band on top, 1-row border, terminal below. The hint bar is
+    // the BAND's bottom row, so it sits directly above the view border, not at the
+    // screen's bottom edge.
     let port = Rect::new(0, 0, 40, 100);
     let t = compute_regions(port, 48, 0, 1);
     assert_eq!(t.layout, ViewLayout::Top);
     assert_eq!(t.tree.y, 0);
     assert_eq!(t.tree.width, 40);
-    let th = t.tree.height;
-    assert_eq!(t.view_border, Rect::new(0, th, 40, 1));
+    let band_h = t.tree.height + t.hint_bar.height;
+    assert_eq!(t.hint_bar, Rect::new(0, t.tree.height, 40, 1));
+    assert_eq!(t.view_border, Rect::new(0, band_h, 40, 1));
     assert_eq!(t.terminal.x, 0);
-    assert_eq!(t.terminal.y, th + 1);
+    assert_eq!(t.terminal.y, band_h + 1);
     assert_eq!(t.terminal.width, 40);
-    assert_eq!(t.hint_bar, Rect::new(0, 99, 40, 1));
     // Tree-hidden sentinel: the terminal owns the whole area, no hint bar / border.
     let hidden = compute_regions(land, 0, 0, 1);
     assert_eq!(hidden.terminal, land);
@@ -1882,15 +1902,19 @@ async fn digit_keys_quick_jump_to_selectable_rows() {
 #[tokio::test]
 async fn hint_bar_and_help_reflect_new_model() {
     let mut h = Harness::new(sample());
-    let hint_bar = h.hint_bar_text();
+    // At rest the bar names only the prefix (zellij's resting status line): the keys it
+    // unlocks are one keypress away, so they do not crowd the nav's bottom row.
+    assert_eq!(h.hint_bar_text().trim(), "C-g");
+    // Armed, it becomes the cheatsheet for exactly those keys.
+    h.state.chrome.set_armed(true);
+    h.draw();
+    let armed = h.hint_bar_text();
     assert!(
-        !hint_bar.to_lowercase().contains("enter attach"),
-        "Enter is a no-op now:\n{hint_bar}"
+        armed.contains("q") && armed.contains("?"),
+        "the armed bar lists the chords the prefix unlocks:\n{armed}"
     );
-    assert!(
-        hint_bar.contains("focus"),
-        "hint_bar mentions focusing the terminal view:\n{hint_bar}"
-    );
+    h.state.chrome.set_armed(false);
+    h.draw();
     h.sw.show_help(&mut h.state); // driven by the app's `prefix ?`
     h.draw();
     let help = h.text();

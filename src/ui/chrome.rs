@@ -176,7 +176,8 @@ pub(crate) fn error_flash_style() -> Style {
 
 /// The switcher's chrome view state: the view border/hint_bar/host-info draws and
 /// their inputs (flash, spinner set + frame, auto-hide + hover cues, view border
-/// colours, the ssh-config text, the configured prefix string, and the hint bar style).
+/// colours, the ssh-config text, the configured prefix string, whether the prefix is
+/// currently armed, and the hint bar style).
 pub struct Chrome {
     pub(crate) flash: String,
     /// Auto-hide-tree mode (set by the app each frame). Drives the view border glyph:
@@ -196,6 +197,12 @@ pub struct Chrome {
     /// The human-readable prefix string (e.g. `"C-g"`, `"C-Space"`) - set once by
     /// the app from config so the help modal reflects the active binding.
     pub(crate) ui_prefix: String,
+    /// True while the prefix has been pressed and the app is waiting for the command
+    /// key (set by the app each frame from the live input state, in either focus). The
+    /// hint bar shows the prefix alone until this flips, then the keys it unlocks - so
+    /// the cheatsheet appears exactly when it is needed and never competes with the
+    /// cards for room.
+    pub(crate) armed: bool,
     /// The tree|terminal view border colours (set once by the app from config; tmux defaults
     /// otherwise). See [`ViewBorderColors`].
     pub(crate) colors: ViewBorderColors,
@@ -214,6 +221,7 @@ impl Default for Chrome {
             spinner_frame: 0,
             ssh_config_text: String::new(),
             ui_prefix: "C-g".into(),
+            armed: false,
             colors: ViewBorderColors::default(),
             hint_bar_style: hint_bar_default_style(),
         }
@@ -221,7 +229,7 @@ impl Default for Chrome {
 }
 
 impl Chrome {
-    /// Sets the transient flash message shown in the full-width hint bar (an error
+    /// Sets the transient flash message shown in the nav's hint bar (an error
     /// or notice). The next tree key clears it (the switcher's `handle_key`), so the
     /// normal help/status hint bar returns.
     pub(crate) fn flash(&mut self, msg: impl Into<String>) {
@@ -264,6 +272,13 @@ impl Chrome {
     /// at startup so the help modal reflects the binding from config's `[ui] prefix`.
     pub(crate) fn set_ui_prefix(&mut self, prefix: String) {
         self.ui_prefix = prefix;
+    }
+
+    /// Sets whether the prefix is armed (pressed, awaiting its command key). The app
+    /// calls this each frame from the live input state; the hint bar reads it to swap
+    /// between the resting prefix indicator and the unlocked-keys cheatsheet.
+    pub(crate) fn set_armed(&mut self, armed: bool) {
+        self.armed = armed;
     }
 
     /// Sets the hint bar style. The app calls this once at startup from
@@ -431,23 +446,41 @@ impl Chrome {
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
     }
 
-    /// The hint_bar's logical text (confirm / flash / scanning / filter / help), fit to
-    /// `width`. A flash is returned raw - it may exceed `width`; [`Self::hint_bar_lines`]
-    /// wraps it so it never clips.
+    /// The hint bar's logical text, fit to `width`. Modeled on zellij's status bar:
+    /// at rest it shows only the prefix, so the nav's bottom row is a quiet reminder
+    /// of the one key that opens everything; once the prefix is ARMED it becomes the
+    /// list of keys that prefix unlocks, which is the moment the user needs it. The
+    /// transient states outrank both, in order: a flash (a refusal), the scan
+    /// progress, then the active filter. A flash is returned raw - it may exceed
+    /// `width`; [`Self::hint_bar_lines`] wraps it so it never clips.
     pub(crate) fn hint_bar_text(&self, width: u16, state: &crate::state::State) -> String {
         // Use the active prefix so the hint_bar matches the user's configured binding.
         let p = &self.ui_prefix;
         if !self.flash.is_empty() {
             format!(" ⚠ {}", self.flash)
+        } else if self.armed {
+            // The prefix is held: name what it unlocks. Longest-first so a narrow nav
+            // drops the rarer chords rather than clipping mid-word.
+            fit(
+                &[
+                    format!(" {p} n new · r rescan · / filter · Tab terminal · t hide · h/l size · ? help · q quit"),
+                    format!(" {p} n new · r rescan · Tab term · t hide · ? help · q quit"),
+                    format!(" {p} n · r · Tab · t · h/l · ? · q"),
+                    format!(" {p} n r Tab t ? q"),
+                    format!(" {p}…"),
+                ],
+                width,
+            )
         } else if !state.scanning.is_empty() {
             // A subtle global indicator while host probes are in flight; clears
-            // (falls through to the help line) once every host has settled.
+            // (falls through to the resting prefix) once every host has settled.
             let total = state.groups.len();
             let done = total.saturating_sub(state.scanning.len());
             fit(
                 &[
-                    format!(" ⟳ scanning hosts {done}/{total}… · {p} q quit · {p} ? help"),
+                    format!(" ⟳ scanning hosts {done}/{total}…"),
                     format!(" ⟳ scanning {done}/{total}…"),
+                    format!(" ⟳ {done}/{total}"),
                 ],
                 width,
             )
@@ -456,31 +489,20 @@ impl Chrome {
             // shows in the hint_bar (with how to clear it).
             fit(
                 &[
-                    format!(
-                        " filter: {} · / edit · Esc clear · {p} ? help · {p} q quit",
-                        state.filter
-                    ),
+                    format!(" filter: {} · / edit · Esc clear", state.filter),
                     format!(" filter: {}", state.filter),
                 ],
                 width,
             )
         } else {
-            fit(
-                &[
-                    format!(" ↑/↓ move · Enter/{p}→ focus terminal · / filter · {p} n new session · {p} r refresh · {p} ? help · {p} q quit"),
-                    format!(" ↑/↓ move · Enter focus terminal · / filter · {p} n new · {p} ? help · {p} q quit"),
-                    format!(" move · Enter focus terminal · / filter · {p} ? help · {p} q quit"),
-                    format!(" Enter focus terminal · {p} ? help · {p} q quit"),
-                    format!(" {p} ? help · {p} q quit"),
-                ],
-                width,
-            )
+            // At rest: the prefix alone. Everything else is one keypress away.
+            fit(&[format!(" {p}"), p.to_string()], width)
         }
     }
 
     /// The hint_bar text split into the lines to render. The fit-based text is always one
     /// line; only a flash (an arbitrary error message) may exceed `width`, so it wraps
-    /// across the full-width hint bar rather than clipping.
+    /// across as many nav rows as it needs rather than clipping.
     pub(crate) fn hint_bar_lines(&self, width: u16, state: &crate::state::State) -> Vec<String> {
         let text = self.hint_bar_text(width, state);
         // Only a flash can exceed `width` (the fit-based text is already constrained);
@@ -593,6 +615,24 @@ mod tests {
         assert_eq!(s.fg, Some(Color::White));
         // A bare colour token is the foreground (tmux convention).
         assert_eq!(parse_hint_bar_style("red").fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn hint_bar_shows_the_prefix_at_rest_and_its_keys_when_armed() {
+        let mut c = Chrome::default();
+        let state = crate::state::State::default();
+        // At rest: the prefix alone. That is the whole resting cheatsheet.
+        assert_eq!(c.hint_bar_text(80, &state).trim(), "C-g");
+        // Armed: the keys the prefix unlocks.
+        c.set_armed(true);
+        let armed = c.hint_bar_text(120, &state);
+        assert!(armed.starts_with(" C-g "), "{armed:?}");
+        for key in ["n new", "r rescan", "? help", "q quit"] {
+            assert!(armed.contains(key), "armed bar lists {key:?}: {armed:?}");
+        }
+        // A flash outranks the armed cheatsheet: a refusal must not be hidden by it.
+        c.flash("host unreachable");
+        assert!(c.hint_bar_text(120, &state).contains("host unreachable"));
     }
 
     #[test]
