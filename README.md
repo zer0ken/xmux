@@ -112,6 +112,25 @@ keys that prefix unlocks.
 
 See [`docs/keybind.md`](docs/keybind.md) for more on the prefix.
 
+## Where the host list comes from
+
+By default xmux offers the `Host` aliases in `~/.ssh/config`, plus `local`. A tailnet
+can supply the list instead, so the machines you can reach are the machines xmux
+offers with nothing to keep in sync by hand:
+
+```toml
+[discovery]
+ssh-config = true   # default; set false to use only the providers below
+tailscale = false   # default; the online peers of this machine's tailnet
+```
+
+A tailnet peer is offered under its DNS label (`jupiter00`), the name that resolves
+and the name an ssh config would already use. Offline peers and this machine itself
+are skipped: this machine is `local`, and an offline peer has nothing to scan. A
+provider that cannot answer (no CLI, daemon down) contributes nothing rather than
+failing the run. Names from `~/.ssh/config` come first and a provider repeating one
+adds nothing, so a host you configured by hand keeps the position you gave it.
+
 ## Configuration
 
 Configuration is entirely optional. Zero-config is the default. xmux reads

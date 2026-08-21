@@ -21,6 +21,7 @@ pub mod manage;
 pub mod model;
 pub mod mux;
 pub mod prefs;
+pub mod roster;
 pub mod session;
 pub mod source;
 pub mod state;

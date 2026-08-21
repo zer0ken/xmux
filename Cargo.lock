@@ -2440,6 +2440,7 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_ignored",
+ "serde_json",
  "terminal-colorsaurus",
  "thiserror 2.0.18",
  "tokio",

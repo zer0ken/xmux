@@ -95,7 +95,21 @@ pub fn build_env() -> (Env, Option<anyhow::Error>) {
     // default, so this is a no-op there.
     cfg_warnings.extend(cfg.value_warnings());
     let os = current_os();
-    let aliases = config::ssh_host_aliases(&ssh_config_path());
+    // The ROSTER: which machines xmux offers. `~/.ssh/config` first, so a hand-written
+    // alias keeps the position the user gave it; then each network provider the config
+    // enables. See `crate::roster`.
+    let aliases = crate::roster::merge(&[
+        if cfg.discovery.ssh_config {
+            config::ssh_host_aliases(&ssh_config_path())
+        } else {
+            Vec::new()
+        },
+        if cfg.discovery.tailscale {
+            crate::roster::tailscale_aliases()
+        } else {
+            Vec::new()
+        },
+    ]);
     let xmux_dir = xmux_dir_path();
     let local_socket = local_socket(std::env::var("TMUX").ok().as_deref());
     let srcs = source::build(&cfg, &aliases, os, &xmux_dir, local_socket);
