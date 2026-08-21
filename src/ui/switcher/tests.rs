@@ -1602,41 +1602,63 @@ fn nav_line(h: &Harness, y: u16) -> String {
 #[tokio::test]
 async fn repeated_host_mux_collapses_the_card_to_one_row() {
     // A card whose {host}/{mux} repeats the previous card's drops its context
-    // line outright - a one-row card - so runs on one server read grouped. A
-    // different mux on the same host keeps the full context line (only an exact
-    // host+mux repeat collapses).
-    let h = Harness::new(one_host_scan(
+    // line outright - a one-row card - so runs on one server read grouped, and
+    // the connectors draw the group: ├ while a collapsed sibling follows below,
+    // └ on the run's last line. A different mux on the same host keeps the full
+    // context line (only an exact host+mux repeat collapses).
+    let mut h = Harness::new(one_host_scan(
         "srv",
         vec![
-            sess_mux("srv", "alpha", "tmux", 300),
-            sess_mux("srv", "beta", "tmux", 200),
-            sess_mux("srv", "gamma", "zellij", 100),
+            sess_mux("srv", "alpha", "tmux", 400),
+            sess_mux("srv", "beta", "tmux", 300),
+            sess_mux("srv", "gamma", "tmux", 200),
+            sess_mux("srv", "delta", "zellij", 100),
         ],
     ));
+    h.key(KeyCode::End).await; // park the selection on delta - no connector suppression above
     let out = h.nav_text();
     assert!(
         out.contains("srv/tmux"),
         "the first card carries the context line:\n{out}"
     );
-    // beta collapses: its single row is the detail line, directly under alpha's.
+    // beta and gamma collapse: single rows stacked directly under alpha's detail.
     let alpha_row = h.nav_row_of("alpha/0:w-alpha").expect("alpha detail");
     let beta_row = h.nav_row_of("beta/0:w-beta").expect("beta detail");
+    let gamma_row = h.nav_row_of("gamma/0:w-gamma").expect("gamma detail");
     assert_eq!(
         beta_row,
         alpha_row + 1,
         "beta has no context line of its own"
+    );
+    assert_eq!(
+        gamma_row,
+        beta_row + 1,
+        "gamma has no context line of its own"
     );
     let beta_line = nav_line(&h, beta_row);
     assert!(
         !beta_line.contains("srv") && !beta_line.contains("tmux"),
         "the collapsed row is the detail alone: {beta_line:?}"
     );
-    // gamma runs a different mux: a full context line, host included.
-    let gamma_row = h.nav_row_of("gamma/0:w-gamma").expect("gamma detail");
-    let gamma_context = nav_line(&h, gamma_row - 1);
+    // The connectors: ├ continues into the collapsed sibling below, └ ends the run.
     assert!(
-        gamma_context.contains("srv/zellij"),
-        "a mux change keeps the full context: {gamma_context:?}"
+        nav_line(&h, alpha_row).contains("├"),
+        "alpha continues into collapsed beta"
+    );
+    assert!(
+        nav_line(&h, beta_row).contains("├"),
+        "beta continues into collapsed gamma"
+    );
+    assert!(
+        nav_line(&h, gamma_row).contains("└"),
+        "gamma ends the collapsed run"
+    );
+    // delta runs a different mux: a full context line, host included.
+    let delta_row = h.nav_row_of("delta/0:w-delta").expect("delta detail");
+    let delta_context = nav_line(&h, delta_row - 1);
+    assert!(
+        delta_context.contains("srv/zellij"),
+        "a mux change keeps the full context: {delta_context:?}"
     );
 }
 
@@ -1670,8 +1692,8 @@ async fn focused_collapsed_card_expands_to_two_rows() {
         "the expanded card shows its full context: {context:?}"
     );
     assert!(
-        !nav_line(&h, beta_row).contains("└"),
-        "the selected card drops the └ connector"
+        !nav_line(&h, beta_row).contains("└") && !nav_line(&h, beta_row).contains("├"),
+        "the selected card drops the connector"
     );
     // The selection bar marks both rows of the expanded card.
     assert_eq!(h.buf()[(0, beta_row - 1)].symbol(), "▌");

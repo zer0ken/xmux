@@ -70,11 +70,13 @@ UI elements a user perceives as distinct things:
   while the terminal view is focused. "cursor" always means this text cursor,
   never the nav selection.
 - card - one nav entry: a context line (`{host}/{mux}`, or `{host}` on a
-  host-state card) over a detail line (`└ {session}/{index}:{window-name}` of
-  the focused (active) window; the host state; or `└ {session}/` + a loading
-  spinner). The `└` connector hangs the detail under its context line - on a
-  collapsed card, under the shared context above; the selected card drops the
-  connector (the accent bar and surface already bind its lines).
+  host-state card) over a detail line (`{session}/{index}:{window-name}` of
+  the focused (active) window behind a connector; the host state; or the
+  session name + a loading spinner). The muted connector hangs the detail
+  under its context line - on a collapsed card, under the shared context
+  above: `├` while a collapsed sibling follows below, `└` on the run's last
+  line; the selected card drops the connector (the accent bar and surface
+  already bind its lines).
   One card per SESSION; the mux segment names the mux kind serving it
   (`Session.mux`, stamped at enumeration), so several muxes on one host stay
   distinguishable. The kinds are the session card, the host-state card

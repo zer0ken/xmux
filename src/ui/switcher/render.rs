@@ -240,13 +240,19 @@ impl Switcher {
             ),
             _ => Span::styled(row.line2.clone(), Style::default().fg(color_window())),
         };
-        // The └ connector hangs the detail line under its context line; on a
+        // The connector hangs the detail line under its context line; on a
         // collapsed card it hangs under the SHARED context above, so a run of
-        // collapsed cards reads as siblings of one context. The selected card
+        // collapsed cards reads as siblings of one context: ├ while a collapsed
+        // sibling follows below, └ on the run's last line. The selected card
         // drops it - the accent bar and surface already bind its two lines.
         let mut detail = vec![gutter(collapsed), Span::raw(" ")];
         if !selected {
-            detail.push(Span::styled("└ ", muted));
+            let connector = if self.card_collapsed(i + 1) {
+                "├ "
+            } else {
+                "└ "
+            };
+            detail.push(Span::styled(connector, muted));
         }
         detail.extend([
             Span::styled(sess.to_string(), Style::default().fg(color_session())),
