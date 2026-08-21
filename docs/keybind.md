@@ -143,11 +143,25 @@ A running xmux instance listens on a local control socket. Sessions are addresse
 The wire carries no kill/rename/window verbs, for the same reason the keys do
 not: the mux owns editing a session.
 
-Drive it with `xmux ctl <verb>`, e.g. `xmux ctl switch prod/api`. A low-level `raw:`
-namespace (`raw:key`, `raw:keys`, `raw:text`) injects keystrokes or bytes for
-tests; it is unstable and not part of the supported surface.
+Every running instance has a NAME. It takes one at startup - an auto-generated
+`<adjective>-<noun>`, or whatever `xmux --name <name>` says (lowercase letters,
+digits, and `-`, up to 32 characters) - and owns `ctl-<name>.sock` while it lives.
 
-With one instance running `xmux ctl` targets it automatically; with several it
-refuses to guess. `xmux ctl list` prints each instance (pid, working directory,
-tty, displayed session, focus) so you can drive a specific one with
-`xmux ctl --pid <pid> <verb>`.
+`xmux instances` lists the live ones with their name, pid, working directory, tty,
+displayed session, and focus. `xmux send <name> <command>` drives one:
+
+```
+xmux instances
+xmux send amber-otter switch prod/api
+xmux send am focus terminal          # any unambiguous name prefix works
+xmux send - dump                     # `-` when exactly one is running
+printf 'switch prod/api\nfocus terminal\n' | xmux send amber-otter
+```
+
+An unknown name, an ambiguous prefix, or `-` with several instances running is an
+error naming the candidates, never a guess: sending a command to the wrong instance
+switches the wrong terminal. With no command, `send` reads them from stdin, one per
+line. A refused command exits non-zero so a script can detect it.
+
+A low-level `raw:` namespace (`raw:key`, `raw:keys`, `raw:text`) injects keystrokes
+or bytes for tests; it is unstable and not part of the supported surface.

@@ -31,8 +31,9 @@ ssh 너머의 tmux 세션이든 똑같다. 떼었다 다시 붙이는 절차도,
 - **넘나들기에만 집중한다.** 세션을 오가고 거르고 번호로 뛰어가고, 세션이 없는
   호스트에 새 세션 하나를 만든다. 이름 바꾸기와 없애기, 창과 pane 작업은 그걸 이미 잘하는 mux에
   남겨 둔다.
-- **컨트롤 소켓.** 로컬 소켓이 스크립팅과 헤드리스 구동을 위한 의미 단위 명령을
-  노출한다([컨트롤 소켓](#컨트롤-소켓) 참고).
+- **이름 붙은 인스턴스.** 실행 중인 인스턴스마다 이름이 있어서
+  `xmux send <name> <command>`로 특정 인스턴스를 골라 구동한다
+  ([컨트롤 소켓](#컨트롤-소켓) 참고).
 
 ## 설치
 
@@ -61,7 +62,8 @@ xmux                          # 대화형 트리 + 실시간 화면 앱
 xmux ls                       # 닿을 수 있는 모든 세션 나열 (스크립트용)
 xmux attach <source>/<name>   # 세션 하나에 바로 연결, 예: xmux attach prod/api
 xmux doctor                   # 설정과 호스트별 접속 가능 여부 점검
-xmux ctl <command…>           # 실행 중인 인스턴스를 컨트롤 소켓으로 구동
+xmux instances                # 실행 중인 인스턴스 목록
+xmux send <name> <command…>  # 그중 하나를 컨트롤 소켓으로 구동
 xmux version
 ```
 
@@ -140,29 +142,27 @@ hint-bar-style = "bg=blue,fg=white"   # 힌트 바 색 (tmux status-style; 비�
 
 ## 컨트롤 소켓
 
-실행 중인 xmux 인스턴스는 로컬 소켓(`~/.xmux/ctl-<pid>.sock`)을 듣는다. 세션은
-`<source>/<session>`으로 지정한다. 이 소켓은 이동·표시 명령을 받는다. `ping`,
-`status`, `dump`, `rescan`, `switch <source>/<session>`, `focus <nav|terminal>`,
-`width <delta>`(트리 폭을 부호 있는 열 수만큼 조정한다. 절대 폭이 아니라 증분이다),
-`toggle-auto-hide`, `quit`이다. 세션 수명을 다루는 명령은
-`new-session <source> [name]` 하나뿐이다. 없애기·이름 바꾸기·창 관련 명령은 없다.
-키를 없앤 이유와 같다. 세션을 고치는 일은 mux가 한다.
+실행 중인 인스턴스마다 이름이 있다. 시작할 때 `<형용사>-<명사>` 꼴로 자동 생성되고,
+`xmux --name <name>`으로 직접 지정할 수도 있다. 그 이름으로
+`~/.xmux/ctl-<name>.sock`을 듣는다. 세션은 `<source>/<session>`으로 지정한다.
 
-저수준 키·바이트 주입용으로 불안정한 `raw:` 네임스페이스를 예약해 두었다. 이렇게
-쓴다:
-
-```sh
-xmux ctl status
-xmux ctl switch prod/api
-```
-
-인스턴스가 하나만 돌고 있으면 `xmux ctl`이 알아서 그것을 겨냥한다. 여럿이 돌고
-있으면 함부로 짐작하지 않는다. 목록을 보고 pid로 하나를 짚는다.
+이동과 표시 명령은 `ping`, `status`, `dump`, `rescan`, `switch <source>/<session>`,
+`focus <nav|terminal>`, `width <delta>`(트리 폭을 부호 있는 열 수만큼 조정한다. 절대
+폭이 아니라 증분이다), `toggle-auto-hide`, `quit`이다. 세션 수명을 다루는 명령은
+`new-session <source> [name]` 하나뿐이다. 없애기·이름 바꾸기·창 관련 명령은
+없다. 키를 없앤 이유와 같다. 세션을 고치는 일은 mux가 한다. 저수준 키·바이트
+주입용으로 불안정한 `raw:` 네임스페이스를 예약해 두었다.
 
 ```sh
-xmux ctl list                 # PID · CWD · TTY · 표시 중 세션 · 초점
-xmux ctl --pid 51907 switch local/logs
+xmux instances                       # NAME · PID · CWD · TTY · 표시 중 · 초점
+xmux send amber-otter switch prod/api
+xmux send am focus terminal          # 겹치지 않는 이름 앞부분이면 된다
+xmux send - dump                     # 하나만 돌고 있을 때는 `-`
 ```
+
+없는 이름, 여러 개에 걸리는 앞부분, 여럿이 돌고 있을 때의 `-`는 모두 후보를 알려주는
+에러다. 짐작해서 보내지 않는다. 명령을 주지 않으면 stdin에서 한 줄씩 읽는다. 거부된
+명령은 0이 아닌 코드로 끝난다.
 
 ## 구조
 

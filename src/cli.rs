@@ -1,6 +1,12 @@
-//! The `xmux` CLI: argument parsing and command dispatch (`ls`/`attach`/
-//! `doctor`/`ctl`/`version` and the default interactive app). `run` is the
-//! single entry the binary shim calls.
+//! The `xmux` CLI: argument parsing and command dispatch (`ls`/`attach`/`doctor`/
+//! `instances`/`send`/`version` and the default interactive app). `run` is the single
+//! entry the binary shim calls.
+//!
+//! A running instance is addressed by NAME, not pid: it takes one at startup (auto
+//! generated, or `--name`), owns `ctl-<name>.sock` while it lives, and answers to
+//! `xmux send <name> <command>`. `xmux instances` lists the live ones. Names are
+//! resolved by exact match first, then by unique prefix, so `xmux send am <cmd>`
+//! reaches `amber-otter` when nothing else starts with `am`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,6 +28,11 @@ use crate::source::Source;
     long_about = "xmux shows every reachable tmux/psmux session (local + ssh) as one list and switches between them."
 )]
 struct Cli {
+    /// Name this instance (default: an auto-generated `<adjective>-<noun>`). Lowercase
+    /// letters, digits, and `-` only; it becomes this instance's control socket name
+    /// and its address for `xmux send`.
+    #[arg(long, global = true)]
+    name: Option<String>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -37,16 +48,15 @@ enum Command {
     },
     /// Diagnose configuration and source reachability.
     Doctor,
-    /// Drive a running switcher over its control socket, or `list` running instances.
-    Ctl {
-        /// Target the instance with this pid (see `xmux ctl list`).
-        #[arg(long)]
-        pid: Option<u32>,
-        /// Target this socket path.
-        #[arg(long)]
-        sock: Option<PathBuf>,
-        /// The command to send (e.g. `list`, `switch prod/api`, `dump`); empty reads
-        /// from stdin. With no target and several instances running, use --pid.
+    /// List every running instance (name, pid, cwd, tty, displayed session, focus).
+    Instances,
+    /// Send a command to a running instance, e.g. `xmux send amber-otter switch prod/api`.
+    Send {
+        /// The instance name, or any unambiguous prefix of one (`xmux instances` lists
+        /// them). With exactly one instance running, `-` targets it.
+        id: String,
+        /// The command to send (e.g. `switch prod/api`, `focus terminal`, `dump`);
+        /// empty reads commands from stdin, one per line.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -66,7 +76,10 @@ pub async fn run() -> i32 {
     let cli = Cli::parse();
     match cli.command {
         None => match interactive_env() {
-            Ok(env) => runtime::run_app(Arc::new(env)).await,
+            Ok(env) => match resolve_requested_name(cli.name.as_deref()) {
+                Ok(requested) => runtime::run_app(Arc::new(env), requested).await,
+                Err(code) => code,
+            },
             Err(code) => code,
         },
         Some(Command::Ls) => match interactive_env() {
@@ -82,15 +95,38 @@ pub async fn run() -> i32 {
             let (env, cfg_err) = env::build_env();
             run_doctor(&env, cfg_err).await
         }
-        Some(Command::Ctl { pid, sock, args }) => {
-            // ctl only needs the xmux dir (independent of config validity).
+        Some(Command::Instances) => {
+            // Instance listing only needs the xmux dir (independent of config validity).
             let (env, _cfg_err) = env::build_env();
-            run_ctl(&env, pid, sock, args).await
+            run_instances(&env).await
+        }
+        Some(Command::Send { id, args }) => {
+            let (env, _cfg_err) = env::build_env();
+            run_send(&env, &id, args).await
         }
         Some(Command::Version) => {
             println!("xmux {}", env!("CARGO_PKG_VERSION"));
             0
         }
+    }
+}
+
+/// Validates an explicit `--name`. Rejected up front rather than silently rewritten,
+/// because the name is how the user will address this instance later: a name that came
+/// back different from what they typed would make `xmux send` fail confusingly. `None`
+/// means "generate one".
+fn resolve_requested_name(requested: Option<&str>) -> Result<Option<String>, i32> {
+    match requested {
+        None => Ok(None),
+        Some(raw) => match control::sanitize_name(raw) {
+            Some(n) => Ok(Some(n)),
+            None => {
+                eprintln!(
+                    "xmux: invalid --name {raw:?} (1-32 chars of a-z, 0-9, and '-', not starting with '-')"
+                );
+                Err(1)
+            }
+        },
     }
 }
 
@@ -189,40 +225,28 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
     i32::from(config_broken)
 }
 
-/// Drives a running switcher over its control socket. `list` enumerates instances;
-/// otherwise, with command args it sends one command and with none it streams
-/// commands from stdin. The target is the explicit `--sock`, else `--pid`'s socket,
-/// else the sole running instance (an error when several run — pick one with --pid).
-async fn run_ctl(env: &Env, pid: Option<u32>, sock: Option<PathBuf>, args: Vec<String>) -> i32 {
-    // `list` is a meta-command over ALL instances, not one — handle it before
-    // resolving a single target socket. Matched case-insensitively, like every socket
-    // verb (which `parse_request` lowercases), so `LIST` is not forwarded and rejected.
-    if args.first().is_some_and(|s| s.eq_ignore_ascii_case("list")) {
-        return run_ctl_list(env).await;
-    }
-    let path = match (sock, pid) {
-        (Some(s), _) => s,
-        (None, Some(p)) => control::socket_path(&env.xmux_dir, p),
-        // No explicit target: drive the sole LIVE instance. Enumerating LIVE instances
-        // (a dialable socket), not markers, is what keeps a crashed instance's stale
-        // `ctl-*.sock` from counting — several dead markers must not read as "many".
-        (None, None) => match choose_sole_instance(&live_instances(&env.xmux_dir).await) {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("xmux ctl: {e}");
-                return 1;
-            }
-        },
+/// Sends one command (or a stdin stream of them) to the instance `id` names. `id` is
+/// an instance name, any unambiguous prefix of one, or `-` for the sole live instance.
+/// Resolution runs over LIVE instances only, so a crashed instance's leftover marker
+/// never shadows a running one that shares its prefix.
+async fn run_send(env: &Env, id: &str, args: Vec<String>) -> i32 {
+    let live = live_instances(&env.xmux_dir).await;
+    let path = match resolve_target(id, &live) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("xmux send: {e}");
+            return 1;
+        }
     };
     let mut client = match control::Client::dial(&path).await {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("xmux ctl: {e}");
+            eprintln!("xmux send: {e}");
             return 1;
         }
     };
     if !args.is_empty() {
-        return ctl_one(&mut client, &args.join(" ")).await;
+        return send_one(&mut client, &args.join(" ")).await;
     }
     // Dispatch each line as it arrives rather than buffering until EOF, so a
     // piped/interactive stream of commands is processed incrementally.
@@ -236,7 +260,7 @@ async fn run_ctl(env: &Env, pid: Option<u32>, sock: Option<PathBuf>, args: Vec<S
         if line.is_empty() {
             continue;
         }
-        let rc = ctl_one(&mut client, line).await;
+        let rc = send_one(&mut client, line).await;
         if rc != 0 {
             return rc;
         }
@@ -244,51 +268,68 @@ async fn run_ctl(env: &Env, pid: Option<u32>, sock: Option<PathBuf>, args: Vec<S
     0
 }
 
-/// The live instances (a dialable `ctl-<pid>.sock`) among the discovered markers — the
-/// same liveness `xmux ctl list` uses. A crashed instance's stale marker does not dial
-/// and is filtered out, so it never counts toward which instance to drive.
-async fn live_instances(dir: &std::path::Path) -> Vec<(PathBuf, u32)> {
+/// The live instances (a dialable `ctl-<name>.sock`) among the discovered markers. A
+/// crashed instance's stale marker does not dial and is filtered out, so it never
+/// resolves a name nor counts toward `-`.
+async fn live_instances(dir: &std::path::Path) -> Vec<(PathBuf, String)> {
     let mut live = Vec::new();
-    for (path, pid) in control::discover_all(dir).unwrap_or_default() {
+    for (path, name) in control::discover_all(dir).unwrap_or_default() {
         if control::Client::dial(&path).await.is_ok() {
-            live.push((path, pid));
+            live.push((path, name));
         }
     }
     live
 }
 
-/// Picks the socket to drive when `xmux ctl` is given no explicit target: exactly one
-/// live instance → its socket; none → an error; several → refuse to guess (name one
-/// with --pid, listed by `xmux ctl list`). Pure over the already-filtered live set.
-fn choose_sole_instance(live: &[(PathBuf, u32)]) -> anyhow::Result<PathBuf> {
-    match live {
-        [] => Err(anyhow::anyhow!("no running xmux instance found")),
+/// Resolves `id` against the live instances: `-` takes the sole one, an exact name wins
+/// outright, else a unique name PREFIX. Ambiguity is an error naming the candidates
+/// rather than a guess, because sending a command to the wrong instance switches the
+/// wrong terminal. Pure over the already-filtered live set, so it is unit-testable.
+fn resolve_target(id: &str, live: &[(PathBuf, String)]) -> anyhow::Result<PathBuf> {
+    if live.is_empty() {
+        anyhow::bail!("no running xmux instance found");
+    }
+    if id == "-" {
+        return match live {
+            [(path, _)] => Ok(path.clone()),
+            many => anyhow::bail!(
+                "{} instances running; name one (run `xmux instances`)",
+                many.len()
+            ),
+        };
+    }
+    if let Some((path, _)) = live.iter().find(|(_, n)| n == id) {
+        return Ok(path.clone());
+    }
+    let hits: Vec<&(PathBuf, String)> = live.iter().filter(|(_, n)| n.starts_with(id)).collect();
+    match hits.as_slice() {
+        [] => anyhow::bail!("no instance named {id:?} (run `xmux instances`)"),
         [(path, _)] => Ok(path.clone()),
-        many => Err(anyhow::anyhow!(
-            "{} xmux instances running; target one with --pid <pid> (run `xmux ctl list`)",
-            many.len()
-        )),
+        many => {
+            let names: Vec<&str> = many.iter().map(|(_, n)| n.as_str()).collect();
+            anyhow::bail!("{id:?} matches {}", names.join(", "))
+        }
     }
 }
 
 /// A framed reply beginning `err:` is the control protocol's command-level failure
-/// signal (an unknown verb or a rejected op — see `ui::run::dispatch`). Distinguished
-/// from a transport error so `xmux ctl` reports a refused command as a failure a script
+/// signal (an unknown verb or a rejected op - see `ui::run::dispatch`). Distinguished
+/// from a transport error so `xmux send` reports a refused command as a failure a script
 /// can detect, not a silent success.
 fn reply_is_err(resp: &str) -> bool {
     resp.starts_with("err:")
 }
 
-async fn ctl_one(client: &mut control::Client, line: &str) -> i32 {
+async fn send_one(client: &mut control::Client, line: &str) -> i32 {
     match client.do_cmd(line).await {
         Ok(resp) => {
             let text = resp.strip_suffix('\n').unwrap_or(&resp);
             if reply_is_err(text) {
-                // A command-level error: route it like a transport error — to stderr,
-                // with the `xmux ctl:` prefix, exit non-zero — so it is not mistaken
+                // A command-level error: route it like a transport error - to stderr,
+                // with the `xmux send:` prefix, exit non-zero - so it is not mistaken
                 // for a successful reply on stdout.
                 let msg = text.strip_prefix("err: ").unwrap_or(text);
-                eprintln!("xmux ctl: {msg}");
+                eprintln!("xmux send: {msg}");
                 1
             } else {
                 println!("{text}");
@@ -296,27 +337,28 @@ async fn ctl_one(client: &mut control::Client, line: &str) -> i32 {
             }
         }
         Err(e) => {
-            eprintln!("xmux ctl: {e}");
+            eprintln!("xmux send: {e}");
             1
         }
     }
 }
 
-/// Lists every running xmux instance so a specific one can be driven with `--pid`.
-/// Enumerates the `ctl-<pid>.sock` markers, then dials each for its `status` (cwd /
-/// tty / displayed session / focus). A socket that does not answer is a crashed
-/// instance's stale marker and is skipped, so the listing shows only live, drivable
-/// instances.
-async fn run_ctl_list(env: &Env) -> i32 {
+/// Lists every running xmux instance so a specific one can be driven with `xmux send`.
+/// Enumerates the `ctl-<name>.sock` markers, then dials each for its `status` (name /
+/// pid / cwd / tty / displayed session / focus). A socket that does not answer is a
+/// crashed instance's stale marker and is skipped, so the listing shows only live,
+/// drivable instances.
+async fn run_instances(env: &Env) -> i32 {
     let instances = control::discover_all(&env.xmux_dir).unwrap_or_default();
-    let mut rows: Vec<[String; 5]> = vec![[
+    let mut rows: Vec<[String; 6]> = vec![[
+        "NAME".into(),
         "PID".into(),
         "CWD".into(),
         "TTY".into(),
         "DISPLAYED".into(),
         "FOCUS".into(),
     ]];
-    for (path, pid) in instances {
+    for (path, name) in instances {
         let Ok(mut client) = control::Client::dial(&path).await else {
             continue; // stale marker for a crashed instance
         };
@@ -326,7 +368,11 @@ async fn run_ctl_list(env: &Env) -> i32 {
         let f = control::parse_status(&resp);
         let cell = |s: String| if s.is_empty() { "-".to_string() } else { s };
         rows.push([
-            pid.to_string(),
+            // The marker name is the authority: it is what `xmux send` dials. The
+            // reply's own `name` is only a cross-check, so a mismatch cannot make the
+            // listing print an address that does not work.
+            name,
+            cell(f.pid),
             cell(f.cwd),
             cell(f.tty),
             cell(f.target),
@@ -343,9 +389,10 @@ async fn run_ctl_list(env: &Env) -> i32 {
 
 /// Renders rows as a left-aligned table: each column is padded to its widest cell.
 /// The final column is not padded, and trailing space is trimmed, so `-` cells never
-/// leave dangling whitespace.
-fn format_table(rows: &[[String; 5]]) -> String {
-    let mut widths = [0usize; 5];
+/// leave dangling whitespace. Generic over the column count so the row shape stays a
+/// fixed-size array (a missing cell cannot compile).
+fn format_table<const N: usize>(rows: &[[String; N]]) -> String {
+    let mut widths = [0usize; N];
     for r in rows {
         for (i, c) in r.iter().enumerate() {
             widths[i] = widths[i].max(c.chars().count());
@@ -396,21 +443,57 @@ fn ssh_on_path() -> bool {
 mod tests {
     use super::*;
 
+    /// A live-instance entry keyed by name, as `live_instances` returns.
+    fn inst(name: &str) -> (PathBuf, String) {
+        (PathBuf::from(format!("ctl-{name}.sock")), name.to_string())
+    }
+
     #[test]
-    fn choose_sole_instance_needs_exactly_one_live() {
-        let inst = |n: u32| (PathBuf::from(format!("ctl-{n}.sock")), n);
-        // None → error (nothing live to drive).
-        assert!(choose_sole_instance(&[]).is_err(), "none → error");
-        // Exactly one → that socket, no --pid needed.
+    fn resolve_target_takes_a_name_then_a_unique_prefix() {
+        let live = [inst("amber-otter"), inst("brisk-wren")];
+        // An exact name wins.
         assert_eq!(
-            choose_sole_instance(&[inst(100)]).unwrap(),
-            PathBuf::from("ctl-100.sock")
+            resolve_target("amber-otter", &live).unwrap(),
+            PathBuf::from("ctl-amber-otter.sock")
         );
-        // Several live → refuse to guess (the multi-instance guard).
+        // A unique prefix resolves.
+        assert_eq!(
+            resolve_target("br", &live).unwrap(),
+            PathBuf::from("ctl-brisk-wren.sock")
+        );
+        // An unknown name is an error, not a guess.
+        assert!(resolve_target("zz", &live).is_err());
+        // Nothing live is an error whatever the id.
+        assert!(resolve_target("amber-otter", &[]).is_err());
+    }
+
+    #[test]
+    fn resolve_target_refuses_an_ambiguous_prefix() {
+        // Sending to the wrong instance switches the wrong terminal, so ambiguity must
+        // fail loudly and name the candidates.
+        let live = [inst("amber-otter"), inst("amber-wren")];
+        let err = resolve_target("amber", &live).unwrap_err().to_string();
         assert!(
-            choose_sole_instance(&[inst(100), inst(200)]).is_err(),
-            "multiple → refuse to guess"
+            err.contains("amber-otter") && err.contains("amber-wren"),
+            "{err}"
         );
+        // An exact name is still exact even when it PREFIXES another.
+        let live = [inst("amber"), inst("amber-wren")];
+        assert_eq!(
+            resolve_target("amber", &live).unwrap(),
+            PathBuf::from("ctl-amber.sock")
+        );
+    }
+
+    #[test]
+    fn resolve_target_dash_takes_the_sole_instance() {
+        assert_eq!(
+            resolve_target("-", &[inst("amber-otter")]).unwrap(),
+            PathBuf::from("ctl-amber-otter.sock")
+        );
+        // With several running, `-` refuses to guess.
+        assert!(resolve_target("-", &[inst("a"), inst("b")]).is_err());
+        assert!(resolve_target("-", &[]).is_err());
     }
 
     #[tokio::test]
@@ -421,8 +504,8 @@ mod tests {
         // Two markers with no live listener: both undialable, so neither counts. This is
         // the crux — a pile of crashed-instance markers must resolve to zero live, not
         // to "many".
-        std::fs::write(control::socket_path(&dir, 100), b"").unwrap();
-        std::fs::write(control::socket_path(&dir, 200), b"").unwrap();
+        std::fs::write(control::socket_path(&dir, "amber-otter"), b"").unwrap();
+        std::fs::write(control::socket_path(&dir, "brisk-wren"), b"").unwrap();
         assert!(
             live_instances(&dir).await.is_empty(),
             "stale markers never count as live instances"
@@ -434,6 +517,7 @@ mod tests {
     fn format_table_aligns_columns_and_trims() {
         let rows = vec![
             [
+                "NAME".into(),
                 "PID".into(),
                 "CWD".into(),
                 "TTY".into(),
@@ -441,6 +525,7 @@ mod tests {
                 "FOCUS".into(),
             ],
             [
+                "amber-otter".into(),
                 "48213".into(),
                 "/home/u/xmux".into(),
                 "-".into(),

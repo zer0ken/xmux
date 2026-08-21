@@ -146,7 +146,7 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   dials). Discovery enumerates the markers newest by mtime first, tie-broken by higher
   pid. **Tests:** `control_handle_drop_removes_socket`, `control_socket_is_owner_only`
   (unix), `prune_stale_removes_dead_markers_and_keeps_own`,
-  `discover_all_newest_then_higher_pid`, `discover_all_tie_break_higher_pid`.
+  `discover_all_newest_then_name_order`, `discover_all_tie_break_by_name`.
 - **FR-D5** — The app launches directly into the persistent split view (tree +
   terminal view) with the cursor preselected — the persisted last session if set,
   else a local-first recency preselect. There is no separate picker mode; `prefix q`
@@ -175,7 +175,7 @@ nothing to switch to until one exists.
 
 ## F. Control channel
 
-- **FR-F1** — A single per-pid local socket (`ctl-<pid>.sock`) drives the running app
+- **FR-F1** — A per-instance local socket (`ctl-<name>.sock`) drives the running app
   headlessly. Its navigation/display verbs — `ping`, `dump`, `status`,
   `switch <source>/<session>`, `focus <terminal|tree>`, `rescan`, `quit`,
   `width <delta>` (a signed column delta, not an absolute width), `toggle-auto-hide` —
@@ -184,7 +184,7 @@ nothing to switch to until one exists.
   verbs: xmux aggregates and switches, so editing a session stays with the mux. Raw
   key/text injection stays behind the unstable `raw:` namespace (`raw:key` /
   `raw:keys` / `raw:text`), reserved for tests. A command-level failure replies
-  `err: …` and `xmux ctl` exits non-zero. **Tests:**
+  `err: …` and `xmux send` exits non-zero. **Tests:**
   `parse_ctl_op_semantic_verbs`, `parse_ctl_op_new_session_is_the_only_lifecycle_verb`,
   `parse_ctl_op_raw_namespace_is_test_only_surface`, `parse_ctl_op_rejects_malformed`,
   `parse_request_cases`, `parse_key_*`, `control_end_to_end`,
@@ -193,14 +193,22 @@ nothing to switch to until one exists.
   is a first-class ctl verb resolving to `Action::Switch`. **Tests:**
   `control_end_to_end`, `dispatch_resolves_semantic_verbs_to_op_cmds`,
   `parse_ctl_op_semantic_verbs`.
-- **FR-F3** — Socket discovery enumerates the `ctl-*.sock` markers, newest by mtime
-  first then higher pid. `xmux ctl` with no `--pid`/`--sock` drives the sole LIVE
-  instance — a dialable socket, so a crashed instance's stale marker is filtered out —
-  and refuses to guess when several are live; `xmux ctl list` shows each (pid, cwd, tty,
-  displayed session, focus) so a specific one can be targeted with `--pid`. **Tests:**
-  `discover_all_newest_then_higher_pid`, `discover_all_tie_break_higher_pid`,
-  `live_instances_filters_out_dead_markers`, `choose_sole_instance_needs_exactly_one_live`,
-  `socket_path_format`.
+- **FR-F3** — Every instance takes a NAME at startup: an auto-generated
+  `<adjective>-<noun>` whose walk skips names live instances hold (a crashed
+  instance's undialable marker is reused), or an explicit `--name` validated to 1-32
+  characters of `[a-z0-9-]` so it is always a legal path segment and Windows pipe
+  name. Socket discovery enumerates the `ctl-*.sock` markers, newest by mtime first
+  then by name. `xmux send <id>` resolves `id` against LIVE instances only — exact
+  name, then unique name prefix, with `-` for the sole one — and refuses ambiguity by
+  naming the candidates. `xmux instances` shows each (name, pid, cwd, tty, displayed
+  session, focus). **Tests:** `sanitize_name_accepts_safe_names_and_refuses_the_rest`,
+  `nth_name_pairs_do_not_repeat_within_a_pass`,
+  `pick_free_name_skips_a_live_marker_but_reuses_a_dead_one`,
+  `discover_all_newest_then_name_order`, `discover_all_tie_break_by_name`,
+  `live_instances_filters_out_dead_markers`,
+  `resolve_target_takes_a_name_then_a_unique_prefix`,
+  `resolve_target_refuses_an_ambiguous_prefix`,
+  `resolve_target_dash_takes_the_sole_instance`, `socket_path_format`.
 - **FR-F4** — Length-framed messages (decimal count + `\n` + bytes) with a bounded
   read; endpoint naming works for `ctl-*.sock` on every platform. **Tests:**
   `read_frame_oversized`, `frame_round_trip`, `socket_path_format`,

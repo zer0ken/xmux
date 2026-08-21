@@ -34,8 +34,9 @@ sessions from one terminal.
 - **Switching, not editing.** Navigate, filter, jump by number, and start a
   session on an empty host. Renaming, killing, and window/pane work stay in the mux that already does
   them well.
-- **A control socket.** A local socket exposes semantic verbs for scripting and
-  headless driving (see [Control socket](#control-socket)).
+- **Named instances.** Every running instance takes a name, so
+  `xmux send <name> <command>` drives a specific one (see
+  [Control socket](#control-socket)).
 
 ## Install
 
@@ -65,7 +66,8 @@ xmux                          # the interactive tree + live-screen app
 xmux ls                       # list every reachable session (scriptable)
 xmux attach <source>/<name>   # attach one session directly, e.g. xmux attach prod/api
 xmux doctor                   # check config and per-host reachability
-xmux ctl <command…>           # drive a running instance over its control socket
+xmux instances                # list running instances
+xmux send <name> <command…>  # drive one of them over its control socket
 xmux version
 ```
 
@@ -147,29 +149,28 @@ session, the live auto-hide-nav toggle, logs, and control sockets) lives under
 
 ## Control socket
 
-A running xmux instance listens on a local socket (`~/.xmux/ctl-<pid>.sock`).
-Sessions are addressed `<source>/<session>`. It speaks navigation/display verbs
-— `ping`, `status`, `dump`, `rescan`, `switch <source>/<session>`,
-`focus <nav|terminal>`, `width <delta>` (adjusts the tree width by a signed column
-count, a delta rather than an absolute width), `toggle-auto-hide`, `quit` — and one
-session-lifecycle verb, `new-session <source> [name]`. There are no kill/rename/window
-verbs, for the same reason the keys are gone: the mux owns editing a session.
+Every running instance has a name — an auto-generated `<adjective>-<noun>`, or
+whatever `xmux --name <name>` says — and listens on `~/.xmux/ctl-<name>.sock`.
+Sessions are addressed `<source>/<session>`.
 
-An unstable `raw:` namespace is reserved for low-level key/byte injection. Drive it
-with:
-
-```sh
-xmux ctl status
-xmux ctl switch prod/api
-```
-
-With one instance running, `xmux ctl` targets it automatically. When several are
-running it refuses to guess: list them and target one by pid.
+It speaks navigation/display verbs — `ping`, `status`, `dump`, `rescan`,
+`switch <source>/<session>`, `focus <nav|terminal>`, `width <delta>` (adjusts the
+tree width by a signed column count, a delta rather than an absolute width),
+`toggle-auto-hide`, `quit` — and one session-lifecycle verb,
+`new-session <source> [name]`. There are no kill/rename/window verbs, for the same
+reason the keys are gone: the mux owns editing a session. An unstable `raw:`
+namespace is reserved for low-level key/byte injection.
 
 ```sh
-xmux ctl list                 # PID · CWD · TTY · displayed session · focus
-xmux ctl --pid 51907 switch local/logs
+xmux instances                       # NAME · PID · CWD · TTY · displayed · focus
+xmux send amber-otter switch prod/api
+xmux send am focus terminal          # any unambiguous name prefix
+xmux send - dump                     # `-` when exactly one is running
 ```
+
+An unknown name, an ambiguous prefix, or `-` with several instances running is an
+error naming the candidates, never a guess. With no command, `send` reads them from
+stdin, one per line; a refused command exits non-zero.
 
 ## Architecture
 
