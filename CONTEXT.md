@@ -96,9 +96,15 @@ UI elements a user perceives as distinct things:
   window part (`{index}:{name}`) bright-black - the quietest level, so the
   session name anchors the detail line; a host-state card's detail line is
   colored by state - scanning yellow, unreachable red, settled "no sessions"
-  muted. The two xmux-own backgrounds (selection surface, hint bar) are derived
-  at startup from the terminal's reported background (OSC 11), so they follow
-  the theme too.
+  muted. The two xmux-own backgrounds (selection surface, hint bar) have no ANSI slot,
+  so they are derived at startup from the terminal's reported background (OSC 11) to
+  stay in the theme's family. When the terminal does not report one, the SELECTION
+  SURFACE paints nothing (the accent bar carries the selection) - a surface sits under
+  text whose every hue is the theme's, so a fixed color is wrong on every theme it was
+  not picked for, and Windows Terminal answers no color query at all.
+  `[ui] selection-style` names one explicitly; the hint bar keeps a fixed dark tone
+  because it is a solid bar of chrome rather than a wash under themed text, with
+  `[ui] hint-bar-style` as its override.
 - selection - the nav's current pick (its card index is `selected`), advanced by
   navigation; a routine poll or restream never moves it (only launch / rescan
   re-sorts). `preselect` / `reselect` are the launch and post-rescan selections.

@@ -189,6 +189,9 @@ view-active-border-style = "green"    # focused view-border colour (tmux colour 
 view-border-style = "default"         # unfocused view-border colour
 view-border-hover-style = "yellow"    # drag-to-resize hover cue
 hint-bar-style = "bg=blue,fg=white"   # hint bar colour (tmux status-style; empty = the built-in dark bar)
+selection-style = "#2d4f6b"           # the selected card's background. Empty (default): derived from
+                                      # the background your terminal reports, and NOTHING is painted
+                                      # when it reports none - the accent bar carries the selection.
 ```
 
 Hosts come from `~/.ssh/config` first. Connection details (user, port, key,

@@ -146,6 +146,14 @@ pub struct UiConfig {
     /// = the built-in tmux default (themegreen/themeblack → yellowgreen / gray5).
     #[serde(rename = "hint-bar-style", default)]
     pub hint_bar_style: String,
+    /// The selected card's background, in the same colour vocabulary as the view border
+    /// (`bg=<colour>`, or a bare colour token). Empty (default) means the surface comes
+    /// from the terminal's reported background, and NOTHING is painted when the terminal
+    /// does not report one - see [`crate::ui::palette`]. This is how a user on a
+    /// terminal that answers no colour query (Windows Terminal answers none) gets a
+    /// selection surface at all.
+    #[serde(rename = "selection-style", default)]
+    pub selection_style: String,
 }
 
 fn default_prefix() -> String {
@@ -165,6 +173,9 @@ impl Default for UiConfig {
             // Empty = the built-in tmux default hint bar style (see
             // crate::ui::chrome::hint_bar_default_style).
             hint_bar_style: String::new(),
+            // Empty = no selection surface of xmux's own choosing (see
+            // crate::ui::palette).
+            selection_style: String::new(),
         }
     }
 }

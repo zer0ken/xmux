@@ -135,6 +135,24 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   `a_jump_never_holds_a_number_no_session_carries`,
   `cancelling_a_jump_restores_the_starting_card`, `a_jump_past_the_last_card_is_inert`.
 
+- **FR-B11** — Every foreground the nav paints is an ANSI-16 slot, so the terminal
+  theme resolves the hue. The selected card's BACKGROUND has no such slot, so it is
+  derived from the background the terminal reports (OSC 11) and, when the terminal
+  reports none, nothing is painted and the accent bar carries the selection: a surface
+  sits under text whose every hue is the theme's, so a fixed colour is wrong on every
+  theme it was not chosen for. `[ui] selection-style` names one explicitly, in the same
+  colour vocabulary as the view border. `xmux doctor` reports which of the three is in
+  effect, because it is invisible on screen. **Tests:**
+  `foreground_roles_are_ansi_indexed`,
+  `an_unqueried_run_paints_no_surface_under_the_cards`,
+  `the_accent_bar_marks_the_selection_when_no_surface_is_painted`,
+  `a_selection_style_names_one_background`,
+  `a_named_selection_surface_wins_over_a_queried_one`,
+  `the_report_says_where_the_surface_colour_came_from`,
+  `derive_backgrounds_raises_on_dark_and_lowers_on_light`. **Live-verified** (a real
+  Windows Terminal answers no query, so the cards paint no surface; with
+  `[ui] selection-style = "#2d4f6b"` set, both card rows come back that colour).
+
 ## C. Switching (the keystone)
 
 - **FR-C1** — A same-server pick switches the live client in place via

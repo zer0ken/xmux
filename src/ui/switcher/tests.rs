@@ -167,12 +167,6 @@ impl Harness {
         row_of(self.buf(), text, NAV_WIDTH)
     }
 
-    fn nav_row_highlighted(&self, y: u16) -> bool {
-        let buf = self.buf();
-        (0..NAV_WIDTH.min(buf.area.width))
-            .any(|x| buf[(x, y)].bg == crate::ui::palette::get().surface)
-    }
-
     fn nav_fg_of(&self, text: &str) -> Option<Color> {
         fg_of(self.buf(), text, NAV_WIDTH)
     }
@@ -1184,22 +1178,30 @@ fn hint_bar_text_reflects_configured_prefix() {
 }
 
 #[tokio::test]
-async fn selected_node_renders_surface_highlight() {
+async fn the_accent_bar_marks_the_selection_when_no_surface_is_painted() {
+    // No terminal background was reported here and no `[ui] selection-style` is set, so
+    // xmux paints no surface of its own - the case a terminal that answers no colour
+    // query (Windows Terminal answers none) is permanently in. The selection still has
+    // to be visible, and the accent bar in the gutter is what makes it so.
     let mut h = Harness::new(sample());
     h.key(KeyCode::Down).await; // step onto local/editor's card
     let sel = h.nav_row_of("editor").expect("editor row");
     let other = h.nav_row_of("inference").expect("inference row");
-    assert!(
-        h.nav_row_highlighted(sel),
-        "selected row must have the surface background"
+    assert_eq!(
+        crate::ui::palette::get().surface,
+        Color::Reset,
+        "unqueried and unconfigured: no surface of xmux's own"
     );
-    assert!(
-        !h.nav_row_highlighted(other),
-        "non-selected row must not be highlighted"
+    assert_eq!(
+        h.buf()[(0, sel)].symbol(),
+        "▌",
+        "the accent bar marks the selected card"
     );
-    // The selected card also carries the accent ▌ bar in its gutter.
-    let buf = h.buf();
-    assert_eq!(buf[(0, sel)].symbol(), "▌", "selection bar on the card");
+    assert_ne!(
+        h.buf()[(0, other)].symbol(),
+        "▌",
+        "and only that one: {other}"
+    );
 }
 
 #[tokio::test]

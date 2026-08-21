@@ -850,12 +850,16 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     // foreground roles are ANSI-16 and need no query. Must run BEFORE raw mode /
     // the alternate screen - the query library manages the terminal itself.
     // Failure (an unsupported terminal, a timeout) keeps the fixed fallbacks.
-    match crate::ui::palette::query_terminal_background() {
-        Some(bg) => crate::ui::palette::init_for_terminal_background(bg),
-        None => {
-            tracing::debug!("terminal background query failed; keeping the fallback surfaces")
-        }
+    let queried_bg = crate::ui::palette::query_terminal_background();
+    if queried_bg.is_none() {
+        tracing::debug!(
+            "terminal background query failed; no selection surface will be painted              unless [ui] selection-style names one"
+        );
     }
+    crate::ui::palette::init(
+        queried_bg,
+        crate::ui::chrome::parse_selection_bg(&env.cfg.ui.selection_style),
+    );
 
     let _term_guard = match TermGuard::enter() {
         Ok(g) => g,
