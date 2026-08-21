@@ -57,10 +57,10 @@ const fn base() -> Palette {
         overlay: Color::DarkGray,
         surface: Color::Rgb(0x31, 0x32, 0x44),
         bar_bg: Color::Rgb(0x18, 0x18, 0x25),
-        host: Color::Magenta,
+        host: Color::Cyan,
         mux: Color::Green,
         window: Color::DarkGray,
-        session: Color::Magenta,
+        session: Color::Cyan,
         pending: Color::Yellow,
         danger: Color::Red,
     }

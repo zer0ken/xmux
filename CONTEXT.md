@@ -89,7 +89,7 @@ UI elements a user perceives as distinct things:
   mapping never diverges.
 - level color - the per-segment card color, from the palette (`ui::palette`).
   Every foreground role is ANSI-16, so the terminal theme resolves the hue: host
-  and session magenta (the two name levels share one color), mux green, the
+  and session cyan (the two name levels share one color), mux green, the
   window part (`{index}:{name}`) bright-black - the quietest level, so the
   session name anchors the detail line; a host-state card's detail line is
   colored by state - scanning yellow, unreachable red, settled "no sessions"
