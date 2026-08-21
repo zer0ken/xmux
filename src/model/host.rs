@@ -380,28 +380,10 @@ mod tests {
         fn list_panes_plan(&self, _s: &str) -> Vec<String> {
             vec![]
         }
-        fn new_window_plan(&self, _s: &str, _n: &str) -> Vec<String> {
-            vec![]
-        }
-        fn split_window_plan(&self, _t: &str, _v: bool) -> Vec<String> {
-            vec![]
-        }
         fn select_window_plan(&self, _t: &str) -> Vec<String> {
             vec![]
         }
-        fn kill_window_plan(&self, _t: &str) -> Vec<String> {
-            vec![]
-        }
-        fn rename_window_plan(&self, _t: &str, _n: &str) -> Vec<String> {
-            vec![]
-        }
         fn new_session_plan(&self, _n: &str) -> Vec<String> {
-            vec![]
-        }
-        fn kill_session_plan(&self, _n: &str) -> Vec<String> {
-            vec![]
-        }
-        fn rename_session_plan(&self, _o: &str, _n: &str) -> Vec<String> {
             vec![]
         }
     }
@@ -731,28 +713,10 @@ mod tests {
         fn list_panes_plan(&self, _s: &str) -> Vec<String> {
             vec![]
         }
-        fn new_window_plan(&self, _s: &str, _n: &str) -> Vec<String> {
-            vec![]
-        }
-        fn split_window_plan(&self, _t: &str, _v: bool) -> Vec<String> {
-            vec![]
-        }
         fn select_window_plan(&self, _t: &str) -> Vec<String> {
             vec![]
         }
-        fn kill_window_plan(&self, _t: &str) -> Vec<String> {
-            vec![]
-        }
-        fn rename_window_plan(&self, _t: &str, _n: &str) -> Vec<String> {
-            vec![]
-        }
         fn new_session_plan(&self, _n: &str) -> Vec<String> {
-            vec![]
-        }
-        fn kill_session_plan(&self, _n: &str) -> Vec<String> {
-            vec![]
-        }
-        fn rename_session_plan(&self, _o: &str, _n: &str) -> Vec<String> {
             vec![]
         }
     }

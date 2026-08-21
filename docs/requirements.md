@@ -136,18 +136,22 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
 
 ## E. Session management
 
-- **FR-E1** — Create a session on any source (`prefix n`), then it appears in the tree.
-  **Tests:** `create_*`, `new_session_*` (mux), `create_on_unreachable_host_refused`.
-- **FR-E2** — Kill a session (`prefix x`) behind an inline confirmation. **Tests:**
-  `menu_release_kill_arms_confirm`, `kill_confirm_esc_cancels`,
-  `kill_removes_session_and_cache`.
-- **FR-E3** — Rename a session (`prefix R`); a leading-dash name is refused.
-  **Tests:** `rename_*`, `rename_rejects_leading_dash`.
-- **FR-E4** — Create/kill/rename run off the key path so a slow ssh round-trip never
-  freezes rendering or the control channel. A committing key folds through
-  `State::apply` into a `Command::RunOp(MuxOp)` the run loop spawns off-loop.
-  **Tests:** `slow_op_is_deferred_off_the_key_path`, `*deferred*`, `apply_*` (the
-  RunOp folds).
+xmux aggregates and switches; it does not edit what a mux already edits. Starting a
+session is the one mutation it keeps, because a reachable host with no sessions has
+nothing to switch to until one exists.
+
+- **FR-E1** — Create a session on a HOST card (`prefix n`), then it appears in the
+  tree. On a session card the action is refused with a flash naming where to press it.
+  **Tests:** `create_*`, `new_session_*` (mux), `create_on_unreachable_host_refused`,
+  `n_on_a_session_card_refuses_with_a_flash`.
+- **FR-E2** — There is no rename, kill, or window/pane command — not on a key, not
+  in a modal, not on the wire, and not in the mux command vocabulary. **Tests:**
+  `parse_ctl_op_new_session_is_the_only_lifecycle_verb`,
+  `resolve_tree_action_keys_require_prefix`.
+- **FR-E3** — Create runs off the key path so a slow ssh round-trip never freezes
+  rendering or the control channel. The committing key folds through `State::apply`
+  into a `Command::RunOp(MuxOp)` the run loop spawns off-loop. **Tests:**
+  `slow_op_is_deferred_off_the_key_path`, `*deferred*`, `apply_*` (the RunOp folds).
 
 ## F. Control channel
 
@@ -155,13 +159,13 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   headlessly. Its navigation/display verbs — `ping`, `dump`, `status`,
   `switch <source>/<session>`, `focus <terminal|tree>`, `rescan`, `quit`,
   `width <delta>` (a signed column delta, not an absolute width), `toggle-auto-hide` —
-  and its session-lifecycle verbs — `new-session`, `kill-session`, `rename-session`,
-  `new-window`, `split-window`, `kill-window`, `rename-window` (sessions addressed
-  `<source>/<session>`, windows `<source>/<session>:<window>`) — parse to a domain
-  `Action`; raw key/text injection stays behind the unstable `raw:` namespace
-  (`raw:key` / `raw:keys` / `raw:text`), reserved for tests. A command-level failure
-  replies `err: …` and `xmux ctl` exits non-zero. **Tests:**
-  `parse_ctl_op_semantic_verbs`, `parse_ctl_op_session_lifecycle_verbs`,
+  and its one session-lifecycle verb, `new-session` (sessions addressed
+  `<source>/<session>`), parse to a domain `Action`. There are no kill/rename/window
+  verbs: xmux aggregates and switches, so editing a session stays with the mux. Raw
+  key/text injection stays behind the unstable `raw:` namespace (`raw:key` /
+  `raw:keys` / `raw:text`), reserved for tests. A command-level failure replies
+  `err: …` and `xmux ctl` exits non-zero. **Tests:**
+  `parse_ctl_op_semantic_verbs`, `parse_ctl_op_new_session_is_the_only_lifecycle_verb`,
   `parse_ctl_op_raw_namespace_is_test_only_surface`, `parse_ctl_op_rejects_malformed`,
   `parse_request_cases`, `parse_key_*`, `control_end_to_end`,
   `dispatch_resolves_semantic_verbs_to_op_cmds`.
@@ -220,15 +224,14 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
 - **UC-6 — Deep in a remote, get back home.** Native detach (`prefix d`) inside the
   remote returns control to the local app's split view; pick local or another host.
   *(FR-C2, FR-D1)*
-- **UC-7 — Spin up a throwaway on a remote and switch to it.** Create on a source,
-  then switch to it. *(FR-E1, FR-C2)*
+- **UC-7 — Spin up a throwaway on a remote and switch to it.** Create on the
+  host's card, then switch to it. *(FR-E1, FR-C2)*
 - **UC-8 — Survey what's running everywhere before deciding.** The tree shows hosts,
   sessions, windows, per-pane commands; the terminal view previews the selection.
   *(FR-B1, FR-B3, FR-B8)*
-- **UC-9 — Rename / kill a session from the switcher.** *(FR-E2, FR-E3)*
-- **UC-10 — Drive xmux from a script.** Control channel: dump, inject keys, signal a
+- **UC-9 — Drive xmux from a script.** Control channel: dump, inject keys, signal a
   switch. *(FR-F1, FR-F2)* — Tests: `control_end_to_end`, the semantic-verb set.
-- **UC-11 — Switch in either direction, local↔remote↔local.** The app re-attaches
+- **UC-10 — Switch in either direction, local↔remote↔local.** The app re-attaches
   whatever the next target is, local or remote, in any order, with no picker between.
   *(FR-C2, FR-D1)*
 

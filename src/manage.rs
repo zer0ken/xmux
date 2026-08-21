@@ -1,5 +1,5 @@
-//! Performs lifecycle operations (create, kill, rename, inspect) directly against
-//! the live mux on a host. Each function composes the two orthogonal axes: the
+//! Performs the mux operations xmux itself issues - create a session, and read a
+//! host's panes / options - directly against the live mux on a host. Each function composes the two orthogonal axes: the
 //! MUX axis (`Host::mux`'s `*_plan`) supplies the mux argv and the MACHINE axis
 //! (`Host::transport`'s `exec_argv`) lowers it for local-vs-ssh execution, then it
 //! runs via an injected runner — exactly like `mux::enumerate_via_list_sessions`.
@@ -30,52 +30,6 @@ pub async fn create(host: &Host, runner: &dyn Runner, name: &str) -> Result<Stri
     Ok(String::from_utf8_lossy(&out).trim().to_string())
 }
 
-/// Kills a session by name.
-pub async fn kill(host: &Host, runner: &dyn Runner, name: &str) -> Result<(), RunError> {
-    run_plan(host, runner, &host.mux.kill_session_plan(name)).await?;
-    Ok(())
-}
-
-/// Renames a session.
-pub async fn rename(
-    host: &Host,
-    runner: &dyn Runner,
-    old_name: &str,
-    new_name: &str,
-) -> Result<(), RunError> {
-    run_plan(
-        host,
-        runner,
-        &host.mux.rename_session_plan(old_name, new_name),
-    )
-    .await?;
-    Ok(())
-}
-
-/// Kills a window by `session:window` target.
-pub async fn kill_window(host: &Host, runner: &dyn Runner, target: &str) -> Result<(), RunError> {
-    run_plan(host, runner, &host.mux.kill_window_plan(target)).await?;
-    Ok(())
-}
-
-/// Kills a pane by `target`. A `session:window` target kills that window's active
-/// pane (the one shown in xmux's terminal view).
-pub async fn kill_pane(host: &Host, runner: &dyn Runner, target: &str) -> Result<(), RunError> {
-    run_plan(host, runner, &host.mux.kill_pane_plan(target)).await?;
-    Ok(())
-}
-
-/// Renames a window.
-pub async fn rename_window(
-    host: &Host,
-    runner: &dyn Runner,
-    target: &str,
-    new_name: &str,
-) -> Result<(), RunError> {
-    run_plan(host, runner, &host.mux.rename_window_plan(target, new_name)).await?;
-    Ok(())
-}
-
 /// Returns the host session's windows-with-panes (for the tree's child loading
 /// and active-pane resolution).
 pub async fn panes(
@@ -92,29 +46,6 @@ pub async fn panes(
 pub async fn show_option(host: &Host, runner: &dyn Runner, name: &str) -> Result<String, RunError> {
     let out = run_plan(host, runner, &host.mux.show_option_plan(name)).await?;
     Ok(String::from_utf8_lossy(&out).trim().to_string())
-}
-
-/// Creates a new window in a session (optionally named).
-pub async fn new_window(
-    host: &Host,
-    runner: &dyn Runner,
-    session: &str,
-    name: &str,
-) -> Result<(), RunError> {
-    run_plan(host, runner, &host.mux.new_window_plan(session, name)).await?;
-    Ok(())
-}
-
-/// Splits a window/session target into a new pane (`vertical` → stacked, else
-/// side-by-side).
-pub async fn split_window(
-    host: &Host,
-    runner: &dyn Runner,
-    target: &str,
-    vertical: bool,
-) -> Result<(), RunError> {
-    run_plan(host, runner, &host.mux.split_window_plan(target, vertical)).await?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -214,25 +145,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn kill_targets_and_propagates_error() {
-        let fr = RecordingRunner::new("", false);
-        kill(&local_host(), fr.as_ref(), "x").await.unwrap();
-        assert_eq!(fr.args(), vec!["kill-session", "-t", "x"]);
-
-        let fe = RecordingRunner::new("", true);
-        assert!(kill(&local_host(), fe.as_ref(), "x").await.is_err());
-    }
-
-    #[tokio::test]
-    async fn rename_targets() {
-        let fr = RecordingRunner::new("", false);
-        rename(&local_host(), fr.as_ref(), "old", "new")
-            .await
-            .unwrap();
-        assert_eq!(fr.args(), vec!["rename-session", "-t", "old", "new"]);
-    }
-
-    #[tokio::test]
     async fn panes_parses_and_targets() {
         let fr = RecordingRunner::new("1\t1\t1\t1\tbash\tshell\n2\t0\t1\t1\ttail\tlogs\n", false);
         let got = panes(&local_host(), fr.as_ref(), "x").await.unwrap();
@@ -257,55 +169,6 @@ mod tests {
         assert!(panes(&local_host(), fr.as_ref(), "x").await.is_err());
     }
 
-    #[tokio::test]
-    async fn new_window_targets_session() {
-        let fr = RecordingRunner::new("", false);
-        new_window(&local_host(), fr.as_ref(), "work", "logs")
-            .await
-            .unwrap();
-        // The trailing `:` on the target keeps a numeric session name unambiguous.
-        assert_eq!(fr.args(), vec!["new-window", "-t", "work:", "-n", "logs"]);
-    }
-
-    #[tokio::test]
-    async fn new_window_auto_name_omits_dash_n() {
-        let fr = RecordingRunner::new("", false);
-        new_window(&local_host(), fr.as_ref(), "0", "")
-            .await
-            .unwrap();
-        assert_eq!(fr.args(), vec!["new-window", "-t", "0:"]);
-    }
-
-    #[tokio::test]
-    async fn split_window_horizontal_and_vertical() {
-        let fr = RecordingRunner::new("", false);
-        split_window(&local_host(), fr.as_ref(), "work:1", false)
-            .await
-            .unwrap();
-        assert_eq!(fr.args(), vec!["split-window", "-h", "-t", "work:1"]);
-
-        let fv = RecordingRunner::new("", false);
-        split_window(&local_host(), fv.as_ref(), "work:1", true)
-            .await
-            .unwrap();
-        assert_eq!(fv.args(), vec!["split-window", "-v", "-t", "work:1"]);
-    }
-
-    #[tokio::test]
-    async fn kill_window_and_rename_window_target() {
-        let fk = RecordingRunner::new("", false);
-        kill_window(&local_host(), fk.as_ref(), "api:2")
-            .await
-            .unwrap();
-        assert_eq!(fk.args(), vec!["kill-window", "-t", "api:2"]);
-
-        let fr = RecordingRunner::new("", false);
-        rename_window(&local_host(), fr.as_ref(), "api:2", "logs")
-            .await
-            .unwrap();
-        assert_eq!(fr.args(), vec!["rename-window", "-t", "api:2", "logs"]);
-    }
-
     // Each op composes the Mux plan through the Transport and runs it via the
     // injected runner: for a REMOTE host the recorded command is `ssh …` and the
     // trailing arg is the mux argv joined per-arg-quoted.
@@ -322,24 +185,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn kill_remote_wraps_kill_session_in_ssh() {
-        let fr = RecordingRunner::new("", false);
-        kill(&remote_host(), fr.as_ref(), "old").await.unwrap();
-        assert_eq!(fr.name(), "ssh");
-        assert_eq!(fr.args().last().unwrap(), "tmux kill-session -t old");
-    }
-
-    #[tokio::test]
-    async fn rename_remote_wraps_rename_session_in_ssh() {
-        let fr = RecordingRunner::new("", false);
-        rename(&remote_host(), fr.as_ref(), "old", "new")
-            .await
-            .unwrap();
-        assert_eq!(fr.name(), "ssh");
-        assert_eq!(fr.args().last().unwrap(), "tmux rename-session -t old new");
-    }
-
-    #[tokio::test]
     async fn panes_remote_wraps_list_panes_in_ssh() {
         let fr = RecordingRunner::new("0\t1\t0\t1\tbash\twork\n", false);
         panes(&remote_host(), fr.as_ref(), "work").await.unwrap();
@@ -347,56 +192,6 @@ mod tests {
         assert_eq!(
             fr.args().last().unwrap(),
             &format!("tmux list-panes -s -t work -F '{}'", mux::PANE_FORMAT)
-        );
-    }
-
-    #[tokio::test]
-    async fn new_window_remote_wraps_in_ssh() {
-        let fr = RecordingRunner::new("", false);
-        new_window(&remote_host(), fr.as_ref(), "work", "logs")
-            .await
-            .unwrap();
-        assert_eq!(fr.name(), "ssh");
-        // `work:` carries a `:`, not shell-safe, so remote_command single-quotes it.
-        assert_eq!(
-            fr.args().last().unwrap(),
-            "tmux new-window -t 'work:' -n logs"
-        );
-    }
-
-    #[tokio::test]
-    async fn split_window_remote_wraps_in_ssh() {
-        let fr = RecordingRunner::new("", false);
-        split_window(&remote_host(), fr.as_ref(), "work:1", true)
-            .await
-            .unwrap();
-        assert_eq!(fr.name(), "ssh");
-        assert_eq!(
-            fr.args().last().unwrap(),
-            "tmux split-window -v -t 'work:1'"
-        );
-    }
-
-    #[tokio::test]
-    async fn kill_window_remote_wraps_in_ssh() {
-        let fr = RecordingRunner::new("", false);
-        kill_window(&remote_host(), fr.as_ref(), "api:2")
-            .await
-            .unwrap();
-        assert_eq!(fr.name(), "ssh");
-        assert_eq!(fr.args().last().unwrap(), "tmux kill-window -t 'api:2'");
-    }
-
-    #[tokio::test]
-    async fn rename_window_remote_wraps_in_ssh() {
-        let fr = RecordingRunner::new("", false);
-        rename_window(&remote_host(), fr.as_ref(), "api:2", "logs")
-            .await
-            .unwrap();
-        assert_eq!(fr.name(), "ssh");
-        assert_eq!(
-            fr.args().last().unwrap(),
-            "tmux rename-window -t 'api:2' logs"
         );
     }
 }

@@ -49,10 +49,11 @@ supply a per-session attach plan.
 - `Mux::enumerate` may use `Transport` because enumeration executes on a
   host.
 - Plan methods return mux argv or mux intent; they do not decide local versus
-  ssh execution. The plan set spans window operations AND session lifecycle
-  (`new_session_plan`, `kill_session_plan`, `rename_session_plan`), so `manage`
-  builds every mux argv from a `Mux` and lowers it via `Transport`, never off
-  a bare binary name.
+  ssh execution. The plan set covers what xmux itself issues: attach, enumerate,
+  read panes/options, select a window, and start a session (`new_session_plan`).
+  There is no kill/rename/window-edit plan - the mux owns those. `manage` builds
+  every mux argv from a `Mux` and lowers it via `Transport`, never off a bare
+  binary name.
 - Generic `mux::*` command builders (from `vocab.rs`) are called ONLY inside the
   per-mux dirs (`tmux/**`, `psmux/**`) and the shared enumeration helper in `mod.rs`
   (each `*_plan` wraps one); the pure address vocabulary (`mux::window_target`,

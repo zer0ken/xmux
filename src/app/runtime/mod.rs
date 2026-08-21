@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::app::input::{
-    leading_ctrl_arrow, nav_menu_may_open, resolve_mouse_chain, resolve_nav_key, to_grid_local,
+    leading_ctrl_arrow, resolve_mouse_chain, resolve_nav_key, to_grid_local,
     view_border_drag_height, view_border_drag_width, ChainAction, MouseState, StdinOutcome,
 };
 use crate::attach;

@@ -28,8 +28,9 @@ ssh 너머의 tmux 세션이든 똑같다. 떼었다 다시 붙이는 절차도,
 - **꼭 필요한 곳은 폴링 없이.** tmux 호스트는 컨트롤 모드(`-CC`)로 추적하고, psmux
   호스트는 폴링한다. 어느 쪽이든 트리는 서버를 그대로 비춘다. 판단 기준은 늘 서버
   쪽에 있다.
-- **마우스도 키보드도.** 세션을 오가고 거르고 만들고 이름 바꾸고 없애는 일 모두
-  키보드로 한다. 클릭·스크롤·우클릭도 된다.
+- **넘나들기에만 집중한다.** 세션을 오가고 거르고, 세션이 없는 호스트에 새 세션
+  하나를 만든다. 이름 바꾸기와 없애기, 창과 pane 작업은 그걸 이미 잘하는 mux에
+  남겨 둔다.
 - **컨트롤 소켓.** 로컬 소켓이 스크립팅과 헤드리스 구동을 위한 의미 단위 명령을
   노출한다([컨트롤 소켓](#컨트롤-소켓) 참고).
 
@@ -78,14 +79,12 @@ xmux version
 | `Home` / `End` | 첫 행 / 마지막 행으로 |
 | `PageUp` / `PageDown` | 열 행씩 이동 |
 | `Enter` | 고른 세션의 실시간 화면으로 초점 옮기기 |
-| `prefix n` | 만들기 (고른 단계에 따라 세션 / 창 / 분할) |
-| `prefix R` | 고른 세션이나 창 이름 바꾸기 |
-| `prefix x` | 고른 세션이나 창 없애기 (확인 창이 뜬다) |
+| `prefix n` | 고른 호스트에 새 세션 만들기 |
 | `/` | 트리 퍼지 필터 |
 | `prefix r` | 모든 호스트 다시 훑기 |
 
 마우스도 된다. 행을 클릭하면 선택되고, 오른쪽 창을 클릭하면 그쪽으로 초점이 간다.
-트리 위에서 휠을 굴려 스크롤하고, 행을 우클릭하면 컨텍스트 메뉴가 뜬다.
+트리 위에서 휠을 굴리면 스크롤한다.
 
 **Prefix 키.** xmux는 tmux의 `set -g prefix`처럼 자체 prefix를 둔다. 기본값은
 `Ctrl-g`이고 `[ui] prefix`로 바꾼다(아래 참고). prefix를 누른 다음:
@@ -98,10 +97,6 @@ xmux version
 | `prefix h` / `prefix l` (또는 `prefix Ctrl-←/→`) | 트리 좁히기 / 넓히기 |
 | `prefix Tab` / 화살표 / `Esc` | 트리와 화면 사이 초점 이동 |
 | `prefix prefix` | prefix 바이트 하나를 초점 세션에 그대로 보내기 |
-
-`prefix x`는 초점에 따라 다르게 동작한다. 트리에서는 고른 세션이나 창을 없애고,
-화면에 초점이 있으면 그 세션의 **활성 pane**, 즉 지금 보고 있는 pane을 없앤다.
-tmux의 `prefix x`와 같다.
 
 prefix에 관한 자세한 내용은 [`docs/keybind.md`](docs/keybind.md)를 참고한다.
 
@@ -142,19 +137,12 @@ hint-bar-style = "bg=blue,fg=white"   # 힌트 바 색 (tmux status-style; 비�
 ## 컨트롤 소켓
 
 실행 중인 xmux 인스턴스는 로컬 소켓(`~/.xmux/ctl-<pid>.sock`)을 듣는다. 세션은
-`<source>/<session>`으로, 창은 `<source>/<session>:<window>`로 지정한다. 이 소켓은
-이동·표시 명령을 받는다. `ping`, `status`, `dump`, `rescan`,
-`switch <source>/<session>`, `focus <nav|terminal>`, `width <delta>`(트리 폭을
-부호 있는 열 수만큼 조정한다. 절대 폭이 아니라 증분이다), `toggle-auto-hide`,
-`quit`이 있고, 세션 수명을 다루는 명령도 있다:
-
-- `new-session <source> [name]`
-- `kill-session <source>/<session>`
-- `rename-session <source>/<session> <name>`
-- `new-window <source>/<session> [name]`
-- `split-window <source>/<session>:<window> [v|h]` — 기본은 세로
-- `kill-window <source>/<session>:<window>`
-- `rename-window <source>/<session>:<window> <name>`
+`<source>/<session>`으로 지정한다. 이 소켓은 이동·표시 명령을 받는다. `ping`,
+`status`, `dump`, `rescan`, `switch <source>/<session>`, `focus <nav|terminal>`,
+`width <delta>`(트리 폭을 부호 있는 열 수만큼 조정한다. 절대 폭이 아니라 증분이다),
+`toggle-auto-hide`, `quit`이다. 세션 수명을 다루는 명령은
+`new-session <source> [name]` 하나뿐이다. 없애기·이름 바꾸기·창 관련 명령은 없다.
+키를 없앤 이유와 같다. 세션을 고치는 일은 mux가 한다.
 
 저수준 키·바이트 주입용으로 불안정한 `raw:` 네임스페이스를 예약해 두었다. 이렇게
 쓴다:

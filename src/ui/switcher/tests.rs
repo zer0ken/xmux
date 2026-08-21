@@ -11,14 +11,7 @@ use std::sync::Mutex;
 
 #[derive(Default)]
 struct RecordOps {
-    killed: Mutex<Vec<Session>>,
     created: Mutex<Vec<String>>,
-    renamed: Mutex<Vec<String>>,
-    windowed: Mutex<Vec<String>>,
-    split: Mutex<Vec<String>>,
-    killed_windows: Mutex<Vec<String>>,
-    killed_panes: Mutex<Vec<String>>,
-    renamed_windows: Mutex<Vec<String>>,
 }
 
 #[async_trait::async_trait]
@@ -41,53 +34,8 @@ impl Ops for RecordOps {
             ..Default::default()
         })
     }
-    async fn new_window(&self, source: &str, session: &str, name: &str) -> anyhow::Result<()> {
-        self.windowed
-            .lock()
-            .unwrap()
-            .push(format!("{source}/{session}:{name}"));
-        Ok(())
-    }
-    async fn split_window(&self, source: &str, target: &str, vertical: bool) -> anyhow::Result<()> {
-        self.split.lock().unwrap().push(format!(
-            "{source}/{target}:{}",
-            if vertical { "v" } else { "h" }
-        ));
-        Ok(())
-    }
-    async fn kill(&self, s: &Session) -> anyhow::Result<()> {
-        self.killed.lock().unwrap().push(s.clone());
-        Ok(())
-    }
-    async fn rename(&self, s: &Session, nn: &str) -> anyhow::Result<()> {
-        self.renamed
-            .lock()
-            .unwrap()
-            .push(format!("{}->{}", s.address(), nn));
-        Ok(())
-    }
     async fn panes(&self, _s: &Session) -> anyhow::Result<Vec<WindowPanes>> {
         Ok(Vec::new())
-    }
-    async fn kill_window(&self, _source: &str, target: &str) -> anyhow::Result<()> {
-        self.killed_windows.lock().unwrap().push(target.to_string());
-        Ok(())
-    }
-    async fn kill_pane(&self, _source: &str, target: &str) -> anyhow::Result<()> {
-        self.killed_panes.lock().unwrap().push(target.to_string());
-        Ok(())
-    }
-    async fn rename_window(
-        &self,
-        _source: &str,
-        target: &str,
-        new_name: &str,
-    ) -> anyhow::Result<()> {
-        self.renamed_windows
-            .lock()
-            .unwrap()
-            .push(format!("{target}->{new_name}"));
-        Ok(())
     }
 }
 
@@ -1234,53 +1182,6 @@ async fn filter_narrows() {
 }
 
 #[tokio::test]
-async fn kill_confirm_esc_cancels() {
-    let mut h = Harness::new(sample()); // launch preselects a session card (killable)
-    h.ch('x').await; // arm the kill y/n confirm
-    assert!(
-        matches!(h.state.modal, Some(Modal::Kill(_))),
-        "x arms the y/n confirm"
-    );
-    h.key(KeyCode::Esc).await; // Esc cancels it, like the input prompts
-    assert!(
-        !matches!(h.state.modal, Some(Modal::Kill(_))),
-        "Esc clears the confirm"
-    );
-    assert!(
-        h.ops.killed.lock().unwrap().is_empty(),
-        "Esc must not kill anything"
-    );
-}
-
-#[tokio::test]
-async fn kill_removes_session_and_cache() {
-    let mut h = Harness::new(sample());
-    // Force local/editor to a loading card (panes cached but not "loaded") so `x` on it
-    // arms a SESSION kill; killing the session must invalidate its cached panes + drop it.
-    h.state.panes_loaded.remove("local/editor");
-    h.sw.rebuild(&mut h.state);
-    assert!(h.sw.select_address("local/editor", &h.state));
-    assert!(h.state.panes.contains_key("local/editor"));
-    h.ch('x').await; // arm
-    assert!(
-        h.text().contains("kill local/editor?"),
-        "expected inline kill confirm:\n{}",
-        h.text()
-    );
-    h.ch('y').await;
-    assert_eq!(h.ops.killed.lock().unwrap().len(), 1);
-    assert_eq!(h.ops.killed.lock().unwrap()[0].name, "editor");
-    assert!(
-        !h.state.panes.contains_key("local/editor"),
-        "kill must invalidate cache"
-    );
-    assert!(
-        !h.text().contains("editor"),
-        "killed session must disappear"
-    );
-}
-
-#[tokio::test]
 async fn create_adds_and_selects() {
     // A reachable empty host shows a host card; n on it creates a session, then selects it.
     let scan = Scan {
@@ -1341,72 +1242,25 @@ async fn slow_op_is_deferred_off_the_key_path() {
 }
 
 #[tokio::test]
-async fn n_on_window_card_creates_a_window() {
-    // The `n` action is card-aware: on a session card it creates a new window in that
-    // card's session.
+async fn n_on_a_session_card_refuses_with_a_flash() {
+    // `n` only starts a SESSION, and only a host card names a host to start it on.
+    // xmux does not create windows, so a session card has nothing to create.
     let mut h = Harness::new(sample());
-    // Land on local/editor's card.
     assert!(h.sw.select_address("local/editor", &h.state));
     h.ch('n').await;
-    h.sw.set_input_text("logs", &mut h.state);
-    h.key(KeyCode::Enter).await;
-    assert_eq!(
-        *h.ops.windowed.lock().unwrap(),
-        vec!["local/editor:logs"],
-        "n on a session card queues a new window in its session"
+    assert!(
+        !h.state.is_inputting(),
+        "no input opens on a session card: {}",
+        h.text()
+    );
+    assert!(
+        h.state.chrome.flash.contains("host card"),
+        "the refusal says where to press it: {:?}",
+        h.state.chrome.flash
     );
     assert!(
         h.ops.created.lock().unwrap().is_empty(),
-        "not a session create"
-    );
-}
-
-#[tokio::test]
-async fn rename_targets_node_captured_at_open_not_enter() {
-    // Open rename on alpha/a-sess, then let a more-recent session stream in on
-    // another host. The rename must still target the session captured when the
-    // input opened.
-    let mut h = Harness::from_sources(&["alpha", "beta"]);
-    h.sw.apply_source_result(
-        "alpha".into(),
-        vec![sess("alpha", "a-sess", 1, false, 100)],
-        None,
-        &mut h.state,
-    );
-    // launch preselects alpha/a-sess's loading card (a session rename).
-    h.ch('R').await; // capture alpha/a-sess
-    h.sw.apply_source_result(
-        "beta".into(),
-        vec![sess("beta", "b-sess", 1, false, 999)],
-        None,
-        &mut h.state,
-    );
-    h.sw.set_input_text("renamed", &mut h.state);
-    h.key(KeyCode::Enter).await;
-    let renamed = h.ops.renamed.lock().unwrap();
-    assert_eq!(
-        *renamed,
-        vec!["alpha/a-sess->renamed".to_string()],
-        "rename must target the captured node, not where streaming moved the selection"
-    );
-}
-
-#[tokio::test]
-async fn rename_rejects_leading_dash() {
-    let mut h = Harness::from_sources(&["local"]);
-    h.sw.apply_source_result(
-        "local".into(),
-        vec![sess("local", "work", 1, false, 100)],
-        None,
-        &mut h.state,
-    );
-    // launch preselects local/work's loading card (a session rename).
-    h.ch('R').await;
-    h.sw.set_input_text("-bad", &mut h.state);
-    h.key(KeyCode::Enter).await;
-    assert!(
-        h.ops.renamed.lock().unwrap().is_empty(),
-        "leading-dash rename must be refused"
+        "nothing is created"
     );
 }
 
@@ -1735,30 +1589,19 @@ async fn double_click_selects_node() {
 #[tokio::test]
 async fn single_click_moves_cursor() {
     let mut h = Harness::new(sample());
-    h.sw.mouse_select(5, 4, &h.state);
-    // After a single click the selection is on a selectable row (not pane/loading).
-    let selectable = h.sw.rows.get(h.sw.selected).is_some_and(Row::selectable);
-    assert!(selectable, "single click must land on a selectable row");
-}
-
-#[test]
-fn menu_items_by_row_type() {
-    use super::MenuItem::*;
-    let host = RowRef::Host {
-        source: "h".into(),
-        unreachable: false,
-    };
-    assert_eq!(modal::menu_items(&host), vec![NewSession]);
-
-    let s = sess("h", "api", 1, false, 0);
-    let session_items = modal::menu_items(&RowRef::Session { sess: s.clone() });
-    assert_eq!(session_items, vec![Focus, NewWindow, Rename, Kill]);
-    assert!(
-        !items_have_split(&session_items),
-        "the menu offers no split action"
+    // Click the card the renderer actually drew at that screen row: card heights
+    // vary, so the hit-test must agree with `card_height`, not a fixed row pitch.
+    let target = row_index(
+        &h,
+        |r| matches!(r, RowRef::Session { sess } if sess.name == "build"),
     );
-    // A loading card can only be focused - its windows are not yet resolved.
-    assert_eq!(modal::menu_items(&RowRef::Loading { sess: s }), vec![Focus]);
+    h.draw();
+    let (x, y) = row_screen_pos(&h, target);
+    h.sw.mouse_select(x, y, &h.state);
+    assert_eq!(
+        h.sw.selected, target,
+        "a click lands on the card drawn at that row"
+    );
 }
 
 /// The screen (col,row) of the card at `idx`: its FIRST screen row. Card heights
@@ -1777,379 +1620,6 @@ fn row_index<F: Fn(&RowRef) -> bool>(h: &Harness, pred: F) -> usize {
         .iter()
         .position(|r| pred(&r.reference))
         .expect("row exists")
-}
-
-#[tokio::test]
-async fn menu_open_on_session_does_not_move_cursor() {
-    let mut h = Harness::new(sample());
-    let before = h.sw.selected;
-    let idx = row_index(
-        &h,
-        |r| matches!(r, RowRef::Session { sess } if sess.name == "build"),
-    );
-    let (x, y) = row_screen_pos(&h, idx);
-    assert!(
-        h.sw.menu_open(x, y, &mut h.state),
-        "menu opens over a session card"
-    );
-    assert!(h.state.menu_active());
-    assert_eq!(
-        h.sw.selected, before,
-        "opening the menu must not move the tree selection"
-    );
-}
-
-#[tokio::test]
-async fn menu_release_off_menu_cancels() {
-    let mut h = Harness::new(sample());
-    let idx = row_index(&h, |r| matches!(r, RowRef::Session { .. }));
-    let (x, y) = row_screen_pos(&h, idx);
-    h.sw.menu_open(x, y, &mut h.state);
-    // Drag fully outside the box → highlight clears → release cancels.
-    h.sw.menu_hover(99, 29, &mut h.state);
-    assert!(matches!(h.sw.menu_release(&mut h.state), MenuOutcome::None));
-    assert!(!h.state.menu_active(), "menu closes on release");
-    assert!(
-        !h.state.is_inputting() && !matches!(h.state.modal, Some(Modal::Kill(_))),
-        "nothing happened"
-    );
-}
-
-#[tokio::test]
-async fn menu_release_in_place_cancels() {
-    // Accidental-click safety: open then release WITHOUT dragging onto an item does
-    // nothing. The pointer lands on the title row with no item pre-selected, so the
-    // release lands off every item.
-    let mut h = Harness::new(sample());
-    let idx = row_index(
-        &h,
-        |r| matches!(r, RowRef::Session { sess } if sess.name == "build"),
-    );
-    let (x, y) = row_screen_pos(&h, idx);
-    assert!(h.sw.menu_open(x, y, &mut h.state));
-    assert!(
-        matches!(h.sw.menu_release(&mut h.state), MenuOutcome::None),
-        "no drag → no action"
-    );
-    assert!(!h.state.menu_active());
-    assert!(
-        !h.state.is_inputting() && !matches!(h.state.modal, Some(Modal::Kill(_))),
-        "nothing happened"
-    );
-}
-
-#[tokio::test]
-async fn menu_title_row_sits_on_the_pointer() {
-    // tmux-style: the title row (top border) lands on the click row, and no item is
-    // pre-selected under the pointer - an accidental right-click releases off every item.
-    let mut h = Harness::new(sample());
-    let idx = row_index(
-        &h,
-        |r| matches!(r, RowRef::Session { sess } if sess.name == "build"),
-    );
-    let (x, y) = row_screen_pos(&h, idx);
-    assert!(h.sw.menu_open(x, y, &mut h.state));
-    let Some(Modal::Menu(menu)) = &h.state.modal else {
-        unreachable!()
-    };
-    assert_eq!(menu.rect.y, y, "the title row sits on the click row");
-    assert_eq!(menu.item_at(x, y), None, "no item under the pointer");
-}
-
-#[tokio::test]
-async fn menu_release_focus_focuses_terminal_and_selects_target() {
-    let mut h = Harness::new(sample());
-    let target = RowRef::Session {
-        sess: sess("local", "build", 1, false, 100),
-    };
-    let items = modal::menu_items(&target);
-    let focus_at = items.iter().position(|i| *i == MenuItem::Focus).unwrap();
-    h.state.modal = Some(Modal::Menu(Menu {
-        target,
-        title: String::new(),
-        rect: Rect::new(0, 0, 20, 7),
-        items,
-        hovered: Some(focus_at),
-    }));
-    assert!(matches!(
-        h.sw.menu_release(&mut h.state),
-        MenuOutcome::FocusTerminal
-    ));
-    assert_eq!(
-        cur_session_name(&h).as_deref(),
-        Some("build"),
-        "selection moved to target"
-    );
-}
-
-#[tokio::test]
-async fn menu_release_rename_opens_input() {
-    let mut h = Harness::new(sample());
-    let target = RowRef::Session {
-        sess: sess("local", "build", 1, false, 100),
-    };
-    let items = modal::menu_items(&target);
-    let at = items.iter().position(|i| *i == MenuItem::Rename).unwrap();
-    h.state.modal = Some(Modal::Menu(Menu {
-        target,
-        title: String::new(),
-        rect: Rect::new(0, 0, 20, 7),
-        items,
-        hovered: Some(at),
-    }));
-    assert!(matches!(
-        h.sw.menu_release(&mut h.state),
-        MenuOutcome::Handled
-    ));
-    assert!(h.state.is_inputting(), "rename opens the inline input");
-}
-
-#[tokio::test]
-async fn menu_release_kill_arms_confirm() {
-    let mut h = Harness::new(sample());
-    let target = RowRef::Session {
-        sess: sess("local", "build", 1, false, 100),
-    };
-    let items = modal::menu_items(&target);
-    let at = items.iter().position(|i| *i == MenuItem::Kill).unwrap();
-    h.state.modal = Some(Modal::Menu(Menu {
-        target,
-        title: String::new(),
-        rect: Rect::new(0, 0, 20, 7),
-        items,
-        hovered: Some(at),
-    }));
-    assert!(matches!(
-        h.sw.menu_release(&mut h.state),
-        MenuOutcome::Handled
-    ));
-    assert!(
-        matches!(h.state.modal, Some(Modal::Kill(_))),
-        "kill arms the y/n confirm"
-    );
-}
-
-#[tokio::test]
-async fn menu_kill_keeps_the_cursor_so_the_confirm_survives() {
-    // Regression: the y/n confirm flashed and vanished because moving the selection to
-    // the target changed the selection → attach → events → rebuild, which clears
-    // pending_kill. Acting on a row must NOT move the selection.
-    let mut h = Harness::new(sample());
-    let editor = row_index(
-        &h,
-        |r| matches!(r, RowRef::Session { sess } if sess.name == "editor"),
-    );
-    h.sw.set_selected(editor, &h.state);
-    h.sw.user_moved = true;
-    // Kill a DIFFERENT session ('build') via the menu.
-    let target = RowRef::Session {
-        sess: sess("local", "build", 1, false, 100),
-    };
-    let items = modal::menu_items(&target);
-    let at = items.iter().position(|i| *i == MenuItem::Kill).unwrap();
-    h.state.modal = Some(Modal::Menu(Menu {
-        target,
-        title: String::new(),
-        rect: Rect::new(0, 0, 20, 7),
-        items,
-        hovered: Some(at),
-    }));
-    assert!(matches!(
-        h.sw.menu_release(&mut h.state),
-        MenuOutcome::Handled
-    ));
-    assert!(
-        matches!(h.state.modal, Some(Modal::Kill(_))),
-        "kill is armed against the clicked row"
-    );
-    assert!(
-        matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.name == "editor"),
-        "the selection stayed put → no selection change to rebuild away the confirm"
-    );
-}
-
-#[tokio::test]
-async fn kill_confirm_survives_a_rebuild_until_the_target_vanishes() {
-    // The confirm must NOT have a time limit: a routine rebuild (the 1.5s local
-    // poll, a remote %-event) used to clear pending_kill out from under the user.
-    let mut h = Harness::new(sample());
-    let build = row_index(
-        &h,
-        |r| matches!(r, RowRef::Session { sess } if sess.name == "build"),
-    );
-    h.sw.set_selected(build, &h.state);
-    h.sw.arm_kill(&mut h.state);
-    assert!(matches!(h.state.modal, Some(Modal::Kill(_))), "kill armed");
-    h.sw.rebuild(&mut h.state); // a poll/event rebuild
-    assert!(
-        matches!(h.state.modal, Some(Modal::Kill(_))),
-        "confirm survives a routine rebuild - no time limit"
-    );
-    // But once the target is actually gone, the stale confirm is dropped.
-    h.state.groups = crate::ui::tree::remove_session(&h.state.groups, "local/build");
-    h.sw.rebuild(&mut h.state);
-    assert!(
-        !matches!(h.state.modal, Some(Modal::Kill(_))),
-        "a vanished target invalidates the confirm"
-    );
-}
-
-#[tokio::test]
-async fn menu_new_session_opens_input_and_creates() {
-    // Regression: 'new session' via the host menu must open the name input and,
-    // on confirm, create the session - the full gesture-to-op path.
-    let scan = Scan {
-        groups: vec![Group {
-            source: "local".into(),
-            err: None,
-            sessions: vec![],
-        }],
-        panes: HashMap::new(),
-    };
-    let mut h = Harness::new(scan);
-    let idx = row_index(
-        &h,
-        |r| matches!(r, RowRef::Host { source, .. } if source == "local"),
-    );
-    let (x, y) = row_screen_pos(&h, idx);
-    assert!(
-        h.sw.menu_open(x, y, &mut h.state),
-        "menu opens on the host row"
-    );
-    // Deliberately move onto the first item (no pre-hover), then release.
-    let rect = match &h.state.modal {
-        Some(Modal::Menu(m)) => m.rect,
-        _ => unreachable!(),
-    };
-    h.sw.menu_hover(rect.x + 1, rect.y + 1, &mut h.state);
-    assert!(matches!(
-        h.sw.menu_release(&mut h.state),
-        MenuOutcome::Handled
-    ));
-    assert!(h.state.is_inputting(), "new session opens the name input");
-    h.sw.set_input_text("fresh", &mut h.state);
-    h.key(KeyCode::Enter).await; // queues + pumps the create op (as the loop would)
-    assert!(
-        h.ops
-            .created
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|c| c.contains("fresh")),
-        "the session is created: {:?}",
-        h.ops.created.lock().unwrap()
-    );
-}
-
-fn items_have_split(items: &[MenuItem]) -> bool {
-    // The menu has no Split action; this test guards against one being added.
-    items.iter().any(|i| i.label().contains("split"))
-}
-
-#[tokio::test]
-async fn menu_open_on_host_row() {
-    let scan = Scan {
-        groups: vec![Group {
-            source: "local".into(),
-            err: None,
-            sessions: vec![],
-        }],
-        panes: HashMap::new(),
-    };
-    let mut h = Harness::new(scan);
-    let idx = row_index(
-        &h,
-        |r| matches!(r, RowRef::Host { source, .. } if source == "local"),
-    );
-    let (x, y) = row_screen_pos(&h, idx);
-    assert!(
-        h.sw.menu_open(x, y, &mut h.state),
-        "menu opens over a host row"
-    );
-    // A host menu's first item (new session) opens an input.
-    let target = RowRef::Host {
-        source: "local".into(),
-        unreachable: false,
-    };
-    let items = modal::menu_items(&target);
-    h.state.modal = Some(Modal::Menu(Menu {
-        target,
-        title: String::new(),
-        rect: Rect::new(0, 0, 20, 4),
-        items,
-        hovered: Some(0),
-    }));
-    assert!(
-        matches!(h.sw.menu_release(&mut h.state), MenuOutcome::Handled),
-        "new session opens an input"
-    );
-    assert!(h.state.is_inputting());
-}
-
-#[tokio::test]
-async fn menu_release_stale_target_cancels() {
-    let mut h = Harness::new(sample());
-    // A target that does not exist in the tree (rebuilt away during the hold).
-    let target = RowRef::Loading {
-        sess: sess("local", "ghost", 1, false, 0),
-    };
-    let items = modal::menu_items(&target);
-    h.state.modal = Some(Modal::Menu(Menu {
-        target,
-        title: String::new(),
-        rect: Rect::new(0, 0, 20, 7),
-        items,
-        hovered: Some(0),
-    }));
-    assert!(
-        matches!(h.sw.menu_release(&mut h.state), MenuOutcome::None),
-        "gone target → no-op"
-    );
-}
-
-#[tokio::test]
-async fn menu_renders_title_and_hovered_item_reversed() {
-    use super::MenuItem::*;
-    let mut h = Harness::new(sample());
-    let target = RowRef::Session {
-        sess: sess("local", "build", 1, false, 100),
-    };
-    let items = vec![Focus, Rename, Kill, NewWindow];
-    // Box at a known spot; hover the second item (rename).
-    h.state.modal = Some(Modal::Menu(Menu {
-        target,
-        title: "build".into(),
-        rect: Rect::new(2, 2, 18, 6),
-        items,
-        hovered: Some(1),
-    }));
-    h.draw();
-    let out = h.text();
-    assert!(
-        out.contains("focus") && out.contains("rename") && out.contains("kill"),
-        "menu items render:\n{out}"
-    );
-    assert!(
-        out.contains("build"),
-        "the menu shows its target's name as the title:\n{out}"
-    );
-
-    // The hovered row (rename, at box y+1+1 = 4) carries the surface highlight
-    // across the box interior (the menu's selection language matches the nav's).
-    let buf = h.buf();
-    let highlighted = (3..19).any(|x| buf[(x, 4u16)].bg == crate::ui::palette::get().surface);
-    assert!(highlighted, "the hovered item renders highlighted");
-}
-
-#[tokio::test]
-async fn help_lists_the_right_click_menu() {
-    let mut h = Harness::new(sample());
-    h.sw.show_help(&mut h.state);
-    h.draw();
-    assert!(
-        h.text().contains("right-click"),
-        "help mentions the right-click menu"
-    );
 }
 
 #[tokio::test]
@@ -2661,7 +2131,7 @@ async fn every_popup_type_is_opaque_over_a_colored_grid() {
     );
     h.sw.set_selected(build, &h.state);
     h.sw.user_moved = true;
-    h.sw.arm_kill(&mut h.state);
+    h.sw.show_help(&mut h.state);
     let g = blue_grid();
     h.term
         .draw(|f| h.sw.render(f, Some(&g), false, NAV_WIDTH, 0, &h.state))
@@ -2669,7 +2139,7 @@ async fn every_popup_type_is_opaque_over_a_colored_grid() {
     assert_eq!(
         interior_blue(h.buf()),
         0,
-        "confirm popup interior must be opaque"
+        "help popup interior must be opaque"
     );
 }
 
@@ -2698,29 +2168,21 @@ fn popup_border_press_then_drag_moves_the_rect() {
 
 #[test]
 fn modals_are_mutually_exclusive() {
-    // Opening any modal closes the others, so the drawn popup always matches where
-    // keystrokes route (the context menu can open input/confirm bypassing handle_key).
+    // Opening either modal closes the other, so the drawn popup always matches where
+    // keystrokes route.
     let mut state = crate::state::State::from_scan(sample());
-    let mut sw = Switcher::new(&mut state); // launch preselects a killable session card
-    sw.arm_kill(&mut state);
-    assert!(matches!(state.modal, Some(Modal::Kill(_))));
-    sw.open_input(InputMode::Rename, &mut state); // as the menu's Rename would
+    let mut sw = Switcher::new(&mut state);
+    sw.open_input(InputMode::Filter, &mut state);
     assert!(state.is_inputting(), "input opened");
-    assert!(
-        !matches!(state.modal, Some(Modal::Kill(_))),
-        "arming an input cancels a pending kill"
-    );
     sw.show_help(&mut state);
     assert!(
-        matches!(state.modal, Some(Modal::Help))
-            && !state.is_inputting()
-            && !matches!(state.modal, Some(Modal::Kill(_))),
+        matches!(state.modal, Some(Modal::Help)) && !state.is_inputting(),
         "help closes the input"
     );
-    sw.arm_kill(&mut state);
+    sw.open_input(InputMode::Filter, &mut state);
     assert!(
-        matches!(state.modal, Some(Modal::Kill(_))) && !matches!(state.modal, Some(Modal::Help)),
-        "arming a kill closes help"
+        state.is_inputting() && !matches!(state.modal, Some(Modal::Help)),
+        "the input closes help"
     );
 }
 
@@ -2858,8 +2320,15 @@ async fn input_renders_as_a_centered_popup_not_the_bottom_pane() {
 
 #[tokio::test]
 async fn input_esc_cancels_without_acting() {
-    let mut h = Harness::new(sample());
-    h.key(KeyCode::Home).await;
+    // `n` starts a session on a REACHABLE host card, so the fixture is one empty host.
+    let mut h = Harness::new(Scan {
+        groups: vec![Group {
+            source: "local".into(),
+            err: None,
+            sessions: vec![],
+        }],
+        panes: HashMap::new(),
+    });
     h.ch('n').await;
     assert!(h.state.is_inputting(), "input open");
     h.key(KeyCode::Esc).await;
@@ -2868,211 +2337,6 @@ async fn input_esc_cancels_without_acting() {
         h.ops.created.lock().unwrap().is_empty(),
         "Esc must not create anything"
     );
-}
-
-#[tokio::test]
-async fn kill_confirm_is_a_centered_red_popup_not_the_hint_bar() {
-    let mut h = Harness::new(sample());
-    let build = row_index(
-        &h,
-        |r| matches!(r, RowRef::Session { sess } if sess.name == "build"),
-    );
-    h.sw.set_selected(build, &h.state);
-    h.sw.user_moved = true;
-    h.key(KeyCode::Char('x')).await; // arm the confirm
-    let buf = h.buf();
-    let last = buf.area.height - 1;
-    let hint_bar: String = (0..buf.area.width)
-        .map(|x| buf[(x, last)].symbol())
-        .collect();
-    assert!(
-        !hint_bar.contains("[y]es"),
-        "confirm must not be in the hint_bar:\n{hint_bar}"
-    );
-    // A danger-red "kill" cell exists in a centered box (not the hint_bar row).
-    let red_kill = (0..last)
-        .flat_map(|y| (0..buf.area.width).map(move |x| (x, y)))
-        .any(|(x, y)| {
-            buf[(x, y)].symbol() == "k" && buf[(x, y)].fg == crate::ui::palette::get().danger
-        });
-    assert!(
-        red_kill,
-        "the confirm popup shows red 'kill' text above the hint_bar"
-    );
-}
-
-#[tokio::test]
-async fn kill_on_session_card_targets_the_session() {
-    let mut h = Harness::new(sample());
-    h.key(KeyCode::Down).await; // → local/editor's card
-    h.sw.handle_key(
-        KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
-        &mut h.state,
-    ); // arm kill (raw, not pumped)
-    let armed = match &h.state.modal {
-        Some(Modal::Kill(PendingKill::Session(sess))) => sess.address(),
-        other => panic!("expected a session PendingKill, got {:?}", other.is_some()),
-    };
-    assert_eq!(armed, "local/editor");
-    // confirm with y
-    let cmds = h.sw.handle_key(
-        KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
-        &mut h.state,
-    );
-    let op = only_run_op(cmds).expect("kill queued");
-    assert!(
-        matches!(op, crate::model::MuxOp::Kill { ref sess } if sess.address() == "local/editor")
-    );
-}
-
-#[tokio::test]
-async fn kill_active_pane_targets_the_displayed_sessions_active_window() {
-    // prefix-x-in-terminal parity: the kill targets the ACTIVE pane of the session the
-    // terminal view is showing (state.displayed), NOT the tree selection. The fixture's
-    // local/editor has window 1 active, so the target is editor:1 (session:window - the
-    // mux resolves that window's active pane).
-    let mut h = Harness::new(sample());
-    h.state.displayed = crate::model::Selection {
-        source: "local".into(),
-        session: "editor".into(),
-        window: None,
-    };
-    h.sw.arm_kill_active_pane(&mut h.state);
-    let target = match &h.state.modal {
-        Some(Modal::Kill(PendingKill::Pane { target, .. })) => target.clone(),
-        _ => panic!("expected a Pane kill confirm"),
-    };
-    assert_eq!(target, "editor:1");
-    let cmds = h.sw.handle_key(
-        KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
-        &mut h.state,
-    );
-    let op = only_run_op(cmds).expect("kill pane queued");
-    assert!(
-        matches!(op, crate::model::MuxOp::KillPane { ref target, .. } if target == "editor:1"),
-        "y confirms → KillPane on the displayed session's active window"
-    );
-}
-
-#[tokio::test]
-async fn kill_active_pane_is_a_no_op_when_nothing_is_displayed() {
-    // With no session on screen (displayed empty), there is no pane to target - the
-    // confirm must not arm (a flash is shown instead).
-    let mut h = Harness::new(sample());
-    assert!(h.state.displayed.is_empty(), "nothing displayed at start");
-    h.sw.arm_kill_active_pane(&mut h.state);
-    assert!(
-        !matches!(h.state.modal, Some(Modal::Kill(_))),
-        "no kill confirm armed when nothing is displayed"
-    );
-}
-
-#[tokio::test]
-async fn rename_on_session_card_targets_the_session() {
-    let mut h = Harness::new(sample());
-    h.key(KeyCode::Down).await; // → local/editor's card
-    h.sw.handle_key(
-        KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE),
-        &mut h.state,
-    ); // open rename (raw)
-    assert!(
-        h.state.is_inputting(),
-        "rename on a session card must open input"
-    );
-    h.sw.set_input_text("newname", &mut h.state);
-    let cmds = h.sw.handle_key(
-        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-        &mut h.state,
-    ); // confirm (raw)
-    let op = only_run_op(cmds).expect("rename queued");
-    assert!(
-        matches!(op, crate::model::MuxOp::Rename { ref sess, ref new_name }
-            if sess.address() == "local/editor" && new_name == "newname")
-    );
-}
-
-#[tokio::test]
-async fn rename_session_unchanged_name_is_ignored() {
-    let mut h = Harness::new(sample());
-    h.key(KeyCode::Down).await; // → local/editor's card
-    h.sw.handle_key(
-        KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE),
-        &mut h.state,
-    ); // open rename (raw)
-    assert!(
-        h.state.is_inputting(),
-        "rename on a session card must open input"
-    );
-    h.sw.set_input_text("editor", &mut h.state); // same as current name
-    let cmds = h.sw.handle_key(
-        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-        &mut h.state,
-    );
-    assert!(
-        only_run_op(cmds).is_none(),
-        "unchanged session name must not queue a Rename op"
-    );
-}
-
-#[tokio::test]
-async fn rename_window_rejects_leading_dash() {
-    let mut h = Harness::new(sample());
-    h.key(KeyCode::Down).await; // → local/editor's card
-    h.sw.handle_key(
-        KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE),
-        &mut h.state,
-    ); // open rename (raw)
-    assert!(
-        h.state.is_inputting(),
-        "rename on window row must open input"
-    );
-    h.sw.set_input_text("-bad", &mut h.state);
-    let cmds = h.sw.handle_key(
-        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-        &mut h.state,
-    );
-    assert!(
-        only_run_op(cmds).is_none(),
-        "leading-dash window rename must be refused"
-    );
-    assert!(
-        h.state.chrome.flash.contains("cannot start with"),
-        "leading-dash window rename must set a flash message, got {:?}",
-        h.state.chrome.flash
-    );
-}
-
-#[tokio::test]
-async fn kill_on_host_row_flashes_error() {
-    let mut h = Harness::new(sample());
-    h.key(KeyCode::End).await; // the db-2 host card (the only host card in the sample)
-    h.ch('x').await;
-    assert!(
-        h.state.chrome.flash.to_lowercase().contains("cannot kill"),
-        "kill on host row must flash an error, got {:?}",
-        h.state.chrome.flash
-    );
-    assert!(
-        !matches!(h.state.modal, Some(Modal::Kill(_))),
-        "no kill queued"
-    );
-}
-
-#[tokio::test]
-async fn rename_on_host_row_flashes_error() {
-    let mut h = Harness::new(sample());
-    h.key(KeyCode::End).await; // the db-2 host card (the only host card in the sample)
-    h.ch('R').await;
-    assert!(
-        h.state
-            .chrome
-            .flash
-            .to_lowercase()
-            .contains("cannot rename"),
-        "rename on host row must flash an error, got {:?}",
-        h.state.chrome.flash
-    );
-    assert!(!h.state.is_inputting(), "no input opened");
 }
 
 #[test]

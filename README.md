@@ -31,8 +31,9 @@ sessions from one terminal.
 - **Metadata without polling where it counts.** tmux hosts are tracked over
   control mode (`-CC`); psmux hosts are polled. Either way the tree reflects the
   servers, which remain the source of truth.
-- **Mouse and keyboard.** Navigate, filter, create, rename, and kill sessions
-  from the keyboard; click, scroll, and right-click work too.
+- **Switching, not editing.** Navigate, filter, and start a session on an empty
+  host. Renaming, killing, and window/pane work stay in the mux that already does
+  them well.
 - **A control socket.** A local socket exposes semantic verbs for scripting and
   headless driving (see [Control socket](#control-socket)).
 
@@ -82,14 +83,12 @@ screen. Keyboard focus is on one region at a time.
 | `Home` / `End` | jump to the first / last row |
 | `PageUp` / `PageDown` | jump ten rows |
 | `Enter` | move focus into the selected session's live screen |
-| `prefix n` | create (session / window / split, depending on the selected level) |
-| `prefix R` | rename the selected session or window |
-| `prefix x` | kill the selected session or window (with a confirm prompt) |
+| `prefix n` | start a new session on the selected host |
 | `/` | fuzzy-filter the tree |
 | `prefix r` | re-scan every host |
 
 The mouse works too: click a row to select it, click the right pane to focus it,
-scroll the wheel over the tree, and right-click a row for a context menu.
+and scroll the wheel over the tree.
 
 **Prefix keys.** xmux has its own prefix, like tmux's `set -g prefix`. The
 default is `Ctrl-g`, configurable via `[ui] prefix` (see below). Press the
@@ -103,10 +102,6 @@ prefix, then:
 | `prefix h` / `prefix l` (or `prefix Ctrl-←/→`) | narrow / widen the tree |
 | `prefix Tab` / arrow / `Esc` | move focus between the tree and the screen |
 | `prefix prefix` | send one literal prefix byte to the focused session |
-
-`prefix x` is focus-aware: in the tree it kills the selected session or window;
-with the screen focused it kills that session's **active pane** — the one you're
-looking at — like tmux's own `prefix x`.
 
 See [`docs/keybind.md`](docs/keybind.md) for more on the prefix.
 
@@ -148,19 +143,12 @@ session, the live auto-hide-nav toggle, logs, and control sockets) lives under
 ## Control socket
 
 A running xmux instance listens on a local socket (`~/.xmux/ctl-<pid>.sock`).
-Sessions are addressed `<source>/<session>` and windows
-`<source>/<session>:<window>`. It speaks navigation/display verbs — `ping`,
-`status`, `dump`, `rescan`, `switch <source>/<session>`, `focus <nav|terminal>`,
-`width <delta>` (adjusts the tree width by a signed column count, a delta rather
-than an absolute width), `toggle-auto-hide`, `quit` — and session-lifecycle verbs:
-
-- `new-session <source> [name]`
-- `kill-session <source>/<session>`
-- `rename-session <source>/<session> <name>`
-- `new-window <source>/<session> [name]`
-- `split-window <source>/<session>:<window> [v|h]` — vertical by default
-- `kill-window <source>/<session>:<window>`
-- `rename-window <source>/<session>:<window> <name>`
+Sessions are addressed `<source>/<session>`. It speaks navigation/display verbs
+— `ping`, `status`, `dump`, `rescan`, `switch <source>/<session>`,
+`focus <nav|terminal>`, `width <delta>` (adjusts the tree width by a signed column
+count, a delta rather than an absolute width), `toggle-auto-hide`, `quit` — and one
+session-lifecycle verb, `new-session <source> [name]`. There are no kill/rename/window
+verbs, for the same reason the keys are gone: the mux owns editing a session.
 
 An unstable `raw:` namespace is reserved for low-level key/byte injection. Drive it
 with:

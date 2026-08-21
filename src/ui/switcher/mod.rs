@@ -17,9 +17,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::model::{Action, Command};
 use crate::session::{Session, WindowPanes};
-use crate::ui::modal::{
-    self, Input, InputMode, Menu, MenuItem, MenuOutcome, Modal, PendingKill, PopupGeometry,
-};
+use crate::ui::modal::{self, Input, InputMode, Modal, PopupGeometry};
 use crate::ui::tree::{self, Group, Row, RowRef};
 
 use crate::ui::ops::OpFollow;
@@ -309,31 +307,6 @@ impl Switcher {
 
     // --- tree model ---------------------------------------------------------
 
-    /// Whether the node an armed kill targets still exists in the current rows,
-    /// matched by identity (session address) rather than row position. Lets
-    /// [`Switcher::rebuild`] keep the confirm alive across routine tree updates and
-    /// drop it only when the target genuinely vanished.
-    fn kill_target_present(&self, kill: &PendingKill) -> bool {
-        match kill {
-            PendingKill::Session(sess) => {
-                let addr = sess.address();
-                self.rows
-                    .iter()
-                    .any(|r| session_addr_of(&r.reference).as_deref() == Some(addr.as_str()))
-            }
-            // The pane target has no card of its own (panes are display-only); the
-            // confirm stays valid while its session's card is shown.
-            PendingKill::Pane {
-                source, session, ..
-            } => {
-                let addr = crate::session::address_of(source, session);
-                self.rows
-                    .iter()
-                    .any(|r| session_addr_of(&r.reference).as_deref() == Some(addr.as_str()))
-            }
-        }
-    }
-
     fn rebuild(&mut self, state: &mut crate::state::State) {
         // Once the user has moved the selection, hold their current session selection
         // across this rebuild when it survives (matched by identity) - a routine rebuild
@@ -364,14 +337,6 @@ impl Switcher {
         );
 
         self.rows = rows;
-        // Keep an armed kill confirm across this rebuild as long as its target still
-        // EXISTS (matched by identity, not row position). Only a tree change that
-        // actually removed the target invalidates it - routine rebuilds (the local
-        // poll, a remote %-event) must NOT silently cancel it, or answering y/n has a
-        // surprise time limit. resolve_kill consumes it; set_selected does not touch it.
-        if matches!(&state.modal, Some(Modal::Kill(k)) if !self.kill_target_present(k)) {
-            state.modal = None;
-        }
         let target = self
             .user_moved
             .then(|| {
