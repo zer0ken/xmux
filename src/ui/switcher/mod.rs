@@ -810,11 +810,22 @@ fn pad_label(s: &str) -> String {
 /// carries only its host; a session/loading card names its session's host, mux
 /// kind (empty when not yet known), and session name.
 fn context_of(reference: &RowRef) -> (&str, &str, &str) {
+    // The MACHINE half, never the whole source id: a source id already carries the mux
+    // when its machine serves several, and the card renders the mux as its own span, so
+    // returning the id whole would read `local:zellij/zellij`. A session card takes the
+    // mux from the session (the kind the enumeration stamped); a host card has no
+    // session to read, so it takes it from its id.
     match reference {
-        RowRef::Host { source, .. } => (source, "", ""),
-        RowRef::Session { sess } | RowRef::Loading { sess } => {
-            (&sess.source, &sess.mux, &sess.name)
-        }
+        RowRef::Host { source, .. } => (
+            crate::session::machine_of(source),
+            crate::session::mux_of(source),
+            "",
+        ),
+        RowRef::Session { sess } | RowRef::Loading { sess } => (
+            crate::session::machine_of(&sess.source),
+            &sess.mux,
+            &sess.name,
+        ),
     }
 }
 

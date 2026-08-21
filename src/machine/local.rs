@@ -6,15 +6,27 @@ use super::Transport;
 use crate::session::LOCAL_SOURCE;
 
 /// The local machine. `socket` targets a non-default mux server (`-S <socket>`,
-/// parsed from `$TMUX`); `None` ⇒ the default socket.
+/// parsed from `$TMUX`); `None` ⇒ the default socket. `id` is the SOURCE id this
+/// transport answers as: bare `local` when this box serves one mux, `local:<mux>` when
+/// it serves several, so two local sources on the same box stay distinct keys.
 #[derive(Clone, Debug)]
 pub struct Local {
+    pub id: String,
     pub socket: Option<String>,
+}
+
+impl Default for Local {
+    fn default() -> Self {
+        Local {
+            id: LOCAL_SOURCE.to_string(),
+            socket: None,
+        }
+    }
 }
 
 impl Transport for Local {
     fn host_id(&self) -> &str {
-        LOCAL_SOURCE
+        &self.id
     }
 
     /// This box's local mux registry is authoritative for a local host (registry-merge
@@ -67,6 +79,7 @@ mod tests {
     fn local(socket: Option<&str>) -> Local {
         Local {
             socket: socket.map(str::to_string),
+            ..Local::default()
         }
     }
     fn argv(parts: &[&str]) -> Vec<String> {

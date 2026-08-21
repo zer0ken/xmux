@@ -27,7 +27,7 @@ pub struct Env {
     pub cfg_warnings: Vec<String>,
     pub srcs: Vec<Source>,
     pub by_alias: HashMap<String, Source>,
-    pub local_bin: String,
+    pub local_muxes: Vec<String>,
     pub ui_prefix: String,
     pub xmux_dir: PathBuf,
     /// The ssh-config host aliases discovered at startup (a config-assembly product).
@@ -114,13 +114,13 @@ pub fn build_env() -> (Env, Option<anyhow::Error>) {
     let local_socket = local_socket(std::env::var("TMUX").ok().as_deref());
     let srcs = source::build(&cfg, &aliases, os, &xmux_dir, local_socket);
     let by_alias = srcs.iter().map(|s| (s.alias.clone(), s.clone())).collect();
-    let local_bin = cfg.local_bin(os);
+    let local_muxes = cfg.local_muxes(os);
     let ui_prefix = cfg.ui_prefix().to_string();
     // The local host's `-S` socket, read back from the assembled local source so the
     // host registry (`Hosts::build`) targets the same server the source list does.
     let host_local_socket = srcs
         .iter()
-        .find(|s| s.alias == crate::session::LOCAL_SOURCE)
+        .find(|s| crate::session::is_local_source(&s.alias))
         .and_then(|s| s.local_socket());
     (
         Env {
@@ -128,7 +128,7 @@ pub fn build_env() -> (Env, Option<anyhow::Error>) {
             cfg_warnings,
             srcs,
             by_alias,
-            local_bin,
+            local_muxes,
             ui_prefix,
             xmux_dir,
             ssh_aliases: aliases,
@@ -323,12 +323,16 @@ mod tests {
     fn test_source(alias: &str, remote: bool, line: &str) -> Source {
         let kind = if remote {
             crate::machine::MachineKind::Ssh {
+                id: String::new(),
                 alias: alias.into(),
                 control_path: String::new(),
                 os: "linux".into(),
             }
         } else {
-            crate::machine::MachineKind::Local { socket: None }
+            crate::machine::MachineKind::Local {
+                id: String::new(),
+                socket: None,
+            }
         };
         Source {
             alias: alias.into(),
@@ -352,7 +356,7 @@ mod tests {
             )]
             .into_iter()
             .collect(),
-            local_bin: "tmux".into(),
+            local_muxes: vec!["tmux".into()],
             ui_prefix: "C-g".into(),
             xmux_dir: PathBuf::from("."),
             ssh_aliases: Vec::new(),

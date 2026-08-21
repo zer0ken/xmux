@@ -134,11 +134,18 @@ pub enum LoweredSwitch {
 /// `MachineKind` matches on the kind.
 #[derive(Clone, Debug)]
 pub enum MachineKind {
-    /// The local machine, optionally targeting a non-default mux socket (`-S`).
-    Local { socket: Option<String> },
-    /// A remote over ssh: the destination `alias`, its ControlMaster socket
-    /// `control_path`, and the LOCAL platform `os` (gates ControlMaster).
+    /// The local machine, optionally targeting a non-default mux socket (`-S`). `id` is
+    /// the source id it answers as (empty ⇒ the bare `local`).
+    Local {
+        #[allow(missing_docs)]
+        id: String,
+        socket: Option<String>,
+    },
+    /// A remote over ssh: the source `id` it answers as (empty ⇒ `alias`), the
+    /// destination `alias`, its ControlMaster socket `control_path`, and the LOCAL
+    /// platform `os` (gates ControlMaster).
     Ssh {
+        id: String,
         alias: String,
         control_path: String,
         os: String,
@@ -151,12 +158,20 @@ impl MachineKind {
     /// no code outside `MachineKind` matches on the kind.
     pub fn transport(self) -> Box<dyn Transport> {
         match self {
-            MachineKind::Local { socket } => local(socket),
+            MachineKind::Local { id, socket } if id.is_empty() => local(socket),
+            MachineKind::Local { id, socket } => local_as(id, socket),
             MachineKind::Ssh {
+                id,
                 alias,
                 control_path,
                 os,
-            } => ssh(alias, control_path, os),
+            } if id.is_empty() || id == alias => ssh(alias, control_path, os),
+            MachineKind::Ssh {
+                id,
+                alias,
+                control_path,
+                os,
+            } => ssh_as(id, alias, control_path, os),
         }
     }
 
@@ -166,20 +181,43 @@ impl MachineKind {
     /// a new family is compiler-forced to state its socket in one place.
     pub fn local_socket(&self) -> Option<String> {
         match self {
-            MachineKind::Local { socket } => socket.clone(),
+            MachineKind::Local { socket, .. } => socket.clone(),
             MachineKind::Ssh { .. } => None,
         }
     }
 }
 
-/// A local machine transport targeting an optional non-default mux socket.
+/// A local machine transport targeting an optional non-default mux socket, answering
+/// as the bare `local` source - this box serving one mux.
 pub fn local(socket: Option<String>) -> Box<dyn Transport> {
-    Box::new(Local { socket })
+    Box::new(Local {
+        socket,
+        ..Local::default()
+    })
 }
 
-/// A remote (ssh) machine transport.
+/// A local machine transport answering as the source `id`. Used when this box serves
+/// SEVERAL muxes and each needs its own key.
+pub fn local_as(id: String, socket: Option<String>) -> Box<dyn Transport> {
+    Box::new(Local { id, socket })
+}
+
+/// A remote (ssh) machine transport answering as the source `alias` - that machine
+/// serving one mux.
 pub fn ssh(alias: String, control_path: String, os: String) -> Box<dyn Transport> {
     Box::new(Ssh {
+        id: alias.clone(),
+        alias,
+        control_path,
+        os,
+    })
+}
+
+/// A remote (ssh) machine transport answering as the source `id` while still reaching
+/// the machine at `alias`. Used when a machine serves SEVERAL muxes.
+pub fn ssh_as(id: String, alias: String, control_path: String, os: String) -> Box<dyn Transport> {
+    Box::new(Ssh {
+        id,
         alias,
         control_path,
         os,
@@ -189,6 +227,32 @@ pub fn ssh(alias: String, control_path: String, os: String) -> Box<dyn Transport
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_qualified_transport_keeps_reaching_the_same_machine() {
+        // Two muxes on one machine are two SOURCES at one DESTINATION: the id
+        // distinguishes them, the ssh argv must not change.
+        let one = ssh("prod".into(), String::new(), "linux".into());
+        let two = ssh_as(
+            "prod:zellij".into(),
+            "prod".into(),
+            String::new(),
+            "linux".into(),
+        );
+        assert_eq!(one.host_id(), "prod");
+        assert_eq!(two.host_id(), "prod:zellij");
+        let (n1, a1) = one.exec_argv(false, &["tmux".to_string(), "ls".to_string()]);
+        let (n2, a2) = two.exec_argv(false, &["tmux".to_string(), "ls".to_string()]);
+        assert_eq!((n1, a1), (n2, a2), "same destination, same argv");
+    }
+
+    #[test]
+    fn a_qualified_local_transport_is_still_this_box() {
+        let l = local_as("local:zellij".into(), None);
+        assert_eq!(l.host_id(), "local:zellij");
+        assert!(crate::session::is_local_source(l.host_id()));
+        assert!(l.local_registry_scope(), "still this box's registry scope");
+    }
 
     #[test]
     fn local_factory_is_local_and_issues_no_raw_ssh() {
@@ -221,6 +285,7 @@ mod tests {
         // `MachineKind::transport` is the single site that maps a machine kind to a
         // concrete Transport (Decision A: a new family = a variant + one match arm).
         let local = MachineKind::Local {
+            id: String::new(),
             socket: Some("/tmp/s".into()),
         }
         .transport();
@@ -234,6 +299,7 @@ mod tests {
         );
 
         let ssh = MachineKind::Ssh {
+            id: String::new(),
             alias: "prod".into(),
             control_path: String::new(),
             os: "linux".into(),
@@ -247,14 +313,23 @@ mod tests {
     fn local_socket_is_some_only_for_a_local_nondefault_socket() {
         assert_eq!(
             MachineKind::Local {
+                id: String::new(),
                 socket: Some("/tmp/s".into())
             }
             .local_socket(),
             Some("/tmp/s".into())
         );
-        assert_eq!(MachineKind::Local { socket: None }.local_socket(), None);
+        assert_eq!(
+            MachineKind::Local {
+                id: String::new(),
+                socket: None
+            }
+            .local_socket(),
+            None
+        );
         assert_eq!(
             MachineKind::Ssh {
+                id: String::new(),
                 alias: "prod".into(),
                 control_path: String::new(),
                 os: "linux".into(),

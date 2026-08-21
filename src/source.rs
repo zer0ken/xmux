@@ -131,23 +131,36 @@ pub fn build(
     xmux_dir: &Path,
     local_socket: Option<String>,
 ) -> Vec<Source> {
-    let mut srcs = vec![Source {
-        alias: session::LOCAL_SOURCE.to_string(),
-        binary: cfg.local_bin(os),
-        kind: MachineKind::Local {
-            socket: local_socket,
-        },
-        runner: None,
-    }];
+    // One source per (machine, mux): this box contributes one for each mux it serves.
+    let local_muxes = cfg.local_muxes(os);
+    let qualified = local_muxes.len() > 1;
+    let mut srcs: Vec<Source> = local_muxes
+        .iter()
+        .map(|bin| {
+            let id = session::source_id(session::LOCAL_SOURCE, bin, qualified);
+            Source {
+                alias: id.clone(),
+                binary: bin.clone(),
+                kind: MachineKind::Local {
+                    id,
+                    socket: local_socket.clone(),
+                },
+                runner: None,
+            }
+        })
+        .collect();
     for spec in cfg.host_specs(ssh_aliases) {
+        // The ControlMaster socket is per MACHINE, not per source: several muxes on one
+        // machine share the one multiplexed connection.
         let control_path = xmux_dir
             .join(format!("cm-{}.sock", spec.alias))
             .to_string_lossy()
             .into_owned();
         srcs.push(Source {
-            alias: spec.alias.clone(),
+            alias: spec.id.clone(),
             binary: spec.bin,
             kind: MachineKind::Ssh {
+                id: spec.id,
                 alias: spec.alias,
                 control_path,
                 os: os.to_string(),

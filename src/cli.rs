@@ -25,7 +25,7 @@ use crate::source::Source;
     name = "xmux",
     version,
     about = "cross-environment mux session switcher",
-    long_about = "xmux shows every reachable tmux/psmux session (local + ssh) as one list and switches between them."
+    long_about = "xmux shows every reachable tmux/psmux/zellij session (local + ssh) as one list and switches between them."
 )]
 struct Cli {
     /// Name this instance (default: an auto-generated `<adjective>-<noun>`). Lowercase
@@ -208,7 +208,7 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
         println!("config.toml: ok");
     }
 
-    println!("local mux: {}", env.local_bin);
+    println!("local mux: {}", env.local_muxes.join(", "));
     if ssh_on_path() {
         println!("ssh: ok");
     } else {

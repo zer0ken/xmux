@@ -1,8 +1,8 @@
 # xmux — functional requirements & use cases
 
 xmux is a stateless cross-environment session switcher: one terminal that sees and
-moves between every reachable tmux/psmux session — local and over ssh — regardless
-of OS or mux kind. Its reason to exist is to deliver tmux's `prefix + s`
+moves between every reachable tmux/psmux/zellij session — local and over ssh —
+regardless of OS or mux kind. Its reason to exist is to deliver tmux's `prefix + s`
 (choose-tree / switch-client) experience **across hosts**: instant, in-place
 switching to any host's session.
 
@@ -35,6 +35,44 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   `the_dns_label_wins_over_hostname`, `a_provider_that_cannot_answer_yields_nothing`,
   `a_label_that_is_not_a_dns_label_is_refused`,
   `merge_keeps_first_seen_order_and_drops_duplicates`.
+
+- **FR-A6** — A host's mux is identified by what its binary answers as, not by the
+  name it was invoked under, so tmux, psmux, and zellij mix freely across hosts with no
+  configuration. Each mux is one family behind the `Mux` trait: the command plans
+  default to tmux-compatible argv (so a tmux-compatible mux is identity plus a few
+  methods), and a mux that shares no argv with tmux overrides every plan together with
+  the shape of what each plan prints. zellij is that case: it is enumerated from
+  `list-sessions`, its windows come from its tab listing, and its sessions are polled
+  because it offers no push channel. **Tests:**
+  `detect_backend_classifies_zellij_by_help_marker`,
+  `zellij_resolves_by_binary_name_and_by_kind`,
+  `zellij_is_per_session_polled_and_dies_by_eof`,
+  `the_window_query_is_the_tab_listing_and_it_reads_json`,
+  `an_idle_zellij_is_empty_and_an_unreachable_host_is_an_error`,
+  `a_session_carries_its_name_kind_and_creation_recency`,
+  `a_resurrectable_session_is_not_offered`, `tabs_are_windows_in_tab_bar_order`.
+  **Live-verified** (real zellij over ssh: attach, cross-session switch, input, and the
+  window row following the session's focused tab).
+
+- **FR-A7** — A SOURCE is one mux on one machine, so a machine running several
+  muxes at once contributes one source per mux and every one of them is listed. A `mux`
+  value is a name or a LIST of names, in `[local]` and in `[[hosts]]` alike. A machine
+  given several muxes has its sources named `<machine>:<mux>`; a machine given one keeps
+  the bare machine alias, so an existing setup's ids, addresses, and typed targets do
+  not move. `exclude` names machines, so it drops every mux on one. A listed mux that is
+  not installed there surfaces as unreachable rather than being dropped, because a name
+  the user wrote is a name they meant. **Tests:**
+  `a_machine_can_be_given_several_muxes`, `one_mux_on_a_machine_keeps_the_bare_id`,
+  `excluding_a_machine_drops_every_mux_on_it`,
+  `a_mux_list_parses_from_toml_beside_a_bare_name`,
+  `a_mux_list_drops_blanks_and_repeats`,
+  `a_source_id_names_its_mux_only_when_the_machine_serves_several`,
+  `the_machine_half_and_localness_survive_qualification`,
+  `a_qualified_source_still_addresses_a_session`,
+  `a_qualified_transport_keeps_reaching_the_same_machine`,
+  `a_qualified_local_transport_is_still_this_box`,
+  `every_mux_on_this_box_pins_ahead_of_every_remote`. **Live-verified** (local psmux and
+  local zellij listed side by side, switching between them in place).
 
 ## B. The switcher — "see the list, decide whether & where to move"
 

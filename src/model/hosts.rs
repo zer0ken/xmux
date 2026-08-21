@@ -48,25 +48,33 @@ impl Hosts {
     ) -> Hosts {
         let mut hosts = Hosts::default();
 
-        let local_bin = cfg.local_bin(os);
-        hosts.insert(Host::new(
-            crate::machine::MachineKind::Local {
-                socket: local_socket,
-            }
-            .transport(),
-            for_binary(&local_bin),
-        ));
+        // One host per (machine, mux): this box contributes one for each mux it serves.
+        let local_muxes = cfg.local_muxes(os);
+        let qualified = local_muxes.len() > 1;
+        for bin in &local_muxes {
+            hosts.insert(Host::new(
+                crate::machine::MachineKind::Local {
+                    id: crate::session::source_id(LOCAL_SOURCE, bin, qualified),
+                    socket: local_socket.clone(),
+                }
+                .transport(),
+                for_binary(bin),
+            ));
+        }
 
         for spec in cfg.host_specs(ssh_aliases) {
             if spec.alias == LOCAL_SOURCE {
-                continue; // "local" is reserved for the local mux source.
+                continue; // "local" is reserved for this box's sources.
             }
+            // The ControlMaster socket is per MACHINE, not per source: several muxes on
+            // one machine share the one multiplexed connection.
             let control_path = xmux_dir
                 .join(format!("cm-{}.sock", spec.alias))
                 .to_string_lossy()
                 .into_owned();
             hosts.insert(Host::new(
                 crate::machine::MachineKind::Ssh {
+                    id: spec.id,
                     alias: spec.alias,
                     control_path,
                     os: os.to_string(),

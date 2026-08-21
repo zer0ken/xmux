@@ -14,17 +14,19 @@ use crate::machine::Transport;
 use crate::model::plan::{DeathSignal, EventSource};
 use crate::model::server_model::ServerModel;
 use crate::mux::vocab as mux;
-use crate::session::Session;
+use crate::session::{Session, WindowPanes};
 use crate::source::{RunError, Runner};
 
 mod control;
 mod psmux;
 mod tmux;
 pub mod vocab;
+mod zellij;
 
 pub use control::{ControlProtocol, Line, Notif};
 pub use psmux::Psmux;
 pub use tmux::{Tmux, TmuxControl};
+pub use zellij::Zellij;
 // Re-export the pure mux vocabulary at the crate::mux root so `crate::mux::<fn>`
 // call sites resolve unchanged whether the item is the Mux trait/factory or a
 // vocab builder/parser.
@@ -79,8 +81,34 @@ pub(crate) async fn enumerate_via_list_sessions(
 pub(crate) fn reason_is_no_sessions(text: &str) -> bool {
     text.to_lowercase().split('\n').any(|line| {
         let line = line.trim();
-        line.starts_with("no server running") || line.starts_with("no sessions")
+        line.starts_with("no server running")
+            || line.starts_with("no sessions")
+            // zellij's idle message, on stderr with a plain non-zero exit.
+            || line.starts_with("no active zellij sessions")
     })
+}
+
+/// The per-command budget for one poll sweep. The poll loop's ticker only advances
+/// after `poll_once` RETURNS, so a single mux command that never answers freezes that
+/// host's whole inventory: every card stays on its loading spinner and no later sweep
+/// ever runs. A command that outlives this is abandoned (the child is killed on drop)
+/// and retried on the next sweep. Exceeds the ssh connect timeout (5s) so a slow remote
+/// is not mistaken for a hung one.
+pub(crate) const POLL_CMD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
+
+/// Runs `fut` under [`POLL_CMD_TIMEOUT`], mapping a timeout to a [`RunError`] naming
+/// the budget it blew.
+async fn within_poll_budget<T>(
+    what: &str,
+    fut: impl std::future::Future<Output = Result<T, RunError>>,
+) -> Result<T, RunError> {
+    match tokio::time::timeout(POLL_CMD_TIMEOUT, fut).await {
+        Ok(r) => r,
+        Err(_) => Err(RunError::Other(format!(
+            "{what} did not answer within {}s",
+            POLL_CMD_TIMEOUT.as_secs()
+        ))),
+    }
 }
 
 /// An opaque, mux-authored plan for an in-place display-client switch. The driver runs
@@ -189,10 +217,11 @@ pub trait Mux: Send + Sync {
         runner: &dyn Runner,
         emit: &mut (dyn FnMut(HostEvent) + Send),
     ) {
-        let (sessions, err) = match self.enumerate(transport, runner).await {
-            Ok(s) => (s, None),
-            Err(e) => (Vec::new(), Some(e.to_string())),
-        };
+        let (sessions, err) =
+            match within_poll_budget("list-sessions", self.enumerate(transport, runner)).await {
+                Ok(s) => (s, None),
+                Err(e) => (Vec::new(), Some(e.to_string())),
+            };
         let names: Vec<(String, String)> = sessions
             .iter()
             .map(|s| (s.name.clone(), s.address()))
@@ -205,10 +234,18 @@ pub trait Mux: Send + Sync {
         for (name, address) in names {
             let argv = self.list_panes_plan(&name);
             let (cmd, args) = transport.exec_argv(false, &argv);
-            if let Ok(out) = runner.run(&cmd, &args).await {
-                let panes = mux::parse_panes(&String::from_utf8_lossy(&out));
-                emit(HostEvent::Panes { address, panes });
-            }
+            // A session whose window list cannot be read still gets a `Panes` event, with
+            // no windows in it. Emitting nothing would leave the card on its loading
+            // spinner forever; an empty answer is the truth (xmux could not read them)
+            // and the nav shows the session without a window row.
+            let panes = match within_poll_budget("list-panes", runner.run(&cmd, &args)).await {
+                Ok(out) => self.parse_panes(&String::from_utf8_lossy(&out)),
+                Err(e) => {
+                    tracing::warn!(host = %source, session = %name, error = %e, "panes_unreadable");
+                    Vec::new()
+                }
+            };
+            emit(HostEvent::Panes { address, panes });
         }
     }
 
@@ -218,6 +255,19 @@ pub trait Mux: Send + Sync {
     fn list_panes_plan(&self, session: &str) -> Vec<String> {
         mux::list_panes(self.bin(), session)
     }
+
+    /// Reads the output of [`Self::list_panes_plan`] as windows-and-panes. A plan and
+    /// the shape of what it prints are one decision, so they are overridden together: a
+    /// mux whose argv diverges from tmux's usually prints something else too (zellij
+    /// answers in JSON). The default is the tmux tab-delimited [`mux::PANE_FORMAT`]
+    /// parser, which every tmux-compatible mux inherits.
+    fn parse_panes(&self, out: &str) -> Vec<WindowPanes> {
+        mux::parse_panes(out)
+    }
+
+    /// Reads one global server option. An EMPTY plan means the mux has no server
+    /// options at all, and the caller yields no value without running anything - the
+    /// honest answer for a mux configured only by a file its server never reports.
     fn show_option_plan(&self, name: &str) -> Vec<String> {
         mux::show_option(self.bin(), name)
     }
@@ -241,10 +291,16 @@ struct MuxKind {
 // `name` is the canonical identity, help-output marker, and conventional binary
 // name. tmux is the implicit fallback because tmux has no positive help signal.
 fn known_muxes() -> &'static [MuxKind] {
-    &[MuxKind {
-        name: "psmux",
-        make: |bin| Box::new(Psmux { bin }),
-    }]
+    &[
+        MuxKind {
+            name: "psmux",
+            make: |bin| Box::new(Psmux { bin }),
+        },
+        MuxKind {
+            name: "zellij",
+            make: |bin| Box::new(Zellij { bin }),
+        },
+    ]
 }
 
 /// The implicit tmux fallback — the single place that names tmux as the mux any
@@ -587,6 +643,91 @@ mod tests {
         }
     }
 
+    /// Answers `list-sessions` and then NEVER answers the pane query - the shape a
+    /// hung mux command takes (a zellij session whose server is gone, an ssh that
+    /// stalls after the handshake).
+    struct HangingPanesRunner;
+
+    #[async_trait]
+    impl Runner for HangingPanesRunner {
+        async fn run(&self, _name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
+            if args.iter().any(|a| a.contains("list-panes")) {
+                std::future::pending::<()>().await;
+            }
+            Ok(b"1	0	0	api
+"
+            .to_vec())
+        }
+    }
+
+    /// Never answers anything.
+    struct HangingRunner;
+
+    #[async_trait]
+    impl Runner for HangingRunner {
+        async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
+            std::future::pending::<()>().await;
+            unreachable!()
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_hung_pane_query_ends_the_sweep_with_an_empty_answer() {
+        // The poll loop's ticker only advances after a sweep RETURNS, so a command that
+        // never answers would freeze the host's whole inventory. The sweep must end, and
+        // the session must still get a `Panes` event - an empty one - because emitting
+        // nothing leaves the card on a loading spinner no later sweep resolves.
+        // Reaching the assertions at all is the proof that the sweep returned.
+        let m = tmux();
+        let transport = crate::machine::local(None);
+        let mut events = Vec::new();
+        m.poll_once("local", &transport, &HangingPanesRunner, &mut |ev| {
+            events.push(ev)
+        })
+        .await;
+        assert_eq!(events.len(), 2, "one Sessions, one Panes");
+        match &events[0] {
+            HostEvent::Sessions { sessions, err, .. } => {
+                assert_eq!(sessions.len(), 1);
+                assert!(err.is_none(), "the listing answered");
+            }
+            _ => panic!("want Sessions first"),
+        }
+        match &events[1] {
+            HostEvent::Panes { address, panes } => {
+                assert_eq!(address, "local/api");
+                assert!(panes.is_empty(), "no windows could be read");
+            }
+            _ => panic!("want Panes second"),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_hung_listing_ends_the_sweep_as_an_error_not_a_freeze() {
+        // Same budget on the other half of the sweep: an unanswered listing surfaces as
+        // the host's error, which the nav shows as unreachable, instead of stalling the
+        // loop forever with nothing on screen.
+        let m = tmux();
+        let transport = crate::machine::local(None);
+        let mut events = Vec::new();
+        m.poll_once("local", &transport, &HangingRunner, &mut |ev| {
+            events.push(ev)
+        })
+        .await;
+        assert_eq!(events.len(), 1, "no session to ask panes for");
+        match &events[0] {
+            HostEvent::Sessions { sessions, err, .. } => {
+                assert!(sessions.is_empty());
+                let err = err.as_deref().unwrap_or_default();
+                assert!(
+                    err.contains("list-sessions") && err.contains("did not answer"),
+                    "the error names what went quiet: {err:?}"
+                );
+            }
+            _ => panic!("want Sessions"),
+        }
+    }
+
     #[tokio::test]
     async fn detect_backend_classifies_psmux_by_help_marker() {
         let transport = crate::machine::local(None);
@@ -599,6 +740,25 @@ mod tests {
             got.attach_plan("api"),
             argv(&["tmux", "new-session", "-A", "-s", "api"])
         );
+    }
+
+    #[tokio::test]
+    async fn detect_backend_classifies_zellij_by_help_marker() {
+        // zellij names itself in its help banner, the same positive signal psmux gives,
+        // so it is identified without ever reaching the `-V` tmux fallback.
+        let transport = crate::machine::local(None);
+        let runner = ProbeRunner::new(
+            Some(
+                "A terminal workspace with batteries included
+
+Usage: zellij [OPTIONS]",
+            ),
+            Some("tmux 3.5a"),
+        );
+        let got = detect_backend(&transport, "zellij", &runner).await.unwrap();
+        assert_eq!(got.kind(), "zellij");
+        assert_eq!(got.server_model(), ServerModel::PerSession);
+        assert_eq!(got.attach_plan("api"), argv(&["zellij", "attach", "api"]));
     }
 
     #[tokio::test]
@@ -688,10 +848,21 @@ mod tests {
     }
 
     #[test]
+    fn zellij_resolves_by_binary_name_and_by_kind() {
+        // The registry is what makes a mux reachable from config: a `mux = "zellij"`
+        // entry and a `zellij` binary must both land on the zellij impl, and the
+        // invoked binary is preserved either way.
+        assert_eq!(for_binary("zellij").kind(), "zellij");
+        assert_eq!(for_kind("zellij", "zellij-nightly").kind(), "zellij");
+        assert_eq!(for_kind("zellij", "zellij-nightly").bin(), "zellij-nightly");
+    }
+
+    #[test]
     fn is_recognized_covers_tmux_and_known_muxes() {
         assert!(is_recognized("tmux"));
         assert!(is_recognized("psmux"));
-        assert!(!is_recognized("zellij"));
+        assert!(is_recognized("zellij"));
+        assert!(!is_recognized("byobu"));
         assert!(!is_recognized(""));
     }
 

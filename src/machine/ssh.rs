@@ -11,9 +11,12 @@ const CONNECT_TIMEOUT: &str = "5";
 
 /// A remote over ssh. `control_path` is the ControlMaster socket (empty ⇒ no
 /// multiplex, e.g. a Windows local side); `os` is the LOCAL platform (gates
-/// ControlMaster). `alias` is the ssh destination.
+/// ControlMaster). `alias` is the ssh DESTINATION, and `id` is the SOURCE id this
+/// transport answers as - the two differ when a machine serves several muxes, since
+/// each mux is its own source reached at the same destination.
 #[derive(Clone, Debug)]
 pub struct Ssh {
+    pub id: String,
     pub alias: String,
     pub control_path: String,
     pub os: String,
@@ -51,7 +54,9 @@ impl Ssh {
 
 impl Transport for Ssh {
     fn host_id(&self) -> &str {
-        &self.alias
+        // The SOURCE id, not the destination: several muxes on one machine are several
+        // sources reached at the same `alias`.
+        &self.id
     }
 
     fn is_remote(&self) -> bool {
@@ -122,6 +127,7 @@ mod tests {
 
     fn ssh(alias: &str, os: &str, cp: &str) -> Ssh {
         Ssh {
+            id: alias.to_string(),
             alias: alias.into(),
             control_path: cp.into(),
             os: os.into(),

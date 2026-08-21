@@ -6,8 +6,9 @@ xmux is a persistent, terminal-owning supervisor written in Rust. It owns the
 terminal you launch it in, keeps its live mux attachments running, and renders
 a split view: a **tree** of every reachable session on the left, the selected
 session's **live screen** on the right. Move through the tree and the right pane
-switches to that session in place, whether it's a local psmux session or a tmux
-session over ssh. No detaching and reattaching, no picker to click through.
+switches to that session in place, whether it's a local psmux session, a tmux
+session over ssh, or a zellij session on a third machine. No detaching and
+reattaching, no picker to click through.
 
 The goal is the `switch-client` experience you already know from tmux, extended
 across hosts: instant, in-place switching between any configured machine's mux
@@ -25,12 +26,13 @@ sessions from one terminal.
 - **Live screens, not previews.** The right pane is a real per-session PTY
   attachment, so what you see is the session's actual screen, kept alive as you
   navigate.
-- **Two orthogonal axes.** A `Mux` axis (**tmux** and **psmux**) and a
+- **Two orthogonal axes.** A `Mux` axis (**tmux**, **psmux**, and **zellij**) and a
   `Transport` axis (**local** and **ssh**) compose freely: any mux over any
   transport, without either knowing about the other.
 - **Metadata without polling where it counts.** tmux hosts are tracked over
-  control mode (`-CC`); psmux hosts are polled. Either way the tree reflects the
-  servers, which remain the source of truth.
+  control mode (`-CC`); psmux and zellij hosts are polled, because neither offers a
+  push channel. Either way the tree reflects the servers, which remain the source of
+  truth.
 - **Switching, not editing.** Navigate, filter, jump by number, and start a
   session on an empty host. Renaming, killing, and window/pane work stay in the mux that already does
   them well.
@@ -53,9 +55,11 @@ cargo install --path .
 ```
 
 It runs on Windows and on unix-likes. You need `ssh` on the machine running
-xmux for remote hosts, and a supported mux on each machine you target:
-`tmux` on unix, `psmux` on Windows (both speak the same command language, and
-xmux drives either).
+xmux for remote hosts, and a supported mux on each machine you target: `tmux` on
+unix, `psmux` on Windows (both speak the same command language), or `zellij`,
+which speaks its own and is driven through its own CLI. A machine's mux is detected
+from the binary it answers as, so a mix of the three across your hosts needs no
+configuration.
 
 ## Usage
 
@@ -112,6 +116,31 @@ keys that prefix unlocks.
 
 See [`docs/keybind.md`](docs/keybind.md) for more on the prefix.
 
+## Several muxes on one machine
+
+A machine can run more than one mux at a time, and xmux offers each as its own
+source. Name them in a list, on this machine or a remote:
+
+```toml
+[local]
+mux = ["psmux", "zellij"]
+
+[[hosts]]
+ssh = "prod"
+mux = ["tmux", "zellij"]
+```
+
+Both then appear in the list, `local/psmux` over its sessions and `local/zellij` over
+its own, and moving between them is the same keystroke as moving between hosts. A
+machine given several muxes has its sources named `local:psmux` and `local:zellij`, and
+that is the name `xmux ls` prints and `xmux send switch` takes; a machine given one
+keeps its bare name (`local`, `prod`) exactly as before. `exclude` names machines, so
+excluding one drops every mux on it.
+
+Listing a mux that is not installed on that machine is not silently ignored: the source
+appears as unreachable with the mux's own message, because a name you wrote is a name
+you meant.
+
 ## Where the host list comes from
 
 By default xmux offers the `Host` aliases in `~/.ssh/config`, plus `local`. A tailnet
@@ -137,9 +166,12 @@ Configuration is entirely optional. Zero-config is the default. xmux reads
 `~/.config/xmux/config.toml`:
 
 ```toml
-# The mux used on the local machine.
+# The mux used on the local machine. A LIST runs several at once: each is its own
+# source, and both appear side by side in the list.
 [local]
-mux = "auto"          # "auto" (default): psmux on Windows, tmux elsewhere
+mux = "auto"          # "auto" (default): psmux on Windows, tmux elsewhere.
+                      # Also accepts "tmux", "psmux", "zellij",
+                      # or a list: ["psmux", "zellij"]
 
 # Override the mux for a discovered ssh host, or add a host ssh-config
 # discovery did not surface.
