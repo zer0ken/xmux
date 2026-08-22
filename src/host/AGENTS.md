@@ -18,7 +18,7 @@ it parses each list-sessions / list-panes block and carries the result on a
 the same carriers the poll path uses). `PendingReply` correlates a control command
 with its reply so the right `HostEvent` is emitted. The app folds those events
 through `State::apply_event` into `model::Host.inventory` — the single owner of
-per-host session/window inventory — and (re)builds the tree from it.
+per-host session/window inventory — and (re)builds the nav rows from it.
 
 ## Module Seams
 

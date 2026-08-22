@@ -4,8 +4,8 @@
 
 This repository is a Rust terminal multiplexer switcher. The running app owns
 the terminal, keeps mux display attachments alive, renders the split view (a
-tree view plus the selected session's live PTY grid), and exposes a local
-control socket for headless driving. Each instance is addressed by NAME
+nav view of session cards plus the selected session's live PTY grid), and exposes
+a local control socket for headless driving. Each instance is addressed by NAME
 (`ctl-<name>.sock`), which is what `xmux send <name> <command>` dials.
 
 ## Mental Model
@@ -24,20 +24,20 @@ There are two mux-facing paths:
   which PTY to use and whether to `switch-client` or reattach — and keeps input
   and resize work off the async runtime.
 
-The app (`app/runtime.rs`) ties those paths together and branches on nothing
+The app (`app/runtime/`) ties those paths together and branches on nothing
 mux-specific. Domain intent converges on `model::Action` applied at
 `State::apply`; raw key/text injection is an unstable low-level surface.
 
 ## Module Seams
 
-- `src/app/` — the app: the runtime loop (`runtime.rs`, entry `run_app`) that
+- `src/app/` — the app: the runtime loop (`runtime/`, entry `run_app`) that
   owns the terminal, plus focus state (`focus.rs`).
 - `src/machine/` — the MACHINE axis: the `Transport` trait, per-machine families
   (`local.rs`, `ssh.rs`), and shared shell vocabulary (`vocab.rs`). A host builds
   one via `machine::local()` / `machine::ssh()`.
 - `src/mux/` — the MUX axis: the `Mux` trait, per-mux families (`tmux/`,
-  `psmux/`) owning metadata + command plans + a display driver, and shared mux
-  vocabulary (`vocab.rs`).
+  `psmux/`, `zellij/`) owning metadata + command plans + a display driver, and
+  shared mux vocabulary (`vocab.rs`).
 - `src/model/` — runtime domain values: `Host`, `Action`, and `Command`.
 - `src/driver.rs` — the mux-agnostic `MuxDriver` trait and the thin `driver_for`
   wrapper; names no concrete mux type.
@@ -45,7 +45,7 @@ mux-specific. Domain intent converges on `model::Action` applied at
   input protocol mechanics.
 - `src/host/` — host connection management (control-mode reader/writer, poll
   tasks, live client ownership).
-- `src/ui/` — switcher tree transforms, interaction state, and rendering.
+- `src/ui/` — nav row transforms (`tree.rs`), interaction state, and rendering.
 - `src/state/` — the explicit app runtime `State` and its `apply` /
   `apply_event` mutation sites.
 

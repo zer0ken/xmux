@@ -11,15 +11,20 @@ and the ssh wrapping only — never a server model, never a mux verb.
 A machine family is a `Transport` implementation. `Local` runs a command on this
 machine (injecting `-S <socket>` for a non-default mux server); `Ssh` wraps the
 command in an ssh connection with the right tty / BatchMode / ControlMaster
-options. A host holds one as `Box<dyn Transport>` and never branches on which
-family it is — it calls trait methods. This mirrors the MUX axis: `Transport` is
-to `machine/` what `Mux` is to `mux/`.
+options. Each transport also carries the SOURCE ID it answers as (`host_id()`),
+separate from where it connects: one machine running several muxes is several
+sources (`local:zellij`), all reaching the same place, so the id cannot be the ssh
+destination. `local()` / `ssh()` derive the id from the destination;
+`local_as()` / `ssh_as()` state it. A host holds one as `Box<dyn Transport>` and
+never branches on which family it is — it calls trait methods. This mirrors the
+MUX axis: `Transport` is to `machine/` what `Mux` is to `mux/`.
 
 ## Module Seams
 
 - `mod.rs` holds the `Transport` trait, the `MachineKind` enum + its `transport()`
   method (the single construction-time match that maps a kind to a concrete transport),
-  the `machine::local()` / `machine::ssh()` factory functions `transport()` delegates to,
+  the `machine::local()` / `machine::ssh()` factory functions `transport()` delegates to
+  and their `*_as` variants that name the SOURCE ID explicitly,
   the `LoweredSwitch` execution-shape enum, the `Clone for Box<dyn Transport>`
   impl (via `clone_box`), and the blanket `impl Transport for Box<dyn Transport>`
   (so a stored box passes where `&dyn Transport` is expected).

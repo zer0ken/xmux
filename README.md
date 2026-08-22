@@ -81,14 +81,13 @@ xmux version
 The left pane is the nav list; the right pane shows the selected session's live
 screen. Keyboard focus is on one region at a time.
 
-**Tree navigation:**
+**Nav keys:**
 
 | Key | Action |
 |---|---|
-| `↑` / `↓` (or `k` / `j`) | move between siblings at the current level |
-| `→` / `←` (or `l` / `h`) | descend into children / ascend to the parent |
-| `Home` / `End` | jump to the first / last row |
-| `PageUp` / `PageDown` | jump ten rows |
+| `↑` / `↓` (or `k` / `j`) | move one card (wraps at both ends) |
+| `Home` / `End` | jump to the first / last card |
+| `PageUp` / `PageDown` | jump ten cards |
 | `Enter` | move focus into the selected session's live screen |
 | `prefix 0`-`prefix 9` | jump to a session by the number in its gutter (keep typing for 10+) |
 | `prefix n` | start a new session on the selected host |

@@ -6,7 +6,7 @@
 selection/display runtime fields that need stable ownership outside the main
 loop's local variables, and `State::apply` / `State::apply_event` — the two
 domain-mutation sites (intent-driven and event-driven). UI components read
-`&State` instead of reaching into the tree.
+`&State` instead of reaching into the row model.
 
 ## Mental Model
 
@@ -30,12 +30,11 @@ and the `should_attach` gate holds, returns `Command::Attach` (plus
 `Command::PersistLastSession` on an address change). `should_attach` is the pure
 gate method that reads `selection` / `displayed`; the terminal view renders and
 routes input to `displayed` (the confirmed session), which lags `selection`
-until the new attach is confirmed (stale-while-revalidate). The
-session-lifecycle intents (`CreateSession` / `NewWindow` /
-`SplitWindow` / `RenameSession` / `KillSession` / `KillWindow` / `RenameWindow`)
-are pure effect emitters: `apply` mutates no domain state and returns a single
-`Command::RunOp(MuxOp)` the run loop runs off-loop (the inventory change arrives
-later as the op's result).
+until the new attach is confirmed (stale-while-revalidate). `CreateSession` is the
+one session-lifecycle intent, and it is a pure effect emitter: `apply` mutates no
+domain state and returns a single `Command::RunOp(MuxOp::Create)` the run loop runs
+off-loop (the inventory change arrives later as the op's result). There is no
+rename, kill, or window intent — the mux owns editing a session.
 
 `State::apply_event(HostEvent, &mut Switcher, &mut connected) -> Vec<EventEffect>`
 is the inbound mirror of `apply`: the single event-driven mutation site. It folds
@@ -46,7 +45,7 @@ follow-ups it cannot perform itself as `EventEffect`s for the run loop to run
 (`ApplyInventory` / `Refetch` / `ProbeActiveWindow` / `ReapHost` /
 `ReapDisplayAttach` / `DispatchScanned` / `SyncPollSessions`). The `connected`
 once-connected set enters as DATA (like the clock on `Tick`): an `Exited` of a
-once-connected host is a transient drop that keeps the last-known tree. The
+once-connected host is a transient drop that keeps the last-known inventory. The
 `Connected`/`Inventory` events carry their parsed sessions, which the loop folds
 into `model::Host.inventory` (the single owner) via `ApplyInventory` — the fold
 needs the `hosts` registry the state layer does not hold, so it is the loop's job.
@@ -67,7 +66,7 @@ popup-drag geometry); the switcher holds the modal state plus its
   `app::focus::Focus` for the focus state machine, `ui::modal::Modal` for the
   open modal, `model::{Action, Command}` for the `apply` vocabulary, and
   `host::HostEvent` + `model::EventEffect` + `&mut ui::switcher::Switcher` for
-  `apply_event` (the switcher rebuilds the tree against `&mut State`).
+  `apply_event` (the switcher rebuilds its rows against `&mut State`).
 - It stores state facts + the two mutation sites (`apply` / `apply_event`); the
   run loop owns effect dispatch — for `apply` the synchronous `Command`s (switcher
   selection move, attach, prefs IO, quit) and for `apply_event` the `EventEffect`
@@ -94,7 +93,7 @@ popup-drag geometry); the switcher holds the modal state plus its
 - `last_saved_session` prevents rewriting prefs on every window step within the
   same session.
 - This layer branches on nothing mux-specific: `apply` / `apply_event` fold
-  intents and events over `State` without a `match` on tmux vs psmux. Per-mux
+  intents and events over `State` without a `match` on tmux vs psmux vs zellij. Per-mux
   behavior lives behind the `Mux`/`MuxDriver` seam the run loop reaches; the
   mux enters here only as domain data (sessions, windows, events).
 

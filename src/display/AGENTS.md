@@ -5,7 +5,7 @@
 `display` is the shared PTY/grid/input display-mechanics layer: PTY attachment
 spawn and lifecycle, the off-runtime attach worker, the attachment registry, the
 vt/grid state, terminal input decoding, mouse parsing, and terminal setup. It is
-mux-agnostic (it names no tmux/psmux verb) and application-agnostic (it holds no
+mux-agnostic (it names no mux verb at all) and application-agnostic (it holds no
 app UI state — the focus/modal state machine lives in `app/focus.rs`).
 
 ## Mental Model

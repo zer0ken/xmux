@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`ui` owns the session switcher: pure tree model transforms, side-effecting UI
+`ui` owns the session switcher: pure row-model transforms, side-effecting UI
 operations, control socket serving helpers, interactive switcher state, and
 ratatui rendering.
 
@@ -66,8 +66,8 @@ renders for `dump`.
 - UI actions that become domain intents should resolve to a `model::Action`
   (the app input `Action` projects via `as_action`), applied at
   `State::apply`.
-- This layer branches on nothing mux-specific: the switcher renders a tree and
-  emits domain intents, never a `match` on tmux vs psmux. Per-mux behavior lives
+- This layer branches on nothing mux-specific: the switcher renders rows and
+  emits domain intents, never a `match` on tmux vs psmux vs zellij. Per-mux behavior lives
   behind the `Mux`/`MuxDriver` seam, reached via `Ops`, not decided here.
 - Selection/drag mutators (`select_address` / `set_active_window` /
   `begin_popup_drag`)
@@ -87,7 +87,7 @@ renders for `dump`.
 
 ## Before Editing
 
-- Decide whether the change is pure tree data, interactive state, rendering,
+- Decide whether the change is pure row data, interactive state, rendering,
   side-effecting operation, or control/dump plumbing.
 - For `switcher/`, find the existing helper for the same surface before adding
   another state path.

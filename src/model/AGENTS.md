@@ -10,7 +10,7 @@ lowering results, server models, plans, and death-signal helpers.
 ## Mental Model
 
 The model layer carries facts and intent, not live process ownership. A `Host`
-combines machine transport and mux mux state. `Action` is the single domain
+combines machine transport and mux state. `Action` is the single domain
 intent vocabulary shared by key handling and ctl; `Command` is the matching
 effect vocabulary the run loop dispatches. `State::apply(Action) -> Vec<Command>`
 (in `crate::state`) is the one site that turns an `Action` into state changes +
