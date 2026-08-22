@@ -140,6 +140,16 @@ UI elements a user perceives as distinct things:
   / `mux_of` / `is_local_source` read the two halves back; nothing compares a source id
   to `local` directly. The nav renders the halves separately (`local/zellij`), so the id
   never appears with its mux twice.
+- mux discovery - how THIS machine's mux list is decided when `[local] mux` is unset
+  or `auto`: every mux xmux supports is asked whether it is installed here, and each one
+  that answers becomes a source. Two halves, in that order: the candidate set is what
+  xmux can DRIVE (`mux::supported_muxes`, minus what it cannot drive on this OS), and the
+  question asked of each candidate is the same identity probe a configured mux gets
+  (`detect_backend`), so a binary carrying a mux's name while being another mux is not
+  that mux. Resolved ONCE, in `Env`, and threaded into `source::build` / `Hosts::build`
+  so source ids and host ids cannot disagree. A written `mux` value is never discovered:
+  it is taken verbatim, unreachable and all. Distinct from `roster` (which MACHINES) and
+  `discovery` (scanning a source for SESSIONS).
 - roster - the list of ssh targets xmux offers as sources, assembled from
   PROVIDERS: `~/.ssh/config` aliases and, when `[discovery]` enables it, the online
   peers of this machine's tailnet. Every provider yields plain ssh target names, so

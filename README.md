@@ -119,7 +119,11 @@ See [`docs/keybind.md`](docs/keybind.md) for more on the prefix.
 ## Several muxes on one machine
 
 A machine can run more than one mux at a time, and xmux offers each as its own
-source. Name them in a list, on this machine or a remote:
+source. On THIS machine you do not have to say so: with `mux` left at its default,
+xmux asks this box which of the muxes it supports are installed, and offers each one
+it finds. Install zellij next to your psmux and it is simply there on the next run.
+
+Name them explicitly when you want a specific set, on this machine or a remote:
 
 ```toml
 [local]
@@ -139,7 +143,12 @@ excluding one drops every mux on it.
 
 Listing a mux that is not installed on that machine is not silently ignored: the source
 appears as unreachable with the mux's own message, because a name you wrote is a name
-you meant.
+you meant. A DISCOVERED list works the other way round, since nothing was written: only
+the muxes that answered are offered. `xmux doctor` says which of the two you have.
+
+A remote host is not probed. Its mux is what you configured, defaulting to `tmux`,
+because asking every host about every mux would mean an ssh connection per mux before
+the first thing is on screen.
 
 ## Where the host list comes from
 
@@ -169,8 +178,9 @@ Configuration is entirely optional. Zero-config is the default. xmux reads
 # The mux used on the local machine. A LIST runs several at once: each is its own
 # source, and both appear side by side in the list.
 [local]
-mux = "auto"          # "auto" (default): psmux on Windows, tmux elsewhere.
-                      # Also accepts "tmux", "psmux", "zellij",
+mux = "auto"          # "auto" (default): every mux xmux supports that is actually
+                      # installed here, the conventional one first (psmux on Windows,
+                      # tmux elsewhere). Also accepts "tmux", "psmux", "zellij",
                       # or a list: ["psmux", "zellij"]
 
 # Override the mux for a discovered ssh host, or add a host ssh-config

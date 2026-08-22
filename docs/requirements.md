@@ -80,6 +80,28 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   answer, since a card whose panes never arrive would keep its spinner forever.
   **Tests:** `a_hung_listing_ends_the_sweep_as_an_error_not_a_freeze`,
   `a_hung_pane_query_ends_the_sweep_with_an_empty_answer`.
+- **FR-A9** — This machine's mux list needs no configuration. With `[local] mux`
+  unset or `auto`, every mux xmux SUPPORTS is asked whether it is installed here and each
+  one that answers becomes a source, so a newly installed mux appears on the next run.
+  The candidate set is what xmux can drive, and each candidate is asked with the same
+  identity probe a configured mux gets, so a binary carrying a mux's name while being
+  another mux is not counted as that mux (Windows drops tmux from the candidates outright:
+  psmux installs a `tmux.exe` alias of itself that no probe can tell from a real tmux).
+  A WRITTEN value is never discovered, keeping FR-A7's rule that a name the user wrote
+  stays visible even when it is missing; a box where nothing answers still offers its
+  conventional mux, so the nav says which mux is unreachable rather than showing nothing.
+  A remote host is not probed: that would mean one ssh connection per mux before the
+  first paint. **Tests:** `discovery_only_looks_for_muxes_xmux_can_drive`,
+  `a_machine_offers_every_supported_mux_it_actually_has`,
+  `windows_never_discovers_a_tmux_it_cannot_drive`,
+  `a_binary_that_answers_as_another_mux_is_not_that_mux`,
+  `a_machine_with_no_mux_installed_discovers_none`,
+  `a_written_mux_is_taken_verbatim_and_auto_is_what_the_box_has`,
+  `the_conventional_mux_leads_the_discovered_list`,
+  `a_box_where_nothing_answered_still_offers_its_conventional_mux`. **Live-verified**
+  (an empty `config.toml` on a Windows box with psmux and zellij installed: `xmux doctor`
+  reports `local mux: psmux, zellij (discovered)` and the nav shows `local/zellij` over
+  its three sessions beside `local/psmux`; discovery costs about 20ms of startup).
 
 ## B. The switcher — "see the list, decide whether & where to move"
 

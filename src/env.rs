@@ -85,7 +85,7 @@ fn local_socket(tmux: Option<&str>) -> Option<String> {
 /// Loads config and assembles the sources. The returned error is the config-parse
 /// error (non-`None` for a malformed config); the [`Env`] is still usable with
 /// defaults so `doctor` can report the problem instead of dying on it.
-pub fn build_env() -> (Env, Option<anyhow::Error>) {
+pub async fn build_env() -> (Env, Option<anyhow::Error>) {
     let (cfg, mut cfg_warnings, cfg_err) = match config::load_verbose(&config_path()) {
         Ok((c, w)) => (c, w, None),
         Err(e) => (Config::default(), Vec::new(), Some(e)),
@@ -112,9 +112,24 @@ pub fn build_env() -> (Env, Option<anyhow::Error>) {
     ]);
     let xmux_dir = xmux_dir_path();
     let local_socket = local_socket(std::env::var("TMUX").ok().as_deref());
-    let srcs = source::build(&cfg, &aliases, os, &xmux_dir, local_socket);
+    // The local mux list, resolved ONCE here and threaded on: `auto` (the default) asks
+    // this box which of the muxes xmux supports it actually has, so a zellij you just
+    // installed shows up without being written down. Probed over a socket-LESS local
+    // transport, because "is this mux here" has nothing to do with which server socket a
+    // session lives on - and a `-S <socket>` injection is a flag zellij would refuse.
+    let installed = if cfg.local.mux.is_auto() {
+        crate::mux::installed_muxes(
+            &*crate::machine::local(None),
+            os,
+            &crate::source::ExecRunner,
+        )
+        .await
+    } else {
+        Vec::new()
+    };
+    let local_muxes = cfg.local_muxes(os, &installed);
+    let srcs = source::build(&cfg, &aliases, os, &local_muxes, &xmux_dir, local_socket);
     let by_alias = srcs.iter().map(|s| (s.alias.clone(), s.clone())).collect();
-    let local_muxes = cfg.local_muxes(os);
     let ui_prefix = cfg.ui_prefix().to_string();
     // The local host's `-S` socket, read back from the assembled local source so the
     // host registry (`Hosts::build`) targets the same server the source list does.

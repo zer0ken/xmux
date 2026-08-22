@@ -1154,6 +1154,7 @@ fn test_rt(env: Env) -> Runtime {
         &env.cfg,
         &env.ssh_aliases,
         "windows",
+        &env.local_muxes,
         &env.xmux_dir,
         env.local_socket.clone(),
     );

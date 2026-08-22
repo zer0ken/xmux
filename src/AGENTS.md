@@ -67,7 +67,11 @@ the live split view.
   machine axis is solely `machine::Transport` (its shared shell vocab —
   `remote_command`/`quote` — lives in `machine/vocab.rs`); `source.rs` carries no
   transport-wrapping implementation of its own. `env.rs` is config assembly plumbing
-  for source definitions and command construction.
+  for source definitions and command construction, and the ONE place this machine's mux
+  list is resolved: `mux::installed_muxes` when the config says `auto`, then
+  `Config::local_muxes`, whose answer is threaded into `source::build` and
+  `Hosts::build` rather than re-derived, so source ids and host ids cannot disagree.
+  That resolution is why `build_env` is async.
 - `roster.rs` answers only "which machines does xmux offer as sources": one or more
   providers (`~/.ssh/config`, tailscale) each yielding plain ssh target names, so
   nothing downstream can tell which provider a name came from. A provider that cannot

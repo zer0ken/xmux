@@ -34,24 +34,25 @@ impl Hosts {
         self.map.insert(id, host);
     }
 
-    /// Assembles the hosts for a config: the local host first (its mux from
-    /// `Config::local_bin`, its socket from `$TMUX`), then each ssh host in order.
-    /// Mirrors `source::build` (source.rs:460) but yields owning `Host`s. `xmux_dir`
-    /// seeds each ssh transport's ControlMaster socket path (`cm-<alias>.sock`),
-    /// exactly as `source::build` did.
+    /// Assembles the hosts for a config: this box's hosts first (one per entry of the
+    /// RESOLVED `local_muxes`, its socket from `$TMUX`), then each ssh host in order.
+    /// Mirrors `source::build` but yields owning `Host`s. `xmux_dir` seeds each ssh
+    /// transport's ControlMaster socket path (`cm-<alias>.sock`), exactly as
+    /// `source::build` does.
     pub fn build(
         cfg: &Config,
         ssh_aliases: &[String],
         os: &str,
+        local_muxes: &[String],
         xmux_dir: &std::path::Path,
         local_socket: Option<String>,
     ) -> Hosts {
         let mut hosts = Hosts::default();
 
         // One host per (machine, mux): this box contributes one for each mux it serves.
-        let local_muxes = cfg.local_muxes(os);
+        // The list is the one `Env` resolved, so these ids match the source ids.
         let qualified = local_muxes.len() > 1;
-        for bin in &local_muxes {
+        for bin in local_muxes {
             hosts.insert(Host::new(
                 crate::machine::MachineKind::Local {
                     id: crate::session::source_id(LOCAL_SOURCE, bin, qualified),
@@ -148,6 +149,12 @@ impl Hosts {
 
 #[cfg(test)]
 mod tests {
+    /// The resolved local mux list a test builds with: what `Config::default()` on a
+    /// unix box resolves to, so these tests pin host ORDER and ids, not discovery.
+    fn local() -> Vec<String> {
+        vec!["tmux".to_string()]
+    }
+
     use super::*;
     use crate::host::HostEvent;
     use crate::machine::Transport;
@@ -188,6 +195,7 @@ mod tests {
             &cfg,
             &aliases,
             "linux",
+            &local(),
             std::path::Path::new("/home/u/.xmux"),
             None,
         );
@@ -208,6 +216,7 @@ mod tests {
             &cfg,
             &[],
             "linux",
+            &local(),
             std::path::Path::new("/x"),
             Some("/tmp/tmux-1000/work".into()),
         );
@@ -231,6 +240,7 @@ mod tests {
             &cfg,
             &["prod".to_string()],
             "linux",
+            &local(),
             std::path::Path::new("/x"),
             None,
         );
@@ -245,6 +255,7 @@ mod tests {
             &Config::default(),
             &["jup".to_string()],
             "linux",
+            &local(),
             std::path::Path::new("/x"),
             None,
         );
@@ -270,6 +281,7 @@ mod tests {
             &Config::default(),
             &["jup".to_string()],
             "linux",
+            &local(),
             std::path::Path::new("/x"),
             None,
         );
@@ -298,8 +310,8 @@ mod tests {
         let aliases: Vec<String> = ["prod", "db"].iter().map(|s| s.to_string()).collect();
         let os = "linux";
         let dir = std::path::Path::new("/home/u/.xmux");
-        let hosts = Hosts::build(&cfg, &aliases, os, dir, None);
-        let srcs = crate::source::build(&cfg, &aliases, os, dir, None);
+        let hosts = Hosts::build(&cfg, &aliases, os, &local(), dir, None);
+        let srcs = crate::source::build(&cfg, &aliases, os, &local(), dir, None);
         let src_order: Vec<String> = srcs.iter().map(|s| s.alias.clone()).collect();
         assert_eq!(
             hosts.ids(),
@@ -324,6 +336,7 @@ mod tests {
             &Config::default(),
             &[],
             "linux",
+            &local(),
             std::path::Path::new("/x"),
             None,
         );

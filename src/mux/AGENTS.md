@@ -60,6 +60,11 @@ decision, so they move together.
 
 - `Mux::enumerate` may use `Transport` because enumeration executes on a
   host.
+- Discovery (`supported_muxes` / `installed_muxes`) answers "which mux is on this
+  machine", and only ever from the registry: the candidate set is what xmux can drive,
+  and each candidate is confirmed by `detect_backend` answering AS that mux. It is called
+  once, by `Env`, never per source. `discovery_candidates` is where a mux xmux cannot
+  drive on an OS is dropped (Windows tmux, whose name psmux's own alias takes).
 - Plan methods return mux argv or mux intent; they do not decide local versus
   ssh execution. The plan set covers what xmux itself issues: attach, enumerate,
   read panes/options, select a window, and start a session (`new_session_plan`).

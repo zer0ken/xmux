@@ -303,6 +303,62 @@ fn known_muxes() -> &'static [MuxKind] {
     ]
 }
 
+/// Every mux xmux can drive, by the binary name each is conventionally invoked as.
+/// tmux leads because it is the fallback identity (and the conventional mux on every
+/// OS but Windows); the rest follow in registry order. This is the CANDIDATE SET for
+/// discovery: xmux only ever looks for a mux it already knows how to drive.
+pub fn supported_muxes() -> Vec<&'static str> {
+    let mut v = vec!["tmux"];
+    v.extend(known_muxes().iter().map(|k| k.name));
+    v
+}
+
+/// The per-probe budget for discovery. Discovery runs BEFORE the first paint, so a
+/// binary that never answers must not hold the screen. Far shorter than
+/// [`POLL_CMD_TIMEOUT`]: this asks a local binary to print its help, which takes
+/// milliseconds when it is there and fails at once when it is not.
+const DETECT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// The muxes worth LOOKING for on a machine running `os`, a subset of
+/// [`supported_muxes`].
+///
+/// Windows drops tmux. tmux does not run natively there, and the name is taken: psmux
+/// installs a `tmux.exe` alias of itself, whose `help` names itself by the name it was
+/// invoked under, so the identity probe cannot tell that alias from a real tmux. Probing
+/// for it would hand a PER-SESSION mux to tmux's SHARED-server driver. A user who really
+/// has a tmux there writes it in the config, where a name is taken verbatim.
+fn discovery_candidates(os: &str) -> Vec<&'static str> {
+    supported_muxes()
+        .into_iter()
+        .filter(|m| !(os == "windows" && *m == "tmux"))
+        .collect()
+}
+
+/// Which mux is installed on the machine `transport` reaches, out of the ones worth
+/// looking for there ([`discovery_candidates`]).
+///
+/// Each candidate is asked with the SAME identity probe a configured mux gets
+/// ([`detect_backend`]), and counts as installed only when the binary answers AS the
+/// mux it was probed for. That second half matters: a binary that carries a mux's name
+/// while being another mux would otherwise become a source whose every command is aimed
+/// at the wrong mux.
+pub async fn installed_muxes(
+    transport: &dyn Transport,
+    os: &str,
+    runner: &dyn Runner,
+) -> Vec<String> {
+    let mut found = Vec::new();
+    for name in discovery_candidates(os) {
+        let probe = detect_backend(transport, name, runner);
+        if let Ok(Some(mux)) = tokio::time::timeout(DETECT_TIMEOUT, probe).await {
+            if mux.kind() == name {
+                found.push(name.to_string());
+            }
+        }
+    }
+    found
+}
+
 /// The implicit tmux fallback — the single place that names tmux as the mux any
 /// binary/kind decodes to when it matches no `known_muxes()` entry. tmux has no
 /// positive help signal, so it cannot be a registry entry; this explicit helper is
@@ -641,6 +697,103 @@ mod tests {
             };
             probe.clone().ok_or_else(|| RunError::Other("down".into()))
         }
+    }
+
+    /// Answers the identity probes as a machine that HAS exactly `present`, with
+    /// `help_marker` overriding what a present binary names itself as (the shape of a
+    /// binary that carries a mux's name but is really another mux). An absent binary
+    /// fails both probes, the way a missing one does.
+    struct MachineWith {
+        present: Vec<&'static str>,
+        help_marker: Option<&'static str>,
+    }
+
+    impl MachineWith {
+        fn new(present: &[&'static str]) -> Self {
+            MachineWith {
+                present: present.to_vec(),
+                help_marker: None,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Runner for MachineWith {
+        async fn run(&self, name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
+            if !self.present.contains(&name) {
+                return Err(RunError::Other("no such binary".into()));
+            }
+            if args.iter().any(|a| a == "-V") {
+                return Ok(format!("{name} 1.2.3").into_bytes());
+            }
+            // `help`: a real tmux has no such command, which is why it needs `-V`.
+            let says = self.help_marker.unwrap_or(name);
+            if says == "tmux" {
+                return Err(RunError::Other("usage: tmux [command]".into()));
+            }
+            Ok(format!("{says} - a terminal workspace").into_bytes())
+        }
+    }
+
+    #[test]
+    fn discovery_only_looks_for_muxes_xmux_can_drive() {
+        // The candidate set IS the supported set, so discovery can never turn up a name
+        // xmux has no family for: every candidate resolves to a mux of its own kind.
+        let names = supported_muxes();
+        assert_eq!(names, vec!["tmux", "psmux", "zellij"]);
+        for name in names {
+            assert_eq!(for_binary(name).kind(), name, "{name} must be drivable");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_machine_offers_every_supported_mux_it_actually_has() {
+        // The reported case: zellij is up on this box but nothing in the config says so.
+        // Discovery asks each supported mux whether it is here, in the supported order.
+        let t = crate::machine::local(None);
+        let got = installed_muxes(&t, "linux", &MachineWith::new(&["tmux", "zellij"])).await;
+        assert_eq!(got, vec!["tmux", "zellij"]);
+    }
+
+    #[tokio::test]
+    async fn windows_never_discovers_a_tmux_it_cannot_drive() {
+        // psmux installs a `tmux.exe` alias of itself, and that alias names ITSELF by the
+        // name it was invoked under, so the identity probe reads it as a real tmux. Taking
+        // it would drive a per-session mux through tmux's shared-server driver. The same
+        // machine on unix, where a `tmux` really is tmux, discovers both.
+        let t = crate::machine::local(None);
+        let present = ["tmux", "psmux"];
+        assert_eq!(
+            installed_muxes(&t, "windows", &MachineWith::new(&present)).await,
+            vec!["psmux"]
+        );
+        assert_eq!(
+            installed_muxes(&t, "linux", &MachineWith::new(&present)).await,
+            vec!["tmux", "psmux"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_machine_with_no_mux_installed_discovers_none() {
+        // Nothing answered, so discovery reports nothing; the CONVENTIONAL fallback is
+        // the config layer's job (`Config::local_muxes`), not this probe's.
+        let t = crate::machine::local(None);
+        assert!(installed_muxes(&t, "linux", &MachineWith::new(&[]))
+            .await
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_binary_that_answers_as_another_mux_is_not_that_mux() {
+        // A `tmux` on the PATH that is really psmux (psmux mimics tmux's `-V`, so only
+        // `help` tells them apart): counting it as tmux would create a source whose every
+        // command is aimed at the wrong mux. Present-but-lying is not installed.
+        let t = crate::machine::local(None);
+        let runner = MachineWith {
+            present: vec!["tmux"],
+            help_marker: Some("psmux"),
+        };
+        assert!(installed_muxes(&t, "linux", &runner).await.is_empty());
     }
 
     /// Answers `list-sessions` and then NEVER answers the pane query - the shape a
