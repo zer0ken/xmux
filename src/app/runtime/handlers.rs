@@ -257,6 +257,7 @@ impl Runtime {
             &env.cfg,
             &env.ssh_aliases,
             host_os,
+            &env.local_muxes,
             &env.xmux_dir,
             env.local_socket.clone(),
         );

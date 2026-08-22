@@ -124,15 +124,19 @@ pub(crate) use crate::mux::reason_is_no_sessions;
 
 /// Assembles the source list for a config: local first, then each ssh host
 /// (ssh-config aliases merged with config overrides) in order.
+///
+/// `local_muxes` is the RESOLVED local mux list (`Env` resolves it once, discovering
+/// what this box has when the config says `auto`), passed in rather than re-derived so
+/// the source ids here and the host ids in `Hosts::build` cannot disagree.
 pub fn build(
     cfg: &Config,
     ssh_aliases: &[String],
     os: &str,
+    local_muxes: &[String],
     xmux_dir: &Path,
     local_socket: Option<String>,
 ) -> Vec<Source> {
     // One source per (machine, mux): this box contributes one for each mux it serves.
-    let local_muxes = cfg.local_muxes(os);
     let qualified = local_muxes.len() > 1;
     let mut srcs: Vec<Source> = local_muxes
         .iter()
@@ -179,7 +183,14 @@ mod tests {
     fn build_puts_local_first() {
         let cfg = Config::default();
         let aliases: Vec<String> = ["prod", "db"].iter().map(|s| s.to_string()).collect();
-        let srcs = build(&cfg, &aliases, "linux", Path::new("/home/u/.xmux"), None);
+        let srcs = build(
+            &cfg,
+            &aliases,
+            "linux",
+            &["tmux".to_string()],
+            Path::new("/home/u/.xmux"),
+            None,
+        );
         assert_eq!(srcs.len(), 3);
         assert_eq!(srcs[0].alias, "local");
         assert!(matches!(srcs[0].kind, MachineKind::Local { .. }));

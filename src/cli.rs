@@ -75,33 +75,33 @@ pub async fn run() -> i32 {
 
     let cli = Cli::parse();
     match cli.command {
-        None => match interactive_env() {
+        None => match interactive_env().await {
             Ok(env) => match resolve_requested_name(cli.name.as_deref()) {
                 Ok(requested) => runtime::run_app(Arc::new(env), requested).await,
                 Err(code) => code,
             },
             Err(code) => code,
         },
-        Some(Command::Ls) => match interactive_env() {
+        Some(Command::Ls) => match interactive_env().await {
             Ok(env) => run_ls(&env).await,
             Err(code) => code,
         },
-        Some(Command::Attach { target }) => match interactive_env() {
+        Some(Command::Attach { target }) => match interactive_env().await {
             Ok(env) => run_direct_attach(&env, &target).await,
             Err(code) => code,
         },
         Some(Command::Doctor) => {
             // Tolerate a malformed config — report it, don't die on it.
-            let (env, cfg_err) = env::build_env();
+            let (env, cfg_err) = env::build_env().await;
             run_doctor(&env, cfg_err).await
         }
         Some(Command::Instances) => {
             // Instance listing only needs the xmux dir (independent of config validity).
-            let (env, _cfg_err) = env::build_env();
+            let (env, _cfg_err) = env::build_env().await;
             run_instances(&env).await
         }
         Some(Command::Send { id, args }) => {
-            let (env, _cfg_err) = env::build_env();
+            let (env, _cfg_err) = env::build_env().await;
             run_send(&env, &id, args).await
         }
         Some(Command::Version) => {
@@ -132,8 +132,8 @@ fn resolve_requested_name(requested: Option<&str>) -> Result<Option<String>, i32
 
 /// Builds the env for an interactive command, treating a config-parse error as
 /// fatal (printing it and returning the exit code in `Err`).
-fn interactive_env() -> Result<Env, i32> {
-    let (env, cfg_err) = env::build_env();
+async fn interactive_env() -> Result<Env, i32> {
+    let (env, cfg_err) = env::build_env().await;
     if let Some(e) = cfg_err {
         eprintln!("xmux: {e}");
         return Err(1);
@@ -208,7 +208,15 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
         println!("config.toml: ok");
     }
 
-    println!("local mux: {}", env.local_muxes.join(", "));
+    // Where the list came from matters when it is short a mux the user expected: a
+    // discovered list means the mux did not answer here, a configured one means it was
+    // never asked for.
+    let source = if env.cfg.local.mux.is_auto() {
+        "discovered"
+    } else {
+        "from config.toml"
+    };
+    println!("local mux: {} ({source})", env.local_muxes.join(", "));
     println!(
         "{}",
         crate::ui::palette::selection_report(crate::ui::chrome::parse_selection_bg(

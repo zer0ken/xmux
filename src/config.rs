@@ -109,6 +109,14 @@ impl MuxSpec {
     pub fn is_unset(&self) -> bool {
         self.names().is_empty()
     }
+
+    /// True when this value asks xmux to decide: unset, or exactly `"auto"`. A list
+    /// that names muxes is never auto, even if `"auto"` is one of the entries - a
+    /// written name is a name the user meant.
+    pub fn is_auto(&self) -> bool {
+        let names = self.names();
+        names.is_empty() || (names.len() == 1 && names[0] == "auto")
+    }
 }
 
 /// The optional `[ui]` table: xmux's own prefix.
@@ -231,22 +239,36 @@ pub fn load_verbose(path: &Path) -> anyhow::Result<(Config, Vec<String>)> {
 }
 
 impl Config {
-    /// The mux binaries to run on the local machine for the given `os`, in order. An
-    /// unset or `"auto"` setting picks the one conventional mux (psmux on Windows, tmux
-    /// elsewhere); any other value is taken verbatim, and a LIST yields one source per
-    /// entry.
-    pub fn local_muxes(&self, os: &str) -> Vec<String> {
-        let named = self.local.mux.names();
-        if named.len() == 1 && named[0] == "auto" || named.is_empty() {
-            return vec![if os == "windows" { "psmux" } else { "tmux" }.to_string()];
+    /// The mux binaries to run on the local machine, in order.
+    ///
+    /// A written value is taken verbatim, and a LIST yields one source per entry: a name
+    /// the user wrote is a name they meant, even if it is not installed (it then shows as
+    /// unreachable rather than vanishing).
+    ///
+    /// An unset or `"auto"` value means "whatever this box actually has", so `installed`
+    /// (from `mux::installed_muxes`) becomes the list, with the `os`'s conventional mux
+    /// first so a single-mux box reads exactly as it always did. A box where discovery
+    /// finds nothing still gets the conventional mux, so the nav says the mux is
+    /// unreachable instead of showing no sources and no reason.
+    pub fn local_muxes(&self, os: &str, installed: &[String]) -> Vec<String> {
+        if !self.local.mux.is_auto() {
+            return self.local.mux.names();
         }
-        named
-    }
-
-    /// The single local mux binary, for the one-line `xmux doctor` summary. The first
-    /// of [`local_muxes`](Self::local_muxes) when several are configured.
-    pub fn local_bin(&self, os: &str) -> String {
-        self.local_muxes(os).remove(0)
+        let conventional = if os == "windows" { "psmux" } else { "tmux" };
+        let mut out: Vec<String> = Vec::new();
+        if installed.iter().any(|m| m == conventional) {
+            out.push(conventional.to_string());
+        }
+        out.extend(
+            installed
+                .iter()
+                .filter(|m| m.as_str() != conventional)
+                .cloned(),
+        );
+        if out.is_empty() {
+            out.push(conventional.to_string());
+        }
+        out
     }
 
     /// Advisory warnings for `mux` values that DECODE but name no mux xmux knows
@@ -646,22 +668,57 @@ bogus = "nope"
     }
 
     #[test]
-    fn local_bin_cases() {
-        let cases: &[(&str, &str, &str)] = &[
-            ("", "windows", "psmux"),
-            ("", "linux", "tmux"),
-            ("auto", "windows", "psmux"),
-            ("auto", "linux", "tmux"),
-            ("zellij", "windows", "zellij"),
-            ("zellij", "linux", "zellij"),
+    fn a_written_mux_is_taken_verbatim_and_auto_is_what_the_box_has() {
+        // A name the user wrote wins over anything discovered, on either OS. `auto` and
+        // unset take the discovered list instead - that is the whole point of the
+        // default - and fall back to the OS's conventional mux when nothing answered.
+        let installed = vec!["tmux".to_string(), "zellij".to_string()];
+        let cases: &[(&str, &str, &[&str])] = &[
+            ("", "windows", &["tmux", "zellij"]),
+            ("", "linux", &["tmux", "zellij"]),
+            ("auto", "windows", &["tmux", "zellij"]),
+            ("auto", "linux", &["tmux", "zellij"]),
+            ("zellij", "windows", &["zellij"]),
+            ("zellij", "linux", &["zellij"]),
         ];
         for &(mux, os, want) in cases {
             let c = Config {
                 local: LocalConfig { mux: mux.into() },
                 ..Default::default()
             };
-            assert_eq!(c.local_bin(os), want, "mux={mux:?} os={os:?}");
+            assert_eq!(c.local_muxes(os, &installed), want, "mux={mux:?} os={os:?}");
         }
+    }
+
+    #[test]
+    fn the_conventional_mux_leads_the_discovered_list() {
+        // The order decides which source paints first and reads as this box's main one,
+        // so a Windows box that has both psmux and tmux leads with psmux and a unix box
+        // leads with tmux, exactly as a single-mux box always did.
+        let c = Config::default();
+        let installed = vec![
+            "tmux".to_string(),
+            "psmux".to_string(),
+            "zellij".to_string(),
+        ];
+        assert_eq!(
+            c.local_muxes("windows", &installed),
+            vec!["psmux", "tmux", "zellij"]
+        );
+        assert_eq!(
+            c.local_muxes("linux", &installed),
+            vec!["tmux", "psmux", "zellij"]
+        );
+    }
+
+    #[test]
+    fn a_box_where_nothing_answered_still_offers_its_conventional_mux() {
+        // Discovery finding nothing is not the same as having no sources: an empty nav
+        // with no host card says nothing at all, while one unreachable card names the
+        // mux that is missing.
+        let c = Config::default();
+        assert_eq!(c.local_muxes("windows", &[]), vec!["psmux"]);
+        assert_eq!(c.local_muxes("linux", &[]), vec!["tmux"]);
     }
 
     #[test]
@@ -678,7 +735,7 @@ bogus = "nope"
             }],
             ..Default::default()
         };
-        assert_eq!(cfg.local_muxes("windows"), vec!["psmux", "zellij"]);
+        assert_eq!(cfg.local_muxes("windows", &[]), vec!["psmux", "zellij"]);
         let got = cfg.host_specs(&["prod".to_string()]);
         assert_eq!(
             got,
@@ -722,7 +779,7 @@ bogus = "nope"
             },
             ..Default::default()
         };
-        assert_eq!(cfg.local_muxes("windows"), vec!["zellij"]);
+        assert_eq!(cfg.local_muxes("windows", &[]), vec!["zellij"]);
     }
 
     #[test]
