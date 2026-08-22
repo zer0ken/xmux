@@ -8,7 +8,8 @@ mux knows the mux binary, server model, enumeration behavior, attach command
 shape, control-channel availability, event source, death signal, and window/session
 operation plans.
 
-`mod.rs` holds the cross-mux surface: the `Mux` trait, identity detection
+`mod.rs` holds the cross-mux surface: the `Mux` trait, the mux registry
+(`known_muxes`, the one list every factory and predicate reads), identity detection
 (`detect_backend`), the factory functions (`for_binary`, `for_kind`), and — via
 `control.rs` — the `ControlProtocol` trait that hides a mux's control-mode (`-CC`)
 wire details (line framing/classification, the notification→event table, the size
@@ -36,9 +37,9 @@ its display driver) and is re-exported from `mod.rs`:
   a JSON tab listing). See `zellij/AGENTS.md`.
 
 Sub-modules pull the shared trait, value types, and imports from the parent via
-`use super::*;`. `crate::mux::{Tmux, Psmux}` resolve through the re-exports; a
+`use super::*;`. `crate::mux::{Tmux, Psmux, Zellij}` resolve through the re-exports; a
 mux's driver is constructed via `Mux::driver()`, so no caller names the concrete
-`TmuxDriver`/`PsmuxDriver` type.
+`TmuxDriver`/`PsmuxDriver`/`ZellijDriver` type.
 
 ## Mental Model
 
@@ -66,8 +67,8 @@ decision, so they move together.
   every mux argv from a `Mux` and lowers it via `Transport`, never off a bare
   binary name.
 - Generic `mux::*` command builders (from `vocab.rs`) are called ONLY inside the
-  per-mux dirs (`tmux/**`, `psmux/**`) and the shared enumeration helper in `mod.rs`
-  (each `*_plan` wraps one); the pure address vocabulary (`mux::window_target`,
+  per-mux dirs (`tmux/**`, `psmux/**`, `zellij/**`) and the shared enumeration helper
+  in `mod.rs` (each `*_plan` wraps one); the pure address vocabulary (`mux::window_target`,
   `parse_panes`, `quote_target`) is callable anywhere.
 - `ServerModel`, `EventSource`, and `DeathSignal` are the classification values
   callers use instead of branching on mux names. `Mux::driver()` constructs
@@ -75,12 +76,18 @@ decision, so they move together.
   family, never a central `match server_model()`); the thin wrapper `driver_for(host)`
   in `src/driver.rs` is just `host.mux.driver()`. `TmuxDriver` = one PTY per host with
   an in-place `switch-client`; `PsmuxDriver` = in-place client switch or reattach per
-  session.
+  session; `ZellijDriver` = reattach on every change, since zellij can name no client
+  from outside its own session.
 
 ## Invariants
 
 - A reachable empty mux enumerates as `Ok(vec![])`; unreachable hosts return an
   error.
+- Every command in a poll sweep runs under `POLL_CMD_TIMEOUT` (`within_poll_budget`).
+  The poll ticker only advances after `poll_once` RETURNS, so one command that never
+  answers would freeze that host's whole inventory. A timed-out listing surfaces as the
+  host's error; a timed-out pane query still emits an EMPTY `Panes` event, because a
+  card whose panes never arrive keeps its spinner forever.
 - Transport-specific command wrapping belongs in `machine::Transport`.
 - Mux methods should stay at the exact behavior surface used by app,
   host metadata, and manage code.

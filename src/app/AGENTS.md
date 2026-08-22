@@ -10,10 +10,10 @@ is the focus/modal routing state it reads and mutates.
 ## Mental Model
 
 `runtime/` is a persistent supervisor. It keeps ONE real attached mux client
-per session (a `tmux attach` / `psmux attach` in a `portable-pty` PTY, via the
-`AttachRegistry`) alive across selections and renders the SELECTED session's live
-`Grid` on the right. A separate control-mode client per remote host
-(`HostManager`) supplies the tree view inventory, mux-side change events, and
+per session (a `tmux attach` / `psmux attach` / `zellij attach` in a `portable-pty`
+PTY, via the `AttachRegistry`) alive across selections and renders the SELECTED
+session's live `Grid` on the right. A separate control-mode client per remote host
+(`HostManager`) supplies the nav view inventory, mux-side change events, and
 programmatic `select-window`; local psmux is enumerated/polled with plain
 commands. One `select!` loop interleaves stdin, host events, PTY events, the
 control socket, terminal resize, and an animation tick. It folds domain
@@ -22,8 +22,8 @@ control socket, terminal resize, and an animation tick. It folds domain
 `state::State` in sync with the switcher selection, drives the debounced attach, and
 draws the split view.
 
-`focus.rs` tracks which view holds focus (tree vs terminal) and which modal is
-open, and exposes the transitions the app and `State` fold through. It is UI
+`focus.rs` tracks which view holds focus (`ViewFocus::Nav` vs `Terminal`) and which
+modal is open, and exposes the transitions the app and `State` fold through. It is UI
 state, not display mechanics: it decides where input is routed, not how a PTY is
 pumped or a grid is rendered.
 

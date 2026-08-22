@@ -22,13 +22,12 @@ One concept, one word. The two axes and the runtime:
   `Ssh`); a host's `transport` field is `Box<dyn Transport>`. It owns where a
   command runs and how its argv is executed, and knows nothing about the mux.
   "machine" is the family/concept; `Transport` is the trait.
-- `Mux` (MUX axis) - the per-mux behavior trait (impls `Tmux` / `Psmux`); a
-  host's `mux` field is `Box<dyn Mux>`. "mux" is the family/concept; `Mux` is
+- `Mux` (MUX axis) - the per-mux behavior trait (impls `Tmux` / `Psmux` /
+  `Zellij`); a host's `mux` field is `Box<dyn Mux>`. "mux" is the family/concept; `Mux` is
   the trait.
 - `MuxDriver` - a mux's display driver, built by `Mux::driver()`.
-- the app - the runtime that owns the terminal (`crate::app`; loop in
-  `app/runtime.rs`, entry `run_app`). There is no `App`/`Cockpit` struct yet:
-  the app is the module and its run function until the runtime is decomposed.
+- the app - the runtime that owns the terminal (`crate::app`; the `Runtime` struct
+  and its loop in `app/runtime/`, entry `run_app`).
 - `ViewFocus` - which screen region holds focus (`Nav` / `Terminal`).
 - `Modal` - the mutually-exclusive focus-grabbing UI (`Help` and an input
   dialog). `ModalKind::Popup` is its one focus sub-kind: a draggable centered
@@ -276,7 +275,7 @@ At creation time, place a new source file by the axis it belongs to:
 - Orchestration (runtime loop, focus) → `src/app/`.
 - Host connection management → `src/host/`.
 - Domain types → `src/model/`.
-- Switcher / tree / status UI → `src/ui/`.
+- Switcher / nav rows / status UI → `src/ui/`.
 - Runtime `State` → `src/state/`.
 
 Then, if the module introduces a new directory, create that directory's
@@ -290,7 +289,7 @@ as invariants, seams, and pitfalls - never as change history or phase narrative.
   Both metadata paths feed it through `HostEvent`s - the control reader carries
   its parsed sessions on `Connected`/`Inventory` and pane subtrees on `Panes`, and
   the poll task carries `Sessions`/`Panes`; the run loop folds them in and rebuilds
-  the tree from it. `host::HostManager` owns the live mechanisms (control clients
+  the nav rows from it. `host::HostManager` owns the live mechanisms (control clients
   and poll tasks). Keep live process/task ownership out of `model::Host`, and do
   not add a third per-host registry.
 - `Source` is thin per-source config/data. The CLI, the `ls` scan, and the

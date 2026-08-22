@@ -24,9 +24,9 @@ ONE per-host PTY and, on a session change, either:
 - SWITCHES it in place (`switch-client -c <tty> -t <session>`) when a live client AND its
   captured tty are known — no teardown, so the terminal view never goes blank; followed by a
   `refresh-client` to force a full repaint; or
-- REATTACHES (`new-session -A -s <name>`, which routes to that session's OWN server — the
-  4a5f053 correctness fix; a bare `attach -t` lands on a warm clone) when there is no live
-  client or no captured tty.
+- REATTACHES (`new-session -A -s <name>`, which routes to that session's OWN server;
+  a bare `attach -t` lands on a warm clone instead, which is why it is not used) when
+  there is no live client or no captured tty.
 
 The tty is captured off-loop by a read-only `list-clients` probe, correlating the client
 by the session it shows (one server per session ⇒ the client showing session S is on S's
@@ -56,8 +56,8 @@ and owns the concrete switch/reattach decision. `Transport` lowers the machine e
 - A per-session attach uses `new-session -A -s <name>` (routes to that session's own
   server), never a bare `attach -t` on the default socket (a warm clone / wrong content).
 - An in-place switch runs ONLY with a live client AND a non-empty captured tty; otherwise
-  it reattaches, so a box where the tty is never captured behaves exactly as before (the
-  4a5f053 guard — no regression).
+  it reattaches, so a box where the tty is never captured still lands on the right
+  session: an in-place switch with a guessed tty would move somebody else's client.
 - On a reattach the stale attachment is HELD (not removed) so its grid stays on screen
   until DisplayReady swaps in the fresh one (stale-while-revalidate).
 - `sync` never pre-warms (attaches are selected on demand by `show`); it only reaps the

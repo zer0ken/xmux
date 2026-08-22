@@ -73,6 +73,13 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   `a_qualified_local_transport_is_still_this_box`,
   `every_mux_on_this_box_pins_ahead_of_every_remote`. **Live-verified** (local psmux and
   local zellij listed side by side, switching between them in place).
+- **FR-A8** — A polled host cannot wedge on one unanswered command. Every command in
+  a poll sweep runs under a fixed per-command budget, because the poll ticker only
+  advances once the sweep returns: a timed-out listing surfaces as that host's error
+  (the nav shows it unreachable), and a timed-out pane query still emits an EMPTY panes
+  answer, since a card whose panes never arrive would keep its spinner forever.
+  **Tests:** `a_hung_listing_ends_the_sweep_as_an_error_not_a_freeze`,
+  `a_hung_pane_query_ends_the_sweep_with_an_empty_answer`.
 
 ## B. The switcher — "see the list, decide whether & where to move"
 

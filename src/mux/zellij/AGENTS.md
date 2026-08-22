@@ -80,6 +80,10 @@ switch at its own display client the way it does for tmux and psmux.
   activeness.
 - Do not treat a non-zero `list-sessions` exit as an unreachable host. An idle zellij
   writes `No active zellij sessions found.` to stderr and exits 1.
+- Do not assume an action always answers. On WINDOWS an action addressed at a stale
+  session never returns, which would freeze that host's whole poll loop; the mux layer's
+  per-command poll budget (`within_poll_budget`) is what bounds it. Verify zellij
+  behavior on Linux, where the same queries answer immediately.
 
 ## Before Editing
 
