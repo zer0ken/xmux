@@ -225,6 +225,23 @@ fn sess(source: &str, name: &str, windows: i64, attached: bool, last: i64) -> Se
     }
 }
 
+/// Adds a more-recent session on a host of its own, so the card under test is NOT the
+/// selected one. The selected card is painted in reverse video, which flattens every
+/// level colour on it by design, so a colour assertion has to read an unselected card.
+/// The decoy's own words (`zz`, `parked`, `psmux`) collide with no needle in these tests.
+fn selection_parked_elsewhere(mut scan: Scan) -> Scan {
+    scan.groups.push(Group {
+        source: "zz".into(),
+        err: None,
+        sessions: vec![sess_mux("zz", "parked", "psmux", 9_999)],
+    });
+    scan.panes.insert(
+        "zz/parked".to_string(),
+        vec![win(0, "w-parked", true, vec![pane(0, true, "sh")])],
+    );
+    scan
+}
+
 fn win(index: i64, name: &str, active: bool, panes: Vec<Pane>) -> WindowPanes {
     WindowPanes {
         index,
@@ -354,7 +371,7 @@ fn two_window_scan() -> Scan {
 fn session_card_shows_the_focused_window_name() {
     // ONE card per session; its detail line is `{session}/{index}:{name}` of the
     // focused (active) window. The inactive window has no card of its own.
-    let h = Harness::new(two_window_scan());
+    let h = Harness::new(selection_parked_elsewhere(two_window_scan()));
     let out = h.nav_text();
     assert!(
         out.contains("api/0:w0"),
@@ -1178,29 +1195,31 @@ fn hint_bar_text_reflects_configured_prefix() {
 }
 
 #[tokio::test]
-async fn the_accent_bar_marks_the_selection_when_no_surface_is_painted() {
-    // No terminal background was reported here and no `[ui] selection-style` is set, so
-    // xmux paints no surface of its own - the case a terminal that answers no colour
-    // query (Windows Terminal answers none) is permanently in. The selection still has
-    // to be visible, and the accent bar in the gutter is what makes it so.
+async fn the_selected_card_is_painted_in_the_terminals_own_reverse_video() {
+    // With no `[ui] selection-style` set, xmux picks no colour for the selection at all:
+    // the row carries REVERSED and the terminal swaps its own pair, so the selection is
+    // as legible as that theme's text on every theme. Both the fg and the bg are pinned
+    // to Reset, which is what stops the swap from striping the row in the card's level
+    // colours cell by cell.
     let mut h = Harness::new(sample());
     h.key(KeyCode::Down).await; // step onto local/editor's card
     let sel = h.nav_row_of("editor").expect("editor row");
     let other = h.nav_row_of("inference").expect("inference row");
-    assert_eq!(
-        crate::ui::palette::get().surface,
-        Color::Reset,
-        "unqueried and unconfigured: no surface of xmux's own"
+    let cell = h.buf()[(4, sel)].clone();
+    assert!(
+        cell.modifier.contains(Modifier::REVERSED),
+        "the selected row inverts: {cell:?}"
+    );
+    assert_eq!(cell.fg, Color::Reset, "no colour of xmux's own under it");
+    assert_eq!(cell.bg, Color::Reset, "nor behind it");
+    assert!(
+        !h.buf()[(4, other)].modifier.contains(Modifier::REVERSED),
+        "and only that row inverts: {other}"
     );
     assert_eq!(
         h.buf()[(0, sel)].symbol(),
         "▌",
-        "the accent bar marks the selected card"
-    );
-    assert_ne!(
-        h.buf()[(0, other)].symbol(),
-        "▌",
-        "and only that one: {other}"
+        "the accent bar still marks the selected card in the gutter"
     );
 }
 
@@ -1480,10 +1499,10 @@ async fn session_card_context_shows_host_mux_session() {
     // The context line is {host}/{mux}, each segment in its own colour (the mux
     // segment distinguishes sessions when one host runs several muxes); the
     // detail line under it is {session}/{index}:{window-name}.
-    let h = Harness::new(one_host_scan(
+    let h = Harness::new(selection_parked_elsewhere(one_host_scan(
         "srv",
         vec![sess_mux("srv", "alpha", "tmux", 100)],
-    ));
+    )));
     let out = h.nav_text();
     assert!(out.contains("srv/tmux"), "context line on the card:\n{out}");
     assert!(

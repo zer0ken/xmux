@@ -26,7 +26,7 @@ the live split view.
   it never owns the registry), `registry.rs` (`AttachRegistry`), `grid.rs` (the
   vt-style `Grid`), and the terminal input mechanics (`input.rs`, `decode.rs`,
   `dispatch.rs`, `mouse.rs`, `term.rs`).
-- `app/` holds the application orchestration layer: `runtime.rs` (the persistent
+- `app/` holds the application orchestration layer: `runtime/` (the persistent
   supervisor and main event loop, which also owns `Selection`) and `focus.rs`, the
   focus/modal routing state machine (`Focus`, `ViewFocus`, `ModalKind`). `focus.rs`
   is UI state, not display mechanics.
@@ -38,7 +38,7 @@ the live split view.
   `Mux::driver()`, so driver.rs names no concrete mux type and there is no
   `match server_model()`. `MuxDriver::show` carries per-host display orchestration —
   which PTY to use, whether to `switch-client` or reattach — and is the sole site for
-  that per-mux decision. `runtime.rs` calls `driver_for` and then `show`; it branches
+  that per-mux decision. `runtime/` calls `driver_for` and then `show`; it branches
   on nothing mux-specific. `TmuxDriver` keeps one PTY per host and moves it with
   `switch-client`; `PsmuxDriver` switches in place via `switch-client -c <tty>`
   when a live client with a captured tty is known, else reattaches. `DriverCtx`
@@ -52,7 +52,7 @@ the live split view.
   — `Transport::control_argv(&Mux::control_argv())` (the mux supplies the control
   payload, the transport wraps it for local `-S`/`ssh -tt`); it never hardcodes a mux
   verb or hand-rolls ssh here.
-- `app/runtime.rs` coordinates these modules and owns the main event loop. Inbound
+- `app/runtime/` coordinates these modules and owns the main event loop. Inbound
   `HostEvent`s route through `State::apply_event` (the event-driven mutation site);
   `handle_host_event` is then a thin executor that runs the returned `EventEffect`s
   (`run_event_effect`) against the host clients, registry, and display worker.
@@ -68,6 +68,15 @@ the live split view.
   `remote_command`/`quote` — lives in `machine/vocab.rs`); `source.rs` carries no
   transport-wrapping implementation of its own. `env.rs` is config assembly plumbing
   for source definitions and command construction.
+- `roster.rs` answers only "which machines does xmux offer as sources": one or more
+  providers (`~/.ssh/config`, tailscale) each yielding plain ssh target names, so
+  nothing downstream can tell which provider a name came from. A provider that cannot
+  run yields an empty list rather than an error. Distinct from `machine/` (how a command
+  REACHES a machine) and `discovery.rs` (scanning a machine for sessions).
+- `prefs.rs` persists the lightweight UI hints across runs (last-selected session
+  address, nav width/height, auto-hide-nav), one small file each under the xmux dir.
+  Every value is best-effort: a stale, missing, or unparsable file falls back to the
+  built-in default, so xmux stays stateless about sessions themselves.
 - `logging.rs` sets up the `tracing` subscriber for the process. `logging::init(xmux_dir)`
   attaches a daily rolling file appender (`tracing_appender`) writing to
   `<xmux_dir>/xmux.log`, wrapped in a non-blocking worker. ANSI codes are
@@ -92,7 +101,7 @@ the live split view.
 - `Selection` is the canonical selected source/session/window value consumed by
   display selection and rendering.
 - The per-mux display decision lives in the `MuxDriver` implementation.
-  `runtime.rs` does not branch on mux kind for display; it calls
+  `runtime/` does not branch on mux kind for display; it calls
   `driver_for(host).show(sel, ctx)` and reads back the grid via `driver.grid`.
 - `DisplayWorker` spawns attachments and hands them back; `AttachRegistry`
   stores and tears them down.
@@ -114,12 +123,12 @@ the live split view.
   sink). Logging macros (`tracing::info!`, `tracing::debug!`, etc.) must never
   write to stdout or stderr: ratatui owns the terminal in alt-screen mode, and
   a stray byte to stdout or stderr corrupts the display.
-- The panic hook in `runtime.rs` restores the terminal before printing the panic
+- The panic hook in `runtime/` restores the terminal before printing the panic
   message. This is what makes a runtime panic appear on the real screen rather
   than garbling the alt-screen.
 - `display_show`, `attach_created`, `tty_probe`, `display_inventory` (emitted by
   the per-mux drivers in `mux/{tmux,psmux}/display.rs`) and `display_grid_changed`
-  (emitted by `runtime.rs`) are the
+  (emitted by `runtime/`) are the
   diagnostic surface for whether a session switch actually landed. The first
   grid change after the displayed session changes is INFO; steady-state repaints
   of the same session (htop, build logs, clocks) are TRACE. A `display_show

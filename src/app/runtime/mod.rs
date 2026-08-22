@@ -845,21 +845,13 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     }
     let _ = std::fs::create_dir_all(&env.xmux_dir);
 
-    // Derive the palette's xmux-own backgrounds (selection surface, hint bar)
-    // from the terminal's reported background (an OSC 11 round-trip); the
-    // foreground roles are ANSI-16 and need no query. Must run BEFORE raw mode /
-    // the alternate screen - the query library manages the terminal itself.
-    // Failure (an unsupported terminal, a timeout) keeps the fixed fallbacks.
-    let queried_bg = crate::ui::palette::query_terminal_background();
-    if queried_bg.is_none() {
-        tracing::debug!(
-            "terminal background query failed; no selection surface will be painted              unless [ui] selection-style names one"
-        );
-    }
-    crate::ui::palette::init(
-        queried_bg,
-        crate::ui::chrome::parse_selection_bg(&env.cfg.ui.selection_style),
-    );
+    // The palette is ANSI-16 slots and attributes throughout, so it needs nothing from
+    // the terminal but the theme the terminal already has: no colour query, no probing,
+    // no fallback to guess at. The one colour from outside those slots is the one the
+    // user names in `[ui] selection-style`.
+    crate::ui::palette::init(crate::ui::chrome::parse_selection_bg(
+        &env.cfg.ui.selection_style,
+    ));
 
     let _term_guard = match TermGuard::enter() {
         Ok(g) => g,

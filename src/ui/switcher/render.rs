@@ -162,10 +162,11 @@ impl Switcher {
         let items: Vec<ListItem> = (0..self.rows.len())
             .map(|i| self.nav_row_item(i, num_w, spinner_glyph))
             .collect();
-        // The selection highlight is a quiet raised surface (plus the accent ▌ bar the
-        // card itself draws in its gutter), not reverse video: the card's own level
-        // colours stay readable while selected.
-        let list = List::new(items).highlight_style(Style::default().bg(palette::get().surface));
+        // The selected card is painted in the terminal theme's own selected look - reverse
+        // video - unless `[ui] selection-style` names a background instead. Either way the
+        // whole row is the List's business (`highlight_style` covers the row), so the card
+        // spans bake in no background of their own.
+        let list = List::new(items).highlight_style(palette::selection_style());
         frame.render_stateful_widget(list, area, &mut self.list_state);
         self.render_nav_scrollbar(frame, area);
     }

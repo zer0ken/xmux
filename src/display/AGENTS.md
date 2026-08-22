@@ -26,7 +26,7 @@ back to the app, which owns the registry.
 - `registry.rs` maps display keys to live attachments and exposes grid/input/
   resize/reap operations (`AttachRegistry`).
 - `grid.rs` owns the vt-style grid (`Grid`). `Grid::fingerprint() -> u64` computes
-  a content hash over all cell bytes; `runtime.rs` compares successive fingerprints
+  a content hash over all cell bytes; `runtime/` compares successive fingerprints
   to determine whether a display transition actually changed the visible screen
   content (`display_grid_changed` is emitted only on a hash change).
 - `input.rs`, `decode.rs`, `dispatch.rs`, and `mouse.rs` turn terminal input into

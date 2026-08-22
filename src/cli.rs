@@ -211,10 +211,9 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
     println!("local mux: {}", env.local_muxes.join(", "));
     println!(
         "{}",
-        crate::ui::palette::source_report(
-            crate::ui::palette::query_terminal_background(),
-            crate::ui::chrome::parse_selection_bg(&env.cfg.ui.selection_style),
-        )
+        crate::ui::palette::selection_report(crate::ui::chrome::parse_selection_bg(
+            &env.cfg.ui.selection_style
+        ))
     );
     if ssh_on_path() {
         println!("ssh: ok");

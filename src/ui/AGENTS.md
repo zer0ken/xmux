@@ -9,7 +9,7 @@ ratatui rendering.
 ## Mental Model
 
 `tree.rs` is side-effect-free model logic over groups and sessions.
-`switcher.rs` is the aggregate interactive TUI surface: selection, flattened rows,
+`switcher/` is the aggregate interactive TUI surface: selection, flattened rows,
 modal/input BEHAVIOR and rendering, key/mouse handling, operation result
 application, and render state. The open modal itself lives in `State.modal`
 (the `Modal` enum is defined here); the switcher reads/writes it and owns only
@@ -33,22 +33,30 @@ renders for `dump`.
 ## Module Seams
 
 - Pure row/group transforms belong in `tree.rs`.
-- UI colours come from the semantic palette in `palette.rs` (accent / surface /
-  muted tiers plus the per-level card colours), so the theme changes in one
-  place. The one exception is the view border: its stock defaults deliberately
-  mirror tmux's pane-border defaults and live with their three-tier resolve
-  logic in `chrome.rs`.
+- UI colours come from the semantic palette in `palette.rs` (accent / muted tiers,
+  the hint bar's pair, the per-level card colours, and `selection_style`), so the
+  theme changes in one place. The one exception is the view border: its stock defaults
+  deliberately mirror tmux's pane-border defaults and live with their three-tier
+  resolve logic in `chrome.rs`.
+- A colour the USER named is parsed in `chrome.rs` (`map_color` and the
+  `parse_*_style` helpers), never in `palette.rs`: the palette holds xmux's own
+  choices, which are slots only.
 - Chrome rendering (view border, hint bar, host-info) and its view-local state
   belong in `chrome.rs`; it reads inventory from `&State`, not the switcher.
 - Slow (network) mux effects belong behind `ops.rs` (`Ops`/`run_op`/`OpResult`);
   a committing key emits `Command::RunOp(MuxOp)` for the run loop to spawn, it
   does not call the mux itself.
 - Control socket serving and dump rendering belong in `run.rs`.
-- Other interaction state and ratatui rendering live in `switcher.rs` until a
+- Other interaction state and ratatui rendering live in `switcher/` until a
   smaller seam exists for the specific surface being changed.
 
 ## Invariants
 
+- Every colour xmux itself paints is an ANSI-16 slot or an attribute (reverse video,
+  bold), so the terminal theme resolves it - never an RGB value. A background with no
+  slot for it is an attribute instead: the selected card is reverse video, not a
+  computed surface. See "Colour ownership" in `CONTEXT.md`; the palette's own test
+  fails on a stray `Color::Rgb`.
 - Tree transforms do not mutate their inputs unless the function name and
   signature make mutation explicit.
 - `dump` should reflect the same split view the main draw path renders.
@@ -61,8 +69,8 @@ renders for `dump`.
 - This layer branches on nothing mux-specific: the switcher renders a tree and
   emits domain intents, never a `match` on tmux vs psmux. Per-mux behavior lives
   behind the `Mux`/`MuxDriver` seam, reached via `Ops`, not decided here.
-- Selection/drag mutators (`select_window` / `select_address` /
-  `select_active_window` / `set_active_window` / `begin_popup_drag`)
+- Selection/drag mutators (`select_address` / `set_active_window` /
+  `begin_popup_drag`)
   return a `bool` - "did it actually move / grab?" - by accepted convention: the
   app gates its follow-up (attach, event consumption) on that signal. This
   mutate-and-return-bool shape is deliberate; it is not split into a pure
@@ -71,6 +79,9 @@ renders for `dump`.
 ## Common Pitfalls
 
 - Do not put host process management or PTY writes in UI modules.
+- Do not reach for a `Color::Rgb` to get a tone the sixteen slots lack (a raised
+  surface, a slightly-off bar). There is no theme-safe way to pick one, and a terminal
+  may answer no colour query at all - use an attribute, or take the colour from config.
 - Do not add side effects to `tree.rs`.
 - Do not route public ctl behavior through internal switcher key names.
 
@@ -78,7 +89,7 @@ renders for `dump`.
 
 - Decide whether the change is pure tree data, interactive state, rendering,
   side-effecting operation, or control/dump plumbing.
-- For `switcher.rs`, find the existing helper for the same surface before adding
+- For `switcher/`, find the existing helper for the same surface before adding
   another state path.
 - Check focus/modal ownership before changing key handling.
 
