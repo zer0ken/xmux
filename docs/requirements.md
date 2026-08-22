@@ -76,9 +76,13 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
 
 ## B. The switcher — "see the list, decide whether & where to move"
 
-- **FR-B1** — The tree renders a `Hosts · Sessions · Windows · Panes` tree of all
-  reachable sessions, expandable to per-window panes with the running command.
-  **Tests:** `parse_panes_*` (data), switcher render tests (`dump_*`, `tree_*`).
+- **FR-B1** — The nav renders ONE CARD PER SESSION across every reachable source,
+  most recently used first: a context line `{host}/{mux}` over a detail line
+  `{session}/{index}:{name}` naming the session's focused window. The list is flat, with
+  no window or pane rows: xmux aggregates and switches, and the mux itself already shows
+  its own windows. **Tests:** `session_card_context_shows_host_mux_session`,
+  `session_card_shows_the_focused_window_name`, `panes_are_not_selectable`,
+  `parse_panes_*` (data), switcher render tests (`dump_*`).
 - **FR-B2** — Render-first: the host skeleton paints instantly; each source's
   sessions and each session's panes stream in independently.
   **Tests:** `connect_all_sources_connects_remote_hosts`,
@@ -86,13 +90,13 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
 - **FR-B3** — The terminal view shows the confirmed session's live grid and follows
   the cursor. A switch keeps the prior grid on screen until the new one is ready
   (stale-while-revalidate); only the first launch, before any grid exists, shows a
-  blank view. The `scanning…` / `loading…` state hints live in the tree, not here.
+  blank view. The `scanning…` / `loading…` state hints live in the nav, not here.
   **Tests:** `render_terminal_view_draws_live_grid`,
   `render_terminal_view_none_grid_is_blank_not_attaching`,
   `terminal_view_target_follows_cursor`, `dump_screen_renders_the_live_grid`.
 - **FR-B4** — Navigation: up/down/home/end/pgup/pgdn; fuzzy filter over
   `<source>/<name>`; manual `prefix r` rescan. **Tests:** `filter_narrows`,
-  `up_down_move_within_level_and_hjkl_match_arrows`, `navigation_wraps_around`,
+  `up_down_and_hjkl_move_linearly`, `navigation_wraps_around`,
   `request_rescan_*`.
 - **FR-B5** — Surveying without committing is first-class: xmux is a switcher, not a
   session owner. Quitting (`prefix q`, or the ctl `quit` verb) leaves the current
@@ -135,22 +139,23 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   `a_jump_never_holds_a_number_no_session_carries`,
   `cancelling_a_jump_restores_the_starting_card`, `a_jump_past_the_last_card_is_inert`.
 
-- **FR-B11** — Every foreground the nav paints is an ANSI-16 slot, so the terminal
-  theme resolves the hue. The selected card's BACKGROUND has no such slot, so it is
-  derived from the background the terminal reports (OSC 11) and, when the terminal
-  reports none, nothing is painted and the accent bar carries the selection: a surface
-  sits under text whose every hue is the theme's, so a fixed colour is wrong on every
-  theme it was not chosen for. `[ui] selection-style` names one explicitly, in the same
-  colour vocabulary as the view border. `xmux doctor` reports which of the three is in
-  effect, because it is invisible on screen. **Tests:**
-  `foreground_roles_are_ansi_indexed`,
-  `an_unqueried_run_paints_no_surface_under_the_cards`,
-  `the_accent_bar_marks_the_selection_when_no_surface_is_painted`,
+- **FR-B11** — Every colour xmux paints is an ANSI-16 slot, so the TERMINAL THEME
+  resolves the hue and the whole UI recolours with the user's own scheme. What the
+  sixteen slots cannot say is said with an attribute: the selected card is REVERSE VIDEO,
+  the terminal swapping its own pair, which is what a theme itself means by "selected".
+  A background xmux picked instead would be wrong on every theme it was not picked for,
+  and it cannot be computed from the terminal's own background either, since a terminal
+  is free to answer no colour query at all. `[ui] selection-style` names a background
+  anyway, in the same colour vocabulary as the view border, and `xmux doctor` reports
+  which of the two is in effect because it is invisible on a screenshot. **Tests:**
+  `every_colour_xmux_chooses_is_an_ansi_slot`,
+  `the_default_selection_is_the_terminals_own_reverse_video`,
+  `the_selected_card_is_painted_in_the_terminals_own_reverse_video`,
   `a_selection_style_names_one_background`,
-  `a_named_selection_surface_wins_over_a_queried_one`,
-  `the_report_says_where_the_surface_colour_came_from`,
-  `derive_backgrounds_raises_on_dark_and_lowers_on_light`. **Live-verified** (a real
-  Windows Terminal answers no query, so the cards paint no surface; with
+  `a_named_selection_style_is_a_plain_background`,
+  `the_report_says_which_of_the_two_paints_the_selection`. **Live-verified** (in a real
+  terminal every cell of the selected card comes back inverted with no colour of its own,
+  the unselected cards come back on ANSI indices 2/6/8, and the hint bar on 0/15/4; with
   `[ui] selection-style = "#2d4f6b"` set, both card rows come back that colour).
 
 ## C. Switching (the keystone)
@@ -174,7 +179,7 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   (real psmux + ssh).
 - **FR-C3** — Host degradation is graceful, never a silent loss: an unreachable host
   is marked `⚠ unreachable: <reason>`, a reachable-but-serverless host reads
-  `(empty)`, a once-connected host keeps its last-known tree on a transient drop, and
+  `(empty)`, a once-connected host keeps its last-known cards on a transient drop, and
   the reconnect sweep self-heals; a dropped display client is reaped and re-attached.
   **Tests:** `host_exited_before_connect_marks_unreachable`,
   `host_exited_with_no_sessions_marks_empty_not_unreachable`,
@@ -186,10 +191,10 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   a live client is moved server-side by a lowered `select-window`. **Tests:**
   `interactive_attach_remote_folds_pre_select_into_one_connection`,
   `interactive_attach_remote_without_pre_select_execs_over_ssh_tty`,
-  `selection_from_window_row_target`, `active_window_probe_moves_tree_selection`.
+  `selection_from_window_row_target`, `active_window_probe_refreshes_focused_window_line`.
 - **FR-C5** — No silent loss: every lowered switch/select command logs its exact argv
   and result through `tracing`; a failed attach logs `attach_failed` (warn) and returns
-  to the tree rather than being swallowed; each driver logs its show decision and the
+  to the nav rather than being swallowed; each driver logs its show decision and the
   grid-changed effect. **Tests:** the decision paths that must emit are exercised by
   `psmux_driver_show_*` and `tmux_driver_show_*`.
 
@@ -217,12 +222,12 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   pid. **Tests:** `control_handle_drop_removes_socket`, `control_socket_is_owner_only`
   (unix), `prune_stale_removes_dead_markers_and_keeps_own`,
   `discover_all_newest_then_name_order`, `discover_all_tie_break_by_name`.
-- **FR-D5** — The app launches directly into the persistent split view (tree +
+- **FR-D5** — The app launches directly into the persistent split view (nav +
   terminal view) with the cursor preselected — the persisted last session if set,
   else a local-first recency preselect. There is no separate picker mode; `prefix q`
-  quits. **Tests:** `preselects_local_first_session`,
-  `preferred_session_wins_preselect_when_it_streams_in`,
-  `streaming_keeps_local_preselect_when_untouched`.
+  quits. **Tests:** `launch_preselects_top_row`,
+  `streaming_keeps_local_preselect_when_untouched`,
+  `rebuild_holds_a_user_moved_session_against_the_preselect`.
 
 ## E. Session management
 
@@ -231,7 +236,7 @@ session is the one mutation it keeps, because a reachable host with no sessions 
 nothing to switch to until one exists.
 
 - **FR-E1** — Create a session on a HOST card (`prefix n`), then it appears in the
-  tree. On a session card the action is refused with a flash naming where to press it.
+  nav. On a session card the action is refused with a flash naming where to press it.
   **Tests:** `create_*`, `new_session_*` (mux), `create_on_unreachable_host_refused`,
   `n_on_a_session_card_refuses_with_a_flash`.
 - **FR-E2** — There is no rename, kill, or window/pane command — not on a key, not
@@ -247,7 +252,7 @@ nothing to switch to until one exists.
 
 - **FR-F1** — A per-instance local socket (`ctl-<name>.sock`) drives the running app
   headlessly. Its navigation/display verbs — `ping`, `dump`, `status`,
-  `switch <source>/<session>`, `focus <terminal|tree>`, `rescan`, `quit`,
+  `switch <source>/<session>`, `focus <terminal|nav>`, `rescan`, `quit`,
   `width <delta>` (a signed column delta, not an absolute width), `toggle-auto-hide` —
   and its one session-lifecycle verb, `new-session` (sessions addressed
   `<source>/<session>`), parse to a domain `Action`. There are no kill/rename/window
@@ -312,20 +317,20 @@ nothing to switch to until one exists.
   FR-D1/D2)* — Tests: FR-C2 set; **live-verified**.
 - **UC-2 — Hop between two same-server sessions.** Select a session on the current
   server → instant switch-client. *(FR-C1)*
-- **UC-3 — Survey, then stay put.** Look around the tree, then quit; the current
+- **UC-3 — Survey, then stay put.** Look around the nav, then quit; the current
   session is untouched. *(FR-B5)* — Test: `control_end_to_end` (quit).
 - **UC-4 — Find one session among many, then go.** Filter to narrow, Enter on the
   visible match. *(FR-B4, FR-B6)* — Tests: the FR-B6 set.
 - **UC-5 — The remote is down — don't leave me in the dark.** An unreachable host shows
-  `⚠ unreachable`; a failed attach is logged and the tree stays usable.
+  `⚠ unreachable`; a failed attach is logged and the nav stays usable.
   *(FR-A2, FR-B7, FR-C5)* — **live-verified** (tracing log entry).
 - **UC-6 — Deep in a remote, get back home.** Native detach (`prefix d`) inside the
   remote returns control to the local app's split view; pick local or another host.
   *(FR-C2, FR-D1)*
 - **UC-7 — Spin up a throwaway on a remote and switch to it.** Create on the
   host's card, then switch to it. *(FR-E1, FR-C2)*
-- **UC-8 — Survey what's running everywhere before deciding.** The tree shows hosts,
-  sessions, windows, per-pane commands; the terminal view previews the selection.
+- **UC-8 — Survey what's running everywhere before deciding.** The nav shows every
+  session on every host with its focused window; the terminal view previews the selection.
   *(FR-B1, FR-B3, FR-B8)*
 - **UC-9 — Drive xmux from a script.** Control channel: dump, inject keys, signal a
   switch. *(FR-F1, FR-F2)* — Tests: `control_end_to_end`, the semantic-verb set.

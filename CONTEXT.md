@@ -78,8 +78,8 @@ UI elements a user perceives as distinct things:
   session name + a loading spinner). The muted connector hangs the detail
   under its context line - on a collapsed card, under the shared context
   above: `├` while a collapsed sibling follows below, `└` on the run's last
-  line; the selected card drops the connector (the accent bar and surface
-  already bind its lines).
+  line; the selected card drops the connector (the accent bar and the inverted
+  rows already bind its lines).
   One card per SESSION; the mux segment names the mux kind serving it
   (`Session.mux`, stamped at enumeration), so several muxes on one host stay
   distinguishable. The kinds are the session card, the host-state card
@@ -96,22 +96,19 @@ UI elements a user perceives as distinct things:
   window part (`{index}:{name}`) bright-black - the quietest level, so the
   session name anchors the detail line; a host-state card's detail line is
   colored by state - scanning yellow, unreachable red, settled "no sessions"
-  muted. The two xmux-own backgrounds (selection surface, hint bar) have no ANSI slot,
-  so they are derived at startup from the terminal's reported background (OSC 11) to
-  stay in the theme's family. When the terminal does not report one, the SELECTION
-  SURFACE paints nothing (the accent bar carries the selection) - a surface sits under
-  text whose every hue is the theme's, so a fixed color is wrong on every theme it was
-  not picked for, and Windows Terminal answers no color query at all.
-  `[ui] selection-style` names one explicitly; the hint bar keeps a fixed dark tone
-  because it is a solid bar of chrome rather than a wash under themed text, with
-  `[ui] hint-bar-style` as its override.
+  muted. The hint bar is two slots as well (black under white, blue keys). Nothing here
+  is an RGB value; see "Colour ownership" below for why, and `[ui] selection-style` /
+  `[ui] hint-bar-style` for naming one anyway.
 - selection - the nav's current pick (its card index is `selected`), advanced by
   navigation; a routine poll or restream never moves it (only launch / rescan
   re-sorts). `preselect` / `reselect` are the launch and post-rescan selections.
-- selection highlight - the selected card's rendering: a quiet surface background
-  (ratatui's `highlight_style`, filling the whole card) plus an accent `▌` bar in
-  the gutter of both card lines, in its own column left of the number. `selected` +
-  `highlight` follow ratatui's list vocabulary.
+- selection highlight - the selected card's rendering: reverse video (ratatui's
+  `highlight_style`, filling the whole card), the terminal theme's own selected look,
+  plus an accent `▌` bar in the gutter of both card lines, in its own column left of the
+  number. The inversion is uniform because the highlight pins fg and bg to `Reset`:
+  inverting per span would turn each level color into a background and stripe the card.
+  `[ui] selection-style` paints a named background instead. `selected` + `highlight`
+  follow ratatui's list vocabulary.
 - spinner - the braille activity glyph on a loading card (and, historically, a
   connecting session).
 - loading card - a card standing in for a session whose panes are not yet loaded;
@@ -169,8 +166,8 @@ boundary and nowhere above it.
 `pane` is reserved for a mux window's terminal split (a tmux / psmux pane); it is
 never a screen region - screen regions are "views", and the line between them is
 the `view border`. A transient hint-bar message is a `flash`, never a "toast" or
-"notice". A card's trailing state is a `status`, never a "hint". The surface-background
-selection is the `selection highlight`; `cursor` names only the grid's text
+"notice". A card's trailing state is a `status`, never a "hint". The reverse-video
+selected card is the `selection highlight`; `cursor` names only the grid's text
 cursor. The furniture around the views is the `chrome`
 (owned by `Chrome`), never a "status surface". The switcher's rendered screen is
 the "switcher screen" (`dump_screen`), never an "overlay".
@@ -239,6 +236,33 @@ The remaining layers each own one concern:
 - `src/driver.rs` - the mux-agnostic `MuxDriver` trait + `DriverCtx` (the
   supervisor capabilities a driver borrows) + the thin `driver_for` wrapper. It
   names no concrete mux type.
+
+## Colour ownership
+
+**The terminal theme owns every colour xmux paints.** xmux names ANSI-16 slots and
+attributes; the terminal resolves them into actual hues. So the whole UI recolours with
+whatever scheme the user runs, and xmux never fights a theme it cannot see. This is a
+hard invariant, not a preference.
+
+- The vocabulary is the sixteen slots (`ui::palette`, one field per UI role) plus
+  ATTRIBUTES: reverse video, bold. Nothing else. A `Color::Rgb`, or a `Color::Indexed`
+  above 15, is a hue xmux chose for somebody else's terminal, and it is wrong on every
+  theme it was not chosen for. `every_colour_xmux_chooses_is_an_ansi_slot` fails if one
+  reaches the palette.
+- Anything the sixteen slots cannot say is said with an attribute instead. "One step off
+  the background" is the case that keeps coming up, and it is not a slot: so the selected
+  card is REVERSE VIDEO, the terminal swapping its own pair, which is what a theme itself
+  means by "selected". Not a computed surface - computing one needs the terminal's
+  background, and a terminal is free to answer no colour query at all (Windows Terminal
+  answers none), which leaves a fixed fallback as the permanent state rather than a rare
+  one.
+- The exceptions are colours the USER names: `[ui] selection-style`,
+  `[ui] hint-bar-style`, and the view-border colours. Their terminal, their choice.
+  `chrome::map_color` is that vocabulary and the only place a `#rrggbb` may enter.
+- A colour a CHILD program emits passes through untouched (`display::grid`): it is that
+  program's own choice against the same theme, and xmux is not in it.
+
+A new colour goes into `ui::palette` as a slot, or it does not go in.
 
 ## Adding a module
 

@@ -1,28 +1,28 @@
 //! The switcher's semantic colour palette: one module naming every colour the nav
-//! cards, chrome, and modals paint with, so the UI reads as one coherent theme and
-//! a colour is changed in exactly one place. Every foreground role is an ANSI-16
-//! colour, so the terminal theme resolves the actual hue and the UI recolours with
-//! whatever scheme the user runs.
+//! cards, chrome, and modals paint with, so the UI reads as one coherent theme and a
+//! colour is changed in exactly one place.
 //!
-//! The two xmux-own BACKGROUNDS (the selection surface and the hint bar) have no ANSI
-//! slot: "one step off the background" is not a colour a 16-slot palette can name. So
-//! they are derived from the terminal's reported background when it answers an OSC 11
-//! query - a small step toward the foreground, staying in the theme's own family.
+//! **The invariant: xmux never emits a colour of its own.** Every colour here is an
+//! ANSI-16 slot, so the TERMINAL THEME decides the actual hue and the whole UI recolours
+//! with whatever scheme the user runs. Anything that cannot be said in sixteen slots is
+//! said with an ATTRIBUTE instead - reverse video, bold - which the theme also resolves.
+//! A `Color::Rgb` or a `Color::Indexed` above 15 is a colour xmux picked for somebody
+//! else's terminal, and it is wrong on every theme it was not picked for; a test below
+//! fails if one appears.
 //!
-//! When it does not answer, the SELECTION SURFACE stays the terminal's own background
-//! and paints nothing. A surface is the one colour xmux cannot guess: it sits UNDER
-//! text whose every hue is the theme's, so a fixed RGB is wrong on every theme it was
-//! not chosen for - and Windows Terminal answers no colour query, so the guess was not
-//! a rare fallback there but the permanent state. A user who wants a surface anyway
-//! names one with `[ui] selection-style`.
+//! That is why the selection is REVERSE VIDEO rather than a raised surface. "One step
+//! off the background" is not a colour sixteen slots can name, and computing one from
+//! the terminal's reported background only works on terminals that answer a colour
+//! query (Windows Terminal answers none). Reverse video needs no answer and no choice:
+//! the terminal swaps its own foreground and background, which is exactly what a theme
+//! means by "selected".
 //!
-//! The hint bar keeps a fixed dark tone when unqueried. It is a solid bar of chrome
-//! rather than a wash under themed text, so a dark bar reads as a bar on either kind of
-//! theme; `[ui] hint-bar-style` overrides it.
+//! A user who wants a specific colour names one (`[ui] selection-style`,
+//! `[ui] hint-bar-style`). Their terminal, their choice.
 
 use std::sync::OnceLock;
 
-use ratatui::style::Color;
+use ratatui::style::{Color, Modifier, Style};
 
 /// The semantic colour set. One field per UI role - callers name the role, never
 /// a hue, so the assignments below stay changeable in one place.
@@ -30,22 +30,17 @@ pub(crate) struct Palette {
     /// The single accent: the selection bar, key hints, and popup titles all
     /// share it, so "interactive / current" is one colour everywhere.
     pub accent: Color,
-    /// Secondary text: hint bar descriptions and panel prose.
+    /// Secondary text: panel prose.
     pub subtext: Color,
     /// Muted furniture: the digit gutter, separators, the └/├ connectors, popup
     /// borders, the scrollbar thumb, and settled status text.
     pub overlay: Color,
-    /// The selection surface: the selected card's (and hovered menu item's)
-    /// background - a quiet raised surface instead of reverse video. Derived from the
-    /// terminal background when it is known, `Reset` (the terminal's own background, so
-    /// no surface) when it is not, and whatever `[ui] selection-style` names when the
-    /// user names one.
-    pub surface: Color,
-    /// The hint bar background: set off from the terminal background so the bar
-    /// reads as chrome, not content. Derived from the terminal background when it is
-    /// known, a fixed dark tone when it is not (a solid bar reads as a bar on either
-    /// kind of theme). `[ui] hint-bar-style` overrides it.
+    /// The hint bar's background: ANSI black, the darkest slot every theme has, so the
+    /// bar reads as chrome rather than content. `[ui] hint-bar-style` overrides it.
     pub bar_bg: Color,
+    /// The hint bar's text, and the text of the refusal bar. Paired with `bar_bg`, so
+    /// the two are legible together in any theme that keeps its own slots legible.
+    pub bar_fg: Color,
     /// Level colour: host.
     pub host: Color,
     /// Level colour: mux.
@@ -59,126 +54,98 @@ pub(crate) struct Palette {
     pub pending: Color,
     /// Failure state: the unreachable status and error text.
     pub danger: Color,
+    /// The background `[ui] selection-style` names, or `None` for the default: reverse
+    /// video, the terminal's own "selected" look. Not a colour role - a user's override
+    /// of one - so it is the only field that may hold a colour xmux did not choose.
+    pub selection_bg: Option<Color>,
 }
 
-/// The role-to-ANSI assignments. `surface` is `Reset` - the terminal's own background -
-/// so an un-queried, un-configured run paints no surface under the cards rather than a
-/// colour picked for somebody else's theme; `bar_bg` keeps a fixed dark tone because the
-/// hint bar is a solid bar of chrome, not a wash under themed text. `DarkGray` is ANSI
-/// bright black, the theme's own muted tone.
+/// The role-to-ANSI assignments. `DarkGray` is ANSI bright black, every theme's own muted
+/// tone. The hint bar is `Black` under `White` with `Blue` keys: the plain terminal
+/// combination, legible on every theme, which is what lets the bar be a solid bar of
+/// chrome without xmux naming a colour of its own.
 const fn base() -> Palette {
     Palette {
         accent: Color::Blue,
         subtext: Color::DarkGray,
         overlay: Color::DarkGray,
-        surface: Color::Reset,
-        bar_bg: Color::Rgb(0x18, 0x18, 0x25),
+        bar_bg: Color::Black,
+        bar_fg: Color::White,
         host: Color::Cyan,
         mux: Color::Green,
         window: Color::DarkGray,
         session: Color::Cyan,
         pending: Color::Yellow,
         danger: Color::Red,
+        selection_bg: None,
     }
 }
 
-/// The set served until (or in place of) [`init_for_terminal_background`].
+/// The set served until [`init`] runs (tests, the headless dump path).
 static FALLBACK: Palette = base();
 
-/// The active set, derived once at startup. Unset (tests, the headless dump
-/// path, a failed background query) reads as [`FALLBACK`].
+/// The active set, installed once at startup. Unset reads as [`FALLBACK`].
 static ACTIVE: OnceLock<Palette> = OnceLock::new();
 
 /// Installs this run's palette, once, before any render; later calls are ignored
-/// (`OnceLock`).
-///
-/// `bg` is the terminal's reported background, or `None` when it did not answer. When it
-/// is known both backgrounds step toward the opposite end of the lightness range (a
-/// raised surface on a dark theme, a lowered one on a light theme) so they stay in the
-/// theme's own family. When it is not, they stay `Reset` and nothing is painted.
-///
-/// `selection_bg` is `[ui] selection-style`, and it wins either way: a user who names a
-/// surface gets exactly it, whether or not the terminal answered.
-pub(crate) fn init(bg: Option<(u8, u8, u8)>, selection_bg: Option<Color>) {
-    let mut p = base();
-    if let Some(bg) = bg {
-        let (surface, bar_bg) = derive_backgrounds(bg);
-        p.surface = surface;
-        p.bar_bg = bar_bg;
-    }
-    if let Some(c) = selection_bg {
-        p.surface = c;
-    }
-    let _ = ACTIVE.set(p);
+/// (`OnceLock`). `selection_bg` is `[ui] selection-style` - the only colour xmux takes
+/// from outside the sixteen slots, because the user naming it is the one person who
+/// knows their own theme.
+pub(crate) fn init(selection_bg: Option<Color>) {
+    let _ = ACTIVE.set(Palette {
+        selection_bg,
+        ..base()
+    });
 }
 
-/// The `(surface, bar_bg)` pair for a terminal background: a 13% / 7% step
-/// toward white on a dark background, toward black on a light one - the surface
-/// visibly raised, the bar only set off.
-fn derive_backgrounds(bg: (u8, u8, u8)) -> (Color, Color) {
-    let (r, g, b) = bg;
-    let dark = (r as u32 + g as u32 + b as u32) / 3 < 128;
-    let toward = |c: u8, pct: i32| -> u8 {
-        let target: i32 = if dark { 255 } else { 0 };
-        (c as i32 + (target - c as i32) * pct / 100) as u8
-    };
-    let shift = |pct| Color::Rgb(toward(r, pct), toward(g, pct), toward(b, pct));
-    (shift(13), shift(7))
-}
-
-/// The active palette. The fallback until [`init_for_terminal_background`] runs.
+/// The active palette.
 pub(crate) fn get() -> &'static Palette {
     ACTIVE.get().unwrap_or(&FALLBACK)
 }
 
-/// Asks the terminal for its background over an OSC 11 round-trip. `None` when the
-/// terminal does not answer (an unsupported terminal, a timeout, a pipe). Must run
-/// BEFORE raw mode / the alternate screen: the query library manages the terminal
-/// itself. Lives here so the app and `xmux doctor` ask the same question the same way.
-pub(crate) fn query_terminal_background() -> Option<(u8, u8, u8)> {
-    // Channels are the full u16 range; the high byte is the 8-bit value.
-    terminal_colorsaurus::background_color(terminal_colorsaurus::QueryOptions::default())
-        .ok()
-        .map(|bg| ((bg.r >> 8) as u8, (bg.g >> 8) as u8, (bg.b >> 8) as u8))
-}
-
-/// A human line describing where the selection surface's colour comes from, for
-/// `xmux doctor`. `bg` is the terminal's reported background (`None` when it did not
-/// answer) and `selection_bg` is `[ui] selection-style`.
+/// The style the SELECTED card is painted with.
 ///
-/// Worth reporting because the answer is invisible from the screen: a terminal that
-/// answers gets a surface stepped out of its OWN background, one that does not gets no
-/// surface at all, and a configured colour overrides both. "My colours look wrong" has
-/// no other way to be told apart from "my theme is unusual".
-pub(crate) fn source_report(bg: Option<(u8, u8, u8)>, selection_bg: Option<Color>) -> String {
-    let reported = match bg {
-        Some((r, g, b)) => format!("terminal background: #{r:02x}{g:02x}{b:02x} (queried)"),
-        None => {
-            "terminal background: UNKNOWN (this terminal does not answer the query)".to_string()
-        }
-    };
-    // The override decides the surface outright, so it is stated instead of the
-    // derivation rather than after it.
-    if let Some(c) = selection_bg {
-        return format!(
-            "{reported} — selection surface set by [ui] selection-style: {}",
-            describe(c)
-        );
-    }
-    match bg {
-        Some(bg) => format!(
-            "{reported} — selection surface derived from it: {}",
-            describe(derive_backgrounds(bg).0)
-        ),
-        None => format!(
-            "{reported} — no selection surface is painted; name one with [ui] selection-style"
-        ),
+/// By default reverse video, and nothing else: the terminal swaps its own foreground and
+/// background, so the selection is as legible as that theme's own text and xmux picks no
+/// colour. The `fg`/`bg` are pinned to `Reset` first because the swap happens per CELL -
+/// left alone, a cyan session name would inverse into a cyan BACKGROUND and the card
+/// would come out striped in its level colours.
+///
+/// `[ui] selection-style` replaces the whole thing with that background, keeping the
+/// level colours on top, for a user who would rather have a surface.
+pub(crate) fn selection_style() -> Style {
+    selection_style_for(get().selection_bg)
+}
+
+/// [`selection_style`] as a function of the override alone, so a test can exercise both
+/// branches without installing a palette: `ACTIVE` is a process-wide `OnceLock`, and one
+/// test setting it would change what every other test in the binary renders.
+fn selection_style_for(selection_bg: Option<Color>) -> Style {
+    match selection_bg {
+        Some(bg) => Style::default().bg(bg),
+        None => Style::default()
+            .fg(Color::Reset)
+            .bg(Color::Reset)
+            .add_modifier(Modifier::REVERSED),
     }
 }
 
-/// A colour as a user would write it in config: `#rrggbb` for a true colour, the ANSI
-/// role's own name otherwise. `Color`'s `Debug` spells an RGB triple as
-/// `Rgb(45, 79, 107)`, which is not a value anyone can paste back.
+/// What `xmux doctor` says about the selected card's paint. The selection is the one
+/// place the palette takes an outside colour, and which of the two is in effect is
+/// invisible on a screenshot, so the doctor states it.
+pub(crate) fn selection_report(selection_bg: Option<Color>) -> String {
+    match selection_bg {
+        Some(c) => format!(
+            "selected card: {} (set by [ui] selection-style)",
+            describe(c)
+        ),
+        None => "selected card: reverse video (the terminal theme's own selected look)".to_string(),
+    }
+}
+
+/// A colour as a user would write it in config: `#rrggbb` for a true colour, the slot's
+/// own name otherwise. `Color`'s `Debug` spells an RGB triple as `Rgb(45, 79, 107)`,
+/// which is not a value anyone can paste back into `config.toml`.
 fn describe(c: Color) -> String {
     match c {
         Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
@@ -192,84 +159,68 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_report_says_where_the_surface_colour_came_from() {
-        // The whole point of the line: which of the three sources is in effect is
-        // invisible on screen, and it decides whether the card background follows the
-        // theme at all.
-        let queried = source_report(Some((0x1e, 0x1e, 0x2e)), None);
-        assert!(queried.contains("#1e1e2e"), "{queried}");
-        assert!(queried.contains("queried"), "{queried}");
-        let unknown = source_report(None, None);
-        assert!(unknown.contains("UNKNOWN"), "{unknown}");
-        assert!(
-            unknown.contains("no selection surface is painted"),
-            "says what it paints instead of naming a colour: {unknown}"
-        );
-        // An override decides the surface outright, so the line says so instead of
-        // still claiming nothing is painted - and it spells the colour the way config
-        // does, not as a Debug triple.
-        let named = source_report(None, Some(Color::Rgb(0x2d, 0x4f, 0x6b)));
-        assert!(named.contains("set by [ui] selection-style"), "{named}");
-        assert!(named.contains("#2d4f6b"), "{named}");
-        assert!(
-            !named.contains("no selection surface"),
-            "the override replaces that clause: {named}"
-        );
-    }
-
-    #[test]
-    fn an_unqueried_run_paints_no_surface_under_the_cards() {
-        // The defect this fixes: the surface sits UNDER text whose every hue is the
-        // theme's, so a fixed RGB is wrong on every theme it was not chosen for - and
-        // Windows Terminal answers no colour query, so the guess was the permanent state
-        // there rather than a rare fallback. The hint bar is a solid bar of chrome
-        // instead, so it keeps its fixed tone.
+    fn every_colour_xmux_chooses_is_an_ansi_slot() {
+        // THE invariant of this module. A `Color::Rgb`, or an `Indexed` above 15, is a
+        // hue xmux picked for somebody else's terminal: it cannot follow a theme, and it
+        // is wrong on every theme it was not picked for. Sixteen slots and attributes are
+        // the whole vocabulary.
         let p = base();
-        assert_eq!(p.surface, Color::Reset);
-        assert!(matches!(p.bar_bg, Color::Rgb(..)));
-    }
-
-    #[test]
-    fn a_named_selection_surface_wins_over_a_queried_one() {
-        // `init` is a `OnceLock`, so this exercises the composition directly rather than
-        // installing a palette a sibling test would then see.
-        let derived = derive_backgrounds((0x0c, 0x0c, 0x0c)).0;
-        assert_ne!(derived, Color::Blue);
-        // What `init` does with both inputs, spelled out: the queried step first, the
-        // configured colour over it.
-        let mut p = base();
-        let (surface, bar_bg) = derive_backgrounds((0x0c, 0x0c, 0x0c));
-        p.surface = surface;
-        p.bar_bg = bar_bg;
-        p.surface = Color::Blue;
-        assert_eq!(p.surface, Color::Blue);
-        assert_eq!(p.bar_bg, bar_bg, "the hint bar keeps its own derivation");
-    }
-
-    #[test]
-    fn derive_backgrounds_raises_on_dark_and_lowers_on_light() {
-        // A dark background steps toward white: surface farther than the bar.
-        let (surface, bar) = derive_backgrounds((0x0c, 0x0c, 0x0c));
-        assert_eq!(surface, Color::Rgb(0x2b, 0x2b, 0x2b));
-        assert_eq!(bar, Color::Rgb(0x1d, 0x1d, 0x1d));
-        // A light background steps toward black.
-        let (surface, bar) = derive_backgrounds((0xff, 0xff, 0xff));
-        assert_eq!(surface, Color::Rgb(0xde, 0xde, 0xde));
-        assert_eq!(bar, Color::Rgb(0xee, 0xee, 0xee));
-    }
-
-    #[test]
-    fn foreground_roles_are_ansi_indexed() {
-        // Every foreground role must stay an ANSI-16 colour so the terminal
-        // theme resolves the hue; only the two derived backgrounds may be RGB.
-        let p = base();
-        for c in [
-            p.accent, p.subtext, p.overlay, p.host, p.mux, p.window, p.session, p.pending, p.danger,
+        for (role, c) in [
+            ("accent", p.accent),
+            ("subtext", p.subtext),
+            ("overlay", p.overlay),
+            ("bar_bg", p.bar_bg),
+            ("bar_fg", p.bar_fg),
+            ("host", p.host),
+            ("mux", p.mux),
+            ("window", p.window),
+            ("session", p.session),
+            ("pending", p.pending),
+            ("danger", p.danger),
         ] {
-            assert!(
-                !matches!(c, Color::Rgb(..) | Color::Indexed(_)),
-                "{c:?} does not follow the terminal theme"
-            );
+            let ansi = match c {
+                Color::Rgb(..) => false,
+                Color::Indexed(n) => n < 16,
+                _ => true,
+            };
+            assert!(ansi, "{role} = {c:?} cannot follow the terminal theme");
         }
+        assert!(
+            p.selection_bg.is_none(),
+            "the only colour from outside the slots is one the USER named"
+        );
+    }
+
+    #[test]
+    fn the_default_selection_is_the_terminals_own_reverse_video() {
+        // No colour at all: the terminal swaps its own pair, so the selection is exactly
+        // as legible as that theme's text. `Reset` on both sides is what keeps the swap
+        // from striping the card in its level colours, cell by cell.
+        let s = selection_style_for(None);
+        assert!(s.add_modifier.contains(Modifier::REVERSED));
+        assert_eq!(s.fg, Some(Color::Reset));
+        assert_eq!(s.bg, Some(Color::Reset));
+    }
+
+    #[test]
+    fn the_report_says_which_of_the_two_paints_the_selection() {
+        // Invisible on a screenshot: a reverse-video row and a named-background row both
+        // just look "selected". So the doctor names the source, and spells a colour the
+        // way config does rather than as a Debug triple.
+        let d = selection_report(None);
+        assert!(d.contains("reverse video"), "{d}");
+        let named = selection_report(Some(Color::Rgb(0x2d, 0x4f, 0x6b)));
+        assert!(named.contains("[ui] selection-style"), "{named}");
+        assert!(named.contains("#2d4f6b"), "{named}");
+        assert!(!named.contains("reverse video"), "{named}");
+    }
+
+    #[test]
+    fn a_named_selection_style_is_a_plain_background() {
+        // A user who names a colour knows their own theme, so it is used as given - and
+        // without REVERSED, which would invert the very colour they asked for.
+        let s = selection_style_for(Some(Color::Blue));
+        assert_eq!(s.bg, Some(Color::Blue));
+        assert!(!s.add_modifier.contains(Modifier::REVERSED));
     }
 }

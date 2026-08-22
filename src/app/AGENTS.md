@@ -3,13 +3,13 @@
 ## Purpose
 
 `app` is the application orchestration layer: the app runtime that owns the
-terminal for the whole session (`runtime.rs`) plus the application UI-state
+terminal for the whole session (`runtime/`) plus the application UI-state
 machine it folds through (`focus.rs`). The app is the coordinator; `focus`
 is the focus/modal routing state it reads and mutates.
 
 ## Mental Model
 
-`runtime.rs` is a persistent supervisor. It keeps ONE real attached mux client
+`runtime/` is a persistent supervisor. It keeps ONE real attached mux client
 per session (a `tmux attach` / `psmux attach` in a `portable-pty` PTY, via the
 `AttachRegistry`) alive across selections and renders the SELECTED session's live
 `Grid` on the right. A separate control-mode client per remote host
@@ -29,13 +29,13 @@ pumped or a grid is rendered.
 
 ## Module Seams
 
-- `runtime.rs` owns the main event loop as a `Runtime` struct: `run_app` builds it,
+- `runtime/` owns the main event loop as a `Runtime` struct: `run_app` builds it,
   keeps the `select!` receivers/timers and the ratatui terminal as loop-locals, and
   drives a `select!` where each arm is one `&mut self` method. It calls
   `driver_for(host).show(sel, ctx)` for display and reads back the grid via
   `driver.grid`; it branches on nothing mux-specific. The canonical `Selection`
   (`source`/`session`/`window`) it reads lives in `src/model`.
-- `input.rs` holds the pure, stateless input-routing core (`resolve_tree_key`,
+- `input.rs` holds the pure, stateless input-routing core (`resolve_nav_key`,
   `resolve_mouse_chain`, the predicates, `MouseState`/`StdinOutcome`); the stateful
   handlers are `Runtime` methods that call into it.
 - `focus.rs` holds the focus/modal state (`Focus`, `ViewFocus`, `ModalKind`) and
@@ -60,7 +60,7 @@ pumped or a grid is rendered.
 - `Selection` (defined in `src/model`) is the canonical selected
   source/session/window value consumed by display selection and rendering.
 - The per-mux display decision lives in the `MuxDriver` implementation, never in
-  `runtime.rs`.
+  `runtime/`.
 - `focus` is the single source of truth for which view owns keys and which modal
   (if any) is open; focus and modal transitions stay in `focus.rs` — the app
   and `State` call into them rather than open-coding view/modal bookkeeping.

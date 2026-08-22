@@ -1,9 +1,9 @@
 # Keybindings
 
 Under the app (entered by running `xmux` with no arguments) the screen is split
-into two views: a **tree** of every reachable session on the left and the
+into two views: a **nav list** of every reachable session on the left and the
 selected session's **live screen** on the right. Keyboard focus is on one view
-at a time. You navigate the tree with the keys below; moving the selection
+at a time. You move down the list with the keys below; moving the selection
 switches the right view to that session in place. A tmux-style **prefix** gates
 the handful of commands that apply regardless of which view holds focus.
 
@@ -23,28 +23,30 @@ unrecognised falls back to `C-g`. The prefix is a single control byte, so it
 never collides with typed text, and a prefix pasted as data (bracketed paste) is
 passed through untouched rather than intercepted.
 
-## Tree navigation
+## Nav navigation
 
-These act on the tree while it holds focus.
+These act on the nav list while it holds focus. The list is flat (one card per
+session, most recently used first), so every key below moves along one axis.
 
 | Key | Action |
 |---|---|
-| `↑` / `↓` (or `k` / `j`) | move between siblings at the current level |
-| `→` / `l` | descend into the selected node's first child |
-| `←` / `h` | ascend to the parent node |
+| `↑` / `↓` (or `k` / `j`) | move one card (wraps at both ends) |
 | `PageUp` / `PageDown` | jump ten cards (wraps, like the arrows) |
-| `Home` / `End` | jump to the first / last node |
+| `Home` / `End` | jump to the first / last card |
 
-## Tree actions
+`←` and `→` move nothing here: a flat list has no level to descend into. `→` and
+`Enter` hand focus to the live screen instead.
+
+## Nav actions
 
 xmux aggregates and switches; it does not edit what a mux already edits. There is
 no rename, no kill, and no window or pane command — do those in the mux itself.
-Two actions remain. `/` filter needs tree focus; `prefix n` / `prefix r` also work
+Two actions remain. `/` filter needs nav focus; `prefix n` / `prefix r` also work
 while the live screen is focused:
 
 | Key | Action |
 |---|---|
-| `/` | fuzzy-filter the tree by `<source>/<name>` (no prefix) |
+| `/` | fuzzy-filter the list by `<source>/<name>` (no prefix) |
 | `prefix 0`-`prefix 9` | jump to a session by its number |
 | `prefix n` | start a new session on the selected host |
 | `prefix r` | re-scan every host |
@@ -69,15 +71,15 @@ Digits are prefix-gated, so a bare digit never jumps by accident.
 ## Prefix commands
 
 Press the prefix, then the command key. These behave identically whether the
-tree or the live screen holds focus.
+nav or the live screen holds focus.
 
 | Chord | Action |
 |---|---|
 | `prefix q` | quit xmux (the only quit binding) |
 | `prefix ?` | toggle the keybinding help |
 | `prefix t` | toggle auto-hide-nav (focusing the screen then gives it the full width) |
-| `prefix h` / `prefix l` | narrow / widen the tree |
-| `prefix Ctrl-←` / `prefix Ctrl-→` | narrow / widen the tree (then a bare `Ctrl-←`/`Ctrl-→` keeps resizing for a moment) |
+| `prefix h` / `prefix l` | narrow / widen the nav |
+| `prefix Ctrl-←` / `prefix Ctrl-→` | narrow / widen the nav (then a bare `Ctrl-←`/`Ctrl-→` keeps resizing for a moment) |
 | `prefix prefix` | send one literal prefix byte to the focused session's pane |
 
 ## The status line
@@ -100,10 +102,10 @@ refusal too long for the nav width wraps onto more rows rather than clipping.
 
 | Key | Action |
 |---|---|
-| `Enter` | move focus from the tree into the live screen |
-| `prefix Tab` | toggle focus between the tree and the live screen |
+| `Enter` | move focus from the nav into the live screen |
+| `prefix Tab` | toggle focus between the nav and the live screen |
 | `prefix →` | focus the live screen |
-| `prefix ←` / `prefix Esc` | focus the tree |
+| `prefix ←` / `prefix Esc` | focus the nav |
 
 When the live screen has focus, every key that is not a prefix chord is
 forwarded raw to the session's active pane, so programs running inside the mux
@@ -123,11 +125,10 @@ forwarded raw to the session's active pane, so programs running inside the mux
 
 | Gesture | Action |
 |---|---|
-| left-click a tree row | select that row (tree focused) |
+| left-click a card | select that card (nav focused) |
 | left-click a view | focus that view |
-| wheel over the tree | move the selection (tree focused) |
-| `Ctrl`+wheel over the tree | change the tree level — descend / ascend (tree focused) |
-| drag the view border | resize the tree |
+| wheel over the nav | move the selection (nav focused) |
+| drag the view border | resize the nav |
 | drag a modal's border | move the modal |
 
 There is no context menu: every action a right-click could offer is either a

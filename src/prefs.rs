@@ -1,5 +1,5 @@
 //! Persists lightweight, best-effort UI preferences across runs (the last-selected
-//! session address, the tree width and height, the auto-hide-nav mode). Every value is a hint
+//! session address, the nav width and height, the auto-hide-nav mode). Every value is a hint
 //! only — a stale, missing, or unparsable file falls back to the built-in default,
 //! so xmux stays stateless about sessions themselves.
 
@@ -8,7 +8,7 @@ use std::path::Path;
 /// The file under the xmux dir holding the last-selected session address.
 const LAST_SESSION_FILE: &str = "last_session";
 
-/// The file under the xmux dir holding the tree view width the user last set
+/// The file under the xmux dir holding the nav view width the user last set
 /// with `prefix h`/`l`, so the next launch restores it instead of the default.
 const NAV_WIDTH_FILE: &str = "nav_width";
 

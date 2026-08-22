@@ -127,16 +127,17 @@ impl ViewBorderColors {
     }
 }
 
-/// The hint bar's built-in default style: a quiet bar on the active palette's
-/// `bar_bg` background with `subtext` text, so the cheatsheet reads as chrome
-/// rather than shouting over the content.
+/// The hint bar's built-in default style: the active palette's `bar_bg` background with
+/// `bar_fg` text - two ANSI slots, so the theme resolves both and the pair stays legible
+/// on any theme that keeps its own slots legible. It reads as chrome rather than
+/// shouting over the content.
 /// Key tokens get the accent on top of this (see [`Chrome::hint_bar_spans`] - only
 /// while this default is in effect, so a `[ui] hint-bar-style` override keeps its
 /// exact colours). Used when `[ui] hint-bar-style` is unset.
 pub(crate) fn hint_bar_default_style() -> Style {
     Style::default()
         .bg(crate::ui::palette::get().bar_bg)
-        .fg(crate::ui::palette::get().subtext)
+        .fg(crate::ui::palette::get().bar_fg)
 }
 
 /// Parses a `[ui] hint-bar-style` spec into the hint bar [`Style`]. Empty ⇒ the
@@ -163,8 +164,8 @@ pub(crate) fn parse_hint_bar_style(spec: &str) -> Style {
 }
 
 /// Parses a `[ui] selection-style` spec into the selected card's background. Empty ⇒
-/// `None`, leaving the surface to the terminal's reported background (and to nothing at
-/// all when the terminal reports none). Accepts the same colour vocabulary as the view
+/// `None`, leaving the selection to reverse video - the terminal theme's own selected
+/// look, and xmux's default. Accepts the same colour vocabulary as the view
 /// border ([`map_color`]): `bg=<colour>`, or a bare colour token, since a selection
 /// surface IS a background and naming it twice would be noise. A `fg=` token is
 /// ignored - the card's text keeps its per-level roles.
@@ -182,7 +183,7 @@ pub(crate) fn parse_selection_bg(spec: &str) -> Option<Color> {
 }
 
 /// The hint bar's refusal style: a solid danger-red bar (the active palette's
-/// `danger` as the background, the `bar_bg` tone as the text) that breaks hard
+/// `danger` as the background, the bar's own text slot on top) that breaks hard
 /// from the calm default so a refused action reads as an
 /// error at a glance, not as more of the key cheatsheet. Every flash today is a
 /// refusal, so a shown flash always paints this. Fixed, not configurable: an
@@ -190,7 +191,7 @@ pub(crate) fn parse_selection_bg(spec: &str) -> Option<Color> {
 pub(crate) fn error_flash_style() -> Style {
     Style::default()
         .bg(crate::ui::palette::get().danger)
-        .fg(crate::ui::palette::get().bar_bg)
+        .fg(crate::ui::palette::get().bar_fg)
 }
 
 /// The switcher's chrome view state: the view border/hint_bar/host-info draws and

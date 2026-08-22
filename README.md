@@ -4,8 +4,8 @@
 
 xmux is a persistent, terminal-owning supervisor written in Rust. It owns the
 terminal you launch it in, keeps its live mux attachments running, and renders
-a split view: a **tree** of every reachable session on the left, the selected
-session's **live screen** on the right. Move through the tree and the right pane
+a split view: a **nav list** of every reachable session on the left, the selected
+session's **live screen** on the right. Move down the list and the right pane
 switches to that session in place, whether it's a local psmux session, a tmux
 session over ssh, or a zellij session on a third machine. No detaching and
 reattaching, no picker to click through.
@@ -16,8 +16,9 @@ sessions from one terminal.
 
 ## Features
 
-- **One tree over every host.** Hosts → sessions → windows → panes, local and
-  over ssh, in a single view. Hosts are auto-discovered from your
+- **One list over every host.** One card per session, local and over ssh, in a
+  single view, ordered by how recently you were in it. Each card names the host, the
+  mux serving it, and the session's focused window. Hosts are auto-discovered from your
   `~/.ssh/config`.
 - **In-place cross-host switching.** Selecting a session on another machine
   re-attaches to it within the same terminal window; selecting another session
@@ -31,7 +32,7 @@ sessions from one terminal.
   transport, without either knowing about the other.
 - **Metadata without polling where it counts.** tmux hosts are tracked over
   control mode (`-CC`); psmux and zellij hosts are polled, because neither offers a
-  push channel. Either way the tree reflects the servers, which remain the source of
+  push channel. Either way the nav list reflects the servers, which remain the source of
   truth.
 - **Switching, not editing.** Navigate, filter, jump by number, and start a
   session on an empty host. Renaming, killing, and window/pane work stay in the mux that already does
@@ -66,7 +67,7 @@ configuration.
 Run xmux with no arguments to open the interactive split view:
 
 ```sh
-xmux                          # the interactive tree + live-screen app
+xmux                          # the interactive nav + live-screen app
 xmux ls                       # list every reachable session (scriptable)
 xmux attach <source>/<name>   # attach one session directly, e.g. xmux attach prod/api
 xmux doctor                   # check config and per-host reachability
@@ -77,7 +78,7 @@ xmux version
 
 ### In the app
 
-The left pane is the tree; the right pane shows the selected session's live
+The left pane is the nav list; the right pane shows the selected session's live
 screen. Keyboard focus is on one region at a time.
 
 **Tree navigation:**
@@ -91,11 +92,11 @@ screen. Keyboard focus is on one region at a time.
 | `Enter` | move focus into the selected session's live screen |
 | `prefix 0`-`prefix 9` | jump to a session by the number in its gutter (keep typing for 10+) |
 | `prefix n` | start a new session on the selected host |
-| `/` | fuzzy-filter the tree |
+| `/` | fuzzy-filter the list |
 | `prefix r` | re-scan every host |
 
 The mouse works too: click a row to select it, click the right pane to focus it,
-and scroll the wheel over the tree.
+and scroll the wheel over the list.
 
 **Prefix keys.** xmux has its own prefix, like tmux's `set -g prefix`. The
 default is `Ctrl-g`, configurable via `[ui] prefix` (see below). Press the
@@ -106,8 +107,8 @@ prefix, then:
 | `prefix q` | quit xmux |
 | `prefix ?` | toggle the keybinding help |
 | `prefix t` | toggle auto-hide-nav (focusing the screen gives it full width) |
-| `prefix h` / `prefix l` (or `prefix Ctrl-←/→`) | narrow / widen the tree |
-| `prefix Tab` / arrow / `Esc` | move focus between the tree and the screen |
+| `prefix h` / `prefix l` (or `prefix Ctrl-←/→`) | narrow / widen the nav |
+| `prefix Tab` / arrow / `Esc` | move focus between the nav and the screen |
 | `prefix prefix` | send one literal prefix byte to the focused session |
 
 The nav's bottom row is its status line. At rest it shows just the prefix; press the
@@ -179,7 +180,7 @@ mux = "auto"          # "auto" (default): psmux on Windows, tmux elsewhere.
 ssh = "prod"          # an ssh-config alias
 mux = "tmux"          # defaults to "tmux" when omitted
 
-# Hide these ssh aliases from the tree.
+# Hide these ssh aliases from the nav.
 exclude = ["bastion"]
 
 [ui]
@@ -188,10 +189,9 @@ auto-hide-nav = false                # initial auto-hide-nav state
 view-active-border-style = "green"    # focused view-border colour (tmux colour vocabulary)
 view-border-style = "default"         # unfocused view-border colour
 view-border-hover-style = "yellow"    # drag-to-resize hover cue
-hint-bar-style = "bg=blue,fg=white"   # hint bar colour (tmux status-style; empty = the built-in dark bar)
-selection-style = "#2d4f6b"           # the selected card's background. Empty (default): derived from
-                                      # the background your terminal reports, and NOTHING is painted
-                                      # when it reports none - the accent bar carries the selection.
+hint-bar-style = "bg=blue,fg=white"   # hint bar colour (tmux status-style; empty = the built-in bar)
+selection-style = "#2d4f6b"           # the selected card's background. Empty (default): reverse video,
+                                      # your terminal theme's own selected look.
 ```
 
 Hosts come from `~/.ssh/config` first. Connection details (user, port, key,
@@ -209,7 +209,7 @@ Sessions are addressed `<source>/<session>`.
 
 It speaks navigation/display verbs — `ping`, `status`, `dump`, `rescan`,
 `switch <source>/<session>`, `focus <nav|terminal>`, `width <delta>` (adjusts the
-tree width by a signed column count, a delta rather than an absolute width),
+nav width by a signed column count, a delta rather than an absolute width),
 `toggle-auto-hide`, `quit` — and one session-lifecycle verb,
 `new-session <source> [name]`. There are no kill/rename/window verbs, for the same
 reason the keys are gone: the mux owns editing a session. An unstable `raw:`
