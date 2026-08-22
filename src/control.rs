@@ -256,7 +256,7 @@ pub enum CtlRequest {
 /// keystroke surface is `raw:key` / `raw:keys` / `raw:text`. Anything else is
 /// `Unknown` (the dispatcher replies `err: ...`). ctl speaks the DOMAIN here, not
 /// internal key names (C-CTL): the wire never references an input Action/KeyCode
-/// again. A session is addressed `<source>/<session>` (as `switch` and the tree
+/// again. A session is addressed `<source>/<session>` (as `switch` and the nav
 /// use). There are no kill/rename/window verbs: xmux aggregates and switches, so
 /// editing a session stays with the mux that owns it.
 pub fn parse_ctl_op(line: &str) -> CtlRequest {
@@ -277,7 +277,7 @@ pub fn parse_ctl_op(line: &str) -> CtlRequest {
             None => unknown(),
         },
         "width" => match req.arg.trim().parse::<i32>() {
-            Ok(d) => CtlRequest::Op(Action::TreeWidth(d)),
+            Ok(d) => CtlRequest::Op(Action::NavWidth(d)),
             Err(_) => unknown(),
         },
         // Session lifecycle. Each maps to the SAME domain `Action` a keypress
@@ -511,7 +511,7 @@ mod tests {
         assert_eq!(parse_ctl_op("quit"), CtlRequest::Op(Action::Quit));
         assert_eq!(
             parse_ctl_op("width -2"),
-            CtlRequest::Op(Action::TreeWidth(-2))
+            CtlRequest::Op(Action::NavWidth(-2))
         );
         assert_eq!(
             parse_ctl_op("toggle-auto-hide"),

@@ -51,16 +51,16 @@ impl Runtime {
         match effect {
             EventEffect::ApplyInventory { host, sessions } => {
                 // The reader carried the parsed sessions on the event. Fold them into the
-                // single owner (`model::Host.inventory`), apply them to the tree, request
+                // single owner (`model::Host.inventory`), apply them to the nav, request
                 // each session's panes, and sync the display PTY(s). Pane subtrees arrive
                 // separately as `HostEvent::Panes` (applied purely by `apply_event`).
                 if let Some(h) = hosts.get_mut(&host) {
                     h.inventory.sessions = sessions.clone();
                 }
-                // Act on the tree/terminals ONLY while the host still has a live client.
+                // Act on the nav/terminals ONLY while the host still has a live client.
                 // Per-host FIFO delivers this inventory before the host's `Exited`/reap, so
                 // `mgr.get` is normally `Some` here; the gate is the backstop that keeps a
-                // broken ordering from reviving a reaped host in the tree
+                // broken ordering from reviving a reaped host in the nav
                 // (`apply_source_result`) or resyncing its dead terminals. (`ApplyInventory`
                 // is emitted only for control-mode hosts, so a poll host is never gated out.)
                 if mgr.get(&host).is_some() {
@@ -89,14 +89,14 @@ impl Runtime {
             }
             EventEffect::Refetch { host } => {
                 // The server's session/window structure changed (a `%`-notification).
-                // Refetch so the tree, panes, and PTY set resync (#5 tree view sync).
+                // Refetch so the nav, panes, and PTY set resync (#5 nav view sync).
                 refetch_host(mgr, panes_requested, &host);
             }
             EventEffect::ProbeActiveWindow { host, session_ref } => {
                 // A session's ACTIVE WINDOW switched — the structure did NOT change, so do
                 // NOT refetch the whole inventory: a full list-sessions + per-session
                 // list-panes per change storms the single-threaded loop and freezes the UI
-                // during rapid window navigation (each tree step issues select-window,
+                // during rapid window navigation (each nav step issues select-window,
                 // which echoes back as this notification). Probe ONLY the session the
                 // notification names (its tmux id, `session_ref`) — never a guessed displayed
                 // session; the reply (Focus) resolves the session name + new active window
@@ -177,7 +177,7 @@ impl Runtime {
                 dispatch_detected_host(mgr, hosts, &source, vc, vr);
             }
             EventEffect::SyncPollSessions { source, sessions } => {
-                // A poll host's SUCCESSFUL enumeration (the tree group is already applied).
+                // A poll host's SUCCESSFUL enumeration (the nav group is already applied).
                 // The `poll enum` debug line is logged UNCONDITIONALLY at the producer
                 // (`run_poll`), where `err` is in hand — `apply_event` drops the error path
                 // before reaching here, so logging here would only ever see successes.
@@ -228,14 +228,14 @@ impl Runtime {
     pub(super) fn new(env: Arc<Env>) -> (Runtime, LoopIo) {
         let size = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
         let (cols, body_rows) = (size.0, size.1.saturating_sub(1)); // status bar = last row
-                                                                    // Restore the natural tree width the user last set; clamp a stale out-of-range
+                                                                    // Restore the natural nav width the user last set; clamp a stale out-of-range
                                                                     // value, fall back to the default when none is saved.
         let nav_width_natural = adjust_nav_width(
             crate::prefs::load_nav_width(&env.xmux_dir).unwrap_or(crate::ui::switcher::NAV_WIDTH),
             0,
         );
         let nav_width = nav_width_natural;
-        // Restore the Top-layout tree height (0 = auto ~40%); a stale value is clamped at
+        // Restore the Top-layout nav height (0 = auto ~40%); a stale value is clamped at
         // render time by compute_regions, so no clamp is needed here.
         let nav_height = crate::prefs::load_nav_height(&env.xmux_dir).unwrap_or(0);
         let auto_hide_nav = crate::prefs::load_auto_hide_nav(&env.xmux_dir)
@@ -263,7 +263,7 @@ impl Runtime {
         );
 
         // The app's runtime state (single source of truth), seeded from the host ids;
-        // events stream the tree in.
+        // events stream the nav in.
         let mut state = crate::state::State::from_sources(hosts.ids().to_vec());
         let switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
         // Feed the switcher the ssh config so an unreachable host's info panel can show
@@ -292,11 +292,11 @@ impl Runtime {
                 &env.cfg.ui.hint_bar_style,
             ));
 
-        // The live mutate ops (create/rename/kill) — NOT tree probing.
+        // The live mutate ops (create/rename/kill) — NOT nav probing.
         let ops = env.ops();
         let prefix = crate::display::term::parse_prefix(Some(&env.ui_prefix));
         let term_input = crate::display::input::TermInput::new(prefix);
-        let tree_decoder = crate::display::decode::KeyDecoder::new();
+        let nav_decoder = crate::display::decode::KeyDecoder::new();
         let (op_tx, op_rx) = tokio::sync::mpsc::unbounded_channel();
         let (border_tx, border_rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -326,7 +326,7 @@ impl Runtime {
             auto_hide_nav,
             mouse_state: MouseState::default(),
             term_input,
-            tree_decoder,
+            nav_decoder,
             prefix,
             connected: HashSet::new(),
             panes_requested: HashSet::new(),
@@ -374,7 +374,7 @@ impl Runtime {
         }
     }
 
-    /// The loop top: advance the spinner, reconcile the modal/tree-width, run the `r`
+    /// The loop top: advance the spinner, reconcile the modal/nav-width, run the `r`
     /// reattach-kick, follow the active window in terminal focus, sync the selection,
     /// drive one debounce beat (the settled attach), flush the debounced width persist,
     /// then draw the gated frame. `term` is the loop-local ratatui terminal.
@@ -392,7 +392,7 @@ impl Runtime {
         // the modal/view reconciliation).
         let modal_kind = self.state.modal_kind();
         self.state.focus.sync_modal(modal_kind);
-        // The single owner of the effective tree width: reconcile it to the focus + the
+        // The single owner of the effective nav width: reconcile it to the focus + the
         // hide setting + any natural-width change. On a change, resize the PTYs so the
         // mux reflows, and mark dirty.
         let want_nav_width = reconciled_nav_width(
@@ -438,7 +438,7 @@ impl Runtime {
             });
         }
         if sync_selection_from_switcher(&mut self.state, &self.switcher) {
-            // The selection moved → the tree needs a redraw. The attach is NOT issued
+            // The selection moved → the nav needs a redraw. The attach is NOT issued
             // here; the Tick below arms the debounce, re-armed on every move.
             self.dirty = true;
         }
@@ -500,7 +500,7 @@ impl Runtime {
                     // commands or a session-lifecycle RunOp.
                     crate::model::Command::SelectAddress(_)
                     | crate::model::Command::Rescan
-                    | crate::model::Command::AdjustTreeWidth(_)
+                    | crate::model::Command::AdjustNavWidth(_)
                     | crate::model::Command::ToggleAutoHide
                     | crate::model::Command::RunOp(_)
                     | crate::model::Command::Quit => {}
@@ -508,7 +508,7 @@ impl Runtime {
             }
         }
 
-        // Flush the debounced tree-width persist once the resize burst settles.
+        // Flush the debounced nav-width persist once the resize burst settles.
         if self.width_dirty
             && self
                 .width_flush_at
@@ -541,7 +541,7 @@ impl Runtime {
             }
         }
 
-        // Draw the split (tree + selected session's live grid). GATED — redraw only when
+        // Draw the split (nav + selected session's live grid). GATED — redraw only when
         // something changed AND at most once per frame, so rapid navigation / a busy PTY
         // cannot flood the terminal.
         if self.dirty && self.last_draw.elapsed() >= Duration::from_millis(FRAME_MS) {
@@ -668,7 +668,7 @@ impl Runtime {
         pty_rx: &mut tokio::sync::mpsc::UnboundedReceiver<PtyEvent>,
     ) {
         // Capture the viewed attach id BEFORE any reap removes it; a background session
-        // dropping (tree focus, or a non-displayed attach) is just reaped.
+        // dropping (nav focus, or a non-displayed attach) is just reaped.
         let displayed_attach_id = (self.state.focus.is_terminal_focused()
             && !self.state.selection.is_empty())
         .then(|| {
@@ -939,14 +939,14 @@ impl Runtime {
     }
 
     /// Whether the prefix is armed, in EITHER focus: the nav path latches it on
-    /// `mouse_state.tree_armed`, the terminal path inside `TermInput`. The hint bar asks
+    /// `mouse_state.nav_armed`, the terminal path inside `TermInput`. The hint bar asks
     /// one question ("is a command key expected?"), so the two latches are OR'd here
     /// rather than making the chrome know about focus.
     pub(super) fn armed(&self) -> bool {
-        self.mouse_state.tree_armed || self.term_input.is_armed()
+        self.mouse_state.nav_armed || self.term_input.is_armed()
     }
 
-    /// The op-result arm: fold a finished create back into the tree/state.
+    /// The op-result arm: fold a finished create back into the nav/state.
     pub(super) fn on_op_result(&mut self, result: crate::ui::switcher::OpResult) {
         self.switcher.apply_op_result(result, &mut self.state);
     }

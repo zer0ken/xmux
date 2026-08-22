@@ -3,16 +3,16 @@
 //! `psmux attach` running inside a `portable-pty` PTY ([`AttachRegistry`]) - alive
 //! across selections, and renders the SELECTED session's live `Grid` on the right.
 //! A separate control-mode client per remote host ([`HostManager`]) supplies the
-//! tree view inventory, mux-side change events, and programmatic `select-window`;
+//! nav view inventory, mux-side change events, and programmatic `select-window`;
 //! local psmux is enumerated/polled with plain commands (it is one-server-per-
 //! session, so a host-level control client cannot see across its sessions).
 //!
 //! State is explicit: [`Selection`] (the canonical `source`/`session`/`window`) is
-//! the single source of truth the display reads - the `Switcher` owns only the tree
+//! the single source of truth the display reads - the `Switcher` owns only the nav
 //! and selection. One `select!` loop interleaves stdin, host events, PTY events, the
 //! control socket, terminal resize, and an animation tick. ratatui owns stdout and
-//! draws the SAME split (tree + selected PTY grid) in both focus states - Focus::Nav
-//! (tree focused) and Focus::Terminal (terminal focused) differ only in the view border
+//! draws the SAME split (nav + selected PTY grid) in both focus states - Focus::Nav
+//! (nav focused) and Focus::Terminal (terminal focused) differ only in the view border
 //! colour and where keys go, so toggling focus needs no screen clear.
 
 use std::collections::{HashMap, HashSet};
@@ -59,7 +59,7 @@ const RECONNECT_MS: u64 = 2000;
 pub(crate) const NAV_WIDTH_MIN: u16 = 20;
 pub(crate) const NAV_WIDTH_MAX: u16 = 100;
 
-/// The Top-layout tree height drag range. The min keeps a few tree rows; compute_regions
+/// The Top-layout nav height drag range. The min keeps a few nav rows; compute_regions
 /// clamps the max down to the body so the terminal always keeps room.
 pub(crate) const NAV_HEIGHT_MIN: u16 = 3;
 pub(crate) const NAV_HEIGHT_MAX: u16 = 100;
@@ -68,12 +68,12 @@ pub(crate) const NAV_HEIGHT_MAX: u16 = 100;
 /// passed to the `Runtime` methods that draw / resize / dump.
 type Term = ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>;
 
-/// How long the resize-repeat window stays open after a prefix-driven tree resize:
+/// How long the resize-repeat window stays open after a prefix-driven nav resize:
 /// during it a bare Ctrl+←/→ (no prefix) keeps resizing and refreshes the window -
-/// tmux's `bind -r` repeat applied to the tree width. Each repeat resets the window.
+/// tmux's `bind -r` repeat applied to the nav width. Each repeat resets the window.
 const RESIZE_REPEAT_MS: u64 = 400;
 
-/// How long after the last resize tick before the debounced tree-width persist fires.
+/// How long after the last resize tick before the debounced nav-width persist fires.
 /// Longer than `RESIZE_REPEAT_MS` so a held Ctrl-arrow autorepeat burst persists once
 /// at the end, not per tick.
 const WIDTH_FLUSH_MS: u64 = 400;
@@ -82,7 +82,7 @@ fn adjust_nav_width(w: u16, delta: i32) -> u16 {
     (w as i32 + delta).clamp(NAV_WIDTH_MIN as i32, NAV_WIDTH_MAX as i32) as u16
 }
 
-/// Adjusts the natural tree width by `wd`, clamped to the allowed range. Returns
+/// Adjusts the natural nav width by `wd`, clamped to the allowed range. Returns
 /// true if the width actually changed (so the loop can schedule a debounced
 /// persist). A zero delta or a clamp-noop returns false. Write-free: the loop
 /// owns the single persist.
@@ -99,7 +99,7 @@ fn apply_width_delta(wd: i32, natural: &mut u16) -> bool {
 }
 
 /// Flips the auto-hide-nav mode and persists it, so the next launch restores it.
-/// Shared by the tree- and terminal-view focus `prefix t` paths. The effective tree width is
+/// Shared by the nav- and terminal-view focus `prefix t` paths. The effective nav width is
 /// reconciled at the next loop top (`reconciled_nav_width`); the caller marks dirty.
 fn toggle_auto_hide(mode: &mut bool, xmux_dir: &std::path::Path) {
     *mode = !*mode;
@@ -111,7 +111,7 @@ fn toggle_auto_hide(mode: &mut bool, xmux_dir: &std::path::Path) {
 /// `display::dispatch::Action::as_action`) and a ctl command resolve through, so the two
 /// surfaces can never take divergent effect. Returns `(quit, width_changed)`: `quit`
 /// signals the loop to exit; `width_changed` signals the loop to schedule the debounced
-/// tree-width persist. `Switch` only moves the selection (a `SelectAddress` command); the
+/// nav-width persist. `Switch` only moves the selection (a `SelectAddress` command); the
 /// loop-top `Tick`/`select_attach` commits the attach on a later pass.
 ///
 /// Only the synchronous, registry-free commands arise here - `Attach`/
@@ -150,7 +150,7 @@ fn dispatch_action(
 }
 
 /// Runs the [`Command`]s an [`Action`] produced - the sole dispatcher of the
-/// synchronous, registry-free effects. `SelectAddress`/`Rescan`/`AdjustTreeWidth`/
+/// synchronous, registry-free effects. `SelectAddress`/`Rescan`/`AdjustNavWidth`/
 /// `ToggleAutoHide`/`Quit` act on the switcher/width/loop here; `RunOp` is spawned
 /// off-loop against the live mux (its `OpResult` folds back through `op_tx`, the
 /// existing channel). `Attach`/`PersistLastSession` arise only from `Action::Tick`,
@@ -178,7 +178,7 @@ fn dispatch_commands(
             Command::Rescan => {
                 switcher.request_rescan(state);
             }
-            Command::AdjustTreeWidth(d) => {
+            Command::AdjustNavWidth(d) => {
                 if apply_width_delta(d, nav_width_natural) {
                     width_changed = true;
                 }
@@ -248,9 +248,9 @@ fn self_tty() -> String {
     }
 }
 
-/// The EFFECTIVE tree width to render and size the terminal view against. Hidden (0, terminal view
+/// The EFFECTIVE nav width to render and size the terminal view against. Hidden (0, terminal view
 /// full width) only while the terminal view is focused AND auto-hide-nav mode is on;
-/// otherwise the tree's natural width. Pure so the focus/mode interaction is
+/// otherwise the nav's natural width. Pure so the focus/mode interaction is
 /// unit-testable; the loop owns the natural width and the PTY resize on change.
 fn reconciled_nav_width(terminal_focused: bool, auto_hide_nav: bool, natural: u16) -> u16 {
     if terminal_focused && auto_hide_nav {
@@ -338,7 +338,7 @@ fn selection_from_target(t: &TerminalViewTarget) -> Selection {
 /// the single mutation site as [`Action::Select`] - which records the new selection
 /// and marks the attach pending. It arms NO deadline; the trailing [`Action::Tick`]
 /// arms the debounce (re-armed on every move, so rapid navigation coalesces into one
-/// trailing attach). Returns true when the selection changed (the tree needs a redraw).
+/// trailing attach). Returns true when the selection changed (the nav needs a redraw).
 ///
 /// The switcher selection is the selection authority; this routes the derived value
 /// through `apply` as an intent rather than mutating `state` directly, so a selection
@@ -358,12 +358,12 @@ fn sync_selection_from_switcher(
     true
 }
 
-/// The size to give a PTY attachment: the terminal view (right of the tree +
+/// The size to give a PTY attachment: the terminal view (right of the nav +
 /// view border), NOT the whole terminal. Sizing a session to the full terminal makes
 /// the remote wrap at a width wider than the visible view, so a line overflows the
 /// right edge (and a double-width char straddles the clip boundary). The view width
-/// is `cols - nav_width - 1` (tree + the single view border rule), except `nav_width == 0`
-/// (the tree-hidden sentinel) gives the full `cols` with no view border. The hint bar
+/// is `cols - nav_width - 1` (nav + the single view border rule), except `nav_width == 0`
+/// (the nav-hidden sentinel) gives the full `cols` with no view border. The hint bar
 /// lives INSIDE the nav region, so it costs the terminal view no height in `Side`: the
 /// view gets the full `body_rows + 1`. In `Top` the terminal view is what is left below
 /// the nav band. Both clamp to at least 1.
@@ -376,8 +376,8 @@ pub(crate) fn terminal_view_size(
     // Derive from the one shared geometry (`compute_regions`) so the PTY size always
     // matches what the renderer draws, in either layout. `body_rows` is full_height - 1,
     // so the full area is `body_rows + 1` tall; sizing assumes a one-row hint bar inside
-    // the nav. A portrait area stacks the tree on top and shrinks the terminal view
-    // height accordingly; `nav_width == 0` gives the full area (tree hidden).
+    // the nav. A portrait area stacks the nav on top and shrinks the terminal view
+    // height accordingly; `nav_width == 0` gives the full area (nav hidden).
     let area = ratatui::layout::Rect::new(0, 0, cols, body_rows.saturating_add(1));
     let t = crate::ui::switcher::compute_regions(area, nav_width, nav_height, 1).terminal;
     (t.width.max(1), t.height.max(1))
@@ -572,7 +572,7 @@ fn sync_source_terminals(
 }
 
 /// Connects the host the selection is on (if not already + detected), so its metadata
-/// channel streams that host's tree in. The manager picks the channel (control client
+/// channel streams that host's rows in. The manager picks the channel (control client
 /// vs poll task) from the host's `event_source`; an undetected host is skipped until a
 /// detection probe resolves its mux.
 fn ensure_current_host(
@@ -706,7 +706,7 @@ fn kick_rescan(
     }
 }
 
-/// Starts each host's first scan at startup, so each host's tree streams in without
+/// Starts each host's first scan at startup, so each host's rows stream in without
 /// waiting for a selection move. Control hosts connect a `-CC` client; poll hosts start
 /// their self-looping enumeration task - both owned by the manager. PTYs are attached
 /// as each source's sessions arrive (see [`sync_source_terminals`]).
@@ -745,8 +745,8 @@ fn request_session_panes(
 
 /// Refetches a host's inventory after a `%`-change notification: clears its
 /// pane-request dedup so every session re-lists, then re-runs list-sessions - its
-/// reply (Connected/Inventory) re-applies the tree, re-requests panes, and re-syncs
-/// the PTY set (a new session attaches, a closed one is reaped). #5 tree view sync.
+/// reply (Connected/Inventory) re-applies the nav, re-requests panes, and re-syncs
+/// the PTY set (a new session attaches, a closed one is reaped). #5 nav view sync.
 fn refetch_host(mgr: &HostManager, panes_requested: &mut HashSet<String>, host: &str) {
     if let Some(client) = mgr.get(host) {
         let prefix = format!("{host}/");
@@ -794,7 +794,7 @@ fn clear_display_tty_for_attach(
 }
 
 /// Handles a remote host's control client dying. A host that had connected keeps its
-/// last-known tree. A never-connected host that died with "no sessions" / "no server
+/// last-known rows. A never-connected host that died with "no sessions" / "no server
 /// running" is REACHABLE but has no mux server - it renders "(empty)" (and a session
 /// can be created there), NOT "⚠". Any other never-connected death is a real
 /// transport failure and renders "⚠". Returns `true` only when it marked the host
@@ -807,7 +807,7 @@ pub(crate) fn note_host_exited(
     reason: Option<String>,
 ) -> bool {
     // Clear the connected mark so this host is no longer pinned to "keep last-known
-    // tree". A transient drop of a once-connected host keeps its tree (no unreachable
+    // rows". A transient drop of a once-connected host keeps its rows (no unreachable
     // flash) on THIS exit; but a later reconnect that fails (no sessions / unreachable)
     // must then resolve its real state - otherwise a refresh that set it scanning would
     // spin on "loading…" forever, since a sticky `connected` made every exit a no-op.
@@ -1032,7 +1032,7 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
 
     // A resize within the last WIDTH_FLUSH_MS before quit leaves the debounce deadline
     // unreached, so the final width is still pending - persist it on the way out so the
-    // tree width the user left with survives the next launch.
+    // nav width the user left with survives the next launch.
     if rt.width_dirty {
         crate::prefs::save_nav_width(&rt.env.xmux_dir, rt.nav_width_natural);
     }
@@ -1066,11 +1066,11 @@ struct Runtime {
     op_tx: tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
     cols: u16,
     body_rows: u16,
-    /// The EFFECTIVE tree width (0 = tree hidden, terminal full width).
+    /// The EFFECTIVE nav width (0 = nav hidden, terminal full width).
     nav_width: u16,
-    /// The tree's natural width (what prefix h/l adjusts; restored when shown again).
+    /// The nav's natural width (what prefix h/l adjusts; restored when shown again).
     nav_width_natural: u16,
-    /// The Top-layout tree height, set by dragging the horizontal view border or the resize
+    /// The Top-layout nav height, set by dragging the horizontal view border or the resize
     /// keys. 0 = auto (~40% of the body). Only used in the portrait Top layout; ignored in Side.
     nav_height: u16,
     /// The `nav_height` last applied to the PTY sizes, so the loop-top reconcile resizes the
@@ -1080,7 +1080,7 @@ struct Runtime {
     auto_hide_nav: bool,
     mouse_state: MouseState,
     term_input: crate::display::input::TermInput,
-    tree_decoder: crate::display::decode::KeyDecoder,
+    nav_decoder: crate::display::decode::KeyDecoder,
     prefix: u8,
     connected: HashSet<String>,
     panes_requested: HashSet<String>,

@@ -9,7 +9,7 @@
 //!
 //! `Action` is the DOMAIN vocabulary, distinct from `display::dispatch::Action` (the
 //! app's raw-byte input vocabulary, which projects INTO this via `as_action`).
-//! The display/navigation intents (Switch/Focus/Rescan/TreeWidth/ToggleAutoHide/Quit),
+//! The display/navigation intents (Switch/Focus/Rescan/NavWidth/ToggleAutoHide/Quit),
 //! the selection/attach-debounce intents (`Select`/`Tick`), and the one async
 //! session-lifecycle intent (`CreateSession`) all live here. A lifecycle intent folds
 //! into a [`Command::RunOp`] carrying the [`MuxOp`] descriptor the run loop runs
@@ -35,17 +35,17 @@ pub enum Action {
     /// address. Moves the selection; the attach commits on a later `Tick` once the
     /// selection settles.
     Switch { address: String },
-    /// Move focus between the tree view and the terminal view.
+    /// Move focus between the nav view and the terminal view.
     Focus(FocusTarget),
-    /// Flip the view focus (Tree ⇄ Terminal) - produced only by a left click on the
+    /// Flip the view focus (Nav ⇄ Terminal) - produced only by a left click on the
     /// unfocused view. (Prefix-key focus moves resolve to a DIRECTED `Focus` instead.)
     /// During a modal it flips the carried `prior` so the modal stays open and restores
     /// onto the flipped view.
     FocusToggle,
     /// Re-enumerate every host (the `r` re-scan).
     Rescan,
-    /// Adjust the tree width by a signed delta.
-    TreeWidth(i32),
+    /// Adjust the nav width by a signed delta.
+    NavWidth(i32),
     /// Toggle auto-hide-nav mode.
     ToggleAutoHide,
     /// Quit the app.
@@ -98,9 +98,9 @@ pub enum Command {
     SelectAddress(String),
     /// Re-enumerate every host (the `r` re-scan), via the switcher.
     Rescan,
-    /// Adjust the natural tree width by this signed delta and schedule the debounced
+    /// Adjust the natural nav width by this signed delta and schedule the debounced
     /// persist.
-    AdjustTreeWidth(i32),
+    AdjustNavWidth(i32),
     /// Toggle auto-hide-nav mode and persist it.
     ToggleAutoHide,
     /// Persist this session address as the user's last-selected.
@@ -133,7 +133,7 @@ pub enum MuxOp {
 /// the attach registry, and the display worker the effects act on.
 ///
 /// The events whose payload is self-contained (`Focus`/`Panes`) produce NO effect -
-/// `apply_event` mutates the tree directly and returns an empty `Vec`. The events
+/// `apply_event` mutates the nav directly and returns an empty `Vec`. The events
 /// that need a mux handle (the single-owner inventory fold into `model::Host`, a
 /// control-mode probe, the registry, the detection box) return the matching effect
 /// for the loop to run.
@@ -141,7 +141,7 @@ pub enum MuxOp {
 /// structurally.
 pub enum EventEffect {
     /// `Connected`/`Inventory`: fold the carried `sessions` into `host`'s
-    /// `model::Host.inventory` (the single owner), apply them to the tree, request
+    /// `model::Host.inventory` (the single owner), apply them to the nav, request
     /// each session's panes, and sync the host's display terminal(s). The reader
     /// carries the parsed sessions on the event, so the loop folds + applies here.
     ApplyInventory {
@@ -180,7 +180,7 @@ pub enum EventEffect {
     },
     /// `Sessions` (poll host, no enumeration error): drop any stale attach whose
     /// registry `.port` vanished, then sync `source`'s display terminal(s).
-    /// (`apply_event` has already applied the enumerated sessions to the tree.)
+    /// (`apply_event` has already applied the enumerated sessions to the nav.)
     SyncPollSessions {
         source: String,
         sessions: Vec<Session>,
