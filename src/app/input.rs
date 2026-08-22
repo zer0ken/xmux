@@ -1,5 +1,5 @@
 //! The PURE, stateless input-routing core: the decode/resolve functions and the small
-//! value types they use. Tree-focus key resolution ([`resolve_nav_key`]), the mouse
+//! value types they use. Nav-focus key resolution ([`resolve_nav_key`]), the mouse
 //! focus×position router ([`resolve_mouse_chain`]/[`ChainAction`]), the gesture/geometry
 //! predicates ([`to_grid_local`], [`leading_ctrl_arrow`], [`view_border_drag_width`]),
 //! and the per-read gesture/outcome carriers
@@ -12,14 +12,14 @@ use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 use crate::app::runtime::{NAV_HEIGHT_MAX, NAV_HEIGHT_MIN, NAV_WIDTH_MAX, NAV_WIDTH_MIN};
 use crate::display::dispatch::Action;
 
-/// The tree width a view border drag to 1-based screen column `col` sets: the dragged
-/// column becomes the view border position (= the tree width), clamped to the allowed range.
+/// The nav width a view border drag to 1-based screen column `col` sets: the dragged
+/// column becomes the view border position (= the nav width), clamped to the allowed range.
 pub(crate) fn view_border_drag_width(col: u16) -> u16 {
     col.saturating_sub(1).clamp(NAV_WIDTH_MIN, NAV_WIDTH_MAX)
 }
 
-/// The Top-layout tree height a horizontal view border drag to 1-based screen row `row`
-/// sets: the dragged row becomes the border position (0-based), which is the tree height,
+/// The Top-layout nav height a horizontal view border drag to 1-based screen row `row`
+/// sets: the dragged row becomes the border position (0-based), which is the nav height,
 /// clamped to the allowed range. compute_regions clamps further to the live body height.
 pub(crate) fn view_border_drag_height(row: u16) -> u16 {
     row.saturating_sub(1).clamp(NAV_HEIGHT_MIN, NAV_HEIGHT_MAX)
@@ -58,17 +58,17 @@ pub(crate) fn to_grid_local(area: ratatui::layout::Rect, col: u16, row: u16) -> 
     }
 }
 
-/// The single key that moves focus from the tree into the terminal view.
-/// (Arrows navigate the tree; the prefix-Esc path returns focus — see TermInput.)
+/// The single key that moves focus from the nav into the terminal view.
+/// (Arrows navigate the nav; the prefix-Esc path returns focus — see TermInput.)
 fn is_focus_in(code: KeyCode) -> bool {
     matches!(code, KeyCode::Enter)
 }
 
-/// Whether a wheel event should drive the TREE (scroll, or Ctrl-wheel level change).
-/// Only when the tree is focused AND the pointer is over the tree: mouse input acts on
+/// Whether a wheel event should drive the NAV (a scroll: the flat list has no levels).
+/// Only when the nav is focused AND the pointer is over the nav: mouse input acts on
 /// the view under the selection, and only when that view is focused — the same rule clicks
-/// and motion already follow. A wheel over the terminal view while the tree is focused is not
-/// a tree scroll.
+/// and motion already follow. A wheel over the terminal view while the nav is focused is not
+/// a nav scroll.
 fn wheel_targets_nav(nav_focused: bool, over_mux: bool) -> bool {
     nav_focused && !over_mux
 }
@@ -77,16 +77,16 @@ fn wheel_targets_nav(nav_focused: bool, over_mux: bool) -> bool {
 /// idle-view border-hover, menu-open) have declined it — the focus×position routing core.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ChainAction {
-    /// Scroll the tree by one row (wheel, tree focus, over tree). `down` = scroll down.
-    ScrollTree(bool),
-    /// Change the tree level (Ctrl+wheel, tree focus, over tree). `down` = descend.
-    LevelChange(bool),
-    /// Toggle focus to the terminal view (left-click the terminal view while the tree is focused).
+    /// Scroll the nav by one row (wheel, nav focus, over nav). `down` = scroll down.
+    /// Ctrl held changes nothing: the nav is a flat list, so there is no level to
+    /// change and a wheel is a wheel.
+    ScrollNav(bool),
+    /// Toggle focus to the terminal view (left-click the terminal view while the nav is focused).
     FocusTerminal,
-    /// Select the clicked tree row (left-click a tree row while the tree is focused).
+    /// Select the clicked nav row (left-click a nav row while the nav is focused).
     SelectRow,
-    /// Toggle focus to the tree (left-click the tree while the terminal view is focused).
-    FocusTree,
+    /// Toggle focus to the nav (left-click the nav while the terminal view is focused).
+    FocusNav,
     /// Forward the event to the focused mux child (terminal focus, over the terminal view).
     ForwardToMux,
     /// Nothing — the event is dropped.
@@ -95,22 +95,17 @@ pub(crate) enum ChainAction {
 
 /// Pure focus×position routing for a mouse event that fell through every gate. The one
 /// rule: input acts on the view under the selection, and only when that view is focused.
-/// A wheel over the terminal view while the tree is focused, or over the tree while the terminal view is
+/// A wheel over the terminal view while the nav is focused, or over the nav while the terminal view is
 /// focused, resolves to Nothing — it never crosses to the unfocused view.
 pub(crate) fn resolve_mouse_chain(
     is_wheel: bool,
-    ctrl: bool,
     down: bool,
     is_left_press: bool,
     nav_focused: bool,
     over_mux: bool,
 ) -> ChainAction {
     if is_wheel && wheel_targets_nav(nav_focused, over_mux) {
-        return if ctrl {
-            ChainAction::LevelChange(down)
-        } else {
-            ChainAction::ScrollTree(down)
-        };
+        return ChainAction::ScrollNav(down);
     }
     if is_left_press && nav_focused && over_mux {
         return ChainAction::FocusTerminal;
@@ -119,7 +114,7 @@ pub(crate) fn resolve_mouse_chain(
         return ChainAction::SelectRow;
     }
     if is_left_press && !nav_focused && !over_mux {
-        return ChainAction::FocusTree;
+        return ChainAction::FocusNav;
     }
     if !nav_focused && over_mux {
         return ChainAction::ForwardToMux;
@@ -127,7 +122,7 @@ pub(crate) fn resolve_mouse_chain(
     ChainAction::Nothing
 }
 
-/// Pure resolution of ONE TREE-focus key into an [`Action`] (or none, when the key
+/// Pure resolution of ONE NAV-focus key into an [`Action`] (or none, when the key
 /// only arms the prefix or is an unrecognized armed command). Touches no app or
 /// switcher state, so it is unit-testable in isolation (mirrors how `TermInput::feed`
 /// resolves the terminal-view focus path). `is_inputting` suppresses prefix arming and the Enter
@@ -150,22 +145,22 @@ pub(crate) fn resolve_nav_key(
             KeyCode::Right if ctrl => Some(Action::Width(1)),
             KeyCode::Char('h') => Some(Action::Width(-1)),
             KeyCode::Char('l') => Some(Action::Width(1)),
-            // prefix Ctrl+↑/↓ resize the tree HEIGHT (the vertical axis, Top layout); ↓ grows.
+            // prefix Ctrl+↑/↓ resize the nav HEIGHT (the vertical axis, Top layout); ↓ grows.
             KeyCode::Up if ctrl => Some(Action::Height(-1)),
             KeyCode::Down if ctrl => Some(Action::Height(1)),
             KeyCode::Char('t') => Some(Action::ToggleAutoHide),
             KeyCode::Char('?') => Some(Action::ShowHelp),
             // prefix Tab cycles focus to the terminal (toggle, mirroring the terminal side's
-            // prefix Tab → tree); prefix → also focuses the terminal view. The byte decoder yields
+            // prefix Tab → nav); prefix → also focuses the terminal view. The byte decoder yields
             // Char('\t') for Tab, never KeyCode::Tab, so match both. (prefix ←/Esc focus
-            // the tree, where we already are — a no-op that resolves to nothing.)
+            // the nav, where we already are — a no-op that resolves to nothing.)
             KeyCode::Right | KeyCode::Tab | KeyCode::Char('\t') => Some(Action::FocusTerminal),
-            // Tier A: the state-changing tree actions are prefix-gated. The prefix arms
-            // them; they then resolve to the tree executor via the existing TreeKey path.
+            // Tier A: the state-changing nav actions are prefix-gated. The prefix arms
+            // them; they then resolve to the nav executor via the existing NavKey path.
             // A digit joins them: `prefix <digit>` opens the card-jump popup seeded with
             // it, so a bare digit stays free for the pane and cannot jump by accident.
-            KeyCode::Char('r') | KeyCode::Char('n') => Some(Action::TreeKey(key)),
-            KeyCode::Char(c) if c.is_ascii_digit() => Some(Action::TreeKey(key)),
+            KeyCode::Char('r') | KeyCode::Char('n') => Some(Action::NavKey(key)),
+            KeyCode::Char(c) if c.is_ascii_digit() => Some(Action::NavKey(key)),
             _ => None,
         };
     }
@@ -173,7 +168,7 @@ pub(crate) fn resolve_nav_key(
         *armed = true;
         return None;
     }
-    // Enter focuses the terminal view. ←/→ navigate the tree inside `handle_key`.
+    // Enter focuses the terminal view. ←/→ navigate the nav inside `handle_key`.
     if !is_inputting && is_focus_in(key.code) {
         return Some(Action::FocusTerminal);
     }
@@ -186,7 +181,7 @@ pub(crate) fn resolve_nav_key(
     {
         return None;
     }
-    Some(Action::TreeKey(key))
+    Some(Action::NavKey(key))
 }
 
 /// The per-event mouse-gesture/input state the `stdin_rx` arm carries across reads,
@@ -194,29 +189,29 @@ pub(crate) fn resolve_nav_key(
 /// must persist across reads). Field-for-field the loop locals `run_app` held.
 #[derive(Default)]
 pub(crate) struct MouseState {
-    /// True while the left button is dragging the tree/terminal view border rule to resize.
+    /// True while the left button is dragging the nav/terminal view border rule to resize.
     pub(crate) dragging_view_border: bool,
     /// True while the mouse hovers the view border rule (no button) — the drag-resize cue.
     pub(crate) hovered_view_border: bool,
     /// The resize-repeat window: a bare Ctrl+←/→ keeps resizing until it lapses.
     pub(crate) repeat_until: Option<std::time::Instant>,
-    /// True while a prefix has been pressed in tree focus, awaiting the command key.
-    pub(crate) tree_armed: bool,
+    /// True while a prefix has been pressed in nav focus, awaiting the command key.
+    pub(crate) nav_armed: bool,
 }
 
 /// The outcome of one stdin read: what the loop must act on after the handler runs.
 /// The stdin handler is a function of (bytes, state) → outcome — it mutates no loop
-/// local directly, so it is unit-testable without the loop. `focus_*` and `tree_replay`
+/// local directly, so it is unit-testable without the loop. `focus_*` and `nav_replay`
 /// carry the resolved focus path (applied inside the handler) for the per-handler
 /// round-trip test + observability.
 #[derive(Default)]
 pub(crate) struct StdinOutcome {
     pub(crate) quit: bool,
     pub(crate) focus_terminal: bool,
-    pub(crate) focus_tree: bool,
+    pub(crate) focus_nav: bool,
     pub(crate) dirty: bool,
-    pub(crate) tree_replay: Vec<u8>,
-    /// True if any `apply_width_delta` call changed the natural tree width; the loop
+    pub(crate) nav_replay: Vec<u8>,
+    /// True if any `apply_width_delta` call changed the natural nav width; the loop
     /// uses this to schedule the debounced persist (instead of writing per tick).
     pub(crate) width_changed: bool,
 }
@@ -225,7 +220,7 @@ pub(crate) struct StdinOutcome {
 mod tests {
     use super::*;
 
-    // --- resolve_nav_key: pure TREE-focus key resolution -------------------
+    // --- resolve_nav_key: pure NAV-focus key resolution -------------------
     /// Resolve one read at the default prefix (C-g = 0x07), fresh decoder/armed,
     /// folding the per-key resolver over the decoded keys.
     fn rt(bytes: &[u8], is_inputting: bool) -> Vec<Action> {
@@ -238,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_tree_prefix_commands() {
+    fn resolve_nav_prefix_commands() {
         assert_eq!(rt(b"\x07q", false), vec![Action::Quit], "prefix q quits");
         assert_eq!(
             rt(b"\x07l", false),
@@ -262,7 +257,7 @@ mod tests {
         );
         // prefix Tab cycles focus to the terminal view, and prefix Right does too. (Tab
         // arrives as Char('\t') from the byte decoder, not KeyCode::Tab — both map to
-        // FocusTerminal so prefix Tab toggles tree⇄terminal like it does from the terminal side.)
+        // FocusTerminal so prefix Tab toggles nav⇄terminal like it does from the terminal side.)
         assert_eq!(
             rt(b"\x07\t", false),
             vec![Action::FocusTerminal],
@@ -297,9 +292,9 @@ mod tests {
     }
 
     #[test]
-    fn resolve_tree_action_keys_require_prefix() {
+    fn resolve_nav_action_keys_require_prefix() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let tk = |c: char| Action::TreeKey(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        let tk = |c: char| Action::NavKey(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
 
         // Bare state-changing keys are inert without the prefix. Digits are in that
         // tier too: a card jump is a deliberate chord, not a stray keystroke.
@@ -310,7 +305,7 @@ mod tests {
                 "a bare action key does nothing without the prefix"
             );
         }
-        // The prefix arms them → they resolve to the tree executor (TreeKey).
+        // The prefix arms them → they resolve to the nav executor (NavKey).
         assert_eq!(rt(b"\x07r", false), vec![tk('r')], "prefix r arms rescan");
         assert_eq!(rt(b"\x07n", false), vec![tk('n')], "prefix n arms new");
         assert_eq!(
@@ -335,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_tree_enter_focuses_mux_and_nav_is_a_nav_key() {
+    fn resolve_nav_enter_focuses_mux_and_nav_is_a_nav_key() {
         assert_eq!(
             rt(b"\r", false),
             vec![Action::FocusTerminal],
@@ -344,124 +339,124 @@ mod tests {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         assert_eq!(
             rt(b"j", false),
-            vec![Action::TreeKey(KeyEvent::new(
+            vec![Action::NavKey(KeyEvent::new(
                 KeyCode::Char('j'),
                 KeyModifiers::NONE
             ))],
-            "a nav key is delegated to the tree verbatim"
+            "a nav key is delegated to the nav verbatim"
         );
     }
 
     #[test]
-    fn resolve_tree_while_inputting_passes_prefix_and_enter_to_the_tree() {
+    fn resolve_nav_while_inputting_passes_prefix_and_enter_to_the_nav() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         // While the input row is open, the prefix is NOT special (typed into the buffer)
-        // and Enter does NOT focus the terminal (it submits the input) — both go to the tree.
+        // and Enter does NOT focus the terminal (it submits the input) — both go to the nav.
         assert_eq!(
             rt(b"\x07", true),
-            vec![Action::TreeKey(KeyEvent::new(
+            vec![Action::NavKey(KeyEvent::new(
                 KeyCode::Char('\u{7}'),
                 KeyModifiers::NONE
             ))],
-            "prefix while inputting is a literal tree key, not an arm"
+            "prefix while inputting is a literal nav key, not an arm"
         );
         assert_eq!(
             rt(b"\r", true),
-            vec![Action::TreeKey(KeyEvent::new(
+            vec![Action::NavKey(KeyEvent::new(
                 KeyCode::Enter,
                 KeyModifiers::NONE
             ))],
-            "Enter while inputting goes to the tree, not focus-switch"
+            "Enter while inputting goes to the nav, not focus-switch"
         );
     }
 
     // --- mouse focus/position rules ----------------------------------------
     #[test]
-    fn wheel_targets_nav_only_when_nav_focused_and_over_tree() {
+    fn wheel_targets_nav_only_when_nav_focused_and_over_nav() {
         assert!(
             wheel_targets_nav(true, false),
-            "tree focus + over tree → drive the tree"
+            "nav focus + over nav → drive the nav"
         );
         assert!(
             !wheel_targets_nav(true, true),
-            "tree focus + over the MUX pane → NOT the tree"
+            "nav focus + over the MUX pane → NOT the nav"
         );
         assert!(
             !wheel_targets_nav(false, false),
-            "terminal-view focus + over tree → not the tree"
+            "terminal-view focus + over nav → not the nav"
         );
         assert!(
             !wheel_targets_nav(false, true),
-            "terminal-view focus + over the terminal view → the mux child, not the tree"
+            "terminal-view focus + over the terminal view → the mux child, not the nav"
         );
     }
 
     #[test]
     fn resolve_mouse_chain_routes_by_focus_and_position() {
         use ChainAction::*;
-        // wheel: only drives the tree when tree-focused AND over the tree.
+        // wheel: only drives the nav when nav-focused AND over the nav.
         assert_eq!(
-            resolve_mouse_chain(true, false, true, false, true, false),
-            ScrollTree(true),
-            "wheel, tree focus, over tree → scroll"
+            resolve_mouse_chain(true, true, false, true, false),
+            ScrollNav(true),
+            "wheel, nav focus, over nav → scroll"
         );
         assert_eq!(
-            resolve_mouse_chain(true, true, false, false, true, false),
-            LevelChange(false),
-            "Ctrl+wheel, tree focus, over tree → level"
+            resolve_mouse_chain(true, false, false, true, false),
+            ScrollNav(false),
+            "Ctrl+wheel is just a wheel: a flat list has no level to change"
         );
         assert_eq!(
-            resolve_mouse_chain(true, false, true, false, true, true),
+            resolve_mouse_chain(true, true, false, true, true),
             Nothing,
-            "wheel, tree focus, over MUX → nothing (never crosses panes)"
+            "wheel, nav focus, over MUX → nothing (never crosses panes)"
         );
         assert_eq!(
-            resolve_mouse_chain(true, false, true, false, false, true),
+            resolve_mouse_chain(true, true, false, false, true),
             ForwardToMux,
             "wheel, terminal-view focus, over the terminal view → forward to child"
         );
         assert_eq!(
-            resolve_mouse_chain(true, false, true, false, false, false),
+            resolve_mouse_chain(true, true, false, false, false),
             Nothing,
-            "wheel, terminal-view focus, over tree → nothing"
+            "wheel, terminal-view focus, over nav → nothing"
         );
         // left press: focus-switch on the unfocused view, act on the focused one.
         assert_eq!(
-            resolve_mouse_chain(false, false, false, true, true, true),
+            resolve_mouse_chain(false, false, true, true, true),
             FocusTerminal,
-            "left, tree focus, over terminal → focus terminal"
+            "left, nav focus, over terminal → focus terminal"
         );
         assert_eq!(
-            resolve_mouse_chain(false, false, false, true, true, false),
+            resolve_mouse_chain(false, false, true, true, false),
             SelectRow,
             "left, nav focus, over nav → select row"
         );
         assert_eq!(
-            resolve_mouse_chain(false, false, false, true, false, false),
-            FocusTree,
+            resolve_mouse_chain(false, false, true, false, false),
+            FocusNav,
             "left, terminal-view focus, over nav → focus nav"
         );
         assert_eq!(
-            resolve_mouse_chain(false, false, false, true, false, true),
+            resolve_mouse_chain(false, false, true, false, true),
             ForwardToMux,
             "left, terminal-view focus, over the terminal view → forward to child"
         );
         // a non-left, non-wheel press (e.g. right-press that the menu gate declined):
         // forwards to the child only when the terminal view is focused and the pointer is over it.
         assert_eq!(
-            resolve_mouse_chain(false, false, false, false, false, true),
+            resolve_mouse_chain(false, false, false, false, true),
             ForwardToMux,
             "right-press, terminal-view focus, over the terminal view → forward"
         );
         assert_eq!(
-            resolve_mouse_chain(false, false, false, false, true, false),
+            resolve_mouse_chain(false, false, false, true, false),
             Nothing,
-            "right-press, tree focus, over tree → nothing"
+            "right-press, nav focus, over nav → nothing"
         );
     }
 
     #[test]
-    fn resolve_tree_arming_persists_across_reads() {
+    fn resolve_nav_arming_persists_across_reads() {
         let mut dec = crate::display::decode::KeyDecoder::new();
         let mut armed = false;
         let r1: Vec<Action> = dec
@@ -536,7 +531,7 @@ mod tests {
 
     #[test]
     fn view_border_drag_width_clamps_to_range() {
-        // The dragged 1-based column becomes the 0-based tree width, clamped to range.
+        // The dragged 1-based column becomes the 0-based nav width, clamped to range.
         assert_eq!(view_border_drag_width(51), 50);
         assert_eq!(
             view_border_drag_width(5),
@@ -560,8 +555,8 @@ mod tests {
     }
 
     #[test]
-    fn to_grid_local_in_tree_column_returns_none() {
-        // Terminal area starts at screen col 50 (0-based). SGR col 10 is in the tree.
+    fn to_grid_local_in_nav_column_returns_none() {
+        // Terminal area starts at screen col 50 (0-based). SGR col 10 is in the nav.
         let area = ratatui::layout::Rect::new(49, 0, 80, 24);
         assert_eq!(to_grid_local(area, 10, 5), None);
     }
@@ -597,9 +592,9 @@ mod tests {
 
     #[test]
     fn to_grid_local_full_width_area_maps_left_edge() {
-        // Tree hidden (auto-hide-nav): the terminal view owns the whole screen, so the
+        // Nav hidden (auto-hide-nav): the terminal view owns the whole screen, so the
         // input handler builds term_area at x=0. The top-left cell SGR (1,1) must map
-        // to grid-local (1,1) rather than being rejected as it would in the tree column.
+        // to grid-local (1,1) rather than being rejected as it would in the nav column.
         let area = ratatui::layout::Rect::new(0, 0, 80, 24);
         assert_eq!(to_grid_local(area, 1, 1), Some((1, 1)));
         assert_eq!(to_grid_local(area, 80, 24), Some((80, 24)));

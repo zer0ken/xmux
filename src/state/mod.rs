@@ -168,7 +168,7 @@ impl State {
                 Vec::new()
             }
             Action::Rescan => vec![Command::Rescan],
-            Action::TreeWidth(d) => vec![Command::AdjustTreeWidth(d)],
+            Action::NavWidth(d) => vec![Command::AdjustNavWidth(d)],
             Action::ToggleAutoHide => vec![Command::ToggleAutoHide],
             Action::Quit => vec![Command::Quit],
             Action::Select(target) => {
@@ -793,8 +793,8 @@ mod tests {
     fn apply_nav_width_emits_adjust_command() {
         let mut s = State::default();
         assert_eq!(
-            s.apply(Action::TreeWidth(-2)),
-            vec![Command::AdjustTreeWidth(-2)]
+            s.apply(Action::NavWidth(-2)),
+            vec![Command::AdjustNavWidth(-2)]
         );
     }
 

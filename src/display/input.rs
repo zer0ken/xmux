@@ -1,15 +1,15 @@
 //! Terminal-focus input handling. When the terminal view has focus every byte is
 //! forwarded raw to the session's active pane (so a real program — vim, a pager —
 //! sees exact input), EXCEPT a prefix (default `C-g`) followed by a command key,
-//! which is intercepted: `prefix Left|Tab|Esc` returns focus to the tree, `prefix Right`
+//! which is intercepted: `prefix Left|Tab|Esc` returns focus to the nav, `prefix Right`
 //! keeps focus on the (already-focused) terminal view, `prefix q` quits, `prefix ?` toggles
-//! the keys help, `prefix h`/`l` and `prefix Ctrl+←/→` resize the tree, `prefix t`
-//! toggles auto-hide-nav mode, `prefix n`/`R`/`r` run the tree actions
+//! the keys help, `prefix h`/`l` and `prefix Ctrl+←/→` resize the nav, `prefix t`
+//! toggles auto-hide-nav mode, `prefix n`/`R`/`r` run the nav actions
 //! (new / rename / re-scan) on the displayed session, `prefix x` kills the ACTIVE pane
-//! of the displayed session (tmux `prefix x` parity — distinct from tree focus, where
+//! of the displayed session (tmux `prefix x` parity — distinct from nav focus, where
 //! `prefix x` kills the selected node), and a doubled
 //! prefix sends one literal prefix byte. Apart from `prefix x`, the command set matches
-//! tree focus, so those commands behave identically regardless of which view holds
+//! nav focus, so those commands behave identically regardless of which view holds
 //! focus. The prefix is a C0
 //! control byte, so it cannot collide with a UTF-8 continuation byte or appear mid-CSI;
 //! bracketed paste is respected so a prefix pasted as data is never intercepted.
@@ -56,7 +56,7 @@ impl TermInput {
     }
 
     /// Processes one stdin read. Forwarded bytes are coalesced; an intercepted
-    /// prefix sequence produces FocusTree/Quit (or a literal prefix byte). The
+    /// prefix sequence produces FocusNav/Quit (or a literal prefix byte). The
     /// command key after a prefix is resolved at the byte level and consumes ONLY
     /// its own byte(s), so any trailing bytes in the same read resume as normal
     /// input (e.g. `C-g C-g abc` forwards a literal prefix then `abc`).
@@ -74,7 +74,7 @@ impl TermInput {
                     i += 1;
                     continue;
                 }
-                // prefix ? / h / l keep terminal-view focus (help toggle, tree resize), so the
+                // prefix ? / h / l keep terminal-view focus (help toggle, nav resize), so the
                 // rest of the read still forwards to the pane — flush, emit, continue.
                 if b0 == b'?' {
                     if !fwd.is_empty() {
@@ -102,9 +102,9 @@ impl TermInput {
                     i += 1;
                     continue;
                 }
-                // prefix n/r and prefix <digit> → the tree actions (new session, re-scan,
+                // prefix n/r and prefix <digit> → the nav actions (new session, re-scan,
                 // card jump), so they are reachable from the terminal view too, not only
-                // tree focus. Emitted as a TreeKey the caller hands to
+                // nav focus. Emitted as a NavKey the caller hands to
                 // Switcher::handle_key: n opens the new-session input, r kicks a re-scan,
                 // a digit opens the jump popup. Focus stays on the terminal view (the modal
                 // draws over it and owns the NEXT read), so the rest of THIS read still
@@ -113,7 +113,7 @@ impl TermInput {
                     if !fwd.is_empty() {
                         out.push(Action::Forward(std::mem::take(&mut fwd)));
                     }
-                    out.push(Action::TreeKey(KeyEvent::new(
+                    out.push(Action::NavKey(KeyEvent::new(
                         KeyCode::Char(b0 as char),
                         KeyModifiers::NONE,
                     )));
@@ -147,7 +147,7 @@ impl TermInput {
                 // read; flush what was forwarded and stop here.
                 if b0 == b'\t' || b0 == 0x1b {
                     // Consume the WHOLE command key, including a multi-byte arrow
-                    // (ESC [ A/B/C/D), so its tail isn't replayed as stray tree input.
+                    // (ESC [ A/B/C/D), so its tail isn't replayed as stray nav input.
                     let cmd_len = if b0 == 0x1b
                         && bytes[i..].len() >= 3
                         && bytes[i + 1] == b'['
@@ -166,8 +166,8 @@ impl TermInput {
                     if !fwd.is_empty() {
                         out.push(Action::Forward(std::mem::take(&mut fwd)));
                     }
-                    // Hand any bytes AFTER the command to the tree (focus switching).
-                    out.push(Action::FocusTree(bytes[i + cmd_len..].to_vec()));
+                    // Hand any bytes AFTER the command to the nav (focus switching).
+                    out.push(Action::FocusNav(bytes[i + cmd_len..].to_vec()));
                     break;
                 }
                 if b0 == b'q' {
@@ -225,30 +225,30 @@ mod tests {
     }
 
     #[test]
-    fn prefix_then_tab_focuses_tree() {
+    fn prefix_then_tab_focuses_nav() {
         let mut t = m();
         assert!(t.feed(&[0x07]).is_empty(), "prefix alone is held");
-        assert_eq!(t.feed(b"\t"), vec![Action::FocusTree(vec![])]);
+        assert_eq!(t.feed(b"\t"), vec![Action::FocusNav(vec![])]);
     }
 
     #[test]
-    fn prefix_then_left_or_esc_focuses_tree() {
+    fn prefix_then_left_or_esc_focuses_nav() {
         // Each command key is consumed whole, so the replay tail is empty (no stray
-        // `[D` leaking to the tree).
+        // `[D` leaking to the nav).
         for seq in [&b"\x1b[D"[..], &b"\x1b"[..]] {
             let mut t = m();
             t.feed(&[0x07]);
             assert_eq!(
                 t.feed(seq),
-                vec![Action::FocusTree(vec![])],
-                "seq {seq:?} → tree"
+                vec![Action::FocusNav(vec![])],
+                "seq {seq:?} → nav"
             );
         }
     }
 
     #[test]
     fn prefix_then_right_stays_in_terminal() {
-        // prefix → focuses the (already-focused) terminal view: swallowed, no FocusTree,
+        // prefix → focuses the (already-focused) terminal view: swallowed, no FocusNav,
         // and any trailing bytes resume as forwarded input.
         let mut t = m();
         t.feed(&[0x07]);
@@ -267,26 +267,26 @@ mod tests {
 
     #[test]
     fn prefix_then_arrow_in_one_read_consumes_the_whole_arrow() {
-        // `C-g Left` in one read leaves to tree with NO replay tail (the `[D` of the
-        // arrow must not leak as stray tree input).
+        // `C-g Left` in one read leaves to nav with NO replay tail (the `[D` of the
+        // arrow must not leak as stray nav input).
         let mut t = m();
-        assert_eq!(t.feed(b"\x07\x1b[D"), vec![Action::FocusTree(vec![])]);
+        assert_eq!(t.feed(b"\x07\x1b[D"), vec![Action::FocusNav(vec![])]);
         // With trailing input after the arrow, only that trailing input is replayed.
         let mut t2 = m();
         assert_eq!(
             t2.feed(b"\x07\x1b[Dabc"),
-            vec![Action::FocusTree(b"abc".to_vec())]
+            vec![Action::FocusNav(b"abc".to_vec())]
         );
     }
 
     #[test]
-    fn prefix_then_tab_then_trailing_goes_to_tree() {
-        // `C-g Tab abc` in one read: focus leaves to the tree carrying `abc` (no
+    fn prefix_then_tab_then_trailing_goes_to_nav() {
+        // `C-g Tab abc` in one read: focus leaves to the nav carrying `abc` (no
         // byte loss — the trailing input belongs to the new focus).
         let mut t = m();
         assert_eq!(
             t.feed(b"\x07\tabc"),
-            vec![Action::FocusTree(b"abc".to_vec())]
+            vec![Action::FocusNav(b"abc".to_vec())]
         );
     }
 
@@ -315,33 +315,33 @@ mod tests {
     }
 
     #[test]
-    fn prefix_then_tree_action_emits_nav_key() {
-        // prefix n/R/r each emit a TreeKey the caller routes to Switcher::handle_key,
-        // so the tree actions work from terminal focus too. (prefix x is separate — it
+    fn prefix_then_nav_action_emits_nav_key() {
+        // prefix n/R/r each emit a NavKey the caller routes to Switcher::handle_key,
+        // so the nav actions work from terminal focus too. (prefix x is separate — it
         // kills the active pane; see prefix_then_x_kills_active_pane.)
         for (b, c) in [(b'n', 'n'), (b'r', 'r')] {
             let mut t = m();
             t.feed(&[0x07]);
             assert_eq!(
                 t.feed(&[b]),
-                vec![Action::TreeKey(KeyEvent::new(
+                vec![Action::NavKey(KeyEvent::new(
                     KeyCode::Char(c),
                     KeyModifiers::NONE
                 ))],
-                "prefix {c} emits a tree key"
+                "prefix {c} emits a nav key"
             );
         }
     }
 
     #[test]
-    fn prefix_tree_action_keeps_focus_and_forwards_rest() {
+    fn prefix_nav_action_keeps_focus_and_forwards_rest() {
         // Like prefix ?/t: the action keeps terminal-view focus, so trailing bytes in the
         // same read still forward to the pane (the opened modal owns the NEXT read).
         let mut t = m();
         assert_eq!(
             t.feed(b"\x07nabc"),
             vec![
-                Action::TreeKey(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
+                Action::NavKey(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
                 Action::Forward(b"abc".to_vec()),
             ]
         );
@@ -450,7 +450,7 @@ mod tests {
         let out = t.feed(b"hi\x07\t");
         assert_eq!(
             out,
-            vec![Action::Forward(b"hi".to_vec()), Action::FocusTree(vec![])]
+            vec![Action::Forward(b"hi".to_vec()), Action::FocusNav(vec![])]
         );
     }
 
@@ -467,6 +467,6 @@ mod tests {
         }
         // after the paste the prefix arms again
         assert!(t.feed(&[0x07]).is_empty());
-        assert_eq!(t.feed(b"\t"), vec![Action::FocusTree(vec![])]);
+        assert_eq!(t.feed(b"\t"), vec![Action::FocusNav(vec![])]);
     }
 }

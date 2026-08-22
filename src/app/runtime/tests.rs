@@ -225,7 +225,7 @@ fn terminal_view_size_zero_tree_is_full_width() {
 #[test]
 fn terminal_view_size_keeps_full_height_when_the_tree_is_shown() {
     use crate::ui::switcher::NAV_WIDTH;
-    // Tree hidden (sentinel 0): terminal view spans the full height.
+    // Nav hidden (sentinel 0): terminal view spans the full height.
     let (_, full) = terminal_view_size(120, 39, 0, 0);
     assert_eq!(full, 40);
     // Tree shown in Side: the hint bar is the NAV column's bottom row, not a full-width
@@ -390,7 +390,7 @@ async fn refresh_after_a_dropped_host_resolves_instead_of_loading_forever() {
     // Bug: refresh → tree stuck on "loading…" forever. A once-connected host stays
     // pinned in `connected`, so every exit is a no-op; a refresh sets it scanning and
     // a reconnect that then fails never clears it. After the fix, the first drop keeps
-    // the tree (no flash) but clears `connected`; a refresh + a failed reconnect (no
+    // the nav (no flash) but clears `connected`; a refresh + a failed reconnect (no
     // sessions) must resolve to "(empty)", not spin.
     use crate::ui::run::dump_screen;
     use crate::ui::switcher::Switcher;
@@ -609,7 +609,7 @@ fn fake_env_builder_constructs() {
 fn apply_inventory_effect_folds_sessions_into_host_inventory() {
     // C1: the control reader carries its parsed sessions on the HostEvent; the
     // loop folds them into the single owner (`model::Host.inventory`) and applies
-    // them to the tree. There is no shared `Arc<Mutex<HostInventory>>` to read.
+    // them to the nav. There is no shared `Arc<Mutex<HostInventory>>` to read.
     use crate::ui::switcher::{Scan, Switcher};
     use crate::ui::tree::Group;
 
@@ -654,7 +654,7 @@ fn apply_inventory_effect_folds_sessions_into_host_inventory() {
         .sessions;
     assert_eq!(owned.len(), 1, "sessions folded into model::Host.inventory");
     assert_eq!(owned[0].name, "api");
-    // And the tree group reflects the same sessions.
+    // And the nav group reflects the same sessions.
     let group = rt
         .state
         .groups
@@ -732,7 +732,7 @@ fn r_rescan_reloads_control_host_panes() {
         "precondition: panes are loaded before the re-scan"
     );
 
-    // The `r` re-scan resets the tree to its scanning skeleton and clears panes.
+    // The `r` re-scan resets the nav to its scanning skeleton and clears panes.
     rt.switcher.request_rescan(&mut rt.state);
     assert!(
         !rt.state.panes.contains_key("jup/api"),
@@ -1186,7 +1186,7 @@ fn test_rt(env: Env) -> Runtime {
         auto_hide_nav: false,
         mouse_state: MouseState::default(),
         term_input: crate::display::input::TermInput::new(prefix),
-        tree_decoder: crate::display::decode::KeyDecoder::new(),
+        nav_decoder: crate::display::decode::KeyDecoder::new(),
         prefix,
         connected: HashSet::new(),
         panes_requested: HashSet::new(),
@@ -1479,8 +1479,8 @@ async fn client_session_changed_in_nav_focus_syncs_belief_without_moving_selecti
 // 3. Select a WINDOW row - confirm the attached client switches to that window.
 // 4. Press Enter (or C-g → / C-g Tab) - focus the terminal (Focus::Terminal); the split
 //    is unchanged (view border turns green) and keystrokes reach the real attached pane.
-//    C-g ← / C-g Esc / C-g Tab return focus to the tree. Confirm no blank/flash.
-// 5. Create / kill a window or session inside a pane - confirm the tree view
+//    C-g ← / C-g Esc / C-g Tab return focus to the nav. Confirm no blank/flash.
+// 5. Create / kill a window or session inside a pane - confirm the nav view
 //    syncs (remote via control events, local within the poll interval) and the
 //    PTY set follows (new session attaches, killed session's PTY is reaped).
 // 6. C-g then `q` - clean quit, terminal restored.
@@ -1553,7 +1553,7 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
         (false, false)
     );
     assert_eq!(sw.terminal_view_target().target, "db");
-    // Focus(Terminal) leaves tree focus → terminal focus.
+    // Focus(Terminal) leaves nav focus → terminal focus.
     assert!(state.focus.is_nav_focused());
     dispatch_action(
         Action::Focus(FocusTarget::Terminal),
@@ -1565,7 +1565,7 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
         (&ops, &op_tx),
     );
     assert_eq!(state.focus, Focus::Terminal);
-    // Focus(Tree) returns to tree focus.
+    // Focus(Tree) returns to nav focus.
     dispatch_action(
         Action::Focus(FocusTarget::Nav),
         &mut sw,
@@ -1576,10 +1576,10 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
         (&ops, &op_tx),
     );
     assert_eq!(state.focus, Focus::Nav);
-    // TreeWidth adjusts the natural width and signals width_changed; Quit signals quit.
+    // NavWidth adjusts the natural width and signals width_changed; Quit signals quit.
     assert_eq!(
         dispatch_action(
-            Action::TreeWidth(1),
+            Action::NavWidth(1),
             &mut sw,
             &mut state,
             &mut natural,
@@ -1719,7 +1719,7 @@ fn handle_stdin_bytes_quit_on_prefix_q_in_tree_focus() {
         groups: vec![],
         panes: Default::default(),
     };
-    let mut state = crate::state::State::from_scan(scan); // tree focus
+    let mut state = crate::state::State::from_scan(scan); // nav focus
     let switcher = Switcher::new(&mut state);
     // The default fake env's prefix is "C-g" (0x07), matching this test's `\x07q`.
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
@@ -1727,7 +1727,7 @@ fn handle_stdin_bytes_quit_on_prefix_q_in_tree_focus() {
     rt.state = state;
     rt.switcher = switcher;
     let out = rt.handle_stdin_bytes(b"\x07q", &Selection::default());
-    assert!(out.quit, "prefix+q in tree focus quits");
+    assert!(out.quit, "prefix+q in nav focus quits");
 }
 
 #[test]
@@ -1741,7 +1741,7 @@ fn arming_the_prefix_marks_the_frame_dirty_so_the_hint_bar_swaps() {
         groups: vec![],
         panes: Default::default(),
     };
-    let mut state = crate::state::State::from_scan(scan); // tree focus
+    let mut state = crate::state::State::from_scan(scan); // nav focus
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
     rt.hosts = crate::model::Hosts::default();
@@ -1778,7 +1778,7 @@ fn rt_terminal_focus_with_session() -> Runtime {
         }],
         panes: Default::default(),
     };
-    let mut state = crate::state::State::from_scan(scan); // launches in tree focus
+    let mut state = crate::state::State::from_scan(scan); // launches in nav focus
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_sources(&["jup"]));
     rt.hosts = crate::model::Hosts::default();
@@ -1841,20 +1841,12 @@ fn handle_mouse_event_view_border_grab_sets_dragging() {
     };
     let (vw, vh) = terminal_view_size(80, 24, nav_width, 0);
     let term_area = ratatui::layout::Rect::new(nav_width + 1, 0, vw, vh);
-    let mut non_mouse: Vec<u8> = Vec::new();
     let mut focus_toggle = false;
     let mut wheel = false;
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
     rt.state = state;
     rt.switcher = switcher;
-    rt.handle_mouse_event(
-        &ev,
-        &sel,
-        &mut non_mouse,
-        &mut focus_toggle,
-        &mut wheel,
-        term_area,
-    );
+    rt.handle_mouse_event(&ev, &sel, &mut focus_toggle, &mut wheel, term_area);
     assert!(
         rt.mouse_state.dragging_view_border,
         "left-press on the view border column grabs it"
@@ -1865,7 +1857,7 @@ fn handle_mouse_event_view_border_grab_sets_dragging() {
 fn handle_mouse_event_top_layout_border_drag_resizes_height() {
     use crate::ui::switcher::{Scan, Switcher};
     // In the portrait Top layout the view border is a HORIZONTAL rule; a left-press on that
-    // row grabs it and a drag sets the tree HEIGHT (not width). 40x60 → Top; the nav band
+    // row grabs it and a drag sets the nav HEIGHT (not width). 40x60 → Top; the nav band
     // carries its own hint bar, so its auto height is ~40% of the whole 60-row area = 24,
     // putting the border at row 24 (0-based) = SGR row 25.
     let mut state = crate::state::State::from_scan(Scan {
@@ -1887,26 +1879,25 @@ fn handle_mouse_event_top_layout_border_drag_resizes_height() {
         row: 25,
         pressed: true,
     };
-    let mut non_mouse: Vec<u8> = Vec::new();
     let (mut ft, mut wheel) = (false, false);
     let area = ratatui::layout::Rect::default();
-    rt.handle_mouse_event(&press, &sel, &mut non_mouse, &mut ft, &mut wheel, area);
+    rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel, area);
     assert!(
         rt.mouse_state.dragging_view_border,
         "left-press on the horizontal Top border grabs it"
     );
 
-    // Drag DOWN to SGR row 30 (motion bit 0x20, left button held) → tree height = 30-1 = 29.
+    // Drag DOWN to SGR row 30 (motion bit 0x20, left button held) → nav height = 30-1 = 29.
     let drag = crate::display::mouse::MouseEvent {
         cb: 0x20,
         col: 5,
         row: 30,
         pressed: true,
     };
-    rt.handle_mouse_event(&drag, &sel, &mut non_mouse, &mut ft, &mut wheel, area);
+    rt.handle_mouse_event(&drag, &sel, &mut ft, &mut wheel, area);
     assert_eq!(
         rt.nav_height, 29,
-        "dragging the horizontal border sets the tree HEIGHT to the dragged row"
+        "dragging the horizontal border sets the nav HEIGHT to the dragged row"
     );
 }
 
@@ -1915,7 +1906,7 @@ fn resize_keys_adjust_height_in_top_layout() {
     use crate::ui::switcher::{Scan, Switcher, ViewLayout, NAV_WIDTH};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    // In the portrait Top layout the tree-resize keys (prefix h/l · Ctrl+←/→) adjust the
+    // In the portrait Top layout the nav-resize keys (prefix h/l · Ctrl+←/→) adjust the
     // HEIGHT, not the width - seeded from the auto height the first time.
     let mut state = crate::state::State::from_scan(Scan {
         groups: vec![],
@@ -1948,7 +1939,7 @@ fn resize_keys_adjust_height_in_top_layout() {
     assert_eq!(
         rt.nav_height,
         auto + 1,
-        "a resize key grows the Top tree height from the auto seed"
+        "a resize key grows the Top nav height from the auto seed"
     );
     assert!(rt.resize_axis(false, -1), "shrink changes the height");
     assert_eq!(rt.nav_height, auto, "and shrinks it back");

@@ -1,11 +1,11 @@
 use super::*;
 
 impl Runtime {
-    /// Processes a batch of TREE-focus input bytes through ONE path — used for both real
-    /// stdin and bytes replayed after a terminal→tree switch. Handles prefix arming
-    /// (`C-g` then `q` → quit, `h`/`Ctrl+←` → shrink tree, `l`/`Ctrl+→` → grow tree),
+    /// Processes a batch of NAV-focus input bytes through ONE path — used for both real
+    /// stdin and bytes replayed after a terminal→nav switch. Handles prefix arming
+    /// (`C-g` then `q` → quit, `h`/`Ctrl+←` → shrink the nav, `l`/`Ctrl+→` → grow the nav),
     /// Enter → focus terminal (unless an inline input is open),
-    /// ←/→ navigate the tree; then the off-loop op dispatch, ensure-current-host, and
+    /// ←/→ navigate the nav; then the off-loop op dispatch, ensure-current-host, and
     /// the `r` re-scan. Returns `(focus_terminal, quit, width_delta, toggle_auto_hide)`.
     /// The selection is committed at the loop top, so this only drives navigation +
     /// metadata, not the display. `width_changed` is the caller's out-flag.
@@ -14,10 +14,10 @@ impl Runtime {
         bytes: &[u8],
         width_changed: &mut bool,
     ) -> (bool, bool, i32, i32, bool) {
-        // Split-borrow the world state into the loose names the body uses (a tree read
+        // Split-borrow the world state into the loose names the body uses (a nav read
         // touches most of it: decoder, switcher/state, host orchestration, width prefs).
         let Self {
-            tree_decoder,
+            nav_decoder,
             switcher,
             state,
             mgr,
@@ -36,7 +36,7 @@ impl Runtime {
             prefix,
             ..
         } = self;
-        let tree_armed = &mut mouse_state.tree_armed;
+        let nav_armed = &mut mouse_state.nav_armed;
         let (prefix, cols, rows, nav_width) = (*prefix, *cols, *rows, *nav_width);
         let mut focus_terminal = false;
         let mut quit = false;
@@ -44,17 +44,17 @@ impl Runtime {
         let mut height_delta = 0i32;
         let mut toggle_auto_hide = false;
         let mut key_cmds: Vec<crate::model::Command> = Vec::new();
-        for key in tree_decoder.feed(bytes) {
-            // Re-query per key: opening a modal popup (via a TreeKey applied below) flips
+        for key in nav_decoder.feed(bytes) {
+            // Re-query per key: opening a modal popup (via a NavKey applied below) flips
             // this, which changes how the next key in this same read resolves. Gating on
             // ANY modal popup (not just the inline input) makes a modal OWN its keys: the
             // help modal and the inline input both swallow prefix/Enter, so `prefix q`
             // can't quit and Enter can't focus the terminal while one is on screen.
             let is_inputting = state.is_modal_popup_open();
-            match resolve_nav_key(key, tree_armed, prefix, is_inputting) {
+            match resolve_nav_key(key, nav_armed, prefix, is_inputting) {
                 // A committed input/kill confirm folds through State::apply, which returns
                 // its Commands; collect them and dispatch the whole batch below.
-                Some(Action::TreeKey(k)) => key_cmds.extend(switcher.handle_key(k, state)),
+                Some(Action::NavKey(k)) => key_cmds.extend(switcher.handle_key(k, state)),
                 Some(Action::FocusTerminal) => focus_terminal = true,
                 Some(Action::Quit) => quit = true,
                 Some(Action::Width(d)) => width_delta = d,
@@ -62,8 +62,8 @@ impl Runtime {
                 Some(Action::ToggleAutoHide) => toggle_auto_hide = true,
                 Some(Action::ShowHelp) => switcher.toggle_help(state),
                 // resolve_nav_key never emits the mux-only or terminal-only variants
-                // (Forward/FocusTree); None = armed/consumed.
-                Some(Action::Forward(_)) | Some(Action::FocusTree(_)) | None => {}
+                // (Forward/FocusNav); None = armed/consumed.
+                Some(Action::Forward(_)) | Some(Action::FocusNav(_)) | None => {}
             }
         }
         // Route the FULL command batch through the single dispatcher (not just RunOp): a
@@ -95,20 +95,19 @@ impl Runtime {
     }
 }
 
-/// Applies ONE parsed SGR mouse event to the gesture state + tree/registry — the body
+/// Applies ONE parsed SGR mouse event to the gesture state + nav/registry — the body
 /// of the inline `while i < bytes.len()` mouse branch, lifted verbatim. Runs the modal/
 /// gesture gates (view border drag, popup drag, modal swallow, view border grab, idle
 /// hover) in the SAME order, then the focus×position routing. Mutates `st`
 /// (the gesture latches), `state.focus` (mid-loop focus toggles — routing re-reads focus
 /// per event, so deferring would change behavior), and the byte-loop accumulators
-/// (`non_mouse`, `mouse_focus_toggle`, `wheel_scrolled`). Returns whether a redraw is
+/// (`mouse_focus_toggle`, `wheel_scrolled`). Returns whether a redraw is
 /// needed for this event.
 impl Runtime {
     pub(super) fn handle_mouse_event(
         &mut self,
         ev: &crate::display::mouse::MouseEvent,
         selection: &Selection,
-        non_mouse: &mut Vec<u8>,
         mouse_focus_toggle: &mut bool,
         wheel_scrolled: &mut bool,
         term_area: ratatui::layout::Rect,
@@ -139,7 +138,7 @@ impl Runtime {
         // Wheel events carry the 0x40 bit (cb 64=up, 65=down; +16=Ctrl).
         let is_wheel = ev.pressed && (ev.cb & 0x40) != 0;
         // View border drag: grab the view border rule (the column at the effective
-        // tree width, only when the tree is shown) with the left button and
+        // nav width, only when the nav is shown) with the left button and
         // drag to resize. Once grabbed it owns every mouse event until the
         // button is released. Sets the NATURAL width; the loop-top reconcile
         // applies it and resizes the PTYs (same path as prefix h/l).
@@ -147,7 +146,7 @@ impl Runtime {
         let row0 = ev.row.saturating_sub(1);
         // The view border rect from the one shared geometry, so the grab / hover works in
         // either layout: a vertical rule in Side, a horizontal rule in Top. The drag then
-        // resizes the tree WIDTH (Side, by column) or HEIGHT (Top, by row).
+        // resizes the nav WIDTH (Side, by column) or HEIGHT (Top, by row).
         let full = ratatui::layout::Rect::new(0, 0, cols, body_rows.saturating_add(1));
         let regions = crate::ui::switcher::compute_regions(full, nav_width, *nav_height, 1);
         let on_view_border = nav_width > 0
@@ -202,7 +201,7 @@ impl Runtime {
         // A modal popup is mouse-modal: while one is open, every mouse
         // event that is not its border-drag (handled above) is swallowed,
         // so clicks, wheels, view border grabs, and hovers never reach the
-        // tree/terminal/view border behind it.
+        // nav/terminal/view border behind it.
         if state.is_modal_popup_open() {
             return dirty;
         }
@@ -215,7 +214,7 @@ impl Runtime {
         // lights the hover cue and is consumed (nothing under it to forward).
         // Elsewhere it falls through to the routing below, so a hover over the
         // terminal view IS forwarded to the child (the inner app gets hover); over
-        // the tree it is harmlessly dropped.
+        // the nav it is harmlessly dropped.
         if ev.pressed && (ev.cb & 0x23) == 0x23 {
             let over_view_border = on_view_border;
             if over_view_border != st.hovered_view_border {
@@ -227,16 +226,14 @@ impl Runtime {
             }
         }
         let down = (ev.cb & 0x01) != 0;
-        let ctrl = (ev.cb & 0x10) != 0;
         match resolve_mouse_chain(
             is_wheel,
-            ctrl,
             down,
             is_left_press,
             state.focus.is_nav_focused(),
             in_mux.is_some(),
         ) {
-            ChainAction::ScrollTree(down) => {
+            ChainAction::ScrollNav(down) => {
                 // Plain wheel → scroll the selection LINEARLY through every row
                 // (move_selection), like any list. NOT sibling-cycle: arrows do
                 // that (move_sibling), but it wraps within a level, so a 2-sibling
@@ -245,19 +242,14 @@ impl Runtime {
                 *wheel_scrolled = true;
                 dirty = true;
             }
-            ChainAction::LevelChange(down) => {
-                // Ctrl+wheel → change level (↑ ascend / ↓ descend); inject the
-                // arrow so the tree path (decode → handle_key → ensure) drives it.
-                non_mouse.extend_from_slice(if down { b"\x1b[C" } else { b"\x1b[D" });
-            }
             // The unfocused view was clicked → switch focus to it (no content
             // delivered); toggle flips Focus::Nav⇄Focus::Terminal either direction.
-            ChainAction::FocusTerminal | ChainAction::FocusTree => {
+            ChainAction::FocusTerminal | ChainAction::FocusNav => {
                 state.apply(crate::model::Action::FocusToggle);
                 *mouse_focus_toggle = true;
             }
             ChainAction::SelectRow => {
-                // Left-click a tree row → move the selection to it (select). The
+                // Left-click a nav row → move the selection to it (select). The
                 // loop top commits the new selection (attach); ensure the
                 // clicked row's host connects so its subtree streams in.
                 switcher.mouse_select(col0, ev.row.saturating_sub(1), state);
@@ -279,7 +271,7 @@ impl Runtime {
 }
 
 impl Runtime {
-    /// Applies a tree-resize delta on ONE axis, gated to the layout that actually shows that
+    /// Applies a nav-resize delta on ONE axis, gated to the layout that actually shows that
     /// axis so a key never resizes a dimension the user cannot see: `horizontal` (←/→ · h/l)
     /// resizes the WIDTH only in Side, `!horizontal` (↑/↓) the HEIGHT only in Top; the
     /// perpendicular axis is a no-op. Height is seeded from the effective auto height the
@@ -328,7 +320,7 @@ impl Runtime {
 
     /// The whole `stdin_rx` arm body, lifted. Scans the read for SGR mouse sequences
     /// (routed via [`Runtime::handle_mouse_event`]) vs a non-mouse byte stream, runs the
-    /// lost-release watchdogs, the resize-repeat window, and the help-modal / tree-focus /
+    /// lost-release watchdogs, the resize-repeat window, and the help-modal / nav-focus /
     /// terminal-view focus routing — in the SAME order as the inline arm. The final focus
     /// toggles (+ replay) run on `self.state.focus`, so the caller only acts on the returned
     /// `dirty`/`quit`. No behavior change.
@@ -347,9 +339,9 @@ impl Runtime {
         let StdinOutcome {
             quit,
             focus_terminal,
-            focus_tree,
+            focus_nav,
             dirty,
-            tree_replay,
+            nav_replay,
             width_changed,
         } = &mut outcome;
         // Scan for SGR mouse sequences BEFORE routing to Focus::Nav/Focus::Terminal branches.
@@ -359,7 +351,7 @@ impl Runtime {
         // Edge case: a sequence split across reads parses as None and falls into
         // non_mouse — rare in practice; no cross-read buffering in v1.
         // The terminal region from the one shared geometry, so a click lands on exactly
-        // what was drawn in either layout (in Top the terminal sits below the tree, not
+        // what was drawn in either layout (in Top the terminal sits below the nav, not
         // to the right of it).
         let full = ratatui::layout::Rect::new(0, 0, self.cols, self.body_rows.saturating_add(1));
         let term_area =
@@ -374,7 +366,6 @@ impl Runtime {
                     if self.handle_mouse_event(
                         &ev,
                         selection,
-                        &mut non_mouse,
                         &mut mouse_focus_toggle,
                         &mut wheel_scrolled,
                         term_area,
@@ -429,13 +420,13 @@ impl Runtime {
         // prefix armed and mis-read the following key). A pure-mouse read (empty
         // non_mouse) leaves the window untouched. Leading Ctrl-arrows are peeled off
         // (handles a coalesced autorepeat burst); any remaining bytes end the window
-        // and fall through to the normal tree/terminal routing below.
+        // and fall through to the normal nav/terminal routing below.
         let mut consumed_by_repeat = false;
         if self
             .mouse_state
             .repeat_until
             .is_some_and(|d| std::time::Instant::now() < d)
-            && !self.mouse_state.tree_armed
+            && !self.mouse_state.nav_armed
             && !self.term_input.is_armed()
             && !non_mouse.is_empty()
         {
@@ -466,13 +457,13 @@ impl Runtime {
         {
             // The help modal is modal (tmux view-mode style): while open it
             // captures every key in EITHER focus — q/Esc closes it, the rest are
-            // swallowed — so nothing leaks to the tree or the terminal view. Above the
-            // tree/terminal split so the behavior is identical regardless of focus.
+            // swallowed — so nothing leaks to the nav or the terminal view. Above the
+            // nav/terminal split so the behavior is identical regardless of focus.
             *dirty = true;
         } else if !consumed_by_repeat
             && (self.state.focus.is_nav_focused() || self.state.focus.is_modal())
         {
-            // Tree view OR any modal: route to the switcher path. A modal popup opened
+            // Nav view OR any modal: route to the switcher path. A modal popup opened
             // from EITHER view owns its keys here; the resolver gating in handle_nav_bytes
             // swallows everything but the modal's own keys, so a modal never emits
             // FocusTerminal/quit and the focus toggles below never fire mid-modal.
@@ -492,7 +483,7 @@ impl Runtime {
             }
         } else if !consumed_by_repeat {
             // TERMINAL focus: forward raw bytes to the selected session's PTY;
-            // TermInput intercepts the prefix (→ tree / quit / help / resize / literal).
+            // TermInput intercepts the prefix (→ nav / quit / help / resize / literal).
             for action in self.term_input.feed(&non_mouse) {
                 match action {
                     // Forward keystrokes to the VISIBLE session (`displayed`), not the
@@ -501,16 +492,16 @@ impl Runtime {
                     Action::Forward(f) => self
                         .registry
                         .input(&display_key(&self.hosts, &self.state.displayed), f),
-                    Action::FocusTree(rest) => {
-                        *focus_tree = true;
-                        *tree_replay = rest;
+                    Action::FocusNav(rest) => {
+                        *focus_nav = true;
+                        *nav_replay = rest;
                     }
                     Action::Quit => *quit = true,
                     Action::ShowHelp => {
                         self.switcher.toggle_help(&mut self.state);
                         *dirty = true;
                     }
-                    // Same resize + repeat-window as the tree path, so a resize started from
+                    // Same resize + repeat-window as the nav path, so a resize started from
                     // the terminal view chains with bare Ctrl-arrows too. Width = ←/→ (Side),
                     // height = ↑/↓ (Top).
                     Action::Width(d) => {
@@ -528,12 +519,12 @@ impl Runtime {
                         *dirty = true;
                     }
                     // prefix n/r reach here from terminal focus: run them through the
-                    // switcher exactly like the tree path. handle_key opens the new-session
+                    // switcher exactly like the nav path. handle_key opens the new-session
                     // input (n) or arms the re-scan (r); Enter then routes via the modal
                     // path (is_modal) on the next read. `r` only sets the re-scan flag, so
-                    // kick_rescan must fire it: the tree path (handle_nav_bytes) runs the
+                    // kick_rescan must fire it: the nav path (handle_nav_bytes) runs the
                     // same tail after every read.
-                    Action::TreeKey(k) => {
+                    Action::NavKey(k) => {
                         let cmds = self.switcher.handle_key(k, &mut self.state);
                         let (cq, cwc) = dispatch_commands(
                             cmds,
@@ -559,7 +550,7 @@ impl Runtime {
                         );
                         *dirty = true;
                     }
-                    // TermInput never emits FocusTerminal (that is the tree-focus path).
+                    // TermInput never emits FocusTerminal (that is the nav-focus path).
                     Action::FocusTerminal => {}
                 }
             }
@@ -575,11 +566,11 @@ impl Runtime {
         if self.armed() != armed_before {
             *dirty = true;
         }
-        if *focus_tree {
+        if *focus_nav {
             self.state
                 .apply(crate::model::Action::Focus(crate::model::FocusTarget::Nav));
-            if !tree_replay.is_empty() {
-                let (ft, q, wd, hd, th) = self.handle_nav_bytes(tree_replay, width_changed);
+            if !nav_replay.is_empty() {
+                let (ft, q, wd, hd, th) = self.handle_nav_bytes(nav_replay, width_changed);
                 if ft {
                     self.state.apply(crate::model::Action::Focus(
                         crate::model::FocusTarget::Terminal,

@@ -271,7 +271,7 @@ nothing to switch to until one exists.
 - **FR-E2** — There is no rename, kill, or window/pane command — not on a key, not
   in a modal, not on the wire, and not in the mux command vocabulary. **Tests:**
   `parse_ctl_op_new_session_is_the_only_lifecycle_verb`,
-  `resolve_tree_action_keys_require_prefix`.
+  `resolve_nav_action_keys_require_prefix`.
 - **FR-E3** — Create runs off the key path so a slow ssh round-trip never freezes
   rendering or the control channel. The committing key folds through `State::apply`
   into a `Command::RunOp(MuxOp)` the run loop spawns off-loop. **Tests:**
