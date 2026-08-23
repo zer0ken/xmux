@@ -142,37 +142,48 @@ pub fn build(
         .iter()
         .map(|bin| {
             let id = session::source_id(session::LOCAL_SOURCE, bin, qualified);
-            Source {
-                alias: id.clone(),
-                binary: bin.clone(),
-                kind: MachineKind::Local {
-                    id,
-                    socket: local_socket.clone(),
-                },
-                runner: None,
-            }
+            for_machine_mux(
+                session::LOCAL_SOURCE,
+                bin,
+                id,
+                os,
+                xmux_dir,
+                local_socket.clone(),
+            )
         })
         .collect();
     for spec in cfg.host_specs(ssh_aliases) {
-        // The ControlMaster socket is per MACHINE, not per source: several muxes on one
-        // machine share the one multiplexed connection.
-        let control_path = xmux_dir
-            .join(format!("cm-{}.sock", spec.alias))
-            .to_string_lossy()
-            .into_owned();
-        srcs.push(Source {
-            alias: spec.id.clone(),
-            binary: spec.bin,
-            kind: MachineKind::Ssh {
-                id: spec.id,
-                alias: spec.alias,
-                control_path,
-                os: os.to_string(),
-            },
-            runner: None,
-        });
+        srcs.push(for_machine_mux(
+            &spec.alias,
+            &spec.bin,
+            spec.id,
+            os,
+            xmux_dir,
+            None,
+        ));
     }
     srcs
+}
+
+/// One [`Source`] for the mux binary `bin` on `machine`, answering as the source `id`.
+/// The machine half comes from [`crate::machine::kind_for`], so this source and the
+/// `Host` the loop drives for the same pair reach the machine the same way. A source
+/// DISCOVERED after launch is built here too, which is what makes it as operable as a
+/// configured one (create / panes / border styles all resolve through the source list).
+pub fn for_machine_mux(
+    machine: &str,
+    bin: &str,
+    id: String,
+    os: &str,
+    xmux_dir: &Path,
+    local_socket: Option<String>,
+) -> Source {
+    Source {
+        alias: id.clone(),
+        binary: bin.to_string(),
+        kind: crate::machine::kind_for(machine, id, os, xmux_dir, local_socket),
+        runner: None,
+    }
 }
 
 #[cfg(test)]

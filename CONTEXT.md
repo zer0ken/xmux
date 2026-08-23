@@ -160,7 +160,11 @@ UI elements a user perceives as distinct things:
   serves several, so a one-mux setup is spelled exactly as it always was. `machine_of`
   / `mux_of` / `is_local_source` read the two halves back; nothing compares a source id
   to `local` directly. The nav renders the halves separately (`local/zellij`), so the id
-  never appears with its mux twice.
+  never appears with its mux twice. A source is held TWICE, once per consumer, and both
+  copies are built from `machine::kind_for` so they reach the machine the same way: the
+  event loop drives a `model::Host` out of `Hosts`, and the off-loop ops resolve a
+  `source::Source` out of `Env`. Discovery adds to BOTH - a source in only one of them
+  paints and scans but refuses every operation, or the reverse.
 - mux discovery - how a machine's mux list is decided when it named no mux (`mux` unset
   or `auto`): every mux xmux supports is asked whether it is installed there, and each one
   that answers becomes a source. Two halves, in that order: the candidate set is what xmux

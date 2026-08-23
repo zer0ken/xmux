@@ -71,6 +71,12 @@ the live split view.
   list is resolved: `mux::installed_muxes` when the config says `auto`, then
   `Config::local_muxes`, whose answer is threaded into `source::build` and
   `Hosts::build` rather than re-derived, so source ids and host ids cannot disagree.
+  `Env` owns the source LIST behind a lock, because async mux discovery adds to it while
+  the app runs: read it with `Env::source_list` / `Env::source`, add with
+  `Env::add_source`, and never hold the guard across an await. A source added there is
+  paired with a `Hosts::insert` in the same handler - `Env` is what the off-loop ops
+  resolve, `Hosts` is what the loop drives, and a source in one but not the other is a
+  card that scans and refuses `prefix n`.
   That resolution is why `build_env` is async.
 - `roster.rs` answers only "which machines does xmux offer as sources": one or more
   providers (`~/.ssh/config`, tailscale) each yielding plain ssh target names, so

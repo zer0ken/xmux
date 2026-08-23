@@ -153,11 +153,8 @@ impl Hosts {
 }
 
 /// One [`Host`] for the mux binary `bin` on `machine`, answering as the source `id`.
-///
-/// The SINGLE place a machine's transport construction data is assembled, so a source
-/// added LATER (an async mux discovery result) reaches its machine exactly as one built
-/// at launch does. The ControlMaster socket is per MACHINE, not per source: several muxes
-/// on one machine share the one multiplexed connection.
+/// The transport comes from [`crate::machine::kind_for`], the one place a machine's
+/// construction data is assembled, so this host and the matching `Source` agree.
 pub fn host_for(
     machine: &str,
     bin: &str,
@@ -166,22 +163,7 @@ pub fn host_for(
     xmux_dir: &std::path::Path,
     local_socket: Option<String>,
 ) -> Host {
-    let kind = if machine == LOCAL_SOURCE {
-        crate::machine::MachineKind::Local {
-            id,
-            socket: local_socket,
-        }
-    } else {
-        crate::machine::MachineKind::Ssh {
-            id,
-            alias: machine.to_string(),
-            control_path: xmux_dir
-                .join(format!("cm-{machine}.sock"))
-                .to_string_lossy()
-                .into_owned(),
-            os: os.to_string(),
-        }
-    };
+    let kind = crate::machine::kind_for(machine, id, os, xmux_dir, local_socket);
     Host::new(kind.transport(), for_binary(bin))
 }
 

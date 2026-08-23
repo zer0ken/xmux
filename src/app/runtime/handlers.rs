@@ -196,6 +196,18 @@ impl Runtime {
                         &env.xmux_dir,
                         env.local_socket.clone(),
                     ));
+                    // The loop drives the `Host`; the OFF-LOOP ops (create a session, read
+                    // panes, read border styles) resolve a source by id through `Env`. Both
+                    // have to learn the source, or it paints and scans but refuses every
+                    // operation with `unknown source`.
+                    env.add_source(crate::source::for_machine_mux(
+                        &machine,
+                        &bin,
+                        id.clone(),
+                        std::env::consts::OS,
+                        &env.xmux_dir,
+                        env.local_socket.clone(),
+                    ));
                     switcher.add_source(id.clone(), state);
                     scan_or_dispatch_host(mgr, hosts, detecting, &id, vc, vr);
                 }

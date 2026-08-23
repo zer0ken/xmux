@@ -1,7 +1,6 @@
 use super::*;
 use crate::config::Config;
 use crate::source::Source;
-use std::collections::HashMap;
 
 fn fake_source(alias: &str) -> Source {
     Source {
@@ -17,8 +16,6 @@ fn fake_source(alias: &str) -> Source {
 
 fn fake_env_with_sources(aliases: &[&str]) -> Env {
     let srcs: Vec<Source> = aliases.iter().map(|a| fake_source(a)).collect();
-    let by_alias: HashMap<String, Source> =
-        srcs.iter().map(|s| (s.alias.clone(), s.clone())).collect();
     let ssh_aliases: Vec<String> = aliases
         .iter()
         .filter(|a| **a != crate::session::LOCAL_SOURCE)
@@ -32,8 +29,7 @@ fn fake_env_with_sources(aliases: &[&str]) -> Env {
     Env {
         cfg: Config::default(),
         cfg_warnings: Vec::new(),
-        srcs,
-        by_alias,
+        sources: std::sync::RwLock::new(srcs),
         local_muxes: vec!["cmd.exe".into()],
         ui_prefix: "C-g".into(),
         xmux_dir,
@@ -602,7 +598,7 @@ fn prefix_s_toggles_state() {
 #[test]
 fn fake_env_builder_constructs() {
     let env = fake_env_with_sources(&["local", "jupiter06"]);
-    assert_eq!(env.srcs.len(), 2);
+    assert_eq!(env.source_list().len(), 2);
 }
 
 #[test]
@@ -1163,6 +1159,22 @@ async fn a_discovered_mux_becomes_a_source_on_the_spot() {
     let h = rt.hosts.get("prod:zellij").expect("the discovered source");
     assert_eq!(h.mux.kind(), "zellij");
     assert_eq!(h.transport.host_id(), "prod:zellij", "it answers as itself");
+    // And the OFF-LOOP ops resolve it: they look a source up in `Env`, so a discovered
+    // source missing from that list scans and paints but refuses `prefix n` with
+    // `unknown source`.
+    let src = rt
+        .env
+        .source("prod:zellij")
+        .expect("the off-loop ops know the discovered source");
+    assert_eq!(
+        src.binary, "zellij",
+        "and reach it with zellij's own binary"
+    );
+    assert_eq!(
+        src.host().transport.host_id(),
+        "prod:zellij",
+        "over the same machine the loop's host uses"
+    );
     assert!(
         rt.state.groups.iter().any(|g| g.source == "prod:zellij"),
         "and it has a card: {:?}",

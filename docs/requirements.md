@@ -111,7 +111,10 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   while the mux already served keeps the id it was painted with: that id is what the
   frozen order, the persisted selection, and anything the user typed are keyed to, so
   nothing is renamed and nothing is removed. New cards APPEND, so a card the user is
-  looking at does not move because another machine answered. **Tests:**
+  looking at does not move because another machine answered. An added source is
+  OPERABLE, not merely visible: the loop's host registry and the off-loop source list
+  both learn it, so creating a session on it, reading its panes, and reading its border
+  styles work exactly as on a configured source. **Tests:**
   `a_discovered_mux_becomes_a_source_on_the_spot`,
   `a_discovered_source_appends_and_leaves_the_selection_put`,
   `muxes_found_forwards_the_add_to_the_loop`,
