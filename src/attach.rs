@@ -1,33 +1,11 @@
-//! The out-of-mux terminal handover into a mux session: the nesting guard
-//! (`in_mux`/`nest_guard`, refusing to attach a mux from inside one) and the
-//! `run_attach` exec that hands the controlling terminal to the mux client.
+//! The terminal handover into a mux session: the `run_attach` exec that hands the
+//! controlling terminal to the mux client.
+//!
+//! It does not ask whether xmux is itself inside a mux. The app attaches its clients as
+//! PTY children rather than handing over this terminal, so nesting costs it nothing, and
+//! a handover a mux WOULD refuse is left to that mux to refuse in its own words.
 
 use anyhow::{anyhow, Result};
-
-/// Reports whether the process is running inside a mux, by checking `$TMUX`
-/// (psmux also sets `TMUX` for tmux-compat, so this one check covers both).
-pub fn in_mux() -> bool {
-    in_mux_value(std::env::var("TMUX").ok().as_deref())
-}
-
-/// The pure core of [`in_mux`]: a non-empty value means inside a mux. Split out
-/// so it is testable without mutating the process environment.
-fn in_mux_value(tmux: Option<&str>) -> bool {
-    matches!(tmux, Some(v) if !v.is_empty())
-}
-
-/// Returns a descriptive error when `in_mux` is true, else `Ok`. Attaching a mux
-/// from inside a mux is refused (psmux/tmux forbid nesting). The message tells
-/// the user to detach first (prefix d). It takes the [`in_mux`] result as a
-/// parameter so it is testable without touching the environment.
-pub fn nest_guard(in_mux: bool) -> Result<()> {
-    if in_mux {
-        return Err(anyhow!(
-            "already inside a mux session: detach first (prefix d), then run xmux"
-        ));
-    }
-    Ok(())
-}
 
 /// Hands the controlling terminal to a child process and waits.
 pub trait Execer {
@@ -66,27 +44,6 @@ pub fn run_attach(e: &dyn Execer, argv: &[String]) -> Result<()> {
 mod tests {
     use super::*;
     use std::cell::RefCell;
-
-    #[test]
-    fn in_mux_value_cases() {
-        assert!(in_mux_value(Some("/tmp/tmux-1000/default,1234,0")));
-        assert!(!in_mux_value(Some("")));
-        assert!(!in_mux_value(None));
-    }
-
-    #[test]
-    fn nest_guard_outside() {
-        assert!(nest_guard(false).is_ok());
-    }
-
-    #[test]
-    fn nest_guard_inside() {
-        let err = nest_guard(true).unwrap_err();
-        assert!(
-            err.to_string().to_lowercase().contains("detach"),
-            "message should mention detaching: {err}"
-        );
-    }
 
     /// Records the argv it was handed and returns a canned result.
     struct FakeExecer {

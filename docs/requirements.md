@@ -119,9 +119,10 @@ no function, and no test, so renaming code is never a documentation change.
   `⚠ unreachable: <reason>` carrying the clause that NAMES the failure, since a tool
   wraps it in its own context and a card is only as wide as the nav; the host screen
   carries the whole message, so no part of why it failed is cut off.
-- **FR-B8** - A session running xmux is never mirrored into the terminal view.
-  This is prevented structurally, not by a runtime check: the nest guard (FR-D3)
-  refuses to run xmux inside a mux, so no attachable session can be running xmux.
+- **FR-B8** - A session running xmux mirrors like any other session: the terminal view
+  shows that xmux's own screen. This holds for the session xmux is ITSELF running in,
+  which mirrors its own screen one frame behind and stays stable there - no runaway
+  redraw, no special case. Nothing is refused to keep it that way.
 - **FR-B9** - The nav's bottom row is a status line, not a screen-wide footer. At
   rest it names only the prefix; the states that outrank it (a refusal, scan progress,
   an active filter) take the row while they apply. Arming the prefix widens the PAINT
@@ -227,8 +228,10 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-D2** - The app serves its control socket concurrently while a session is
   displayed (attach spawning is off-loop), so `ping` / `dump` / `status` / `switch`
   are answered without blocking.
-- **FR-D3** - Running the app inside a mux is refused (exit 2 with guidance), not
-  warned: nested, every attach is refused, leaving a doomed loop.
+- **FR-D3** - The app runs inside a mux, and inside its own session. It attaches its
+  mux clients as PTY children rather than handing over the terminal, so its attachments
+  do not nest and none of them is refused; a `xmux attach` handover that a mux WOULD
+  refuse is left to that mux to refuse, in its own words, rather than pre-empted here.
 - **FR-D4** - Socket hygiene: a stale socket is removed before bind, the socket is
   owner-only (`0600`) on unix, and it is removed on exit. A crashed instance's leftover
   `ctl-*.sock` marker is swept on the next startup (any marker whose socket no longer

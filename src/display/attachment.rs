@@ -633,13 +633,11 @@ mod tests {
     // a ConPTY, and confirm its stdout round-trips into the `Grid` (the pump fed it),
     // an `Output` event was emitted, and `connecting` cleared.
     //
-    // `#[ignore]` and MUST be run in a REAL, NON-NESTED terminal:
+    // `#[ignore]` and MUST be run in a REAL terminal, which CI does not have:
     //   cargo test -p xmux display::attachment::tests::spawn_attachment -- --ignored --nocapture
-    // Run inside a mux pane (nested ConPTY) it FAILS even though the pump pipeline
-    // runs (`connecting` still clears) — Windows does not deliver a nested
-    // pseudoconsole child's output to the outer master. This is exactly why the
-    // app refuses to run inside a mux (`attach::nest_guard`): xmux must own the
-    // terminal directly. So this smoke is a real-terminal gate, not a CI test.
+    // A mux pane is a real terminal for this purpose - the app runs there and its
+    // ConPTY children feed their grids - so this is a real-terminal gate, not a
+    // non-nested one.
     #[ignore = "spawns a real ConPTY child; run only in a non-nested real terminal"]
     #[test]
     fn spawn_attachment_feeds_grid_smoke() {

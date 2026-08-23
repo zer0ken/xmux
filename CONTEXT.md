@@ -80,6 +80,10 @@ UI elements a user perceives as distinct things:
   failed (the reason its transport gave, the provider that put it on the roster, the ssh
   stanza it was reached through) and the rescan key; the EMPTY state's rows are the keys that start a session or rescan. A host
   still scanning gets no screen: an in-flight state is the nav's to show.
+- nesting - xmux running inside a mux session. Allowed, and not a special case: the
+  app attaches mux clients as PTY CHILDREN, so nothing it opens is a terminal handover
+  that a mux would refuse. A session running xmux mirrors like any other, its own
+  session included, which draws its screen one frame behind and holds there.
 - grid - the live terminal content drawn in the terminal view: xmux's in-memory
   cell mirror of the attached session's screen, fed by the terminal-emulation parser.
 - cursor - the real terminal cursor placed over the grid at the mux's cursor cell
