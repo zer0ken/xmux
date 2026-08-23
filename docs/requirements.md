@@ -213,10 +213,15 @@ no function, and no test, so renaming code is never a documentation change.
   source's driver takes over, the previously shown session stays on screen until the fresh grid is ready
   (stale-while-revalidate), and the canonical selection is synced immediately.
 - **FR-C3** - Source degradation is graceful, never a silent loss: an unreachable source
-  is marked `⚠ unreachable: <reason>`, and its host screen names the PROVIDER that put
-  that host on the roster, so a host the user never wrote down is traceable to the thing
-  that offered it (and to the `[discovery]` key that would turn it off) rather than
-  standing there unexplained; a reachable-but-serverless source reads `(empty)`, a once-connected source keeps its last-known cards on a transient drop, and
+  is marked `⚠ unreachable: <reason>`, and its host screen states everything known about
+  the failure rather than leaving the user with a message alone - the reason its transport
+  gave, how many failures in a row it is, the mux binary asked for, how the machine is
+  addressed and the wait that bounds reaching it, the socket, the session-listing command
+  itself (spelled so it can be run by hand outside xmux), the PROVIDER that put that host
+  on the roster (so a host the user never wrote down is traceable to the thing that
+  offered it, and to the `[discovery]` key that would turn it off), the ssh stanza it was
+  reached through, what the OTHER muxes on that same machine answered (which is what says
+  whether the machine or the mux is down), and the log file holding the full history; a reachable-but-serverless source reads `(empty)`, a once-connected source keeps its last-known cards on a transient drop, and
   the reconnect sweep self-heals; a dropped display client is reaped and re-attached.
 - **FR-C4** - A switch lands on the picked window. A fresh first attach folds the
   window into the attach argv (ssh folds the pre-selection into one `ssh -t`);

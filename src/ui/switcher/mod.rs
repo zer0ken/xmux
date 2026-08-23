@@ -851,6 +851,15 @@ impl Switcher {
         // mux-reported `last_attached`, and re-sorting on it would reshuffle the tree
         // on every ~1.5s poll.
         let was_scanning = state.scanning.remove(&source);
+        // The failure run, counted where every result lands so no path can skip it: a
+        // result that failed lengthens it, one that answered clears it. It is shown, not
+        // acted on - see `State::failure_runs`.
+        match &err {
+            Some(_) => *state.failure_runs.entry(source.clone()).or_insert(0) += 1,
+            None => {
+                state.failure_runs.remove(&source);
+            }
+        }
         let existing = state.groups.iter().position(|g| g.source == source);
         if was_scanning {
             tree::sort_by_recency(&mut sessions);
