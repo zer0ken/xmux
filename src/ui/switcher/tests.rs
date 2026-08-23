@@ -1219,7 +1219,7 @@ async fn the_selected_card_is_painted_in_the_terminals_own_reverse_video() {
     assert_eq!(
         h.buf()[(0, sel)].symbol(),
         super::render::SELECTED_MARK,
-        "the selection mark still marks the selected card in the gutter"
+        "the selection mark stands in the selected card's address column"
     );
 }
 
@@ -1662,14 +1662,16 @@ async fn focused_collapsed_card_expands_to_two_rows() {
         "the selected card KEEPS the connector, so its session name stays in the column          every other name is in: {:?}",
         nav_line(&h, beta_row)
     );
-    // The selection mark marks both rows of the expanded card.
-    assert_eq!(
-        h.buf()[(0, beta_row - 1)].symbol(),
-        super::render::SELECTED_MARK
-    );
+    // The mark stands in the address column, on the detail row - the row that carries
+    // the session, the same row every other card puts its number on.
     assert_eq!(
         h.buf()[(0, beta_row)].symbol(),
         super::render::SELECTED_MARK
+    );
+    assert_eq!(
+        h.buf()[(0, beta_row - 1)].symbol(),
+        " ",
+        "the context row spends the column blank"
     );
     h.key(KeyCode::Up).await; // move off - beta collapses again
     assert_eq!(
@@ -2048,8 +2050,8 @@ async fn selecting_a_card_never_moves_its_session_name() {
             sess_mux("srv", "beta", "tmux", 200),
         ],
     ));
-    // The COLUMN, not the byte offset: the gutter holds `▌` and `└`, which are three
-    // bytes each, so a byte index would report a shift that is not on screen.
+    // The COLUMN, not the byte offset: the address column and the `└` connector hold
+    // multi-byte glyphs, so a byte index would report a shift that is not on screen.
     let col_of = |h: &Harness, name: &str| -> Option<usize> {
         let row = h.nav_row_of(&format!("{name}/0:w-{name}"))?;
         let line = nav_line(h, row);
@@ -2076,11 +2078,11 @@ fn every_unselected_card_carries_its_0_based_number_beside_its_session() {
     term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, &state))
         .unwrap();
     let buf = term.backend().buffer();
-    // Column 0 is the selection mark's own column; the number follows it, right-aligned
-    // in one width for the whole frame, and sits on the card's DETAIL line - the row
-    // carrying the session it addresses, not the host/mux context above it. The SELECTED
-    // card shows no number: it is the address you would type to get where you already
-    // are, and the selection mark beside it says so.
+    // The address column starts at column 0, right-aligned in one width for the whole
+    // frame, and sits on the card's DETAIL line - the row carrying the session it
+    // addresses, not the host/mux context above it. The SELECTED card holds the mark
+    // there instead of a number: it is the address you would type to get where you
+    // already are.
     let selected = sw.list_state.selected().unwrap();
     let num_w = sw.rows.len().saturating_sub(1).to_string().len().max(1) as u16;
     let read =
@@ -2089,27 +2091,22 @@ fn every_unselected_card_carries_its_0_based_number_beside_its_session() {
     for i in 0..sw.rows.len() {
         let detail = top + sw.card_height(i) - 1;
         let want = if i == selected {
-            String::new()
+            super::render::SELECTED_MARK.to_string()
         } else {
             i.to_string()
         };
         assert_eq!(
-            read(1, detail, num_w).trim(),
+            read(0, detail, num_w).trim(),
             want,
-            "card {i} number on its detail row {detail} (selected={selected})"
+            "card {i} address on its detail row {detail} (selected={selected})"
         );
         if sw.card_height(i) > 1 {
             assert_eq!(
-                read(1, top, num_w).trim(),
+                read(0, top, num_w).trim(),
                 "",
-                "card {i}'s context row leaves the number column blank"
+                "card {i}'s context row leaves the address column blank"
             );
         }
-        assert_eq!(
-            buf[(0u16, detail)].symbol() == super::render::SELECTED_MARK,
-            i == selected,
-            "only the selected card marks column 0 with the selection mark"
-        );
         top += sw.card_height(i);
     }
 }

@@ -104,12 +104,12 @@ UI elements a user perceives as distinct things:
   re-sorts). `preselect` / `reselect` are the launch and post-rescan selections.
 - selection highlight - the selected card's rendering: reverse video (ratatui's
   `highlight_style`, filling the whole card), the terminal theme's own selected look,
-  plus a `❯` mark in the gutter of both card lines, in its own column left of the
-  number. The inversion is uniform because the highlight pins fg and bg to `Reset`:
-  inverting per span would turn each level color into a background and stripe the card.
-  That same pinning is why the mark is an open shape and never a solid block: it draws
-  inverted too, so a block fills its cell and disappears into the bar while an outline
-  keeps a readable silhouette.
+  plus a `❯` mark standing in the address column of the card's detail line, where
+  every other card carries its number. The inversion is uniform because the highlight
+  pins fg and bg to `Reset`: inverting per span would turn each level color into a
+  background and stripe the card. That same pinning is why the mark is an open shape and
+  never a solid block: it draws inverted too, so a block fills its cell and disappears
+  into the band while an outline keeps a readable silhouette.
   `[ui] selection-style` paints a named background instead. `selected` + `highlight`
   follow ratatui's list vocabulary.
 - spinner - the braille activity glyph on a loading card (and, historically, a
@@ -118,14 +118,14 @@ UI elements a user perceives as distinct things:
   its detail line is `{session}/` + a spinner rather than a window part.
 - status - a host-state card's detail-line state text (`scanning…` / `no sessions` /
   `⚠ unreachable`). Not to be confused with the hint bar (below) or the `chrome`.
-- card number - the dim 0-based index in a card's left gutter, and the address
-  `prefix <digit>` jumps to. Every UNSELECTED card carries one; the selected card shows
-  none, because its number is the address you would type to reach where you already are
-  and the selection mark in the column beside it says so. The column is still spent, blank,
-  so a card's name never moves as the selection passes over it. It sits on the DETAIL
-  line, beside the session it addresses, so a collapsed card puts it in the same place
-  as an expanded one. The number column is one width per frame, so the names stay
-  aligned and the numbers line up by units place as the count crosses 10.
+- address column - the leftmost column set of every card, holding the one thing that
+  answers "where is this": the dim 0-based number `prefix <digit>` jumps to, or, on the
+  SELECTED card, the selection mark - the number there would be the address of where you
+  already are. One column carries both, so a card's name never moves as the selection
+  passes over it. It is written on the DETAIL line, beside the session it addresses, so a
+  collapsed card puts it in the same place as an expanded one; a context line spends the
+  same width blank. The column is one width per frame, so the names stay aligned and the
+  numbers line up by units place as the count crosses 10.
 - jump - the digits-only popup `prefix <digit>` opens. It acts WHILE open: each edit
   moves the selection, so Enter only closes it and Esc restores where it started. It
   accepts only a digit that keeps the number addressing a real card, so one-, two-,

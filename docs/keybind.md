@@ -56,8 +56,9 @@ with a brief message. Creating under an unreachable host is likewise refused.
 
 ### Jumping by number
 
-Every card carries a dim 0-based number in its left gutter, on the same row as the
-session it names, the selected card included. `prefix <digit>` jumps straight there
+Every card carries a dim 0-based number in its left column, on the same row as the
+session it names. The selected card shows the selection mark there instead: its number
+is the address of where you already are. `prefix <digit>` jumps straight there
 and leaves a small popup open holding the number, so anything past 9 is reached by
 typing the rest of it (`prefix 1` then `2` lands on 12, then `7` on 127).
 
