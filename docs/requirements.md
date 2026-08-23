@@ -116,9 +116,9 @@ no function, and no test, so renaming code is never a documentation change.
   is outstanding instead of only that it is busy, and no status word repeats what the
   spinner already says. The nav's scan progress turns the same spinner on the same
   frame. A card that has SETTLED reads a word instead: `no sessions`, or
-  `⚠ unreachable: <reason>` carrying the clause that NAMES the failure, since a tool
-  wraps it in its own context and a card is only as wide as the nav; the host screen
-  carries the whole message, so no part of why it failed is cut off.
+  `⚠ unreachable`. The word is all a card carries: WHY a host failed is stated on
+  its view screen, which has the room to keep a tool's diagnostic whole, while a card
+  is only as wide as the nav and could carry no more than a cut-down copy of it.
 - **FR-B8** - The session xmux is ITSELF running in is never mirrored into the terminal
   view: showing it attaches a second client to the session that HOLDS xmux, which moves
   the user's own client and paints xmux inside itself. The refusal is on the terminal-view
@@ -213,8 +213,8 @@ no function, and no test, so renaming code is never a documentation change.
   source's driver takes over, the previously shown session stays on screen until the fresh grid is ready
   (stale-while-revalidate), and the canonical selection is synced immediately.
 - **FR-C3** - Source degradation is graceful, never a silent loss: an unreachable source
-  is marked `⚠ unreachable: <reason>`, and its host screen states everything known about
-  the failure rather than leaving the user with a message alone - the reason its transport
+  is marked `⚠ unreachable`, and its view screen states everything known about the
+  failure rather than leaving the user with a message alone - the reason its transport
   gave, how many failures in a row it is, the mux binary asked for, how the machine is
   addressed and the wait that bounds reaching it, the socket, the session-listing command
   itself (spelled so it can be run by hand outside xmux), the PROVIDER that put that host
