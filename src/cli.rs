@@ -175,10 +175,6 @@ async fn run_direct_attach(env: &Env, addr: &str) -> i32 {
         );
         return 1;
     };
-    if let Err(e) = attach::nest_guard(attach::in_mux()) {
-        eprintln!("xmux: {e}");
-        return 1;
-    }
     if let Err(e) = attach::run_attach(
         &OsExecer,
         &src.host().interactive_attach_command(&target.name, None),

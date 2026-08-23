@@ -23,7 +23,6 @@ use crate::app::input::{
     leading_ctrl_arrow, resolve_mouse_chain, resolve_nav_key, to_grid_local,
     view_border_drag_height, view_border_drag_width, ChainAction, MouseState, StdinOutcome,
 };
-use crate::attach;
 use crate::display::attachment::PtyEvent;
 use crate::display::dispatch::Action;
 use crate::display::registry::AttachRegistry;
@@ -882,13 +881,6 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     use std::io::Read;
     use std::time::Duration;
 
-    // The app owns the terminal and attaches mux clients as PTY children; nested
-    // inside a mux every attach is refused. So running it inside a mux is refused.
-    if let Err(e) = attach::nest_guard(attach::in_mux()) {
-        eprintln!("xmux: {e}");
-        eprintln!("xmux: the app must be your terminal entry, not run inside a mux.");
-        return 2;
-    }
     let _ = std::fs::create_dir_all(&env.xmux_dir);
 
     // The palette is ANSI-16 slots and attributes throughout, so it needs nothing from
