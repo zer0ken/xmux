@@ -157,25 +157,15 @@ pub(super) fn scroll_to(
     first
 }
 
-/// The horizontal scrollbar thumb's `(start, len)` along a `track` of cells, for `shown`
-/// of `total` columns starting at `first`.
-///
-/// Computed here rather than handed to ratatui's `Scrollbar`, whose thumb length divides
-/// by `content_length - 1 + viewport`: at the handful of columns a nav band holds that
-/// rounds a two-of-three view up to the WHOLE track, which reads as "nothing is off
-/// screen" precisely when something is. This is proportional, never shorter than a cell,
-/// and flush with the track's end when the last column is on screen.
-pub(super) fn thumb(track: u16, total: usize, shown: usize, first: usize) -> (u16, u16) {
-    if track == 0 || total == 0 || shown == 0 || shown >= total {
-        return (0, track);
-    }
-    let len = ((shown * track as usize) / total)
-        .max(1)
-        .min(track as usize) as u16;
-    let span = track - len;
-    let max_first = total - shown;
-    let start = (first.min(max_first) * span as usize / max_first) as u16;
-    (start, len)
+/// How many cards sit in the columns OFF SCREEN either side of the window that starts at
+/// `first` and holds `shown` columns: `(left, right)`. Cards, not columns, because a count
+/// of columns answers a question about the layout while the reader is asking one about
+/// their sessions.
+pub(super) fn hidden_counts(placed: &[Placed], first: usize, shown: usize) -> (usize, usize) {
+    let last = first + shown; // exclusive
+    let left = placed.iter().filter(|p| p.col < first).count();
+    let right = placed.iter().filter(|p| p.col >= last).count();
+    (left, right)
 }
 
 /// Turns placements into screen rects for the columns starting at `first`, in `area`.
@@ -346,19 +336,26 @@ mod tests {
     }
 
     #[test]
-    fn the_thumb_is_proportional_and_reaches_both_ends() {
-        // Two of three columns on screen: two thirds of the track, flush left at offset
-        // 0 and flush right at the last offset.
-        assert_eq!(thumb(30, 3, 2, 0), (0, 20));
-        assert_eq!(thumb(30, 3, 2, 1), (10, 20));
-        // Nothing off screen: the whole track, so the bar never implies a hidden column.
-        assert_eq!(thumb(30, 2, 2, 0), (0, 30));
-        // One of six: a sixth of the track, and it still walks to the far end.
-        assert_eq!(thumb(30, 6, 1, 0), (0, 5));
-        assert_eq!(thumb(30, 6, 1, 5), (25, 5));
-        // Degenerate tracks cannot panic or vanish.
-        assert_eq!(thumb(0, 5, 2, 0), (0, 0));
-        assert_eq!(thumb(3, 100, 1, 0).1, 1, "never shorter than a cell");
+    fn the_hidden_counts_are_cards_either_side_of_the_window() {
+        // Three columns of two cards. With one column on screen, the count either side is
+        // in CARDS: what the reader is looking for is a session, not a column.
+        let cards = run(2, 10, 10);
+        let mut all = cards;
+        all.extend(run(2, 10, 10));
+        all.extend(run(2, 10, 10));
+        let p = place(&all, 3); // one run per column
+        assert_eq!(
+            hidden_counts(&p, 0, 1),
+            (0, 4),
+            "two columns hide to the right"
+        );
+        assert_eq!(hidden_counts(&p, 1, 1), (2, 2), "one either side");
+        assert_eq!(hidden_counts(&p, 2, 1), (4, 0), "all of them to the left");
+        assert_eq!(
+            hidden_counts(&p, 0, 3),
+            (0, 0),
+            "nothing hidden, nothing counted"
+        );
     }
 
     #[test]

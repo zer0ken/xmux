@@ -3211,41 +3211,105 @@ fn a_column_holds_whole_host_mux_runs() {
 }
 
 #[test]
-fn the_column_scrollbars_row_is_outside_every_card() {
-    // Cards too wide to all fit spend the band's bottom row on the horizontal scrollbar.
-    // That row must be OUTSIDE every card rect: the selected card is painted by inverting
-    // its rect, and a thumb inside one inverts with it into a hole in the bar.
-    // aa's run is 3 rows and bb's is 4: together exactly the 7 rows the band would have
-    // without a scrollbar, so a bar painted OVER the cards would land on bb's last card.
-    let (sw, term) = portrait(
+fn the_hidden_columns_are_counted_on_the_status_row() {
+    // Columns too wide to all fit leave cards off screen. The status row says which way
+    // they went and how many, at the end they went off: the count is in CARDS, because
+    // what the reader is hunting for is a session, not a column.
+    //
+    // The row is the band's own last row, never a card's: a selected card inverts its
+    // whole rect, and anything sharing that rect inverts with it.
+    let (_sw, mut term) = portrait(
         column_flow_scan_sized(&[("aa", 2), ("bb", 3), ("cc", 2)], 18),
         60,
         20,
     );
-    let buf = term.backend().buffer();
-    let cells = cells_of(&sw);
-    assert!(!cells.is_empty(), "something is painted");
-    let bar_y = 6; // band 8 rows: 7 of cards, minus the row this bar takes, then the hint bar
-    let row: String = (0..buf.area.width)
-        .map(|x| buf[(x, bar_y)].symbol())
-        .collect();
-    let thumb = row.chars().filter(|c| *c == '▄').count();
+    let bar_y = 7; // the band is 8 rows: 7 of cards, then its own status row
+    let row = |t: &Terminal<TestBackend>| -> String {
+        let buf = t.backend().buffer();
+        (0..buf.area.width)
+            .map(|x| buf[(x, bar_y)].symbol())
+            .collect()
+    };
+    let at_left = row(&term);
     assert!(
-        thumb > 0 && thumb < buf.area.width as usize,
-        "row {bar_y} carries a THUMB, not nothing and not a full-width rule: {row:?}"
+        at_left.contains("C-g"),
+        "the bar still names the prefix: {at_left:?}"
     );
-    for (i, rect) in &cells {
-        assert!(
-            rect.y + rect.height <= bar_y,
-            "card {i} at {rect:?} must not reach the scrollbar row {bar_y}"
-        );
-    }
     assert!(
-        (0..buf.area.width).all(|x| !buf[(x, bar_y)].modifier.contains(Modifier::REVERSED)),
-        "nothing on the scrollbar row is inverted, so the thumb reads as a thumb"
+        at_left.trim_end().ends_with("more >>"),
+        "and the cards off to the right are counted at that end: {at_left:?}"
+    );
+    assert!(
+        !at_left.contains("<<"),
+        "nothing is off to the left from the first column: {at_left:?}"
+    );
+    // The label sits on its own background, sized to itself; the counts do not.
+    let bar_bg = crate::ui::palette::get().bar_bg;
+    let buf = term.backend().buffer();
+    let lit = (0..buf.area.width)
+        .filter(|x| buf[(*x, bar_y)].bg == bar_bg)
+        .count();
+    assert!(
+        lit > 0 && lit < buf.area.width as usize / 2,
+        "the label is a label, not a slab: {lit} of {} cells",
+        buf.area.width
+    );
+    // Walk to the last card: now the hidden columns are behind us, so the count swaps ends.
+    let mut state = crate::state::State::from_scan(column_flow_scan_sized(
+        &[("aa", 2), ("bb", 3), ("cc", 2)],
+        18,
+    ));
+    let mut sw = Switcher::new(&mut state);
+    sw.move_to(-1, &state);
+    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
+        .unwrap();
+    let at_right = row(&term);
+    assert!(
+        at_right.contains("<<") && at_right.contains("more"),
+        "the cards left behind are counted at the left end: {at_right:?}"
     );
 }
-
+#[test]
+fn the_portrait_status_line_is_a_label_until_the_prefix_is_armed() {
+    // Nothing off screen, so the status row is the bar's alone. It still paints only what
+    // it has to say plus a cell of padding: a full-width slab of bar colour across a wide
+    // window is a lot of paint for one word.
+    let (_sw, mut term) = portrait(column_flow_scan(&["aa", "bb", "cc"], 2), 60, 20);
+    let bar_bg = crate::ui::palette::get().bar_bg;
+    let bar_y = 7;
+    {
+        let buf = term.backend().buffer();
+        let row: String = (0..buf.area.width)
+            .map(|x| buf[(x, bar_y)].symbol())
+            .collect();
+        assert!(row.contains("C-g"), "the bar names the prefix: {row:?}");
+        assert_eq!(buf[(0, bar_y)].bg, bar_bg, "on its own background: {row:?}");
+        let lit = (0..buf.area.width)
+            .filter(|x| buf[(*x, bar_y)].bg == bar_bg)
+            .count();
+        assert!(
+            lit < buf.area.width as usize / 2,
+            "sized to the content, not the row: {lit} of {} cells",
+            buf.area.width
+        );
+    }
+    // Arming the prefix takes the whole width: the cheatsheet has to be readable over
+    // everything it now covers.
+    let mut state = crate::state::State::from_scan(column_flow_scan(&["aa", "bb", "cc"], 2));
+    let mut sw = Switcher::new(&mut state);
+    state.chrome.set_armed(true);
+    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
+        .unwrap();
+    let buf = term.backend().buffer();
+    let armed_y = bar_y; // it widens in place: the band's own row, the window's full width
+    assert!(
+        (0..buf.area.width).all(|x| buf[(x, armed_y)].bg == bar_bg),
+        "the armed bar fills its row: {:?}",
+        (0..buf.area.width)
+            .map(|x| buf[(x, armed_y)].symbol())
+            .collect::<String>()
+    );
+}
 #[test]
 fn the_side_lists_scrollbar_column_is_outside_every_card() {
     // Same rule on the other axis: when the side list overflows, its thumb takes the

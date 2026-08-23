@@ -194,6 +194,23 @@ pub(crate) fn error_flash_style() -> Style {
         .fg(crate::ui::palette::get().bar_fg)
 }
 
+/// How much of its row the hint bar paints.
+///
+/// The bar is a status bar where it owns its row, and a label where it does not: the
+/// portrait band's bar shares one row with the horizontal scrollbar, so at rest it paints
+/// its glyphs alone and leaves the thumb showing. Arming the prefix takes the whole row
+/// back, because the cheatsheet has to be readable over whatever it covers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BarFill {
+    /// The whole rect: a solid bar. What an armed or flashing bar always uses, and what
+    /// the side column's own status row uses.
+    Row,
+    /// The text plus a cell of padding, on its own background: the portrait band's bar
+    /// shares its row with the horizontal scrollbar, so it takes only the cells it needs
+    /// and leaves the rest of the row to the thumb.
+    Content,
+}
+
 /// The switcher's chrome view state: the view border/hint_bar/host-info draws and
 /// their inputs (flash, spinner set + frame, auto-hide + hover cues, view border
 /// colours, the ssh-config text, the configured prefix string, whether the prefix is
@@ -592,11 +609,17 @@ impl Chrome {
         frame: &mut Frame,
         area: Rect,
         state: &crate::state::State,
+        fill: BarFill,
     ) {
         let lines = self.hint_bar_lines(area.width, state);
         // Key tokens get the accent only on the built-in default style with no flash
         // showing: a `[ui] hint-bar-style` override keeps its exact colours (uniform,
         // as configured), and a flash stays solid error-red.
+        let width = lines
+            .iter()
+            .map(|l| l.chars().count() as u16)
+            .max()
+            .unwrap_or(0);
         let styled = self.flash.is_empty() && self.hint_bar_style == hint_bar_default_style();
         let text = if styled {
             Text::from(
@@ -618,11 +641,38 @@ impl Chrome {
         // An armed bar floats over the live grid, so without this the grid's own
         // characters survive in the columns the bar's text does not reach and the bar
         // reads as text spilled across the screen instead of a bar covering it.
-        frame.render_widget(Clear, area);
+        let painted = match fill {
+            BarFill::Row => area,
+            BarFill::Content => Self::bar_content_rect(area, width),
+        };
+        frame.render_widget(Clear, painted);
         frame.render_widget(
             Paragraph::new(text).style(self.hint_bar_render_style()),
-            area,
+            painted,
         );
+    }
+
+    /// How many cells a [`BarFill::Content`] bar paints, so whatever else is on the row
+    /// (the portrait flow's scrollbar) can start where the bar stops instead of being
+    /// painted over.
+    pub(crate) fn hint_bar_chip_width(&self, width: u16, state: &crate::state::State) -> u16 {
+        let content = self
+            .hint_bar_lines(width, state)
+            .iter()
+            .map(|l| l.chars().count() as u16)
+            .max()
+            .unwrap_or(0);
+        Self::bar_content_rect(Rect::new(0, 0, width, 1), content).width
+    }
+
+    /// The bar's rect trimmed to what it has to say, plus one cell of padding, so a
+    /// resting bar reads as a label on its row instead of a slab of colour across a
+    /// window it has one word for. Never wider than the row it was given.
+    fn bar_content_rect(area: Rect, content_w: u16) -> Rect {
+        Rect {
+            width: content_w.saturating_add(1).min(area.width),
+            ..area
+        }
     }
 }
 
