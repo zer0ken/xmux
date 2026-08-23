@@ -1033,6 +1033,49 @@ async fn unreachable_host_screen_keeps_a_long_reason_whole() {
 }
 
 #[tokio::test]
+async fn unreachable_host_screen_names_the_provider_that_offered_the_host() {
+    // A host that fails is only half an answer while the user cannot tell why it is on
+    // the list at all: a tailnet peer nobody wrote down reads as a mystery. The screen
+    // names the provider that put it there, which is also the one they would turn off.
+    let mut h = Harness::from_sources(&["kyla"]);
+    h.state.chrome.set_roster_providers(
+        [("kyla".to_string(), "tailscale".to_string())]
+            .into_iter()
+            .collect(),
+    );
+    h.sw.apply_source_result(
+        "kyla".into(),
+        vec![],
+        Some("connection timed out".into()),
+        &mut h.state,
+    );
+    h.draw();
+    let out = h.view_text();
+    assert!(out.contains("provider"), "the row is named:\n{out}");
+    assert!(out.contains("tailscale"), "and carries the answer:\n{out}");
+}
+
+#[tokio::test]
+async fn a_host_nothing_recorded_gets_no_provider_row() {
+    // An empty map is not "offered by nothing": it is nothing recorded. The row is
+    // absent rather than blank, so the screen never states an answer it does not have.
+    let mut h = Harness::from_sources(&["kyla"]);
+    h.sw.apply_source_result(
+        "kyla".into(),
+        vec![],
+        Some("connection timed out".into()),
+        &mut h.state,
+    );
+    h.draw();
+    let out = h.view_text();
+    assert!(
+        out.contains("connection timed out"),
+        "the screen is up:\n{out}"
+    );
+    assert!(!out.contains("provider"), "and says nothing of one:\n{out}");
+}
+
+#[tokio::test]
 async fn unreachable_host_screen_shows_ssh_config_stanza() {
     let mut h = Harness::from_sources(&["jupiter00"]);
     h.state.chrome.set_ssh_config_text(

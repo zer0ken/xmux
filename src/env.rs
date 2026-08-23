@@ -4,6 +4,7 @@
 //! over the live mux — including the per-source/per-session probes the event
 //! loop streams in.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,6 +35,11 @@ pub struct Env {
     pub local_muxes: Vec<String>,
     pub ui_prefix: String,
     pub xmux_dir: PathBuf,
+    /// Which provider put each host on the roster, keyed by HOST name (the machine half
+    /// of a source id). Read only to be SHOWN: the unreachable host screen names it, so
+    /// a host that fails is traceable to the thing that offered it. See
+    /// [`crate::roster::Provider`].
+    pub roster_providers: HashMap<String, crate::roster::Provider>,
     /// The ssh-config host aliases discovered at startup (a config-assembly product).
     /// `Hosts::build` reruns `Config::host_specs` over these to seed the runtime host
     /// registry, so the registry is built from config, not by re-reading `srcs`.
@@ -106,18 +112,25 @@ pub async fn build_env() -> (Env, Option<anyhow::Error>) {
     // The ROSTER: which machines xmux offers. `~/.ssh/config` first, so a hand-written
     // alias keeps the position the user gave it; then each network provider the config
     // enables. See `crate::roster`.
-    let aliases = crate::roster::merge(&[
-        if cfg.discovery.ssh_config {
-            config::ssh_host_aliases(&ssh_config_path())
-        } else {
-            Vec::new()
-        },
-        if cfg.discovery.tailscale {
-            crate::roster::tailscale_aliases()
-        } else {
-            Vec::new()
-        },
+    let offered = crate::roster::merge(&[
+        (
+            crate::roster::Provider::SshConfig,
+            if cfg.discovery.ssh_config {
+                config::ssh_host_aliases(&ssh_config_path())
+            } else {
+                Vec::new()
+            },
+        ),
+        (
+            crate::roster::Provider::Tailscale,
+            if cfg.discovery.tailscale {
+                crate::roster::tailscale_aliases()
+            } else {
+                Vec::new()
+            },
+        ),
     ]);
+    let aliases: Vec<String> = offered.iter().map(|(name, _)| name.clone()).collect();
     // This box's WSL distributions, on by default like every other provider: a box
     // without WSL, and a `wsl.exe` that cannot start, both cost an empty list rather
     // than an error. A `[[wsl]]` entry still names one distribution without listing
@@ -149,6 +162,7 @@ pub async fn build_env() -> (Env, Option<anyhow::Error>) {
         &xmux_dir,
         local_socket,
     );
+    let roster_providers = roster_providers(&cfg, &offered, &wsl_distros);
     let ui_prefix = cfg.ui_prefix().to_string();
     // The local host's `-S` socket, read back from the assembled local source so the
     // host registry (`Hosts::build`) targets the same server the source list does.
@@ -166,10 +180,48 @@ pub async fn build_env() -> (Env, Option<anyhow::Error>) {
             xmux_dir,
             ssh_aliases: aliases,
             wsl_distros,
+            roster_providers,
             local_socket: host_local_socket,
         },
         cfg_err,
     )
+}
+
+/// Which provider put each host on the roster, keyed by HOST name.
+///
+/// `offered` is what the roster providers answered, already deduped in precedence order.
+/// The two families that never pass through those providers are added behind it: a WSL
+/// distribution `wsl.exe` listed, and a host the CONFIG named outright, which is a host
+/// no provider offered and `host_specs` / `wsl_specs` append. First entry wins
+/// throughout, so a host that a provider listed keeps that provider even when a
+/// `[[hosts]]` entry also names it - the entry overrides its mux, it did not put it on
+/// the roster.
+fn roster_providers(
+    cfg: &Config,
+    offered: &[(String, crate::roster::Provider)],
+    wsl_distros: &[String],
+) -> HashMap<String, crate::roster::Provider> {
+    use crate::roster::Provider;
+    let mut out: HashMap<String, Provider> = HashMap::new();
+    for (name, provider) in offered {
+        out.entry(name.clone()).or_insert(*provider);
+    }
+    for machine in wsl_distros {
+        out.entry(machine.clone()).or_insert(Provider::Wsl);
+    }
+    for h in &cfg.hosts {
+        out.entry(h.ssh.clone()).or_insert(Provider::Config);
+    }
+    for w in &cfg.wsl {
+        if w.distro.is_empty() {
+            continue;
+        }
+        out.entry(format!("{}{}", crate::session::WSL_PREFIX, w.distro))
+            .or_insert(Provider::Config);
+    }
+    // This box is on the roster without anything offering it.
+    out.insert(crate::session::LOCAL_SOURCE.to_string(), Provider::Local);
+    out
 }
 
 /// Converts scan results to display groups, sorting sessions by recency.
@@ -422,6 +474,7 @@ mod tests {
             xmux_dir: PathBuf::from("."),
             ssh_aliases: Vec::new(),
             wsl_distros: Vec::new(),
+            roster_providers: HashMap::new(),
             local_socket: None,
         });
         let ops = env.ops();
@@ -488,6 +541,39 @@ mod tests {
         );
         assert_eq!(local_socket(None), None);
         assert_eq!(local_socket(Some("")), None);
+    }
+
+    #[test]
+    fn the_roster_records_what_offered_each_host() {
+        use crate::roster::Provider;
+        // `jupiter00` is on the roster twice over: a provider listed it AND a `[[hosts]]`
+        // entry names it. The entry overrides its mux, it did not put it on the roster.
+        let cfg = Config {
+            hosts: vec![
+                crate::config::HostConfig {
+                    ssh: "written-down".into(),
+                    mux: Default::default(),
+                },
+                crate::config::HostConfig {
+                    ssh: "jupiter00".into(),
+                    mux: Default::default(),
+                },
+            ],
+            ..Default::default()
+        };
+        let offered = vec![
+            ("jupiter00".to_string(), Provider::SshConfig),
+            ("kyla".to_string(), Provider::Tailscale),
+        ];
+        let got = roster_providers(&cfg, &offered, &["wsl.Ubuntu-24.04".to_string()]);
+
+        assert_eq!(got.get("jupiter00"), Some(&Provider::SshConfig));
+        assert_eq!(got.get("kyla"), Some(&Provider::Tailscale));
+        assert_eq!(got.get("wsl.Ubuntu-24.04"), Some(&Provider::Wsl));
+        // A host no provider listed is offered by the config that names it.
+        assert_eq!(got.get("written-down"), Some(&Provider::Config));
+        // This box is on the roster without anything offering it.
+        assert_eq!(got.get("local"), Some(&Provider::Local));
     }
 
     #[test]

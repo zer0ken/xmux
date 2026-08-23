@@ -4,10 +4,15 @@
 //! `discovery`, which scans a machine for sessions. This module answers only "which
 //! ssh targets exist", from one or more providers.
 //!
-//! Every provider yields plain ssh target names, so the rest of the app cannot tell
-//! where a name came from: a tailnet peer becomes a `MachineKind::Ssh` exactly as an
+//! Every provider yields plain ssh target names, so nothing downstream BEHAVES
+//! differently for one: a tailnet peer becomes a `MachineKind::Ssh` exactly as an
 //! `~/.ssh/config` alias does. That is what keeps the providers additive - adding one
 //! touches this module and the config, nothing downstream.
+//!
+//! Which provider offered a name is kept ALONGSIDE the name, never inside it, and is
+//! read for one purpose: a host that turns out unreachable names the thing that put it
+//! on the roster, so the user knows which provider to look at (or turn off) rather than
+//! hunting for a host they never wrote down.
 //!
 //! A provider that cannot run (the CLI is missing, the daemon is down, the output is
 //! unparseable) yields an empty list rather than an error. A host source going quiet
@@ -109,17 +114,52 @@ fn dns_first_label(dns: &str) -> Option<String> {
     Some(label.to_ascii_lowercase())
 }
 
+/// Which provider put a host on the roster.
+///
+/// It is display-only: nothing branches on it, because a host reaches its machine the
+/// same way whichever provider named it. The unreachable host screen shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Provider {
+    /// A `Host` alias in `~/.ssh/config`.
+    SshConfig,
+    /// An online peer of this machine's tailnet.
+    Tailscale,
+    /// A WSL distribution `wsl.exe` listed on this box.
+    Wsl,
+    /// No provider listed it: a `[[hosts]]` or `[[wsl]]` entry named it outright.
+    Config,
+    /// This box, which is on the roster without being offered by anything.
+    Local,
+}
+
+impl Provider {
+    /// What to call it on screen: the `[discovery]` key that turns it off, so the name
+    /// shown is the name the user would edit. The two that no key controls say what
+    /// they are instead.
+    pub fn label(self) -> &'static str {
+        match self {
+            Provider::SshConfig => "ssh-config",
+            Provider::Tailscale => "tailscale",
+            Provider::Wsl => "wsl",
+            Provider::Config => "config.toml",
+            Provider::Local => "this box",
+        }
+    }
+}
+
 /// Merges provider lists into one roster, preserving first-seen order and dropping
-/// duplicates. Order is the caller's precedence: an `~/.ssh/config` alias comes first,
-/// so a host the user has configured by hand keeps the position they gave it and a
-/// provider that reports the same name adds nothing.
-pub fn merge(lists: &[Vec<String>]) -> Vec<String> {
+/// duplicates, and keeping which provider each name came from. Order is the caller's
+/// precedence: an `~/.ssh/config` alias comes first, so a host the user has configured
+/// by hand keeps the position they gave it and a provider that reports the same name
+/// adds nothing - including its attribution, since the name is already on the roster
+/// and the FIRST provider is the one that put it there.
+pub fn merge(lists: &[(Provider, Vec<String>)]) -> Vec<(String, Provider)> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
-    for list in lists {
+    for (provider, list) in lists {
         for name in list {
             if seen.insert(name.clone()) {
-                out.push(name.clone());
+                out.push((name.clone(), *provider));
             }
         }
     }
@@ -207,10 +247,31 @@ mod tests {
     fn merge_keeps_first_seen_order_and_drops_duplicates() {
         let ssh = vec!["prod".to_string(), "jupiter00".to_string()];
         let ts = vec!["jupiter00".to_string(), "graphai01".to_string()];
+        let got = merge(&[(Provider::SshConfig, ssh), (Provider::Tailscale, ts)]);
         assert_eq!(
-            merge(&[ssh, ts]),
+            got.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
             vec!["prod", "jupiter00", "graphai01"],
             "a hand-configured alias keeps its position; a provider repeat adds nothing"
         );
+    }
+
+    #[test]
+    fn a_repeated_name_keeps_the_provider_that_offered_it_first() {
+        // The second provider adds nothing at all - not the name, and not a second
+        // answer to "where did this come from".
+        let got = merge(&[
+            (Provider::SshConfig, vec!["jupiter00".to_string()]),
+            (Provider::Tailscale, vec!["jupiter00".to_string()]),
+        ]);
+        assert_eq!(got, vec![("jupiter00".to_string(), Provider::SshConfig)]);
+    }
+
+    #[test]
+    fn a_provider_is_labelled_by_the_key_that_turns_it_off() {
+        // The label is what the user would edit, so reading it off the screen is enough
+        // to act on it.
+        assert_eq!(Provider::SshConfig.label(), "ssh-config");
+        assert_eq!(Provider::Tailscale.label(), "tailscale");
+        assert_eq!(Provider::Wsl.label(), "wsl");
     }
 }
