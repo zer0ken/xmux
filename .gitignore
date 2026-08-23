@@ -12,3 +12,6 @@ graphify-out/
 
 # editor
 /.vscode/
+
+# worktrees
+/.worktrees/
