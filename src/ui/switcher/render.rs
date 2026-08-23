@@ -160,18 +160,14 @@ impl Switcher {
             .chrome
             .render_view_border(frame, r.view_border, terminal_focused);
         let term_area = r.terminal;
-        // An unreachable host has no live grid; show an info panel (ssh config stanza
-        // + failure reason) in the terminal view instead of the blank grid.
-        if self.current_host_unreachable() {
+        // A selected host with no session to show has no live grid to mirror: its host
+        // screen fills the region instead, so neither state is ever a blank view with no
+        // next step. One call for both, because they are one screen in two states.
+        if let Some(kind) = self.current_host_screen(state) {
             let source = self.current_source().unwrap_or_default();
             state
                 .chrome
-                .render_host_info(frame, term_area, state, &source);
-        } else if self.current_host_empty(state) {
-            // A reachable host with no sessions yet: a calm landing panel (name +
-            // how to start one) rather than a blank grid with no next step.
-            let source = self.current_source().unwrap_or_default();
-            state.chrome.render_host_landing(frame, term_area, &source);
+                .render_host_screen(frame, term_area, state, &source, kind);
         } else {
             self.render_terminal_view(frame, term_area, grid);
         }

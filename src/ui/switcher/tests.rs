@@ -121,13 +121,14 @@ impl Harness {
         out
     }
 
-    /// Only the terminal view (the columns PAST the nav) - so a panel assertion cannot
-    /// be satisfied by the same words standing on a nav card.
+    /// Only the terminal-view region (past the nav column and its view border) - so a
+    /// host-screen assertion is not satisfied by the nav card that says the same word.
     fn view_text(&self) -> String {
         let buf = self.buf();
+        let first = (NAV_WIDTH + 1).min(buf.area.width);
         let mut out = String::new();
         for y in 0..buf.area.height {
-            for x in NAV_WIDTH.min(buf.area.width)..buf.area.width {
+            for x in first..buf.area.width {
                 out.push_str(buf[(x, y)].symbol());
             }
             out.push('\n');
@@ -493,7 +494,7 @@ async fn renders_a_session_card_per_session() {
         "inference",
         "train", // inference's focused window
         "db-2",
-        "⚠", // unreachable host marker (the reason now lives in the info pane)
+        "⚠", // unreachable host marker (the reason now lives on the host screen)
     ] {
         assert!(out.contains(want), "nav missing {want:?}\n{out}");
     }
@@ -895,7 +896,7 @@ async fn apply_source_result_empty_shows_empty_status() {
 }
 
 #[tokio::test]
-async fn apply_source_result_unreachable_marks_tree_and_reason_in_info_pane() {
+async fn apply_source_result_unreachable_marks_tree_and_reason_on_the_screen() {
     let mut h = Harness::from_sources(&["prod"]);
     h.sw.apply_source_result(
         "prod".into(),
@@ -916,23 +917,23 @@ async fn apply_source_result_unreachable_marks_tree_and_reason_in_info_pane() {
         !tree.contains("command failed"),
         "the verbose context does NOT clutter the tree:\n{tree}"
     );
-    // The lone unreachable host is auto-selected → its right-pane info panel
-    // states it is unreachable and shows why.
+    // The lone unreachable host is auto-selected → its host screen states it is
+    // unreachable and shows why.
     let out = h.text();
     assert!(
         out.contains("unreachable"),
-        "info pane states unreachable:\n{out}"
+        "the host screen states unreachable:\n{out}"
     );
     assert!(
         out.contains("connection refused"),
-        "info pane shows the failure reason:\n{out}"
+        "the host screen shows the failure reason:\n{out}"
     );
 }
 
 #[tokio::test]
-async fn unreachable_info_pane_keeps_a_long_reason_whole() {
+async fn unreachable_host_screen_keeps_a_long_reason_whole() {
     // ssh wraps the failure in its own context and names it LAST, past the width of the
-    // panel: a reason cut off at the edge drops the only words that say what went wrong.
+    // screen: a reason cut off at the edge drops the only words that say what went wrong.
     let reason =
         "command failed (exit 255): ssh: connect to host kyla.tail1cbccc.ts.net port 22: Connection timed out";
     let mut h = Harness::from_sources(&["kyla"]);
@@ -942,14 +943,14 @@ async fn unreachable_info_pane_keeps_a_long_reason_whole() {
     for word in reason.split_whitespace() {
         assert!(
             out.contains(word),
-            "the panel keeps `{word}` of the reason:
+            "the screen keeps `{word}` of the reason:
 {out}"
         );
     }
 }
 
 #[tokio::test]
-async fn unreachable_info_pane_shows_ssh_config_stanza() {
+async fn unreachable_host_screen_shows_ssh_config_stanza() {
     let mut h = Harness::from_sources(&["jupiter00"]);
     h.state.chrome.set_ssh_config_text(
             "Host jupiter00\n    HostName 143.248.140.120\n    User hrlee\n\nHost other\n    HostName 1.2.3.4\n".into(),
@@ -1465,9 +1466,9 @@ async fn create_on_unreachable_host_refused() {
 }
 
 #[tokio::test]
-async fn empty_reachable_host_shows_landing_panel() {
-    // A reachable host with no sessions renders a landing panel (name + how to
-    // start one) in the terminal view, not a blank grid.
+async fn empty_reachable_host_shows_its_host_screen() {
+    // A reachable host with no sessions renders its host screen (the name, the state, the
+    // keys that apply) in the terminal view, not a blank grid.
     let scan = Scan {
         groups: vec![Group {
             source: "fresh".into(),
@@ -1482,15 +1483,23 @@ async fn empty_reachable_host_shows_landing_panel() {
         matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "fresh"),
         "selection is on the empty host row"
     );
+    let view = h.view_text();
     assert!(
-        h.text().contains("no sessions yet"),
-        "empty host shows the landing panel:\n{}",
-        h.text()
+        view.contains("fresh"),
+        "the screen is headed by the host's name:\n{view}"
+    );
+    assert!(
+        view.contains("no sessions"),
+        "under it, the same state word its card carries:\n{view}"
+    );
+    assert!(
+        view.contains("start a new session"),
+        "then the key that answers that state:\n{view}"
     );
 }
 
 #[tokio::test]
-async fn host_with_sessions_has_no_landing_panel() {
+async fn host_with_sessions_has_no_host_screen() {
     let mut h = Harness::new(sample());
     h.key(KeyCode::Home).await; // the top card - a session of a host that HAS sessions
     assert!(
@@ -1498,9 +1507,67 @@ async fn host_with_sessions_has_no_landing_panel() {
         "the top card is a session of a reachable host with sessions"
     );
     assert!(
-        !h.text().contains("no sessions yet"),
-        "a host with sessions must not show the empty landing"
+        !h.view_text().contains("start a new session"),
+        "a host with sessions must not show a host screen"
     );
+}
+
+#[tokio::test]
+async fn both_host_screens_share_one_grammar() {
+    // The unreachable screen and the empty screen are ONE screen in two states, so what
+    // is pinned here is the SHAPE both hold to, not either one's words: the name as the
+    // headline, the state word under it, one rule column for every row that carries a
+    // cell, and the rescan key both offer. A state added later has this to answer to.
+    let mut dead = Harness::from_sources(&["prod"]);
+    dead.state
+        .chrome
+        .set_ssh_config_text("Host prod\n    HostName 10.0.0.1\n".into());
+    dead.sw.apply_source_result(
+        "prod".into(),
+        vec![],
+        Some("connection refused".into()),
+        &mut dead.state,
+    );
+    dead.draw();
+    let empty = Harness::new(Scan {
+        groups: vec![Group {
+            source: "fresh".into(),
+            err: None,
+            sessions: vec![],
+        }],
+        panes: HashMap::new(),
+    });
+    for (label, view, name, word) in [
+        ("unreachable", dead.view_text(), "prod", "⚠ unreachable"),
+        ("empty", empty.view_text(), "fresh", "no sessions"),
+    ] {
+        let lines: Vec<&str> = view.lines().collect();
+        assert_eq!(lines[0].trim(), "", "{label}: opens on a blank row");
+        assert_eq!(
+            lines[1].trim_end(),
+            format!(" {name}"),
+            "{label}: the host name is the headline"
+        );
+        assert_eq!(
+            lines[2].trim_end(),
+            format!(" {word}"),
+            "{label}: its state word sits under the name"
+        );
+        assert_eq!(
+            lines[3].trim(),
+            "",
+            "{label}: a blank row parts the header from the rows"
+        );
+        let rules: Vec<usize> = lines.iter().filter_map(|l| l.find('│')).collect();
+        assert!(
+            !rules.is_empty() && rules.iter().all(|c| *c == rules[0]),
+            "{label}: every row meets one rule column, got {rules:?}"
+        );
+        assert!(
+            view.contains("rescan this host"),
+            "{label}: both screens offer the rescan key:\n{view}"
+        );
+    }
 }
 
 #[tokio::test]

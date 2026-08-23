@@ -199,8 +199,7 @@ pub fn rename_session(groups: &[Group], address: &str, new_name: &str) -> Vec<Gr
 
 /// What a navigation card references. Every card is a selectable target: a session
 /// card attaches to that session (the mux lands on its active window), a loading
-/// card likewise, a host-state card selects the host (so its landing / unreachable
-/// info panel shows).
+/// card likewise, a host-state card selects the host (so its host screen shows).
 #[derive(Clone)]
 pub(crate) enum RowRef {
     /// A session card: a `{host}/{mux}` context line over a `{session}/{window}`
@@ -383,6 +382,17 @@ fn push_session_card(
     });
 }
 
+/// The status word a SETTLED host reads, whether it is read on the host's nav card or on
+/// its host screen. One source for both, so the card and the screen a user reaches from
+/// it can never name the same state two ways.
+pub(crate) fn host_state_word(unreachable: bool) -> &'static str {
+    if unreachable {
+        "⚠ unreachable"
+    } else {
+        "no sessions"
+    }
+}
+
 /// Flattens the inventory into a flat list of navigation cards: one session card per
 /// session (or a loading card while its panes are in flight), emitted in the frozen
 /// MRU `order` (session addresses) so a routine poll never reshuffles the list under
@@ -441,12 +451,14 @@ pub(crate) fn flatten(
         let line2 = if is_scanning {
             "scanning…".to_string()
         } else if unreachable {
+            // The status word comes from the one source either way; a card that HAS a
+            // reason names it after the word, in the clause that says what failed.
             match g.err.as_deref().map(short_reason) {
-                Some(r) if !r.is_empty() => format!("⚠ unreachable: {r}"),
-                _ => "⚠ unreachable".to_string(),
+                Some(r) if !r.is_empty() => format!("{}: {r}", host_state_word(true)),
+                _ => host_state_word(true).to_string(),
             }
         } else {
-            "no sessions".to_string()
+            host_state_word(unreachable).to_string()
         };
         rows.push(Row {
             line2,

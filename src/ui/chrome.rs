@@ -1,8 +1,9 @@
 //! The switcher's chrome: the tree|terminal view border, the full-width hint_bar
-//! (help / status / wrapped flash), and the unreachable-host info panel. These
-//! own the view-local presentation state ([`Chrome`]) and read the runtime
-//! inventory from `State`; the [`Switcher`](crate::ui::switcher::Switcher) holds a
-//! [`Chrome`] and delegates these draws to it.
+//! (help / status / wrapped flash), and the host screens that fill the terminal-view
+//! region in place of a mux. These own the view-local presentation state ([`Chrome`])
+//! and read the runtime inventory from `State`; the
+//! [`Switcher`](crate::ui::switcher::Switcher) holds a [`Chrome`] and delegates these
+//! draws to it.
 
 use std::collections::HashSet;
 
@@ -211,7 +212,50 @@ pub(crate) enum BarFill {
     Content,
 }
 
-/// The switcher's chrome view state: the view border/hint_bar/host-info draws and
+/// Which host screen fills the terminal-view region in place of a mux. One variant per
+/// state a selected host can be in with no session to show, and no variant for a host
+/// still scanning: an in-flight state is the nav's to show, so the view keeps its grid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HostScreen {
+    /// The host could not be reached.
+    Unreachable,
+    /// The host answered and is serving no session.
+    Empty,
+}
+
+/// The left cell of a host-screen row: what the row is about, and how it reads.
+enum ScreenCell {
+    /// A key the user can press on this screen. Bold and nothing else, the help modal's
+    /// own key column, so a key reads as a key wherever it is offered.
+    Key(String),
+    /// The name of the datum beside it, muted so the datum itself reads first.
+    Label(&'static str),
+    /// No cell: the value continues the row above, hanging under the same rule, so a
+    /// multi-line value stays one row rather than becoming a run of nameless ones.
+    Continued,
+    /// No row at all - the blank line parting two blocks of them.
+    Gap,
+}
+
+impl ScreenCell {
+    fn text(&self) -> &str {
+        match self {
+            ScreenCell::Key(k) => k,
+            ScreenCell::Label(l) => l,
+            ScreenCell::Continued | ScreenCell::Gap => "",
+        }
+    }
+
+    fn style(&self) -> Style {
+        match self {
+            ScreenCell::Key(_) => Style::default().add_modifier(Modifier::BOLD),
+            ScreenCell::Label(_) => Style::default().fg(crate::ui::palette::get().overlay),
+            ScreenCell::Continued | ScreenCell::Gap => Style::default(),
+        }
+    }
+}
+
+/// The switcher's chrome view state: the view border/hint_bar/host-screen draws and
 /// their inputs (flash, spinner set + frame, auto-hide + hover cues, view border
 /// colours, the ssh-config text, the configured prefix string, whether the prefix is
 /// currently armed, and the hint bar style).
@@ -228,8 +272,8 @@ pub struct Chrome {
     /// spinner glyph renders right of their name in the tree.
     pub(crate) spinner: HashSet<String>,
     pub(crate) spinner_frame: usize,
-    /// Raw `~/.ssh/config` text (set once by the app). The terminal-view info panel
-    /// shows the matching Host/Match stanza for a selected unreachable host. Empty in tests.
+    /// Raw `~/.ssh/config` text (set once by the app). The unreachable host screen shows
+    /// the matching Host/Match stanza for the selected host. Empty in tests.
     pub(crate) ssh_config_text: String,
     /// The human-readable prefix string (e.g. `"C-g"`, `"C-Space"`) - set once by
     /// the app from config so the help modal reflects the active binding.
@@ -324,7 +368,7 @@ impl Chrome {
         self.hint_bar_style = style;
     }
 
-    /// Sets the raw `~/.ssh/config` text the unreachable-host info panel reads.
+    /// Sets the raw `~/.ssh/config` text the unreachable host screen reads.
     pub(crate) fn set_ssh_config_text(&mut self, text: String) {
         self.ssh_config_text = text;
     }
@@ -412,90 +456,148 @@ impl Chrome {
         frame.render_widget(Paragraph::new(bars), area);
     }
 
-    /// The terminal-view info panel for a selected unreachable host: the failure reason
-    /// and the host's `~/.ssh/config` stanza, so the user can see WHY the control
-    /// connection failed without leaving the app.
-    pub(crate) fn render_host_info(
+    /// The terminal-view HOST SCREEN: what fills the terminal-view region in place of a
+    /// mux, for a selected host with no session to show.
+    ///
+    /// One screen, two states, so a reader of either reads the other: the host's name as
+    /// the headline, under it the same status word its nav card carries, then the rows
+    /// that apply to it. A row is the help modal's row borrowed whole - a right-aligned
+    /// left cell, the `│` rule, the value - so a key offered on a screen looks like a key
+    /// offered anywhere else, and a datum's name stays quieter than the datum.
+    pub(crate) fn render_host_screen(
         &self,
         frame: &mut Frame,
         area: Rect,
         state: &crate::state::State,
         source: &str,
+        kind: HostScreen,
     ) {
-        let alias = source.to_string();
-        let reason = state
-            .groups
-            .iter()
-            .find(|g| g.source == alias)
-            .and_then(|g| g.err.clone());
-        let dim = Style::default().add_modifier(Modifier::DIM);
-        let mut lines = vec![
-            Line::from(Span::styled(
-                format!(" ⚠ {alias} unreachable"),
-                Style::default().fg(crate::ui::palette::get().danger),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(" reason:", dim)),
-        ];
-        // The message in FULL, wrapped: it is the one place the whole diagnostic is
-        // readable, and ssh's own line ("ssh: connect to host kyla port 22: Connection
-        // timed out") outruns the panel, which would clip away the very words that name
-        // the failure. The card carries only its last clause, so clipping here would
-        // leave the reason nowhere.
-        match &reason {
-            Some(r) => {
-                for src_line in r.trim().lines() {
-                    for l in wrap_text(src_line.trim(), area.width.saturating_sub(2)) {
-                        lines.push(Line::from(format!(" {l}")));
-                    }
-                }
-            }
-            // The scan records a reason with every failure, so this is the state that
-            // should not happen - named as itself rather than as a guessed cause, which
-            // would send the user after a fault that was never reported.
-            None => lines.push(Line::from(" (none recorded)")),
-        }
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(" ~/.ssh/config:", dim)));
-        let stanza = crate::config::host_stanza(&self.ssh_config_text, &alias);
-        if stanza.is_empty() {
-            lines.push(Line::from(Span::styled(
-                " (no matching ssh config entry)",
-                dim,
-            )));
-        } else {
-            for l in stanza.lines() {
-                lines.push(Line::from(format!(" {l}")));
-            }
-        }
+        let lines = self.host_screen_lines(state, source, kind, area.width);
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
     }
 
-    /// The terminal-view landing panel for a selected REACHABLE host that has no
-    /// sessions yet: names the host and the keys to start one or rescan, so a
-    /// freshly-reachable but empty host offers a next step rather than a blank grid.
-    pub(crate) fn render_host_landing(&self, frame: &mut Frame, area: Rect, source: &str) {
+    /// The lines of [`render_host_screen`](Self::render_host_screen). Split out because
+    /// the layout IS the list of rows: both states build one, so neither can drift into a
+    /// paragraph of its own shape.
+    fn host_screen_lines(
+        &self,
+        state: &crate::state::State,
+        source: &str,
+        kind: HostScreen,
+        width: u16,
+    ) -> Vec<Line<'static>> {
+        let pal = crate::ui::palette::get();
         let p = &self.ui_prefix;
-        let accent = Style::default().fg(crate::ui::palette::get().accent);
-        let prose = Style::default().fg(crate::ui::palette::get().subtext);
-        let lines = vec![
+        // The rows in reading order: WHY the state is what it is, then what to press
+        // about it. An unreachable host's why is the reason its own transport gave plus
+        // the ssh stanza it was reached through, which is what a fix needs; a reachable
+        // empty host has no why, so its screen is the keys alone.
+        let mut rows: Vec<(ScreenCell, String)> = Vec::new();
+        if kind == HostScreen::Unreachable {
+            let reason = state
+                .groups
+                .iter()
+                .find(|g| g.source == source)
+                .and_then(|g| g.err.clone())
+                .unwrap_or_else(|| "connection closed".into());
+            rows.push((ScreenCell::Label("reason"), reason));
+            let stanza = crate::config::host_stanza(&self.ssh_config_text, source);
+            if stanza.is_empty() {
+                rows.push((
+                    ScreenCell::Label("ssh config"),
+                    "(no matching entry)".into(),
+                ));
+            } else {
+                for (i, l) in stanza.lines().enumerate() {
+                    let cell = if i == 0 {
+                        ScreenCell::Label("ssh config")
+                    } else {
+                        ScreenCell::Continued
+                    };
+                    rows.push((cell, l.trim_end().to_string()));
+                }
+            }
+            rows.push((ScreenCell::Gap, String::new()));
+        } else {
+            // Creating under an unreachable host is refused, so `n` is offered only where
+            // it can actually run.
+            rows.push((
+                ScreenCell::Key(format!("{p} n")),
+                "start a new session".into(),
+            ));
+        }
+        rows.push((ScreenCell::Key(format!("{p} r")), "rescan this host".into()));
+
+        // One column width for keys and labels alike: every row of a screen meets the
+        // same rule, whichever kind of cell it carries.
+        let cw = rows
+            .iter()
+            .map(|(c, _)| c.text().chars().count())
+            .max()
+            .unwrap_or(0);
+        // A value too wide for its column hangs under the SAME rule rather than
+        // clipping at the pane edge: ssh names a failure in the LAST clause of a long
+        // line, and the card carries only that clause, so a screen that clipped would
+        // leave the whole message nowhere readable. A value that already fits is passed
+        // through untouched, which is what keeps the ssh stanza's own indentation.
+        let value_w = width.saturating_sub(cw as u16 + 4);
+        let rows: Vec<(ScreenCell, String)> = rows
+            .into_iter()
+            .flat_map(|(cell, value)| {
+                let mut cell = Some(cell);
+                let mut out: Vec<(ScreenCell, String)> = Vec::new();
+                for src in value.trim_end().lines() {
+                    let fits =
+                        unicode_width::UnicodeWidthStr::width(src) <= value_w.max(1) as usize;
+                    let parts = if fits {
+                        vec![src.to_string()]
+                    } else {
+                        wrap_text(src.trim(), value_w)
+                    };
+                    for part in parts {
+                        out.push((cell.take().unwrap_or(ScreenCell::Continued), part));
+                    }
+                }
+                match cell {
+                    // Nothing to write: the row is a gap, and it keeps its blank line.
+                    Some(c) => vec![(c, String::new())],
+                    None => out,
+                }
+            })
+            .collect();
+
+        let rule = Span::styled("│ ", Style::default().fg(pal.overlay));
+        let state_style = Style::default().fg(match kind {
+            HostScreen::Unreachable => pal.danger,
+            HostScreen::Empty => pal.overlay,
+        });
+        let mut out = vec![
             Line::from(""),
             Line::from(Span::styled(
-                format!("  {source}"),
-                accent.add_modifier(Modifier::BOLD),
+                format!(" {source}"),
+                Style::default().fg(pal.host).add_modifier(Modifier::BOLD),
             )),
-            Line::from(Span::styled("  reachable, no sessions yet", prose)),
+            Line::from(Span::styled(
+                format!(
+                    " {}",
+                    crate::ui::tree::host_state_word(kind == HostScreen::Unreachable)
+                ),
+                state_style,
+            )),
             Line::from(""),
-            Line::from(vec![
-                Span::styled(format!("  {p} n"), accent),
-                Span::styled("  start a new session", prose),
-            ]),
-            Line::from(vec![
-                Span::styled(format!("  {p} r"), accent),
-                Span::styled("  rescan this host", prose),
-            ]),
         ];
-        frame.render_widget(Paragraph::new(Text::from(lines)), area);
+        for (cell, value) in rows {
+            if matches!(cell, ScreenCell::Gap) {
+                out.push(Line::from(""));
+                continue;
+            }
+            out.push(Line::from(vec![
+                Span::styled(format!(" {:>cw$} ", cell.text()), cell.style()),
+                rule.clone(),
+                Span::raw(value),
+            ]));
+        }
+        out
     }
 
     /// The hint bar's logical text, fit to `width`. Modeled on zellij's status bar:
