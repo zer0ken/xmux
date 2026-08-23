@@ -95,7 +95,9 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-B6** - Under a filter, `Enter` attaches the **visible (filtered)** session,
   never a filtered-out one, even when a host row is selected.
 - **FR-B7** - Per-element state hints: `scanning…`, `loading…`, `(empty)`,
-  `⚠ unreachable: <reason>`.
+  `⚠ unreachable: <reason>`. A card carries the clause that NAMES the failure, since
+  a tool wraps it in its own context and a card is only as wide as the nav; the selected
+  host's panel carries the whole message, so no part of why it failed is cut off.
 - **FR-B8** - A session running xmux is never mirrored into the terminal view.
   This is prevented structurally, not by a runtime check: the nest guard (FR-D3)
   refuses to run xmux inside a mux, so no attachable session can be running xmux.

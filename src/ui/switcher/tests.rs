@@ -121,6 +121,20 @@ impl Harness {
         out
     }
 
+    /// Only the terminal view (the columns PAST the nav) - so a panel assertion cannot
+    /// be satisfied by the same words standing on a nav card.
+    fn view_text(&self) -> String {
+        let buf = self.buf();
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in NAV_WIDTH.min(buf.area.width)..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
     fn draw(&mut self) {
         let sw = &mut self.sw;
         let state = &self.state;
@@ -886,16 +900,21 @@ async fn apply_source_result_unreachable_marks_tree_and_reason_in_info_pane() {
     h.sw.apply_source_result(
         "prod".into(),
         vec![],
-        Some("connection refused".into()),
+        Some("command failed (exit 255): ssh: connect to prod port 22: connection refused".into()),
         &mut h.state,
     );
     h.draw();
-    // Tree: only the ⚠ marker beside the name - not the verbose reason.
+    // Tree: the ⚠ marker and the clause that NAMES the failure. The context the tool
+    // wrapped it in stays out, so the card says why without taking the nav to say it.
     let tree = h.nav_text();
     assert!(tree.contains('⚠'), "the host row is marked with ⚠:\n{tree}");
     assert!(
-        !tree.contains("connection refused"),
-        "the reason does NOT clutter the tree:\n{tree}"
+        tree.contains("connection refused"),
+        "the card names the failure:\n{tree}"
+    );
+    assert!(
+        !tree.contains("command failed"),
+        "the verbose context does NOT clutter the tree:\n{tree}"
     );
     // The lone unreachable host is auto-selected → its right-pane info panel
     // states it is unreachable and shows why.
@@ -908,6 +927,25 @@ async fn apply_source_result_unreachable_marks_tree_and_reason_in_info_pane() {
         out.contains("connection refused"),
         "info pane shows the failure reason:\n{out}"
     );
+}
+
+#[tokio::test]
+async fn unreachable_info_pane_keeps_a_long_reason_whole() {
+    // ssh wraps the failure in its own context and names it LAST, past the width of the
+    // panel: a reason cut off at the edge drops the only words that say what went wrong.
+    let reason =
+        "command failed (exit 255): ssh: connect to host kyla.tail1cbccc.ts.net port 22: Connection timed out";
+    let mut h = Harness::from_sources(&["kyla"]);
+    h.sw.apply_source_result("kyla".into(), vec![], Some(reason.into()), &mut h.state);
+    h.draw();
+    let out = h.view_text();
+    for word in reason.split_whitespace() {
+        assert!(
+            out.contains(word),
+            "the panel keeps `{word}` of the reason:
+{out}"
+        );
+    }
 }
 
 #[tokio::test]

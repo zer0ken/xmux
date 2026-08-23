@@ -299,6 +299,54 @@ pub(crate) fn target_for(reference: &RowRef, groups: &[Group], filter: &str) -> 
     }
 }
 
+/// The widest reason a host card carries. A column is as wide as its widest card, so
+/// an unbounded message would take the whole nav for one dead host; past this the
+/// reason is elided and the info panel carries the message in full.
+const SHORT_REASON_COLS: usize = 40;
+
+/// The card's form of a failure reason: the last `": "`-separated clause of the
+/// message's last line, elided to [`SHORT_REASON_COLS`].
+///
+/// ssh and the muxes both write a diagnostic as `context: context: what failed`
+/// (`ssh: connect to host kyla port 22: Connection timed out`), so the LAST clause
+/// names the failure while the leading ones repeat what the card already says. The
+/// separator is a colon FOLLOWED BY A SPACE, because a bare colon also holds a
+/// Windows drive letter apart from its path.
+fn short_reason(reason: &str) -> String {
+    let last_line = reason
+        .lines()
+        .map(str::trim)
+        .rfind(|l| !l.is_empty())
+        .unwrap_or("");
+    let clause = match last_line.rsplit(": ").next().map(str::trim) {
+        // A message ending in the separator has no trailing clause; the whole line is
+        // then all there is to say.
+        Some(c) if !c.is_empty() => c,
+        _ => last_line,
+    };
+    elide(clause, SHORT_REASON_COLS)
+}
+
+/// `s` cut to `cols` display columns, the cut marked with an ellipsis.
+fn elide(s: &str, cols: usize) -> String {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if UnicodeWidthStr::width(s) <= cols {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    let mut w = 0usize;
+    for ch in s.chars() {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if w + cw > cols.saturating_sub(1) {
+            break;
+        }
+        out.push(ch);
+        w += cw;
+    }
+    out.push('…');
+    out
+}
+
 /// Pushes a session's card: line2 carries its focused (active) window, written the way
 /// the session's own mux writes it, or a loading card stands in while the panes are in
 /// flight.
@@ -393,7 +441,10 @@ pub(crate) fn flatten(
         let line2 = if is_scanning {
             "scanning…".to_string()
         } else if unreachable {
-            "⚠ unreachable".to_string()
+            match g.err.as_deref().map(short_reason) {
+                Some(r) if !r.is_empty() => format!("⚠ unreachable: {r}"),
+                _ => "⚠ unreachable".to_string(),
+            }
         } else {
             "no sessions".to_string()
         };
@@ -978,7 +1029,7 @@ mod tests {
         assert_eq!(addr_of(&rows[0].reference), "empty");
         assert_eq!(rows[0].line2, "no sessions");
         assert_eq!(addr_of(&rows[1].reference), "dead");
-        assert_eq!(rows[1].line2, "⚠ unreachable");
+        assert_eq!(rows[1].line2, "⚠ unreachable: refused");
         assert!(matches!(
             rows[1].reference,
             RowRef::Host {
@@ -986,6 +1037,93 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn an_unreachable_card_names_the_failure() {
+        // The reason is what the user came to the card for: an ssh diagnostic wraps the
+        // failure in its own context, and the card keeps the clause that names it.
+        let groups = vec![Group {
+            source: "kyla".into(),
+            err: Some(
+                "command failed (exit 255): ssh: connect to host kyla port 22: Connection timed out"
+                    .into(),
+            ),
+            sessions: vec![],
+        }];
+        let rows = flatten(
+            &groups,
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            "",
+            &[],
+        );
+        assert_eq!(rows[0].line2, "⚠ unreachable: Connection timed out");
+    }
+
+    #[test]
+    fn a_scanning_host_is_not_yet_a_failure() {
+        // A host still being scanned has no reason to show, even carrying a stale one
+        // from the last sweep: the card says what it is doing now.
+        let groups = vec![Group {
+            source: "kyla".into(),
+            err: Some("ssh: Connection timed out".into()),
+            sessions: vec![],
+        }];
+        let mut scanning = HashSet::new();
+        scanning.insert("kyla".to_string());
+        let rows = flatten(
+            &groups,
+            &HashMap::new(),
+            &HashSet::new(),
+            &scanning,
+            "",
+            &[],
+        );
+        assert_eq!(rows[0].line2, "scanning…");
+    }
+
+    #[test]
+    fn short_reason_keeps_the_clause_that_names_the_failure() {
+        assert_eq!(
+            short_reason("command failed (exit 255): ssh: connect to host kyla port 22: Connection timed out"),
+            "Connection timed out"
+        );
+        // A message with no separator is already the failure.
+        assert_eq!(short_reason("timed out after 6s"), "timed out after 6s");
+        // A trailing separator leaves no clause; the line itself is all there is.
+        assert_eq!(
+            short_reason("exited with no message: "),
+            "exited with no message:"
+        );
+        // Multi-line stderr: ssh states the failure on its last line.
+        assert_eq!(
+            short_reason("@@@ WARNING @@@\nHost key verification failed."),
+            "Host key verification failed."
+        );
+    }
+
+    #[test]
+    fn short_reason_does_not_split_a_windows_path() {
+        // A bare colon also holds a drive letter apart from its path, so only a colon
+        // FOLLOWED BY A SPACE separates clauses.
+        assert_eq!(
+            short_reason("no server on C:\\Users\\h\\.psmux"),
+            "no server on C:\\Users\\h\\.psmux"
+        );
+    }
+
+    #[test]
+    fn short_reason_is_bounded_so_one_card_cannot_take_the_nav() {
+        let long = "x".repeat(200);
+        let got = short_reason(&long);
+        assert_eq!(
+            got.chars().count(),
+            SHORT_REASON_COLS,
+            "elided to the cap, ellipsis included: {got}"
+        );
+        assert!(got.ends_with('…'), "the cut is marked: {got}");
     }
 
     #[test]
