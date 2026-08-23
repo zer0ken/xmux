@@ -116,9 +116,9 @@ no function, and no test, so renaming code is never a documentation change.
   is outstanding instead of only that it is busy, and no status word repeats what the
   spinner already says. The nav's scan progress turns the same spinner on the same
   frame. A card that has SETTLED reads a word instead: `no sessions`, or
-  `⚠ unreachable: <reason>` carrying the clause that NAMES the failure, since a tool
-  wraps it in its own context and a card is only as wide as the nav; the host screen
-  carries the whole message, so no part of why it failed is cut off.
+  `⚠ unreachable`. The word is all a card carries: WHY a host failed is stated on
+  its view screen, which has the room to keep a tool's diagnostic whole, while a card
+  is only as wide as the nav and could carry no more than a cut-down copy of it.
 - **FR-B8** - The session xmux is ITSELF running in is never mirrored into the terminal
   view: showing it attaches a second client to the session that HOLDS xmux, which moves
   the user's own client and paints xmux inside itself. The refusal is on the terminal-view
@@ -213,10 +213,11 @@ no function, and no test, so renaming code is never a documentation change.
   source's driver takes over, the previously shown session stays on screen until the fresh grid is ready
   (stale-while-revalidate), and the canonical selection is synced immediately.
 - **FR-C3** - Source degradation is graceful, never a silent loss: an unreachable source
-  is marked `⚠ unreachable: <reason>`, and its host screen names the PROVIDER that put
-  that host on the roster, so a host the user never wrote down is traceable to the thing
-  that offered it (and to the `[discovery]` key that would turn it off) rather than
-  standing there unexplained; a reachable-but-serverless source reads `(empty)`, a once-connected source keeps its last-known cards on a transient drop, and
+  is marked `⚠ unreachable`, and its view screen states why - the reason its transport
+  gave, the PROVIDER that put that host on the roster (so a host the user never wrote
+  down is traceable to the thing that offered it, and to the `[discovery]` key that
+  would turn it off), and the ssh stanza it was reached through - rather than standing
+  there unexplained; a reachable-but-serverless source reads `(empty)`, a once-connected source keeps its last-known cards on a transient drop, and
   the reconnect sweep self-heals; a dropped display client is reaped and re-attached.
 - **FR-C4** - A switch lands on the picked window. A fresh first attach folds the
   window into the attach argv (ssh folds the pre-selection into one `ssh -t`);

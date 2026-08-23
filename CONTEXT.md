@@ -64,7 +64,7 @@ UI elements a user perceives as distinct things:
   `pane-border-lines`): `single │` (default), `double ║` (auto-hide-nav on),
   `heavy ┃` (hover - the drag-resize grab cue).
 - chrome - the furniture around the two views: the view border, the hint bar, and
-  the host screens.
+  the view screens.
 - hint bar - the nav's own status line: the bottom row(s) of the nav region, ending
   at the view border rather than spanning the screen, so the terminal view keeps
   every row it owns. At rest it shows only the prefix; while the prefix is ARMED it
@@ -72,9 +72,11 @@ UI elements a user perceives as distinct things:
   filter outrank both, in that order. A long flash wraps across as many nav rows as
   it needs instead of clipping. A shown flash paints it in the error style.
 - view screen - what fills the terminal-view region in place of a mux, for a selection
-  with no grid to show there. One screen in three states, so a reader of any of them
-  reads the others: the subject as the headline (a host for the two host states, the
-  session address for `own session`), under it the state word, then the rows that apply. A row is the key-column row the help also uses - a
+  with no grid to show there. Where a card states the selection's STATE, the screen
+  states WHY: it is the one surface with the room to hold a tool's diagnostic whole.
+  One screen in three states, so a reader of any of them reads the others: the subject
+  as the headline (a host for the two host states, the session address for
+  `own session`), under it the state word, then the rows that apply. A row is the key-column row the help also uses - a
   right-aligned cell, the `│` rule, the value - where a bold cell is a key that can be
   pressed here and a muted cell names a datum. The UNREACHABLE state's rows are why it
   failed (the reason its transport gave, the provider that put it on the roster, the ssh
@@ -97,8 +99,9 @@ UI elements a user perceives as distinct things:
   never the nav selection.
 - card - one nav entry: a context line (`{host}/{mux}`, or `{host}` on a
   host-state card) over a detail line (`{session}/{window}` of the focused (active)
-  window behind a connector; the settled host state; or a spinner in the card's
-  unresolved level).
+  window behind a connector; the settled host state, the state word alone; or a spinner
+  in the card's unresolved level). A card states WHAT something is; WHY it is that way
+  is the screen's, never a card's.
   The window part is written the way its own mux writes it - see `window label`. The muted connector hangs the detail
   under its context line - on a collapsed card, under the shared context
   above: `├` while a collapsed sibling follows below, `└` on the run's last
@@ -274,7 +277,7 @@ UI elements a user perceives as distinct things:
   `[discovery]` turns it off: `~/.ssh/config` aliases, the online peers of this
   machine's tailnet, and this box's WSL distributions. Every provider yields plain ssh
   target names, so nothing downstream BEHAVES differently for one; which provider
-  offered a name is kept beside it and shown on the unreachable host screen, never read
+  offered a name is kept beside it and shown on the unreachable host's view screen, never read
   to decide anything. The roster is what makes a machine a
   host: a machine no provider names is one xmux has nothing to say about. Distinct
   from `mux discovery`, which asks a host WHICH MUXES it serves, from `discovery`,
