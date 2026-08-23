@@ -18,29 +18,27 @@ module hides, and which dependencies are allowed to cross into it.
 
 One concept, one word. The two axes and the runtime:
 
-- `Transport` (MACHINE axis) - the per-machine execution trait (impls `Local` /
-  `Ssh`); a host's `transport` field is `Box<dyn Transport>`. It owns where a
-  command runs and how its argv is executed, and knows nothing about the mux.
-  "machine" is the family/concept; `Transport` is the trait.
-- `Mux` (MUX axis) - the per-mux behavior trait (impls `Tmux` / `Psmux` /
-  `Zellij`); a host's `mux` field is `Box<dyn Mux>`. "mux" is the family/concept; `Mux` is
-  the trait.
-- `MuxDriver` - a mux's display driver, built by `Mux::driver()`.
-- the app - the runtime that owns the terminal (`crate::app`; the `Runtime` struct
-  and its loop in `app/runtime/`, entry `run_app`).
-- `ViewFocus` - which screen region holds focus (`Nav` / `Terminal`).
-- `Modal` - the mutually-exclusive focus-grabbing UI (`Help` and an input
-  dialog). `ModalKind::Popup` is its one focus sub-kind: a draggable centered
-  dialog.
+- `Transport` (MACHINE axis) - the per-machine execution trait (local / ssh); a
+  host holds one. It owns where a command runs and how its argv is executed, and
+  knows nothing about the mux. "machine" is the family/concept; `Transport` is the
+  trait.
+- `Mux` (MUX axis) - the per-mux behavior trait (tmux / psmux / zellij); a host
+  holds one. "mux" is the family/concept; `Mux` is the trait.
+- `MuxDriver` - a mux's display driver, which the mux itself builds.
+- the app - the runtime that owns the terminal: its loop, its focus state, and
+  its input routing.
+- `ViewFocus` - which screen region holds focus (nav or terminal).
+- `Modal` - the mutually-exclusive focus-grabbing UI (the help and an input
+  dialog). A popup is its one focus sub-kind: a draggable centered dialog.
 
 UI elements a user perceives as distinct things:
 
 - split view - the whole two-region layout.
 - nav view - the region holding the session cards, ordered by source recency (a left
-  column in `Side`, a top band in portrait `Top`, where the same cards run in a column
-  flow). Never the "sidebar", and
-  never the "tree": the on-screen VIEW is the nav view; `tree` names only the
-  internal row-model module (`ui::tree`), which is still a Host→Session→Window
+  column in side layout, a top band in portrait layout, where the same cards run in a
+  column flow). Never the
+  "sidebar", and never the "tree": the on-screen VIEW is the nav view; "tree" names
+  only the internal row-model module, which is still a Host to Session to Window
   structure.
 - terminal view - the right region (the selected session's live grid).
 - view border - the vertical line between the two views. Modelled on tmux's pane
@@ -56,8 +54,8 @@ UI elements a user perceives as distinct things:
 - view border lines - the view border's line-drawing style (tmux
   `pane-border-lines`): `single │` (default), `double ║` (auto-hide-nav on),
   `heavy ┃` (hover - the drag-resize grab cue).
-- chrome - the furniture around the two views, owned by the `Chrome` type: the
-  view border, the hint bar, and the host info.
+- chrome - the furniture around the two views: the view border, the hint bar, and
+  the host info.
 - hint bar - the nav's own status line: the bottom row(s) of the nav region, ending
   at the view border rather than spanning the screen, so the terminal view keeps
   every row it owns. At rest it shows only the prefix; while the prefix is ARMED it
@@ -68,7 +66,7 @@ UI elements a user perceives as distinct things:
 - landing - the empty-state panel shown in the terminal-view region for a selected
   reachable host that has no sessions yet (its name + the keys to start one).
 - grid - the live terminal content drawn in the terminal view: xmux's in-memory
-  cell mirror of the attached session's screen, fed by the vt100 parser.
+  cell mirror of the attached session's screen, fed by the terminal-emulation parser.
 - cursor - the real terminal cursor placed over the grid at the mux's cursor cell
   while the terminal view is focused. "cursor" always means this text cursor,
   never the nav selection.
@@ -80,51 +78,49 @@ UI elements a user perceives as distinct things:
   above: `├` while a collapsed sibling follows below, `└` on the run's last
   line; the selected card drops the connector (the selection mark and the inverted
   rows already bind its lines).
-  One card per SESSION; the mux segment names the mux kind serving it
-  (`Session.mux`, stamped at enumeration), so several muxes on one host stay
-  distinguishable. The kinds are the session card, the host-state card
-  (scanning / unreachable / empty host), and the loading card.
+  One card per SESSION; the mux segment names the mux kind serving it, stamped at
+  enumeration, so several muxes on one host stay distinguishable. The kinds are the
+  session card, the host-state card (scanning / unreachable / empty host), and the
+  loading card.
 - card collapse - a session/loading card whose `{host}/{mux}` repeats the
   previous card's drops its context line and renders one row tall, so runs on
-  one server read grouped. In the `Side` list the SELECTED card never collapses (focus
-  expands it to the full two-row card, so its context is always readable in place) and
-  the renderer and mouse hit-testing share one `card_height` so the screen-row mapping
-  never diverges. The column flow collapses by position alone, never by selection: a
-  column's first card always states its context, and heights that moved with the
-  selection would reflow whole columns as the cursor passed.
-- nav size - the nav's live geometry as one value (`NavSize`): the width the user SET
-  (`natural`), the width ON SCREEN this frame (`width`, which is 0 while auto-hide has
-  taken it), and the `Top` band height the user set (`height`, 0 = auto). All three are
-  settable while xmux runs, so every consumer takes the whole value rather than picking
-  two of the three out of the runtime: the effective width has one owner
-  (`reconciled_nav_width`), and a resize cannot reach the renderer and miss the PTY
-  sizing. `natural` and `width` differ only while the nav is hidden, and that is exactly
-  why both travel: the regions are cut from `width`, the layout turnover is measured from
-  `natural`.
-- layout turnover - the one test that picks `Side` or `Top` (`view_layout`), measured as
-  if the nav kept its side column: the terminal that column would leave is
-  `w - nav_width - 1` wide over the window's full height. Wider than tall keeps the side
-  column; square or taller moves the nav to the top band and drops the column. Wider than
-  tall in the proportions the user SEES, not in cell counts: a row is about two columns
-  tall (`CELL_ASPECT`), so the rows count double and 60 columns over 30 rows is square.
-  Comparing the counts directly kept the side column until the terminal was half as wide
-  as it looked. The
-  as-if is the point - going `Top` hands those columns back to the terminal and takes the
-  band's rows instead, so a test measuring the LIVE terminal would flip its own input and
-  the layout would oscillate on one cell of resize. Hiding the nav is not a resize either:
-  the turnover reads `natural`, so the nav comes back the shape it left and the resize keys
-  keep driving the same axis while it is gone.
-- column flow - how the portrait `Top` band lays its cards out (`ui::switcher::columns`):
-  down a column, then right. A column takes whole host/mux RUNS, so a source's cards stay
-  together under the one context line naming them and the run that does not fit opens the
-  next column instead of splitting across the break. A run taller than the whole column
-  is the one exception, having nowhere else to go: it splits, and the continuation states
-  its context again. A column is as wide as its widest card, columns are parted by one
-  blank, and the flow is pure geometry, so the paint, the hit-test and the tests read one
-  answer. A list would show three cards in a band twenty rows wide and leave the rest of
-  every row blank; the flow is what makes the band worth its rows.
-- level color - the per-segment card color, from the palette (`ui::palette`).
-  Every foreground role is ANSI-16, so the terminal theme resolves the hue: host blue,
+  one server read grouped. In the SIDE list the selected card never collapses (focus
+  expands it to the full two-row card, so its context is always readable in place), and
+  the renderer and mouse hit-testing share one card-height rule so the screen-row mapping
+  never diverges. The column flow collapses by POSITION alone, never by selection: a
+  column's first card always states its context, and heights that moved with the selection
+  would reflow whole columns as the cursor passed.
+- nav size - the nav's live geometry as one value: the width the user SET, the width ON
+  SCREEN this frame (0 while auto-hide has taken it), and the portrait band's height the
+  user set (0 = auto). All three are settable while xmux runs, so every consumer takes the
+  whole value rather than picking two of the three out of the runtime: the effective width
+  has one owner, and a resize cannot reach the renderer and miss the PTY sizing. The set
+  width and the on-screen width differ only while the nav is hidden, and that is exactly
+  why both travel: the regions are cut from what is on screen, the layout turnover is
+  measured from what the user set.
+- layout turnover - the one test that picks the side column or the top band, measured as
+  if the nav kept its side column: the terminal that column would leave is the window
+  width less the nav and its border, over the window's full height. Wider than tall keeps
+  the side column; square or taller moves the nav to the top band and drops the column.
+  Wider than tall in the proportions the user SEES, not in cell counts: a row is about two
+  columns tall, so the rows count double and 60 columns over 30 rows is square. Comparing
+  the counts directly kept the side column until the terminal was half as wide as it
+  looked. The as-if is the point too: going to the band hands those columns back to the
+  terminal and takes rows instead, so a test measuring the LIVE terminal would flip its own
+  input and the layout would oscillate on one cell of resize. Hiding the nav is not a
+  resize either, since the turnover reads the width the user set, so the nav comes back the
+  shape it left and the resize keys keep driving the same axis while it is gone.
+- column flow - how the portrait band lays its cards out: down a column, then right. A
+  column takes whole host/mux RUNS, so a source's cards stay together under the one
+  context line naming them, and the run that does not fit opens the next column instead of
+  splitting across the break. A run taller than the whole column is the one exception,
+  having nowhere else to go: it splits, and the continuation states its context again. A
+  column is as wide as its widest card, columns are parted by one blank, and the flow is
+  pure geometry, so the paint, the hit-test and the tests read one answer. A list would
+  show three cards in a band twenty rows wide and leave the rest of every row blank; the
+  flow is what makes the band worth its rows.
+- level color - the per-segment card color, from the palette. Every foreground role
+  is ANSI-16, so the terminal theme resolves the hue: host blue,
   mux green, session red, the window part bright-black - the quietest
   level, so the session name anchors the detail line. The four read as one code-theme
   palette, and the level a user actually picks (the session) is the one that stands out.
@@ -135,12 +131,12 @@ UI elements a user perceives as distinct things:
   `[ui] hint-bar-style` for naming one anyway.
 - window label - how a card writes its focused window, in the CONVENTION OF ITS OWN MUX
   rather than one xmux imposes: tmux and psmux get `{index}:{name}`, which is what
-  their own status line and `list-windows` print; zellij gets the tab name alone,
+  their own status line and window listing print; zellij gets the tab name alone,
   because zellij's tab bar shows names and nothing else and a tab it names itself is
-  already called `Tab #1`. The mux owns the rule (`Mux::window_label`), so a reader who
-  knows one mux reads its cards without learning a second notation.
-- card order - the one order the flat card list follows (`Switcher::nav_order`, held as
-  addresses). Recency is measured per SOURCE, not per session: a source's cards are
+  already called `Tab #1`. The mux owns the rule, so a reader who knows one mux reads
+  its cards without learning a second notation.
+- card order - the one order the flat card list follows, held as addresses. Recency is
+  measured per SOURCE, not per session: a source's cards are
   contiguous, sources run most-recently-used first, and inside a source its own sessions
   run most-recently-used first. Global session recency would split a source across the
   list, restating its context line and leaving a connector claiming cards that belong to
@@ -149,19 +145,19 @@ UI elements a user perceives as distinct things:
   discovered later inside its group. The order is rebuilt while any host is still
   scanning and frozen once they settle, so a routine poll never reshuffles cards under
   the user.
-- selection - the nav's current pick (its card index is `selected`), advanced by
-  navigation; a routine poll or restream never moves it (only launch / rescan
-  re-sorts). `preselect` / `reselect` are the launch and post-rescan selections.
-- selection highlight - the selected card's rendering: reverse video (ratatui's
-  `highlight_style`, filling the whole card), the terminal theme's own selected look,
+- selection - the nav's current pick, advanced by navigation; a routine poll or
+  restream never moves it (only launch / rescan re-sorts). The preselect and the
+  reselect are the launch and post-rescan selections.
+- selection highlight - the selected card's rendering: reverse video filling the whole
+  card, the terminal theme's own selected look,
   plus a `❯` mark standing in the address column of the card's detail line, where
   every other card carries its number. The inversion is uniform because the highlight
-  pins fg and bg to `Reset`: inverting per span would turn each level color into a
-  background and stripe the card. That same pinning is why the mark is an open shape and
+  pins both foreground and background to the terminal's defaults: inverting per span
+  would turn each level color into a background and stripe the card. That same pinning
+  is why the mark is an open shape and
   never a solid block: it draws inverted too, so a block fills its cell and disappears
   into the band while an outline keeps a readable silhouette.
-  `[ui] selection-style` paints a named background instead. `selected` + `highlight`
-  follow ratatui's list vocabulary.
+  `[ui] selection-style` paints a named background instead.
 - scrollbar strip - the COLUMN the side list's scrollbar takes from the nav region when
   the cards overflow it. Reserved, never overlaid, because the selected card is painted by
   inverting its whole rect and a thumb inside that rect inverts with it into a hole in the
@@ -175,13 +171,12 @@ UI elements a user perceives as distinct things:
   say what a thumb cannot: which way the cards went, and how many. An ARMED bar takes the
   whole row back, counts included, since a cheatsheet has to be readable over what it
   covers.
-- status row fill - how much of its row the hint bar paints (`BarFill`). The side column's
-  bar, an armed bar and a refusal fill the ROW: a solid bar, legible over whatever it
-  covers. The portrait band's resting bar paints its text plus a cell of padding and
-  stops, because it shares that row with the offscreen counts and a full-width slab of bar
-  colour across a wide window is a lot of paint for one word.
-- spinner - the braille activity glyph on a loading card (and, historically, a
-  connecting session).
+- status row fill - how much of its row the hint bar paints. The side column's bar, an
+  armed bar and a refusal fill the ROW: a solid bar, legible over whatever it covers. The
+  portrait band's resting bar paints its text plus a cell of padding and stops, because it
+  shares that row with the offscreen counts and a full-width slab of bar colour across a
+  wide window is a lot of paint for one word.
+- spinner - the braille activity glyph on a loading card.
 - loading card - a card standing in for a session whose panes are not yet loaded;
   its detail line is `{session}/` + a spinner rather than a window part.
 - status - a host-state card's detail-line state text (`scanning…` / `no sessions` /
@@ -208,29 +203,29 @@ UI elements a user perceives as distinct things:
   machine running several muxes at once contributes one source per mux, all reached
   through the same `Transport`. A source id is the bare machine alias (`local`, `prod`)
   when its machine serves a single mux, and `<machine>:<mux>` (`local:zellij`) when it
-  serves several, so a one-mux setup is spelled exactly as it always was. `machine_of`
-  / `mux_of` / `is_local_source` read the two halves back; nothing compares a source id
-  to `local` directly. The nav renders the halves separately (`local/zellij`), so the id
+  serves several, so a one-mux setup is spelled exactly as it always was. The two halves
+  are read back through accessors; nothing compares a source id to `local` directly. The
+  nav renders the halves separately (`local/zellij`), so the id
   never appears with its mux twice. A source is held TWICE, once per consumer, and both
-  copies are built from `machine::kind_for` so they reach the machine the same way: the
-  event loop drives a `model::Host` out of `Hosts`, and the off-loop ops resolve a
-  `source::Source` out of `Env`. Discovery adds to BOTH - a source in only one of them
+  copies resolve the machine the same way: the event loop drives a host out of its
+  runtime host registry, and the off-loop operations resolve a source out of the
+  environment's source list. Discovery adds to BOTH - a source in only one of them
   paints and scans but refuses every operation, or the reverse.
 - mux discovery - how a machine's mux list is decided when it named no mux (`mux` unset
   or `auto`): every mux xmux supports is asked whether it is installed there, and each one
   that answers becomes a source. Two halves, in that order: the candidate set is what xmux
-  can DRIVE (`mux::supported_muxes`), and the question asked of each candidate is the same
-  identity probe a configured mux gets (`detect_backend`), so a binary carrying a mux's
+  can DRIVE, and the question asked of each candidate is the same identity probe a
+  configured mux gets, so a binary carrying a mux's
   name while being another mux is not that mux (where psmux answers, a `tmux` that answers
   is psmux's own alias). A written `mux` value is never probed: it is taken verbatim,
   unreachable and all. Distinct from `roster` (which MACHINES) and `discovery` (scanning a
   source for SESSIONS).
-  THIS BOX is resolved before the first paint (a local probe is milliseconds), once, in
-  `Env`, and threaded into `source::build` / `Hosts::build` so source ids and host ids
+  THIS BOX is resolved before the first paint (a local probe is milliseconds), once, and
+  threaded into both source-list and host-registry construction so source ids and host ids
   cannot disagree. A REMOTE machine is probed AFTER launch instead (one ssh round trip per
-  mux, which nothing may wait for): `discover_machine_muxes` spawns one task per machine,
-  the answer arrives as `HostEvent::MuxesFound`, and `EventEffect::AddDiscoveredSources`
-  adds a scanning card for every mux the machine does not already serve. That add is
+  mux, which nothing may wait for): one task per machine, the answer arrives as a host
+  event, and the loop adds a scanning card for every mux the machine does not already
+  serve. That add is
   ADD-ONLY: an added source's id is always qualified (`prod:zellij`) and the mux already
   served keeps the id it was painted with, because that id is what the frozen order, the
   persisted selection, and typed ctl targets are keyed to.
@@ -238,7 +233,7 @@ UI elements a user perceives as distinct things:
   PROVIDERS, both on unless `[discovery]` turns one off: `~/.ssh/config` aliases and the
   online peers of this machine's tailnet. Every provider yields plain ssh target names, so
   nothing downstream can tell where a name came from. Distinct from `discovery`, which
-  scans a source for sessions, and from `machine/`, which reaches one.
+  scans a source for sessions, and from the machine axis, which reaches one.
 - filter - the type-to-filter input over the nav list.
 - flash - a transient notice or error line shown in the hint bar (e.g. a refused
   action's reason). Never a "toast" or "notice".
@@ -247,9 +242,8 @@ UI elements a user perceives as distinct things:
 - armed - the state between pressing the prefix and its command key. The hint bar
   reads it to swap from the resting prefix to the cheatsheet, so arming is a
   visible change and redraws the frame.
-- popup - the rounded-bordered, opaque, centered (draggable) dialog a
-  `ModalKind::Popup` draws, its accent title in the top border. The help and the
-  input dialog are popups.
+- popup - the rounded-bordered, opaque, centered (draggable) dialog a popup modal
+  draws, its accent title in the top border. The help and the input dialog are popups.
 - prompt - the `❯` entry marker on an input dialog's edit line.
 
 A zellij TAB is a `window` and a zellij SESSION is a `session`: xmux's vocabulary is
@@ -261,9 +255,8 @@ never a screen region - screen regions are "views", and the line between them is
 the `view border`. A transient hint-bar message is a `flash`, never a "toast" or
 "notice". A card's trailing state is a `status`, never a "hint". The reverse-video
 selected card is the `selection highlight`; `cursor` names only the grid's text
-cursor. The furniture around the views is the `chrome`
-(owned by `Chrome`), never a "status surface". The switcher's rendered screen is
-the "switcher screen" (`dump_screen`), never an "overlay".
+cursor. The furniture around the views is the `chrome`, never a "status surface".
+The switcher's rendered screen is the "switcher screen", never an "overlay".
 
 ## Working Notes Format
 
@@ -283,52 +276,60 @@ history or phase narrative.
 
 Repository documentation is written in English when it is committed to the
 project. Temporary files outside the repository may use another language.
-The `docs/superpowers/` tree is not part of the public documentation surface and
-must be excluded before release.
+
+## Documentation is the standard, code is the subject
+
+Durable documentation states the behavior and the design rules the code is
+checked against. It is not a mirror of the code, so it never names a test, a
+function, a method, a field, or a library API: those move, and a document that
+follows them turns every code change into a documentation change. What a
+document may name is what the design itself prescribes and what the outside
+world already depends on: the two axes and their vocabulary, the directory
+layout a new module must fit, config keys, CLI and ctl verbs, socket names, and
+the argv of the muxes xmux drives.
 
 ## Architecture - the orthogonal design
 
 Two orthogonal axes describe every connection, and no module conflates them:
 
-- MACHINE - `src/machine/`. Each machine family (`local.rs`, `ssh.rs`) owns its
-  execution behind the `Transport` trait; a host builds one via `machine::local()`
-  / `machine::ssh()`, so machine selection lives at construction, never a central
-  `match`. Shared shell vocabulary (`quote` / `remote_command`) lives in
-  `src/machine/vocab.rs`. `Transport` owns where a command runs and how its argv is
-  executed; it knows nothing about the mux.
+- MACHINE - `src/machine/`. Each machine family owns its execution behind the
+  `Transport` trait; a host builds one at construction, so machine selection is
+  never a central `match`. Shared shell vocabulary (quoting, remote command
+  assembly) lives beside the families. `Transport` owns where a command runs and
+  how its argv is executed; it knows nothing about the mux.
 - MUX - `src/mux/<kind>/`. Each mux family (`tmux/`, `psmux/`, `zellij/`) owns its
-  metadata and command plans in `mod.rs` (behind the `Mux` trait) and its display
-  driver in `display.rs`. A mux builds its OWN driver via `Mux::driver()`,
-  so mux selection lives in the mux family, never a central `match`. Shared mux
-  vocabulary lives in `src/mux/vocab.rs`. The trait's command plans default to
-  tmux-compatible argv, so a tmux-compatible mux is identity plus a few methods; a
-  mux that shares no argv (zellij) overrides every plan AND the shape of what each
-  plan prints, since a plan and its output are one decision.
+  metadata and command plans behind the `Mux` trait and its display driver beside
+  them. A mux builds its OWN driver, so mux selection lives in the mux family,
+  never a central `match`. Shared mux vocabulary lives beside the families. The
+  trait's command plans default to tmux-compatible argv, so a tmux-compatible mux
+  is identity plus a few overrides; a mux that shares no argv (zellij) overrides
+  every plan AND the shape of what each plan prints, since a plan and its output
+  are one decision.
 
-Attach argv is composed from a host's own `mux` + `transport` (the two axes
+Attach argv is composed from a host's own mux + transport (the two axes
 together), so the two families are combined without either knowing the other.
 
 The supervisor branches on NOTHING mux-specific. `src/app/` (runtime loop,
-focus, input routing), `src/ui/` (switcher / tree / chrome / modal / ops
-rendering), and `src/state/` (runtime `State` + the `apply` / `apply_event`
-mutation sites) select display through `driver_for(host).show(...)` - i.e.
-`host.mux.driver()` - and read the grid back via `MuxDriver::grid`; per-mux
+focus, input routing), `src/ui/` (switcher / rows / chrome / modal / ops
+rendering), and `src/state/` (the runtime state and its mutation sites) select
+display through the host's own driver and read the grid back from it; per-mux
 behavior lives behind that seam. These layers carry no PTY, grid, or
 terminal-protocol logic.
 
 The remaining layers each own one concern:
 
 - `src/display/` - the mux- and app-agnostic PTY/grid/input mechanics (attach
-  spawning, the `Grid`, input decode, `term`, `dispatch`, the registry, worker).
+  spawning, the grid, input decode, terminal setup, dispatch, the registry, the
+  worker).
 - `src/host/` - host connection management (control-mode reader/writer, poll
   tasks, live client ownership).
-- `src/machine/` - the machine axis: the `Transport` trait, the `Local`/`Ssh`
-  families, and the shared shell vocab (`vocab.rs`).
-- `src/model/` - domain types (`Host`, `Hosts`, `Selection`, `Action`,
-  `Command`, `EventEffect`, server model).
-- `src/driver.rs` - the mux-agnostic `MuxDriver` trait + `DriverCtx` (the
-  supervisor capabilities a driver borrows) + the thin `driver_for` wrapper. It
-  names no concrete mux type.
+- `src/machine/` - the machine axis: the `Transport` trait, the local and ssh
+  families, and the shared shell vocabulary.
+- `src/model/` - domain types: hosts, selection, actions, commands, event
+  effects, and the server model.
+- `src/driver.rs` - the mux-agnostic `MuxDriver` trait, the supervisor
+  capabilities a driver borrows, and the thin wrapper that resolves a host's
+  driver. It names no concrete mux type.
 
 ## Colour ownership
 
@@ -337,11 +338,10 @@ attributes; the terminal resolves them into actual hues. So the whole UI recolou
 whatever scheme the user runs, and xmux never fights a theme it cannot see. This is a
 hard invariant, not a preference.
 
-- The vocabulary is the sixteen slots (`ui::palette`, one field per UI role) plus
-  ATTRIBUTES: reverse video, bold. Nothing else. A `Color::Rgb`, or a `Color::Indexed`
-  above 15, is a hue xmux chose for somebody else's terminal, and it is wrong on every
-  theme it was not chosen for. `every_colour_xmux_chooses_is_an_ansi_slot` fails if one
-  reaches the palette.
+- The vocabulary is the sixteen slots (one per UI role) plus ATTRIBUTES: reverse
+  video, bold. Nothing else. An RGB colour, or an indexed colour above 15, is a hue
+  xmux chose for somebody else's terminal, and it is wrong on every
+  theme it was not chosen for. The palette is guarded so one cannot reach it.
 - Anything the sixteen slots cannot say is said with an attribute instead. "One step off
   the background" is the case that keeps coming up, and it is not a slot: so the selected
   card is REVERSE VIDEO, the terminal swapping its own pair, which is what a theme itself
@@ -351,26 +351,27 @@ hard invariant, not a preference.
   one.
 - The exceptions are colours the USER names: `[ui] selection-style`,
   `[ui] hint-bar-style`, and the view-border colours. Their terminal, their choice.
-  `chrome::map_color` is that vocabulary and the only place a `#rrggbb` may enter.
-- A colour a CHILD program emits passes through untouched (`display::grid`): it is that
-  program's own choice against the same theme, and xmux is not in it.
+  The chrome's colour mapping is that vocabulary and the only place a `#rrggbb` may
+  enter.
+- A colour a CHILD program emits passes through untouched: it is that program's own
+  choice against the same theme, and xmux is not in it.
 
-A new colour goes into `ui::palette` as a slot, or it does not go in.
+A new colour goes into the palette as a slot, or it does not go in.
 
 ## Adding a module
 
 At creation time, place a new source file by the axis it belongs to:
 
-- Machine-specific → a new machine family is a new `src/machine/<kind>.rs`
-  implementing `Transport` (+ a `machine::<kind>()` factory); new per-machine
-  execution goes in the existing `local.rs`/`ssh.rs`.
+- Machine-specific → a new machine family is a new module under `src/machine/`
+  implementing `Transport` (plus its factory); new per-machine execution goes in
+  the existing local or ssh family.
 - Mux-specific (a new mux family or per-mux behavior) → `src/mux/<kind>/`.
 - PTY / grid / terminal-protocol mechanics → `src/display/`.
 - Orchestration (runtime loop, focus) → `src/app/`.
 - Host connection management → `src/host/`.
 - Domain types → `src/model/`.
 - Switcher / nav rows / status UI → `src/ui/`.
-- Runtime `State` → `src/state/`.
+- Runtime state → `src/state/`.
 
 Then, if the module introduces a new directory, create that directory's
 `AGENTS.md` using the Working Notes Format above (all seven sections). Follow the
@@ -379,30 +380,26 @@ as invariants, seams, and pitfalls - never as change history or phase narrative.
 
 ## Improvement Notes
 
-- Per-host session/window inventory has a single owner: `model::Host.inventory`.
-  Both metadata paths feed it through `HostEvent`s - the control reader carries
-  its parsed sessions on `Connected`/`Inventory` and pane subtrees on `Panes`, and
-  the poll task carries `Sessions`/`Panes`; the run loop folds them in and rebuilds
-  the nav rows from it. `host::HostManager` owns the live mechanisms (control clients
-  and poll tasks). Keep live process/task ownership out of `model::Host`, and do
-  not add a third per-host registry.
-- `Source` is thin per-source config/data. The CLI, the `ls` scan, and the
-  off-loop `Ops`/`manage` paths assemble a value `Host` from it (`Source::host`)
-  and drive enumerate/manage/attach through the `Host`/`Mux`/`Transport` APIs; the
-  machine boundary (argv assembly, ssh transport) lives entirely in `Transport`,
-  and the psmux registry helpers live in `mux/psmux`. `Hosts` is the app loop's
-  runtime host registry (every `Host` keyed by id, in display order); `Env` keeps
-  the source list + `by_alias` for the CLI, the scan, and `EnvOps`. The remaining
-  direction: shrink `Source` further by folding its `Host` assembly into `Host`
-  construction and backing the off-loop `Ops` with `Hosts` too, then reshape
-  `host::HostManager` as a runtime manager if it outgrows its metadata-client role.
-  New local/ssh execution belongs in `Transport`, new mux behavior in `Mux`.
-- `docs/superpowers/` contains working planning material and is not intended for
-  the public open source documentation surface. Before release, remove it from
-  the published repository state or replace any still-useful content with
-  current English documentation elsewhere.
-- The control socket has a useful module seam: public ctl verbs parse to
-  `model::Action`, while raw key and text injection stays behind the
-  unstable `raw:` namespace. Working Notes should tell agents to add
-  user-facing automation through semantic actions first, and reserve raw
-  input for tests or low-level compatibility.
+- Per-host session/window inventory has a single owner: the host's own inventory.
+  Both metadata paths feed it through host events - the control reader carries its
+  parsed sessions and pane subtrees, and the poll task carries the same - the run
+  loop folds them in and rebuilds the nav rows from it. The host manager owns the
+  live mechanisms (control clients and poll tasks). Keep live process/task
+  ownership out of the host domain type, and do not add a third per-host registry.
+- A source is thin per-source config/data. The CLI, the scan, and the off-loop
+  operations assemble a value host from it and drive enumerate/manage/attach
+  through the host, mux, and transport APIs; the machine boundary (argv assembly,
+  ssh transport) lives entirely in the transport, and the psmux registry helpers
+  live in the psmux family. The runtime host registry is the app loop's (every
+  host keyed by id, in display order); the environment keeps the source list and
+  its alias index for the CLI, the scan, and the off-loop operations. The
+  remaining direction: shrink the source further by folding its host assembly into
+  host construction and backing the off-loop operations with the runtime registry
+  too, then reshape the host manager as a runtime manager if it outgrows its
+  metadata-client role. New local/ssh execution belongs in the transport, new mux
+  behavior in the mux.
+- The control socket has a useful module seam: public ctl verbs resolve to domain
+  actions, while raw key and text injection stays behind the unstable `raw:`
+  namespace. Working Notes should tell agents to add user-facing automation
+  through semantic actions first, and reserve raw input for low-level
+  compatibility.

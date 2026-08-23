@@ -10,7 +10,7 @@ the handful of commands that apply regardless of which view holds focus.
 ## The prefix
 
 xmux has its own prefix, like tmux's `set -g prefix`. It is read **only** from
-the config file — there is no environment-variable override. Set it under
+the config file - there is no environment-variable override. Set it under
 `[ui]` in `~/.config/xmux/config.toml`:
 
 ```toml
@@ -46,7 +46,7 @@ one below, or the top of the next column.
 ## Nav actions
 
 xmux aggregates and switches; it does not edit what a mux already edits. There is
-no rename, no kill, and no window or pane command — do those in the mux itself.
+no rename, no kill, and no window or pane command - do those in the mux itself.
 Two actions remain. `/` filter needs nav focus; `prefix n` / `prefix r` also work
 while the live screen is focused:
 
@@ -152,10 +152,10 @@ enabled to use them).
 ## Automation
 
 A running xmux instance listens on a local control socket. Sessions are addressed
-`<source>/<session>`. It speaks navigation/display verbs — `ping`, `status`,
+`<source>/<session>`. It speaks navigation/display verbs - `ping`, `status`,
 `dump`, `rescan`, `switch <source>/<session>`, `focus <nav|terminal>`,
 `width <delta>` (a signed column delta, not an absolute width),
-`toggle-auto-hide`, `quit` — and one session-lifecycle verb:
+`toggle-auto-hide`, `quit` - and one session-lifecycle verb:
 
 - `new-session <source> [name]`
 
@@ -183,4 +183,4 @@ switches the wrong terminal. With no command, `send` reads them from stdin, one 
 line. A refused command exits non-zero so a script can detect it.
 
 A low-level `raw:` namespace (`raw:key`, `raw:keys`, `raw:text`) injects keystrokes
-or bytes for tests; it is unstable and not part of the supported surface.
+or bytes; it is unstable and not part of the supported surface.
