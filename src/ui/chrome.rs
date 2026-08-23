@@ -5,7 +5,7 @@
 //! [`Switcher`](crate::ui::switcher::Switcher) holds a [`Chrome`] and delegates these
 //! draws to it.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -275,6 +275,10 @@ pub struct Chrome {
     /// Raw `~/.ssh/config` text (set once by the app). The unreachable host screen shows
     /// the matching Host/Match stanza for the selected host. Empty in tests.
     pub(crate) ssh_config_text: String,
+    /// What offered each host to the roster, keyed by HOST name and already reduced to
+    /// the words to print (set once by the app). The unreachable host screen names it.
+    /// Empty in tests, where the row is then absent rather than blank.
+    pub(crate) roster_providers: HashMap<String, String>,
     /// The human-readable prefix string (e.g. `"C-g"`, `"C-Space"`) - set once by
     /// the app from config so the help modal reflects the active binding.
     pub(crate) ui_prefix: String,
@@ -301,6 +305,7 @@ impl Default for Chrome {
             spinner: HashSet::new(),
             spinner_frame: 0,
             ssh_config_text: String::new(),
+            roster_providers: HashMap::new(),
             ui_prefix: "C-g".into(),
             armed: false,
             colors: ViewBorderColors::default(),
@@ -371,6 +376,13 @@ impl Chrome {
     /// Sets the raw `~/.ssh/config` text the unreachable host screen reads.
     pub(crate) fn set_ssh_config_text(&mut self, text: String) {
         self.ssh_config_text = text;
+    }
+
+    /// Sets what offered each host to the roster. The app calls this once at startup
+    /// with the assembled roster; a host missing from the map simply shows no such row,
+    /// which is the honest answer for one nothing recorded.
+    pub(crate) fn set_roster_providers(&mut self, providers: HashMap<String, String>) {
+        self.roster_providers = providers;
     }
 
     /// The vertical rule between the tree (left) and terminal (right). It splits into
@@ -501,6 +513,17 @@ impl Chrome {
                 .and_then(|g| g.err.clone())
                 .unwrap_or_else(|| "connection closed".into());
             rows.push((ScreenCell::Label("reason"), reason));
+            // WHERE this host came from, between what failed and how it is configured. A
+            // host that fails is worth nothing if the user cannot tell why it is on the
+            // list at all: a tailnet peer they never wrote down reads as a mystery until
+            // the row names the provider that offered it, which is also the provider
+            // they would turn off.
+            if let Some(provider) = self
+                .roster_providers
+                .get(crate::session::machine_of(source))
+            {
+                rows.push((ScreenCell::Label("provider"), provider.clone()));
+            }
             let stanza = crate::config::host_stanza(&self.ssh_config_text, source);
             if stanza.is_empty() {
                 rows.push((

@@ -323,6 +323,15 @@ impl Runtime {
         state.chrome.set_ssh_config_text(
             std::fs::read_to_string(crate::env::ssh_config_path()).unwrap_or_default(),
         );
+        // And what offered each host, so an unreachable one can name the provider that
+        // put it on the roster. Reduced to words here: the screen prints them and
+        // nothing branches on which provider it was.
+        state.chrome.set_roster_providers(
+            env.roster_providers
+                .iter()
+                .map(|(host, p)| (host.clone(), p.label().to_string()))
+                .collect(),
+        );
         // View border colours: the config baseline (explicit overrides + stock fallback),
         // applied before any host is displayed and whenever no mux answers. Once a host is
         // displayed its live pane-*-border-style is queried and re-resolved (on_border_styles).

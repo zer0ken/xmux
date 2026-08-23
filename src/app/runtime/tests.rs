@@ -35,6 +35,7 @@ fn fake_env_with_sources(aliases: &[&str]) -> Env {
         xmux_dir,
         ssh_aliases,
         wsl_distros: Vec::new(),
+        roster_providers: std::collections::HashMap::new(),
         local_socket: None,
     }
 }

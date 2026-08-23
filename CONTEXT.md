@@ -77,8 +77,8 @@ UI elements a user perceives as distinct things:
   carries, then the rows that apply. A row is the key-column row the help also uses - a
   right-aligned cell, the `│` rule, the value - where a bold cell is a key that can be
   pressed here and a muted cell names a datum. The UNREACHABLE state's rows are why it
-  failed (the reason its transport gave, the ssh stanza it was reached through) and the
-  rescan key; the EMPTY state's rows are the keys that start a session or rescan. A host
+  failed (the reason its transport gave, the provider that put it on the roster, the ssh
+  stanza it was reached through) and the rescan key; the EMPTY state's rows are the keys that start a session or rescan. A host
   still scanning gets no screen: an in-flight state is the nav's to show.
 - grid - the live terminal content drawn in the terminal view: xmux's in-memory
   cell mirror of the attached session's screen, fed by the terminal-emulation parser.
@@ -262,8 +262,10 @@ UI elements a user perceives as distinct things:
   persisted selection, and typed ctl targets are keyed to.
 - roster - which HOSTS xmux offers, assembled from PROVIDERS, EVERY one on unless
   `[discovery]` turns it off: `~/.ssh/config` aliases, the online peers of this
-  machine's tailnet, and this box's WSL distributions. Every provider yields plain ssh target names, so nothing
-  downstream can tell where a name came from. The roster is what makes a machine a
+  machine's tailnet, and this box's WSL distributions. Every provider yields plain ssh
+  target names, so nothing downstream BEHAVES differently for one; which provider
+  offered a name is kept beside it and shown on the unreachable host screen, never read
+  to decide anything. The roster is what makes a machine a
   host: a machine no provider names is one xmux has nothing to say about. Distinct
   from `mux discovery`, which asks a host WHICH MUXES it serves, from `discovery`,
   which scans a source for sessions, and from the host axis, which reaches one.
