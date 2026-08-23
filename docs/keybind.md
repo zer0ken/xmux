@@ -25,9 +25,14 @@ passed through untouched rather than intercepted.
 
 ## Nav navigation
 
-These act on the nav list while it holds focus. The list is flat (one card per session,
-each source's cards together, the source you used most recently first), so every key
-below moves along one axis.
+These act on the nav while it holds focus. It holds one card per session, each source's
+cards together, the source you used most recently first. While a side column leaves the live screen
+wider than it is tall, the nav IS that column and the cards run down it. Once the window
+is narrow or short enough that the column would leave the live screen square or taller,
+the nav moves to a band across the top instead and the same cards flow down a column and
+then continue to the right, a whole source at a time. Either
+way the order is the same, so every key below moves along one axis: the next card is the
+one below, or the top of the next column.
 
 | Key | Action |
 |---|---|
@@ -35,8 +40,8 @@ below moves along one axis.
 | `PageUp` / `PageDown` | jump ten cards (wraps, like the arrows) |
 | `Home` / `End` | jump to the first / last card |
 
-`←` and `→` move nothing here: a flat list has no level to descend into. `→` and
-`Enter` hand focus to the live screen instead.
+Bare `←` and `→` move nothing here: the cards have no level to descend into. `Enter`
+hands focus to the live screen instead, as does `prefix →`.
 
 ## Nav actions
 
@@ -106,8 +111,12 @@ refusal too long for the nav width wraps onto more rows rather than clipping.
 |---|---|
 | `Enter` | move focus from the nav into the live screen |
 | `prefix Tab` | toggle focus between the nav and the live screen |
-| `prefix →` | focus the live screen |
-| `prefix ←` / `prefix Esc` | focus the nav |
+| `prefix →` / `prefix ↓` | focus the live screen |
+| `prefix ←` / `prefix ↑` / `prefix Esc` | focus the nav |
+
+An arrow points at the view it focuses. The live screen is right of the nav on a
+landscape screen and below it on a portrait one, so `→` and `↓` both name it; `←` and
+`↑` both name the nav. An arrow naming the view that already has focus does nothing.
 
 When the live screen has focus, every key that is not a prefix chord is
 forwarded raw to the session's active pane, so programs running inside the mux

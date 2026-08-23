@@ -36,9 +36,9 @@ One concept, one word. The two axes and the runtime:
 UI elements a user perceives as distinct things:
 
 - split view - the whole two-region layout.
-- nav view - the region holding the flat list of session cards, ordered by source
-  recency (a
-  left column in `Side`, a top band in portrait `Top`). Never the "sidebar", and
+- nav view - the region holding the session cards, ordered by source recency (a left
+  column in `Side`, a top band in portrait `Top`, where the same cards run in a column
+  flow). Never the "sidebar", and
   never the "tree": the on-screen VIEW is the nav view; `tree` names only the
   internal row-model module (`ui::tree`), which is still a Host→Session→Window
   structure.
@@ -86,10 +86,28 @@ UI elements a user perceives as distinct things:
   (scanning / unreachable / empty host), and the loading card.
 - card collapse - a session/loading card whose `{host}/{mux}` repeats the
   previous card's drops its context line and renders one row tall, so runs on
-  one server read grouped. The SELECTED card never collapses (focus expands it
-  to the full two-row card, so its context is always readable in place); the
-  renderer and mouse hit-testing share one `card_height` so the screen-row
-  mapping never diverges.
+  one server read grouped. In the `Side` list the SELECTED card never collapses (focus
+  expands it to the full two-row card, so its context is always readable in place) and
+  the renderer and mouse hit-testing share one `card_height` so the screen-row mapping
+  never diverges. The column flow collapses by position alone, never by selection: a
+  column's first card always states its context, and heights that moved with the
+  selection would reflow whole columns as the cursor passed.
+- layout turnover - the one test that picks `Side` or `Top` (`view_layout`), measured as
+  if the nav kept its side column: the terminal that column would leave is
+  `w - nav_width - 1` wide over the window's full height. Wider than tall keeps the side
+  column; square or taller moves the nav to the top band and drops the column. The
+  as-if is the point - going `Top` hands those columns back to the terminal and takes the
+  band's rows instead, so a test measuring the LIVE terminal would flip its own input and
+  the layout would oscillate on one cell of resize.
+- column flow - how the portrait `Top` band lays its cards out (`ui::switcher::columns`):
+  down a column, then right. A column takes whole host/mux RUNS, so a source's cards stay
+  together under the one context line naming them and the run that does not fit opens the
+  next column instead of splitting across the break. A run taller than the whole column
+  is the one exception, having nowhere else to go: it splits, and the continuation states
+  its context again. A column is as wide as its widest card, columns are parted by one
+  blank, and the flow is pure geometry, so the paint, the hit-test and the tests read one
+  answer. A list would show three cards in a band twenty rows wide and leave the rest of
+  every row blank; the flow is what makes the band worth its rows.
 - level color - the per-segment card color, from the palette (`ui::palette`).
   Every foreground role is ANSI-16, so the terminal theme resolves the hue: host blue,
   mux green, session red, the window part bright-black - the quietest
@@ -129,6 +147,13 @@ UI elements a user perceives as distinct things:
   into the band while an outline keeps a readable silhouette.
   `[ui] selection-style` paints a named background instead. `selected` + `highlight`
   follow ratatui's list vocabulary.
+- scrollbar strip - the row or column a scrollbar takes from the nav region when the
+  cards overflow it: the bottom ROW under the portrait column flow (which scrolls
+  sideways, by column), the right COLUMN beside the side list (which scrolls down, by
+  card). Reserved, never overlaid, because the selected card is painted by inverting its
+  whole rect and a thumb inside that rect inverts with it into a hole in the bar. The
+  thumb is proportional and reaches both ends of its track; nothing is drawn at all while
+  everything fits, so a nav that fits spends no cell on furniture.
 - spinner - the braille activity glyph on a loading card (and, historically, a
   connecting session).
 - loading card - a card standing in for a session whose panes are not yet loaded;

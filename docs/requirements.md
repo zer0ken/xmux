@@ -190,6 +190,46 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   `a_jump_never_holds_a_number_no_session_carries`,
   `cancelling_a_jump_restores_the_starting_card`, `a_jump_past_the_last_card_is_inert`.
 
+- **FR-B15** — Which layout is in force is decided by ONE test, always measured as if
+  the nav kept its side column: the terminal that column would leave is `w - nav_width - 1`
+  wide over the window's full height, and while that is WIDER than tall the nav is the side
+  column. The moment it is not (`x <= y`, square included) the nav becomes the top band and
+  the side column is gone. Measuring the live terminal instead would flip its own input -
+  going top hands those columns back and takes the band's rows - so the layout would
+  oscillate at the boundary. **Tests:**
+  `the_layout_turns_over_where_the_side_terminal_stops_being_wider_than_tall`,
+  `compute_regions_side_top_and_hidden`.
+- **FR-B12** — On a portrait screen the nav is a wide, short band, and its cards flow
+  into COLUMNS: down a column, then right. A column takes whole host/mux runs, so a
+  source's cards stay together under the one context line naming them and the run that
+  does not fit opens the next column rather than splitting across the break; only a run
+  taller than the whole column splits, having nowhere else to go, and its continuation
+  states its context again. Card order does not change, so the numbers still count in
+  reading order. The paint records each card's rect and the hit-test reads it back, so a
+  click cannot land on a card the renderer put elsewhere. **Tests:**
+  `the_portrait_band_flows_cards_down_then_right`, `a_column_holds_whole_host_mux_runs`,
+  `a_run_fills_downward_then_the_next_run_starts_a_column`,
+  `a_run_taller_than_the_column_splits_and_restates_its_context`,
+  `a_column_is_as_wide_as_its_widest_card`, `a_two_row_band_keeps_one_card_per_column`,
+  `a_one_row_band_collapses_every_card`,
+  `only_whole_columns_are_drawn_and_the_selection_stays_visible`,
+  `cells_place_columns_left_to_right_with_a_gutter`.
+- **FR-B13** — A scrollbar takes a row or a column OF ITS OWN from the nav region: the
+  band's bottom row under the column flow (which scrolls sideways), the last column beside
+  the side list (which scrolls down). It is never painted over the cards, because the
+  selected card is painted by inverting its whole rect and a thumb inside that rect
+  inverts with it into a hole in the bar. The thumb is proportional to what is on screen
+  and reaches both ends of its track, and nothing is drawn while everything fits.
+  **Tests:** `the_column_scrollbars_row_is_outside_every_card`,
+  `the_side_lists_scrollbar_column_is_outside_every_card`,
+  `the_thumb_is_proportional_and_reaches_both_ends`.
+- **FR-B14** — An arrow points AT the view it focuses, on either axis: the terminal is
+  right of the nav in the side layout and below it in the portrait one, so `prefix →` and
+  `prefix ↓` both focus the terminal while `prefix ←` and `prefix ↑` both focus the nav
+  (as `prefix Esc` does). An arrow naming the view that already has focus does nothing.
+  **Tests:** `resolve_nav_prefix_commands`, `prefix_then_left_or_esc_focuses_nav`,
+  `prefix_then_right_or_down_stays_in_terminal`.
+
 - **FR-B11** — Every colour xmux paints is an ANSI-16 slot, so the TERMINAL THEME
   resolves the hue and the whole UI recolours with the user's own scheme. What the
   sixteen slots cannot say is said with an attribute: the selected card is REVERSE VIDEO,
