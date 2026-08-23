@@ -122,22 +122,10 @@ impl MuxDriver for PsmuxDriver {
         tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
         host.display.set_shows(&key, &sel.session);
 
-        // Capture xmux's display-client tty off-loop so the NEXT switch is in-place. A
-        // LOCAL psmux attach runs the binary directly (no shell), so the remote shell
-        // marker never fires; instead probe `list-clients` (read-only) and correlate the
-        // client by the session it shows. If the probe finds nothing the tty stays unset
-        // and the next switch simply reattaches again — no regression. The probe reads
-        // THIS box's default socket, so it runs only where the local registry is
-        // authoritative; a host whose registry is on the far side skips it.
-        if host.transport.local_registry_scope() {
-            spawn_local_psmux_tty_capture(
-                host.mux.bin().to_string(),
-                sel.session.clone(),
-                id,
-                ctx.pty_tx.clone(),
-            );
-        }
-
+        // xmux's display-client tty is captured off-loop at DisplayReady (in the runtime),
+        // NOT here at spawn: at spawn our attach may not be registered yet, so an external
+        // client already on the session could be misread as ours (the TOCTOU leak of #60).
+        // At Ready our client is registered, so a sole match is unambiguously ours.
         if let Some(win) = sel.window {
             lower_select_window(host, control, &sel.session, win);
         }
@@ -186,30 +174,32 @@ pub(crate) fn parse_psmux_client_tty(out: &str, session: &str) -> Option<String>
     ttys.next().is_none().then_some(first)
 }
 
-/// Captures xmux's local psmux display-client tty off the event loop, so the next
-/// session switch can be IN PLACE (`switch-client -c <tty>`) instead of a reattach.
-/// Runs a read-only `list-clients` a few times (the just-spawned attach needs a moment
-/// to register a client), correlates the client by the session it shows, and feeds the
-/// tty back as a `PtyEvent::DisplayTty { id, … }` so the existing capture pipeline
-/// records it on the owning host. Read-only and identity-correct for psmux's
-/// one-server-per-session model; never runs `switch-client -c ""` or moves a client.
-fn spawn_local_psmux_tty_capture(
-    bin: String,
+/// Captures xmux's OWN psmux display-client tty off the event loop, so the next session
+/// switch can be IN PLACE (`switch-client -c <tty>`) instead of a reattach. Runs a
+/// read-only `list-clients` a few times and correlates the client by the session it
+/// shows, feeding the tty back as `PtyEvent::DisplayTty`. Called from the runtime at
+/// DisplayReady — AFTER our attach is confirmed live — so a sole client on the session
+/// is unambiguously OUR client: at Ready our client is registered, so a sole match is
+/// ours and a second match (an external client sharing the session) means ambiguity →
+/// the guard leaves the tty unset → the next switch reattaches (safe). `argv` is the
+/// transport-lowered `psmux list-clients` (local or via ssh).
+pub fn spawn_psmux_tty_capture(
+    argv: Vec<String>,
     session: String,
     id: u64,
     pty_tx: tokio::sync::mpsc::UnboundedSender<crate::display::attachment::PtyEvent>,
 ) {
     use crate::source::Runner;
+    let (name, args) = (argv[0].clone(), argv[1..].to_vec());
     // The addr string used for tty_probe events is the list-clients command target.
     let addr = format!("local/{}", session);
     tokio::spawn(async move {
-        // The list-clients argv against the default socket; the client showing `session`
-        // is on that session's own server, which the default socket coordinates.
-        let argv = [bin, "list-clients".to_string()];
+        // Our attach is already registered (Ready), but let list-clients propagate, then
+        // back off. A sole client on the session is ours; 0 or many means the tty stays
+        // unset and the next switch reattaches (no regression).
         for attempt in 0..5u8 {
-            // Let the attach register a client before the first probe, then back off.
             tokio::time::sleep(std::time::Duration::from_millis(120 * (attempt as u64 + 1))).await;
-            let Ok(out) = crate::source::ExecRunner.run(&argv[0], &argv[1..]).await else {
+            let Ok(out) = crate::source::ExecRunner.run(&name, &args).await else {
                 tracing::debug!(addr = %addr, attempt, result = "none", "tty_probe");
                 continue;
             };
@@ -226,8 +216,8 @@ fn spawn_local_psmux_tty_capture(
                 return;
             }
         }
-        // No client matched in the window — leave the tty unset; the next switch
-        // reattaches (no regression) and re-arms this capture.
+        // No unambiguous client matched in the window — leave the tty unset; the next
+        // switch reattaches (no regression) and re-arms this capture on the next Ready.
     });
 }
 

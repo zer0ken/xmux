@@ -820,6 +820,30 @@ impl Runtime {
                         // session, kept on screen until now) and install the fresh one.
                         self.registry.remove(&key);
                         self.registry.insert(&key, attachment);
+                        // Capture xmux's display-client tty for a psmux host now that the
+                        // attach is confirmed LIVE (Ready): at this point our client is
+                        // registered, so a sole client on the shown session is unambiguously
+                        // ours and a second one (an external client sharing it) means
+                        // ambiguity → the guard leaves the tty unset → the next switch
+                        // reattaches. This is the TOCTOU-free #60 capture — at spawn our
+                        // client may not be registered yet, which let an external client be
+                        // misread as ours. Transport-lowered so local runs it directly and
+                        // remote over ssh.
+                        if let Some(h) = self.hosts.get(&hid) {
+                            if h.mux.kind() == "psmux" {
+                                let mux_argv =
+                                    vec![h.mux.bin().to_string(), "list-clients".to_string()];
+                                let (cmd, args) = h.transport.exec_argv(false, &mux_argv);
+                                let mut argv = vec![cmd];
+                                argv.extend(args);
+                                crate::mux::spawn_psmux_tty_capture(
+                                    argv,
+                                    shown.clone(),
+                                    id,
+                                    self.driver_pty_tx.clone(),
+                                );
+                            }
+                        }
                         self.state
                             .apply(crate::model::Action::ConfirmDisplay(Selection {
                                 source: hid.clone(),

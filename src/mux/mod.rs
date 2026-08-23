@@ -24,6 +24,7 @@ pub mod vocab;
 mod zellij;
 
 pub use control::{ControlProtocol, Line, Notif};
+pub use psmux::display::spawn_psmux_tty_capture;
 pub use psmux::Psmux;
 pub use tmux::{Tmux, TmuxControl};
 pub use zellij::Zellij;
