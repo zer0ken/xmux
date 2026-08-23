@@ -626,6 +626,7 @@ impl Switcher {
         let Some(RowRef::Host {
             source,
             unreachable,
+            ..
         }) = self.current_ref()
         else {
             return false;

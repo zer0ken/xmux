@@ -510,14 +510,17 @@ impl Chrome {
             )
         } else if !state.scanning.is_empty() {
             // A subtle global indicator while host probes are in flight; clears
-            // (falls through to the resting prefix) once every host has settled.
+            // (falls through to the resting prefix) once every host has settled. It
+            // turns the SAME spinner the scanning cards do, on the same frame, so the
+            // bar and the cards read as one thing still loading.
             let total = state.groups.len();
             let done = total.saturating_sub(state.scanning.len());
+            let sp = crate::ui::spinner_glyph(self.spinner_frame);
             fit(
                 &[
-                    format!(" ⟳ scanning hosts {done}/{total}…"),
-                    format!(" ⟳ scanning {done}/{total}…"),
-                    format!(" ⟳ {done}/{total}"),
+                    format!(" {sp} scanning hosts {done}/{total}…"),
+                    format!(" {sp} scanning {done}/{total}…"),
+                    format!(" {sp} {done}/{total}"),
                 ],
                 width,
             )
