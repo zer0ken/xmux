@@ -10,6 +10,17 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
 
+/// The base name the daily appender writes under; the date it suffixes makes the rest.
+const LOG_BASE: &str = "xmux.log";
+
+/// The files this log is written to, as the pattern the appender produces: the daily
+/// suffix means no single path is the log for long, so the pattern is what a reader needs
+/// to find them. Named to be SHOWN - the unreachable screen states it - and opened by
+/// nothing.
+pub fn log_files(xmux_dir: &Path) -> std::path::PathBuf {
+    xmux_dir.join(format!("{LOG_BASE}.<date>"))
+}
+
 /// Initialises the tracing subscriber and returns the `WorkerGuard` that keeps
 /// the background log-writer alive. The caller MUST bind the guard to a variable
 /// in `main` (or wherever the program lifetime lives) — dropping it early flushes
@@ -20,7 +31,7 @@ use tracing_subscriber::{EnvFilter, Layer};
 /// is absent or contains an invalid directive the subscriber falls back to
 /// `xmux=info`, which logs all `info`-and-above events inside the `xmux` crate.
 pub fn init(xmux_dir: &Path) -> WorkerGuard {
-    let file_appender = tracing_appender::rolling::daily(xmux_dir, "xmux.log");
+    let file_appender = tracing_appender::rolling::daily(xmux_dir, LOG_BASE);
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
     // Parse XMUX_LOG; fall back to "xmux=info" when the variable is absent or

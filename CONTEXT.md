@@ -78,9 +78,16 @@ UI elements a user perceives as distinct things:
   as the headline (a host for the two host states, the session address for
   `own session`), under it the state word, then the rows that apply. A row is the key-column row the help also uses - a
   right-aligned cell, the `│` rule, the value - where a bold cell is a key that can be
-  pressed here and a muted cell names a datum. The UNREACHABLE state's rows are why it
-  failed (the reason its transport gave, the provider that put it on the roster, the ssh
-  stanza it was reached through) and the rescan key; the EMPTY state's rows are the keys that start a session or rescan. A host
+  pressed here and a muted cell names a datum. No value on a screen is shortened to fit
+  its column: one too wide hangs under the same rule, a multi-line one keeps its lines,
+  and a control character is written as its escape rather than printed as nothing. The
+  UNREACHABLE state states everything known about the failure, in reading order: the
+  reason its transport gave, how many failures in a row it is, then what was asked and
+  over what (the mux binary, how the machine is addressed and the wait that bounds it,
+  the socket, and the session-listing command itself, spelled so it can be run by hand),
+  then the provider that put the host on the roster, the ssh stanza it was reached
+  through, what the OTHER muxes on that same machine answered, and the log file holding
+  the full history - then the rescan key. The EMPTY state's rows are the keys that start a session or rescan. A host
   still scanning gets no screen: an in-flight state is the nav's to show. The
   `own session` state's rows are why it is refused, and no key, because nothing pressed
   here would make it showable.

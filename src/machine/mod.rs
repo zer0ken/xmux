@@ -202,6 +202,32 @@ impl MachineKind {
     /// The one site that maps a machine kind to a concrete [`Transport`] (Decision A).
     /// A new family = a variant above + one arm here (and in the sibling `local_socket`);
     /// no code outside `MachineKind` matches on the kind.
+    /// How this machine is ADDRESSED, in words, with the wait that bounds reaching it.
+    ///
+    /// Shown, never parsed: the unreachable screen states it, so a host that failed says
+    /// what it was asked over. It lives here because this is where a machine family's
+    /// construction data already lives - the alternative is a caller that matches on the
+    /// family to describe it, and every such caller drifts from `transport`.
+    pub fn addressed_as(&self) -> String {
+        match self {
+            MachineKind::Local { .. } => "this box, no connection to make".to_string(),
+            MachineKind::Ssh { alias, .. } => {
+                format!("ssh to {alias}, given {}s to connect", ssh::CONNECT_TIMEOUT)
+            }
+            MachineKind::Wsl { distro, .. } => format!("wsl distribution {distro}"),
+        }
+    }
+
+    /// The socket / multiplexed-connection path this machine addresses its mux through,
+    /// or empty when it addresses one without a path.
+    pub fn socket_path(&self) -> String {
+        match self {
+            MachineKind::Local { socket, .. } => socket.clone().unwrap_or_default(),
+            MachineKind::Ssh { control_path, .. } => control_path.clone(),
+            MachineKind::Wsl { .. } => String::new(),
+        }
+    }
+
     pub fn transport(self) -> Box<dyn Transport> {
         match self {
             MachineKind::Local { id, socket } if id.is_empty() => local(socket),
@@ -481,5 +507,44 @@ mod tests {
         assert!(!wsl.is_remote());
         assert!(wsl.runs_through_shell());
         assert!(!wsl.local_registry_scope());
+    }
+}
+
+#[cfg(test)]
+mod describe_tests {
+    use super::*;
+
+    #[test]
+    fn each_family_says_how_it_is_addressed_and_over_what_path() {
+        // Shown on the unreachable screen: what a failed host was asked over. The ssh
+        // wait is the SAME constant the option carries, so the words and the command
+        // cannot disagree.
+        let ssh = MachineKind::Ssh {
+            id: String::new(),
+            alias: "prod".into(),
+            control_path: "/tmp/cm.sock".into(),
+            os: "linux".into(),
+        };
+        assert_eq!(
+            ssh.addressed_as(),
+            format!("ssh to prod, given {}s to connect", ssh::CONNECT_TIMEOUT)
+        );
+        assert_eq!(ssh.socket_path(), "/tmp/cm.sock");
+
+        let local = MachineKind::Local {
+            id: String::new(),
+            socket: Some("/tmp/psmux.sock".into()),
+        };
+        assert!(local.addressed_as().contains("this box"));
+        assert_eq!(local.socket_path(), "/tmp/psmux.sock");
+
+        // A machine addressed without a path states none, and the screen then carries no
+        // such row rather than an empty one.
+        let wsl = MachineKind::Wsl {
+            id: String::new(),
+            distro: "Ubuntu".into(),
+        };
+        assert!(wsl.addressed_as().contains("Ubuntu"));
+        assert_eq!(wsl.socket_path(), "");
     }
 }

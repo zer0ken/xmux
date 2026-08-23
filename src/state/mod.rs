@@ -18,6 +18,11 @@ pub struct State {
     pub panes: HashMap<String, Vec<WindowPanes>>,
     /// Sources whose `list-sessions` has not yet returned (host shows scanning…).
     pub scanning: HashSet<String>,
+    /// How many times in a row each source has failed to enumerate, reset to zero the
+    /// moment it answers. Written at the single result-apply site and read only to be
+    /// SHOWN: the unreachable screen states it, because one failed sweep and a host that
+    /// has not answered since launch are different problems behind the same message.
+    pub failure_runs: HashMap<String, u32>,
     /// Session addresses whose `list-panes` has resolved (success or failure).
     pub panes_loaded: HashSet<String>,
     /// Active fuzzy-filter text (drives the visible tree + the hint_bar).

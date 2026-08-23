@@ -265,6 +265,19 @@ impl Host {
         self.enumerate_with(&crate::source::ExecRunner).await
     }
 
+    /// The command a session listing spawns on this host, `argv[0]` first.
+    ///
+    /// The mux names the listing (a local psmux reads its registry first, then still runs
+    /// it for the detail) and the machine wraps it, so it is what a failed scan ran. It
+    /// exists to be SHOWN: the unreachable screen states it, which is what lets a user
+    /// reproduce the failure outside xmux instead of taking the app's word for it.
+    pub fn list_sessions_command(&self) -> Vec<String> {
+        let (name, args) = self
+            .transport
+            .exec_argv(false, &self.mux.list_sessions_plan());
+        std::iter::once(name).chain(args).collect()
+    }
+
     /// The argv that hands the terminal over to attach this host's named session
     /// (over `ssh -t` for a remote).
     ///
@@ -784,6 +797,19 @@ mod tests {
                 .take()
                 .unwrap_or_else(|| Ok(Vec::new()))
         }
+    }
+
+    #[test]
+    fn list_sessions_command_is_the_listing_a_scan_runs() {
+        // Shown on the unreachable screen, so it has to be the real command: the mux
+        // binary, its listing verb, and the machine's own wrapping around them.
+        let h = Host::new(crate::machine::local(None), crate::mux::for_binary("tmux"));
+        let cmd = h.list_sessions_command();
+        assert_eq!(cmd[0], "tmux");
+        assert!(
+            cmd.contains(&"list-sessions".to_string()),
+            "the listing verb is in it: {cmd:?}"
+        );
     }
 
     #[tokio::test]

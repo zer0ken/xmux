@@ -140,6 +140,17 @@ pub trait Mux: Send + Sync {
     /// Per-session vs shared. The supervisor reads this instead of `remote`.
     fn server_model(&self) -> ServerModel;
 
+    /// The mux argv this mux enumerates its sessions with, `argv[0]` the binary.
+    ///
+    /// Exists to be SHOWN - the unreachable screen states the command behind a failed
+    /// scan - so it must be the argv `enumerate` really issues, not a plausible one. The
+    /// default is the shared `list-sessions` listing, which is what every mux built on
+    /// `enumerate_via_list_sessions` runs; a mux that lists its sessions another way
+    /// overrides this beside its own `enumerate`, so the two cannot drift.
+    fn list_sessions_plan(&self) -> Vec<String> {
+        mux::list_sessions(self.bin())
+    }
+
     /// The mux's own display driver — the per-host orchestration of which PTY to
     /// attach and whether to `switch-client` or reattach on a session change. Each
     /// mux constructs ITS OWN driver, so mux selection lives in the mux family

@@ -242,6 +242,72 @@ impl ViewScreen {
     }
 }
 
+/// How many times in a row this source has failed, in words.
+///
+/// It separates a host that just dropped from one that has not answered all session -
+/// two different problems that one error message reads identically for. No clock is
+/// involved and none is wanted: the sweep re-probes every host every couple of seconds,
+/// so a shown failure is always seconds old and an age row would say the same thing
+/// every time it was read.
+fn failure_run_words(runs: u32) -> String {
+    match runs {
+        0 | 1 => "first failure".to_string(),
+        n => format!("{n} in a row"),
+    }
+}
+
+/// The OTHER sources on `source`'s machine, each with what it last answered, in the
+/// inventory's own order.
+///
+/// A machine serving several muxes gets one source per mux, and they fail
+/// independently: this is what says whether the machine or the mux is the thing that is
+/// down. Empty when the machine serves this source alone, and then the screen carries no
+/// such row rather than an empty one.
+fn siblings(state: &crate::state::State, source: &str) -> Vec<String> {
+    let machine = crate::session::machine_of(source);
+    state
+        .groups
+        .iter()
+        .filter(|g| g.source != source && crate::session::machine_of(&g.source) == machine)
+        .map(|g| {
+            let word = if state.scanning.contains(&g.source) {
+                "still scanning".to_string()
+            } else if g.err.is_some() {
+                crate::ui::tree::host_state_word(true).to_string()
+            } else {
+                match g.sessions.len() {
+                    0 => crate::ui::tree::host_state_word(false).to_string(),
+                    1 => "1 session".to_string(),
+                    n => format!("{n} sessions"),
+                }
+            };
+            // A source id can itself carry the `:` that parts machine from mux, so the
+            // two are parted by a middot instead - the hint bar's own separator.
+            format!("{} · {word}", g.source)
+        })
+        .collect()
+}
+
+/// How xmux reaches one source, in the words the unreachable screen prints.
+///
+/// Resolved once at startup from that source's own config, because how a source is
+/// REACHED cannot change under a run - only whether it answers can. Every field is
+/// already words: the screen prints them and nothing branches on any of them, which is
+/// what keeps this layer blind to which machine family or which mux a source is.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SourceReach {
+    /// The command a session listing spawns, spelled so it can be run by hand. The one
+    /// datum that turns "it failed" into something the user can reproduce outside xmux.
+    pub probe: String,
+    /// The machine and how it is addressed, with the connect budget that applies to it.
+    pub machine: String,
+    /// The mux binary asked for on that machine.
+    pub mux: String,
+    /// The socket / ControlMaster path the mux is addressed through. Empty ⇒ no row,
+    /// which is the honest answer for a machine addressed without one.
+    pub socket: String,
+}
+
 /// The left cell of a host-screen row: what the row is about, and how it reads.
 enum ScreenCell {
     /// A key the user can press on this screen. Bold and nothing else, the help modal's
@@ -298,6 +364,14 @@ pub struct Chrome {
     /// the words to print (set once by the app). The unreachable host screen names it.
     /// Empty in tests, where the row is then absent rather than blank.
     pub(crate) roster_providers: HashMap<String, String>,
+    /// How xmux reaches each source, keyed by SOURCE id (set once by the app). The
+    /// unreachable screen states it: a host that failed is worth little without what was
+    /// asked of it and how. See [`SourceReach`].
+    pub(crate) source_reach: HashMap<String, SourceReach>,
+    /// The log file every lowered command and its result is written to (set once by the
+    /// app). The unreachable screen names the path, so the full history of what was run
+    /// is findable rather than being something the user has to know about.
+    pub(crate) log_path: String,
     /// The human-readable prefix string (e.g. `"C-g"`, `"C-Space"`) - set once by
     /// the app from config so the help modal reflects the active binding.
     pub(crate) ui_prefix: String,
@@ -325,6 +399,8 @@ impl Default for Chrome {
             spinner_frame: 0,
             ssh_config_text: String::new(),
             roster_providers: HashMap::new(),
+            source_reach: HashMap::new(),
+            log_path: String::new(),
             ui_prefix: "C-g".into(),
             armed: false,
             colors: ViewBorderColors::default(),
@@ -402,6 +478,19 @@ impl Chrome {
     /// which is the honest answer for one nothing recorded.
     pub(crate) fn set_roster_providers(&mut self, providers: HashMap<String, String>) {
         self.roster_providers = providers;
+    }
+
+    /// Sets how xmux reaches each source, keyed by source id. The app calls this once at
+    /// startup from the assembled source list; a source missing from the map shows the
+    /// rows it has and no blanks for the rest.
+    pub(crate) fn set_source_reach(&mut self, reach: HashMap<String, SourceReach>) {
+        self.source_reach = reach;
+    }
+
+    /// Sets the log file path the unreachable screen names. The app calls this once at
+    /// startup with the file logging actually opened.
+    pub(crate) fn set_log_path(&mut self, path: String) {
+        self.log_path = path;
     }
 
     /// The vertical rule between the tree (left) and terminal (right). It splits into
@@ -540,6 +629,14 @@ impl Chrome {
                     .into(),
             ));
         } else if kind == ViewScreen::Unreachable {
+            // WHAT failed, then WHEN, then what was asked of the host and how, then who
+            // put it on the list, then how it is configured, then what else on that same
+            // machine answered, then where the whole history is written. Read top to
+            // bottom it is one account of a failure: the message, its age, the command
+            // behind it, and the two things that decide whether the box or the mux is at
+            // fault. Nothing here is abbreviated to fit - a value too wide hangs under
+            // its own rule (see below), because a datum the user came here to read is
+            // worth more than a tidy column.
             let reason = state
                 .groups
                 .iter()
@@ -547,6 +644,28 @@ impl Chrome {
                 .and_then(|g| g.err.clone())
                 .unwrap_or_else(|| "connection closed".into());
             rows.push((ScreenCell::Label("reason"), reason));
+            if let Some(runs) = state.failure_runs.get(source) {
+                rows.push((ScreenCell::Label("failures"), failure_run_words(*runs)));
+            }
+            rows.push((ScreenCell::Gap, String::new()));
+            // What was asked, and of what. The mux and the machine are separate rows
+            // because they are the two independent things that can be wrong: the box may
+            // be up with no such mux on it, or the mux fine behind a box that cannot be
+            // reached.
+            if let Some(reach) = self.source_reach.get(source) {
+                if !reach.mux.is_empty() {
+                    rows.push((ScreenCell::Label("mux"), reach.mux.clone()));
+                }
+                if !reach.machine.is_empty() {
+                    rows.push((ScreenCell::Label("machine"), reach.machine.clone()));
+                }
+                if !reach.socket.is_empty() {
+                    rows.push((ScreenCell::Label("socket"), reach.socket.clone()));
+                }
+                if !reach.probe.is_empty() {
+                    rows.push((ScreenCell::Label("probe"), reach.probe.clone()));
+                }
+            }
             // WHERE this host came from, between what failed and how it is configured. A
             // host that fails is worth nothing if the user cannot tell why it is on the
             // list at all: a tailnet peer they never wrote down reads as a mystery until
@@ -573,6 +692,20 @@ impl Chrome {
                     };
                     rows.push((cell, l.trim_end().to_string()));
                 }
+            }
+            // The other muxes on the SAME machine, each with what it answered. This is
+            // the one row that tells the user which half is broken without leaving the
+            // screen: a sibling serving sessions says the box is up and this mux is not.
+            for (i, sib) in siblings(state, source).into_iter().enumerate() {
+                let cell = if i == 0 {
+                    ScreenCell::Label("same machine")
+                } else {
+                    ScreenCell::Continued
+                };
+                rows.push((cell, sib));
+            }
+            if !self.log_path.is_empty() {
+                rows.push((ScreenCell::Label("log"), self.log_path.clone()));
             }
             rows.push((ScreenCell::Gap, String::new()));
         } else {

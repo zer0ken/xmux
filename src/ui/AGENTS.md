@@ -116,6 +116,20 @@ flatten renders for the dump verb.
   consumption) on that signal. This mutate-and-return-bool shape is deliberate; it
   is not split into a pure command and query pair, because the churn would exceed
   the value.
+- A surface that exists to be READ never shortens what it states. A value too wide for
+  its column hangs under the same rule, a multi-line value keeps its lines, and a
+  control character is written as its escape rather than printed as nothing: where a
+  datum does not fit, the surface grows, and the datum is never the thing that gives
+  way. This is why the reason, the probe command and the ssh stanza are on a screen and
+  not on a card - the card had the room for none of them.
+- A state screen states everything known about the state it explains, not the minimum
+  that identifies it. The user reached it because the one-line state word was not
+  enough, so the screen carries what failed, what was asked and over what, who put the
+  thing on the list, what else nearby answered, and where the full history is written. A
+  datum nothing recorded is an ABSENT row, never a blank one.
+- The words on a screen and the values the code runs come from one place: the ssh
+  connect wait is printed from the same constant the ssh option is built from, and a
+  status word from the one helper the cards read. Two spellings of one fact drift.
 
 ## Common Pitfalls
 
