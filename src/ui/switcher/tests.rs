@@ -3043,3 +3043,159 @@ fn fit_selects_by_display_width() {
         "width-4 candidate accepted at budget 4"
     );
 }
+
+// --- the portrait band's column flow ------------------------------------
+
+/// `n` sources of two sessions each, named so every card is the same width.
+fn column_flow_scan(sources: &[&str], name_len: usize) -> Scan {
+    let counts: Vec<(&str, usize)> = sources.iter().map(|s| (*s, 2)).collect();
+    column_flow_scan_sized(&counts, name_len)
+}
+
+/// Sources carrying the given session counts, most recent source first, every card the
+/// same width. The counts set each host/mux RUN's height (one expanded card over the
+/// rest collapsed), which is what the column flow packs.
+fn column_flow_scan_sized(sources: &[(&str, usize)], name_len: usize) -> Scan {
+    let pad = "x".repeat(name_len.saturating_sub(2));
+    let mut out: Vec<(&str, Vec<Session>)> = Vec::new();
+    let mut last = 1000i64;
+    for (src, n) in sources {
+        let mut sessions = Vec::new();
+        for k in 0..*n {
+            sessions.push(sess(src, &format!("{src}{pad}{k}"), 1, false, last));
+            last -= 1;
+        }
+        out.push((*src, sessions));
+    }
+    sources_scan(out)
+}
+
+/// Renders `scan` into a `w`x`h` portrait backend and returns the switcher, so a test
+/// can read the card rects the paint recorded.
+fn portrait(scan: Scan, w: u16, h: u16) -> (Switcher, Terminal<TestBackend>) {
+    let mut state = crate::state::State::from_scan(scan);
+    let mut sw = Switcher::new(&mut state);
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, &state))
+        .unwrap();
+    assert_eq!(sw.layout, ViewLayout::Top, "the backend must be portrait");
+    (sw, term)
+}
+
+/// Card rects by card index, as the last paint placed them.
+fn cells_of(sw: &Switcher) -> std::collections::HashMap<usize, Rect> {
+    sw.nav_cells.iter().map(|(i, r)| (*i, *r)).collect()
+}
+
+#[test]
+fn the_portrait_band_flows_cards_down_then_right() {
+    // A three-row band: each source's run (one expanded card over one collapsed) fills a
+    // column exactly, so the next source opens the column to its right. Reading order is
+    // the fill order - down a column, then right - which is what the numbers count in.
+    let (sw, _t) = portrait(column_flow_scan(&["aa", "bb", "cc"], 2), 60, 12);
+    let cells = cells_of(&sw);
+    assert_eq!(cells.len(), 6, "every card is placed: {cells:?}");
+    for pair in [(0usize, 1usize), (2, 3), (4, 5)] {
+        let (top, under) = (cells[&pair.0], cells[&pair.1]);
+        assert_eq!(top.x, under.x, "a source's two cards share a column");
+        assert_eq!(top.y, 0, "the run starts at the top of its column");
+        assert_eq!(top.height, 2, "and states its {{host}}/{{mux}} context");
+        assert_eq!(under.y, 2, "the second card hangs directly under it");
+        assert_eq!(under.height, 1, "collapsed, sharing the context above");
+    }
+    assert!(
+        cells[&0].x < cells[&2].x && cells[&2].x < cells[&4].x,
+        "later sources open columns to the right: {cells:?}"
+    );
+}
+
+#[test]
+fn a_column_holds_whole_host_mux_runs() {
+    // An eight-row band holds two three-row runs with TWO rows to spare - room for the
+    // third run's first card, but not for the run. It moves right ENTIRE rather than
+    // leaving one card behind at the foot of the column: a source's cards stay together,
+    // and the context line naming them stays at the top of them.
+    let (sw, _t) = portrait(column_flow_scan(&["aa", "bb", "cc"], 2), 60, 23);
+    let cells = cells_of(&sw);
+    assert_eq!(cells.len(), 6);
+    let x0 = cells[&0].x;
+    for i in [1usize, 2, 3] {
+        assert_eq!(cells[&i].x, x0, "runs one and two share the first column");
+    }
+    assert_eq!(
+        cells[&2].y, 3,
+        "the second run follows the first down the column"
+    );
+    assert!(
+        cells[&4].x > x0,
+        "the run that does not fit starts a column instead of splitting: {cells:?}"
+    );
+    assert_eq!(cells[&4].y, 0, "at the top of it");
+    assert_eq!(cells[&4].height, 2, "stating its own context");
+    assert_eq!(cells[&5].x, cells[&4].x, "with its sibling under it");
+}
+
+#[test]
+fn the_column_scrollbars_row_is_outside_every_card() {
+    // Cards too wide to all fit spend the band's bottom row on the horizontal scrollbar.
+    // That row must be OUTSIDE every card rect: the selected card is painted by inverting
+    // its rect, and a thumb inside one inverts with it into a hole in the bar.
+    // aa's run is 3 rows and bb's is 4: together exactly the 7 rows the band would have
+    // without a scrollbar, so a bar painted OVER the cards would land on bb's last card.
+    let (sw, term) = portrait(
+        column_flow_scan_sized(&[("aa", 2), ("bb", 3), ("cc", 2)], 18),
+        60,
+        20,
+    );
+    let buf = term.backend().buffer();
+    let cells = cells_of(&sw);
+    assert!(!cells.is_empty(), "something is painted");
+    let bar_y = 6; // band 8 rows: 7 of cards, minus the row this bar takes, then the hint bar
+    let row: String = (0..buf.area.width)
+        .map(|x| buf[(x, bar_y)].symbol())
+        .collect();
+    let thumb = row.chars().filter(|c| *c == '▄').count();
+    assert!(
+        thumb > 0 && thumb < buf.area.width as usize,
+        "row {bar_y} carries a THUMB, not nothing and not a full-width rule: {row:?}"
+    );
+    for (i, rect) in &cells {
+        assert!(
+            rect.y + rect.height <= bar_y,
+            "card {i} at {rect:?} must not reach the scrollbar row {bar_y}"
+        );
+    }
+    assert!(
+        (0..buf.area.width).all(|x| !buf[(x, bar_y)].modifier.contains(Modifier::REVERSED)),
+        "nothing on the scrollbar row is inverted, so the thumb reads as a thumb"
+    );
+}
+
+#[test]
+fn the_side_lists_scrollbar_column_is_outside_every_card() {
+    // Same rule on the other axis: when the side list overflows, its thumb takes the
+    // nav's last column and the cards give it up, so no inverted card runs under it.
+    let mut state = crate::state::State::from_scan(column_flow_scan(&["aa", "bb", "cc"], 2));
+    let mut sw = Switcher::new(&mut state);
+    let mut term = Terminal::new(TestBackend::new(140, 8)).unwrap();
+    term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, &state))
+        .unwrap();
+    assert_eq!(sw.layout, ViewLayout::Side);
+    let buf = term.backend().buffer();
+    let bar_x = NAV_WIDTH - 1;
+    let col: String = (0..buf.area.height - 1)
+        .map(|y| buf[(bar_x, y)].symbol())
+        .collect();
+    assert!(
+        col.contains("▐"),
+        "the overflow cue is in the nav's last column: {col:?}"
+    );
+    assert!(
+        (0..buf.area.height).all(|y| !buf[(bar_x, y)].modifier.contains(Modifier::REVERSED)),
+        "and no selected card reaches into it"
+    );
+    assert!(
+        buf[(0, 0)].modifier.contains(Modifier::REVERSED),
+        "while the selected card itself is still inverted"
+    );
+}

@@ -33,6 +33,11 @@ pub const NAV_WIDTH: u16 = 48;
 /// [`Switcher::card_height`] so the screen-row-to-card mapping never diverges.
 pub(super) const CARD_H: u16 = 2;
 
+/// Blank columns between two card columns in the portrait `Top` flow. One is enough to
+/// part them: every card opens with its address column, so a gutter reads as a gap
+/// between a name and the next number rather than two names running together.
+pub(super) const COL_GUTTER: u16 = 1;
+
 // Per-level node colours (the shared semantic palette), so the tree levels read
 // apart at a glance. Functions, not consts: the active palette (dark / light) is
 // picked at runtime from the terminal background.
@@ -235,6 +240,14 @@ pub struct Switcher {
 
     list_state: ListState,
     nav_inner: Rect,
+    /// The card rects of the last paint, in the portrait `Top` layout's column flow:
+    /// mouse hit-testing reads them so a click lands on the card the user sees, whatever
+    /// column it flowed into. Empty in the `Side` layout, where the list's own row
+    /// arithmetic answers the same question.
+    nav_cells: Vec<(usize, Rect)>,
+    /// The leftmost drawn column of the `Top` column flow: the horizontal scroll
+    /// position, moved only as far as keeping the selected card visible requires.
+    nav_col_offset: usize,
     /// The view stacking as of the last render (Side vs Top), cached so key handling can
     /// route the arrows to match what is on screen without re-deriving the geometry. Set
     /// each frame by `render` from [`view_layout`].
@@ -253,6 +266,7 @@ pub struct Switcher {
     popup_geo: PopupGeometry,
 }
 
+mod columns;
 mod input;
 mod mouse;
 mod render;
@@ -269,6 +283,8 @@ impl Switcher {
             terminal_view_target: TerminalViewTarget::default(),
             list_state: ListState::default(),
             nav_inner: Rect::default(),
+            nav_cells: Vec::new(),
+            nav_col_offset: 0,
             layout: ViewLayout::Side,
             rescan_reselect: None,
             screen_area: Rect::default(),
@@ -444,6 +460,15 @@ impl Switcher {
         if self.list_state.selected() == Some(i) {
             return false;
         }
+        self.hangs_under_prev(i)
+    }
+
+    /// Whether card `i` shares the previous card's `{host}/{mux}` context, so it CAN
+    /// hang under it instead of restating it. The context test alone: whether it
+    /// actually collapses also depends on the layout (the selected card expands in the
+    /// `Side` list; a column's first card always states its context in the `Top` flow),
+    /// so each layout applies its own rule over this one.
+    fn hangs_under_prev(&self, i: usize) -> bool {
         let (Some(row), Some(prev)) = (
             self.rows.get(i),
             i.checked_sub(1).and_then(|p| self.rows.get(p)),
