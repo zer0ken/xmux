@@ -413,8 +413,8 @@ fn set_active_window_refreshes_the_focused_window_line() {
 
 #[test]
 fn up_down_and_hjkl_move_linearly() {
-    // The flat card list has no levels: ↑/↓ (and k/j) step one card up/down the
-    // whole list, and h/l are inert (nothing to move between horizontally).
+    // The card list has no levels: every arrow (and k/j) steps ONE card along it, and
+    // h/l are inert (they resize the nav behind the prefix instead).
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     let start = sw.selected;
@@ -434,7 +434,17 @@ fn up_down_and_hjkl_move_linearly() {
         &mut state,
     );
     assert_eq!(sw.selected, start, "k == ↑");
-    // h/l are inert on the flat list (no horizontal level to move between).
+    // ←/→ step the same one card. The portrait band flows its cards down a column and
+    // then right, so the card after this one is sometimes below and sometimes one column
+    // over; one step means one card either way, in both layouts.
+    sw.handle_key(
+        KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+        &mut state,
+    );
+    assert_eq!(sw.selected, next, "→ == ↓");
+    sw.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), &mut state);
+    assert_eq!(sw.selected, start, "← == ↑");
+    // h/l are inert on the card list (they resize the nav behind the prefix).
     sw.handle_key(
         KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
         &mut state,
