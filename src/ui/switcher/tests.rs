@@ -979,7 +979,7 @@ async fn apply_source_result_empty_shows_empty_status() {
 }
 
 #[tokio::test]
-async fn apply_source_result_unreachable_marks_tree_and_reason_on_the_screen() {
+async fn apply_source_result_marks_the_card_and_states_the_reason_on_the_screen() {
     let mut h = Harness::from_sources(&["prod"]);
     h.sw.apply_source_result(
         "prod".into(),
@@ -988,18 +988,16 @@ async fn apply_source_result_unreachable_marks_tree_and_reason_on_the_screen() {
         &mut h.state,
     );
     h.draw();
-    // Tree: the ⚠ marker and the clause that NAMES the failure. The context the tool
-    // wrapped it in stays out, so the card says why without taking the nav to say it.
+    // Nav: the ⚠ marker and nothing more. No part of the message reaches the card -
+    // the screen is where it is stated, and a card is too narrow to hold it whole.
     let tree = h.nav_text();
     assert!(tree.contains('⚠'), "the host row is marked with ⚠:\n{tree}");
-    assert!(
-        tree.contains("connection refused"),
-        "the card names the failure:\n{tree}"
-    );
-    assert!(
-        !tree.contains("command failed"),
-        "the verbose context does NOT clutter the tree:\n{tree}"
-    );
+    for absent in ["connection refused", "command failed"] {
+        assert!(
+            !tree.contains(absent),
+            "the card states no reason, found {absent:?}:\n{tree}"
+        );
+    }
     // The lone unreachable host is auto-selected → its host screen states it is
     // unreachable and shows why.
     let out = h.text();

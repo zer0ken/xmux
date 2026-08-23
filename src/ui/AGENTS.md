@@ -67,6 +67,11 @@ flatten renders for the dump verb.
   added later joins that grammar rather than bringing its own.
 - A settled host's status word has one source, so the word on a card and the word on the
   screen reached from it are the same word.
+- A card states a STATE, never a REASON: the status word is all a settled host card
+  carries, and the message behind it (the diagnostic its transport gave, the provider
+  that offered the host, the config stanza it was reached through) is stated on the
+  screen that card selects. A card is only as wide as the nav, so a reason on it is a
+  cut-down copy of one the screen already holds whole.
 - A card that is waiting turns ONE spinner, in the first of its levels that has not
   resolved (mux, then session, then window); every level behind it stays blank. A
   second spinner on one card would say two separate things are in flight, when the
