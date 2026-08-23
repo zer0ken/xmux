@@ -266,16 +266,23 @@ impl Switcher {
             let (host, mux, _) = context_of(&row.reference);
             let mut line1 = gutter(false);
             // A machine serving several muxes has one host card per mux, so the mux has
-            // to be on the line or the two cards read identically.
-            let label = if mux.is_empty() {
-                host.to_string()
-            } else {
-                format!("{host}/{mux}")
-            };
+            // to be on the line or the two cards read identically. It is spanned exactly
+            // as a session card's context line is - host, separator, mux - because a
+            // level's colour is the level's, not the card kind's: a single-colour run reading
+            // `local/psmux` would say the mux is part of the host's name.
+            line1.push(Span::raw(" "));
             line1.push(Span::styled(
-                pad_label(&label),
+                host.to_string(),
                 Style::default().fg(color_host()),
             ));
+            if !mux.is_empty() {
+                line1.push(Span::styled("/", muted));
+                line1.push(Span::styled(
+                    mux.to_string(),
+                    Style::default().fg(color_mux()),
+                ));
+            }
+            line1.push(Span::raw(" "));
             let style = if *unreachable {
                 Style::default().fg(palette::get().danger)
             } else if row.line2.starts_with("scanning") {

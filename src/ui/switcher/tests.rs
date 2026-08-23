@@ -1515,6 +1515,49 @@ async fn session_card_context_shows_host_mux_session() {
     assert_eq!(h.nav_fg_of("0:w-alpha"), Some(color_window()));
 }
 
+#[tokio::test]
+async fn a_host_card_colours_its_levels_like_a_session_card_does() {
+    // A level's colour belongs to the LEVEL, not to the kind of card it lands on, so the
+    // host card is spanned host / separator / mux exactly as a session card's context
+    // line is. A single-colour run would read as if the mux were part of the host's name.
+    let scan = Scan {
+        groups: vec![
+            Group {
+                source: "srv:zellij".into(),
+                err: None,
+                sessions: vec![sess_mux("srv:zellij", "alpha", "zellij", 200)],
+            },
+            // A reachable machine with no session left: the host-state card.
+            Group {
+                source: "srv:psmux".into(),
+                err: None,
+                sessions: vec![],
+            },
+        ],
+        panes: HashMap::new(),
+    };
+    let h = Harness::new(scan);
+    let out = h.nav_text();
+    assert!(
+        out.contains("srv/psmux"),
+        "the host card names its mux:
+{out}"
+    );
+    assert_eq!(
+        h.nav_fg_of("psmux"),
+        Some(color_mux()),
+        "the mux segment is the mux colour, not the host's"
+    );
+    // The separator is furniture on both card kinds, and the host half is the host's.
+    let (x, y) = locate(h.buf(), "srv/psmux", NAV_WIDTH).expect("the host card");
+    assert_eq!(h.buf()[(x, y)].fg, color_host(), "the host half");
+    assert_eq!(
+        h.buf()[(x + 3, y)].fg,
+        color_hint(),
+        "the separator is furniture"
+    );
+}
+
 /// The full content of screen row `y`, across the nav width.
 fn nav_line(h: &Harness, y: u16) -> String {
     (0..NAV_WIDTH.min(h.buf().area.width))
