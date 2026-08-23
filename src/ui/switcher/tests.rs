@@ -1031,6 +1031,69 @@ async fn unreachable_host_screen_keeps_a_long_reason_whole() {
 }
 
 #[tokio::test]
+async fn the_session_xmux_runs_in_is_never_a_terminal_view_target() {
+    // Attaching to it would put a second client on the session holding xmux: that moves
+    // the user's own client and paints xmux inside itself. The refusal is on the TARGET,
+    // which is the one value the display reconcile, the attach and the mux-side switch
+    // all read, so none of them can reach the session by another path.
+    let mut h = Harness::from_sources(&["local"]);
+    h.sw.set_own_session(Some("local/xmus".to_string()));
+    h.sw.apply_source_result(
+        "local".into(),
+        vec![sess_mux("local", "xmus", "psmux", 100)],
+        None,
+        &mut h.state,
+    );
+    h.draw();
+
+    assert_eq!(
+        h.sw.terminal_view_target().target,
+        "",
+        "no target, so nothing downstream attaches"
+    );
+    assert!(
+        h.sw.current_attach_target(&h.state).is_none(),
+        "and the mux-side switch has nothing to switch to"
+    );
+}
+
+#[tokio::test]
+async fn the_session_xmux_runs_in_shows_a_screen_instead_of_its_grid() {
+    // Refusing silently would leave the last session's grid standing under the wrong
+    // card. The screen says whose session it is and why it is not shown.
+    let mut h = Harness::from_sources(&["local"]);
+    h.sw.set_own_session(Some("local/xmus".to_string()));
+    h.sw.apply_source_result(
+        "local".into(),
+        vec![sess_mux("local", "xmus", "psmux", 100)],
+        None,
+        &mut h.state,
+    );
+    h.draw();
+    let out = h.view_text();
+    assert!(out.contains("local/xmus"), "headlined by address:\n{out}");
+    assert!(out.contains("running xmux"), "and by its state:\n{out}");
+    assert!(out.contains("refused"), "and says it is refused:\n{out}");
+}
+
+#[tokio::test]
+async fn another_instances_session_is_shown_like_any_other() {
+    // Only xmux's OWN session is refused. A session running a DIFFERENT xmux mirrors
+    // like anything else - that is a real screen a user may want to look at.
+    let mut h = Harness::from_sources(&["local"]);
+    h.sw.set_own_session(Some("local/xmus".to_string()));
+    h.sw.apply_source_result(
+        "local".into(),
+        vec![sess_mux("local", "other", "psmux", 100)],
+        None,
+        &mut h.state,
+    );
+    h.draw();
+    assert_eq!(h.sw.terminal_view_target().target, "other");
+    assert!(h.sw.current_attach_target(&h.state).is_some());
+}
+
+#[tokio::test]
 async fn unreachable_host_screen_names_the_provider_that_offered_the_host() {
     // A host that fails is only half an answer while the user cannot tell why it is on
     // the list at all: a tailnet peer nobody wrote down reads as a mystery. The screen

@@ -36,6 +36,7 @@ fn fake_env_with_sources(aliases: &[&str]) -> Env {
         ssh_aliases,
         wsl_distros: Vec::new(),
         roster_providers: std::collections::HashMap::new(),
+        own_session: None,
         local_socket: None,
     }
 }

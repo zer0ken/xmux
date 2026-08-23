@@ -18,7 +18,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::model::{Action, Command};
 use crate::session::{Session, WindowPanes};
-use crate::ui::chrome::HostScreen;
+use crate::ui::chrome::ViewScreen;
 use crate::ui::modal::{self, Input, InputMode, Modal, PopupGeometry};
 use crate::ui::tree::{self, Group, Row, RowRef};
 
@@ -303,6 +303,9 @@ pub struct Switcher {
     nav_order: Vec<String>,
 
     terminal_view_target: TerminalViewTarget,
+    /// The address of the session xmux is ITSELF running in, when it is inside one. The
+    /// one address the terminal view refuses: see [`Switcher::is_own_session`].
+    own_session: Option<String>,
 
     list_state: ListState,
     nav_inner: Rect,
@@ -347,6 +350,7 @@ impl Switcher {
             selected: 0,
             nav_order: Vec::new(),
             terminal_view_target: TerminalViewTarget::default(),
+            own_session: None,
             list_state: ListState::default(),
             nav_inner: Rect::default(),
             nav_cells: Vec::new(),
@@ -381,6 +385,25 @@ impl Switcher {
 
     pub fn terminal_view_target(&self) -> TerminalViewTarget {
         self.terminal_view_target.clone()
+    }
+
+    /// Names the session xmux is running in, so the terminal view can refuse it. The app
+    /// calls this once at startup; outside a mux, and where the session could not be
+    /// named, it is never called and nothing is refused.
+    pub fn set_own_session(&mut self, address: Option<String>) {
+        self.own_session = address;
+    }
+
+    /// Whether `(source, target)` addresses the session xmux is ITSELF running in.
+    ///
+    /// That session has a live grid like any other, and showing it is still refused:
+    /// attaching to it puts a second client on the session that holds xmux, which moves
+    /// the user's own client and paints xmux inside itself.
+    fn is_own_session(&self, source: &str, target: &str) -> bool {
+        match &self.own_session {
+            Some(own) => !target.is_empty() && *own == crate::session::address_of(source, target),
+            None => false,
+        }
     }
 
     /// The view stacking as of the last render (Side vs Top). Lets the app route the
@@ -624,7 +647,14 @@ impl Switcher {
     /// unreachable names why it failed, empty names what to press. A host still scanning
     /// gets neither, because an in-flight state is the nav's to show (its card spins) and
     /// the view keeps the grid it already has.
-    fn current_host_screen(&self, state: &crate::state::State) -> Option<HostScreen> {
+    fn current_view_screen(&self, state: &crate::state::State) -> Option<ViewScreen> {
+        // The session xmux runs in comes first: it is the one card with a grid the view
+        // still refuses, and the screen is what stands in place of it.
+        if let Some(addr) = self.current_screen_address(state) {
+            if self.own_session.as_deref() == Some(addr.as_str()) {
+                return Some(ViewScreen::SelfSession);
+            }
+        }
         let Some(RowRef::Host {
             source,
             unreachable,
@@ -634,7 +664,7 @@ impl Switcher {
             return None;
         };
         if *unreachable {
-            return Some(HostScreen::Unreachable);
+            return Some(ViewScreen::Unreachable);
         }
         if state.scanning.contains(source) {
             return None;
@@ -643,7 +673,30 @@ impl Switcher {
             .groups
             .iter()
             .any(|g| &g.source == source && g.sessions.is_empty())
-            .then_some(HostScreen::Empty)
+            .then_some(ViewScreen::Empty)
+    }
+
+    /// The address the selected card would show, or `None` when it would show nothing.
+    /// The address is what a refusal is keyed to, and it is what the screen writes as its
+    /// headline, so both read the same value.
+    fn current_screen_address(&self, state: &crate::state::State) -> Option<String> {
+        let r = self.current_ref()?;
+        let (source, target) = tree::target_for(r, &state.groups, &state.filter);
+        (!target.is_empty()).then(|| crate::session::address_of(&source, &target))
+    }
+
+    /// What the view screen writes as its headline: the session ADDRESS for the
+    /// self-session state, whose subject is one session, and the host for the two host
+    /// states, whose subject is the host.
+    pub(crate) fn view_screen_headline(
+        &self,
+        state: &crate::state::State,
+        kind: ViewScreen,
+    ) -> String {
+        match kind {
+            ViewScreen::SelfSession => self.current_screen_address(state).unwrap_or_default(),
+            _ => self.current_source().unwrap_or_default(),
+        }
     }
 
     // --- preview ------------------------------------------------------------
@@ -652,7 +705,15 @@ impl Switcher {
         self.terminal_view_target = match self.current_ref() {
             Some(r) => {
                 let (source, target) = tree::target_for(r, &state.groups, &state.filter);
-                TerminalViewTarget { source, target }
+                // xmux's OWN session is not a terminal-view target. Emptying it here is
+                // what makes the refusal total: the target is the one value the display
+                // reconcile, the attach, and the mux-side switch all read, so none of
+                // them can reach this session by another path.
+                if self.is_own_session(&source, &target) {
+                    TerminalViewTarget::default()
+                } else {
+                    TerminalViewTarget { source, target }
+                }
             }
             None => TerminalViewTarget::default(),
         };
@@ -664,7 +725,7 @@ impl Switcher {
     pub fn current_attach_target(&self, state: &crate::state::State) -> Option<TerminalViewTarget> {
         let r = self.current_ref()?;
         let (source, target) = tree::target_for(r, &state.groups, &state.filter);
-        if target.is_empty() {
+        if target.is_empty() || self.is_own_session(&source, &target) {
             None
         } else {
             Some(TerminalViewTarget { source, target })
