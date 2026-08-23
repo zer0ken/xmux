@@ -18,6 +18,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::model::{Action, Command};
 use crate::session::{Session, WindowPanes};
+use crate::ui::chrome::HostScreen;
 use crate::ui::modal::{self, Input, InputMode, Modal, PopupGeometry};
 use crate::ui::tree::{self, Group, Row, RowRef};
 
@@ -618,25 +619,30 @@ impl Switcher {
         matches!(self.current_ref(), Some(RowRef::Host { unreachable, .. }) if *unreachable)
     }
 
-    /// True when the selected row is a REACHABLE host that has finished scanning
-    /// and has no sessions yet. The terminal view then shows a landing panel
-    /// (how to start a session) instead of a blank grid, so a freshly-reachable
-    /// but empty host is never a dead-end blank view.
-    fn current_host_empty(&self, state: &crate::state::State) -> bool {
+    /// Which host screen the terminal view shows in place of the grid, or `None` when it
+    /// shows the grid. Only a selected HOST card earns one, and only once it has settled:
+    /// unreachable names why it failed, empty names what to press. A host still scanning
+    /// gets neither, because an in-flight state is the nav's to show (its card spins) and
+    /// the view keeps the grid it already has.
+    fn current_host_screen(&self, state: &crate::state::State) -> Option<HostScreen> {
         let Some(RowRef::Host {
             source,
             unreachable,
         }) = self.current_ref()
         else {
-            return false;
+            return None;
         };
-        if *unreachable || state.scanning.contains(source) {
-            return false;
+        if *unreachable {
+            return Some(HostScreen::Unreachable);
+        }
+        if state.scanning.contains(source) {
+            return None;
         }
         state
             .groups
             .iter()
             .any(|g| &g.source == source && g.sessions.is_empty())
+            .then_some(HostScreen::Empty)
     }
 
     // --- preview ------------------------------------------------------------

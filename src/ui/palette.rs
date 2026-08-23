@@ -30,8 +30,6 @@ pub(crate) struct Palette {
     /// The single accent: the selection mark, key hints, and popup titles all
     /// share it, so "interactive / current" is one colour everywhere.
     pub accent: Color,
-    /// Secondary text: panel prose.
-    pub subtext: Color,
     /// Muted furniture: the digit gutter, separators, the └/├ connectors, popup
     /// borders, the scrollbar thumb, and settled status text.
     pub overlay: Color,
@@ -70,7 +68,6 @@ pub(crate) struct Palette {
 const fn base() -> Palette {
     Palette {
         accent: Color::Blue,
-        subtext: Color::DarkGray,
         overlay: Color::DarkGray,
         bar_bg: Color::Black,
         bar_fg: Color::White,
@@ -170,7 +167,6 @@ mod tests {
         let p = base();
         for (role, c) in [
             ("accent", p.accent),
-            ("subtext", p.subtext),
             ("overlay", p.overlay),
             ("bar_bg", p.bar_bg),
             ("bar_fg", p.bar_fg),
