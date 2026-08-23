@@ -15,10 +15,10 @@ render state. The open modal itself lives in the runtime state, though the modal
 type is defined here; the switcher reads and writes it and owns only the
 transient popup geometry.
 
-The chrome is the view border, the hint bar, and the unreachable-host info, plus
-its view-local state (flash, spinner, view border colours, prefix, armed). The
-hint bar is the NAV's bottom row or rows, not a full-width strip, and shows the
-prefix alone until it is armed. The chrome instance itself lives in the runtime
+The chrome is the view border, the hint bar, and the host screens, plus its
+view-local state (flash, spinner, view border colours, prefix, armed). The hint
+bar is the NAV's bottom row or rows, not a full-width strip, and shows the prefix
+alone until it is armed. The chrome instance itself lives in the runtime
 state, fed by the app each frame and rendered from it.
 
 The operations module holds the off-loop mux-action boundary: the trait over the
@@ -62,6 +62,20 @@ flatten renders for the dump verb.
   background with no slot for it is an attribute instead: the selected card is
   reverse video, not a computed surface. See "Colour ownership" in `CONTEXT.md`;
   the palette is guarded so a stray RGB colour cannot reach it.
+- The host screens are ONE screen in two states, not two panels: one builder lays both
+  out, so the headline, the state word, and the key rows cannot drift apart. A state
+  added later joins that grammar rather than bringing its own.
+- A settled host's status word has one source, so the word on a card and the word on the
+  screen reached from it are the same word.
+- A card that is waiting turns ONE spinner, in the first of its levels that has not
+  resolved (mux, then session, then window); every level behind it stays blank. A
+  second spinner on one card would say two separate things are in flight, when the
+  card is waiting on exactly one answer. A level that has settled shows its value, and
+  a card that has settled entirely shows a status word - never both a word and a
+  spinner for the same state.
+- Every in-flight marker in this layer reads its glyph from the one spinner helper on
+  the frame the chrome advances, cards and the hint bar's scan progress alike, so
+  nothing on screen turns out of step with anything else.
 - Row transforms do not mutate their inputs unless the function name and
   signature make mutation explicit.
 - The dump should reflect the same split view the main draw path renders.

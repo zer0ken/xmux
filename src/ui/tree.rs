@@ -199,16 +199,20 @@ pub fn rename_session(groups: &[Group], address: &str, new_name: &str) -> Vec<Gr
 
 /// What a navigation card references. Every card is a selectable target: a session
 /// card attaches to that session (the mux lands on its active window), a loading
-/// card likewise, a host-state card selects the host (so its landing / unreachable
-/// info panel shows).
+/// card likewise, a host-state card selects the host (so its host screen shows).
 #[derive(Clone)]
 pub(crate) enum RowRef {
     /// A session card: a `{host}/{mux}` context line over a `{session}/{window}`
     /// detail line (the focused window, in its own mux's notation).
     Session { sess: Session },
     /// A host with no session to show (scanning / unreachable / empty) - the only
-    /// host-level entry, sunk to the bottom of the list.
-    Host { source: String, unreachable: bool },
+    /// host-level entry, sunk to the bottom of the list. `scanning` is the in-flight
+    /// state: the card's unresolved level shows a spinner instead of a status word.
+    Host {
+        source: String,
+        unreachable: bool,
+        scanning: bool,
+    },
     /// A session whose panes are still in flight: its card shows a spinner until
     /// the focused window's name resolves. Attaches to the session all the same.
     Loading { sess: Session },
@@ -223,8 +227,10 @@ pub(crate) enum RowRef {
 pub(crate) struct Row {
     /// The detail line's variable part: the focused (active) window's label, as the
     /// session's own mux writes it, for a session card (the renderer prefixes the
-    /// session name), the host state (scanning… / ⚠ unreachable / no sessions) for a
-    /// host-state card, unused for a loading card (a spinner renders instead).
+    /// session name), the SETTLED host state (⚠ unreachable / no sessions) for a
+    /// host-state card. Empty on anything still in flight - a loading card and a
+    /// scanning host card alike - because a spinner renders in place of the level that
+    /// has not resolved.
     pub(crate) line2: String,
     pub(crate) reference: RowRef,
 }
@@ -299,6 +305,54 @@ pub(crate) fn target_for(reference: &RowRef, groups: &[Group], filter: &str) -> 
     }
 }
 
+/// The widest reason a host card carries. A column is as wide as its widest card, so
+/// an unbounded message would take the whole nav for one dead host; past this the
+/// reason is elided and the info panel carries the message in full.
+const SHORT_REASON_COLS: usize = 40;
+
+/// The card's form of a failure reason: the last `": "`-separated clause of the
+/// message's last line, elided to [`SHORT_REASON_COLS`].
+///
+/// ssh and the muxes both write a diagnostic as `context: context: what failed`
+/// (`ssh: connect to host kyla port 22: Connection timed out`), so the LAST clause
+/// names the failure while the leading ones repeat what the card already says. The
+/// separator is a colon FOLLOWED BY A SPACE, because a bare colon also holds a
+/// Windows drive letter apart from its path.
+fn short_reason(reason: &str) -> String {
+    let last_line = reason
+        .lines()
+        .map(str::trim)
+        .rfind(|l| !l.is_empty())
+        .unwrap_or("");
+    let clause = match last_line.rsplit(": ").next().map(str::trim) {
+        // A message ending in the separator has no trailing clause; the whole line is
+        // then all there is to say.
+        Some(c) if !c.is_empty() => c,
+        _ => last_line,
+    };
+    elide(clause, SHORT_REASON_COLS)
+}
+
+/// `s` cut to `cols` display columns, the cut marked with an ellipsis.
+fn elide(s: &str, cols: usize) -> String {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if UnicodeWidthStr::width(s) <= cols {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    let mut w = 0usize;
+    for ch in s.chars() {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if w + cw > cols.saturating_sub(1) {
+            break;
+        }
+        out.push(ch);
+        w += cw;
+    }
+    out.push('…');
+    out
+}
+
 /// Pushes a session's card: line2 carries its focused (active) window, written the way
 /// the session's own mux writes it, or a loading card stands in while the panes are in
 /// flight.
@@ -330,9 +384,20 @@ fn push_session_card(
         }
     }
     rows.push(Row {
-        line2: "loading…".into(),
+        line2: String::new(),
         reference: RowRef::Loading { sess: sess.clone() },
     });
+}
+
+/// The status word a SETTLED host reads, whether it is read on the host's nav card or on
+/// its host screen. One source for both, so the card and the screen a user reaches from
+/// it can never name the same state two ways.
+pub(crate) fn host_state_word(unreachable: bool) -> &'static str {
+    if unreachable {
+        "⚠ unreachable"
+    } else {
+        "no sessions"
+    }
 }
 
 /// Flattens the inventory into a flat list of navigation cards: one session card per
@@ -390,18 +455,26 @@ pub(crate) fn flatten(
         if !unreachable && !g.sessions.is_empty() {
             continue;
         }
+        // A scanning card carries no status WORD: the spinner in its unresolved level
+        // is the status, so the card does not say the same thing twice.
         let line2 = if is_scanning {
-            "scanning…".to_string()
+            String::new()
         } else if unreachable {
-            "⚠ unreachable".to_string()
+            // The status word comes from the one source either way; a card that HAS a
+            // reason names it after the word, in the clause that says what failed.
+            match g.err.as_deref().map(short_reason) {
+                Some(r) if !r.is_empty() => format!("{}: {r}", host_state_word(true)),
+                _ => host_state_word(true).to_string(),
+            }
         } else {
-            "no sessions".to_string()
+            host_state_word(unreachable).to_string()
         };
         rows.push(Row {
             line2,
             reference: RowRef::Host {
                 source: g.source.clone(),
                 unreachable,
+                scanning: is_scanning,
             },
         });
     }
@@ -948,7 +1021,17 @@ mod tests {
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["host"]);
         assert_eq!(addr_of(&rows[0].reference), "jup");
-        assert_eq!(rows[0].line2, "scanning…");
+        // No status WORD while it scans: the card is marked in flight, and the render
+        // turns a spinner in the level that has not resolved.
+        assert!(matches!(
+            rows[0].reference,
+            RowRef::Host {
+                scanning: true,
+                unreachable: false,
+                ..
+            }
+        ));
+        assert_eq!(rows[0].line2, "");
     }
 
     #[test]
@@ -978,14 +1061,108 @@ mod tests {
         assert_eq!(addr_of(&rows[0].reference), "empty");
         assert_eq!(rows[0].line2, "no sessions");
         assert_eq!(addr_of(&rows[1].reference), "dead");
-        assert_eq!(rows[1].line2, "⚠ unreachable");
+        assert_eq!(rows[1].line2, "⚠ unreachable: refused");
         assert!(matches!(
             rows[1].reference,
             RowRef::Host {
                 unreachable: true,
+                scanning: false,
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn an_unreachable_card_names_the_failure() {
+        // The reason is what the user came to the card for: an ssh diagnostic wraps the
+        // failure in its own context, and the card keeps the clause that names it.
+        let groups = vec![Group {
+            source: "kyla".into(),
+            err: Some(
+                "command failed (exit 255): ssh: connect to host kyla port 22: Connection timed out"
+                    .into(),
+            ),
+            sessions: vec![],
+        }];
+        let rows = flatten(
+            &groups,
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            "",
+            &[],
+        );
+        assert_eq!(rows[0].line2, "⚠ unreachable: Connection timed out");
+    }
+
+    #[test]
+    fn a_scanning_host_is_not_yet_a_failure() {
+        // A host still being scanned has no reason to show, even carrying a stale one
+        // from the last sweep: the card says what it is doing now.
+        let groups = vec![Group {
+            source: "kyla".into(),
+            err: Some("ssh: Connection timed out".into()),
+            sessions: vec![],
+        }];
+        let mut scanning = HashSet::new();
+        scanning.insert("kyla".to_string());
+        let rows = flatten(
+            &groups,
+            &HashMap::new(),
+            &HashSet::new(),
+            &scanning,
+            "",
+            &[],
+        );
+        // No word at all, and the card is marked in flight: the render turns a spinner
+        // in the level it is waiting on, which is what says "doing it now".
+        assert_eq!(rows[0].line2, "");
+        assert!(matches!(
+            rows[0].reference,
+            RowRef::Host { scanning: true, .. }
+        ));
+    }
+
+    #[test]
+    fn short_reason_keeps_the_clause_that_names_the_failure() {
+        assert_eq!(
+            short_reason("command failed (exit 255): ssh: connect to host kyla port 22: Connection timed out"),
+            "Connection timed out"
+        );
+        // A message with no separator is already the failure.
+        assert_eq!(short_reason("timed out after 6s"), "timed out after 6s");
+        // A trailing separator leaves no clause; the line itself is all there is.
+        assert_eq!(
+            short_reason("exited with no message: "),
+            "exited with no message:"
+        );
+        // Multi-line stderr: ssh states the failure on its last line.
+        assert_eq!(
+            short_reason("@@@ WARNING @@@\nHost key verification failed."),
+            "Host key verification failed."
+        );
+    }
+
+    #[test]
+    fn short_reason_does_not_split_a_windows_path() {
+        // A bare colon also holds a drive letter apart from its path, so only a colon
+        // FOLLOWED BY A SPACE separates clauses.
+        assert_eq!(
+            short_reason("no server on C:\\Users\\h\\.psmux"),
+            "no server on C:\\Users\\h\\.psmux"
+        );
+    }
+
+    #[test]
+    fn short_reason_is_bounded_so_one_card_cannot_take_the_nav() {
+        let long = "x".repeat(200);
+        let got = short_reason(&long);
+        assert_eq!(
+            got.chars().count(),
+            SHORT_REASON_COLS,
+            "elided to the cap, ellipsis included: {got}"
+        );
+        assert!(got.ends_with('…'), "the cut is marked: {got}");
     }
 
     #[test]

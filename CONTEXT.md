@@ -18,7 +18,7 @@ module hides, and which dependencies are allowed to cross into it.
 
 One concept, one word. The two axes and the runtime:
 
-- `Transport` (HOST axis) - the per-host execution trait (local / ssh); a
+- `Transport` (HOST axis) - the per-host execution trait (local / ssh / wsl); a
   source holds one. It owns where a command runs and how its argv is executed, and
   knows nothing about the mux. "host" is the family/concept; `Transport` is the
   trait.
@@ -64,16 +64,22 @@ UI elements a user perceives as distinct things:
   `pane-border-lines`): `single │` (default), `double ║` (auto-hide-nav on),
   `heavy ┃` (hover - the drag-resize grab cue).
 - chrome - the furniture around the two views: the view border, the hint bar, and
-  the host info.
+  the host screens.
 - hint bar - the nav's own status line: the bottom row(s) of the nav region, ending
   at the view border rather than spanning the screen, so the terminal view keeps
   every row it owns. At rest it shows only the prefix; while the prefix is ARMED it
   shows the keys that prefix unlocks. A flash, the scan indicator, and the active
   filter outrank both, in that order. A long flash wraps across as many nav rows as
   it needs instead of clipping. A shown flash paints it in the error style.
-- host info - the unreachable-host detail shown in the terminal-view region.
-- landing - the empty-state panel shown in the terminal-view region for a selected
-  reachable source that has no sessions yet (its name + the keys to start one).
+- host screen - what fills the terminal-view region in place of a mux, for a selected
+  host with no session to show. One screen in two states, so a reader of either reads
+  the other: the host's name as the headline, under it the same status word its card
+  carries, then the rows that apply. A row is the key-column row the help also uses - a
+  right-aligned cell, the `│` rule, the value - where a bold cell is a key that can be
+  pressed here and a muted cell names a datum. The UNREACHABLE state's rows are why it
+  failed (the reason its transport gave, the ssh stanza it was reached through) and the
+  rescan key; the EMPTY state's rows are the keys that start a session or rescan. A host
+  still scanning gets no screen: an in-flight state is the nav's to show.
 - grid - the live terminal content drawn in the terminal view: xmux's in-memory
   cell mirror of the attached session's screen, fed by the terminal-emulation parser.
 - cursor - the real terminal cursor placed over the grid at the mux's cursor cell
@@ -81,7 +87,8 @@ UI elements a user perceives as distinct things:
   never the nav selection.
 - card - one nav entry: a context line (`{host}/{mux}`, or `{host}` on a
   host-state card) over a detail line (`{session}/{window}` of the focused (active)
-  window behind a connector; the host state; or the session name + a loading spinner).
+  window behind a connector; the settled host state; or a spinner in the card's
+  unresolved level).
   The window part is written the way its own mux writes it - see `window label`. The muted connector hangs the detail
   under its context line - on a collapsed card, under the shared context
   above: `├` while a collapsed sibling follows below, `└` on the run's last
@@ -133,9 +140,8 @@ UI elements a user perceives as distinct things:
   mux green, session red, the window part bright-black - the quietest
   level, so the session name anchors the detail line. The four read as one code-theme
   palette, and the level a user actually picks (the session) is the one that stands out.
-  A host-state card's detail line is
-  colored by state - scanning yellow, unreachable red, settled "no sessions"
-  muted. The hint bar is two slots as well (black under white, blue keys). Nothing here
+  A spinner is pending yellow wherever it stands. A settled host-state card's detail
+  line is colored by state - unreachable red, "no sessions" muted. The hint bar is two slots as well (black under white, blue keys). Nothing here
   is an RGB value; see "Colour ownership" below for why, and `[ui] selection-style` /
   `[ui] hint-bar-style` for naming one anyway.
 - window label - how a card writes its focused window, in the CONVENTION OF ITS OWN MUX
@@ -185,11 +191,20 @@ UI elements a user perceives as distinct things:
   portrait band's resting bar paints its text plus a cell of padding and stops, because it
   shares that row with the offscreen counts and a full-width slab of bar colour across a
   wide window is a lot of paint for one word.
-- spinner - the braille activity glyph on a loading card.
+- spinner - the braille activity glyph marking a level that has not resolved. One
+  glyph and one frame counter for the whole UI, so every marker on screen turns
+  together.
+- unresolved level - the first of a card's levels (mux, then session, then window)
+  with no answer yet. The spinner stands in exactly that one, and every level of the
+  card behind it stays blank: one spinner per card names WHICH answer is outstanding,
+  where a second would only say the card is busy.
 - loading card - a card standing in for a session whose panes are not yet loaded;
-  its detail line is `{session}/` + a spinner rather than a window part.
-- status - a host-state card's detail-line state text (`scanning…` / `no sessions` /
-  `⚠ unreachable`). Not to be confused with the hint bar (below) or the `chrome`.
+  the window is its unresolved level, so its detail line is `{session}/` + a spinner
+  rather than a window part.
+- status - a host-state card's detail-line state text once it has SETTLED (`no
+  sessions` / `⚠ unreachable`); a card still scanning carries no status word, because
+  its spinner already says so. Not to be confused with the hint bar (below) or the
+  `chrome`.
 - address column - the leftmost column set of every card, holding the one thing that
   answers "where is this": the dim 0-based number `prefix <digit>` jumps to, or, on the
   SELECTED card, the selection mark - the number there would be the address of where you
@@ -213,7 +228,13 @@ UI elements a user perceives as distinct things:
   through the same `Transport`. A source id is the bare host alias (`local`, `prod`)
   when its host serves a single mux, and `<host>:<mux>` (`local:zellij`) when it
   serves several, so a one-mux setup is spelled exactly as it always was. The two halves
-  are read back through accessors; nothing compares a source id to `local` directly. The
+  are read back through accessors; nothing compares a source id to `local` directly. A
+  HOST name says which family reaches it wherever the name alone would be ambiguous:
+  `local` is this box and `wsl.<distribution>` is a WSL distribution on it, everything
+  else being an ssh destination. That is what lets a host named LATER (a mux-discovery
+  answer carries a bare host name and nothing else) be reached exactly as one named at
+  launch, and it is why an ssh alias spelled either reserved way is refused rather than
+  served as the wrong family. The
   nav renders the halves separately (`local/zellij`), so the id
   never appears with its mux twice. A source is held TWICE, once per consumer, and both
   copies resolve its host the same way: the event loop drives a source out of its
@@ -249,10 +270,9 @@ UI elements a user perceives as distinct things:
 - filter - the type-to-filter input over the nav list.
 - flash - a transient notice or error line shown in the hint bar (e.g. a refused
   action's reason). Never a "toast" or "notice".
-- scan indicator - the `⟳ scanning hosts n/m…` progress shown in the hint bar
-  while source probes are in flight; distinct from a row's `scanning…` status. The
-  counted things are sources, so the word the bar prints is one the vocabulary no
-  longer uses.
+- scan indicator - the `scanning n/m…` progress shown in the hint bar while host
+  probes are in flight, behind the same spinner on the same frame as the cards it
+  counts. It counts SOURCES; a card's own spinner names one card's unresolved level.
 - armed - the state between pressing the prefix and its command key. The hint bar
   reads it to swap from the resting prefix to the cheatsheet, so arming is a
   visible change and redraws the frame.

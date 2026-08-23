@@ -307,6 +307,7 @@ impl Runtime {
         let hosts = crate::model::Hosts::build(
             &env.cfg,
             &env.ssh_aliases,
+            &env.wsl_distros,
             host_os,
             &env.local_muxes,
             &env.xmux_dir,
@@ -317,7 +318,7 @@ impl Runtime {
         // events stream the nav in.
         let mut state = crate::state::State::from_sources(hosts.ids().to_vec());
         let switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
-        // Feed the switcher the ssh config so an unreachable host's info panel can show
+        // Feed the switcher the ssh config so an unreachable host's screen can show
         // its Host/Match stanza. Read once; a missing file just yields no stanza.
         state.chrome.set_ssh_config_text(
             std::fs::read_to_string(crate::env::ssh_config_path()).unwrap_or_default(),

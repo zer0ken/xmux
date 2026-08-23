@@ -13,6 +13,8 @@ pub struct Config {
     #[serde(default)]
     pub hosts: Vec<HostConfig>,
     #[serde(default)]
+    pub wsl: Vec<WslConfig>,
+    #[serde(default)]
     pub exclude: Vec<String>,
     #[serde(default)]
     pub ui: UiConfig,
@@ -23,25 +25,33 @@ pub struct Config {
 /// The optional `[discovery]` table: which providers contribute ssh targets to the
 /// roster (see [`crate::roster`]).
 ///
-/// `ssh-config` is on by default because it is where the host list has always come
-/// from; turning it off is how a user who keeps no ssh config opts out. The network
-/// providers are OFF by default: they run an external CLI and would otherwise change
-/// the host list of an existing install without being asked.
+/// The ssh providers are ON by default, so a machine xmux can reach is a machine xmux
+/// offers with nothing to configure. Each flag is how a user narrows that: `ssh-config`
+/// off for someone who keeps no ssh config, `tailscale` off for someone who does not
+/// want the roster to depend on an external CLI. A provider that cannot run costs an
+/// empty list, not an error, so leaving one on is safe on a machine without it.
+///
+/// `wsl` is the one that starts off: a box with Docker Desktop carries distributions
+/// that run no mux at all, so it costs noise rather than an empty list.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DiscoveryConfig {
     /// Read host aliases from `~/.ssh/config`.
     #[serde(rename = "ssh-config", default = "default_true")]
     pub ssh_config: bool,
     /// Offer the online peers of this machine's tailnet, by their DNS label.
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub tailscale: bool,
+    /// Offer this box's WSL distributions, by the name `wsl.exe` lists them under.
+    #[serde(default)]
+    pub wsl: bool,
 }
 
 impl Default for DiscoveryConfig {
     fn default() -> Self {
         DiscoveryConfig {
             ssh_config: true,
-            tailscale: false,
+            tailscale: true,
+            wsl: false,
         }
     }
 }
@@ -198,6 +208,17 @@ pub struct HostConfig {
     pub mux: MuxSpec,
 }
 
+/// Overrides the mux for a WSL distribution, or names one `[discovery] wsl` is not
+/// listing. `distro` is the bare name `wsl.exe` reports (`Ubuntu-24.04`); the machine it
+/// becomes carries the family prefix, so `exclude` names it as `wsl.Ubuntu-24.04`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct WslConfig {
+    #[serde(default)]
+    pub distro: String,
+    #[serde(default)]
+    pub mux: MuxSpec,
+}
+
 /// A resolved remote SOURCE: one mux on one machine. `id` is the source id the rest of
 /// the app keys everything by, `alias` is the ssh destination it is reached at (several
 /// sources share it when a machine runs several muxes), and `bin` is the mux binary.
@@ -294,6 +315,16 @@ impl Config {
                 }
             }
         }
+        for w in &self.wsl {
+            for name in w.mux.names() {
+                if !crate::mux::is_recognized(&name) {
+                    warnings.push(format!(
+                        "wsl {:?} mux {name:?} is not a recognized mux (tmux/psmux/zellij); treating it as tmux-compatible",
+                        w.distro
+                    ));
+                }
+            }
+        }
         warnings
     }
 
@@ -303,6 +334,13 @@ impl Config {
     pub fn mux_is_auto(&self, machine: &str) -> bool {
         if machine == crate::session::LOCAL_SOURCE {
             return self.local.mux.is_auto();
+        }
+        if let Some(distro) = crate::session::wsl_distro_of(machine) {
+            return self
+                .wsl
+                .iter()
+                .find(|w| w.distro == distro)
+                .is_none_or(|w| w.mux.is_auto());
         }
         // First entry wins, mirroring `host_specs`; no entry at all is auto.
         self.hosts
@@ -333,65 +371,127 @@ impl Config {
     /// ssh alias and each carrying its own qualified source id. `exclude` names
     /// MACHINES, so excluding one drops every mux on it.
     pub fn host_specs(&self, ssh_aliases: &[String]) -> Vec<HostSpec> {
-        use std::collections::HashSet;
-
-        let excluded: HashSet<&str> = self.exclude.iter().map(String::as_str).collect();
-
-        let mut override_mux: std::collections::HashMap<&str, &MuxSpec> =
-            std::collections::HashMap::new();
-        for h in &self.hosts {
-            if h.ssh.is_empty() {
-                continue;
-            }
-            // First entry wins; a later duplicate with an unset mux must never
-            // clobber an explicit one already recorded for the same alias.
-            let replace = match override_mux.get(h.ssh.as_str()) {
-                None => true,
-                Some(existing) => existing.is_unset() && !h.mux.is_unset(),
-            };
-            if replace {
-                override_mux.insert(h.ssh.as_str(), &h.mux);
-            }
-        }
-
-        let mut specs = Vec::new();
-        let mut seen: HashSet<&str> = HashSet::new();
-        // "local" is reserved for this box's sources; pre-seeding it makes both
-        // the discovered-alias and config-host loops skip any host named "local"
-        // so a remote can never shadow them.
-        seen.insert(crate::session::LOCAL_SOURCE);
-
-        for alias in ssh_aliases {
-            if excluded.contains(alias.as_str()) || seen.contains(alias.as_str()) {
-                continue;
-            }
-            let muxes = override_mux
-                .get(alias.as_str())
-                .map(|m| m.names())
-                .filter(|n| !n.is_empty())
-                .unwrap_or_else(|| vec!["tmux".to_string()]);
-            specs.extend(host_specs_for(alias, &muxes));
-            seen.insert(alias.as_str());
-        }
-
-        for h in &self.hosts {
-            if h.ssh.is_empty()
-                || excluded.contains(h.ssh.as_str())
-                || seen.contains(h.ssh.as_str())
-            {
-                continue;
-            }
-            let muxes = if h.mux.is_unset() {
-                vec!["tmux".to_string()]
-            } else {
-                h.mux.names()
-            };
-            specs.extend(host_specs_for(&h.ssh, &muxes));
-            seen.insert(h.ssh.as_str());
-        }
-
-        specs
+        let configured: Vec<(&str, &MuxSpec)> = self
+            .hosts
+            .iter()
+            .map(|h| (h.ssh.as_str(), &h.mux))
+            .collect();
+        merge_specs(
+            ssh_aliases,
+            &configured,
+            &self.excluded(),
+            is_reserved_alias,
+        )
     }
+
+    /// The WSL sources: one spec per mux on each distribution, merged the same way
+    /// [`host_specs`](Self::host_specs) merges ssh hosts. `distro_machines` are the
+    /// MACHINE names `[discovery] wsl` listed (`wsl.Ubuntu-24.04`); a `[[wsl]]` entry
+    /// names its distribution bare and is prefixed here, so both halves key alike.
+    ///
+    /// `exclude` names MACHINES here too, which for this family is the prefixed name.
+    pub fn wsl_specs(&self, distro_machines: &[String]) -> Vec<HostSpec> {
+        let prefixed: Vec<String> = self
+            .wsl
+            .iter()
+            .map(|w| {
+                if w.distro.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}{}", crate::session::WSL_PREFIX, w.distro)
+                }
+            })
+            .collect();
+        let configured: Vec<(&str, &MuxSpec)> = prefixed
+            .iter()
+            .map(String::as_str)
+            .zip(self.wsl.iter().map(|w| &w.mux))
+            .collect();
+        // Nothing to reserve: every name here already carries the family prefix, so it can
+        // collide with neither `local` nor an ssh alias `host_specs` accepted.
+        merge_specs(distro_machines, &configured, &self.excluded(), |_| false)
+    }
+
+    /// The machines `exclude` names, as a lookup.
+    fn excluded(&self) -> std::collections::HashSet<&str> {
+        self.exclude.iter().map(String::as_str).collect()
+    }
+}
+
+/// The machine names the ssh family may not claim: `local` is this box's own, and a
+/// `wsl.`-prefixed name is a WSL distribution's. Either would otherwise be built as an
+/// ssh destination and shadow the machine that owns the name, so an ssh alias spelled
+/// either way is dropped rather than served ambiguously.
+fn is_reserved_alias(machine: &str) -> bool {
+    machine == crate::session::LOCAL_SOURCE || crate::session::wsl_distro_of(machine).is_some()
+}
+
+/// The merge every machine family's spec list follows: `discovered` names first, in the
+/// order their provider gave them, then the `configured` entries that were not
+/// discovered. Config augments discovery; it never replaces it.
+///
+/// A name that is excluded, reserved, or already taken is skipped, and a machine's mux
+/// list is its config override or the conventional `tmux`. A machine configured with
+/// SEVERAL muxes yields one spec per mux, all sharing the machine and each carrying its
+/// own qualified source id.
+fn merge_specs(
+    discovered: &[String],
+    configured: &[(&str, &MuxSpec)],
+    excluded: &std::collections::HashSet<&str>,
+    is_reserved: impl Fn(&str) -> bool,
+) -> Vec<HostSpec> {
+    use std::collections::HashSet;
+
+    let mut override_mux: std::collections::HashMap<&str, &MuxSpec> =
+        std::collections::HashMap::new();
+    for (machine, mux) in configured {
+        if machine.is_empty() {
+            continue;
+        }
+        // First entry wins; a later duplicate with an unset mux must never
+        // clobber an explicit one already recorded for the same machine.
+        let replace = match override_mux.get(machine) {
+            None => true,
+            Some(existing) => existing.is_unset() && !mux.is_unset(),
+        };
+        if replace {
+            override_mux.insert(machine, mux);
+        }
+    }
+
+    let mut specs = Vec::new();
+    let mut seen: HashSet<&str> = HashSet::new();
+
+    for machine in discovered {
+        let machine = machine.as_str();
+        if is_reserved(machine) || excluded.contains(machine) || !seen.insert(machine) {
+            continue;
+        }
+        let muxes = override_mux
+            .get(machine)
+            .map(|m| m.names())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| vec!["tmux".to_string()]);
+        specs.extend(host_specs_for(machine, &muxes));
+    }
+
+    for (machine, mux) in configured {
+        if machine.is_empty()
+            || is_reserved(machine)
+            || excluded.contains(machine)
+            || !seen.insert(machine)
+        {
+            continue;
+        }
+        let muxes = if mux.is_unset() {
+            vec!["tmux".to_string()]
+        } else {
+            mux.names()
+        };
+        specs.extend(host_specs_for(machine, &muxes));
+    }
+
+    specs
 }
 
 /// One [`HostSpec`] per mux on `alias`. The id is qualified only when the machine
@@ -908,6 +1008,132 @@ mux = "tmux"
         let w = c.value_warnings();
         assert_eq!(w.len(), 1, "{w:?}");
         assert!(w[0].contains("bad") && w[0].contains("kitty"), "{w:?}");
+    }
+
+    #[test]
+    fn wsl_specs_merge_listed_distributions_with_config_entries() {
+        // The same merge as `host_specs`: listed machines first in the order `wsl.exe`
+        // gave them, then a `[[wsl]]` entry that was not listed. The default mux is tmux,
+        // because a distribution is a Linux machine.
+        let cfg = Config {
+            wsl: vec![
+                WslConfig {
+                    distro: "Ubuntu-24.04".into(),
+                    mux: vec!["tmux", "zellij"].into(),
+                },
+                WslConfig {
+                    distro: "Alpine".into(),
+                    mux: MuxSpec::default(),
+                },
+            ],
+            ..Config::default()
+        };
+        let listed: Vec<String> = ["wsl.Ubuntu-24.04", "wsl.docker-desktop"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let got: Vec<(String, String, String)> = cfg
+            .wsl_specs(&listed)
+            .into_iter()
+            .map(|s| (s.id, s.alias, s.bin))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                // Two muxes on one distribution, so both ids name theirs.
+                (
+                    "wsl.Ubuntu-24.04:tmux".to_string(),
+                    "wsl.Ubuntu-24.04".to_string(),
+                    "tmux".to_string()
+                ),
+                (
+                    "wsl.Ubuntu-24.04:zellij".to_string(),
+                    "wsl.Ubuntu-24.04".to_string(),
+                    "zellij".to_string()
+                ),
+                // Listed, not configured: the conventional mux, and a bare id.
+                (
+                    "wsl.docker-desktop".to_string(),
+                    "wsl.docker-desktop".to_string(),
+                    "tmux".to_string()
+                ),
+                // Configured, not listed: appended, so one distribution is served
+                // without listing every one of them.
+                (
+                    "wsl.Alpine".to_string(),
+                    "wsl.Alpine".to_string(),
+                    "tmux".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn exclude_names_a_wsl_machine_by_its_prefixed_name() {
+        // `exclude` names MACHINES, and a distribution's machine name carries the family
+        // prefix — which is how the Docker Desktop distributions are dropped.
+        let cfg = Config {
+            exclude: vec!["wsl.docker-desktop".into()],
+            ..Config::default()
+        };
+        let listed: Vec<String> = ["wsl.Ubuntu", "wsl.docker-desktop"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let ids: Vec<String> = cfg.wsl_specs(&listed).into_iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec!["wsl.Ubuntu"]);
+    }
+
+    #[test]
+    fn an_ssh_alias_may_not_claim_a_wsl_machine_name() {
+        // A `wsl.`-prefixed name belongs to the WSL family, and `kind_for` reads the
+        // family out of the name. An ssh alias spelled that way would be built as a WSL
+        // machine, so it is dropped instead of served as the wrong family.
+        let cfg = Config::default();
+        let aliases: Vec<String> = ["prod", "wsl.internal", "local"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let ids: Vec<String> = cfg.host_specs(&aliases).into_iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec!["prod"], "only the plain alias is served");
+    }
+
+    #[test]
+    fn mux_is_auto_reads_the_wsl_table_for_a_wsl_machine() {
+        // The async mux discovery asks this per MACHINE. A distribution that named its
+        // muxes must not be probed, and one with no entry is xmux's to decide.
+        let cfg = Config {
+            wsl: vec![WslConfig {
+                distro: "Ubuntu".into(),
+                mux: "zellij".into(),
+            }],
+            ..Config::default()
+        };
+        assert!(!cfg.mux_is_auto("wsl.Ubuntu"));
+        assert!(cfg.mux_is_auto("wsl.Alpine"));
+    }
+
+    #[test]
+    fn an_unrecognized_wsl_mux_warns() {
+        let cfg = Config {
+            wsl: vec![WslConfig {
+                distro: "Ubuntu".into(),
+                mux: "tmuxx".into(),
+            }],
+            ..Config::default()
+        };
+        let warnings = cfg.value_warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("tmuxx"), "{warnings:?}");
+        assert!(warnings[0].contains("Ubuntu"), "{warnings:?}");
+    }
+
+    #[test]
+    fn wsl_discovery_is_off_until_asked_for() {
+        // `wsl.exe` is an external CLI, and a box with Docker Desktop has distributions
+        // that run no mux, so the family does not change an existing install's host list
+        // on its own.
+        assert!(!DiscoveryConfig::default().wsl);
     }
 
     #[test]

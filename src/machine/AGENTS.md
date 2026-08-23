@@ -4,16 +4,23 @@
 
 `machine/` is the HOST axis: how a mux argv reaches the server it runs on,
 SEPARATE from which mux runs there (that is `src/mux`). It owns argv assembly and
-the ssh wrapping only, never a server model and never a mux verb.
+the per-family execution wrapping only, never a server model and never a mux
+verb.
 
 ## Mental Model
 
 A host family is a `Transport` implementation. The local family runs a command on
 this host, injecting the server socket for a non-default mux server; the
 ssh family wraps the command in an ssh connection with the right tty, batch-mode,
-and multiplexing options. Each transport also carries the SOURCE ID it answers
-as, separate from where it connects: one host running several muxes is several
-sources, all reaching the same place, so the id cannot be the ssh destination.
+and multiplexing options; the WSL family runs it inside a distribution on this
+box, exec'd through a login shell so the launcher's own command-line parsing
+never re-reads the quoting and the user's own mux is on `PATH`. Which family a
+host belongs to is read out of its NAME, so a host named after launch reaches
+its family without anything extra being threaded alongside it.
+
+Each transport also carries the SOURCE ID it answers as, separate from where it
+connects: one host running several muxes is several sources, all reaching the
+same place, so the id cannot be the ssh destination.
 The plain factories derive the id from the destination; their explicit variants
 state it. A source holds one transport and never branches on which family it is:
 it calls trait methods. This mirrors the MUX axis, where the mux trait plays the
@@ -28,13 +35,15 @@ same role.
   boxing impls that let a stored transport pass where a borrowed one is expected.
 - Each host family is its own module: the local family issues no remote shell
   command and uses none of the shared vocabulary; the ssh family owns the
-  private option assembly (tty, batch mode, multiplexing) and is the sole
-  consumer of remote-command rendering.
+  private option assembly (tty, batch mode, multiplexing); the WSL family owns
+  its launcher wrapping, and also the provider that lists this box's
+  distributions as host names, because listing them is launcher mechanics
+  rather than roster policy.
 - The shared shell vocabulary renders an argv injection-safe for the POSIX shell
-  ssh hands its command to. It is the peer of the mux axis's own vocabulary.
+  a family hands its command to. It is the peer of the mux axis's own vocabulary.
 
-The dependency is one-way: the ssh family imports the shared vocabulary, and
-nothing in `machine/` imports a mux type or a source.
+The dependency is one-way: the shell-based families import the shared vocabulary,
+and nothing in `machine/` imports a mux type or a source.
 
 ## Invariants
 
@@ -49,10 +58,14 @@ nothing in `machine/` imports a mux type or a source.
   No match on the kind is scattered across call sites; the trait object carries
   the choice everywhere else.
 - The transport lowers four shapes and no more: a non-interactive command, an
-  attach into the terminal handover (local socket injection, or an ssh tty
-  session that folds the window pre-selection ahead of the attach, which lives
-  here and never in the mux or the caller), a control-mode child, and a raw
-  remote command (which only the ssh family answers).
+  attach into the terminal handover (local socket injection, or a shell session
+  that folds the window pre-selection ahead of the attach, which lives here and
+  never in the mux or the caller), a control-mode child, and a raw shell command
+  (which only the shell-based families answer).
+- A family that needs a terminal for the control child arranges one on the HOST
+  side, the way the ssh family forces a pty. It never rewrites a mux flag to work
+  around a pipe: which control payload runs is the mux's word, not the
+  transport's.
 - The mux argv always comes from a mux command plan; a transport only decides HOW
   to run it, never WHAT.
 - Every untrusted argv element crossing into a remote shell passes through the
@@ -71,11 +84,14 @@ nothing in `machine/` imports a mux type or a source.
 
 ## Before Editing
 
-- Adding a host family (for example WSL): add its module with a type
-  implementing `Transport`, overriding the capability predicates for its own
-  combination rather than deriving them from remoteness, add its factory, and add
-  a host-kind variant plus one arm in each of the kind's methods. The compiler
-  forces every arm, and no match on the kind exists outside the kind itself.
+- Adding a host family: add its module with a type implementing `Transport`,
+  overriding the capability predicates for its own combination rather than
+  deriving them from remoteness, add its factory, and add a host-kind variant
+  plus one arm in each of the kind's methods. The compiler forces every arm, and
+  no match on the kind exists outside the kind itself. If the family needs its
+  own host names, make them recognizable from the name alone, the way `local`
+  and the WSL prefix are, and refuse that spelling in the families that would
+  otherwise claim it.
 - Adding per-host execution behavior to an existing family: edit that family
   and keep the shared shell vocabulary where it is.
 
