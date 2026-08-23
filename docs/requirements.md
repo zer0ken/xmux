@@ -120,11 +120,13 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
 
 - **FR-B1** — The nav renders ONE CARD PER SESSION across every reachable source,
   most recently used first: a context line `{host}/{mux}` over a detail line
-  `{session}/{index}:{name}` naming the session's focused window. The list is flat, with
+  `{session}/{window}` naming the session's focused window. The list is flat, with
   no window or pane rows: xmux aggregates and switches, and the mux itself already shows
-  its own windows. **Tests:** `session_card_context_shows_host_mux_session`,
-  `session_card_shows_the_focused_window_name`, `panes_are_not_selectable`,
-  `parse_panes_*` (data), switcher render tests (`dump_*`).
+  its own windows. The window is written in its own mux's convention - `{index}:{name}`
+  for tmux and psmux, the bare tab name for zellij - so a card reads the way that mux's
+  own status line reads. **Tests:** `session_card_context_shows_host_mux_session`,
+  `session_card_shows_the_focused_window_name`, `window_label_follows_each_mux_own_convention`,
+  `panes_are_not_selectable`, `parse_panes_*` (data), switcher render tests (`dump_*`).
 - **FR-B2** — Render-first: the host skeleton paints instantly; each source's
   sessions and each session's panes stream in independently.
   **Tests:** `connect_all_sources_connects_remote_hosts`,

@@ -1619,8 +1619,9 @@ async fn repeated_host_mux_collapses_the_card_to_one_row() {
         nav_line(&h, gamma_row).contains("└"),
         "gamma ends the collapsed run"
     );
-    // delta runs a different mux: a full context line, host included.
-    let delta_row = h.nav_row_of("delta/0:w-delta").expect("delta detail");
+    // delta runs a different mux: a full context line, host included. Its window part
+    // is written zellij's way - the tab name alone, no index prefix.
+    let delta_row = h.nav_row_of("delta/w-delta").expect("delta detail");
     let delta_context = nav_line(&h, delta_row - 1);
     assert!(
         delta_context.contains("srv/zellij"),

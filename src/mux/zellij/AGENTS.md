@@ -54,6 +54,10 @@ switch at its own display client the way it does for tmux and psmux.
   caller's own session, and xmux is outside every session.
 - `go-to-tab` counts tabs from ONE while xmux and zellij's own `position` count from
   zero. The shift happens in `select_window_plan` and nowhere else.
+- A tab is written on a card by NAME ALONE (`window_label`). zellij's tab bar shows
+  names and nothing else, and a tab zellij names itself is already called `Tab #1`, so
+  tmux's `{index}:` prefix would invent a second number - zero-based, while zellij's own
+  `Ctrl t` + digit counts from one. The index stays internal, for `go-to-tab`.
 - The attach is plain `attach <name>`, never `attach -c`: showing a session must not
   create or resurrect one. A session that died between the scan and the attach fails the
   attach, which is the EOF the death signal is waiting for.

@@ -281,6 +281,14 @@ pub trait Mux: Send + Sync {
     fn new_session_plan(&self, name: &str) -> Vec<String> {
         mux::new_session(self.bin(), name)
     }
+
+    /// How this mux writes one of its own windows, for a reader who knows the mux and
+    /// not xmux. The default is tmux's `{index}:{name}`, which is what tmux's own status
+    /// line and `list-windows` print, so every tmux-compatible mux inherits it; a mux
+    /// that names its windows differently overrides this and nothing else.
+    fn window_label(&self, index: i64, name: &str) -> String {
+        format!("{index}:{name}")
+    }
 }
 
 struct MuxKind {
@@ -362,8 +370,8 @@ fn tmux_fallback(bin: &str) -> Box<dyn Mux> {
     })
 }
 
-/// Picks a mux mux by conventional binary name. tmux is the fallback, matching
-/// the default in `Config::local_bin` / `host_specs`.
+/// Picks a mux by conventional binary name. tmux is the fallback, the same default
+/// `[local] mux` and the host specs take.
 pub fn for_binary(bin: &str) -> Box<dyn Mux> {
     for k in known_muxes() {
         if k.name == bin {
@@ -382,6 +390,15 @@ pub fn for_kind(kind: &str, bin: &str) -> Box<dyn Mux> {
         }
     }
     tmux_fallback(bin)
+}
+
+/// How the mux named `kind` writes the window `(index, name)` on screen. The nav holds
+/// a session's mux as a kind string, not a [`Mux`], so this is the one call it needs;
+/// the convention itself stays with the mux, in [`Mux::window_label`]. An unstamped
+/// session (its mux not yet known) reads as tmux, the same fallback every other
+/// kind-keyed lookup takes.
+pub fn window_label(kind: &str, index: i64, name: &str) -> String {
+    for_kind(kind, kind).window_label(index, name)
 }
 
 /// True when `name` names a mux xmux actually recognizes — tmux (the implicit
@@ -445,6 +462,21 @@ mod tests {
         Psmux {
             bin: "psmux".into(),
         }
+    }
+
+    #[test]
+    fn window_label_follows_each_mux_own_convention() {
+        // tmux prints `index:name` itself, in its status line and `list-windows`, and
+        // every tmux-compatible mux inherits that.
+        assert_eq!(window_label("tmux", 0, "bash"), "0:bash");
+        assert_eq!(window_label("psmux", 2, "editor"), "2:editor");
+        // zellij's tab bar shows names alone; the number a reader expects is already in
+        // the name zellij gives a fresh tab.
+        assert_eq!(window_label("zellij", 0, "Tab #1"), "Tab #1");
+        assert_eq!(window_label("zellij", 2, "deploy"), "deploy");
+        // A session whose mux is not stamped yet reads as tmux, like every other
+        // kind-keyed lookup.
+        assert_eq!(window_label("", 1, "bash"), "1:bash");
     }
 
     #[test]

@@ -72,9 +72,9 @@ UI elements a user perceives as distinct things:
   while the terminal view is focused. "cursor" always means this text cursor,
   never the nav selection.
 - card - one nav entry: a context line (`{host}/{mux}`, or `{host}` on a
-  host-state card) over a detail line (`{session}/{index}:{window-name}` of
-  the focused (active) window behind a connector; the host state; or the
-  session name + a loading spinner). The muted connector hangs the detail
+  host-state card) over a detail line (`{session}/{window}` of the focused (active)
+  window behind a connector; the host state; or the session name + a loading spinner).
+  The window part is written the way its own mux writes it - see `window label`. The muted connector hangs the detail
   under its context line - on a collapsed card, under the shared context
   above: `├` while a collapsed sibling follows below, `└` on the run's last
   line; the selected card drops the connector (the selection mark and the inverted
@@ -91,7 +91,7 @@ UI elements a user perceives as distinct things:
   mapping never diverges.
 - level color - the per-segment card color, from the palette (`ui::palette`).
   Every foreground role is ANSI-16, so the terminal theme resolves the hue: host blue,
-  mux green, session red, the window part (`{index}:{name}`) bright-black - the quietest
+  mux green, session red, the window part bright-black - the quietest
   level, so the session name anchors the detail line. The four read as one code-theme
   palette, and the level a user actually picks (the session) is the one that stands out.
   A host-state card's detail line is
@@ -99,6 +99,12 @@ UI elements a user perceives as distinct things:
   muted. The hint bar is two slots as well (black under white, blue keys). Nothing here
   is an RGB value; see "Colour ownership" below for why, and `[ui] selection-style` /
   `[ui] hint-bar-style` for naming one anyway.
+- window label - how a card writes its focused window, in the CONVENTION OF ITS OWN MUX
+  rather than one xmux imposes: tmux and psmux get `{index}:{name}`, which is what
+  their own status line and `list-windows` print; zellij gets the tab name alone,
+  because zellij's tab bar shows names and nothing else and a tab it names itself is
+  already called `Tab #1`. The mux owns the rule (`Mux::window_label`), so a reader who
+  knows one mux reads its cards without learning a second notation.
 - selection - the nav's current pick (its card index is `selected`), advanced by
   navigation; a routine poll or restream never moves it (only launch / rescan
   re-sorts). `preselect` / `reselect` are the launch and post-rescan selections.

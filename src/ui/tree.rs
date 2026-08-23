@@ -203,8 +203,8 @@ pub fn rename_session(groups: &[Group], address: &str, new_name: &str) -> Vec<Gr
 /// info panel shows).
 #[derive(Clone)]
 pub(crate) enum RowRef {
-    /// A session card: a `{host}/{mux}` context line over a
-    /// `{session}/{index}:{window-name}` detail line (the focused window).
+    /// A session card: a `{host}/{mux}` context line over a `{session}/{window}`
+    /// detail line (the focused window, in its own mux's notation).
     Session { sess: Session },
     /// A host with no session to show (scanning / unreachable / empty) - the only
     /// host-level entry, sunk to the bottom of the list.
@@ -221,9 +221,9 @@ pub(crate) enum RowRef {
 /// model stays terminal-free (no `ratatui` dependency) and unit-testable without
 /// a backend.
 pub(crate) struct Row {
-    /// The detail line's variable part: the focused (active) window's
-    /// `{index}:{name}` for a session card (the renderer prefixes the session
-    /// name), the host state (scanning… / ⚠ unreachable / no sessions) for a
+    /// The detail line's variable part: the focused (active) window's label, as the
+    /// session's own mux writes it, for a session card (the renderer prefixes the
+    /// session name), the host state (scanning… / ⚠ unreachable / no sessions) for a
     /// host-state card, unused for a loading card (a spinner renders instead).
     pub(crate) line2: String,
     pub(crate) reference: RowRef,
@@ -299,8 +299,9 @@ pub(crate) fn target_for(reference: &RowRef, groups: &[Group], filter: &str) -> 
     }
 }
 
-/// Pushes a session's card: line2 carries its focused (active) window's
-/// `{index}:{name}`, or a loading card stands in while the panes are in flight.
+/// Pushes a session's card: line2 carries its focused (active) window, written the way
+/// the session's own mux writes it, or a loading card stands in while the panes are in
+/// flight.
 fn push_session_card(
     rows: &mut Vec<Row>,
     sess: &Session,
@@ -318,7 +319,7 @@ fn push_session_card(
                 .find(|w| w.active)
                 .or_else(|| windows.first())
             {
-                Some(focused) => format!("{}:{}", focused.index, focused.name),
+                Some(focused) => crate::mux::window_label(&sess.mux, focused.index, &focused.name),
                 None => String::new(),
             };
             rows.push(Row {

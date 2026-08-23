@@ -229,8 +229,8 @@ impl Switcher {
     /// `{host}/{mux}` in the host / mux colours (the mux segment only when known -
     /// a just-created session is stamped by the next enumeration; just `{host}` on
     /// a host-state card). The detail line is the address column + detail: a session
-    /// card's `{session}/{index}:{window-name}` - the focused (active) window,
-    /// what the mux shows on attach - in the session / window colours, a loading
+    /// card's `{session}/{window}` - the focused (active) window, written as its own
+    /// mux writes it - in the session / window colours, a loading
     /// card's `{session}/` + spinner, a host-state card's state coloured by kind
     /// (pending / danger / muted). Ahead of both lines runs the ADDRESS column: the
     /// card's dim 0-based number, the thing `prefix <digit>` types. It sits on the

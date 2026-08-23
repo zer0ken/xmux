@@ -46,7 +46,7 @@ pub(crate) struct Palette {
     pub host: Color,
     /// Level colour: mux.
     pub mux: Color,
-    /// Level colour: window (the `{index}:{name}` part of the detail line) - the
+    /// Level colour: window (the detail line's window part) - the
     /// quietest level, so the session name reads as the detail line's anchor.
     pub window: Color,
     /// Level colour: session. Red, so the level a user actually picks stands out from

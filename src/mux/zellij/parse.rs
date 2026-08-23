@@ -109,10 +109,11 @@ fn unit_secs(unit: &str) -> Option<i64> {
 
 /// Parses `zellij action list-tabs -a -j` into xmux windows-and-panes.
 ///
-/// A zellij TAB is what xmux calls a window, and `position` is its index: that is the
-/// number `go-to-tab` addresses (one-based there) and the number the nav shows. The
-/// records are sorted by position so the rows read in the order the tab bar does,
-/// independent of the order zellij emitted them.
+/// A zellij TAB is what xmux calls a window, and `position` is its index - what
+/// `go-to-tab` addresses (one-based there). It is internal: a card names a tab the way
+/// zellij's own tab bar does, by name alone. The records are sorted by position so the
+/// rows read in the order the tab bar does, independent of the order zellij emitted
+/// them.
 ///
 /// Pane rows carry only their ordinal. This query reports how many selectable panes a
 /// tab holds, not which one is focused or what each runs, and it is the query that
