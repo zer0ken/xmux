@@ -33,6 +33,17 @@ pub const NAV_WIDTH: u16 = 48;
 /// [`Switcher::card_height`] so the screen-row-to-card mapping never diverges.
 pub(super) const CARD_H: u16 = 2;
 
+/// How much taller than wide a terminal cell is. A row is about two half-width columns
+/// high in every font a terminal ships with, so an aspect measured in CELLS is not the
+/// aspect the user sees: 60 columns over 30 rows is a square window, not a landscape one.
+/// Every shape test multiplies the rows by this and compares real proportions.
+pub(super) const CELL_ASPECT: u32 = 2;
+
+/// Blank columns between two card columns in the portrait `Top` flow. One is enough to
+/// part them: every card opens with its address column, so a gutter reads as a gap
+/// between a name and the next number rather than two names running together.
+pub(super) const COL_GUTTER: u16 = 1;
+
 // Per-level node colours (the shared semantic palette), so the tree levels read
 // apart at a glance. Functions, not consts: the active palette (dark / light) is
 // picked at runtime from the terminal background.
@@ -58,23 +69,80 @@ fn color_hint() -> Color {
 pub use crate::ui::chrome::ViewBorderColors;
 
 /// Which way the two views stack. `Side` (default) puts the tree in a left column;
-/// `Top` stacks the tree above the terminal for a portrait (taller-than-wide) screen,
-/// so a narrow phone-shaped terminal stays usable.
+/// `Top` stacks the tree above the terminal once a side column would leave the terminal
+/// no wider than it is tall, so a narrow phone-shaped terminal stays usable.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ViewLayout {
     Side,
     Top,
 }
 
+/// The nav's live size, as one value: what the user set, and what is on screen this
+/// frame. Both are settable while xmux runs (`prefix h`/`l` and a border drag set the
+/// width, `prefix Ctrl+arrow` and a drag the `Top` height, and auto-hide takes the width
+/// away entirely), so every consumer reads them from here rather than deriving either.
+///
+/// `natural` and `width` differ only while the nav is HIDDEN, and keeping both is the
+/// point: the layout turnover is measured from `natural`, so hiding the nav cannot flip
+/// the layout under the very keys that resize it, while the regions are cut from `width`,
+/// which is what is actually on screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NavSize {
+    /// The width the user set: the saved pref, `prefix h`/`l`, or a border drag.
+    pub natural: u16,
+    /// The width on screen this frame: `natural`, or 0 while the nav is hidden.
+    pub width: u16,
+    /// The `Top` band's height the user set; 0 means auto (~40% of the body).
+    pub height: u16,
+}
+
+impl NavSize {
+    /// The nav on screen at the width the user set.
+    pub fn visible(natural: u16) -> Self {
+        NavSize {
+            natural,
+            width: natural,
+            height: 0,
+        }
+    }
+
+    /// The nav hidden (auto-hide plus terminal focus). The width the user set travels with
+    /// it, because the layout is measured from that width whether the nav is showing or not.
+    pub fn hidden(natural: u16) -> Self {
+        NavSize {
+            natural,
+            width: 0,
+            height: 0,
+        }
+    }
+
+    /// The same nav with the `Top` band height the user set (0 = auto).
+    pub fn with_height(self, height: u16) -> Self {
+        NavSize { height, ..self }
+    }
+}
+
 /// Picks the layout from the TERMINAL VIEW's aspect, not the whole screen's: putting the
 /// tree in a side column costs the terminal `nav_width + 1` columns, and if that would
-/// leave the terminal view taller than wide (portrait), the tree stacks on `Top` instead so
+/// leave the terminal view no wider than it is tall, the tree stacks on `Top` instead so
 /// the terminal keeps full width. So a screen that is landscape overall can still go `Top`
-/// once the tree squeezes the terminal into a portrait shape. `nav_width` is the width the
-/// tree would occupy in `Side` (the natural/unhidden width).
+/// once the tree squeezes the terminal into a square-or-taller shape. `nav_width` is the
+/// width the tree would occupy in `Side` (the natural/unhidden width).
+///
+/// The aspect is the one the user SEES, not the one the cell counts state: a row is about
+/// two columns tall ([`CELL_ASPECT`]), so 60 columns over 30 rows is square. Comparing the
+/// counts directly would call that window landscape and keep the side column until the
+/// terminal was half as wide as it looked.
+///
+/// The aspect is always measured AS IF the tree were in its side column, never from the
+/// terminal's live size: going `Top` gives the terminal back the tree's columns and takes
+/// the band's rows instead, so measuring the result would make the test flip its own input
+/// and the layout oscillate at the boundary. One side of the comparison, one answer: the
+/// side terminal is wider than tall (`x > y`) or it is not (`x <= y`).
 pub fn view_layout(area: Rect, nav_width: u16) -> ViewLayout {
-    let side_term_w = area.width.saturating_sub(nav_width.saturating_add(1));
-    if area.height > side_term_w {
+    let side_term_w = area.width.saturating_sub(nav_width.saturating_add(1)) as u32;
+    let side_term_h = area.height as u32 * CELL_ASPECT;
+    if side_term_w <= side_term_h {
         ViewLayout::Top
     } else {
         ViewLayout::Side
@@ -138,10 +206,12 @@ fn split_nav(nav: Rect, hint_bar_h: u16) -> (Rect, Rect) {
     (r[0], r[1])
 }
 
-pub fn compute_regions(area: Rect, nav_width: u16, nav_height: u16, hint_bar_h: u16) -> Regions {
-    // The layout is decided from the natural tree width so the terminal-view aspect test is
-    // stable; the hidden sentinel (0) below still forces the whole area to the terminal.
-    let layout = view_layout(area, nav_width);
+pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
+    // The layout is decided from the width the user SET, never from the width on screen, so
+    // hiding the nav cannot flip it; the hidden sentinel below still gives the whole area
+    // to the terminal.
+    let layout = view_layout(area, nav.natural);
+    let (nav_width, nav_height) = (nav.width, nav.height);
     if nav_width == 0 {
         return Regions {
             layout,
@@ -235,6 +305,14 @@ pub struct Switcher {
 
     list_state: ListState,
     nav_inner: Rect,
+    /// The card rects of the last paint, in the portrait `Top` layout's column flow:
+    /// mouse hit-testing reads them so a click lands on the card the user sees, whatever
+    /// column it flowed into. Empty in the `Side` layout, where the list's own row
+    /// arithmetic answers the same question.
+    nav_cells: Vec<(usize, Rect)>,
+    /// The leftmost drawn column of the `Top` column flow: the horizontal scroll
+    /// position, moved only as far as keeping the selected card visible requires.
+    nav_col_offset: usize,
     /// The view stacking as of the last render (Side vs Top), cached so key handling can
     /// route the arrows to match what is on screen without re-deriving the geometry. Set
     /// each frame by `render` from [`view_layout`].
@@ -253,6 +331,7 @@ pub struct Switcher {
     popup_geo: PopupGeometry,
 }
 
+mod columns;
 mod input;
 mod mouse;
 mod render;
@@ -269,6 +348,8 @@ impl Switcher {
             terminal_view_target: TerminalViewTarget::default(),
             list_state: ListState::default(),
             nav_inner: Rect::default(),
+            nav_cells: Vec::new(),
+            nav_col_offset: 0,
             layout: ViewLayout::Side,
             rescan_reselect: None,
             screen_area: Rect::default(),
@@ -444,6 +525,15 @@ impl Switcher {
         if self.list_state.selected() == Some(i) {
             return false;
         }
+        self.hangs_under_prev(i)
+    }
+
+    /// Whether card `i` shares the previous card's `{host}/{mux}` context, so it CAN
+    /// hang under it instead of restating it. The context test alone: whether it
+    /// actually collapses also depends on the layout (the selected card expands in the
+    /// `Side` list; a column's first card always states its context in the `Top` flow),
+    /// so each layout applies its own rule over this one.
+    fn hangs_under_prev(&self, i: usize) -> bool {
         let (Some(row), Some(prev)) = (
             self.rows.get(i),
             i.checked_sub(1).and_then(|p| self.rows.get(p)),

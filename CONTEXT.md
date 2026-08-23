@@ -34,8 +34,9 @@ One concept, one word. The two axes and the runtime:
 UI elements a user perceives as distinct things:
 
 - split view - the whole two-region layout.
-- nav view - the region holding the flat list of session cards, ordered by source
-  recency (a left column in side layout, a top band in portrait layout). Never the
+- nav view - the region holding the session cards, ordered by source recency (a left
+  column in side layout, a top band in portrait layout, where the same cards run in a
+  column flow). Never the
   "sidebar", and never the "tree": the on-screen VIEW is the nav view; "tree" names
   only the internal row-model module, which is still a Host to Session to Window
   structure.
@@ -83,10 +84,41 @@ UI elements a user perceives as distinct things:
   loading card.
 - card collapse - a session/loading card whose `{host}/{mux}` repeats the
   previous card's drops its context line and renders one row tall, so runs on
-  one server read grouped. The SELECTED card never collapses (focus expands it
-  to the full two-row card, so its context is always readable in place); the
-  renderer and mouse hit-testing share one card-height rule so the screen-row
-  mapping never diverges.
+  one server read grouped. In the SIDE list the selected card never collapses (focus
+  expands it to the full two-row card, so its context is always readable in place), and
+  the renderer and mouse hit-testing share one card-height rule so the screen-row mapping
+  never diverges. The column flow collapses by POSITION alone, never by selection: a
+  column's first card always states its context, and heights that moved with the selection
+  would reflow whole columns as the cursor passed.
+- nav size - the nav's live geometry as one value: the width the user SET, the width ON
+  SCREEN this frame (0 while auto-hide has taken it), and the portrait band's height the
+  user set (0 = auto). All three are settable while xmux runs, so every consumer takes the
+  whole value rather than picking two of the three out of the runtime: the effective width
+  has one owner, and a resize cannot reach the renderer and miss the PTY sizing. The set
+  width and the on-screen width differ only while the nav is hidden, and that is exactly
+  why both travel: the regions are cut from what is on screen, the layout turnover is
+  measured from what the user set.
+- layout turnover - the one test that picks the side column or the top band, measured as
+  if the nav kept its side column: the terminal that column would leave is the window
+  width less the nav and its border, over the window's full height. Wider than tall keeps
+  the side column; square or taller moves the nav to the top band and drops the column.
+  Wider than tall in the proportions the user SEES, not in cell counts: a row is about two
+  columns tall, so the rows count double and 60 columns over 30 rows is square. Comparing
+  the counts directly kept the side column until the terminal was half as wide as it
+  looked. The as-if is the point too: going to the band hands those columns back to the
+  terminal and takes rows instead, so a test measuring the LIVE terminal would flip its own
+  input and the layout would oscillate on one cell of resize. Hiding the nav is not a
+  resize either, since the turnover reads the width the user set, so the nav comes back the
+  shape it left and the resize keys keep driving the same axis while it is gone.
+- column flow - how the portrait band lays its cards out: down a column, then right. A
+  column takes whole host/mux RUNS, so a source's cards stay together under the one
+  context line naming them, and the run that does not fit opens the next column instead of
+  splitting across the break. A run taller than the whole column is the one exception,
+  having nowhere else to go: it splits, and the continuation states its context again. A
+  column is as wide as its widest card, columns are parted by one blank, and the flow is
+  pure geometry, so the paint, the hit-test and the tests read one answer. A list would
+  show three cards in a band twenty rows wide and leave the rest of every row blank; the
+  flow is what makes the band worth its rows.
 - level color - the per-segment card color, from the palette. Every foreground role
   is ANSI-16, so the terminal theme resolves the hue: host blue,
   mux green, session red, the window part bright-black - the quietest
@@ -126,6 +158,24 @@ UI elements a user perceives as distinct things:
   never a solid block: it draws inverted too, so a block fills its cell and disappears
   into the band while an outline keeps a readable silhouette.
   `[ui] selection-style` paints a named background instead.
+- scrollbar strip - the COLUMN the side list's scrollbar takes from the nav region when
+  the cards overflow it. Reserved, never overlaid, because the selected card is painted by
+  inverting its whole rect and a thumb inside that rect inverts with it into a hole in the
+  bar. Nothing is drawn at all while everything fits, so a nav that fits spends no cell on
+  furniture. The portrait flow has no strip: it scrolls sideways, and says so in words on
+  its status row (see "offscreen counts").
+- offscreen counts - what the portrait flow puts on its status row when columns are off
+  screen: `<< 5 more` at the left end, `7 more >>` at the right, in the cells the status
+  label does not take. Cards, not columns, because the reader is hunting a session, not a
+  column. They cost no row (the status row is the band's own last row, never a card's) and
+  say what a thumb cannot: which way the cards went, and how many. An ARMED bar takes the
+  whole row back, counts included, since a cheatsheet has to be readable over what it
+  covers.
+- status row fill - how much of its row the hint bar paints. The side column's bar, an
+  armed bar and a refusal fill the ROW: a solid bar, legible over whatever it covers. The
+  portrait band's resting bar paints its text plus a cell of padding and stops, because it
+  shares that row with the offscreen counts and a full-width slab of bar colour across a
+  wide window is a lot of paint for one word.
 - spinner - the braille activity glyph on a loading card.
 - loading card - a card standing in for a session whose panes are not yet loaded;
   its detail line is `{session}/` + a spinner rather than a window part.
@@ -180,8 +230,8 @@ UI elements a user perceives as distinct things:
   served keeps the id it was painted with, because that id is what the frozen order, the
   persisted selection, and typed ctl targets are keyed to.
 - roster - the list of ssh targets xmux offers as sources, assembled from
-  PROVIDERS: `~/.ssh/config` aliases and, when `[discovery]` enables it, the online
-  peers of this machine's tailnet. Every provider yields plain ssh target names, so
+  PROVIDERS, both on unless `[discovery]` turns one off: `~/.ssh/config` aliases and the
+  online peers of this machine's tailnet. Every provider yields plain ssh target names, so
   nothing downstream can tell where a name came from. Distinct from `discovery`, which
   scans a source for sessions, and from the machine axis, which reaches one.
 - filter - the type-to-filter input over the nav list.

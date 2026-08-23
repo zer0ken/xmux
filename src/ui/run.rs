@@ -62,7 +62,15 @@ pub fn dump_screen(
         Err(_) => return String::new(),
     };
     if term
-        .draw(|f| switcher.render(f, grid, false, crate::ui::switcher::NAV_WIDTH, 0, state))
+        .draw(|f| {
+            switcher.render(
+                f,
+                grid,
+                false,
+                crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+                state,
+            )
+        })
         .is_err()
     {
         return String::new();

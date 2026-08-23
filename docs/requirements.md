@@ -121,6 +121,56 @@ no function, and no test, so renaming code is never a documentation change.
   is free to answer no colour query at all. `[ui] selection-style` names a background
   anyway, in the same colour vocabulary as the view border, and `xmux doctor` reports
   which of the two is in effect because it is invisible on a screenshot.
+- **FR-B12** - On a portrait screen the nav is a wide, short band, and its cards flow
+  into COLUMNS: down a column, then right. A column takes whole host/mux runs, so a
+  source's cards stay together under the one context line naming them and the run that
+  does not fit opens the next column rather than splitting across the break; only a run
+  taller than the whole column splits, having nowhere else to go, and its continuation
+  states its context again. Card order does not change, so the numbers still count in
+  reading order. The paint records each card's rect and the hit-test reads it back, so a
+  click cannot land on a card the renderer put elsewhere.
+- **FR-B13** - The nav says what is off screen without spending a row on furniture. The
+  side list's scrollbar takes a COLUMN of its own from the nav region, never painted over
+  the cards, because the selected card is painted by inverting its whole rect and a thumb
+  inside that rect inverts with it into a hole in the bar. The portrait flow scrolls
+  sideways instead and says so in words on its status row: `<< 5 more` at the left end and
+  `7 more >>` at the right, counting CARDS behind the columns the window does not reach.
+  That row is the band's own last row, never a card's. Nothing is drawn while everything
+  fits.
+- **FR-B14** - An arrow points AT the view it focuses, on either axis: the terminal is
+  right of the nav in the side layout and below it in the portrait one, so `prefix right`
+  and `prefix down` both focus the terminal while `prefix left` and `prefix up` both focus
+  the nav (as `prefix Esc` does). An arrow naming the view that already has focus does
+  nothing. Bare arrows belong to the cards instead: each steps ONE card along the list,
+  back for left and up, on for right and down. Not by column, because the portrait band
+  puts the next card below in one place and one column over in another, and a key that
+  moved by column would mean two different things in the two layouts.
+- **FR-B15** - Which layout is in force is decided by ONE test, always measured as if the
+  nav kept its side column: the terminal that column would leave is the window width less
+  the nav and its border, over the window's full height, and while that is WIDER than tall
+  the nav is the side column. The moment it is not (square included) the nav becomes the
+  top band and the side column is gone. Wider than tall is judged in the proportions the
+  user SEES: a terminal row is about two columns tall, so the rows count double. Judging
+  it by cell counts alone held the side column until the terminal was half as wide as it
+  looked, and measuring the LIVE terminal would flip the test's own input, since going to
+  the band hands those columns back and takes rows instead, so the layout would oscillate
+  at the boundary.
+- **FR-B16** - The nav's width and the portrait band's height are both live: the saved
+  pref seeds them, the resize keys step them, a border drag sets them, and auto-hide takes
+  the width away entirely. They therefore travel as ONE value carrying the width the user
+  set, the width on screen, and the band height, so the renderer, the PTY sizing and mouse
+  hit-testing cannot read three different answers, and the effective width keeps its single
+  owner. Hiding the nav does not move the layout: the turnover reads the width the user
+  SET, so the nav returns the shape it left.
+- **FR-B17** - The status row is a bar where it owns its row and a label where it does not:
+  the side column's bar fills its row, and so does any armed or flashing bar, which has to
+  be readable over what it covers; the portrait band's resting bar paints its text plus a
+  cell of padding, leaving the rest of the row to the offscreen counts.
+- **FR-B18** - A prefix waits for the next INPUT, and a mouse action is input: a click, a
+  release, a wheel or a drag disarms it in either focus, because mouse bytes are scanned
+  out of the stream before either focus path's key handling sees them and a chord left
+  half-open keeps its cheatsheet on screen and then eats the next key. Bare hover is not
+  an action: the pointer drifting must not break a chord being typed.
 
 ## C. Switching (the keystone)
 

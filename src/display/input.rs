@@ -1,12 +1,13 @@
 //! Terminal-focus input handling. When the terminal view has focus every byte is
-//! forwarded raw to the session's active pane (so a real program — vim, a pager —
+//! forwarded raw to the session's active pane (so a real program - vim, a pager -
 //! sees exact input), EXCEPT a prefix (default `C-g`) followed by a command key,
-//! which is intercepted: `prefix Left|Tab|Esc` returns focus to the nav, `prefix Right`
-//! keeps focus on the (already-focused) terminal view, `prefix q` quits, `prefix ?` toggles
+//! which is intercepted: `prefix Left|Up|Tab|Esc` returns focus to the nav,
+//! `prefix Right|Down` keeps focus on the (already-focused) terminal view (an arrow
+//! points at the view it focuses), `prefix q` quits, `prefix ?` toggles
 //! the keys help, `prefix h`/`l` and `prefix Ctrl+←/→` resize the nav, `prefix t`
 //! toggles auto-hide-nav mode, `prefix n`/`R`/`r` run the nav actions
 //! (new / rename / re-scan) on the displayed session, `prefix x` kills the ACTIVE pane
-//! of the displayed session (tmux `prefix x` parity — distinct from nav focus, where
+//! of the displayed session (tmux `prefix x` parity - distinct from nav focus, where
 //! `prefix x` kills the selected node), and a doubled
 //! prefix sends one literal prefix byte. Apart from `prefix x`, the command set matches
 //! nav focus, so those commands behave identically regardless of which view holds
@@ -43,6 +44,13 @@ impl TermInput {
         self.armed
     }
 
+    /// Drops a pending prefix. A prefix waits for the NEXT input, and a mouse action is
+    /// input - but mouse bytes are scanned out of the stream before `feed` ever sees them,
+    /// so the mouse path says so here instead of leaving the chord half-open.
+    pub fn disarm(&mut self) {
+        self.armed = false;
+    }
+
     fn track_paste(&mut self, byte: u8) {
         self.paste_scan.push(byte);
         if self.paste_scan.len() > PASTE_START.len().max(PASTE_END.len()) {
@@ -75,7 +83,7 @@ impl TermInput {
                     continue;
                 }
                 // prefix ? / h / l keep terminal-view focus (help toggle, nav resize), so the
-                // rest of the read still forwards to the pane — flush, emit, continue.
+                // rest of the read still forwards to the pane - flush, emit, continue.
                 if b0 == b'?' {
                     if !fwd.is_empty() {
                         out.push(Action::Forward(std::mem::take(&mut fwd)));
@@ -157,9 +165,12 @@ impl TermInput {
                     } else {
                         1
                     };
-                    // prefix → (Right): focus the right (terminal) view — already focused here,
-                    // so swallow it and stay; the rest of the read resumes as mux input.
-                    if cmd_len == 3 && bytes[i + 2] == b'C' {
+                    // An arrow points AT the view it focuses: the terminal is right of the
+                    // nav in Side and below it in Top, so prefix → (C) and prefix ↓ (B) both
+                    // name the view that already has focus here. Swallow them and stay; the
+                    // rest of the read resumes as mux input. prefix ← (D) and prefix ↑ (A)
+                    // name the nav and fall through to the focus switch below.
+                    if cmd_len == 3 && matches!(bytes[i + 2], b'C' | b'B') {
                         i += cmd_len;
                         continue;
                     }
@@ -234,8 +245,9 @@ mod tests {
     #[test]
     fn prefix_then_left_or_esc_focuses_nav() {
         // Each command key is consumed whole, so the replay tail is empty (no stray
-        // `[D` leaking to the nav).
-        for seq in [&b"\x1b[D"[..], &b"\x1b"[..]] {
+        // `[D` leaking to the nav). UP joins LEFT: an arrow names the view it focuses,
+        // and the nav is left of the terminal in Side, above it in Top.
+        for seq in [&b"\x1b[D"[..], &b"\x1b[A"[..], &b"\x1b"[..]] {
             let mut t = m();
             t.feed(&[0x07]);
             assert_eq!(
@@ -247,21 +259,30 @@ mod tests {
     }
 
     #[test]
-    fn prefix_then_right_stays_in_terminal() {
-        // prefix → focuses the (already-focused) terminal view: swallowed, no FocusNav,
-        // and any trailing bytes resume as forwarded input.
-        let mut t = m();
-        t.feed(&[0x07]);
-        assert!(
-            t.feed(b"\x1b[C").is_empty(),
-            "prefix → produces no action (stays in mux)"
-        );
+    fn prefix_then_right_or_down_stays_in_terminal() {
+        // prefix → and prefix ↓ both name the terminal view, which already has focus:
+        // swallowed, no FocusNav, and any trailing bytes resume as forwarded input.
+        for seq in [&b"\x1b[C"[..], &b"\x1b[B"[..]] {
+            let mut t = m();
+            t.feed(&[0x07]);
+            assert!(
+                t.feed(seq).is_empty(),
+                "seq {seq:?} produces no action (stays in mux)"
+            );
+        }
         let mut t2 = m();
         t2.feed(&[0x07]);
         assert_eq!(
             fwd(&t2.feed(b"\x1b[Cabc")),
             b"abc",
             "trailing input after prefix → forwards"
+        );
+        let mut t3 = m();
+        t3.feed(&[0x07]);
+        assert_eq!(
+            fwd(&t3.feed(b"\x1b[Babc")),
+            b"abc",
+            "trailing input after prefix ↓ forwards too"
         );
     }
 
@@ -282,7 +303,7 @@ mod tests {
     #[test]
     fn prefix_then_tab_then_trailing_goes_to_nav() {
         // `C-g Tab abc` in one read: focus leaves to the nav carrying `abc` (no
-        // byte loss — the trailing input belongs to the new focus).
+        // byte loss - the trailing input belongs to the new focus).
         let mut t = m();
         assert_eq!(
             t.feed(b"\x07\tabc"),
@@ -317,7 +338,7 @@ mod tests {
     #[test]
     fn prefix_then_nav_action_emits_nav_key() {
         // prefix n/R/r each emit a NavKey the caller routes to Switcher::handle_key,
-        // so the nav actions work from terminal focus too. (prefix x is separate — it
+        // so the nav actions work from terminal focus too. (prefix x is separate - it
         // kills the active pane; see prefix_then_x_kills_active_pane.)
         for (b, c) in [(b'n', 'n'), (b'r', 'r')] {
             let mut t = m();

@@ -28,8 +28,8 @@ pub(crate) fn view_border_drag_height(row: u16) -> u16 {
 /// If `bytes` STARTS with a Ctrl-arrow (`ESC [ 1 ; 5 A/B/C/D`), returns `(horizontal,
 /// delta, len)`: the axis (true = ←/→ width, false = ↑/↓ height), the signed step (→/↓ = +1,
 /// ←/↑ = -1), and the 6 bytes it consumed; else `None`. Peeling leading Ctrl-arrows (rather
-/// than matching the whole read) lets a coalesced autorepeat burst — several presses in one
-/// stdin read — keep resizing. Restricted to Ctrl-arrows (not bare arrows or h/l) so it never
+/// than matching the whole read) lets a coalesced autorepeat burst - several presses in one
+/// stdin read - keep resizing. Restricted to Ctrl-arrows (not bare arrows or h/l) so it never
 /// hijacks navigation or typed pane input outside the repeat window.
 pub(crate) fn leading_ctrl_arrow(bytes: &[u8]) -> Option<(bool, i32, usize)> {
     if bytes.len() >= 6 && bytes[0] == 0x1b && bytes[1] == b'[' && &bytes[2..5] == b"1;5" {
@@ -59,14 +59,14 @@ pub(crate) fn to_grid_local(area: ratatui::layout::Rect, col: u16, row: u16) -> 
 }
 
 /// The single key that moves focus from the nav into the terminal view.
-/// (Arrows navigate the nav; the prefix-Esc path returns focus — see TermInput.)
+/// (Arrows navigate the nav; the prefix-Esc path returns focus - see TermInput.)
 fn is_focus_in(code: KeyCode) -> bool {
     matches!(code, KeyCode::Enter)
 }
 
 /// Whether a wheel event should drive the NAV (a scroll: the flat list has no levels).
 /// Only when the nav is focused AND the pointer is over the nav: mouse input acts on
-/// the view under the selection, and only when that view is focused — the same rule clicks
+/// the view under the selection, and only when that view is focused - the same rule clicks
 /// and motion already follow. A wheel over the terminal view while the nav is focused is not
 /// a nav scroll.
 fn wheel_targets_nav(nav_focused: bool, over_mux: bool) -> bool {
@@ -74,7 +74,7 @@ fn wheel_targets_nav(nav_focused: bool, over_mux: bool) -> bool {
 }
 
 /// What a mouse event resolves to once the modal/gesture gates (menu, view border drag,
-/// idle-view border-hover, menu-open) have declined it — the focus×position routing core.
+/// idle-view border-hover, menu-open) have declined it - the focus×position routing core.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ChainAction {
     /// Scroll the nav by one row (wheel, nav focus, over nav). `down` = scroll down.
@@ -89,14 +89,14 @@ pub(crate) enum ChainAction {
     FocusNav,
     /// Forward the event to the focused mux child (terminal focus, over the terminal view).
     ForwardToMux,
-    /// Nothing — the event is dropped.
+    /// Nothing - the event is dropped.
     Nothing,
 }
 
 /// Pure focus×position routing for a mouse event that fell through every gate. The one
 /// rule: input acts on the view under the selection, and only when that view is focused.
 /// A wheel over the terminal view while the nav is focused, or over the nav while the terminal view is
-/// focused, resolves to Nothing — it never crosses to the unfocused view.
+/// focused, resolves to Nothing - it never crosses to the unfocused view.
 pub(crate) fn resolve_mouse_chain(
     is_wheel: bool,
     down: bool,
@@ -126,8 +126,8 @@ pub(crate) fn resolve_mouse_chain(
 /// only arms the prefix or is an unrecognized armed command). Touches no app or
 /// switcher state, so it is unit-testable in isolation (mirrors how `TermInput::feed`
 /// resolves the terminal-view focus path). `is_inputting` suppresses prefix arming and the Enter
-/// focus-switch so the input row receives those keys verbatim. Resolved per key — not
-/// per read — because `is_inputting` can flip mid-read (a key that opens the input row
+/// focus-switch so the input row receives those keys verbatim. Resolved per key - not
+/// per read - because `is_inputting` can flip mid-read (a key that opens the input row
 /// changes how the next key in the same read is treated), so the caller re-queries it
 /// and applies each action before resolving the next key.
 pub(crate) fn resolve_nav_key(
@@ -150,11 +150,15 @@ pub(crate) fn resolve_nav_key(
             KeyCode::Down if ctrl => Some(Action::Height(1)),
             KeyCode::Char('t') => Some(Action::ToggleAutoHide),
             KeyCode::Char('?') => Some(Action::ShowHelp),
-            // prefix Tab cycles focus to the terminal (toggle, mirroring the terminal side's
-            // prefix Tab → nav); prefix → also focuses the terminal view. The byte decoder yields
-            // Char('\t') for Tab, never KeyCode::Tab, so match both. (prefix ←/Esc focus
-            // the nav, where we already are — a no-op that resolves to nothing.)
-            KeyCode::Right | KeyCode::Tab | KeyCode::Char('\t') => Some(Action::FocusTerminal),
+            // An arrow points AT the view it focuses, in either layout: the terminal is
+            // right of the nav in Side and below it in Top, so prefix → and prefix ↓ both
+            // focus the terminal, and prefix ← / prefix ↑ both name the nav, which already
+            // has focus here, so they resolve to nothing (as prefix Esc does). prefix Tab
+            // cycles, mirroring the terminal side's prefix Tab → nav. The byte decoder
+            // yields Char('\t') for Tab, never KeyCode::Tab, so match both.
+            KeyCode::Right | KeyCode::Down | KeyCode::Tab | KeyCode::Char('\t') => {
+                Some(Action::FocusTerminal)
+            }
             // Tier A: the state-changing nav actions are prefix-gated. The prefix arms
             // them; they then resolve to the nav executor via the existing NavKey path.
             // A digit joins them: `prefix <digit>` opens the card-jump popup seeded with
@@ -172,7 +176,7 @@ pub(crate) fn resolve_nav_key(
     if !is_inputting && is_focus_in(key.code) {
         return Some(Action::FocusTerminal);
     }
-    // Tier A: bare (unprefixed) r/n and bare digits are inert — they require the prefix.
+    // Tier A: bare (unprefixed) r/n and bare digits are inert - they require the prefix.
     // Navigation, Enter, and `/` filter stay bare. Only applies when not inputting, so
     // every key is still literal text while an input row (filter / new / jump) is open.
     if !is_inputting
@@ -191,7 +195,7 @@ pub(crate) fn resolve_nav_key(
 pub(crate) struct MouseState {
     /// True while the left button is dragging the nav/terminal view border rule to resize.
     pub(crate) dragging_view_border: bool,
-    /// True while the mouse hovers the view border rule (no button) — the drag-resize cue.
+    /// True while the mouse hovers the view border rule (no button) - the drag-resize cue.
     pub(crate) hovered_view_border: bool,
     /// The resize-repeat window: a bare Ctrl+←/→ keeps resizing until it lapses.
     pub(crate) repeat_until: Option<std::time::Instant>,
@@ -200,7 +204,7 @@ pub(crate) struct MouseState {
 }
 
 /// The outcome of one stdin read: what the loop must act on after the handler runs.
-/// The stdin handler is a function of (bytes, state) → outcome — it mutates no loop
+/// The stdin handler is a function of (bytes, state) → outcome - it mutates no loop
 /// local directly, so it is unit-testable without the loop. `focus_*` and `nav_replay`
 /// carry the resolved focus path (applied inside the handler) for the per-handler
 /// round-trip test + observability.
@@ -256,7 +260,7 @@ mod tests {
             "prefix ? toggles help"
         );
         // prefix Tab cycles focus to the terminal view, and prefix Right does too. (Tab
-        // arrives as Char('\t') from the byte decoder, not KeyCode::Tab — both map to
+        // arrives as Char('\t') from the byte decoder, not KeyCode::Tab - both map to
         // FocusTerminal so prefix Tab toggles nav⇄terminal like it does from the terminal side.)
         assert_eq!(
             rt(b"\x07\t", false),
@@ -268,6 +272,21 @@ mod tests {
             vec![Action::FocusTerminal],
             "prefix Right focuses mux"
         );
+        // An arrow names the view it focuses, whichever way the two are stacked: the
+        // terminal is right of the nav in Side and below it in Top, so ↓ focuses it too.
+        assert_eq!(
+            rt(b"\x07\x1b[B", false),
+            vec![Action::FocusTerminal],
+            "prefix Down focuses mux, like prefix Right"
+        );
+        // ← and ↑ both name the nav, which already has focus here: nothing to do.
+        for k in [b"\x07\x1b[D" as &[u8], b"\x07\x1b[A"] {
+            assert_eq!(
+                rt(k, false),
+                Vec::<Action>::new(),
+                "prefix Left / prefix Up focus the nav, where we already are"
+            );
+        }
         assert_eq!(
             rt(b"\x07\x1b[1;5C", false),
             vec![Action::Width(1)],
@@ -351,7 +370,7 @@ mod tests {
     fn resolve_nav_while_inputting_passes_prefix_and_enter_to_the_nav() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         // While the input row is open, the prefix is NOT special (typed into the buffer)
-        // and Enter does NOT focus the terminal (it submits the input) — both go to the nav.
+        // and Enter does NOT focus the terminal (it submits the input) - both go to the nav.
         assert_eq!(
             rt(b"\x07", true),
             vec![Action::NavKey(KeyEvent::new(
@@ -508,7 +527,7 @@ mod tests {
             "Ctrl-Up shrinks height (vertical -)"
         );
         // A LEADING Ctrl-arrow is peeled even with trailing bytes (the caller loops /
-        // routes the remainder) — this is what makes a coalesced autorepeat keep going.
+        // routes the remainder) - this is what makes a coalesced autorepeat keep going.
         assert_eq!(
             leading_ctrl_arrow(b"\x1b[1;5C\x1b[1;5C"),
             Some((true, 1, 6)),

@@ -48,6 +48,10 @@ flatten renders for the dump verb.
   emits a deferred-operation command for the run loop to spawn, and does not call
   the mux itself.
 - Control socket serving and dump rendering belong in the control bridge.
+- Card LAYOUT geometry belongs in the column-flow module and stays pure: it takes card
+  widths and run boundaries and returns rects, so the paint, the mouse hit-test and the
+  tests all read one answer. Rendering reads that answer; it does not compute a second
+  one.
 - Other interaction state and rendering live in `switcher/` until a smaller seam
   exists for the specific surface being changed.
 
@@ -61,6 +65,21 @@ flatten renders for the dump verb.
 - Row transforms do not mutate their inputs unless the function name and
   signature make mutation explicit.
 - The dump should reflect the same split view the main draw path renders.
+- A scrollbar is RESERVED a column of the nav region, never overlaid on the cards: the
+  selected card is painted by inverting its rect, so a thumb drawn inside one inverts with
+  it and reads as a hole in the bar. The portrait flow scrolls sideways and puts its cue on
+  the status row instead, which is the band's own last row and never a card's, so the flow
+  keeps every row of the band.
+- In the portrait column flow, what a card collapses under is decided by POSITION alone,
+  never by the selection: a card height that moved with the cursor would reflow whole
+  columns as the selection passed over them. The side list keeps its
+  selection-expands-the-card rule, where a height change only shifts rows.
+- A pending prefix is dropped by the next INPUT, mouse included. The mouse path has to say
+  so itself, because mouse bytes never reach either focus path's key handling. Bare hover
+  is exempt: it is the pointer sitting there, not an action.
+- An arrow key points AT the view it focuses, in both focus paths (one for nav focus, one
+  for terminal focus): right and down name the terminal, left and up name the nav. A change
+  to one path is a change to both.
 - Modal input owns keys while open; those keys must not leak to the terminal view
   or global shortcuts. At most one modal is open, because the state holds one
   optional modal, so opening any modal drops whatever was open.

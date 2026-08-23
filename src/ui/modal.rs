@@ -346,7 +346,10 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
     // navigation and the `/` filter stay bare.
     let rows: Vec<HelpRow> = vec![
         HelpRow::Head("navigation".into()),
-        HelpRow::Key("↑/↓ · j/k".into(), "move up / down the list".into()),
+        HelpRow::Key(
+            "↑/↓/←/→ · j/k".into(),
+            "move one card (either way, either layout)".into(),
+        ),
         HelpRow::Key("PgUp/PgDn".into(), "jump by 10".into()),
         HelpRow::Key("Home/End".into(), "first / last card".into()),
         HelpRow::Key(
@@ -359,12 +362,12 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
         HelpRow::Gap,
         // Focus section - prefix rows built from `prefix`.
         HelpRow::Head(format!("focus ({p} = prefix)")),
-        HelpRow::Key(format!("Enter · {p} →"), "focus the terminal".into()),
+        HelpRow::Key(format!("Enter · {p} →/↓"), "focus the terminal".into()),
         HelpRow::Key(
             format!("{p} Tab"),
             "toggle focus between tree and terminal".into(),
         ),
-        HelpRow::Key(format!("{p} ← · {p} Esc"), "focus the tree".into()),
+        HelpRow::Key(format!("{p} ←/↑ · {p} Esc"), "focus the tree".into()),
         HelpRow::Key(
             format!("{p} C-←/→"),
             "resize tree width (Side); h/l too. repeats briefly".into(),

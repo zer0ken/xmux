@@ -51,7 +51,10 @@ struct Harness {
 
 impl Harness {
     fn new(scan: Scan) -> Self {
-        Self::new_sized(scan, 100, 30)
+        // Landscape ENOUGH: a row is two columns tall, so the side column survives only
+        // while `w - nav - 1` beats twice the rows. 140x30 leaves a 91x30 terminal, which
+        // is 91 over 60 in real proportions - the shape these list tests are about.
+        Self::new_sized(scan, 140, 30)
     }
 
     /// A harness with a specific backend size - used to exercise the portrait Top
@@ -71,7 +74,7 @@ impl Harness {
     }
 
     fn from_sources(aliases: &[&str]) -> Self {
-        let backend = TestBackend::new(100, 30);
+        let backend = TestBackend::new(140, 30);
         let term = Terminal::new(backend).unwrap();
         let aliases = aliases.iter().map(|s| s.to_string()).collect();
         let mut state = crate::state::State::from_sources(aliases);
@@ -122,7 +125,7 @@ impl Harness {
         let sw = &mut self.sw;
         let state = &self.state;
         self.term
-            .draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, state))
+            .draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), state))
             .unwrap();
     }
 
@@ -413,8 +416,8 @@ fn set_active_window_refreshes_the_focused_window_line() {
 
 #[test]
 fn up_down_and_hjkl_move_linearly() {
-    // The flat card list has no levels: ↑/↓ (and k/j) step one card up/down the
-    // whole list, and h/l are inert (nothing to move between horizontally).
+    // The card list has no levels: every arrow (and k/j) steps ONE card along it, and
+    // h/l are inert (they resize the nav behind the prefix instead).
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     let start = sw.selected;
@@ -434,7 +437,17 @@ fn up_down_and_hjkl_move_linearly() {
         &mut state,
     );
     assert_eq!(sw.selected, start, "k == ↑");
-    // h/l are inert on the flat list (no horizontal level to move between).
+    // ←/→ step the same one card. The portrait band flows its cards down a column and
+    // then right, so the card after this one is sometimes below and sometimes one column
+    // over; one step means one card either way, in both layouts.
+    sw.handle_key(
+        KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+        &mut state,
+    );
+    assert_eq!(sw.selected, next, "→ == ↓");
+    sw.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), &mut state);
+    assert_eq!(sw.selected, start, "← == ↑");
+    // h/l are inert on the card list (they resize the nav behind the prefix).
     sw.handle_key(
         KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
         &mut state,
@@ -1115,8 +1128,10 @@ async fn armed_hint_bar_fits_a_narrow_nav() {
     state.chrome.set_armed(true);
     let mut sw = Switcher::new(&mut state);
     let nav_w = 24u16;
-    let mut term = Terminal::new(TestBackend::new(60, 30)).unwrap();
-    term.draw(|f| sw.render(f, None, false, nav_w, 0, &state))
+    // Landscape enough for the side column: a row counts as two columns, so the terminal
+    // beside a 24-wide nav must beat twice the rows (90 - 25 = 65 against 60).
+    let mut term = Terminal::new(TestBackend::new(90, 30)).unwrap();
+    term.draw(|f| sw.render(f, None, false, NavSize::visible(nav_w), &state))
         .unwrap();
     let buf = term.backend().buffer();
     let y = buf.area.height - 1;
@@ -1146,7 +1161,7 @@ fn hint_bar_has_status_bar_background() {
     // Wide enough that the terminal view stays landscape, so the layout is Side and the
     // nav column runs the full height (its last row IS the hint bar).
     let mut term = Terminal::new(TestBackend::new(140, 20)).unwrap();
-    term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, &state))
+    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer();
     let y = buf.area.height - 1; // the one-line hint bar sits on the nav's last row
@@ -1907,7 +1922,7 @@ async fn render_terminal_view_draws_live_grid() {
     // Render with the live grid supplied.
     let sw = &mut h.sw;
     h.term
-        .draw(|f| sw.render(f, Some(&g), false, NAV_WIDTH, 0, &h.state))
+        .draw(|f| sw.render(f, Some(&g), false, NavSize::visible(NAV_WIDTH), &h.state))
         .unwrap();
     let out = buffer_text(h.term.backend().buffer());
     assert!(
@@ -1926,7 +1941,7 @@ fn render_terminal_view_none_grid_is_blank_not_attaching() {
     let mut state = crate::state::State::from_sources(vec!["local".into(), "jupiter06".into()]);
     let mut sw = Switcher::from_sources(&mut state);
     let mut term = Terminal::new(TestBackend::new(40, 10)).unwrap();
-    term.draw(|f| sw.render(f, None, true, 0, 0, &state))
+    term.draw(|f| sw.render(f, None, true, NavSize::hidden(NAV_WIDTH), &state))
         .unwrap();
     let out = buffer_text(term.backend().buffer());
     assert!(
@@ -2039,27 +2054,90 @@ async fn flash_clears_on_next_key_restoring_the_hint_bar() {
 }
 
 #[test]
+fn the_layout_turns_over_where_the_side_terminal_stops_being_wider_than_tall() {
+    use ratatui::layout::Rect;
+    // The test is the aspect of the terminal AS IF the tree kept its side column: with a
+    // 48-wide tree that terminal is `w - 49` columns over the window's full height. It
+    // stays Side while that is wider than tall, and turns over the moment it is not - in
+    // the proportions the user SEES, so a row counts as two columns.
+    //
+    // Measuring the LIVE terminal instead would oscillate: going Top hands it the tree's
+    // columns back and takes the band's rows, which lands it back on the other side of
+    // the same test.
+    for (w, h, want) in [
+        (150u16, 50u16, ViewLayout::Side), // 101 cells over 50 rows = 101 x 100: wider
+        (149, 50, ViewLayout::Top),        // 100 x 100: square, so the band takes over
+        (140, 50, ViewLayout::Top),        // 91 x 100: taller than wide
+        (74, 12, ViewLayout::Side),        // 25 x 24: one column wider than tall
+        (73, 12, ViewLayout::Top),         // 24 x 24: square, on a small window too
+    ] {
+        assert_eq!(
+            view_layout(Rect::new(0, 0, w, h), 48),
+            want,
+            "{w}x{h} with a 48-wide tree leaves a side terminal {} cells over {h} rows, \
+             which is {} by {} once a row counts as two columns",
+            w.saturating_sub(49),
+            w.saturating_sub(49),
+            h * 2
+        );
+    }
+}
+
+#[test]
+fn hiding_the_nav_leaves_the_layout_where_it_was() {
+    use ratatui::layout::Rect;
+    // Auto-hide takes the nav's width away for as long as the terminal holds focus. The
+    // layout must not move with it: it is measured from the width the user SET, which
+    // travels with the hidden nav, so the resize keys keep driving the same axis and the
+    // nav comes back the shape it left.
+    let portrait = Rect::new(0, 0, 100, 34); // a 31-wide nav leaves 68 over 34 rows: square
+    let shown = compute_regions(portrait, NavSize::visible(31), 1);
+    let gone = compute_regions(portrait, NavSize::hidden(31), 1);
+    assert_eq!(shown.layout, ViewLayout::Top);
+    assert_eq!(
+        gone.layout,
+        ViewLayout::Top,
+        "hiding the nav is not a reflow"
+    );
+    assert_eq!(
+        gone.terminal, portrait,
+        "and the terminal owns the whole area"
+    );
+    assert_eq!(gone.tree, Rect::default());
+    // The same holds the other way round: a wide window stays Side while hidden.
+    let landscape = Rect::new(0, 0, 260, 40);
+    assert_eq!(
+        compute_regions(landscape, NavSize::hidden(31), 1).layout,
+        ViewLayout::Side
+    );
+    assert_eq!(
+        compute_regions(landscape, NavSize::visible(31), 1).layout,
+        ViewLayout::Side
+    );
+}
+
+#[test]
 fn compute_regions_side_top_and_hidden() {
     use ratatui::layout::Rect;
     // Landscape → Side: tree left, 1-col border, terminal right. The hint bar is the
     // NAV column's bottom row, so the border and the terminal keep the full height.
-    let land = Rect::new(0, 0, 100, 30);
-    let s = compute_regions(land, 48, 0, 1);
+    let land = Rect::new(0, 0, 140, 30);
+    let s = compute_regions(land, NavSize::visible(48), 1);
     assert_eq!(s.layout, ViewLayout::Side);
     assert_eq!(s.tree, Rect::new(0, 0, 48, 29));
     assert_eq!(s.view_border, Rect::new(48, 0, 1, 30));
-    assert_eq!(s.terminal, Rect::new(49, 0, 51, 30));
+    assert_eq!(s.terminal, Rect::new(49, 0, 91, 30));
     assert_eq!(s.hint_bar, Rect::new(0, 29, 48, 1));
     // A landscape SCREEN can still be Top when the side tree would squeeze the terminal
     // view into a portrait shape: 100 wide, tree 48 → terminal view ~51 wide vs 80 tall, so
     // Top wins even though the screen itself is wider than tall.
-    let squeezed = compute_regions(Rect::new(0, 0, 100, 80), 48, 0, 1);
+    let squeezed = compute_regions(Rect::new(0, 0, 140, 60), NavSize::visible(48), 1);
     assert_eq!(squeezed.layout, ViewLayout::Top);
     // Portrait → Top: tree band on top, 1-row border, terminal below. The hint bar is
     // the BAND's bottom row, so it sits directly above the view border, not at the
     // screen's bottom edge.
     let port = Rect::new(0, 0, 40, 100);
-    let t = compute_regions(port, 48, 0, 1);
+    let t = compute_regions(port, NavSize::visible(48), 1);
     assert_eq!(t.layout, ViewLayout::Top);
     assert_eq!(t.tree.y, 0);
     assert_eq!(t.tree.width, 40);
@@ -2070,7 +2148,7 @@ fn compute_regions_side_top_and_hidden() {
     assert_eq!(t.terminal.y, band_h + 1);
     assert_eq!(t.terminal.width, 40);
     // Tree-hidden sentinel: the terminal owns the whole area, no hint bar / border.
-    let hidden = compute_regions(land, 0, 0, 1);
+    let hidden = compute_regions(land, NavSize::hidden(48), 1);
     assert_eq!(hidden.terminal, land);
     assert_eq!(hidden.hint_bar, Rect::default());
     assert_eq!(hidden.view_border, Rect::default());
@@ -2191,7 +2269,7 @@ fn every_unselected_card_carries_its_0_based_number_beside_its_session() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
-    term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, &state))
+    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer();
     // The address column starts at column 0, right-aligned in one width for the whole
@@ -2243,7 +2321,7 @@ fn the_armed_hint_bar_floats_across_the_whole_window() {
     let g = grid;
     let draw =
         |term: &mut Terminal<TestBackend>, sw: &mut Switcher, state: &crate::state::State| {
-            term.draw(|f| sw.render(f, Some(&g), false, NAV_WIDTH, 0, state))
+            term.draw(|f| sw.render(f, Some(&g), false, NavSize::visible(NAV_WIDTH), state))
                 .unwrap();
         };
     draw(&mut term, &mut sw, &state);
@@ -2356,7 +2434,7 @@ fn a_hidden_nav_keeps_no_status_line_until_it_has_something_to_say() {
     };
     let draw =
         |term: &mut Terminal<TestBackend>, sw: &mut Switcher, state: &crate::state::State| {
-            term.draw(|f| sw.render(f, Some(&grid), true, 0, 0, state))
+            term.draw(|f| sw.render(f, Some(&grid), true, NavSize::hidden(NAV_WIDTH), state))
                 .unwrap();
         };
 
@@ -2435,7 +2513,7 @@ async fn hint_bar_and_help_reflect_new_model() {
 async fn view_border_uses_configured_colors() {
     // Colours set from config (pane-*-border-style) drive the view border: active on the
     // focused half, inactive on the other, hover overrides both while hovered.
-    let backend = TestBackend::new(100, 30);
+    let backend = TestBackend::new(140, 30);
     let mut term = Terminal::new(backend).unwrap();
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
@@ -2449,7 +2527,7 @@ async fn view_border_uses_configured_colors() {
     let fg = |buf: &Buffer, y: u16| buf[(x, y)].fg;
 
     // Tree focused: top = active(Blue), bottom = inactive(Gray).
-    term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, &state))
+    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(
@@ -2465,7 +2543,7 @@ async fn view_border_uses_configured_colors() {
 
     // Hovering the rule overrides with the configured hover colour.
     state.chrome.set_view_border_hovered(true);
-    term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, &state))
+    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(
@@ -2479,7 +2557,7 @@ async fn view_border_uses_configured_colors() {
 async fn view_border_splits_top_bottom_to_mark_focused_side() {
     // The rule splits into halves: the accent (green) half marks WHICH pane has
     // focus - top = tree (left), bottom = terminal (right) - and the other half is dim.
-    let backend = TestBackend::new(100, 30);
+    let backend = TestBackend::new(140, 30);
     let mut term = Terminal::new(backend).unwrap();
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
@@ -2489,7 +2567,7 @@ async fn view_border_splits_top_bottom_to_mark_focused_side() {
 
     // Terminal focused: accent on the bottom (terminal side), inactive on top. The inactive
     // half is the tmux default (terminal default = Color::Reset), not a dim grey.
-    term.draw(|f| sw.render(f, None, true, NAV_WIDTH, 0, &state))
+    term.draw(|f| sw.render(f, None, true, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(buf[(x, top)].symbol(), "│", "view border still drawn");
@@ -2505,7 +2583,7 @@ async fn view_border_splits_top_bottom_to_mark_focused_side() {
     );
 
     // Tree focused: accent on the top (tree side), inactive on bottom.
-    term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, &state))
+    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(fg(&buf, top), Color::Green, "tree focus: top half accent");
@@ -2520,12 +2598,12 @@ async fn view_border_splits_top_bottom_to_mark_focused_side() {
 async fn view_border_highlights_on_hover() {
     // Hover swaps the rule to the HEAVY vertical (┃) - box-drawing has no bold form,
     // so the thicker glyph IS the weight cue - and recolours it brighter. No fill.
-    let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     let x = NAV_WIDTH;
     state.chrome.set_view_border_hovered(true);
-    term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, &state))
+    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     for y in [2u16, 27u16] {
@@ -2551,14 +2629,14 @@ async fn view_border_highlights_on_hover() {
 async fn view_border_glyph_reflects_auto_hide_mode() {
     // ║ (double) when auto-hide-nav mode is on, │ (single) when off - so a visible
     // tree that will vanish on blur is distinguishable from a pinned one.
-    let backend = TestBackend::new(100, 30);
+    let backend = TestBackend::new(140, 30);
     let mut term = Terminal::new(backend).unwrap();
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     let (x, y) = (NAV_WIDTH, 2u16);
 
     state.chrome.set_auto_hide(false);
-    term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, &state))
+    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     assert_eq!(
         term.backend().buffer()[(x, y)].symbol(),
@@ -2567,7 +2645,7 @@ async fn view_border_glyph_reflects_auto_hide_mode() {
     );
 
     state.chrome.set_auto_hide(true);
-    term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, &state))
+    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     assert_eq!(
         term.backend().buffer()[(x, y)].symbol(),
@@ -2627,7 +2705,9 @@ async fn every_popup_type_is_opaque_over_a_colored_grid() {
     h.sw.show_help(&mut h.state);
     let g = blue_grid();
     h.term
-        .draw(|f| h.sw.render(f, Some(&g), true, 0, 0, &h.state))
+        .draw(|f| {
+            h.sw.render(f, Some(&g), true, NavSize::hidden(NAV_WIDTH), &h.state)
+        })
         .unwrap();
     assert_eq!(
         interior_blue(h.buf()),
@@ -2639,7 +2719,9 @@ async fn every_popup_type_is_opaque_over_a_colored_grid() {
     h.ch('/').await;
     let g = blue_grid();
     h.term
-        .draw(|f| h.sw.render(f, Some(&g), false, NAV_WIDTH, 0, &h.state))
+        .draw(|f| {
+            h.sw.render(f, Some(&g), false, NavSize::visible(NAV_WIDTH), &h.state)
+        })
         .unwrap();
     assert_eq!(
         interior_blue(h.buf()),
@@ -2657,7 +2739,9 @@ async fn every_popup_type_is_opaque_over_a_colored_grid() {
     h.sw.show_help(&mut h.state);
     let g = blue_grid();
     h.term
-        .draw(|f| h.sw.render(f, Some(&g), false, NAV_WIDTH, 0, &h.state))
+        .draw(|f| {
+            h.sw.render(f, Some(&g), false, NavSize::visible(NAV_WIDTH), &h.state)
+        })
         .unwrap();
     assert_eq!(
         interior_blue(h.buf()),
@@ -2671,8 +2755,8 @@ fn popup_border_press_then_drag_moves_the_rect() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     sw.open_input(InputMode::Filter, &mut state); // a small popup with room to move both ways
-    let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-    term.draw(|f| sw.render(f, None, false, 0, 0, &state))
+    let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
+    term.draw(|f| sw.render(f, None, false, NavSize::hidden(NAV_WIDTH), &state))
         .unwrap();
     let before = sw.popup_geo.rect;
     let (bx, by) = (before.x, before.y); // top-left corner is on the border
@@ -2681,7 +2765,7 @@ fn popup_border_press_then_drag_moves_the_rect() {
         "press on the border grabs"
     );
     sw.drag_popup(bx + 5, by + 3);
-    term.draw(|f| sw.render(f, None, false, 0, 0, &state))
+    term.draw(|f| sw.render(f, None, false, NavSize::hidden(NAV_WIDTH), &state))
         .unwrap();
     assert_eq!(sw.popup_geo.rect.x, before.x + 5, "moved right by 5");
     assert_eq!(sw.popup_geo.rect.y, before.y + 3, "moved down by 3");
@@ -2716,8 +2800,8 @@ fn closed_popup_cannot_be_grabbed_even_with_a_stale_rect() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     sw.open_input(InputMode::Filter, &mut state);
-    let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-    term.draw(|f| sw.render(f, None, false, 0, 0, &state))
+    let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
+    term.draw(|f| sw.render(f, None, false, NavSize::hidden(NAV_WIDTH), &state))
         .unwrap();
     let r = sw.popup_geo.rect; // border rect is now cached
     sw.close_input(&mut state); // close WITHOUT re-rendering → popup_rect is stale
@@ -2735,7 +2819,7 @@ fn popup_renders_without_panicking_on_a_narrow_screen() {
     let mut sw = Switcher::new(&mut state);
     sw.show_help(&mut state);
     let mut term = Terminal::new(TestBackend::new(10, 10)).unwrap();
-    term.draw(|f| sw.render(f, None, false, 0, 0, &state))
+    term.draw(|f| sw.render(f, None, false, NavSize::hidden(NAV_WIDTH), &state))
         .unwrap();
     assert!(
         sw.popup_geo.rect.width <= 10,
@@ -2748,8 +2832,8 @@ fn popup_interior_press_does_not_grab() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     sw.show_help(&mut state);
-    let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-    term.draw(|f| sw.render(f, None, false, 0, 0, &state))
+    let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
+    term.draw(|f| sw.render(f, None, false, NavSize::hidden(NAV_WIDTH), &state))
         .unwrap();
     let r = sw.popup_geo.rect;
     assert!(
@@ -2763,13 +2847,13 @@ fn popup_drag_clamps_within_screen() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     sw.show_help(&mut state);
-    let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-    term.draw(|f| sw.render(f, None, false, 0, 0, &state))
+    let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
+    term.draw(|f| sw.render(f, None, false, NavSize::hidden(NAV_WIDTH), &state))
         .unwrap();
     let r = sw.popup_geo.rect;
     assert!(sw.begin_popup_drag(r.x, r.y, &state));
     sw.drag_popup(r.x.saturating_sub(50), r.y); // yank far left, past the edge
-    term.draw(|f| sw.render(f, None, false, 0, 0, &state))
+    term.draw(|f| sw.render(f, None, false, NavSize::hidden(NAV_WIDTH), &state))
         .unwrap();
     assert_eq!(sw.popup_geo.rect.x, 0, "clamped to the left screen edge");
 }
@@ -2905,12 +2989,13 @@ fn render_nav_width_zero_gives_terminal_full_width() {
     // live grid's content begins at column 0.
     let mut state = crate::state::State::from_sources(vec!["local".into(), "jupiter06".into()]);
     let mut sw = Switcher::from_sources(&mut state);
-    let mut term = Terminal::new(TestBackend::new(40, 10)).unwrap();
-    let mut g = Grid::new(10, 40);
+    // 60 wide keeps the 20-wide nav in its column (39 against 20 rows counted double).
+    let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
+    let mut g = Grid::new(10, 60);
     g.feed(b"EDGE-CONTENT");
 
     // nav_width == 0 → no tree column, no view border: the terminal view starts at x=0.
-    term.draw(|f| sw.render(f, Some(&g), true, 0, 0, &state))
+    term.draw(|f| sw.render(f, Some(&g), true, NavSize::hidden(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     // Column 0 row 0 must NOT be the view border rule '│' (the view border is gone).
@@ -2920,14 +3005,14 @@ fn render_nav_width_zero_gives_terminal_full_width() {
         "view border must be absent when tree hidden"
     );
     // The live grid content begins at x=0, proving the terminal view owns the left edge.
-    let row0: String = (0..40).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+    let row0: String = (0..60).map(|x| buf[(x, 0)].symbol().to_string()).collect();
     assert!(
         row0.starts_with("EDGE-CONTENT"),
         "terminal view fills row 0 from x=0: {row0:?}"
     );
 
     // Sanity: with a normal width the view border rule IS present at the tree edge.
-    term.draw(|f| sw.render(f, Some(&g), true, 20, 0, &state))
+    term.draw(|f| sw.render(f, Some(&g), true, NavSize::visible(20), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(
@@ -3041,5 +3126,225 @@ fn fit_selects_by_display_width() {
         fit(&cands, 4),
         "한국",
         "width-4 candidate accepted at budget 4"
+    );
+}
+
+// --- the portrait band's column flow ------------------------------------
+
+/// `n` sources of two sessions each, named so every card is the same width.
+fn column_flow_scan(sources: &[&str], name_len: usize) -> Scan {
+    let counts: Vec<(&str, usize)> = sources.iter().map(|s| (*s, 2)).collect();
+    column_flow_scan_sized(&counts, name_len)
+}
+
+/// Sources carrying the given session counts, most recent source first, every card the
+/// same width. The counts set each host/mux RUN's height (one expanded card over the
+/// rest collapsed), which is what the column flow packs.
+fn column_flow_scan_sized(sources: &[(&str, usize)], name_len: usize) -> Scan {
+    let pad = "x".repeat(name_len.saturating_sub(2));
+    let mut out: Vec<(&str, Vec<Session>)> = Vec::new();
+    let mut last = 1000i64;
+    for (src, n) in sources {
+        let mut sessions = Vec::new();
+        for k in 0..*n {
+            sessions.push(sess(src, &format!("{src}{pad}{k}"), 1, false, last));
+            last -= 1;
+        }
+        out.push((*src, sessions));
+    }
+    sources_scan(out)
+}
+
+/// Renders `scan` into a `w`x`h` portrait backend and returns the switcher, so a test
+/// can read the card rects the paint recorded.
+fn portrait(scan: Scan, w: u16, h: u16) -> (Switcher, Terminal<TestBackend>) {
+    let mut state = crate::state::State::from_scan(scan);
+    let mut sw = Switcher::new(&mut state);
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
+        .unwrap();
+    assert_eq!(sw.layout, ViewLayout::Top, "the backend must be portrait");
+    (sw, term)
+}
+
+/// Card rects by card index, as the last paint placed them.
+fn cells_of(sw: &Switcher) -> std::collections::HashMap<usize, Rect> {
+    sw.nav_cells.iter().map(|(i, r)| (*i, *r)).collect()
+}
+
+#[test]
+fn the_portrait_band_flows_cards_down_then_right() {
+    // A three-row band: each source's run (one expanded card over one collapsed) fills a
+    // column exactly, so the next source opens the column to its right. Reading order is
+    // the fill order - down a column, then right - which is what the numbers count in.
+    let (sw, _t) = portrait(column_flow_scan(&["aa", "bb", "cc"], 2), 60, 12);
+    let cells = cells_of(&sw);
+    assert_eq!(cells.len(), 6, "every card is placed: {cells:?}");
+    for pair in [(0usize, 1usize), (2, 3), (4, 5)] {
+        let (top, under) = (cells[&pair.0], cells[&pair.1]);
+        assert_eq!(top.x, under.x, "a source's two cards share a column");
+        assert_eq!(top.y, 0, "the run starts at the top of its column");
+        assert_eq!(top.height, 2, "and states its {{host}}/{{mux}} context");
+        assert_eq!(under.y, 2, "the second card hangs directly under it");
+        assert_eq!(under.height, 1, "collapsed, sharing the context above");
+    }
+    assert!(
+        cells[&0].x < cells[&2].x && cells[&2].x < cells[&4].x,
+        "later sources open columns to the right: {cells:?}"
+    );
+}
+
+#[test]
+fn a_column_holds_whole_host_mux_runs() {
+    // An eight-row band holds two three-row runs with TWO rows to spare - room for the
+    // third run's first card, but not for the run. It moves right ENTIRE rather than
+    // leaving one card behind at the foot of the column: a source's cards stay together,
+    // and the context line naming them stays at the top of them.
+    let (sw, _t) = portrait(column_flow_scan(&["aa", "bb", "cc"], 2), 60, 23);
+    let cells = cells_of(&sw);
+    assert_eq!(cells.len(), 6);
+    let x0 = cells[&0].x;
+    for i in [1usize, 2, 3] {
+        assert_eq!(cells[&i].x, x0, "runs one and two share the first column");
+    }
+    assert_eq!(
+        cells[&2].y, 3,
+        "the second run follows the first down the column"
+    );
+    assert!(
+        cells[&4].x > x0,
+        "the run that does not fit starts a column instead of splitting: {cells:?}"
+    );
+    assert_eq!(cells[&4].y, 0, "at the top of it");
+    assert_eq!(cells[&4].height, 2, "stating its own context");
+    assert_eq!(cells[&5].x, cells[&4].x, "with its sibling under it");
+}
+
+#[test]
+fn the_hidden_columns_are_counted_on_the_status_row() {
+    // Columns too wide to all fit leave cards off screen. The status row says which way
+    // they went and how many, at the end they went off: the count is in CARDS, because
+    // what the reader is hunting for is a session, not a column.
+    //
+    // The row is the band's own last row, never a card's: a selected card inverts its
+    // whole rect, and anything sharing that rect inverts with it.
+    let (_sw, mut term) = portrait(
+        column_flow_scan_sized(&[("aa", 2), ("bb", 3), ("cc", 2)], 18),
+        60,
+        20,
+    );
+    let bar_y = 7; // the band is 8 rows: 7 of cards, then its own status row
+    let row = |t: &Terminal<TestBackend>| -> String {
+        let buf = t.backend().buffer();
+        (0..buf.area.width)
+            .map(|x| buf[(x, bar_y)].symbol())
+            .collect()
+    };
+    let at_left = row(&term);
+    assert!(
+        at_left.contains("C-g"),
+        "the bar still names the prefix: {at_left:?}"
+    );
+    assert!(
+        at_left.trim_end().ends_with("more >>"),
+        "and the cards off to the right are counted at that end: {at_left:?}"
+    );
+    assert!(
+        !at_left.contains("<<"),
+        "nothing is off to the left from the first column: {at_left:?}"
+    );
+    // The label sits on its own background, sized to itself; the counts do not.
+    let bar_bg = crate::ui::palette::get().bar_bg;
+    let buf = term.backend().buffer();
+    let lit = (0..buf.area.width)
+        .filter(|x| buf[(*x, bar_y)].bg == bar_bg)
+        .count();
+    assert!(
+        lit > 0 && lit < buf.area.width as usize / 2,
+        "the label is a label, not a slab: {lit} of {} cells",
+        buf.area.width
+    );
+    // Walk to the last card: now the hidden columns are behind us, so the count swaps ends.
+    let mut state = crate::state::State::from_scan(column_flow_scan_sized(
+        &[("aa", 2), ("bb", 3), ("cc", 2)],
+        18,
+    ));
+    let mut sw = Switcher::new(&mut state);
+    sw.move_to(-1, &state);
+    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
+        .unwrap();
+    let at_right = row(&term);
+    assert!(
+        at_right.contains("<<") && at_right.contains("more"),
+        "the cards left behind are counted at the left end: {at_right:?}"
+    );
+}
+#[test]
+fn the_portrait_status_line_is_a_label_until_the_prefix_is_armed() {
+    // Nothing off screen, so the status row is the bar's alone. It still paints only what
+    // it has to say plus a cell of padding: a full-width slab of bar colour across a wide
+    // window is a lot of paint for one word.
+    let (_sw, mut term) = portrait(column_flow_scan(&["aa", "bb", "cc"], 2), 60, 20);
+    let bar_bg = crate::ui::palette::get().bar_bg;
+    let bar_y = 7;
+    {
+        let buf = term.backend().buffer();
+        let row: String = (0..buf.area.width)
+            .map(|x| buf[(x, bar_y)].symbol())
+            .collect();
+        assert!(row.contains("C-g"), "the bar names the prefix: {row:?}");
+        assert_eq!(buf[(0, bar_y)].bg, bar_bg, "on its own background: {row:?}");
+        let lit = (0..buf.area.width)
+            .filter(|x| buf[(*x, bar_y)].bg == bar_bg)
+            .count();
+        assert!(
+            lit < buf.area.width as usize / 2,
+            "sized to the content, not the row: {lit} of {} cells",
+            buf.area.width
+        );
+    }
+    // Arming the prefix takes the whole width: the cheatsheet has to be readable over
+    // everything it now covers.
+    let mut state = crate::state::State::from_scan(column_flow_scan(&["aa", "bb", "cc"], 2));
+    let mut sw = Switcher::new(&mut state);
+    state.chrome.set_armed(true);
+    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
+        .unwrap();
+    let buf = term.backend().buffer();
+    let armed_y = bar_y; // it widens in place: the band's own row, the window's full width
+    assert!(
+        (0..buf.area.width).all(|x| buf[(x, armed_y)].bg == bar_bg),
+        "the armed bar fills its row: {:?}",
+        (0..buf.area.width)
+            .map(|x| buf[(x, armed_y)].symbol())
+            .collect::<String>()
+    );
+}
+#[test]
+fn the_side_lists_scrollbar_column_is_outside_every_card() {
+    // Same rule on the other axis: when the side list overflows, its thumb takes the
+    // nav's last column and the cards give it up, so no inverted card runs under it.
+    let mut state = crate::state::State::from_scan(column_flow_scan(&["aa", "bb", "cc"], 2));
+    let mut sw = Switcher::new(&mut state);
+    let mut term = Terminal::new(TestBackend::new(140, 8)).unwrap();
+    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
+        .unwrap();
+    assert_eq!(sw.layout, ViewLayout::Side);
+    let buf = term.backend().buffer();
+    let bar_x = NAV_WIDTH - 1;
+    let col: String = (0..buf.area.height - 1)
+        .map(|y| buf[(bar_x, y)].symbol())
+        .collect();
+    assert!(
+        col.contains("▐"),
+        "the overflow cue is in the nav's last column: {col:?}"
+    );
+    assert!(
+        (0..buf.area.height).all(|y| !buf[(bar_x, y)].modifier.contains(Modifier::REVERSED)),
+        "and no selected card reaches into it"
+    );
+    assert!(
+        buf[(0, 0)].modifier.contains(Modifier::REVERSED),
+        "while the selected card itself is still inverted"
     );
 }

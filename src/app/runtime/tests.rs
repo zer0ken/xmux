@@ -210,23 +210,48 @@ async fn scan_or_dispatch_host_detects_from_hosts_without_env() {
 #[test]
 fn terminal_view_size_zero_tree_is_full_width() {
     // Hidden tree (sentinel 0): full cols, no view border subtracted.
-    assert_eq!(terminal_view_size(80, 23, 0, 0), (80, 24));
+    assert_eq!(
+        terminal_view_size(
+            80,
+            23,
+            crate::ui::switcher::NavSize::hidden(crate::ui::switcher::NAV_WIDTH)
+        ),
+        (80, 24)
+    );
     // Shown tree: cols - nav_width - 1 (view border). The hint bar lives inside the nav
-    // column, so the terminal view keeps every row.
-    assert_eq!(terminal_view_size(80, 23, 48, 0), (31, 24));
+    // column, so the terminal view keeps every row. Wide enough to STAY in Side: a row is
+    // two columns tall, so the column survives only while `w - nav - 1` beats twice the
+    // rows (200 - 49 = 151 against 48).
+    assert_eq!(
+        terminal_view_size(200, 23, crate::ui::switcher::NavSize::visible(48)),
+        (151, 24)
+    );
     // Degenerate widths clamp to at least 1.
-    assert_eq!(terminal_view_size(0, 0, 0, 0), (1, 1));
+    assert_eq!(
+        terminal_view_size(
+            0,
+            0,
+            crate::ui::switcher::NavSize::hidden(crate::ui::switcher::NAV_WIDTH)
+        ),
+        (1, 1)
+    );
 }
 
 #[test]
 fn terminal_view_size_keeps_full_height_when_the_tree_is_shown() {
     use crate::ui::switcher::NAV_WIDTH;
     // Nav hidden (sentinel 0): terminal view spans the full height.
-    let (_, full) = terminal_view_size(120, 39, 0, 0);
+    let (_, full) = terminal_view_size(
+        120,
+        39,
+        crate::ui::switcher::NavSize::hidden(crate::ui::switcher::NAV_WIDTH),
+    );
     assert_eq!(full, 40);
     // Tree shown in Side: the hint bar is the NAV column's bottom row, not a full-width
     // strip, so the terminal view costs nothing in height.
-    let (_, shown) = terminal_view_size(120, 39, NAV_WIDTH, 0);
+    // 220 wide keeps the side column at 40 rows (171 against 80); at 120 the column would
+    // leave a terminal squarer than it looks, and the band would take over.
+    let (_, shown) = terminal_view_size(220, 39, crate::ui::switcher::NavSize::visible(NAV_WIDTH));
     assert_eq!(
         shown, 40,
         "the nav-local hint bar costs the terminal view no rows"
@@ -285,7 +310,7 @@ fn nav_width_adjust_clamps() {
 #[test]
 fn terminal_view_size_subtracts_tree_and_view_border() {
     use crate::ui::switcher::NAV_WIDTH;
-    let (vc, vr) = terminal_view_size(143, 39, NAV_WIDTH, 0);
+    let (vc, vr) = terminal_view_size(143, 39, crate::ui::switcher::NavSize::visible(NAV_WIDTH));
     assert_eq!(
         vc,
         143 - (NAV_WIDTH + 1),
@@ -302,7 +327,7 @@ fn terminal_view_size_clamps_to_at_least_one() {
     // A 10-col terminal can't fit the 48-col tree beside it, so the layout goes Top and the
     // terminal keeps full width; a zero-row body still clamps the height up to 1. The
     // invariant this guards is that neither dimension is ever 0 (degenerate PTY size).
-    let (vc, vr) = terminal_view_size(10, 0, NAV_WIDTH, 0);
+    let (vc, vr) = terminal_view_size(10, 0, crate::ui::switcher::NavSize::visible(NAV_WIDTH));
     assert!(vc >= 1, "width never zero, got {vc}");
     assert_eq!(vr, 1, "0.max(1) = 1: height clamps up for a zero-row body");
 }
@@ -796,8 +821,7 @@ fn current_grid_returns_none_for_empty_displayed() {
             attach_seq: &mut attach_seq,
             cols: 80,
             body_rows: 24,
-            nav_width: crate::ui::switcher::NAV_WIDTH,
-            nav_height: 0,
+            nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
         },
     );
     assert!(grid.is_none(), "empty displayed yields no grid");
@@ -856,8 +880,7 @@ async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
             attach_seq: &mut attach_seq,
             cols: 80,
             body_rows: 24,
-            nav_width: crate::ui::switcher::NAV_WIDTH,
-            nav_height: 0,
+            nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
         }
     ));
     assert_eq!(hosts.get("jup").unwrap().display.shows("jup"), Some("a"));
@@ -879,8 +902,7 @@ async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
             attach_seq: &mut attach_seq,
             cols: 80,
             body_rows: 24,
-            nav_width: crate::ui::switcher::NAV_WIDTH,
-            nav_height: 0,
+            nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
         }
     ));
     assert_eq!(
@@ -931,8 +953,7 @@ async fn psmux_selection_replaces_the_single_display_attachment() {
             attach_seq: &mut attach_seq,
             cols: 80,
             body_rows: 24,
-            nav_width: crate::ui::switcher::NAV_WIDTH,
-            nav_height: 0,
+            nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
         }
     ));
     let ready = tokio::time::timeout(std::time::Duration::from_millis(100), worker.recv())
@@ -975,8 +996,7 @@ async fn psmux_selection_replaces_the_single_display_attachment() {
             attach_seq: &mut attach_seq,
             cols: 80,
             body_rows: 24,
-            nav_width: crate::ui::switcher::NAV_WIDTH,
-            nav_height: 0,
+            nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
         }
     ));
 
@@ -1033,8 +1053,7 @@ async fn psmux_select_attach_does_not_trust_stale_display_bookkeeping() {
             attach_seq: &mut attach_seq,
             cols: 80,
             body_rows: 24,
-            nav_width: crate::ui::switcher::NAV_WIDTH,
-            nav_height: 0,
+            nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
         }
     ));
 
@@ -1118,8 +1137,7 @@ async fn psmux_select_attach_supersedes_in_flight_attach() {
             attach_seq: &mut attach_seq,
             cols: 80,
             body_rows: 24,
-            nav_width: crate::ui::switcher::NAV_WIDTH,
-            nav_height: 0,
+            nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
         }
     ));
 
@@ -1901,6 +1919,69 @@ fn prefix_r_in_terminal_focus_kicks_rescan() {
 }
 
 #[test]
+fn a_mouse_action_disarms_the_prefix_and_a_hover_does_not() {
+    use crate::ui::switcher::{Scan, Switcher};
+    // A prefix waits for the NEXT input, and a mouse action is input. Mouse bytes are
+    // scanned out of the stream before either focus path's key handling sees them, so
+    // without an explicit disarm the chord stays half-open: its cheatsheet keeps floating
+    // over the window, and the next key it swallows is one meant for the pane.
+    let ev = |cb: u16, pressed: bool| crate::display::mouse::MouseEvent {
+        cb,
+        col: 10,
+        row: 3,
+        pressed,
+    };
+    let nav_width = crate::ui::switcher::NAV_WIDTH;
+    let (vw, vh) = terminal_view_size(80, 24, crate::ui::switcher::NavSize::visible(nav_width));
+    let term_area = ratatui::layout::Rect::new(nav_width + 1, 0, vw, vh);
+    // cb 0 = left press, cb 64 = wheel up, cb 0 with pressed=false = release.
+    for (cb, pressed, what) in [
+        (0u16, true, "a click"),
+        (0, false, "a release"),
+        (64, true, "a wheel"),
+        (32, true, "a drag"), // motion WITH a button held
+    ] {
+        let mut state = crate::state::State::from_scan(Scan {
+            groups: vec![],
+            panes: Default::default(),
+        });
+        let switcher = Switcher::new(&mut state);
+        let mut rt = test_rt(fake_env_with_sources(&["local"]));
+        rt.state = state;
+        rt.switcher = switcher;
+        rt.mouse_state.nav_armed = true;
+        let dirty = rt.handle_mouse_event(
+            &ev(cb, pressed),
+            &Selection::default(),
+            &mut false,
+            &mut false,
+            term_area,
+        );
+        assert!(!rt.armed(), "{what} disarms the prefix");
+        assert!(dirty, "{what} redraws, so the cheatsheet goes at once");
+    }
+    // Bare hover is the pointer sitting there, not an action: it must not break a chord
+    // the user is still typing. cb 35 = motion bit with no button held.
+    let mut state = crate::state::State::from_scan(Scan {
+        groups: vec![],
+        panes: Default::default(),
+    });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.mouse_state.nav_armed = true;
+    rt.handle_mouse_event(
+        &ev(35, true),
+        &Selection::default(),
+        &mut false,
+        &mut false,
+        term_area,
+    );
+    assert!(rt.armed(), "a hover leaves the chord alone");
+}
+
+#[test]
 fn handle_mouse_event_view_border_grab_sets_dragging() {
     use crate::ui::switcher::{Scan, Switcher};
     // A left-press exactly on the view border column sets dragging_view_border, as the
@@ -1922,13 +2003,18 @@ fn handle_mouse_event_view_border_grab_sets_dragging() {
         row: 3,
         pressed: true,
     };
-    let (vw, vh) = terminal_view_size(80, 24, nav_width, 0);
+    // Landscape enough to keep the side column, whose border this test grabs.
+    let (vw, vh) = terminal_view_size(200, 24, crate::ui::switcher::NavSize::visible(nav_width));
     let term_area = ratatui::layout::Rect::new(nav_width + 1, 0, vw, vh);
     let mut focus_toggle = false;
     let mut wheel = false;
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
     rt.state = state;
     rt.switcher = switcher;
+    // The handler cuts its own regions from the runtime's size, so the runtime has to be
+    // landscape too or the border it looks for is a horizontal rule under the band.
+    rt.cols = 200;
+    rt.body_rows = 23;
     rt.handle_mouse_event(&ev, &sel, &mut focus_toggle, &mut wheel, term_area);
     assert!(
         rt.mouse_state.dragging_view_border,
@@ -2007,8 +2093,16 @@ fn resize_keys_adjust_height_in_top_layout() {
     {
         let sw = &mut rt.switcher;
         let st = &rt.state;
-        term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, st))
-            .unwrap();
+        term.draw(|f| {
+            sw.render(
+                f,
+                None,
+                false,
+                crate::ui::switcher::NavSize::visible(NAV_WIDTH),
+                st,
+            )
+        })
+        .unwrap();
     }
     assert_eq!(rt.switcher.layout(), ViewLayout::Top, "portrait → Top");
 

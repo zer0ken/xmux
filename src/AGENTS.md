@@ -83,6 +83,10 @@ the debounced attach, and renders the live split view.
 
 ## Invariants
 
+- The nav's live size travels as one value (the width the user set, the width on screen,
+  the portrait band's height), never as two loose numbers: the effective width has a single
+  owner, and every geometry - the draw, the PTY sizing, mouse hit-testing - is cut from the
+  same value, so a resize while xmux runs cannot reach one consumer and miss another.
 - Applying a domain action to the runtime state is the single intent-driven
   mutation site, and applying a host event is the matching event-driven one.
   Keys and ctl can never diverge, because both flow through the same apply.

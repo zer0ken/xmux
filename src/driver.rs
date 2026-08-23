@@ -64,10 +64,10 @@ pub struct DriverCtx<'a> {
     pub attach_seq: &'a mut u64,
     pub cols: u16,
     pub body_rows: u16,
-    pub nav_width: u16,
-    /// The Top-layout tree height (0 = auto), so the driver sizes the PTY to the same
-    /// terminal region the renderer draws in portrait. Ignored in the Side layout.
-    pub nav_height: u16,
+    /// The nav's live size (the width the user set, the width on screen, the `Top` band
+    /// height), so the driver sizes the PTY to the same terminal region the renderer
+    /// draws, in either layout.
+    pub nav: crate::ui::switcher::NavSize,
 }
 
 /// One mux driver per host: intent in, screen out.
@@ -271,8 +271,7 @@ pub(crate) mod tests {
                 attach_seq: &mut attach_seq,
                 cols: 80,
                 body_rows: 24,
-                nav_width: crate::ui::switcher::NAV_WIDTH,
-                nav_height: 0,
+                nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
             };
             driver.show(&sel, &mut ctx)
         };

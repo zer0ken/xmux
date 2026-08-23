@@ -1,6 +1,6 @@
 use super::*;
 
-use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState};
+use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 
 use crate::ui::palette;
 
@@ -52,6 +52,46 @@ fn hint_bar_rect(nav_local: Rect, area: Rect, hint_bar_h: u16, floating: bool) -
 /// needed. An outline keeps its silhouette either way round.
 pub(super) const SELECTED_MARK: &str = "\u{276f}";
 
+/// Splits a nav region into `(cards, scrollbar strip)`. `needed` false gives the whole
+/// region to the cards and an empty strip, so a nav that fits spends nothing on furniture.
+/// The strip is the bottom ROW when the cards scroll sideways (the portrait column flow)
+/// and the right COLUMN when they scroll down (the side list). Reserving instead of
+/// overlaying is what keeps the thumb out of the selected card's inverted rect.
+fn reserve_bar(area: Rect, needed: bool, horizontal: bool) -> (Rect, Rect) {
+    if !needed {
+        return (area, Rect::default());
+    }
+    if horizontal {
+        if area.height < 2 {
+            return (area, Rect::default());
+        }
+        let cards = Rect {
+            height: area.height - 1,
+            ..area
+        };
+        let bar = Rect {
+            y: area.y + area.height - 1,
+            height: 1,
+            ..area
+        };
+        (cards, bar)
+    } else {
+        if area.width < 2 {
+            return (area, Rect::default());
+        }
+        let cards = Rect {
+            width: area.width - 1,
+            ..area
+        };
+        let bar = Rect {
+            x: area.x + area.width - 1,
+            width: 1,
+            ..area
+        };
+        (cards, bar)
+    }
+}
+
 /// Braille spinner frames for pending states (connecting session, loading panes).
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -61,14 +101,15 @@ impl Switcher {
         frame: &mut Frame,
         grid: Option<&crate::display::grid::Grid>,
         terminal_focused: bool,
-        nav_width: u16,
-        nav_height: u16,
+        nav: NavSize,
         state: &crate::state::State,
     ) {
         let area = frame.area();
         self.screen_area = area;
+        let nav_width = nav.width;
         // Cache the stacking so key handling routes the arrows to match what is on screen.
-        self.layout = view_layout(area, nav_width);
+        // Measured from the width the user SET, so hiding the nav leaves it alone.
+        self.layout = view_layout(area, nav.natural);
         // Reset the buffer before painting. The widgets below do not all fill every cell
         // they own - the mux grid only paints its top-left clip (cells past the grid size
         // are skipped), the view border rule sets fg only, and the nav list leaves blank
@@ -94,7 +135,9 @@ impl Switcher {
             if hint_bar_floats(nav_width, state) {
                 let h = state.chrome.hint_bar_lines(area.width, state).len().max(1) as u16;
                 let rect = hint_bar_rect(Rect::default(), area, h, true);
-                state.chrome.render_hint_bar(frame, rect, state);
+                state
+                    .chrome
+                    .render_hint_bar(frame, rect, state, crate::ui::chrome::BarFill::Row);
             }
             // The modal stacks above the bar: a popup is a stronger claim on the screen.
             self.render_modal_popup(frame, area, state);
@@ -110,8 +153,8 @@ impl Switcher {
         let floating = hint_bar_floats(nav_width, state);
         let bar_w = if floating { area.width } else { nav_width };
         let hint_bar_h = state.chrome.hint_bar_lines(bar_w, state).len().max(1) as u16;
-        let r = compute_regions(area, nav_width, nav_height, hint_bar_h);
-        self.render_nav(frame, r.tree, state);
+        let r = compute_regions(area, nav, hint_bar_h);
+        let hidden = self.render_nav(frame, r.tree, state);
         // The view border marks focus between the two views (vertical in Side, horizontal in Top).
         state
             .chrome
@@ -136,10 +179,35 @@ impl Switcher {
         // terminal view. At rest it stays inside the nav (its own status line); floating,
         // it widens to the whole window - the layout never reflows, only the paint reaches
         // further, so arming the prefix cannot shift a single card.
+        // The portrait band's bar shares its row with the flow's offscreen counts: the bar
+        // keeps its own background but takes only the cells it needs, and the counts sit at
+        // the ends of what is left. An ARMED bar takes the whole row back, because a
+        // cheatsheet has to be readable over whatever it covers.
+        let fill = if floating || !state.chrome.flash.is_empty() {
+            crate::ui::chrome::BarFill::Row
+        } else if r.layout == ViewLayout::Top {
+            crate::ui::chrome::BarFill::Content
+        } else {
+            crate::ui::chrome::BarFill::Row
+        };
+        if let (Some(counts), crate::ui::chrome::BarFill::Content) = (hidden, fill) {
+            let chip = state
+                .chrome
+                .hint_bar_chip_width(r.hint_bar.width, state)
+                .min(r.hint_bar.width);
+            let track = Rect {
+                x: r.hint_bar.x + chip,
+                width: r.hint_bar.width - chip,
+                height: 1,
+                ..r.hint_bar
+            };
+            Self::render_hidden_counts(frame, track, counts);
+        }
         state.chrome.render_hint_bar(
             frame,
             hint_bar_rect(r.hint_bar, area, hint_bar_h, floating),
             state,
+            fill,
         );
         // In the terminal view, place the real cursor at the grid's cursor so typing in the
         // mux is visible and tracks. Skipped when the child hid its cursor.
@@ -153,41 +221,214 @@ impl Switcher {
         self.render_modal_popup(frame, area, state);
     }
 
-    /// The navigation list: one flat, vertically-scrolling list of cards in both
-    /// layouts (the Side column and the portrait Top band differ only in where the
-    /// region sits). Card heights vary - two rows expanded, one collapsed (see
-    /// [`Switcher::card_collapsed`]) - which ratatui's `List` handles per item;
-    /// `list_state` carries the scroll offset so the selected card stays visible,
-    /// and the selection highlight is ratatui's `highlight_style` over the whole
-    /// card area.
-    fn render_nav(&mut self, frame: &mut Frame, area: Rect, state: &crate::state::State) {
-        // No border box: the list fills its region outright and a single rule
+    /// The navigation cards. `Side` stacks them in one vertically-scrolling list; the
+    /// portrait `Top` band flows them into columns (see [`columns`]), because a wide,
+    /// short region shows three cards as a list and twenty as a grid.
+    ///
+    /// Either way a scrollbar, when one is needed, gets its own row or column of the
+    /// region rather than sitting over the cards: the selected card is painted by
+    /// inverting its whole rect, and a thumb inside that rect inverts with it into a
+    /// hole in the bar.
+    /// Returns how many cards are off screen either side of the portrait flow's window,
+    /// as `(left, right)`: the caller writes those counts on the hint bar's row, at the
+    /// ends the hidden columns are behind. `None` when the whole flow fits, and always in
+    /// the side layout, whose own scrollbar is a column it reserves itself.
+    fn render_nav(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        state: &crate::state::State,
+    ) -> Option<(usize, usize)> {
+        // No border box: the cards fill their region outright and a single rule
         // (render_view_border) separates it from the terminal view.
         self.nav_inner = area;
-
+        self.nav_cells.clear();
         let spinner_glyph = SPINNER[state.chrome.spinner_frame % SPINNER.len()];
         let num_w = self.number_width();
+        match self.layout {
+            ViewLayout::Side => {
+                self.render_nav_list(frame, area, num_w, spinner_glyph);
+                None
+            }
+            ViewLayout::Top => self.render_nav_columns(frame, area, num_w, spinner_glyph),
+        }
+    }
+
+    /// The `Side` layout's nav: one vertically-scrolling list. Card heights vary - two
+    /// rows expanded, one collapsed (see [`Switcher::card_collapsed`]) - which ratatui's
+    /// `List` handles per item; `list_state` carries the scroll offset so the selected
+    /// card stays visible, and the selection highlight is ratatui's `highlight_style`
+    /// over the whole card area.
+    fn render_nav_list(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        num_w: usize,
+        spinner_glyph: char,
+    ) {
+        let total_h: u16 = (0..self.rows.len()).map(|i| self.card_height(i)).sum();
+        let (cards, bar) = reserve_bar(area, total_h > area.height, false);
         let items: Vec<ListItem> = (0..self.rows.len())
-            .map(|i| self.nav_row_item(i, num_w, spinner_glyph))
+            .map(|i| {
+                ListItem::new(self.nav_row_lines(
+                    i,
+                    num_w,
+                    spinner_glyph,
+                    self.card_collapsed(i),
+                    self.card_collapsed(i + 1),
+                ))
+            })
             .collect();
         // The selected card is painted in the terminal theme's own selected look - reverse
         // video - unless `[ui] selection-style` names a background instead. Either way the
         // whole row is the List's business (`highlight_style` covers the row), so the card
         // spans bake in no background of their own.
         let list = List::new(items).highlight_style(palette::selection_style());
-        frame.render_stateful_widget(list, area, &mut self.list_state);
-        self.render_nav_scrollbar(frame, area);
+        frame.render_stateful_widget(list, cards, &mut self.list_state);
+        self.render_nav_scrollbar(frame, cards, bar);
     }
 
-    /// A minimal scrollbar on the nav list's right edge, drawn only when the cards
-    /// overflow the region - the offscreen-content cue the flat list otherwise lacks.
-    /// Thumb only (no track / arrows) so it reads as a position marker, not furniture.
-    /// Counted in cards (not screen rows) over the variable card heights, reading the
-    /// offset ratatui settled while rendering the list just before.
-    fn render_nav_scrollbar(&mut self, frame: &mut Frame, area: Rect) {
+    /// The portrait `Top` band's nav: the same cards flowed into columns that fill
+    /// downward and continue to the right, each column holding whole host/mux runs.
+    ///
+    /// The band spends none of its rows on the scrollbar: the thumb goes on the hint bar's
+    /// row, beside the bar's own label, so every row of the band stays a card row and no
+    /// card rect can contain the thumb (a selected card inverts its whole rect, and a thumb
+    /// inside one inverts with it into a hole in the bar).
+    fn render_nav_columns(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        num_w: usize,
+        spinner_glyph: char,
+    ) -> Option<(usize, usize)> {
+        let cards: Vec<columns::Card> = (0..self.rows.len())
+            .map(|i| self.flow_card(i, num_w, spinner_glyph))
+            .collect();
+        let band = area;
+        let placed = columns::place(&cards, band.height);
+        let widths = columns::widths(&cards, &placed, band.width);
+        // Keep the selected card's column on screen, scrolling the least it takes.
+        let sel_col = self
+            .list_state
+            .selected()
+            .and_then(|i| placed.get(i))
+            .map_or(0, |p| p.col);
+        self.nav_col_offset = columns::scroll_to(
+            &widths,
+            band.width,
+            COL_GUTTER,
+            self.nav_col_offset,
+            sel_col,
+        );
+        let cells = columns::cells(&placed, &widths, band, self.nav_col_offset, COL_GUTTER);
+        for cell in &cells {
+            // The connector hangs a card under the one above it, so it only reads as a
+            // sibling while that card is in the SAME column.
+            let next_hangs = placed
+                .get(cell.idx + 1)
+                .is_some_and(|n| n.col == placed[cell.idx].col && n.collapsed);
+            let lines =
+                self.nav_row_lines(cell.idx, num_w, spinner_glyph, cell.collapsed, next_hangs);
+            frame.render_widget(Paragraph::new(lines), cell.rect);
+            if self.list_state.selected() == Some(cell.idx) {
+                // The card's OWN rect, not the band's width: in a grid the selection marks
+                // one cell, and a full-width bar would claim the columns beside it.
+                frame
+                    .buffer_mut()
+                    .set_style(cell.rect, palette::selection_style());
+            }
+            self.nav_cells.push((cell.idx, cell.rect));
+        }
+        // What the caller needs for the offscreen cue: the cards behind the columns the
+        // window does not reach, counted on each side.
+        let shown = columns::visible_cols(&widths, band.width, self.nav_col_offset, COL_GUTTER);
+        if shown >= widths.len() {
+            return None;
+        }
+        Some(columns::hidden_counts(&placed, self.nav_col_offset, shown))
+    }
+
+    /// Writes the offscreen-card counts in `track` - the hint bar's row minus the cells the
+    /// bar's own label takes - at the ends the hidden columns are behind: `<< 5 more` on the
+    /// left, `7 more >>` on the right. The arrows point the way the cards went, and the
+    /// count says how many, which a scrollbar thumb cannot. Dropped, not clipped, when the
+    /// row is too narrow to hold them.
+    fn render_hidden_counts(frame: &mut Frame, track: Rect, (left, right): (usize, usize)) {
+        // Neither count sits flush against what it is beside: the left one clears the
+        // status label, the right one the window's edge, so each reads as a note in the
+        // margin rather than text jammed into a corner.
+        const PAD: u16 = 2;
+        let track = Rect {
+            x: track.x + PAD.min(track.width),
+            width: track.width.saturating_sub(PAD * 2),
+            ..track
+        };
+        let muted = Style::default().fg(palette::get().overlay);
+        let mut used = 0u16;
+        if left > 0 {
+            let label = format!("<< {left} more");
+            let w = label.chars().count() as u16;
+            if w <= track.width {
+                frame.render_widget(
+                    Paragraph::new(label).style(muted),
+                    Rect {
+                        width: w,
+                        height: 1,
+                        ..track
+                    },
+                );
+                used = w + 1;
+            }
+        }
+        if right > 0 {
+            let label = format!("{right} more >>");
+            let w = label.chars().count() as u16;
+            if w + used <= track.width {
+                frame.render_widget(
+                    Paragraph::new(label).style(muted),
+                    Rect {
+                        x: track.x + track.width - w,
+                        width: w,
+                        height: 1,
+                        ..track
+                    },
+                );
+            }
+        }
+    }
+
+    /// One card measured for the column flow: where a run starts, and how wide each of
+    /// its two lines paints. A host-state card reports one width for both lines - it
+    /// never drops a line, so a column must reserve room for the wider one.
+    fn flow_card(&self, i: usize, num_w: usize, spinner_glyph: char) -> columns::Card {
+        let lines = self.nav_row_lines(i, num_w, spinner_glyph, false, false);
+        let w = |n: usize| lines.get(n).map_or(0, |l: &Line| l.width() as u16);
+        let host_card = matches!(
+            self.rows.get(i).map(|r| &r.reference),
+            Some(RowRef::Host { .. })
+        );
+        let (ctx_w, detail_w) = if host_card {
+            let m = w(0).max(w(1));
+            (m, m)
+        } else {
+            (w(0), w(1))
+        };
+        columns::Card {
+            starts_run: !self.hangs_under_prev(i),
+            ctx_w,
+            detail_w,
+        }
+    }
+
+    /// A minimal scrollbar in the strip `reserve_bar` set aside beside the nav list,
+    /// drawn only when the cards overflow the region - the offscreen-content cue the flat
+    /// list otherwise lacks. Thumb only (no track / arrows) so it reads as a position
+    /// marker, not furniture. Counted in cards (not screen rows) over the variable card
+    /// heights, reading the offset ratatui settled while rendering the list just before.
+    fn render_nav_scrollbar(&mut self, frame: &mut Frame, area: Rect, bar: Rect) {
         let total = self.rows.len();
-        let total_h: u16 = (0..total).map(|i| self.card_height(i)).sum();
-        if total_h <= area.height || area.width == 0 {
+        if bar.width == 0 || bar.height == 0 {
             return;
         }
         // The cards fully visible from the settled offset.
@@ -210,7 +451,7 @@ impl Switcher {
                 .track_symbol(None)
                 .thumb_symbol("▐")
                 .thumb_style(Style::default().fg(palette::get().overlay)),
-            area,
+            bar,
             &mut sb,
         );
     }
@@ -245,7 +486,14 @@ impl Switcher {
     ///
     /// The surface background comes from the List's `highlight_style`, so no per-span
     /// background is baked in here.
-    fn nav_row_item(&self, i: usize, num_w: usize, spinner_glyph: char) -> ListItem<'static> {
+    fn nav_row_lines(
+        &self,
+        i: usize,
+        num_w: usize,
+        spinner_glyph: char,
+        collapsed: bool,
+        next_hangs: bool,
+    ) -> Vec<Line<'static>> {
         let row = &self.rows[i];
         let muted = Style::default().fg(color_hint());
         let selected = self.list_state.selected() == Some(i);
@@ -295,12 +543,11 @@ impl Switcher {
             };
             let mut line2 = address(true);
             line2.push(Span::styled(format!("{} ", row.line2), style));
-            return ListItem::new(vec![Line::from(line1), Line::from(line2)]);
+            return vec![Line::from(line1), Line::from(line2)];
         }
 
         // Session / loading card.
         let (host, mux, sess) = context_of(&row.reference);
-        let collapsed = self.card_collapsed(i);
         let mut lines: Vec<Line> = Vec::new();
         if !collapsed {
             let mut context: Vec<Span> = address(false);
@@ -333,11 +580,7 @@ impl Switcher {
         // two columns of connector would slide the session name left of every name
         // above and below it.
         let mut detail = address(true);
-        let connector = if self.card_collapsed(i + 1) {
-            "├ "
-        } else {
-            "└ "
-        };
+        let connector = if next_hangs { "├ " } else { "└ " };
         detail.push(Span::styled(connector, muted));
         detail.push(Span::styled(
             sess.to_string(),
@@ -351,7 +594,7 @@ impl Switcher {
         }
         detail.push(Span::raw(" "));
         lines.push(Line::from(detail));
-        ListItem::new(lines)
+        lines
     }
 
     fn render_terminal_view(

@@ -77,14 +77,19 @@ impl Switcher {
         // hint_bar; actions below may set a fresh one, which survives because this runs first.
         state.chrome.flash.clear();
         // The flat card list has no levels or host columns: ↑/↓ (and k/j) step one card,
-        // PageUp/Down jump ten, Home/End go to the ends. Left/right have nothing to move
-        // between, so they are inert here (prefix →/Enter focuses the terminal at the app
-        // layer). `n` starts a session on the selected host; a digit opens the jump popup
-        // seeded with it (the app only forwards a digit here behind the prefix).
+        // PageUp/Down jump ten, Home/End go to the ends. All four arrows step one card
+        // (prefix →/Enter focuses the terminal at the app layer). `n` starts a session on
+        // the selected host; a digit opens the jump popup seeded with it (the app only
+        // forwards a digit here behind the prefix).
         match ev.code {
             KeyCode::Enter => {}
-            KeyCode::Up | KeyCode::Char('k') => self.nav_vertical(-1, state),
-            KeyCode::Down | KeyCode::Char('j') => self.nav_vertical(1, state),
+            // Every arrow steps ONE card along the list, whichever way the cards happen to
+            // be laid out: back for ←/↑, on for →/↓. The portrait band flows its cards down
+            // a column and then right, so "the next card" is sometimes below and sometimes
+            // one column over, and a key that moved by column would mean two different
+            // things in the two layouts.
+            KeyCode::Up | KeyCode::Left | KeyCode::Char('k') => self.nav_vertical(-1, state),
+            KeyCode::Down | KeyCode::Right | KeyCode::Char('j') => self.nav_vertical(1, state),
             KeyCode::PageUp => self.move_selection(-10, state),
             KeyCode::PageDown => self.move_selection(10, state),
             KeyCode::Home => self.move_to(0, state),

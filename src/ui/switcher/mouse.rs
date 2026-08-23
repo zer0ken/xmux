@@ -8,14 +8,26 @@ impl Switcher {
     }
 
     /// The card index under a 0-based screen `(col, row)`, or `None` if it is outside the
-    /// nav list or past its cards. Both layouts render one vertically-scrolling list of
-    /// cards whose heights VARY (two rows expanded, one collapsed), so the screen-row
-    /// delta walks `card_height` from the `list_state` offset (an item index). ratatui
-    /// never partial-scrolls an item, so the first visible card always starts at the
-    /// region's top edge.
+    /// nav or past its cards.
+    ///
+    /// The portrait `Top` flow lays cards out in columns, so the paint records each card's
+    /// rect and the hit-test reads those back - one geometry, so a click cannot land on a
+    /// card the renderer put elsewhere. The `Side` list has no such record and needs none:
+    /// its cards' heights VARY (two rows expanded, one collapsed), so the screen-row delta
+    /// walks `card_height` from the `list_state` offset (an item index). ratatui never
+    /// partial-scrolls an item, so the first visible card always starts at the region's
+    /// top edge.
     fn row_at(&self, col: u16, row: u16) -> Option<usize> {
         if !self.in_tree(col, row) {
             return None;
+        }
+        if self.layout == ViewLayout::Top {
+            let at = Position { x: col, y: row };
+            return self
+                .nav_cells
+                .iter()
+                .find(|(_, rect)| rect.contains(at))
+                .map(|(i, _)| *i);
         }
         let mut row_in = row.saturating_sub(self.nav_inner.y);
         for i in self.list_state.offset()..self.rows.len() {

@@ -370,16 +370,15 @@ fn sync_selection_from_switcher(
 pub(crate) fn terminal_view_size(
     cols: u16,
     body_rows: u16,
-    nav_width: u16,
-    nav_height: u16,
+    nav: crate::ui::switcher::NavSize,
 ) -> (u16, u16) {
     // Derive from the one shared geometry (`compute_regions`) so the PTY size always
     // matches what the renderer draws, in either layout. `body_rows` is full_height - 1,
     // so the full area is `body_rows + 1` tall; sizing assumes a one-row hint bar inside
     // the nav. A portrait area stacks the nav on top and shrinks the terminal view
-    // height accordingly; `nav_width == 0` gives the full area (nav hidden).
+    // height accordingly; a hidden nav gives the full area.
     let area = ratatui::layout::Rect::new(0, 0, cols, body_rows.saturating_add(1));
-    let t = crate::ui::switcher::compute_regions(area, nav_width, nav_height, 1).terminal;
+    let t = crate::ui::switcher::compute_regions(area, nav, 1).terminal;
     (t.width.max(1), t.height.max(1))
 }
 
@@ -587,7 +586,8 @@ fn ensure_current_host(
     // displayed grid (that goes through the DriverCtx, which carries the real nav_height),
     // and on_tick's resize_all reconciles it to the exact height. Avoids threading nav_height
     // through every ensure_current_host caller for a size the user never sees.
-    let (cols, rows) = terminal_view_size(cols, rows, nav_width, 0);
+    let (cols, rows) =
+        terminal_view_size(cols, rows, crate::ui::switcher::NavSize::visible(nav_width));
     if let Some(id) = switcher.current_host() {
         if let Some(host) = hosts.get(&id) {
             if host.detected {
@@ -765,7 +765,8 @@ fn connect_all_sources(
 ) {
     // Auto height (0): the initial metadata-client size only; the display PTY and on_tick
     // resize carry the real nav_height. (See ensure_current_host.)
-    let (cols, rows) = terminal_view_size(cols, rows, nav_width, 0);
+    let (cols, rows) =
+        terminal_view_size(cols, rows, crate::ui::switcher::NavSize::visible(nav_width));
     for id in hosts.ids() {
         scan_or_dispatch_host(mgr, hosts, detecting, id, cols, rows);
     }
