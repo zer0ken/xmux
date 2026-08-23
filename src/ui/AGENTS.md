@@ -62,9 +62,13 @@ flatten renders for the dump verb.
   background with no slot for it is an attribute instead: the selected card is
   reverse video, not a computed surface. See "Colour ownership" in `CONTEXT.md`;
   the palette is guarded so a stray RGB colour cannot reach it.
-- The host screens are ONE screen in two states, not two panels: one builder lays both
-  out, so the headline, the state word, and the key rows cannot drift apart. A state
-  added later joins that grammar rather than bringing its own.
+- The view screens are ONE screen in several states, not a panel each: one builder lays
+  them all out, so the headline, the state word, and the key rows cannot drift apart. A
+  state added later joins that grammar rather than bringing its own.
+- The terminal view refuses exactly one address, the session xmux is running in, and it
+  refuses it by emptying the view TARGET rather than at each place that would attach.
+  The target is what the display reconcile, the attach and the mux-side switch all read,
+  so a refusal anywhere else would leave the other paths open.
 - A settled host's status word has one source, so the word on a card and the word on the
   screen reached from it are the same word.
 - A card that is waiting turns ONE spinner, in the first of its levels that has not

@@ -228,7 +228,7 @@ fn own_source_id<'a>(srcs: &'a [Source], kind: &str) -> Option<&'a str> {
     }
     let mut it = local.iter().filter(|s| tmux_family(&s.binary));
     let only = it.next()?;
-    it.next().is_none().then(|| only.alias.as_str())
+    it.next().is_none().then_some(only.alias.as_str())
 }
 
 /// Which provider put each host on the roster, keyed by HOST name.

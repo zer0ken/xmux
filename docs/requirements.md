@@ -119,10 +119,15 @@ no function, and no test, so renaming code is never a documentation change.
   `⚠ unreachable: <reason>` carrying the clause that NAMES the failure, since a tool
   wraps it in its own context and a card is only as wide as the nav; the host screen
   carries the whole message, so no part of why it failed is cut off.
-- **FR-B8** - A session running xmux mirrors like any other session: the terminal view
-  shows that xmux's own screen. This holds for the session xmux is ITSELF running in,
-  which mirrors its own screen one frame behind and stays stable there - no runaway
-  redraw, no special case. Nothing is refused to keep it that way.
+- **FR-B8** - The session xmux is ITSELF running in is never mirrored into the terminal
+  view: showing it attaches a second client to the session that HOLDS xmux, which moves
+  the user's own client and paints xmux inside itself. The refusal is on the terminal-view
+  TARGET, the one value the display reconcile, the attach, and the mux-side switch all
+  read, so none of them reaches that session by another path; the card stays selectable
+  and killable, and a screen stands in place of the grid to say why. A session running a
+  DIFFERENT xmux is not refused - it mirrors like any other session, showing that xmux's
+  screen. A session xmux cannot name (the mux does not say, and cannot be asked) is not
+  refused either, because a refusal keyed to a guess would hide a session at random.
 - **FR-B9** - The nav's bottom row is a status line, not a screen-wide footer. At
   rest it names only the prefix; the states that outrank it (a refusal, scan progress,
   an active filter) take the row while they apply. Arming the prefix widens the PAINT
@@ -228,10 +233,11 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-D2** - The app serves its control socket concurrently while a session is
   displayed (attach spawning is off-loop), so `ping` / `dump` / `status` / `switch`
   are answered without blocking.
-- **FR-D3** - The app runs inside a mux, and inside its own session. It attaches its
-  mux clients as PTY children rather than handing over the terminal, so its attachments
-  do not nest and none of them is refused; a `xmux attach` handover that a mux WOULD
-  refuse is left to that mux to refuse, in its own words, rather than pre-empted here.
+- **FR-D3** - The app runs inside a mux. It attaches its mux clients as PTY children
+  rather than handing over the terminal, so its attachments do not nest and none of them
+  is refused; a `xmux attach` handover that a mux WOULD refuse is left to that mux to
+  refuse, in its own words, rather than pre-empted here. The one thing running inside a
+  mux costs is the session it runs in, which is not mirrored (FR-B8).
 - **FR-D4** - Socket hygiene: a stale socket is removed before bind, the socket is
   owner-only (`0600`) on unix, and it is removed on exit. A crashed instance's leftover
   `ctl-*.sock` marker is swept on the next startup (any marker whose socket no longer
