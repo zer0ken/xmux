@@ -64,13 +64,18 @@ renders for `dump`.
 - Tree transforms do not mutate their inputs unless the function name and
   signature make mutation explicit.
 - `dump` should reflect the same split view the main draw path renders.
-- A scrollbar is RESERVED a row or a column of the nav region, never overlaid on the
-  cards: the selected card is painted by inverting its rect, so a thumb drawn inside one
-  inverts with it and reads as a hole in the bar.
+- A scrollbar is RESERVED a column of the nav region, never overlaid on the cards: the
+  selected card is painted by inverting its rect, so a thumb drawn inside one inverts with
+  it and reads as a hole in the bar. The portrait flow scrolls sideways and puts its cue
+  on the status row instead (`<< N more` / `N more >>`), which is the band's own last row
+  and never a card's - so the flow keeps every row of the band.
 - In the portrait column flow, what a card collapses under is decided by POSITION alone,
   never by the selection: a card height that moved with the cursor would reflow whole
   columns as the selection passed over them. The side list keeps its
   selection-expands-the-card rule, where a height change only shifts rows.
+- A pending prefix is dropped by the next INPUT, mouse included. The mouse path has to say
+  so itself (`handle_mouse_event`), because mouse bytes never reach either focus path's key
+  handling. Bare hover is exempt: it is the pointer sitting there, not an action.
 - An arrow key points AT the view it focuses, in both focus paths (`app::input` for nav
   focus, `display::input` for terminal focus): right and down name the terminal, left and
   up name the nav. A change to one path is a change to both.

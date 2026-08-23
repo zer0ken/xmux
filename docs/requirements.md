@@ -224,15 +224,29 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   `a_one_row_band_collapses_every_card`,
   `only_whole_columns_are_drawn_and_the_selection_stays_visible`,
   `cells_place_columns_left_to_right_with_a_gutter`.
-- **FR-B13** — A scrollbar takes a row or a column OF ITS OWN from the nav region: the
-  band's bottom row under the column flow (which scrolls sideways), the last column beside
-  the side list (which scrolls down). It is never painted over the cards, because the
-  selected card is painted by inverting its whole rect and a thumb inside that rect
-  inverts with it into a hole in the bar. The thumb is proportional to what is on screen
-  and reaches both ends of its track, and nothing is drawn while everything fits.
-  **Tests:** `the_column_scrollbars_row_is_outside_every_card`,
+- **FR-B13** — The nav says what is off screen without spending a row on furniture.
+  The side list's scrollbar takes a COLUMN of its own from the nav region, never painted
+  over the cards, because the selected card is painted by inverting its whole rect and a
+  thumb inside that rect inverts with it into a hole in the bar. The portrait flow scrolls
+  sideways instead and says so in words on its status row: `<< 5 more` at the left end and
+  `7 more >>` at the right, counting CARDS behind the columns the window does not reach.
+  That row is the band's own last row, never a card's. Nothing is drawn while everything
+  fits. **Tests:** `the_hidden_columns_are_counted_on_the_status_row`,
   `the_side_lists_scrollbar_column_is_outside_every_card`,
-  `the_thumb_is_proportional_and_reaches_both_ends`.
+  `the_hidden_counts_are_cards_either_side_of_the_window`.
+- **FR-B17** — The status row is a bar where it owns its row and a label where it does
+  not: the side column's bar fills its row, and so does any armed or flashing bar, which
+  has to be readable over what it covers; the portrait band's resting bar paints its text
+  plus a cell of padding, leaving the rest of the row to the offscreen counts. **Tests:**
+  `the_portrait_status_line_is_a_label_until_the_prefix_is_armed`,
+  `hint_bar_shows_the_prefix_at_rest_and_its_keys_when_armed`.
+- **FR-B18** — A prefix waits for the next INPUT, and a mouse action is input: a click,
+  a release, a wheel or a drag disarms it in either focus, because mouse bytes are scanned
+  out of the stream before either focus path's key handling sees them and a chord left
+  half-open keeps its cheatsheet on screen and then eats the next key. Bare hover is not
+  an action: the pointer drifting must not break a chord being typed. **Tests:**
+  `a_mouse_action_disarms_the_prefix_and_a_hover_does_not`,
+  `hint_bar_arm_and_disarm_are_both_visible`.
 - **FR-B14** — An arrow points AT the view it focuses, on either axis: the terminal is
   right of the nav in the side layout and below it in the portrait one, so `prefix →` and
   `prefix ↓` both focus the terminal while `prefix ←` and `prefix ↑` both focus the nav

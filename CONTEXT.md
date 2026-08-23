@@ -158,13 +158,24 @@ UI elements a user perceives as distinct things:
   into the band while an outline keeps a readable silhouette.
   `[ui] selection-style` paints a named background instead. `selected` + `highlight`
   follow ratatui's list vocabulary.
-- scrollbar strip - the row or column a scrollbar takes from the nav region when the
-  cards overflow it: the bottom ROW under the portrait column flow (which scrolls
-  sideways, by column), the right COLUMN beside the side list (which scrolls down, by
-  card). Reserved, never overlaid, because the selected card is painted by inverting its
-  whole rect and a thumb inside that rect inverts with it into a hole in the bar. The
-  thumb is proportional and reaches both ends of its track; nothing is drawn at all while
-  everything fits, so a nav that fits spends no cell on furniture.
+- scrollbar strip - the COLUMN the side list's scrollbar takes from the nav region when
+  the cards overflow it. Reserved, never overlaid, because the selected card is painted by
+  inverting its whole rect and a thumb inside that rect inverts with it into a hole in the
+  bar. Nothing is drawn at all while everything fits, so a nav that fits spends no cell on
+  furniture. The portrait flow has no strip: it scrolls sideways, and says so in words on
+  its status row (see "offscreen counts").
+- offscreen counts - what the portrait flow puts on its status row when columns are off
+  screen: `<< 5 more` at the left end, `7 more >>` at the right, in the cells the status
+  label does not take. Cards, not columns, because the reader is hunting a session, not a
+  column. They cost no row (the status row is the band's own last row, never a card's) and
+  say what a thumb cannot: which way the cards went, and how many. An ARMED bar takes the
+  whole row back, counts included, since a cheatsheet has to be readable over what it
+  covers.
+- status row fill - how much of its row the hint bar paints (`BarFill`). The side column's
+  bar, an armed bar and a refusal fill the ROW: a solid bar, legible over whatever it
+  covers. The portrait band's resting bar paints its text plus a cell of padding and
+  stops, because it shares that row with the offscreen counts and a full-width slab of bar
+  colour across a wide window is a lot of paint for one word.
 - spinner - the braille activity glyph on a loading card (and, historically, a
   connecting session).
 - loading card - a card standing in for a session whose panes are not yet loaded;

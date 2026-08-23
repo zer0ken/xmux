@@ -36,12 +36,11 @@ one below, or the top of the next column.
 
 | Key | Action |
 |---|---|
-| `↑` / `↓` (or `k` / `j`) | move one card (wraps at both ends) |
+| `↑` / `↓` / `←` / `→` (or `k` / `j`) | move one card (wraps at both ends) |
 | `PageUp` / `PageDown` | jump ten cards (wraps, like the arrows) |
 | `Home` / `End` | jump to the first / last card |
 
-Bare `←` and `→` move nothing here: the cards have no level to descend into. `Enter`
-hands focus to the live screen instead, as does `prefix →`.
+`Enter` hands focus to the live screen, as does `prefix →`.
 
 ## Nav actions
 
@@ -92,11 +91,13 @@ nav or the live screen holds focus.
 ## The status line
 
 The nav's bottom row is its status line. At rest it shows one thing, the prefix, and
-stops at the view border so the live screen keeps every row it has. Press the prefix
-and the same row widens to the whole window, floating over the border and the live
-screen to list the keys that prefix unlocks; it shrinks back once the command key
-lands. Only the paint moves, never the layout, so arming the prefix never shifts a
-card.
+stops at the view border so the live screen keeps every row it has. In the portrait
+layout it stops at its own text instead, because it shares that row with the
+offscreen-card counts. Press the prefix and the same row widens to the whole window,
+floating over the border and the live screen to list the keys that prefix unlocks; it
+shrinks back once the command key lands, or once any mouse action does (a click, a wheel,
+a drag: a prefix waits for the next input, whatever that turns out to be). Only the paint
+moves, never the layout, so arming the prefix never shifts a card.
 
 With the nav auto-hidden the mux owns every row, status line included. The bar still
 floats over the bottom of the window for the two things that must be seen the moment
