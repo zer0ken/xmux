@@ -140,6 +140,15 @@ pub trait Mux: Send + Sync {
     /// Per-session vs shared. The supervisor reads this instead of `remote`.
     fn server_model(&self) -> ServerModel;
 
+    /// Whether this mux takes a SERVER SOCKET flag (`-S <path>`), which is what decides
+    /// whether a machine may address it over one.
+    ///
+    /// Deliberately has NO default. A tmux-compatible default is silently wrong for a
+    /// mux that refuses tmux's flags outright: zellij exits on an unexpected `-S` before
+    /// it reads the verb, so the source it serves can never answer at all. A mux added
+    /// later has to answer this itself rather than inherit an answer that breaks it.
+    fn takes_server_socket(&self) -> bool;
+
     /// The mux argv this mux enumerates its sessions with, `argv[0]` the binary.
     ///
     /// Exists to be SHOWN - the unreachable screen states the command behind a failed
@@ -392,6 +401,17 @@ pub fn for_binary(bin: &str) -> Box<dyn Mux> {
     tmux_fallback(bin)
 }
 
+/// The server socket to address the mux binary `bin` over: the one this box named, or
+/// `None` for a mux that takes no socket flag.
+///
+/// The two composition sites (the source list and the host registry) call this before
+/// handing a socket to the machine axis, so a socket only ever reaches a mux that
+/// understands it. The machine axis cannot make this call itself: it names no mux by
+/// design, so it injects the socket it is GIVEN and asks nothing about it.
+pub fn server_socket_for(bin: &str, socket: Option<String>) -> Option<String> {
+    socket.filter(|_| for_binary(bin).takes_server_socket())
+}
+
 /// Builds a mux by canonical identity while preserving the binary used to
 /// reach it.
 pub fn for_kind(kind: &str, bin: &str) -> Box<dyn Mux> {
@@ -546,6 +566,11 @@ mod tests {
 
     #[async_trait]
     impl Mux for BareMux {
+        /// tmux-shaped, like the fake itself.
+        fn takes_server_socket(&self) -> bool {
+            true
+        }
+
         fn kind(&self) -> &str {
             "bare"
         }
@@ -1191,5 +1216,19 @@ Usage: zellij [OPTIONS]",
             _ => panic!("first event must be Sessions"),
         }
         assert!(matches!(events.get(1), Some(HostEvent::Panes { .. })));
+    }
+    #[test]
+    fn a_socket_reaches_only_a_mux_that_takes_one() {
+        // The whole point of asking: zellij exits on an unexpected `-S` before it reads
+        // the verb, so a socket handed to it makes its source permanently unreachable.
+        let sock = || Some("/tmp/psmux/default".to_string());
+        assert_eq!(server_socket_for("tmux", sock()), sock());
+        assert_eq!(server_socket_for("psmux", sock()), sock());
+        assert_eq!(server_socket_for("zellij", sock()), None);
+        // An unknown binary is reached the tmux way, and takes a socket the same way.
+        assert_eq!(server_socket_for("mux-of-the-future", sock()), sock());
+        // No socket to hand on stays no socket, whoever the mux is.
+        assert_eq!(server_socket_for("tmux", None), None);
+        assert_eq!(server_socket_for("zellij", None), None);
     }
 }

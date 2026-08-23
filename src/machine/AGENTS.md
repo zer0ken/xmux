@@ -47,6 +47,11 @@ and nothing in `machine/` imports a mux type or a source.
 
 ## Invariants
 
+- The local family injects the server socket it is GIVEN and asks nothing about it. It
+  cannot ask: it names no mux, so it cannot know whether the mux it wraps understands a
+  socket flag. Whether a socket is passed at all is decided by the composition sites that
+  know the mux (see `src/mux/AGENTS.md`); a socket that arrives here is one the mux has
+  already been found to take.
 - `Transport` names no mux and no server model. Remoteness is a semantic
   ssh-versus-local marker only. What the mux sites actually read are the
   capability predicates: whether a display attach runs through a host shell (the

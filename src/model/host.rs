@@ -356,6 +356,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Mux for StubMux {
+        /// tmux-shaped, like the fake itself.
+        fn takes_server_socket(&self) -> bool {
+            true
+        }
+
         fn kind(&self) -> &str {
             "stub"
         }
@@ -686,6 +691,11 @@ mod tests {
     }
     #[async_trait::async_trait]
     impl Mux for EnumMux {
+        /// tmux-shaped, like the fake itself.
+        fn takes_server_socket(&self) -> bool {
+            true
+        }
+
         fn kind(&self) -> &str {
             "enum"
         }

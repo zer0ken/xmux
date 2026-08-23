@@ -21,6 +21,11 @@ pub struct Psmux {
 
 #[async_trait]
 impl Mux for Psmux {
+    /// psmux is tmux-compatible down to the server-selection flag.
+    fn takes_server_socket(&self) -> bool {
+        true
+    }
+
     fn kind(&self) -> &str {
         "psmux"
     }

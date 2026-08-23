@@ -97,13 +97,6 @@ impl Source {
         }
     }
 
-    /// The local mux server socket (`-S`) this source targets when it is a local
-    /// machine; `None` for a remote source or a local source on the default socket.
-    /// Delegates to [`MachineKind::local_socket`] — the match on the kind lives on the kind.
-    pub(crate) fn local_socket(&self) -> Option<String> {
-        self.kind.local_socket()
-    }
-
     /// Assembles a value [`Host`](crate::model::Host) from this source's config —
     /// transport from [`kind`](Self::kind) at the single `MachineKind::transport` site,
     /// mux from [`binary`](Self::binary) — for the off-loop `Ops`/CLI paths that cannot
@@ -177,6 +170,11 @@ pub fn build(
 /// `Host` the loop drives for the same pair reach the machine the same way. A source
 /// DISCOVERED after launch is built here too, which is what makes it as operable as a
 /// configured one (create / panes / border styles all resolve through the source list).
+///
+/// The socket is filtered by what `bin` accepts before the machine is given it: this is
+/// one of the two sites where the mux is known alongside the machine, and the machine
+/// axis names no mux, so the choice can only be made here. Both sites filter the same
+/// raw value the same way, which is what keeps a source and its `Host` on one server.
 pub fn for_machine_mux(
     machine: &str,
     bin: &str,
@@ -185,6 +183,7 @@ pub fn for_machine_mux(
     xmux_dir: &Path,
     local_socket: Option<String>,
 ) -> Source {
+    let local_socket = crate::mux::server_socket_for(bin, local_socket);
     Source {
         alias: id.clone(),
         binary: bin.to_string(),
@@ -216,5 +215,33 @@ mod tests {
         assert_eq!(srcs[1].alias, "prod");
         assert!(matches!(srcs[1].kind, MachineKind::Ssh { .. }));
         assert_eq!(srcs[1].binary, "tmux");
+    }
+    #[test]
+    fn a_local_zellij_source_is_built_without_the_tmux_socket() {
+        // The socket comes from `$TMUX`, which is set whenever xmux runs inside a mux -
+        // the normal case. Handing it to zellij made every local zellij source fail its
+        // listing on argument parsing, so it never reaches the machine at all.
+        let dir = Path::new("/tmp/xmux");
+        let sock = Some("/tmp/psmux-1/default".to_string());
+        let z = for_machine_mux(
+            "local",
+            "zellij",
+            "local:zellij".into(),
+            "linux",
+            dir,
+            sock.clone(),
+        );
+        assert_eq!(z.kind.local_socket(), None, "no socket reaches zellij");
+
+        // The tmux family still targets the server it was told to.
+        let p = for_machine_mux(
+            "local",
+            "psmux",
+            "local:psmux".into(),
+            "linux",
+            dir,
+            sock.clone(),
+        );
+        assert_eq!(p.kind.local_socket(), sock);
     }
 }

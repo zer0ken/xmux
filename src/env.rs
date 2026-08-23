@@ -164,17 +164,16 @@ pub async fn build_env() -> (Env, Option<anyhow::Error>) {
         os,
         &local_muxes,
         &xmux_dir,
-        local_socket,
+        local_socket.clone(),
     );
     let roster_providers = roster_providers(&cfg, &offered, &wsl_distros);
     let own_session = own_session_address(&srcs);
     let ui_prefix = cfg.ui_prefix().to_string();
-    // The local host's `-S` socket, read back from the assembled local source so the
-    // host registry (`Hosts::build`) targets the same server the source list does.
-    let host_local_socket = srcs
-        .iter()
-        .find(|s| crate::session::is_local_source(&s.alias))
-        .and_then(|s| s.local_socket());
+    // The local server socket this box named, handed on RAW: the host registry filters
+    // it per mux exactly as the source list does, so both derive one answer from one
+    // value. Reading it back off an assembled source would instead make it depend on
+    // WHICH local mux happens to be first, and a first source that takes no socket
+    // (zellij) would drop it for every host behind it.
     (
         Env {
             cfg,
@@ -187,7 +186,7 @@ pub async fn build_env() -> (Env, Option<anyhow::Error>) {
             wsl_distros,
             roster_providers,
             own_session,
-            local_socket: host_local_socket,
+            local_socket,
         },
         cfg_err,
     )
