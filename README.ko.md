@@ -143,13 +143,14 @@ mux = ["tmux", "zellij"]
 
 ## 호스트 목록의 출처
 
-기본값은 `~/.ssh/config`의 `Host` 별칭과 `local`이다. tailnet에서 목록을 받아올 수도
-있다. 그러면 닿을 수 있는 기계가 곧 xmux가 보여주는 기계이고, 손으로 맞춰 둘 것이 없다.
+기본값은 `~/.ssh/config`의 `Host` 별칭, 이 기계가 속한 tailnet의 온라인 피어, 그리고
+`local`이다. 닿을 수 있는 기계가 곧 xmux가 보여주는 기계이고, 손으로 맞춰 둘 것이 없다.
+제공자는 각각 끌 수 있다.
 
 ```toml
 [discovery]
-ssh-config = true   # 기본값. false로 두면 아래 제공자만 쓴다
-tailscale = false   # 기본값. 이 기계가 속한 tailnet의 온라인 피어
+ssh-config = true   # 기본값. `~/.ssh/config`의 `Host` 별칭
+tailscale = true    # 기본값. 이 기계가 속한 tailnet의 온라인 피어
 wsl = false         # 기본값. 이 상자에 설치된 WSL 배포판
 ```
 

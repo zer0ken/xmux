@@ -24,11 +24,12 @@ no function, and no test, so renaming code is never a documentation change.
   their source, and the sources themselves by their most recent session, so one source's
   cards are contiguous and the nav never names a source twice.
 - **FR-A5** - The roster (which ssh targets are offered) comes from providers the
-  `[discovery]` table selects: `~/.ssh/config` aliases (on by default) and this
-  machine's tailnet peers (off by default, since it runs an external CLI). A tailnet
-  peer is offered under its DNS label; this machine and offline peers are skipped. A
-  provider that cannot answer contributes nothing instead of failing the run, and
-  ssh-config names keep their position when a provider repeats them.
+  `[discovery]` table selects: `~/.ssh/config` aliases and this machine's tailnet peers,
+  both on by default. A tailnet peer is offered under its DNS label; this machine and
+  offline peers are skipped. A provider that cannot answer contributes nothing instead
+  of failing the run, so a machine without the tailscale CLI installed reaches an empty
+  list rather than an error, and ssh-config names keep their position when a provider
+  repeats them.
 - **FR-A6** - A host's mux is identified by what its binary answers as, not by the
   name it was invoked under, so tmux, psmux, and zellij mix freely across hosts with no
   configuration. Each mux is one family behind the mux axis: the command plans
@@ -97,7 +98,7 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-B3** - The terminal view shows the confirmed session's live grid and follows
   the cursor. A switch keeps the prior grid on screen until the new one is ready
   (stale-while-revalidate); only the first launch, before any grid exists, shows a
-  blank view. The `scanning…` / `loading…` state hints live in the nav, not here.
+  blank view. The waiting and unreachable state hints live in the nav, not here.
 - **FR-B4** - Navigation: up/down/home/end/pgup/pgdn; fuzzy filter over
   `<source>/<name>`; manual `prefix r` rescan.
 - **FR-B5** - Surveying without committing is first-class: xmux is a switcher, not a
