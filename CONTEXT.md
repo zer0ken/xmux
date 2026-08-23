@@ -261,8 +261,8 @@ UI elements a user perceives as distinct things:
   served keeps the id it was painted with, because that id is what the frozen order, the
   persisted selection, and typed ctl targets are keyed to.
 - roster - which HOSTS xmux offers, assembled from PROVIDERS, EVERY one on unless
-  `[discovery]` turns it off: `~/.ssh/config` aliases and the online peers of this
-  machine's tailnet. Every provider yields plain ssh target names, so nothing
+  `[discovery]` turns it off: `~/.ssh/config` aliases, the online peers of this
+  machine's tailnet, and this box's WSL distributions. Every provider yields plain ssh target names, so nothing
   downstream can tell where a name came from. The roster is what makes a machine a
   host: a machine no provider names is one xmux has nothing to say about. Distinct
   from `mux discovery`, which asks a host WHICH MUXES it serves, from `discovery`,

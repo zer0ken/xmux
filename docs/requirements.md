@@ -77,9 +77,11 @@ no function, and no test, so renaming code is never a documentation change.
   distribution is a HOST of its own, named `wsl.<distribution>` so which family it
   belongs to is readable in the id and in every address typed at it, and no ssh alias may
   claim a name spelled that way. Distributions are offered either by the `[discovery] wsl`
-  provider (off by default: it runs an external CLI, and a box with Docker Desktop carries
-  distributions that run no mux at all) or by naming one in a `[[wsl]]` entry, which also
-  overrides its mux list. Everything FR-A7 to FR-A10 say then holds unchanged: several
+  provider (on by default, like every provider: a box without WSL costs an empty list
+  rather than an error) or by naming one in a `[[wsl]]` entry, which also overrides its
+  mux list. A distribution that runs no mux at all, which is what Docker Desktop installs,
+  surfaces as unreachable like any other host with nothing to serve, and `exclude` drops
+  it by name. Everything FR-A7 to FR-A10 say then holds unchanged: several
   muxes in one distribution are several sources, `exclude` names the host, an unlisted
   mux surfaces as unreachable, and the distribution is asked which muxes it has after
   launch. The family is added at the end of the source list, so every id an existing

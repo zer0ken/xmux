@@ -118,10 +118,10 @@ pub async fn build_env() -> (Env, Option<anyhow::Error>) {
             Vec::new()
         },
     ]);
-    // This box's WSL distributions, listed only when asked for: `wsl.exe` is an
-    // external CLI, and a box with Docker Desktop installed has distributions on it that
-    // run no mux at all, so turning the family on is the user's call. A `[[wsl]]` entry
-    // still names one distribution without listing every one of them.
+    // This box's WSL distributions, on by default like every other provider: a box
+    // without WSL, and a `wsl.exe` that cannot start, both cost an empty list rather
+    // than an error. A `[[wsl]]` entry still names one distribution without listing
+    // every one of them.
     let wsl_distros = if cfg.discovery.wsl {
         crate::machine::wsl::distros()
     } else {
