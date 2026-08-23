@@ -38,6 +38,10 @@ pub struct Env {
     /// `Hosts::build` reruns `Config::host_specs` over these to seed the runtime host
     /// registry, so the registry is built from config, not by re-reading `srcs`.
     pub ssh_aliases: Vec<String>,
+    /// The WSL distributions listed at startup, as MACHINE names. Held for the same
+    /// reason as `ssh_aliases`: `Hosts::build` reruns `Config::wsl_specs` over them, so
+    /// the host registry and the source list are built from one answer rather than two.
+    pub wsl_distros: Vec<String>,
     /// The local mux server socket parsed from `$TMUX` (`-S` target), threaded into
     /// the local host's transport by `Hosts::build`. `None` on the default socket.
     pub local_socket: Option<String>,
@@ -114,6 +118,15 @@ pub async fn build_env() -> (Env, Option<anyhow::Error>) {
             Vec::new()
         },
     ]);
+    // This box's WSL distributions, listed only when asked for: `wsl.exe` is an
+    // external CLI, and a box with Docker Desktop installed has distributions on it that
+    // run no mux at all, so turning the family on is the user's call. A `[[wsl]]` entry
+    // still names one distribution without listing every one of them.
+    let wsl_distros = if cfg.discovery.wsl {
+        crate::machine::wsl::distros()
+    } else {
+        Vec::new()
+    };
     let xmux_dir = xmux_dir_path();
     let local_socket = local_socket(std::env::var("TMUX").ok().as_deref());
     // The local mux list, resolved ONCE here and threaded on: `auto` (the default) asks
@@ -127,7 +140,15 @@ pub async fn build_env() -> (Env, Option<anyhow::Error>) {
         Vec::new()
     };
     let local_muxes = cfg.local_muxes(os, &installed);
-    let srcs = source::build(&cfg, &aliases, os, &local_muxes, &xmux_dir, local_socket);
+    let srcs = source::build(
+        &cfg,
+        &aliases,
+        &wsl_distros,
+        os,
+        &local_muxes,
+        &xmux_dir,
+        local_socket,
+    );
     let ui_prefix = cfg.ui_prefix().to_string();
     // The local host's `-S` socket, read back from the assembled local source so the
     // host registry (`Hosts::build`) targets the same server the source list does.
@@ -144,6 +165,7 @@ pub async fn build_env() -> (Env, Option<anyhow::Error>) {
             ui_prefix,
             xmux_dir,
             ssh_aliases: aliases,
+            wsl_distros,
             local_socket: host_local_socket,
         },
         cfg_err,
@@ -399,6 +421,7 @@ mod tests {
             ui_prefix: "C-g".into(),
             xmux_dir: PathBuf::from("."),
             ssh_aliases: Vec::new(),
+            wsl_distros: Vec::new(),
             local_socket: None,
         });
         let ops = env.ops();

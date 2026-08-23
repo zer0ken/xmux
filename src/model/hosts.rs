@@ -35,13 +35,14 @@ impl Hosts {
     }
 
     /// Assembles the hosts for a config: this box's hosts first (one per entry of the
-    /// RESOLVED `local_muxes`, its socket from `$TMUX`), then each ssh host in order.
-    /// Mirrors `source::build` but yields owning `Host`s. `xmux_dir` seeds each ssh
-    /// transport's ControlMaster socket path (`cm-<alias>.sock`), exactly as
-    /// `source::build` does.
+    /// RESOLVED `local_muxes`, its socket from `$TMUX`), then each ssh host in order,
+    /// then each WSL distribution. Mirrors `source::build` but yields owning `Host`s.
+    /// `xmux_dir` seeds each ssh transport's ControlMaster socket path
+    /// (`cm-<alias>.sock`), exactly as `source::build` does.
     pub fn build(
         cfg: &Config,
         ssh_aliases: &[String],
+        wsl_distros: &[String],
         os: &str,
         local_muxes: &[String],
         xmux_dir: &std::path::Path,
@@ -64,7 +65,11 @@ impl Hosts {
             ));
         }
 
-        for spec in cfg.host_specs(ssh_aliases) {
+        for spec in cfg
+            .host_specs(ssh_aliases)
+            .into_iter()
+            .chain(cfg.wsl_specs(wsl_distros))
+        {
             if spec.alias == LOCAL_SOURCE {
                 continue; // "local" is reserved for this box's sources.
             }
@@ -215,6 +220,7 @@ mod tests {
         let hosts = Hosts::build(
             &cfg,
             &["prod".to_string()],
+            &[],
             "linux",
             &local(),
             std::path::Path::new("/x"),
@@ -235,6 +241,7 @@ mod tests {
         let hosts = Hosts::build(
             &cfg,
             &aliases,
+            &[],
             "linux",
             &local(),
             std::path::Path::new("/home/u/.xmux"),
@@ -255,6 +262,7 @@ mod tests {
         let cfg = Config::default();
         let hosts = Hosts::build(
             &cfg,
+            &[],
             &[],
             "linux",
             &local(),
@@ -280,6 +288,7 @@ mod tests {
         let mut hosts = Hosts::build(
             &cfg,
             &["prod".to_string()],
+            &[],
             "linux",
             &local(),
             std::path::Path::new("/x"),
@@ -295,6 +304,7 @@ mod tests {
         let mut hosts = Hosts::build(
             &Config::default(),
             &["jup".to_string()],
+            &[],
             "linux",
             &local(),
             std::path::Path::new("/x"),
@@ -321,6 +331,7 @@ mod tests {
         let mut hosts = Hosts::build(
             &Config::default(),
             &["jup".to_string()],
+            &[],
             "linux",
             &local(),
             std::path::Path::new("/x"),
@@ -351,8 +362,8 @@ mod tests {
         let aliases: Vec<String> = ["prod", "db"].iter().map(|s| s.to_string()).collect();
         let os = "linux";
         let dir = std::path::Path::new("/home/u/.xmux");
-        let hosts = Hosts::build(&cfg, &aliases, os, &local(), dir, None);
-        let srcs = crate::source::build(&cfg, &aliases, os, &local(), dir, None);
+        let hosts = Hosts::build(&cfg, &aliases, &[], os, &local(), dir, None);
+        let srcs = crate::source::build(&cfg, &aliases, &[], os, &local(), dir, None);
         let src_order: Vec<String> = srcs.iter().map(|s| s.alias.clone()).collect();
         assert_eq!(
             hosts.ids(),
@@ -372,9 +383,45 @@ mod tests {
     }
 
     #[test]
+    fn build_appends_wsl_distributions_after_the_ssh_hosts() {
+        // The registry projection and the source list must agree on the WSL family too,
+        // and the family has to survive as a transport: the ids an existing install had
+        // keep their positions, and the new ones follow.
+        let cfg = Config::default();
+        let aliases = vec!["prod".to_string()];
+        let distros = vec!["wsl.Ubuntu-24.04".to_string()];
+        let dir = std::path::Path::new("/x");
+        let hosts = Hosts::build(&cfg, &aliases, &distros, "windows", &local(), dir, None);
+        let srcs = crate::source::build(&cfg, &aliases, &distros, "windows", &local(), dir, None);
+        let src_order: Vec<String> = srcs.iter().map(|s| s.alias.clone()).collect();
+        assert_eq!(
+            src_order,
+            vec![
+                "local".to_string(),
+                "prod".to_string(),
+                "wsl.Ubuntu-24.04".to_string(),
+            ]
+        );
+        assert_eq!(hosts.ids(), src_order.as_slice());
+        let wsl = hosts
+            .get("wsl.Ubuntu-24.04")
+            .expect("the distribution's host");
+        assert!(
+            !wsl.transport.is_remote(),
+            "a distro on this box is not remote"
+        );
+        assert!(wsl.transport.runs_through_shell());
+        let (name, _args) = wsl
+            .transport
+            .exec_argv(false, &["tmux".to_string(), "list-sessions".to_string()]);
+        assert_eq!(name, "wsl.exe");
+    }
+
+    #[test]
     fn apply_event_for_unknown_host_is_a_noop() {
         let mut hosts = Hosts::build(
             &Config::default(),
+            &[],
             &[],
             "linux",
             &local(),

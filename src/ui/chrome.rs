@@ -427,26 +427,41 @@ impl Chrome {
             .groups
             .iter()
             .find(|g| g.source == alias)
-            .and_then(|g| g.err.clone())
-            .unwrap_or_else(|| "connection closed".into());
+            .and_then(|g| g.err.clone());
+        let dim = Style::default().add_modifier(Modifier::DIM);
         let mut lines = vec![
             Line::from(Span::styled(
                 format!(" ⚠ {alias} unreachable"),
                 Style::default().fg(crate::ui::palette::get().danger),
             )),
             Line::from(""),
-            Line::from(format!(" reason: {reason}")),
-            Line::from(""),
-            Line::from(Span::styled(
-                " ~/.ssh/config:",
-                Style::default().add_modifier(Modifier::DIM),
-            )),
+            Line::from(Span::styled(" reason:", dim)),
         ];
+        // The message in FULL, wrapped: it is the one place the whole diagnostic is
+        // readable, and ssh's own line ("ssh: connect to host kyla port 22: Connection
+        // timed out") outruns the panel, which would clip away the very words that name
+        // the failure. The card carries only its last clause, so clipping here would
+        // leave the reason nowhere.
+        match &reason {
+            Some(r) => {
+                for src_line in r.trim().lines() {
+                    for l in wrap_text(src_line.trim(), area.width.saturating_sub(2)) {
+                        lines.push(Line::from(format!(" {l}")));
+                    }
+                }
+            }
+            // The scan records a reason with every failure, so this is the state that
+            // should not happen - named as itself rather than as a guessed cause, which
+            // would send the user after a fault that was never reported.
+            None => lines.push(Line::from(" (none recorded)")),
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(" ~/.ssh/config:", dim)));
         let stanza = crate::config::host_stanza(&self.ssh_config_text, &alias);
         if stanza.is_empty() {
             lines.push(Line::from(Span::styled(
                 " (no matching ssh config entry)",
-                Style::default().add_modifier(Modifier::DIM),
+                dim,
             )));
         } else {
             for l in stanza.lines() {

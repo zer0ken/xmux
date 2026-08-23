@@ -162,6 +162,7 @@ with nothing to keep in sync by hand. Each provider can be turned off:
 [discovery]
 ssh-config = true   # default; the `Host` aliases in ~/.ssh/config
 tailscale = true    # default; the online peers of this machine's tailnet
+wsl = false         # default; the WSL distributions installed on this box
 ```
 
 A tailnet peer is offered under its DNS label (`jupiter00`), the name that resolves
@@ -170,6 +171,42 @@ are skipped: this machine is `local`, and an offline peer has nothing to scan. A
 provider that cannot answer (no CLI, daemon down) contributes nothing rather than
 failing the run. Names from `~/.ssh/config` come first and a provider repeating one
 adds nothing, so a host you configured by hand keeps the position you gave it.
+
+## A mux inside WSL
+
+A WSL distribution is a machine of its own, so a tmux running inside one is a source
+like any other: it appears in the list, its sessions stream in, and landing in one is
+the same keystroke as landing in a remote. Turn the family on and every distribution
+this box has is offered:
+
+```toml
+[discovery]
+wsl = true
+```
+
+Or name one, which also sets its mux:
+
+```toml
+[[wsl]]
+distro = "Ubuntu-24.04"   # the name `wsl -l` prints
+mux = "tmux"              # defaults to "tmux" when omitted; a list works too
+```
+
+The machine is named `wsl.Ubuntu-24.04`, so a session there is
+`wsl.Ubuntu-24.04/editor` and that is what `xmux ls` prints and `xmux send switch`
+takes. The prefix is what says which distribution is meant rather than a host of the
+same name, so `exclude` names it the same way (`exclude = ["wsl.docker-desktop"]`) and
+an ssh alias may not be spelled `wsl.something`.
+
+Listing is off by default for a reason: it runs `wsl.exe`, and a box with Docker
+Desktop installed carries distributions that run no mux at all and would only show up
+unreachable. `[[wsl]]` is the way to serve one distribution without listing every one
+of them.
+
+xmux finds a mux installed under your own home inside the distribution, because the
+command runs in a login shell there. A distribution running tmux also needs `script`
+(util-linux) present, which is where tmux's push channel gets the terminal it insists
+on; a polled mux such as zellij needs nothing extra.
 
 ## Configuration
 
@@ -191,8 +228,13 @@ mux = "auto"          # "auto" (default): every mux xmux supports that is actual
 ssh = "prod"          # an ssh-config alias
 mux = "tmux"          # defaults to "tmux" when omitted
 
-# Hide these ssh aliases from the nav.
-exclude = ["bastion"]
+# Serve a WSL distribution on this box, or override the mux of a listed one.
+[[wsl]]
+distro = "Ubuntu-24.04"   # the name `wsl -l` prints; the machine is wsl.Ubuntu-24.04
+mux = "tmux"              # defaults to "tmux" when omitted
+
+# Hide these machines from the nav.
+exclude = ["bastion", "wsl.docker-desktop"]
 
 [ui]
 prefix = "C-g"                        # xmux's prefix (e.g. C-g, C-Space, C-b)
