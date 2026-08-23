@@ -51,7 +51,7 @@ pub struct State {
     /// geometry (drag offset / drawn rect); this owns which modal is open + its content.
     pub(crate) modal: Option<crate::ui::modal::Modal>,
     /// The switcher's chrome view-state: the tree|terminal view border, the tree-column
-    /// hint bar (help / status / wrapped flash), and the unreachable-host info panel,
+    /// hint bar (help / status / wrapped flash), and the host screens,
     /// plus their inputs (flash, spinner set + frame, auto-hide/hover cues, view border
     /// colours, ssh-config text, prefix). Owned here (the [`Modal`](crate::ui::modal::Modal)
     /// precedent) and fed by the app each frame; the switcher's `render` reads it off

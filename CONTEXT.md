@@ -18,8 +18,8 @@ module hides, and which dependencies are allowed to cross into it.
 
 One concept, one word. The two axes and the runtime:
 
-- `Transport` (MACHINE axis) - the per-machine execution trait (local / ssh); a
-  host holds one. It owns where a command runs and how its argv is executed, and
+- `Transport` (MACHINE axis) - the per-machine execution trait (local / ssh /
+  wsl); a host holds one. It owns where a command runs and how its argv is executed, and
   knows nothing about the mux. "machine" is the family/concept; `Transport` is the
   trait.
 - `Mux` (MUX axis) - the per-mux behavior trait (tmux / psmux / zellij); a host
@@ -55,16 +55,22 @@ UI elements a user perceives as distinct things:
   `pane-border-lines`): `single │` (default), `double ║` (auto-hide-nav on),
   `heavy ┃` (hover - the drag-resize grab cue).
 - chrome - the furniture around the two views: the view border, the hint bar, and
-  the host info.
+  the host screens.
 - hint bar - the nav's own status line: the bottom row(s) of the nav region, ending
   at the view border rather than spanning the screen, so the terminal view keeps
   every row it owns. At rest it shows only the prefix; while the prefix is ARMED it
   shows the keys that prefix unlocks. A flash, the scan indicator, and the active
   filter outrank both, in that order. A long flash wraps across as many nav rows as
   it needs instead of clipping. A shown flash paints it in the error style.
-- host info - the unreachable-host detail shown in the terminal-view region.
-- landing - the empty-state panel shown in the terminal-view region for a selected
-  reachable host that has no sessions yet (its name + the keys to start one).
+- host screen - what fills the terminal-view region in place of a mux, for a selected
+  host with no session to show. One screen in two states, so a reader of either reads
+  the other: the host's name as the headline, under it the same status word its card
+  carries, then the rows that apply. A row is the key-column row the help also uses - a
+  right-aligned cell, the `│` rule, the value - where a bold cell is a key that can be
+  pressed here and a muted cell names a datum. The UNREACHABLE state's rows are why it
+  failed (the reason its transport gave, the ssh stanza it was reached through) and the
+  rescan key; the EMPTY state's rows are the keys that start a session or rescan. A host
+  still scanning gets no screen: an in-flight state is the nav's to show.
 - grid - the live terminal content drawn in the terminal view: xmux's in-memory
   cell mirror of the attached session's screen, fed by the terminal-emulation parser.
 - cursor - the real terminal cursor placed over the grid at the mux's cursor cell
@@ -213,7 +219,13 @@ UI elements a user perceives as distinct things:
   through the same `Transport`. A source id is the bare machine alias (`local`, `prod`)
   when its machine serves a single mux, and `<machine>:<mux>` (`local:zellij`) when it
   serves several, so a one-mux setup is spelled exactly as it always was. The two halves
-  are read back through accessors; nothing compares a source id to `local` directly. The
+  are read back through accessors; nothing compares a source id to `local` directly. A
+  MACHINE name says which family reaches it wherever the name alone would be ambiguous:
+  `local` is this box and `wsl.<distribution>` is a WSL distribution on it, everything
+  else being an ssh destination. That is what lets a machine named LATER (a mux-discovery
+  answer carries a bare machine name and nothing else) be reached exactly as one named at
+  launch, and it is why an ssh alias spelled either reserved way is refused rather than
+  served as the wrong family. The
   nav renders the halves separately (`local/zellij`), so the id
   never appears with its mux twice. A source is held TWICE, once per consumer, and both
   copies resolve the machine the same way: the event loop drives a host out of its
