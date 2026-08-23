@@ -34,6 +34,7 @@ fn fake_env_with_sources(aliases: &[&str]) -> Env {
         ui_prefix: "C-g".into(),
         xmux_dir,
         ssh_aliases,
+        wsl_distros: Vec::new(),
         local_socket: None,
     }
 }
@@ -1236,6 +1237,7 @@ fn test_rt(env: Env) -> Runtime {
     let hosts = crate::model::Hosts::build(
         &env.cfg,
         &env.ssh_aliases,
+        &env.wsl_distros,
         "windows",
         &env.local_muxes,
         &env.xmux_dir,

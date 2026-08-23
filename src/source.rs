@@ -123,7 +123,9 @@ impl Source {
 pub(crate) use crate::mux::reason_is_no_sessions;
 
 /// Assembles the source list for a config: local first, then each ssh host
-/// (ssh-config aliases merged with config overrides) in order.
+/// (ssh-config aliases merged with config overrides) in order, then each WSL
+/// distribution. WSL comes last so adding the family leaves every id an existing
+/// install already had in the position it had.
 ///
 /// `local_muxes` is the RESOLVED local mux list (`Env` resolves it once, discovering
 /// what this box has when the config says `auto`), passed in rather than re-derived so
@@ -131,6 +133,7 @@ pub(crate) use crate::mux::reason_is_no_sessions;
 pub fn build(
     cfg: &Config,
     ssh_aliases: &[String],
+    wsl_distros: &[String],
     os: &str,
     local_muxes: &[String],
     xmux_dir: &Path,
@@ -152,7 +155,11 @@ pub fn build(
             )
         })
         .collect();
-    for spec in cfg.host_specs(ssh_aliases) {
+    for spec in cfg
+        .host_specs(ssh_aliases)
+        .into_iter()
+        .chain(cfg.wsl_specs(wsl_distros))
+    {
         srcs.push(for_machine_mux(
             &spec.alias,
             &spec.bin,
@@ -197,6 +204,7 @@ mod tests {
         let srcs = build(
             &cfg,
             &aliases,
+            &[],
             "linux",
             &["tmux".to_string()],
             Path::new("/home/u/.xmux"),

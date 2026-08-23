@@ -300,6 +300,7 @@ impl Runtime {
         let hosts = crate::model::Hosts::build(
             &env.cfg,
             &env.ssh_aliases,
+            &env.wsl_distros,
             host_os,
             &env.local_muxes,
             &env.xmux_dir,
