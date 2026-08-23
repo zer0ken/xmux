@@ -237,8 +237,8 @@ impl Row {
 }
 
 /// The groups to render, in `groups` order - that order is authoritative (established
-/// by recency at scan time via [`order_groups`], then frozen so a routine poll never
-/// reshuffles the tree). An empty filter returns the input unchanged. A non-matching
+/// by source recency at scan time via [`order_groups`], then frozen so a routine poll
+/// never reshuffles the tree). An empty filter returns the input unchanged. A non-matching
 /// filter must not be a dead end (XM-01): it falls back to header-only groups (every
 /// source, no sessions) so the hosts stay visible. Inputs are not mutated.
 pub(crate) fn visible_groups(groups: &[Group], filter: &str) -> Vec<Group> {

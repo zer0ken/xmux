@@ -364,40 +364,62 @@ impl Switcher {
         self.set_selected(target, state);
     }
 
-    /// Refreshes the frozen MRU order (`nav_order`) the flat card list follows.
-    /// While any host is still scanning the order is rebuilt from global recency each
-    /// time; once every host has settled it is held - existing entries keep their
-    /// positions so a routine poll never reshuffles cards under the user (xmux
-    /// pre-attaches sessions, churning `last_attached`), and sessions that appeared
-    /// since are appended by recency (newest first).
+    /// Refreshes the frozen order (`nav_order`) the flat card list follows.
+    ///
+    /// Recency applies to the SOURCE, not to the session alone: a source's cards are
+    /// contiguous, the sources run most-recently-used first, and a source's own sessions
+    /// run most-recently-used first inside it. Global session recency would split a
+    /// source, restating its `{host}/{mux}` context in two places, and the connector
+    /// under a context line claims the cards below belong to it.
+    ///
+    /// One insertion rule produces all of that: a session lands after the last card of
+    /// its own source, or at the end when its source has none yet. Fed addresses in
+    /// recency order that yields the grouping directly, and it is also what keeps a
+    /// session discovered later inside its group instead of stranded at the bottom.
+    ///
+    /// While any host is still scanning the order is rebuilt each time; once every host
+    /// has settled it is held - entries still present keep their positions, so a routine
+    /// poll never reshuffles cards under the user (xmux pre-attaches sessions, churning
+    /// `last_attached`).
     fn reorder(&mut self, state: &crate::state::State) {
         if !state.scanning.is_empty() {
             self.nav_order.clear();
         }
         let mut recency: HashMap<String, i64> = HashMap::new();
+        let mut source_of: HashMap<String, String> = HashMap::new();
         for g in &state.groups {
             if g.err.is_some() {
                 continue;
             }
             for s in &g.sessions {
-                recency.insert(s.address(), s.last_attached);
+                let addr = s.address();
+                recency.insert(addr.clone(), s.last_attached);
+                source_of.insert(addr, s.source.clone());
             }
         }
-        // Existing entries still present keep their positions (no churn on poll).
+        // Entries still present keep their positions (no churn on poll).
         let mut next: Vec<String> = self
             .nav_order
             .iter()
             .filter(|a| recency.contains_key(*a))
             .cloned()
             .collect();
-        // Sessions new since the freeze append by recency desc (ties by address).
+        // Sessions new since the freeze, most recent first (ties by address).
         let mut newcomers: Vec<String> = recency
             .keys()
             .filter(|a| !next.contains(*a))
             .cloned()
             .collect();
         newcomers.sort_by(|a, b| recency[b].cmp(&recency[a]).then_with(|| a.cmp(b)));
-        next.extend(newcomers);
+        for addr in newcomers {
+            let source = source_of.get(&addr);
+            let after = next
+                .iter()
+                .rposition(|a| source_of.get(a) == source)
+                .map(|i| i + 1)
+                .unwrap_or(next.len());
+            next.insert(after, addr);
+        }
         self.nav_order = next;
     }
 

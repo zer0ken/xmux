@@ -25,8 +25,9 @@ passed through untouched rather than intercepted.
 
 ## Nav navigation
 
-These act on the nav list while it holds focus. The list is flat (one card per
-session, most recently used first), so every key below moves along one axis.
+These act on the nav list while it holds focus. The list is flat (one card per session,
+each source's cards together, the source you used most recently first), so every key
+below moves along one axis.
 
 | Key | Action |
 |---|---|
