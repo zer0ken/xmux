@@ -6,6 +6,14 @@
 /// qualified by a mux (see [`source_id`]).
 pub const LOCAL_SOURCE: &str = "local";
 
+/// The reserved MACHINE-name namespace for a WSL distribution on this box. A distro is
+/// neither reachable over ssh nor part of this box's own mux scope, so its machine name
+/// carries the family: `wsl.Ubuntu-24.04`. Naming the family in the id is what lets it be
+/// recovered from the id ALONE, which is what an async mux-discovery answer needs - it
+/// carries a bare machine name, and the transport rebuilt from it has to be the same one
+/// the launch path built.
+pub const WSL_PREFIX: &str = "wsl.";
+
 /// Separates a machine from the mux it serves inside a source id. Not `/`, which
 /// already separates a source from a session name, and not a character an ssh alias or
 /// a mux binary name carries.
@@ -36,6 +44,16 @@ pub fn machine_of(source: &str) -> &str {
 /// unqualified because its machine serves a single mux.
 pub fn mux_of(source: &str) -> &str {
     source.split_once(MUX_SEP).map_or("", |(_, mux)| mux)
+}
+
+/// The distribution a WSL machine name carries (`wsl.Ubuntu-24.04` -> `Ubuntu-24.04`),
+/// or `None` for any other machine name. The one spelling of "is this a WSL machine", so
+/// no caller re-derives the prefix split - and an empty distro is refused, since
+/// `wsl.` alone names no machine.
+pub fn wsl_distro_of(machine: &str) -> Option<&str> {
+    machine
+        .strip_prefix(WSL_PREFIX)
+        .filter(|distro| !distro.is_empty())
 }
 
 /// True when `source` names a mux on THIS box, qualified or not. The one spelling of
@@ -158,6 +176,34 @@ mod tests {
         assert!(is_local_source("local:zellij"));
         assert!(!is_local_source("localhost"));
         assert!(!is_local_source("prod:tmux"));
+    }
+
+    #[test]
+    fn a_wsl_machine_name_carries_its_distribution() {
+        // The family has to be recoverable from the name alone: `machine_of` on any id
+        // built over it yields the machine, and that machine says which family it is.
+        assert_eq!(wsl_distro_of("wsl.Ubuntu-24.04"), Some("Ubuntu-24.04"));
+        assert_eq!(
+            machine_of(&source_id("wsl.Ubuntu-24.04", "zellij", true)),
+            "wsl.Ubuntu-24.04"
+        );
+        // Everything else is not a WSL machine, and neither is the bare prefix.
+        assert_eq!(wsl_distro_of("local"), None);
+        assert_eq!(wsl_distro_of("prod"), None);
+        assert_eq!(
+            wsl_distro_of("wsl."),
+            None,
+            "the prefix alone names nothing"
+        );
+        assert_eq!(wsl_distro_of("wslx"), None);
+    }
+
+    #[test]
+    fn a_wsl_machine_is_not_this_box() {
+        // A distro's mux registry lives inside the distro, so it must not be taken for
+        // this box's own scope - the local-registry merge would read the wrong registry.
+        assert!(!is_local_source("wsl.Ubuntu-24.04"));
+        assert!(!is_local_source("wsl.Ubuntu-24.04:zellij"));
     }
 
     #[test]

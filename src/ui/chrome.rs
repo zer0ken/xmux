@@ -472,7 +472,7 @@ impl Chrome {
         source: &str,
         kind: HostScreen,
     ) {
-        let lines = self.host_screen_lines(state, source, kind);
+        let lines = self.host_screen_lines(state, source, kind, area.width);
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
     }
 
@@ -484,6 +484,7 @@ impl Chrome {
         state: &crate::state::State,
         source: &str,
         kind: HostScreen,
+        width: u16,
     ) -> Vec<Line<'static>> {
         let pal = crate::ui::palette::get();
         let p = &self.ui_prefix;
@@ -534,6 +535,37 @@ impl Chrome {
             .map(|(c, _)| c.text().chars().count())
             .max()
             .unwrap_or(0);
+        // A value too wide for its column hangs under the SAME rule rather than
+        // clipping at the pane edge: ssh names a failure in the LAST clause of a long
+        // line, and the card carries only that clause, so a screen that clipped would
+        // leave the whole message nowhere readable. A value that already fits is passed
+        // through untouched, which is what keeps the ssh stanza's own indentation.
+        let value_w = width.saturating_sub(cw as u16 + 4);
+        let rows: Vec<(ScreenCell, String)> = rows
+            .into_iter()
+            .flat_map(|(cell, value)| {
+                let mut cell = Some(cell);
+                let mut out: Vec<(ScreenCell, String)> = Vec::new();
+                for src in value.trim_end().lines() {
+                    let fits =
+                        unicode_width::UnicodeWidthStr::width(src) <= value_w.max(1) as usize;
+                    let parts = if fits {
+                        vec![src.to_string()]
+                    } else {
+                        wrap_text(src.trim(), value_w)
+                    };
+                    for part in parts {
+                        out.push((cell.take().unwrap_or(ScreenCell::Continued), part));
+                    }
+                }
+                match cell {
+                    // Nothing to write: the row is a gap, and it keeps its blank line.
+                    Some(c) => vec![(c, String::new())],
+                    None => out,
+                }
+            })
+            .collect();
+
         let rule = Span::styled("│ ", Style::default().fg(pal.overlay));
         let state_style = Style::default().fg(match kind {
             HostScreen::Unreachable => pal.danger,

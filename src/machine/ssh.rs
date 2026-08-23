@@ -109,7 +109,7 @@ impl Transport for Ssh {
 
     /// Joins a raw remote shell command behind the ssh options. The caller must
     /// `quote` any untrusted value inside `remote_cmd` (see [`super::vocab::quote`]).
-    fn raw_ssh_argv(&self, remote_cmd: &str) -> Option<Vec<String>> {
+    fn raw_shell_argv(&self, remote_cmd: &str) -> Option<Vec<String>> {
         let mut v = vec!["ssh".to_string()];
         v.extend(self.ssh_opts(false));
         v.push(remote_cmd.to_string());
@@ -189,9 +189,9 @@ mod tests {
     }
 
     #[test]
-    fn raw_ssh_argv_some_for_ssh() {
+    fn raw_shell_argv_some_for_ssh() {
         let got = ssh("prod", "linux", "")
-            .raw_ssh_argv("c=$(tty); echo $c")
+            .raw_shell_argv("c=$(tty); echo $c")
             .unwrap();
         assert_eq!(got[0], "ssh");
         assert_eq!(got.last().unwrap(), "c=$(tty); echo $c");

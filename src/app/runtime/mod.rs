@@ -526,7 +526,7 @@ pub(crate) fn run_lowered(lowered: crate::machine::LoweredSwitch) {
 /// Runs a mux's opaque [`crate::mux::SwitchPlan`] BLIND: the driver hands the whole plan
 /// here and this lowers each variant through the host's transport, never naming the mux
 /// type. `Exec` argv(s) run non-interactively in order; a `Shell` command runs over the
-/// host's raw shell (`raw_ssh_argv`). Returns whether the switch was issued - `false` when
+/// host's raw shell (`raw_shell_argv`). Returns whether the switch was issued - `false` when
 /// a `Shell` plan has no host shell (a local machine), so the caller falls back to a
 /// reattach. The variant→lowering mapping is 1:1 with [`crate::machine::LoweredSwitch`].
 pub(crate) fn run_switch_plan(host: &crate::model::Host, plan: crate::mux::SwitchPlan) -> bool {
@@ -542,7 +542,7 @@ pub(crate) fn run_switch_plan(host: &crate::model::Host, plan: crate::mux::Switc
             }
             true
         }
-        SwitchPlan::Shell(cmd) => match host.transport.raw_ssh_argv(&cmd) {
+        SwitchPlan::Shell(cmd) => match host.transport.raw_shell_argv(&cmd) {
             Some(argv) => {
                 run_lowered(LoweredSwitch::RawSsh(argv));
                 true
