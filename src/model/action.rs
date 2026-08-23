@@ -155,6 +155,11 @@ pub enum EventEffect {
     /// (the tmux SESSION id from the notification payload) over `host`'s control
     /// connection (no refetch). Targets THAT SPECIFIC session, not a displayed guess.
     ProbeActiveWindow { host: String, session_ref: String },
+    /// `MuxesFound`: add a source for every mux in `muxes` that `machine` does not
+    /// already serve. The loop owns it because it needs the host registry (to know what
+    /// the machine already serves, and to insert the new hosts) and the manager (to kick
+    /// each new source's first scan).
+    AddDiscoveredSources { machine: String, muxes: Vec<String> },
     /// `Exited`: reap `host`'s metadata client. (`apply_event` has already folded the
     /// tree/connected-set state change; this is the mux teardown.)
     ReapHost { host: String },
@@ -201,6 +206,11 @@ impl std::fmt::Debug for EventEffect {
                 .debug_struct("ApplyInventory")
                 .field("host", host)
                 .field("sessions", sessions)
+                .finish(),
+            EventEffect::AddDiscoveredSources { machine, muxes } => f
+                .debug_struct("AddDiscoveredSources")
+                .field("machine", machine)
+                .field("muxes", muxes)
                 .finish(),
             EventEffect::Refetch { host } => f.debug_struct("Refetch").field("host", host).finish(),
             EventEffect::ProbeActiveWindow { host, session_ref } => f

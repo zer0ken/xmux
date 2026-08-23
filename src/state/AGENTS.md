@@ -43,7 +43,8 @@ marker, a `Panes` subtree, a `Sessions` poll enumeration, the `Exited`
 unreachable mark) into `State` through the switcher, and returns the mux
 follow-ups it cannot perform itself as `EventEffect`s for the run loop to run
 (`ApplyInventory` / `Refetch` / `ProbeActiveWindow` / `ReapHost` /
-`ReapDisplayAttach` / `DispatchScanned` / `SyncPollSessions`). The `connected`
+`ReapDisplayAttach` / `DispatchScanned` / `SyncPollSessions` /
+`AddDiscoveredSources`). The `connected`
 once-connected set enters as DATA (like the clock on `Tick`): an `Exited` of a
 once-connected host is a transient drop that keeps the last-known inventory. The
 `Connected`/`Inventory` events carry their parsed sessions, which the loop folds
@@ -70,8 +71,8 @@ popup-drag geometry); the switcher holds the modal state plus its
 - It stores state facts + the two mutation sites (`apply` / `apply_event`); the
   run loop owns effect dispatch — for `apply` the synchronous `Command`s (switcher
   selection move, attach, prefs IO, quit) and for `apply_event` the `EventEffect`
-  mux follow-ups (inventory fold+apply, refetch, probe, reap, sync,
-  scan-dispatch) — and feeds back the runtime attach facts on `Tick`. No
+  mux follow-ups (inventory fold+apply, refetch, probe, reap, sync, scan-dispatch,
+  source-add) — and feeds back the runtime attach facts on `Tick`. No
   IO/spawning/channel sends happen here.
 
 ## Invariants

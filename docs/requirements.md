@@ -80,28 +80,41 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   answer, since a card whose panes never arrive would keep its spinner forever.
   **Tests:** `a_hung_listing_ends_the_sweep_as_an_error_not_a_freeze`,
   `a_hung_pane_query_ends_the_sweep_with_an_empty_answer`.
-- **FR-A9** — This machine's mux list needs no configuration. With `[local] mux`
-  unset or `auto`, every mux xmux SUPPORTS is asked whether it is installed here and each
-  one that answers becomes a source, so a newly installed mux appears on the next run.
-  The candidate set is what xmux can drive, and each candidate is asked with the same
-  identity probe a configured mux gets, so a binary carrying a mux's name while being
-  another mux is not counted as that mux (Windows drops tmux from the candidates outright:
-  psmux installs a `tmux.exe` alias of itself that no probe can tell from a real tmux).
-  A WRITTEN value is never discovered, keeping FR-A7's rule that a name the user wrote
-  stays visible even when it is missing; a box where nothing answers still offers its
-  conventional mux, so the nav says which mux is unreachable rather than showing nothing.
-  A remote host is not probed: that would mean one ssh connection per mux before the
-  first paint. **Tests:** `discovery_only_looks_for_muxes_xmux_can_drive`,
+- **FR-A9** — No mux list needs configuring, on any machine. A machine that named no
+  mux is asked which of the ones xmux SUPPORTS it has, and each one that answers becomes a
+  source. The candidate set is what xmux can drive, and each candidate is asked with the
+  same identity probe a configured mux gets, so a binary carrying a mux's name while being
+  another mux is not counted as that mux: where psmux answers, a `tmux` that also answers
+  is psmux's own alias of itself (which names itself by the name it was invoked under, so
+  no probe can tell it apart) and is dropped. A WRITTEN value is never probed, keeping
+  FR-A7's rule that a name the user wrote stays visible even when it is missing; a machine
+  where nothing answers keeps the mux it was assumed to run, so the nav names what is
+  unreachable rather than showing nothing.
+  **Tests:** `discovery_only_looks_for_muxes_xmux_can_drive`,
   `a_machine_offers_every_supported_mux_it_actually_has`,
-  `windows_never_discovers_a_tmux_it_cannot_drive`,
+  `where_psmux_answers_a_tmux_is_its_own_alias`,
   `a_binary_that_answers_as_another_mux_is_not_that_mux`,
   `a_machine_with_no_mux_installed_discovers_none`,
   `a_written_mux_is_taken_verbatim_and_auto_is_what_the_box_has`,
   `the_conventional_mux_leads_the_discovered_list`,
-  `a_box_where_nothing_answered_still_offers_its_conventional_mux`. **Live-verified**
-  (an empty `config.toml` on a Windows box with psmux and zellij installed: `xmux doctor`
-  reports `local mux: psmux, zellij (discovered)` and the nav shows `local/zellij` over
-  its three sessions beside `local/psmux`; discovery costs about 20ms of startup).
+  `a_box_where_nothing_answered_still_offers_its_conventional_mux`,
+  `only_a_machine_that_named_no_mux_is_xmuxs_to_decide`.
+- **FR-A10** — A REMOTE machine is discovered AFTER launch, asynchronously, and its
+  answer only ADDS. The app paints the sources the config names first (a remote probe is
+  an ssh round trip per mux, and nothing may wait for that), then each machine's answer
+  arrives and every mux it reports that the machine does not already serve becomes a
+  scanning card on the spot. An added source's id is always qualified (`prod:zellij`)
+  while the mux already served keeps the id it was painted with: that id is what the
+  frozen order, the persisted selection, and anything the user typed are keyed to, so
+  nothing is renamed and nothing is removed. New cards APPEND, so a card the user is
+  looking at does not move because another machine answered. **Tests:**
+  `a_discovered_mux_becomes_a_source_on_the_spot`,
+  `a_discovered_source_appends_and_leaves_the_selection_put`,
+  `muxes_found_forwards_the_add_to_the_loop`,
+  `machine_serves_asks_by_machine_and_mux_not_by_id`. **Live-verified** (a real ssh host
+  running both tmux and zellij: the nav paints its tmux card at once, and `jupiter06/zellij`
+  with its session appears about eight seconds later, on a Windows box where ssh has no
+  ControlMaster multiplexing).
 
 ## B. The switcher — "see the list, decide whether & where to move"
 

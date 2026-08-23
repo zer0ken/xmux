@@ -140,16 +140,24 @@ UI elements a user perceives as distinct things:
   / `mux_of` / `is_local_source` read the two halves back; nothing compares a source id
   to `local` directly. The nav renders the halves separately (`local/zellij`), so the id
   never appears with its mux twice.
-- mux discovery - how THIS machine's mux list is decided when `[local] mux` is unset
-  or `auto`: every mux xmux supports is asked whether it is installed here, and each one
-  that answers becomes a source. Two halves, in that order: the candidate set is what
-  xmux can DRIVE (`mux::supported_muxes`, minus what it cannot drive on this OS), and the
-  question asked of each candidate is the same identity probe a configured mux gets
-  (`detect_backend`), so a binary carrying a mux's name while being another mux is not
-  that mux. Resolved ONCE, in `Env`, and threaded into `source::build` / `Hosts::build`
-  so source ids and host ids cannot disagree. A written `mux` value is never discovered:
-  it is taken verbatim, unreachable and all. Distinct from `roster` (which MACHINES) and
-  `discovery` (scanning a source for SESSIONS).
+- mux discovery - how a machine's mux list is decided when it named no mux (`mux` unset
+  or `auto`): every mux xmux supports is asked whether it is installed there, and each one
+  that answers becomes a source. Two halves, in that order: the candidate set is what xmux
+  can DRIVE (`mux::supported_muxes`), and the question asked of each candidate is the same
+  identity probe a configured mux gets (`detect_backend`), so a binary carrying a mux's
+  name while being another mux is not that mux (where psmux answers, a `tmux` that answers
+  is psmux's own alias). A written `mux` value is never probed: it is taken verbatim,
+  unreachable and all. Distinct from `roster` (which MACHINES) and `discovery` (scanning a
+  source for SESSIONS).
+  THIS BOX is resolved before the first paint (a local probe is milliseconds), once, in
+  `Env`, and threaded into `source::build` / `Hosts::build` so source ids and host ids
+  cannot disagree. A REMOTE machine is probed AFTER launch instead (one ssh round trip per
+  mux, which nothing may wait for): `discover_machine_muxes` spawns one task per machine,
+  the answer arrives as `HostEvent::MuxesFound`, and `EventEffect::AddDiscoveredSources`
+  adds a scanning card for every mux the machine does not already serve. That add is
+  ADD-ONLY: an added source's id is always qualified (`prod:zellij`) and the mux already
+  served keeps the id it was painted with, because that id is what the frozen order, the
+  persisted selection, and typed ctl targets are keyed to.
 - roster - the list of ssh targets xmux offers as sources, assembled from
   PROVIDERS: `~/.ssh/config` aliases and, when `[discovery]` enables it, the online
   peers of this machine's tailnet. Every provider yields plain ssh target names, so

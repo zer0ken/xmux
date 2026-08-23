@@ -698,6 +698,28 @@ impl Switcher {
         self.restore_focus(prior, state);
     }
 
+    /// Adds a source that was not there at launch (a mux discovery answered) as a
+    /// SCANNING host card, so it appears the moment it is found instead of at the next
+    /// run. Idempotent: a source already in the nav is left exactly as it is.
+    ///
+    /// It APPENDS. The group order is frozen after launch, and a card the user is looking
+    /// at must not move because another machine answered - the new card takes the bottom
+    /// and its own first scan result sorts its sessions.
+    pub fn add_source(&mut self, source: String, state: &mut crate::state::State) {
+        if state.groups.iter().any(|g| g.source == source) {
+            return;
+        }
+        let prior = self.capture_focus();
+        state.scanning.insert(source.clone());
+        state.groups.push(Group {
+            source,
+            err: None,
+            sessions: Vec::new(),
+        });
+        self.rebuild(state);
+        self.restore_focus(prior, state);
+    }
+
     /// Streams in one session's `list-panes` outcome, clearing its loading
     /// placeholder. An empty `panes` (a failed/timed-out fetch) still resolves the
     /// session - it shows no children rather than spinning forever.

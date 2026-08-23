@@ -63,8 +63,11 @@ decision, so they move together.
 - Discovery (`supported_muxes` / `installed_muxes`) answers "which mux is on this
   machine", and only ever from the registry: the candidate set is what xmux can drive,
   and each candidate is confirmed by `detect_backend` answering AS that mux. It is called
-  once, by `Env`, never per source. `discovery_candidates` is where a mux xmux cannot
-  drive on an OS is dropped (Windows tmux, whose name psmux's own alias takes).
+  once per machine - by `Env` for this box (before the first paint) and by the runtime's
+  `discover_machine_muxes` for each remote (after it) - never per source. The
+  psmux-shadows-tmux filter lives inside `installed_muxes` and keys off what ANSWERED,
+  never off an OS: a remote's OS is not something xmux knows (`Ssh.os` is the LOCAL
+  platform, gating ControlMaster).
 - Plan methods return mux argv or mux intent; they do not decide local versus
   ssh execution. The plan set covers what xmux itself issues: attach, enumerate,
   read panes/options, select a window, and start a session (`new_session_plan`).

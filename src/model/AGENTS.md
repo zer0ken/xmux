@@ -16,8 +16,8 @@ effect vocabulary the run loop dispatches. `State::apply(Action) -> Vec<Command>
 (in `crate::state`) is the one site that turns an `Action` into state changes +
 `Command`s. `EventEffect` is the inbound mirror: `State::apply_event(HostEvent)
 -> Vec<EventEffect>` (in `crate::state`) folds a mux event's self-contained
-state mutation and returns the mux follow-ups (refetch / probe / reap / sync
-/ scan-dispatch) the run loop runs against the host clients + registry.
+state mutation and returns the mux follow-ups (refetch / probe / reap / sync /
+scan-dispatch / source-add) the run loop runs against the host clients + registry.
 
 ## Module Seams
 

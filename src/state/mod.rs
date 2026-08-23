@@ -320,6 +320,11 @@ impl State {
                 // layer forwards it as an effect for the loop to record.
                 vec![EventEffect::RecordDisplayTty { host, tty }]
             }
+            HostEvent::MuxesFound { machine, muxes } => {
+                // Nothing to fold: which muxes the machine ALREADY serves lives in the
+                // host registry, so the whole decision is the loop's.
+                vec![EventEffect::AddDiscoveredSources { machine, muxes }]
+            }
             HostEvent::Scanned { source, detected } => {
                 vec![EventEffect::DispatchScanned { source, detected }]
             }
@@ -1255,6 +1260,33 @@ mod tests {
             ),
             "Scanned forwards a DispatchScanned effect: {effects:?}"
         );
+    }
+
+    #[test]
+    fn muxes_found_forwards_the_add_to_the_loop() {
+        // Which muxes a machine ALREADY serves lives in the host registry, which this
+        // layer does not hold, so the whole decision is forwarded rather than folded.
+        let mut state = State::from_sources(vec!["prod".into()]);
+        let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+        let mut connected = HashSet::new();
+        let before = state.groups.len();
+        let effects = state.apply_event(
+            HostEvent::MuxesFound {
+                machine: "prod".into(),
+                muxes: vec!["tmux".into(), "zellij".into()],
+            },
+            &mut sw,
+            &mut connected,
+        );
+        assert!(
+            matches!(
+                &effects[..],
+                [EventEffect::AddDiscoveredSources { machine, muxes }]
+                    if machine == "prod" && muxes == &["tmux".to_string(), "zellij".to_string()]
+            ),
+            "{effects:?}"
+        );
+        assert_eq!(state.groups.len(), before, "and folds nothing itself");
     }
 
     // --- fold_op_result: State owns the op-result inventory mutation ----------

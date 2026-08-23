@@ -615,6 +615,51 @@ fn spawn_host_detection(
     });
 }
 
+/// Runs one MACHINE's mux discovery off the loop, cloning the transport of a source that
+/// already reaches it so the probes travel the same axes as everything else. The answer
+/// is emitted as `HostEvent::MuxesFound`.
+///
+/// Fire and forget, and deliberately AFTER launch: a remote probe is an ssh round trip
+/// per mux, and the app must be on screen before any of that. Nothing waits for it, so a
+/// machine that never answers costs a task and no more.
+fn spawn_mux_discovery(
+    machine: String,
+    transport: Box<dyn crate::machine::Transport>,
+    tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
+) {
+    tokio::spawn(async move {
+        let muxes = crate::mux::installed_muxes(&*transport, &crate::source::ExecRunner).await;
+        if !muxes.is_empty() {
+            let _ = tx.send(HostEvent::MuxesFound { machine, muxes });
+        }
+    });
+}
+
+/// Starts mux discovery for every machine that left its mux list to xmux, once, right
+/// after the first paint. One task per MACHINE (not per source): the answer is about the
+/// machine, and each mux it reports beyond the one already served becomes a source.
+fn discover_machine_muxes(
+    cfg: &crate::config::Config,
+    hosts: &crate::model::Hosts,
+    tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
+) {
+    let mut seen: HashSet<&str> = HashSet::new();
+    for id in hosts.ids() {
+        let machine = crate::session::machine_of(id);
+        // This box is resolved BEFORE the first paint (a local probe is milliseconds), so
+        // its list is already complete; only remote machines are probed here.
+        if crate::session::is_local_source(id) || !seen.insert(machine) {
+            continue;
+        }
+        if !cfg.mux_is_auto(machine) {
+            continue;
+        }
+        if let Some(host) = hosts.get(id) {
+            spawn_mux_discovery(machine.to_string(), host.transport.clone(), tx.clone());
+        }
+    }
+}
+
 /// Dispatches a DETECTED host onto its metadata channel via the manager, which picks
 /// the channel (control client vs poll task) from the host's `event_source`. Idempotent
 /// - a no-op when the channel is already live.
@@ -916,6 +961,10 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
         rt.body_rows,
         rt.nav_width,
     );
+    // Then ask each auto machine which muxes it has. Deliberately last and deliberately
+    // async: the sources the config already names are painting by now, and a mux nobody
+    // wrote down appears as its machine answers.
+    discover_machine_muxes(&rt.env.cfg, &rt.hosts, rt.mgr.events());
     // Take the worker's reply receiver out so the loop can `select!` on it while `&mut rt`
     // is borrowed for the arm body (the send half stays on `rt.worker`).
     let mut worker_events = rt.worker.take_events();

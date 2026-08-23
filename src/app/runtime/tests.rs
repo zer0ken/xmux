@@ -1138,6 +1138,77 @@ fn empty_manager() -> HostManager {
 /// A headless `Runtime` for exercising the `&mut self` arm/effect methods: a fake
 /// attach worker (no real PTYs), dropped receiver halves, hosts built from `env`.
 /// A test overrides the fields it cares about (`rt.hosts`, `rt.state`, ...).
+#[tokio::test]
+async fn a_discovered_mux_becomes_a_source_on_the_spot() {
+    // The whole point of discovering asynchronously: the machine's answer arrives after
+    // the app is up, and the mux nobody wrote down turns into a card RIGHT THEN.
+    let mut rt = test_rt(fake_env_with_sources(&["prod"]));
+    assert!(
+        rt.hosts.get("prod:zellij").is_none(),
+        "nothing knows about zellij yet"
+    );
+    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+        machine: "prod".into(),
+        muxes: vec!["tmux".into(), "zellij".into()],
+    });
+    // tmux is what `prod` was already painted as, so it is left exactly as it is: its
+    // BARE id is what the frozen order, the saved selection, and anything the user typed
+    // are keyed to.
+    assert!(rt.hosts.get("prod").is_some(), "the bare id is untouched");
+    assert!(
+        rt.hosts.get("prod:tmux").is_none(),
+        "the mux it already serves is not added a second time"
+    );
+    // zellij is new, so it becomes its own source under a qualified id, scanning.
+    let h = rt.hosts.get("prod:zellij").expect("the discovered source");
+    assert_eq!(h.mux.kind(), "zellij");
+    assert_eq!(h.transport.host_id(), "prod:zellij", "it answers as itself");
+    assert!(
+        rt.state.groups.iter().any(|g| g.source == "prod:zellij"),
+        "and it has a card: {:?}",
+        rt.state
+            .groups
+            .iter()
+            .map(|g| &g.source)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        rt.state.scanning.contains("prod:zellij"),
+        "the card reads scanning until its first result"
+    );
+    // Idempotent: the same answer twice adds nothing.
+    let before = rt.state.groups.len();
+    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+        machine: "prod".into(),
+        muxes: vec!["tmux".into(), "zellij".into()],
+    });
+    assert_eq!(rt.state.groups.len(), before, "no duplicate card");
+}
+
+#[tokio::test]
+async fn a_discovered_source_appends_and_leaves_the_selection_put() {
+    // A card the user is looking at must not move because another machine answered.
+    let mut rt = test_rt(fake_env_with_sources(&["prod", "db"]));
+    let before: Vec<String> = rt.state.groups.iter().map(|g| g.source.clone()).collect();
+    let selected = {
+        let t = rt.switcher.terminal_view_target();
+        (t.source, t.target)
+    };
+    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+        machine: "db".into(),
+        muxes: vec!["zellij".into()],
+    });
+    let after: Vec<String> = rt.state.groups.iter().map(|g| g.source.clone()).collect();
+    assert_eq!(&after[..before.len()], &before[..], "the order is kept");
+    assert_eq!(after.last().unwrap(), "db:zellij", "the new card appends");
+    let now = rt.switcher.terminal_view_target();
+    assert_eq!(
+        (now.source, now.target),
+        selected,
+        "the selection stays put"
+    );
+}
+
 fn test_rt(env: Env) -> Runtime {
     let env = std::sync::Arc::new(env);
     let (host_tx, _host_rx) = tokio::sync::mpsc::unbounded_channel();
