@@ -45,10 +45,19 @@ impl Runtime {
             cols,
             body_rows: rows,
             nav_width,
+            nav_width_natural,
             nav_height,
             ..
         } = self;
-        let (cols, rows, nav_width, nav_height) = (*cols, *rows, *nav_width, *nav_height);
+        let (cols, rows) = (*cols, *rows);
+        // The nav's live size as one value, read once for this effect: the width the user
+        // set, the width on screen, and the band height. Every geometry below is cut from
+        // it, so none of them re-derives one of the three.
+        let nav = crate::ui::switcher::NavSize {
+            natural: *nav_width_natural,
+            width: *nav_width,
+            height: *nav_height,
+        };
         match effect {
             EventEffect::ApplyInventory { host, sessions } => {
                 // The reader carried the parsed sessions on the event. Fold them into the
@@ -82,8 +91,7 @@ impl Runtime {
                         attach_seq: &mut *attach_seq,
                         cols,
                         body_rows: rows,
-                        nav_width,
-                        nav_height,
+                        nav,
                     };
                     sync_source_terminals(&host, &sessions, &mut ctx);
                 }
@@ -178,7 +186,7 @@ impl Runtime {
                 // already served keeps the id it was painted with, bare or not, because
                 // that id is what the frozen order, the persisted selection, and anything
                 // the user typed are keyed to - renaming it mid-run would break all three.
-                let (vc, vr) = terminal_view_size(cols, rows, nav_width, nav_height);
+                let (vc, vr) = terminal_view_size(cols, rows, nav);
                 for bin in muxes {
                     if hosts.machine_serves(&machine, &bin) {
                         continue;
@@ -217,7 +225,7 @@ impl Runtime {
                 // now-detected host onto its metadata channel (control client or poll task).
                 detecting.remove(&source);
                 apply_scan_result(hosts, &source, detected);
-                let (vc, vr) = terminal_view_size(cols, rows, nav_width, nav_height);
+                let (vc, vr) = terminal_view_size(cols, rows, nav);
                 dispatch_detected_host(mgr, hosts, &source, vc, vr);
             }
             EventEffect::SyncPollSessions { source, sessions } => {
@@ -244,8 +252,7 @@ impl Runtime {
                     attach_seq: &mut *attach_seq,
                     cols,
                     body_rows: rows,
-                    nav_width,
-                    nav_height,
+                    nav,
                 };
                 sync_source_terminals(&source, &sessions, &mut ctx);
             }
@@ -422,6 +429,19 @@ impl Runtime {
     /// reattach-kick, follow the active window in terminal focus, sync the selection,
     /// drive one debounce beat (the settled attach), flush the debounced width persist,
     /// then draw the gated frame. `term` is the loop-local ratatui terminal.
+    /// The nav's live size, in one place: the width the user set, the width on screen
+    /// (0 while auto-hide has taken it), and the `Top` band height the user set. Every
+    /// geometry the loop computes reads this instead of picking two of the three fields
+    /// out of `self`, so a resize while xmux runs cannot reach one consumer and miss
+    /// another.
+    pub(super) fn nav_size(&self) -> crate::ui::switcher::NavSize {
+        crate::ui::switcher::NavSize {
+            natural: self.nav_width_natural,
+            width: self.nav_width,
+            height: self.nav_height,
+        }
+    }
+
     pub(super) fn prepare_and_draw(&mut self, term: &mut Term) {
         use std::time::Duration;
         // Advance the spinner from wall-clock so it animates regardless of which arm fired.
@@ -453,8 +473,7 @@ impl Runtime {
             let crossed_hidden = (want_nav_width == 0) != (self.nav_width == 0);
             self.nav_width = want_nav_width;
             self.applied_nav_height = self.nav_height;
-            let (vc, vr) =
-                terminal_view_size(self.cols, self.body_rows, self.nav_width, self.nav_height);
+            let (vc, vr) = terminal_view_size(self.cols, self.body_rows, self.nav_size());
             self.registry.resize_all(vc, vr);
             self.mgr.resize_all(vc, vr);
             if crossed_hidden {
@@ -515,8 +534,8 @@ impl Runtime {
                                 attach_seq: &mut self.attach_seq,
                                 cols: self.cols,
                                 body_rows: self.body_rows,
-                                nav_width: self.nav_width,
-                                nav_height: self.nav_height,
+                                nav: crate::ui::switcher::NavSize::visible(self.nav_width)
+                                    .with_height(self.nav_height),
                             },
                         );
                         if shown {
@@ -602,8 +621,8 @@ impl Runtime {
                     attach_seq: &mut self.attach_seq,
                     cols: self.cols,
                     body_rows: self.body_rows,
-                    nav_width: self.nav_width,
-                    nav_height: self.nav_height,
+                    nav: crate::ui::switcher::NavSize::visible(self.nav_width)
+                        .with_height(self.nav_height),
                 },
             );
             let terminal_focused = self.state.focus.is_terminal_focused();
@@ -633,31 +652,22 @@ impl Runtime {
                     }
                     // Split-borrow so the draw closure captures only these fields, not all
                     // of `self` (the fingerprint block's borrows have ended above).
+                    let nav = self.nav_size();
                     let switcher = &mut self.switcher;
                     let state = &self.state;
-                    let nav_width = self.nav_width;
-                    let nav_height = self.nav_height;
                     term.draw(|f| {
                         let t_render = std::time::Instant::now();
-                        switcher.render(
-                            f,
-                            guard.as_deref(),
-                            terminal_focused,
-                            nav_width,
-                            nav_height,
-                            state,
-                        );
+                        switcher.render(f, guard.as_deref(), terminal_focused, nav, state);
                         DrawObserver::slow_step("render", t_render);
                     })
                 }
                 None => {
+                    let nav = self.nav_size();
                     let switcher = &mut self.switcher;
                     let state = &self.state;
-                    let nav_width = self.nav_width;
-                    let nav_height = self.nav_height;
                     term.draw(|f| {
                         let t_render = std::time::Instant::now();
-                        switcher.render(f, None, terminal_focused, nav_width, nav_height, state);
+                        switcher.render(f, None, terminal_focused, nav, state);
                         DrawObserver::slow_step("render", t_render);
                     })
                 }
@@ -904,8 +914,8 @@ impl Runtime {
                         attach_seq: &mut self.attach_seq,
                         cols: self.cols,
                         body_rows: self.body_rows,
-                        nav_width: self.nav_width,
-                        nav_height: self.nav_height,
+                        nav: crate::ui::switcher::NavSize::visible(self.nav_width)
+                            .with_height(self.nav_height),
                     },
                 );
                 let dump = match &grid_arc {
@@ -971,8 +981,8 @@ impl Runtime {
                             attach_seq: &mut self.attach_seq,
                             cols: self.cols,
                             body_rows: self.body_rows,
-                            nav_width: self.nav_width,
-                            nav_height: self.nav_height,
+                            nav: crate::ui::switcher::NavSize::visible(self.nav_width)
+                                .with_height(self.nav_height),
                         };
                         driver.input(&self.state.displayed, bytes, &ctx);
                     }
@@ -1004,7 +1014,7 @@ impl Runtime {
                 let body = r.saturating_sub(1);
                 self.cols = c;
                 self.body_rows = body;
-                let (vc, vr) = terminal_view_size(c, body, self.nav_width, self.nav_height);
+                let (vc, vr) = terminal_view_size(c, body, self.nav_size());
                 self.registry.resize_all(vc, vr);
                 self.mgr.resize_all(vc, vr);
                 let _ = term.autoresize();
@@ -1035,8 +1045,7 @@ impl Runtime {
     /// hosts, re-warm dropped control-host PTYs, capture display ttys, and re-attach the
     /// selected session if its display terminal dropped. The sole automatic retry path.
     pub(super) fn on_reconnect(&mut self) {
-        let (vc, vr) =
-            terminal_view_size(self.cols, self.body_rows, self.nav_width, self.nav_height);
+        let (vc, vr) = terminal_view_size(self.cols, self.body_rows, self.nav_size());
         // Snapshot the ids so the loops can re-borrow `hosts` (incl. &mut) without holding
         // the `ids()` borrow across the body.
         let ids: Vec<String> = self.hosts.ids().to_vec();
@@ -1074,8 +1083,8 @@ impl Runtime {
                 attach_seq: &mut self.attach_seq,
                 cols: self.cols,
                 body_rows: self.body_rows,
-                nav_width: self.nav_width,
-                nav_height: self.nav_height,
+                nav: crate::ui::switcher::NavSize::visible(self.nav_width)
+                    .with_height(self.nav_height),
             };
             sync_source_terminals(id, &inventory, &mut ctx);
         }
@@ -1112,8 +1121,8 @@ impl Runtime {
                     attach_seq: &mut self.attach_seq,
                     cols: self.cols,
                     body_rows: self.body_rows,
-                    nav_width: self.nav_width,
-                    nav_height: self.nav_height,
+                    nav: crate::ui::switcher::NavSize::visible(self.nav_width)
+                        .with_height(self.nav_height),
                 };
                 select_attach(&self.state.selection, &mut ctx);
             }

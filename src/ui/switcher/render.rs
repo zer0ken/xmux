@@ -101,14 +101,15 @@ impl Switcher {
         frame: &mut Frame,
         grid: Option<&crate::display::grid::Grid>,
         terminal_focused: bool,
-        nav_width: u16,
-        nav_height: u16,
+        nav: NavSize,
         state: &crate::state::State,
     ) {
         let area = frame.area();
         self.screen_area = area;
+        let nav_width = nav.width;
         // Cache the stacking so key handling routes the arrows to match what is on screen.
-        self.layout = view_layout(area, nav_width);
+        // Measured from the width the user SET, so hiding the nav leaves it alone.
+        self.layout = view_layout(area, nav.natural);
         // Reset the buffer before painting. The widgets below do not all fill every cell
         // they own - the mux grid only paints its top-left clip (cells past the grid size
         // are skipped), the view border rule sets fg only, and the nav list leaves blank
@@ -150,7 +151,7 @@ impl Switcher {
         let floating = hint_bar_floats(nav_width, state);
         let bar_w = if floating { area.width } else { nav_width };
         let hint_bar_h = state.chrome.hint_bar_lines(bar_w, state).len().max(1) as u16;
-        let r = compute_regions(area, nav_width, nav_height, hint_bar_h);
+        let r = compute_regions(area, nav, hint_bar_h);
         self.render_nav(frame, r.tree, state);
         // The view border marks focus between the two views (vertical in Side, horizontal in Top).
         state

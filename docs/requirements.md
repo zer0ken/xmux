@@ -190,6 +190,16 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   `a_jump_never_holds_a_number_no_session_carries`,
   `cancelling_a_jump_restores_the_starting_card`, `a_jump_past_the_last_card_is_inert`.
 
+- **FR-B16** — The nav's width and the `Top` band's height are both live: the saved
+  pref seeds them, `prefix h`/`l` and `prefix Ctrl+arrow` step them, a border drag sets
+  them, and auto-hide takes the width away entirely. They therefore travel as ONE value
+  (`NavSize`) carrying the width the user set, the width on screen, and the band height,
+  so the renderer, the PTY sizing and mouse hit-testing cannot read three different
+  answers, and the effective width keeps its single owner. Hiding the nav does not move
+  the layout: the turnover reads the width the user SET, so the nav returns the shape it
+  left. **Tests:** `hiding_the_nav_leaves_the_layout_where_it_was`,
+  `reconciled_nav_width_hides_only_when_focused_and_enabled`,
+  `terminal_view_size_*`, `compute_regions_side_top_and_hidden`.
 - **FR-B15** — Which layout is in force is decided by ONE test, always measured as if
   the nav kept its side column: the terminal that column would leave is `w - nav_width - 1`
   wide over the window's full height, and while that is WIDER than tall the nav is the side

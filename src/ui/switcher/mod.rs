@@ -71,6 +71,51 @@ pub enum ViewLayout {
     Top,
 }
 
+/// The nav's live size, as one value: what the user set, and what is on screen this
+/// frame. Both are settable while xmux runs (`prefix h`/`l` and a border drag set the
+/// width, `prefix Ctrl+arrow` and a drag the `Top` height, and auto-hide takes the width
+/// away entirely), so every consumer reads them from here rather than deriving either.
+///
+/// `natural` and `width` differ only while the nav is HIDDEN, and keeping both is the
+/// point: the layout turnover is measured from `natural`, so hiding the nav cannot flip
+/// the layout under the very keys that resize it, while the regions are cut from `width`,
+/// which is what is actually on screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NavSize {
+    /// The width the user set: the saved pref, `prefix h`/`l`, or a border drag.
+    pub natural: u16,
+    /// The width on screen this frame: `natural`, or 0 while the nav is hidden.
+    pub width: u16,
+    /// The `Top` band's height the user set; 0 means auto (~40% of the body).
+    pub height: u16,
+}
+
+impl NavSize {
+    /// The nav on screen at the width the user set.
+    pub fn visible(natural: u16) -> Self {
+        NavSize {
+            natural,
+            width: natural,
+            height: 0,
+        }
+    }
+
+    /// The nav hidden (auto-hide plus terminal focus). The width the user set travels with
+    /// it, because the layout is measured from that width whether the nav is showing or not.
+    pub fn hidden(natural: u16) -> Self {
+        NavSize {
+            natural,
+            width: 0,
+            height: 0,
+        }
+    }
+
+    /// The same nav with the `Top` band height the user set (0 = auto).
+    pub fn with_height(self, height: u16) -> Self {
+        NavSize { height, ..self }
+    }
+}
+
 /// Picks the layout from the TERMINAL VIEW's aspect, not the whole screen's: putting the
 /// tree in a side column costs the terminal `nav_width + 1` columns, and if that would
 /// leave the terminal view no wider than it is tall, the tree stacks on `Top` instead so
@@ -149,10 +194,12 @@ fn split_nav(nav: Rect, hint_bar_h: u16) -> (Rect, Rect) {
     (r[0], r[1])
 }
 
-pub fn compute_regions(area: Rect, nav_width: u16, nav_height: u16, hint_bar_h: u16) -> Regions {
-    // The layout is decided from the natural tree width so the terminal-view aspect test is
-    // stable; the hidden sentinel (0) below still forces the whole area to the terminal.
-    let layout = view_layout(area, nav_width);
+pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
+    // The layout is decided from the width the user SET, never from the width on screen, so
+    // hiding the nav cannot flip it; the hidden sentinel below still gives the whole area
+    // to the terminal.
+    let layout = view_layout(area, nav.natural);
+    let (nav_width, nav_height) = (nav.width, nav.height);
     if nav_width == 0 {
         return Regions {
             layout,

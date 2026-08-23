@@ -148,7 +148,15 @@ impl Runtime {
         // either layout: a vertical rule in Side, a horizontal rule in Top. The drag then
         // resizes the nav WIDTH (Side, by column) or HEIGHT (Top, by row).
         let full = ratatui::layout::Rect::new(0, 0, cols, body_rows.saturating_add(1));
-        let regions = crate::ui::switcher::compute_regions(full, nav_width, *nav_height, 1);
+        let regions = crate::ui::switcher::compute_regions(
+            full,
+            crate::ui::switcher::NavSize {
+                natural: *nav_width_natural,
+                width: nav_width,
+                height: *nav_height,
+            },
+            1,
+        );
         let on_view_border = nav_width > 0
             && regions
                 .view_border
@@ -354,8 +362,7 @@ impl Runtime {
         // what was drawn in either layout (in Top the terminal sits below the nav, not
         // to the right of it).
         let full = ratatui::layout::Rect::new(0, 0, self.cols, self.body_rows.saturating_add(1));
-        let term_area =
-            crate::ui::switcher::compute_regions(full, self.nav_width, self.nav_height, 1).terminal;
+        let term_area = crate::ui::switcher::compute_regions(full, self.nav_size(), 1).terminal;
         let mut non_mouse: Vec<u8> = Vec::with_capacity(bytes.len());
         let mut mouse_focus_toggle = false;
         let mut wheel_scrolled = false;

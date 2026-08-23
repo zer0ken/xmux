@@ -29,8 +29,7 @@ impl MuxDriver for ZellijDriver {
         if sel.is_empty() {
             return false;
         }
-        let (cols, rows) =
-            terminal_view_size(ctx.cols, ctx.body_rows, ctx.nav_width, ctx.nav_height);
+        let (cols, rows) = terminal_view_size(ctx.cols, ctx.body_rows, ctx.nav);
         let control = ctx.mgr.get(&sel.source);
         let Some(host) = ctx.hosts.get_mut(&sel.source) else {
             return false;

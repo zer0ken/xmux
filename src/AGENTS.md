@@ -99,6 +99,11 @@ the live split view.
 
 ## Invariants
 
+- The nav's live size travels as one `NavSize` (the width the user set, the width on
+  screen, the `Top` band height), never as two loose numbers: the effective width has a
+  single owner (`reconciled_nav_width`), and every geometry - the draw, the PTY sizing,
+  mouse hit-testing - is cut from the same value so a mid-run resize cannot reach one and
+  miss another.
 - `State::apply(Action) -> Vec<Command>` is the single intent-driven mutation site;
   `dispatch_action` runs its synchronous commands for key- and ctl-derived
   actions, and the loop-top `Tick` runs the settled-attach commands. The two

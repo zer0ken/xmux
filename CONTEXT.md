@@ -92,13 +92,24 @@ UI elements a user perceives as distinct things:
   never diverges. The column flow collapses by position alone, never by selection: a
   column's first card always states its context, and heights that moved with the
   selection would reflow whole columns as the cursor passed.
+- nav size - the nav's live geometry as one value (`NavSize`): the width the user SET
+  (`natural`), the width ON SCREEN this frame (`width`, which is 0 while auto-hide has
+  taken it), and the `Top` band height the user set (`height`, 0 = auto). All three are
+  settable while xmux runs, so every consumer takes the whole value rather than picking
+  two of the three out of the runtime: the effective width has one owner
+  (`reconciled_nav_width`), and a resize cannot reach the renderer and miss the PTY
+  sizing. `natural` and `width` differ only while the nav is hidden, and that is exactly
+  why both travel: the regions are cut from `width`, the layout turnover is measured from
+  `natural`.
 - layout turnover - the one test that picks `Side` or `Top` (`view_layout`), measured as
   if the nav kept its side column: the terminal that column would leave is
   `w - nav_width - 1` wide over the window's full height. Wider than tall keeps the side
   column; square or taller moves the nav to the top band and drops the column. The
   as-if is the point - going `Top` hands those columns back to the terminal and takes the
   band's rows instead, so a test measuring the LIVE terminal would flip its own input and
-  the layout would oscillate on one cell of resize.
+  the layout would oscillate on one cell of resize. Hiding the nav is not a resize either:
+  the turnover reads `natural`, so the nav comes back the shape it left and the resize keys
+  keep driving the same axis while it is gone.
 - column flow - how the portrait `Top` band lays its cards out (`ui::switcher::columns`):
   down a column, then right. A column takes whole host/mux RUNS, so a source's cards stay
   together under the one context line naming them and the run that does not fit opens the

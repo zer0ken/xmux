@@ -25,8 +25,7 @@ impl MuxDriver for PsmuxDriver {
         if sel.is_empty() {
             return false;
         }
-        let (cols, rows) =
-            terminal_view_size(ctx.cols, ctx.body_rows, ctx.nav_width, ctx.nav_height);
+        let (cols, rows) = terminal_view_size(ctx.cols, ctx.body_rows, ctx.nav);
         let control = ctx.mgr.get(&sel.source);
         let Some(host) = ctx.hosts.get_mut(&sel.source) else {
             return false;
@@ -286,8 +285,7 @@ mod tests {
                 attach_seq: &mut attach_seq,
                 cols: 80,
                 body_rows: 24,
-                nav_width: crate::ui::switcher::NAV_WIDTH,
-                nav_height: 0,
+                nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
             };
             driver.show(&sel, &mut ctx)
         };
@@ -350,8 +348,7 @@ mod tests {
                 attach_seq: &mut attach_seq,
                 cols: 80,
                 body_rows: 24,
-                nav_width: crate::ui::switcher::NAV_WIDTH,
-                nav_height: 0,
+                nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
             };
             driver.sync(
                 "local",
@@ -378,8 +375,7 @@ mod tests {
                 attach_seq: &mut attach_seq,
                 cols: 80,
                 body_rows: 24,
-                nav_width: crate::ui::switcher::NAV_WIDTH,
-                nav_height: 0,
+                nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
             };
             driver.sync("local", &[], &mut ctx);
         }
@@ -434,8 +430,7 @@ mod tests {
                 attach_seq: &mut attach_seq,
                 cols: 80,
                 body_rows: 24,
-                nav_width: crate::ui::switcher::NAV_WIDTH,
-                nav_height: 0,
+                nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
             };
             assert!(driver.show(&sel, &mut ctx));
         }
@@ -499,8 +494,7 @@ mod tests {
                 attach_seq: &mut attach_seq,
                 cols: 80,
                 body_rows: 24,
-                nav_width: crate::ui::switcher::NAV_WIDTH,
-                nav_height: 0,
+                nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
             };
             assert!(driver.show(&sel, &mut ctx));
         }
