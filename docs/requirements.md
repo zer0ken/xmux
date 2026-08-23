@@ -30,13 +30,14 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   `a_sources_cards_are_contiguous_and_the_sources_run_most_recent_first`,
   `a_session_found_later_lands_inside_its_own_source`.
 - **FR-A5** — The roster (which ssh targets are offered) comes from providers the
-  `[discovery]` table selects: `~/.ssh/config` aliases (on by default) and this
-  machine's tailnet peers (off by default, since it runs an external CLI). A tailnet
-  peer is offered under its DNS label; this machine and offline peers are skipped. A
-  provider that cannot answer contributes nothing instead of failing the run, and
-  ssh-config names keep their position when a provider repeats them. **Tests:**
-  `takes_online_peers_by_their_dns_label`, `skips_self_and_offline_peers`,
+  `[discovery]` table selects: `~/.ssh/config` aliases and this machine's tailnet peers,
+  both on by default. A tailnet peer is offered under its DNS label; this machine and
+  offline peers are skipped. A provider that cannot answer contributes nothing instead
+  of failing the run, so a machine with no tailscale installed reaches an empty list
+  rather than an error, and ssh-config names keep their position when a provider repeats
+  them. **Tests:** `takes_online_peers_by_their_dns_label`, `skips_self_and_offline_peers`,
   `the_dns_label_wins_over_hostname`, `a_provider_that_cannot_answer_yields_nothing`,
+  `a_missing_cli_yields_nothing_rather_than_an_error`,
   `a_label_that_is_not_a_dns_label_is_refused`,
   `merge_keeps_first_seen_order_and_drops_duplicates`.
 
@@ -203,8 +204,10 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
 - **FR-B15** — Which layout is in force is decided by ONE test, always measured as if
   the nav kept its side column: the terminal that column would leave is `w - nav_width - 1`
   wide over the window's full height, and while that is WIDER than tall the nav is the side
-  column. The moment it is not (`x <= y`, square included) the nav becomes the top band and
-  the side column is gone. Measuring the live terminal instead would flip its own input -
+  column. The moment it is not (square included) the nav becomes the top band and the side
+  column is gone. Wider than tall is judged in the proportions the user SEES: a terminal
+  row is about two columns tall, so the rows count double (`x <= 2y`). Judging it by cell
+  counts alone held the side column until the terminal was half as wide as it looked. Measuring the live terminal instead would flip its own input -
   going top hands those columns back and takes the band's rows - so the layout would
   oscillate at the boundary. **Tests:**
   `the_layout_turns_over_where_the_side_terminal_stops_being_wider_than_tall`,

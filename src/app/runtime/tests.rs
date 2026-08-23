@@ -219,10 +219,12 @@ fn terminal_view_size_zero_tree_is_full_width() {
         (80, 24)
     );
     // Shown tree: cols - nav_width - 1 (view border). The hint bar lives inside the nav
-    // column, so the terminal view keeps every row.
+    // column, so the terminal view keeps every row. Wide enough to STAY in Side: a row is
+    // two columns tall, so the column survives only while `w - nav - 1` beats twice the
+    // rows (200 - 49 = 151 against 48).
     assert_eq!(
-        terminal_view_size(80, 23, crate::ui::switcher::NavSize::visible(48)),
-        (31, 24)
+        terminal_view_size(200, 23, crate::ui::switcher::NavSize::visible(48)),
+        (151, 24)
     );
     // Degenerate widths clamp to at least 1.
     assert_eq!(
@@ -247,7 +249,9 @@ fn terminal_view_size_keeps_full_height_when_the_tree_is_shown() {
     assert_eq!(full, 40);
     // Tree shown in Side: the hint bar is the NAV column's bottom row, not a full-width
     // strip, so the terminal view costs nothing in height.
-    let (_, shown) = terminal_view_size(120, 39, crate::ui::switcher::NavSize::visible(NAV_WIDTH));
+    // 220 wide keeps the side column at 40 rows (171 against 80); at 120 the column would
+    // leave a terminal squarer than it looks, and the band would take over.
+    let (_, shown) = terminal_view_size(220, 39, crate::ui::switcher::NavSize::visible(NAV_WIDTH));
     assert_eq!(
         shown, 40,
         "the nav-local hint bar costs the terminal view no rows"
@@ -1999,13 +2003,18 @@ fn handle_mouse_event_view_border_grab_sets_dragging() {
         row: 3,
         pressed: true,
     };
-    let (vw, vh) = terminal_view_size(80, 24, crate::ui::switcher::NavSize::visible(nav_width));
+    // Landscape enough to keep the side column, whose border this test grabs.
+    let (vw, vh) = terminal_view_size(200, 24, crate::ui::switcher::NavSize::visible(nav_width));
     let term_area = ratatui::layout::Rect::new(nav_width + 1, 0, vw, vh);
     let mut focus_toggle = false;
     let mut wheel = false;
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
     rt.state = state;
     rt.switcher = switcher;
+    // The handler cuts its own regions from the runtime's size, so the runtime has to be
+    // landscape too or the border it looks for is a horizontal rule under the band.
+    rt.cols = 200;
+    rt.body_rows = 23;
     rt.handle_mouse_event(&ev, &sel, &mut focus_toggle, &mut wheel, term_area);
     assert!(
         rt.mouse_state.dragging_view_border,

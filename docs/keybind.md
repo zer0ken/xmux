@@ -27,7 +27,8 @@ passed through untouched rather than intercepted.
 
 These act on the nav while it holds focus. It holds one card per session, each source's
 cards together, the source you used most recently first. While a side column leaves the live screen
-wider than it is tall, the nav IS that column and the cards run down it. Once the window
+wider than it is tall, the nav IS that column and the cards run down it (wider than tall
+as it looks on screen, where a row is about two columns tall). Once the window
 is narrow or short enough that the column would leave the live screen square or taller,
 the nav moves to a band across the top instead and the same cards flow down a column and
 then continue to the right, a whole source at a time. Either

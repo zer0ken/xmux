@@ -33,6 +33,12 @@ pub const NAV_WIDTH: u16 = 48;
 /// [`Switcher::card_height`] so the screen-row-to-card mapping never diverges.
 pub(super) const CARD_H: u16 = 2;
 
+/// How much taller than wide a terminal cell is. A row is about two half-width columns
+/// high in every font a terminal ships with, so an aspect measured in CELLS is not the
+/// aspect the user sees: 60 columns over 30 rows is a square window, not a landscape one.
+/// Every shape test multiplies the rows by this and compares real proportions.
+pub(super) const CELL_ASPECT: u32 = 2;
+
 /// Blank columns between two card columns in the portrait `Top` flow. One is enough to
 /// part them: every card opens with its address column, so a gutter reads as a gap
 /// between a name and the next number rather than two names running together.
@@ -123,14 +129,20 @@ impl NavSize {
 /// once the tree squeezes the terminal into a square-or-taller shape. `nav_width` is the
 /// width the tree would occupy in `Side` (the natural/unhidden width).
 ///
+/// The aspect is the one the user SEES, not the one the cell counts state: a row is about
+/// two columns tall ([`CELL_ASPECT`]), so 60 columns over 30 rows is square. Comparing the
+/// counts directly would call that window landscape and keep the side column until the
+/// terminal was half as wide as it looked.
+///
 /// The aspect is always measured AS IF the tree were in its side column, never from the
 /// terminal's live size: going `Top` gives the terminal back the tree's columns and takes
 /// the band's rows instead, so measuring the result would make the test flip its own input
 /// and the layout oscillate at the boundary. One side of the comparison, one answer: the
 /// side terminal is wider than tall (`x > y`) or it is not (`x <= y`).
 pub fn view_layout(area: Rect, nav_width: u16) -> ViewLayout {
-    let side_term_w = area.width.saturating_sub(nav_width.saturating_add(1));
-    if side_term_w <= area.height {
+    let side_term_w = area.width.saturating_sub(nav_width.saturating_add(1)) as u32;
+    let side_term_h = area.height as u32 * CELL_ASPECT;
+    if side_term_w <= side_term_h {
         ViewLayout::Top
     } else {
         ViewLayout::Side

@@ -104,7 +104,11 @@ UI elements a user perceives as distinct things:
 - layout turnover - the one test that picks `Side` or `Top` (`view_layout`), measured as
   if the nav kept its side column: the terminal that column would leave is
   `w - nav_width - 1` wide over the window's full height. Wider than tall keeps the side
-  column; square or taller moves the nav to the top band and drops the column. The
+  column; square or taller moves the nav to the top band and drops the column. Wider than
+  tall in the proportions the user SEES, not in cell counts: a row is about two columns
+  tall (`CELL_ASPECT`), so the rows count double and 60 columns over 30 rows is square.
+  Comparing the counts directly kept the side column until the terminal was half as wide
+  as it looked. The
   as-if is the point - going `Top` hands those columns back to the terminal and takes the
   band's rows instead, so a test measuring the LIVE terminal would flip its own input and
   the layout would oscillate on one cell of resize. Hiding the nav is not a resize either:
@@ -231,8 +235,8 @@ UI elements a user perceives as distinct things:
   served keeps the id it was painted with, because that id is what the frozen order, the
   persisted selection, and typed ctl targets are keyed to.
 - roster - the list of ssh targets xmux offers as sources, assembled from
-  PROVIDERS: `~/.ssh/config` aliases and, when `[discovery]` enables it, the online
-  peers of this machine's tailnet. Every provider yields plain ssh target names, so
+  PROVIDERS, both on unless `[discovery]` turns one off: `~/.ssh/config` aliases and the
+  online peers of this machine's tailnet. Every provider yields plain ssh target names, so
   nothing downstream can tell where a name came from. Distinct from `discovery`, which
   scans a source for sessions, and from `machine/`, which reaches one.
 - filter - the type-to-filter input over the nav list.
