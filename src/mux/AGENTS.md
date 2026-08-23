@@ -12,7 +12,7 @@ The module root holds the cross-mux surface: the `Mux` trait, the mux registry
 (the one list every factory and predicate reads), identity detection, the factory
 functions, and the control-protocol trait that hides a mux's control-mode wire
 details (line framing and classification, the notification-to-event table, the
-size formatter) from the host layer. The shared vocabulary holds the query format
+size formatter) from the connection layer. The shared vocabulary holds the query format
 templates, the argv builders, the row parsers, and the address utilities; the root
 re-exports it, so one path names a vocabulary builder and a mux factory alike.
 
@@ -23,7 +23,7 @@ AND its display driver, and is re-exported from the root:
   driver with its attach helper, and its pure control-mode wire functions behind
   the control-protocol trait. See `tmux/AGENTS.md`.
 - `psmux/` owns the psmux mux, its poll cadence, its in-place switch plan, its
-  driver with the tty capture and refresh helpers, and the per-machine session
+  driver with the tty capture and refresh helpers, and the per-host session
   registry that backs enumeration (one server per session, so there is no
   aggregate session listing). See `psmux/AGENTS.md`.
 - `zellij/` owns the zellij mux, its poll cadence, the per-session action argv
@@ -38,12 +38,12 @@ driver type.
 
 ## Mental Model
 
-A mux describes mux vocabulary and classification. A transport lowers machine
+A mux describes mux vocabulary and classification. A transport lowers host
 execution. The `MuxDriver` trait in `src/driver.rs` is the mux-agnostic display
 seam; each mux's concrete driver lives in its own family directory and is
 constructed by the mux, so a mux owns BOTH its argv, server model, and
 enumeration AND its display orchestration. Shared muxes such as tmux use one
-aggregate server and a host-level control stream. Per-session muxes such as psmux
+aggregate server and a source-level control stream. Per-session muxes such as psmux
 and zellij enumerate differently and supply a per-session attach plan.
 
 The command-plan verbs default to tmux-compatible argv, so a tmux-compatible mux
@@ -54,10 +54,10 @@ it prints are one decision, so they move together.
 ## Module Seams
 
 - Enumeration may use the transport, because it executes on a host.
-- Discovery answers "which mux is on this machine", and only ever from the
+- Discovery answers "which muxes a host serves", and only ever from the
   registry: the candidate set is what xmux can drive, and each candidate is
   confirmed by the identity probe answering AS that mux. It is called once per
-  machine, by the environment for this box before the first paint and by the
+  host, by the environment for this box before the first paint and by the
   runtime for each remote after it, never per source. The psmux-shadows-tmux
   filter lives inside discovery and keys off what ANSWERED, never off an OS: a
   remote's OS is not something xmux knows, since the ssh family's platform field
@@ -72,23 +72,23 @@ it prints are one decision, so they move together.
   plan wrapping one. The pure address vocabulary is callable anywhere.
 - The server model, the event source, and the death signal are the classification
   values callers use instead of branching on mux names. The mux constructs the
-  host's driver, so mux selection lives in the mux family and never in a central
+  source's driver, so mux selection lives in the mux family and never in a central
   match on server model; the wrapper in `src/driver.rs` only resolves it. tmux
-  keeps one PTY per host with an in-place switch; psmux switches its client in
+  keeps one PTY per source with an in-place switch; psmux switches its client in
   place or reattaches per session; zellij reattaches on every change, since it
   can name no client from outside its own session.
 
 ## Invariants
 
 - A reachable empty mux enumerates as an empty list, not an error; unreachable
-  hosts return an error.
+  sources return an error.
 - Every command in a poll sweep runs under a fixed per-command budget. The poll
   ticker only advances after the sweep RETURNS, so one command that never answers
-  would freeze that host's whole inventory. A timed-out listing surfaces as the
-  host's error; a timed-out pane query still emits an EMPTY panes event, because a
+  would freeze that source's whole inventory. A timed-out listing surfaces as the
+  source's error; a timed-out pane query still emits an EMPTY panes event, because a
   card whose panes never arrive keeps its spinner forever.
-- Transport-specific command wrapping belongs to the machine axis.
-- Mux methods should stay at the exact behavior surface used by app, host
+- Transport-specific command wrapping belongs to the host axis.
+- Mux methods should stay at the exact behavior surface used by app, source
   metadata, and management code.
 
 ## Common Pitfalls
@@ -101,7 +101,7 @@ it prints are one decision, so they move together.
 
 ## Before Editing
 
-- Identify whether the new behavior is mux semantics, machine transport, or UI
+- Identify whether the new behavior is mux semantics, host transport, or UI
   policy.
 - Check tmux, psmux, AND zellij behavior when changing trait methods. A new verb
   with a tmux-compatible default is silently wrong for zellij, which refuses
@@ -112,5 +112,5 @@ it prints are one decision, so they move together.
 
 - Pin the argv a plan emits and the shape it parses back together; they are one
   decision.
-- Re-check the host and app surfaces when the event source, death signal, or
+- Re-check the connection and app surfaces when the event source, death signal, or
   selection outcome changes.

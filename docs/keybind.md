@@ -55,7 +55,7 @@ while the live screen is focused:
 | `/` | fuzzy-filter the list by `<source>/<name>` (no prefix) |
 | `prefix 0`-`prefix 9` | jump to a session by its number |
 | `prefix n` | start a new session on the selected host |
-| `prefix r` | re-scan every host |
+| `prefix r` | re-scan every source |
 
 `prefix n` needs a host row: a session row has nothing to create, and it says so
 with a brief message. Creating under an unreachable host is likewise refused.
@@ -104,7 +104,7 @@ With the nav auto-hidden the mux owns every row, status line included. The bar s
 floats over the bottom of the window for the two things that must be seen the moment
 they happen: the armed prefix, and a refusal. Scan progress and the active filter
 persist, so they stay in the nav and never take a row back from a hidden one. Four states outrank the prefix while they apply, in order: a refusal message
-(in red), the host-scan progress, the active filter, and then the resting prefix. A
+(in red), the scan progress, the active filter, and then the resting prefix. A
 refusal too long for the nav width wraps onto more rows rather than clipping.
 
 ## Focus

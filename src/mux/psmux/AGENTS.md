@@ -9,7 +9,7 @@ no psmux code sits at the `src` root. It owns BOTH sides of the mux:
   enumeration for a LOCAL host (a plain session listing over ssh for a REMOTE
   one), attach argv, poll cadence, death signal, and the window and session
   operation plans;
-- the display driver: the per-host display orchestration for a per-session mux.
+- the display driver: the per-source display orchestration for a per-session mux.
 
 The mux constructs its own driver, so psmux selection lives in this family and
 never in a central match on server model. psmux has no control stream; it is
@@ -18,8 +18,8 @@ polled.
 ## Mental Model
 
 psmux is a PER-SESSION mux: one server per session on its own port, recorded in a
-per-machine registry under the user's home directory and coordinated over the
-default socket. The display driver holds ONE per-host PTY and, on a session
+per-host registry under the user's home directory and coordinated over the
+default socket. The display driver holds ONE per-source PTY and, on a session
 change, either:
 
 - SWITCHES it in place (`switch-client -c <tty> -t <session>`) when a live client
@@ -31,12 +31,12 @@ change, either:
 
 The tty is captured off-loop by a read-only `list-clients` probe, correlating the
 client by the session it shows: with one server per session, the client showing a
-session is on that session's own server. A remote psmux host is enumerated and
+session is on that session's own server. A remote psmux source is enumerated and
 displayed the generic way, and the local probe is skipped there.
 
 The mux supplies mux vocabulary (argv, model, enumeration); the driver consumes it
 and owns the concrete switch-or-reattach decision. The transport lowers the
-machine execution.
+host execution.
 
 ## Module Seams
 
@@ -62,8 +62,8 @@ machine execution.
 - On a reattach the stale attachment is HELD, not removed, so its grid stays on
   screen until the fresh one is ready (stale-while-revalidate).
 - Sync never pre-warms, since attaches are selected on demand when a session is
-  shown; it only reaps the host PTY when the host has no sessions left.
-- A LOCAL psmux host reads the per-machine registry; a REMOTE one enumerates over
+  shown; it only reaps the source PTY when the source has no sessions left.
+- A LOCAL psmux source reads the per-host registry; a REMOTE one enumerates over
   ssh and never touches the local registry.
 
 ## Common Pitfalls
@@ -72,7 +72,7 @@ machine execution.
   through the mux, never through a match on server model.
 - Do not run a switch with an empty client tty. The capture is guarded, and an
   empty or absent tty must fall back to reattach.
-- Do not fold the local registry into a REMOTE host: it would inject local session
+- Do not fold the local registry into a REMOTE source: it would inject local session
   names as phantoms and swallow an ssh failure into a fake empty list.
 
 ## Before Editing
@@ -86,7 +86,7 @@ machine execution.
 ## Verification
 
 - Exercise the plan argv, the registry merge, and the driver decision for the
-  seam you touched, and re-check the app and host surfaces when the event source,
+  seam you touched, and re-check the app and connection surfaces when the event source,
   death signal, or display decision changes.
 - Set `XMUX_LOG=xmux::mux::psmux=debug` to trace the driver's show, tty probe, and
   inventory decisions.

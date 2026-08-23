@@ -1,6 +1,6 @@
 # xmux
 
-*A cross-host terminal-multiplexer switcher — tmux's `prefix + s` / `switch-client`, but reaching every machine.*
+*A cross-host terminal-multiplexer switcher - tmux's `prefix + s` / `switch-client`, but reaching every machine.*
 
 xmux is a persistent, terminal-owning supervisor written in Rust. It owns the
 terminal you launch it in, keeps its live mux attachments running, and renders
@@ -11,7 +11,7 @@ session over ssh, or a zellij session on a third machine. No detaching and
 reattaching, no picker to click through.
 
 The goal is the `switch-client` experience you already know from tmux, extended
-across hosts: instant, in-place switching between any configured machine's mux
+across hosts: instant, in-place switching between any configured host's mux
 sessions from one terminal.
 
 ## Features
@@ -30,8 +30,8 @@ sessions from one terminal.
 - **Two orthogonal axes.** A `Mux` axis (**tmux**, **psmux**, and **zellij**) and a
   `Transport` axis (**local** and **ssh**) compose freely: any mux over any
   transport, without either knowing about the other.
-- **Metadata without polling where it counts.** tmux hosts are tracked over
-  control mode (`-CC`); psmux and zellij hosts are polled, because neither offers a
+- **Metadata without polling where it counts.** tmux sources are tracked over
+  control mode (`-CC`); psmux and zellij sources are polled, because neither offers a
   push channel. Either way the nav list reflects the servers, which remain the source of
   truth.
 - **Switching, not editing.** Navigate, filter, jump by number, and start a
@@ -56,9 +56,9 @@ cargo install --path .
 ```
 
 It runs on Windows and on unix-likes. You need `ssh` on the machine running
-xmux for remote hosts, and a supported mux on each machine you target: `tmux` on
+xmux for remote hosts, and a supported mux on each host you target: `tmux` on
 unix, `psmux` on Windows (both speak the same command language), or `zellij`,
-which speaks its own and is driven through its own CLI. A machine's mux is detected
+which speaks its own and is driven through its own CLI. A host's mux is detected
 from the binary it answers as, so a mix of the three across your hosts needs no
 configuration.
 
@@ -70,7 +70,7 @@ Run xmux with no arguments to open the interactive split view:
 xmux                          # the interactive nav + live-screen app
 xmux ls                       # list every reachable session (scriptable)
 xmux attach <source>/<name>   # attach one session directly, e.g. xmux attach prod/api
-xmux doctor                   # check config and per-host reachability
+xmux doctor                   # check config and per-source reachability
 xmux instances                # list running instances
 xmux send <name> <command…>  # drive one of them over its control socket
 xmux version
@@ -92,7 +92,7 @@ screen. Keyboard focus is on one region at a time.
 | `prefix 0`-`prefix 9` | jump to a session by the number in its left column (keep typing for 10+) |
 | `prefix n` | start a new session on the selected host |
 | `/` | fuzzy-filter the list |
-| `prefix r` | re-scan every host |
+| `prefix r` | re-scan every source |
 
 The mouse works too: click a row to select it, click the right pane to focus it,
 and scroll the wheel over the list.
@@ -116,14 +116,14 @@ keys that prefix unlocks.
 
 See [`docs/keybind.md`](docs/keybind.md) for more on the prefix.
 
-## Several muxes on one machine
+## Several muxes on one host
 
-A machine can run more than one mux at a time, and xmux offers each as its own
-source. On THIS machine you do not have to say so: with `mux` left at its default,
+A host can run more than one mux at a time, and xmux offers each as its own
+source. On THIS host you do not have to say so: with `mux` left at its default,
 xmux asks this box which of the muxes it supports are installed, and offers each one
 it finds. Install zellij next to your psmux and it is simply there on the next run.
 
-Name them explicitly when you want a specific set, on this machine or a remote:
+Name them explicitly when you want a specific set, on this host or a remote:
 
 ```toml
 [local]
@@ -136,26 +136,30 @@ mux = ["tmux", "zellij"]
 
 Both then appear in the list, `local/psmux` over its sessions and `local/zellij` over
 its own, and moving between them is the same keystroke as moving between hosts. A
-machine given several muxes has its sources named `local:psmux` and `local:zellij`, and
-that is the name `xmux ls` prints and `xmux send switch` takes; a machine given one
-keeps its bare name (`local`, `prod`) exactly as before. `exclude` names machines, so
+host given several muxes has its sources named `local:psmux` and `local:zellij`, and
+that is the name `xmux ls` prints and `xmux send switch` takes; a host given one
+keeps its bare name (`local`, `prod`) exactly as before. `exclude` names hosts, so
 excluding one drops every mux on it.
 
-Listing a mux that is not installed on that machine is not silently ignored: the source
+Listing a mux that is not installed on that host is not silently ignored: the source
 appears as unreachable with the mux's own message, because a name you wrote is a name
 you meant. A DISCOVERED list works the other way round, since nothing was written: only
 the muxes that answered are offered. `xmux doctor` says which of the two you have.
 
-Remote machines are asked too, but AFTER the app is up. A remote probe is an ssh round
+Remote hosts are asked too, but AFTER the app is up. A remote probe is an ssh round
 trip per mux, so nothing waits for it: the sources you configured paint immediately, and a
-mux nobody wrote down appears as its machine answers, a second or several later. Discovery
-only ever ADDS. The mux a machine was already showing keeps its name, so nothing you typed
+mux nobody wrote down appears as its host answers, a second or several later. Discovery
+only ever ADDS. The mux a host was already showing keeps its name, so nothing you typed
 or selected changes under you.
 
 ## Where the host list comes from
 
+A **host** is a machine that hosts muxes and that xmux can reach; this list is what
+decides the set. One host can serve several muxes, and each of those pairings is a
+**source** (see above).
+
 By default xmux offers the `Host` aliases in `~/.ssh/config`, plus `local`. A tailnet
-can supply the list instead, so the machines you can reach are the machines xmux
+can supply the list instead, so the hosts you can reach are the hosts xmux
 offers with nothing to keep in sync by hand:
 
 ```toml
@@ -177,7 +181,7 @@ Configuration is entirely optional. Zero-config is the default. xmux reads
 `~/.config/xmux/config.toml`:
 
 ```toml
-# The mux used on the local machine. A LIST runs several at once: each is its own
+# The mux used on the local host. A LIST runs several at once: each is its own
 # source, and both appear side by side in the list.
 [local]
 mux = "auto"          # "auto" (default): every mux xmux supports that is actually
@@ -208,20 +212,20 @@ selection-style = "#2d4f6b"           # the selected card's background. Empty (d
 Hosts come from `~/.ssh/config` first. Connection details (user, port, key,
 jump host) are taken from there. The config file augments that discovery; it
 never replaces it. Run `xmux doctor` to see the resolved local mux, ssh
-availability, and per-host reachability. Persistent state (last selected
+availability, and per-source reachability. Persistent state (last selected
 session, the live auto-hide-nav toggle, logs, and control sockets) lives under
 `~/.xmux/`.
 
 ## Control socket
 
-Every running instance has a name — an auto-generated `<adjective>-<noun>`, or
-whatever `xmux --name <name>` says — and listens on `~/.xmux/ctl-<name>.sock`.
+Every running instance has a name - an auto-generated `<adjective>-<noun>`, or
+whatever `xmux --name <name>` says - and listens on `~/.xmux/ctl-<name>.sock`.
 Sessions are addressed `<source>/<session>`.
 
-It speaks navigation/display verbs — `ping`, `status`, `dump`, `rescan`,
+It speaks navigation/display verbs - `ping`, `status`, `dump`, `rescan`,
 `switch <source>/<session>`, `focus <nav|terminal>`, `width <delta>` (adjusts the
 nav width by a signed column count, a delta rather than an absolute width),
-`toggle-auto-hide`, `quit` — and one session-lifecycle verb,
+`toggle-auto-hide`, `quit` - and one session-lifecycle verb,
 `new-session <source> [name]`. There are no kill/rename/window verbs, for the same
 reason the keys are gone: the mux owns editing a session. An unstable `raw:`
 namespace is reserved for low-level key/byte injection.
@@ -240,7 +244,7 @@ stdin, one per line; a refused command exits non-zero.
 ## Architecture
 
 xmux is built around two orthogonal axes, `Mux` (per-mux behavior) and
-`Transport` (per-machine execution), so that mux families and machine families
+`Transport` (per-host execution), so that mux families and host families
 compose without conflating. The metadata path and the display path are kept
 separate, and the supervisor branches on nothing mux-specific.
 
@@ -252,4 +256,4 @@ recorded under [`docs/adr/`](docs/adr/), and behavior requirements in
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT - see [`LICENSE`](LICENSE).

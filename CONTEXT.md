@@ -18,12 +18,21 @@ module hides, and which dependencies are allowed to cross into it.
 
 One concept, one word. The two axes and the runtime:
 
-- `Transport` (MACHINE axis) - the per-machine execution trait (local / ssh); a
-  host holds one. It owns where a command runs and how its argv is executed, and
-  knows nothing about the mux. "machine" is the family/concept; `Transport` is the
+- `Transport` (HOST axis) - the per-host execution trait (local / ssh); a
+  source holds one. It owns where a command runs and how its argv is executed, and
+  knows nothing about the mux. "host" is the family/concept; `Transport` is the
   trait.
-- `Mux` (MUX axis) - the per-mux behavior trait (tmux / psmux / zellij); a host
+- `Mux` (MUX axis) - the per-mux behavior trait (tmux / psmux / zellij); a source
   holds one. "mux" is the family/concept; `Mux` is the trait.
+- host - a machine that HOSTS muxes and that xmux can reach. The `roster` decides
+  the set: of all the machines there are, the hosts are the ones it names. "machine"
+  is the plain word for the thing in the world and names no abstraction here; the
+  abstraction is the host. A host is never a host paired with one mux - that is a
+  `source` - so a host serving several muxes is several sources under ONE host, and
+  the host is the half of a source id that survives when the mux half is dropped.
+  The host FOR a mux is a host that can run it; the host OF a session is the host
+  that session runs on. A `Transport` reaches a host; it is not one, and several
+  transports may reach the same host.
 - `MuxDriver` - a mux's display driver, which the mux itself builds.
 - the app - the runtime that owns the terminal: its loop, its focus state, and
   its input routing.
@@ -38,15 +47,15 @@ UI elements a user perceives as distinct things:
   column in side layout, a top band in portrait layout, where the same cards run in a
   column flow). Never the
   "sidebar", and never the "tree": the on-screen VIEW is the nav view; "tree" names
-  only the internal row-model module, which is still a Host to Session to Window
+  only the internal row-model module, which is still a Source to Session to Window
   structure.
 - terminal view - the right region (the selected session's live grid).
 - view border - the vertical line between the two views. Modelled on tmux's pane
   border, but it borders views (not panes), so it is a `view border`, never a
   "pane border" or a bare "divider". Its color config keys are `view-border-style`
   / `view-active-border-style` / `view-border-hover-style`. These keys are
-  OVERRIDES: unset (empty), each colour comes from the displayed host's live mux
-  `pane-*-border-style` (queried per displayed host), falling back to the stock
+  OVERRIDES: unset (empty), each colour comes from the displayed source's live mux
+  `pane-*-border-style` (queried per displayed source), falling back to the stock
   default (`green` / terminal-default / `yellow`). A non-empty key wins over both.
 - active view border - the view border half painted the active color to mark which
   view holds focus (tmux `pane-active-border-style`; the top half is the active
@@ -64,7 +73,7 @@ UI elements a user perceives as distinct things:
   it needs instead of clipping. A shown flash paints it in the error style.
 - host info - the unreachable-host detail shown in the terminal-view region.
 - landing - the empty-state panel shown in the terminal-view region for a selected
-  reachable host that has no sessions yet (its name + the keys to start one).
+  reachable source that has no sessions yet (its name + the keys to start one).
 - grid - the live terminal content drawn in the terminal view: xmux's in-memory
   cell mirror of the attached session's screen, fed by the terminal-emulation parser.
 - cursor - the real terminal cursor placed over the grid at the mux's cursor cell
@@ -140,9 +149,9 @@ UI elements a user perceives as distinct things:
   contiguous, sources run most-recently-used first, and inside a source its own sessions
   run most-recently-used first. Global session recency would split a source across the
   list, restating its context line and leaving a connector claiming cards that belong to
-  another host. One insertion rule carries it: a session lands after the last card of its
-  own source, or at the end when its source has none yet - which also keeps a session
-  discovered later inside its group. The order is rebuilt while any host is still
+  another source. One insertion rule carries it: a session lands after the last card
+  of its own source, or at the end when its source has none yet - which also keeps a session
+  discovered later inside its group. The order is rebuilt while any source is still
   scanning and frozen once they settle, so a routine poll never reshuffles cards under
   the user.
 - selection - the nav's current pick, advanced by navigation; a routine poll or
@@ -199,46 +208,51 @@ UI elements a user perceives as distinct things:
   (or `--name`), owning `ctl-<name>.sock` for its lifetime. `xmux send <name>` and
   `xmux instances` address instances by it; a unique name prefix resolves, and `-`
   means the sole live instance.
-- source - ONE MUX ON ONE MACHINE, and the thing every session address names. A
-  machine running several muxes at once contributes one source per mux, all reached
-  through the same `Transport`. A source id is the bare machine alias (`local`, `prod`)
-  when its machine serves a single mux, and `<machine>:<mux>` (`local:zellij`) when it
+- source - ONE MUX ON ONE HOST, and the thing every session address names. A
+  host running several muxes at once contributes one source per mux, all reached
+  through the same `Transport`. A source id is the bare host alias (`local`, `prod`)
+  when its host serves a single mux, and `<host>:<mux>` (`local:zellij`) when it
   serves several, so a one-mux setup is spelled exactly as it always was. The two halves
   are read back through accessors; nothing compares a source id to `local` directly. The
   nav renders the halves separately (`local/zellij`), so the id
   never appears with its mux twice. A source is held TWICE, once per consumer, and both
-  copies resolve the machine the same way: the event loop drives a host out of its
-  runtime host registry, and the off-loop operations resolve a source out of the
-  environment's source list. Discovery adds to BOTH - a source in only one of them
+  copies resolve its host the same way: the event loop drives a source out of its
+  runtime registry, and the off-loop operations resolve one out of the environment's
+  source list. Discovery adds to BOTH - a source in only one of them
   paints and scans but refuses every operation, or the reverse.
-- mux discovery - how a machine's mux list is decided when it named no mux (`mux` unset
+- mux discovery - how a host's mux list is decided when it named no mux (`mux` unset
   or `auto`): every mux xmux supports is asked whether it is installed there, and each one
   that answers becomes a source. Two halves, in that order: the candidate set is what xmux
   can DRIVE, and the question asked of each candidate is the same identity probe a
   configured mux gets, so a binary carrying a mux's
   name while being another mux is not that mux (where psmux answers, a `tmux` that answers
   is psmux's own alias). A written `mux` value is never probed: it is taken verbatim,
-  unreachable and all. Distinct from `roster` (which MACHINES) and `discovery` (scanning a
+  unreachable and all. Distinct from `roster` (which HOSTS) and `discovery` (scanning a
   source for SESSIONS).
   THIS BOX is resolved before the first paint (a local probe is milliseconds), once, and
-  threaded into both source-list and host-registry construction so source ids and host ids
-  cannot disagree. A REMOTE machine is probed AFTER launch instead (one ssh round trip per
-  mux, which nothing may wait for): one task per machine, the answer arrives as a host
-  event, and the loop adds a scanning card for every mux the machine does not already
+  threaded into the construction of both the source list and the runtime registry, so the
+  two cannot disagree on which sources exist. A REMOTE host is probed AFTER launch
+  instead (one ssh round trip per
+  mux, which nothing may wait for): one task per host, the answer arrives as a source
+  event, and the loop adds a scanning card for every mux the host does not already
   serve. That add is
   ADD-ONLY: an added source's id is always qualified (`prod:zellij`) and the mux already
   served keeps the id it was painted with, because that id is what the frozen order, the
   persisted selection, and typed ctl targets are keyed to.
-- roster - the list of ssh targets xmux offers as sources, assembled from
-  PROVIDERS, both on unless `[discovery]` turns one off: `~/.ssh/config` aliases and the
-  online peers of this machine's tailnet. Every provider yields plain ssh target names, so
-  nothing downstream can tell where a name came from. Distinct from `discovery`, which
-  scans a source for sessions, and from the machine axis, which reaches one.
+- roster - which HOSTS xmux offers, assembled from PROVIDERS, both on unless
+  `[discovery]` turns one off: `~/.ssh/config` aliases and the online peers of this
+  machine's tailnet. Every provider yields plain ssh target names, so nothing
+  downstream can tell where a name came from. The roster is what makes a machine a
+  host: a machine no provider names is one xmux has nothing to say about. Distinct
+  from `mux discovery`, which asks a host WHICH MUXES it serves, from `discovery`,
+  which scans a source for sessions, and from the host axis, which reaches one.
 - filter - the type-to-filter input over the nav list.
 - flash - a transient notice or error line shown in the hint bar (e.g. a refused
   action's reason). Never a "toast" or "notice".
 - scan indicator - the `⟳ scanning hosts n/m…` progress shown in the hint bar
-  while host probes are in flight; distinct from a row's `scanning…` status.
+  while source probes are in flight; distinct from a row's `scanning…` status. The
+  counted things are sources, so the word the bar prints is one the vocabulary no
+  longer uses.
 - armed - the state between pressing the prefix and its command key. The hint bar
   reads it to swap from the resting prefix to the cheatsheet, so arming is a
   visible change and redraws the frame.
@@ -292,8 +306,8 @@ the argv of the muxes xmux drives.
 
 Two orthogonal axes describe every connection, and no module conflates them:
 
-- MACHINE - `src/machine/`. Each machine family owns its execution behind the
-  `Transport` trait; a host builds one at construction, so machine selection is
+- HOST - `src/machine/`. Each host family owns its execution behind the
+  `Transport` trait; a source builds one at construction, so host selection is
   never a central `match`. Shared shell vocabulary (quoting, remote command
   assembly) lives beside the families. `Transport` owns where a command runs and
   how its argv is executed; it knows nothing about the mux.
@@ -306,13 +320,13 @@ Two orthogonal axes describe every connection, and no module conflates them:
   every plan AND the shape of what each plan prints, since a plan and its output
   are one decision.
 
-Attach argv is composed from a host's own mux + transport (the two axes
+Attach argv is composed from a source's own mux + transport (the two axes
 together), so the two families are combined without either knowing the other.
 
 The supervisor branches on NOTHING mux-specific. `src/app/` (runtime loop,
 focus, input routing), `src/ui/` (switcher / rows / chrome / modal / ops
 rendering), and `src/state/` (the runtime state and its mutation sites) select
-display through the host's own driver and read the grid back from it; per-mux
+display through the source's own driver and read the grid back from it; per-mux
 behavior lives behind that seam. These layers carry no PTY, grid, or
 terminal-protocol logic.
 
@@ -321,14 +335,14 @@ The remaining layers each own one concern:
 - `src/display/` - the mux- and app-agnostic PTY/grid/input mechanics (attach
   spawning, the grid, input decode, terminal setup, dispatch, the registry, the
   worker).
-- `src/host/` - host connection management (control-mode reader/writer, poll
-  tasks, live client ownership).
-- `src/machine/` - the machine axis: the `Transport` trait, the local and ssh
+- `src/host/` - per-source connection management (control-mode reader/writer,
+  poll tasks, live client ownership).
+- `src/machine/` - the host axis: the `Transport` trait, the local and ssh
   families, and the shared shell vocabulary.
-- `src/model/` - domain types: hosts, selection, actions, commands, event
+- `src/model/` - domain types: sources, selection, actions, commands, event
   effects, and the server model.
 - `src/driver.rs` - the mux-agnostic `MuxDriver` trait, the supervisor
-  capabilities a driver borrows, and the thin wrapper that resolves a host's
+  capabilities a driver borrows, and the thin wrapper that resolves a source's
   driver. It names no concrete mux type.
 
 ## Colour ownership
@@ -362,13 +376,13 @@ A new colour goes into the palette as a slot, or it does not go in.
 
 At creation time, place a new source file by the axis it belongs to:
 
-- Machine-specific → a new machine family is a new module under `src/machine/`
-  implementing `Transport` (plus its factory); new per-machine execution goes in
+- Host-specific → a new host family is a new module under `src/machine/`
+  implementing `Transport` (plus its factory); new per-host execution goes in
   the existing local or ssh family.
 - Mux-specific (a new mux family or per-mux behavior) → `src/mux/<kind>/`.
 - PTY / grid / terminal-protocol mechanics → `src/display/`.
 - Orchestration (runtime loop, focus) → `src/app/`.
-- Host connection management → `src/host/`.
+- Per-source connection management → `src/host/`.
 - Domain types → `src/model/`.
 - Switcher / nav rows / status UI → `src/ui/`.
 - Runtime state → `src/state/`.
@@ -380,24 +394,25 @@ as invariants, seams, and pitfalls - never as change history or phase narrative.
 
 ## Improvement Notes
 
-- Per-host session/window inventory has a single owner: the host's own inventory.
-  Both metadata paths feed it through host events - the control reader carries its
-  parsed sessions and pane subtrees, and the poll task carries the same - the run
-  loop folds them in and rebuilds the nav rows from it. The host manager owns the
-  live mechanisms (control clients and poll tasks). Keep live process/task
-  ownership out of the host domain type, and do not add a third per-host registry.
-- A source is thin per-source config/data. The CLI, the scan, and the off-loop
-  operations assemble a value host from it and drive enumerate/manage/attach
-  through the host, mux, and transport APIs; the machine boundary (argv assembly,
-  ssh transport) lives entirely in the transport, and the psmux registry helpers
-  live in the psmux family. The runtime host registry is the app loop's (every
-  host keyed by id, in display order); the environment keeps the source list and
-  its alias index for the CLI, the scan, and the off-loop operations. The
-  remaining direction: shrink the source further by folding its host assembly into
-  host construction and backing the off-loop operations with the runtime registry
-  too, then reshape the host manager as a runtime manager if it outgrows its
-  metadata-client role. New local/ssh execution belongs in the transport, new mux
-  behavior in the mux.
+- Per-source session/window inventory has a single owner: the source's own
+  inventory. Both metadata paths feed it through source events - the control reader
+  carries its parsed sessions and pane subtrees, and the poll task carries the same
+  - the run loop folds them in and rebuilds the nav rows from it. The source
+  manager owns the live mechanisms (control clients and poll tasks). Keep live
+  process/task ownership out of the source domain type, and do not add a third
+  per-source registry.
+- A source definition is thin per-source config/data. The CLI, the scan, and the
+  off-loop operations assemble a runtime source from it and drive
+  enumerate/manage/attach through the source, mux, and transport APIs; the host
+  boundary (argv assembly, ssh transport) lives entirely in the transport, and the
+  psmux registry helpers live in the psmux family. The runtime source registry is
+  the app loop's (every source keyed by id, in display order); the environment
+  keeps the source list and its alias index for the CLI, the scan, and the off-loop
+  operations. The remaining direction: shrink the definition further by folding its
+  assembly into runtime-source construction and backing the off-loop operations
+  with the runtime registry too, then reshape the source manager as a runtime
+  manager if it outgrows its metadata-client role. New local/ssh execution belongs
+  in the transport, new mux behavior in the mux.
 - The control socket has a useful module seam: public ctl verbs resolve to domain
   actions, while raw key and text injection stays behind the unstable `raw:`
   namespace. Working Notes should tell agents to add user-facing automation
