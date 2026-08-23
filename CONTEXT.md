@@ -78,7 +78,8 @@ UI elements a user perceives as distinct things:
   never the nav selection.
 - card - one nav entry: a context line (`{host}/{mux}`, or `{host}` on a
   host-state card) over a detail line (`{session}/{window}` of the focused (active)
-  window behind a connector; the host state; or the session name + a loading spinner).
+  window behind a connector; the settled host state; or a spinner in the card's
+  unresolved level).
   The window part is written the way its own mux writes it - see `window label`. The muted connector hangs the detail
   under its context line - on a collapsed card, under the shared context
   above: `├` while a collapsed sibling follows below, `└` on the run's last
@@ -130,9 +131,8 @@ UI elements a user perceives as distinct things:
   mux green, session red, the window part bright-black - the quietest
   level, so the session name anchors the detail line. The four read as one code-theme
   palette, and the level a user actually picks (the session) is the one that stands out.
-  A host-state card's detail line is
-  colored by state - scanning yellow, unreachable red, settled "no sessions"
-  muted. The hint bar is two slots as well (black under white, blue keys). Nothing here
+  A spinner is pending yellow wherever it stands. A settled host-state card's detail
+  line is colored by state - unreachable red, "no sessions" muted. The hint bar is two slots as well (black under white, blue keys). Nothing here
   is an RGB value; see "Colour ownership" below for why, and `[ui] selection-style` /
   `[ui] hint-bar-style` for naming one anyway.
 - window label - how a card writes its focused window, in the CONVENTION OF ITS OWN MUX
@@ -182,11 +182,20 @@ UI elements a user perceives as distinct things:
   portrait band's resting bar paints its text plus a cell of padding and stops, because it
   shares that row with the offscreen counts and a full-width slab of bar colour across a
   wide window is a lot of paint for one word.
-- spinner - the braille activity glyph on a loading card.
+- spinner - the braille activity glyph marking a level that has not resolved. One
+  glyph and one frame counter for the whole UI, so every marker on screen turns
+  together.
+- unresolved level - the first of a card's levels (mux, then session, then window)
+  with no answer yet. The spinner stands in exactly that one, and every level of the
+  card behind it stays blank: one spinner per card names WHICH answer is outstanding,
+  where a second would only say the card is busy.
 - loading card - a card standing in for a session whose panes are not yet loaded;
-  its detail line is `{session}/` + a spinner rather than a window part.
-- status - a host-state card's detail-line state text (`scanning…` / `no sessions` /
-  `⚠ unreachable`). Not to be confused with the hint bar (below) or the `chrome`.
+  the window is its unresolved level, so its detail line is `{session}/` + a spinner
+  rather than a window part.
+- status - a host-state card's detail-line state text once it has SETTLED (`no
+  sessions` / `⚠ unreachable`); a card still scanning carries no status word, because
+  its spinner already says so. Not to be confused with the hint bar (below) or the
+  `chrome`.
 - address column - the leftmost column set of every card, holding the one thing that
   answers "where is this": the dim 0-based number `prefix <digit>` jumps to, or, on the
   SELECTED card, the selection mark - the number there would be the address of where you
@@ -249,8 +258,9 @@ UI elements a user perceives as distinct things:
 - filter - the type-to-filter input over the nav list.
 - flash - a transient notice or error line shown in the hint bar (e.g. a refused
   action's reason). Never a "toast" or "notice".
-- scan indicator - the `⟳ scanning hosts n/m…` progress shown in the hint bar
-  while host probes are in flight; distinct from a row's `scanning…` status.
+- scan indicator - the `scanning n/m…` progress shown in the hint bar while host
+  probes are in flight, behind the same spinner on the same frame as the cards it
+  counts. It counts SOURCES; a card's own spinner names one card's unresolved level.
 - armed - the state between pressing the prefix and its command key. The hint bar
   reads it to swap from the resting prefix to the cheatsheet, so arming is a
   visible change and redraws the frame.

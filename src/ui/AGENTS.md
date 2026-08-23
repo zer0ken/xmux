@@ -67,6 +67,15 @@ flatten renders for the dump verb.
   added later joins that grammar rather than bringing its own.
 - A settled host's status word has one source, so the word on a card and the word on the
   screen reached from it are the same word.
+- A card that is waiting turns ONE spinner, in the first of its levels that has not
+  resolved (mux, then session, then window); every level behind it stays blank. A
+  second spinner on one card would say two separate things are in flight, when the
+  card is waiting on exactly one answer. A level that has settled shows its value, and
+  a card that has settled entirely shows a status word - never both a word and a
+  spinner for the same state.
+- Every in-flight marker in this layer reads its glyph from the one spinner helper on
+  the frame the chrome advances, cards and the hint bar's scan progress alike, so
+  nothing on screen turns out of step with anything else.
 - Row transforms do not mutate their inputs unless the function name and
   signature make mutation explicit.
 - The dump should reflect the same split view the main draw path renders.

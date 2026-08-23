@@ -206,8 +206,13 @@ pub(crate) enum RowRef {
     /// detail line (the focused window, in its own mux's notation).
     Session { sess: Session },
     /// A host with no session to show (scanning / unreachable / empty) - the only
-    /// host-level entry, sunk to the bottom of the list.
-    Host { source: String, unreachable: bool },
+    /// host-level entry, sunk to the bottom of the list. `scanning` is the in-flight
+    /// state: the card's unresolved level shows a spinner instead of a status word.
+    Host {
+        source: String,
+        unreachable: bool,
+        scanning: bool,
+    },
     /// A session whose panes are still in flight: its card shows a spinner until
     /// the focused window's name resolves. Attaches to the session all the same.
     Loading { sess: Session },
@@ -222,8 +227,10 @@ pub(crate) enum RowRef {
 pub(crate) struct Row {
     /// The detail line's variable part: the focused (active) window's label, as the
     /// session's own mux writes it, for a session card (the renderer prefixes the
-    /// session name), the host state (scanning… / ⚠ unreachable / no sessions) for a
-    /// host-state card, unused for a loading card (a spinner renders instead).
+    /// session name), the SETTLED host state (⚠ unreachable / no sessions) for a
+    /// host-state card. Empty on anything still in flight - a loading card and a
+    /// scanning host card alike - because a spinner renders in place of the level that
+    /// has not resolved.
     pub(crate) line2: String,
     pub(crate) reference: RowRef,
 }
@@ -377,7 +384,7 @@ fn push_session_card(
         }
     }
     rows.push(Row {
-        line2: "loading…".into(),
+        line2: String::new(),
         reference: RowRef::Loading { sess: sess.clone() },
     });
 }
@@ -448,8 +455,10 @@ pub(crate) fn flatten(
         if !unreachable && !g.sessions.is_empty() {
             continue;
         }
+        // A scanning card carries no status WORD: the spinner in its unresolved level
+        // is the status, so the card does not say the same thing twice.
         let line2 = if is_scanning {
-            "scanning…".to_string()
+            String::new()
         } else if unreachable {
             // The status word comes from the one source either way; a card that HAS a
             // reason names it after the word, in the clause that says what failed.
@@ -465,6 +474,7 @@ pub(crate) fn flatten(
             reference: RowRef::Host {
                 source: g.source.clone(),
                 unreachable,
+                scanning: is_scanning,
             },
         });
     }
@@ -1011,7 +1021,17 @@ mod tests {
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["host"]);
         assert_eq!(addr_of(&rows[0].reference), "jup");
-        assert_eq!(rows[0].line2, "scanning…");
+        // No status WORD while it scans: the card is marked in flight, and the render
+        // turns a spinner in the level that has not resolved.
+        assert!(matches!(
+            rows[0].reference,
+            RowRef::Host {
+                scanning: true,
+                unreachable: false,
+                ..
+            }
+        ));
+        assert_eq!(rows[0].line2, "");
     }
 
     #[test]
@@ -1046,6 +1066,7 @@ mod tests {
             rows[1].reference,
             RowRef::Host {
                 unreachable: true,
+                scanning: false,
                 ..
             }
         ));
@@ -1093,7 +1114,13 @@ mod tests {
             "",
             &[],
         );
-        assert_eq!(rows[0].line2, "scanning…");
+        // No word at all, and the card is marked in flight: the render turns a spinner
+        // in the level it is waiting on, which is what says "doing it now".
+        assert_eq!(rows[0].line2, "");
+        assert!(matches!(
+            rows[0].reference,
+            RowRef::Host { scanning: true, .. }
+        ));
     }
 
     #[test]

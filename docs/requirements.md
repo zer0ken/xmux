@@ -106,10 +106,16 @@ no function, and no test, so renaming code is never a documentation change.
   mux session untouched: it is never killed or altered by exiting.
 - **FR-B6** - Under a filter, `Enter` attaches the **visible (filtered)** session,
   never a filtered-out one, even when a host row is selected.
-- **FR-B7** - Per-element state hints: `scanning…`, `loading…`, `(empty)`,
-  `⚠ unreachable: <reason>`. A card carries the clause that NAMES the failure, since
-  a tool wraps it in its own context and a card is only as wide as the nav; the selected
-  host's panel carries the whole message, so no part of why it failed is cut off.
+- **FR-B7** - A card that is WAITING turns ONE spinner, standing in the first of its
+  levels that has no answer yet: the mux while the source's own id does not name one,
+  the session while the source is still being listed, the window while the session's
+  panes are in flight. The levels behind it stay blank, so the card says WHICH answer
+  is outstanding instead of only that it is busy, and no status word repeats what the
+  spinner already says. The nav's scan progress turns the same spinner on the same
+  frame. A card that has SETTLED reads a word instead: `no sessions`, or
+  `⚠ unreachable: <reason>` carrying the clause that NAMES the failure, since a tool
+  wraps it in its own context and a card is only as wide as the nav; the host screen
+  carries the whole message, so no part of why it failed is cut off.
 - **FR-B8** - A session running xmux is never mirrored into the terminal view.
   This is prevented structurally, not by a runtime check: the nest guard (FR-D3)
   refuses to run xmux inside a mux, so no attachable session can be running xmux.

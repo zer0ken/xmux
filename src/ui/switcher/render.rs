@@ -92,9 +92,6 @@ fn reserve_bar(area: Rect, needed: bool, horizontal: bool) -> (Rect, Rect) {
     }
 }
 
-/// Braille spinner frames for pending states (connecting session, loading panes).
-const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-
 impl Switcher {
     pub fn render(
         &mut self,
@@ -239,7 +236,7 @@ impl Switcher {
         // (render_view_border) separates it from the terminal view.
         self.nav_inner = area;
         self.nav_cells.clear();
-        let spinner_glyph = SPINNER[state.chrome.spinner_frame % SPINNER.len()];
+        let spinner_glyph = crate::ui::spinner_glyph(state.chrome.spinner_frame);
         let num_w = self.number_width();
         match self.layout {
             ViewLayout::Side => {
@@ -468,11 +465,12 @@ impl Switcher {
     /// a host-state card). The detail line is the address column + detail: a session
     /// card's `{session}/{window}` - the focused (active) window, written as its own
     /// mux writes it - in the session / window colours, a loading
-    /// card's `{session}/` + spinner, a host-state card's state coloured by kind
-    /// (pending / danger / muted). Ahead of both lines runs the ADDRESS column: the
-    /// card's dim 0-based number, the thing `prefix <digit>` types. It sits on the
-    /// DETAIL line, never the context line, so it reads beside the session it names and
-    /// a collapsed card (detail line only) puts it in the same place as an expanded one.
+    /// card's `{session}/` + spinner, a host-state card's settled state coloured by kind
+    /// (danger / muted) or a spinner while it scans. Ahead of both lines runs the
+    /// ADDRESS column: the card's dim 0-based number, the thing `prefix <digit>` types.
+    /// It sits on the DETAIL line, never the context line, so it reads beside the
+    /// session it names and a collapsed card (detail line only) puts it in the same
+    /// place as an expanded one.
     ///
     /// On the SELECTED card that column holds the mark instead of a number, because
     /// "you are here" answers the same question the number answers, and one column pays
@@ -507,11 +505,20 @@ impl Switcher {
             }
         };
 
-        // Host-state card: the host name over its status, coloured by kind -
-        // in-flight scanning is pending (soft yellow), a dead host is danger
-        // (soft red), a settled empty host is muted.
-        if let RowRef::Host { unreachable, .. } = &row.reference {
+        // Host-state card: the host name over its status. A card still SCANNING has no
+        // status WORD - the spinner stands in the level that has not resolved, and in
+        // that one level only: while the mux is still unknown the detail line stays
+        // blank, because a second spinner would say two separate things are in flight.
+        // A SETTLED card reads its status coloured by kind: a dead host is danger (soft
+        // red), a reachable empty one muted.
+        if let RowRef::Host {
+            unreachable,
+            scanning,
+            ..
+        } = &row.reference
+        {
             let (host, mux, _) = context_of(&row.reference);
+            let pending = Style::default().fg(palette::get().pending);
             let mut line1 = address(false);
             // A machine serving several muxes has one host card per mux, so the mux has
             // to be on the line or the two cards read identically. It is spanned exactly
@@ -528,17 +535,29 @@ impl Switcher {
                     mux.to_string(),
                     Style::default().fg(color_mux()),
                 ));
+            } else if *scanning {
+                // A source id names its mux only when its machine serves several, so on
+                // the rest the mux is genuinely not known yet: the scan stamps it onto
+                // the sessions it finds. The spinner sits where that name will land.
+                line1.push(Span::styled("/", muted));
+                line1.push(Span::styled(spinner_glyph.to_string(), pending));
             }
             line1.push(Span::raw(" "));
-            let style = if *unreachable {
-                Style::default().fg(palette::get().danger)
-            } else if row.line2.starts_with("scanning") {
-                Style::default().fg(palette::get().pending)
-            } else {
-                muted
-            };
             let mut line2 = address(true);
-            line2.push(Span::styled(format!("{} ", row.line2), style));
+            if *scanning {
+                // The session level, once the mux above it is settled.
+                if !mux.is_empty() {
+                    line2.push(Span::styled(spinner_glyph.to_string(), pending));
+                    line2.push(Span::raw(" "));
+                }
+            } else {
+                let style = if *unreachable {
+                    Style::default().fg(palette::get().danger)
+                } else {
+                    muted
+                };
+                line2.push(Span::styled(format!("{} ", row.line2), style));
+            }
             return vec![Line::from(line1), Line::from(line2)];
         }
 

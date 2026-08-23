@@ -106,6 +106,22 @@ impl Harness {
         line.trim_end().to_string()
     }
 
+    /// Only the nav's CARD rows: the nav column minus the hint bar's bottom row, so a
+    /// card assertion cannot be satisfied by the bar's own global scan indicator (both
+    /// turn the same spinner).
+    fn nav_cards_text(&self) -> String {
+        let buf = self.buf();
+        let limit = NAV_WIDTH.min(buf.area.width);
+        let mut out = String::new();
+        for y in 0..buf.area.height.saturating_sub(1) {
+            for x in 0..limit {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
     /// Only the tree pane (first `NAV_WIDTH` columns) - so a hint assertion
     /// is not satisfied by the preview pane's own loading/reconnecting dialog.
     fn nav_text(&self) -> String {
@@ -558,6 +574,21 @@ async fn panes_are_not_selectable() {
     assert!(saw_session, "navigation reaches session cards");
 }
 
+/// The first card's two lines, trimmed of the padding that keeps the columns aligned,
+/// so an assertion reads the card's CONTENT.
+fn card_rows(h: &Harness) -> Vec<String> {
+    h.nav_cards_text()
+        .lines()
+        .take(2)
+        .map(|l| l.trim().to_string())
+        .collect()
+}
+
+/// Whether `s` holds a spinner frame: the marker of a level that has not resolved.
+fn spins(s: &str) -> bool {
+    s.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c))
+}
+
 #[tokio::test]
 async fn rescan_resets_to_scanning_skeleton() {
     // `r` resets every host to its scanning state and signals the loop to
@@ -569,10 +600,10 @@ async fn rescan_resets_to_scanning_skeleton() {
         h.sw.take_rescan_kick(),
         "rescan must signal the loop to re-probe"
     );
-    let tree = h.nav_text();
+    let tree = h.nav_cards_text();
     assert!(
-        tree.contains("scanning"),
-        "hosts return to scanning after rescan:\n{tree}"
+        spins(&tree),
+        "hosts return to a spinning skeleton after rescan:\n{tree}"
     );
     assert!(
         !tree.contains("inference"),
@@ -587,12 +618,16 @@ async fn from_sources_renders_scanning_skeletons() {
     // The first frame: one host-skeleton row per source, each in a scanning
     // state, before ANY probe result lands. Structure first, data later.
     let h = Harness::from_sources(&["local", "jupiter00"]);
-    let out = h.text();
+    let out = h.nav_cards_text();
     assert!(out.contains("local"), "host skeleton present:\n{out}");
     assert!(out.contains("jupiter00"), "host skeleton present:\n{out}");
     assert!(
-        out.contains("scanning"),
-        "each host shows a scanning status:\n{out}"
+        spins(&out),
+        "each host card spins in the level it is waiting on:\n{out}"
+    );
+    assert!(
+        !out.contains("scanning"),
+        "and says so with the spinner alone, no status word:\n{out}"
     );
     assert!(
         !out.contains("window"),
@@ -601,9 +636,53 @@ async fn from_sources_renders_scanning_skeletons() {
 }
 
 #[tokio::test]
+async fn the_spinner_marks_the_first_unresolved_level_only() {
+    // A card names two levels over two lines - `{host}/{mux}` over `{session}/{window}` -
+    // and while it waits, ONE spinner stands in the first of those levels that has no
+    // answer yet. It says WHICH answer is outstanding, not merely that the card is busy,
+    // which is why a second spinner never joins it further down the card.
+    use super::render::SELECTED_MARK;
+    let sp = crate::ui::spinner_glyph(0);
+
+    // A bare source id does not name its mux (only a machine serving several qualifies
+    // its ids), so the mux is the level in flight and the session line stays empty.
+    let h = Harness::from_sources(&["local"]);
+    let card = card_rows(&h);
+    assert_eq!(card[0], format!("local/{sp}"), "the mux level spins");
+    assert_eq!(card[1], SELECTED_MARK, "and nothing below it does");
+
+    // A qualified id already names its mux, so the session level is the one in flight.
+    let h = Harness::from_sources(&["local:zellij"]);
+    let card = card_rows(&h);
+    assert_eq!(card[0], "local/zellij", "the mux is known");
+    assert_eq!(
+        card[1],
+        format!("{SELECTED_MARK} {sp}"),
+        "so the session level spins"
+    );
+
+    // The session landed and stamped its mux; its focused window has not, so the spinner
+    // moves one level down, into the window slot.
+    let mut h = Harness::from_sources(&["local"]);
+    h.sw.apply_source_result(
+        "local".into(),
+        vec![sess_mux("local", "editor", "psmux", 100)],
+        None,
+        &mut h.state,
+    );
+    h.draw();
+    let card = card_rows(&h);
+    assert_eq!(card[0], "local/psmux");
+    assert_eq!(card[1], format!("{SELECTED_MARK} \u{2514} editor/{sp}"));
+}
+
+#[tokio::test]
 async fn apply_source_result_turns_scanning_into_sessions() {
     let mut h = Harness::from_sources(&["local"]);
-    assert!(h.text().contains("scanning"), "scanning before the result");
+    assert!(
+        spins(&h.nav_cards_text()),
+        "the host card spins before the result"
+    );
     h.sw.apply_source_result(
         "local".into(),
         vec![sess("local", "editor", 2, false, 100)],
@@ -617,11 +696,11 @@ async fn apply_source_result_turns_scanning_into_sessions() {
         "session appears after result:\n{out}"
     );
     assert!(
-        !out.contains("scanning"),
-        "scanning status clears once the only host resolves:\n{out}"
+        !h.hint_bar_text().contains("scanning"),
+        "the scan indicator clears once the only host resolves"
     );
     assert!(
-        out.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)),
+        spins(&out),
         "the session shows a progress spinner until its panes arrive:\n{out}"
     );
 }
@@ -893,6 +972,10 @@ async fn apply_source_result_empty_shows_empty_status() {
         "a reachable host with no sessions reads (no sessions):\n{out}"
     );
     assert!(!out.contains("scanning"), "no longer scanning:\n{out}");
+    assert!(
+        !spins(&h.nav_cards_text()),
+        "and the card stops spinning once it has its answer:\n{out}"
+    );
 }
 
 #[tokio::test]
@@ -985,9 +1068,7 @@ async fn apply_panes_attaches_and_clears_loading() {
     );
     h.draw();
     assert!(
-        h.nav_text()
-            .chars()
-            .any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)),
+        spins(&h.nav_text()),
         "a progress spinner stands in before panes land"
     );
     h.sw.apply_panes(
@@ -1002,7 +1083,7 @@ async fn apply_panes_attaches_and_clears_loading() {
         "the focused window's name lands on the card:\n{out}"
     );
     assert!(
-        !out.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)),
+        !spins(&out),
         "the progress spinner clears once panes arrive:\n{out}"
     );
 }
