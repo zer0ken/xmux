@@ -11,16 +11,18 @@ control socket for headless driving. Each instance is addressed by NAME, owning
 ## Mental Model
 
 Two orthogonal axes describe every connection and no module conflates them:
-`Transport` (MACHINE, local versus ssh) and `Mux` (MUX, the per-mux behavior
-trait). Attach and command argv are composed from a host's own transport and mux,
-so the two families combine without either knowing the other.
+`Transport` (HOST, local versus ssh) and `Mux` (MUX, the per-mux behavior
+trait). Attach and command argv are composed from a source's own transport and mux,
+so the two families combine without either knowing the other. A HOST is a machine
+that hosts muxes and that the roster names; a SOURCE is one mux on one host, so a
+host serving several muxes is several sources under one host.
 
 There are two mux-facing paths:
 
 - Metadata path: `src/host/` runs control-mode or poll enumeration, tracks
-  inventory, and emits host events.
+  inventory, and emits source events.
 - Display path: `src/display/` runs real PTY attachments and feeds grids; the
-  driver seam owns the per-host display decision (which PTY to use and whether to
+  driver seam owns the per-source display decision (which PTY to use and whether to
   switch in place or reattach) and keeps input and resize work off the async
   runtime.
 
@@ -32,19 +34,19 @@ state; raw key and text injection is an unstable low-level surface.
 
 - `src/app/` - the app: the runtime loop that owns the terminal, plus the focus
   and modal routing state.
-- `src/machine/` - the MACHINE axis: the `Transport` trait, the per-machine
-  families, and the shared shell vocabulary. A host builds one at construction.
+- `src/machine/` - the HOST axis: the `Transport` trait, the per-host
+  families, and the shared shell vocabulary. A source builds one at construction.
 - `src/mux/` - the MUX axis: the `Mux` trait, the per-mux families (`tmux/`,
   `psmux/`, `zellij/`) owning metadata, command plans, and a display driver, and
   the shared mux vocabulary.
-- `src/model/` - runtime domain values: hosts, the action vocabulary, and the
+- `src/model/` - runtime domain values: sources, the action vocabulary, and the
   command vocabulary.
 - `src/driver.rs` - the mux-agnostic `MuxDriver` trait and the thin wrapper that
-  resolves a host's driver; it names no concrete mux type.
+  resolves a source's driver; it names no concrete mux type.
 - `src/display/` - PTY attachment, the grid, terminal input, and low-level input
   protocol mechanics.
-- `src/host/` - host connection management (control-mode reader and writer, poll
-  tasks, live client ownership).
+- `src/host/` - per-source connection management (control-mode reader and writer,
+  poll tasks, live client ownership).
 - `src/ui/` - nav row transforms, interaction state, and rendering.
 - `src/state/` - the explicit app runtime state and its two mutation sites.
 
@@ -58,8 +60,8 @@ state; raw key and text injection is an unstable low-level surface.
 
 ## Common Pitfalls
 
-- Do not add another per-host live-process registry without reconciling it with
-  the host manager.
+- Do not add another per-source live-process registry without reconciling it with
+  the source manager.
 - Do not put transport decisions into mux methods that are documented as
   transport-blind.
 - Do not document work history in code comments or durable docs; describe the
@@ -80,5 +82,5 @@ state; raw key and text injection is an unstable low-level surface.
 ## Verification
 
 - Exercise the behavior the touched module is responsible for.
-- For app, host, or display changes, run the whole suite when feasible, because
+- For app, connection, or display changes, run the whole suite when feasible, because
   cross-module behavior is heavily coupled.

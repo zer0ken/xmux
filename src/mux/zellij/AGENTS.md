@@ -8,7 +8,7 @@ no zellij code sits at the `src` root. It owns BOTH sides of the mux:
 - the metadata mux: binary name, a per-session server model, session-listing
   enumeration, attach argv, poll cadence, death signal, and the command plans,
   none of which are tmux-compatible;
-- the display driver: the per-host display orchestration for a per-session mux
+- the display driver: the per-source display orchestration for a per-session mux
   with no in-place switch;
 - the output shapes: the session listing (a human line) and the tab listing
   (JSON), as pure functions.
@@ -28,7 +28,7 @@ Its CLI is one process per query, and every query is addressed with
 caller is inside, which xmux never is. Vocabulary maps as: a zellij TAB is what
 xmux calls a window, and its position is the window index.
 
-The display driver holds ONE per-host PTY and REATTACHES it on every session
+The display driver holds ONE per-source PTY and REATTACHES it on every session
 change. There is no in-place switch to make: `switch-session` moves whichever
 client runs it, and a client cannot be named from outside its own session, so
 xmux has no way to aim a switch at its own display client the way it does for
@@ -69,7 +69,7 @@ tmux and psmux.
 - On a reattach the stale attachment is HELD, not removed, so its grid stays on
   screen until the fresh one is ready (stale-while-revalidate).
 - Sync never pre-warms, since attaches are selected on demand when a session is
-  shown; it only reaps the host PTY when the host has no sessions left.
+  shown; it only reaps the source PTY when the source has no sessions left.
 
 ## Common Pitfalls
 
@@ -78,17 +78,17 @@ tmux and psmux.
 - Do not inherit a tmux-compatible command plan by leaving a verb unoverridden.
   zellij refuses tmux's flags outright (a session listing with tmux's format flag
   is an unexpected-argument error), so a missed override surfaces as an
-  unreachable host, not a degraded one.
+  unreachable source, not a degraded one.
 - Do not parse the session listing by splitting on whitespace. zellij forbids only
   `/` in a session name, so a name may hold spaces; the split is on the
   ` [Created ` marker.
 - Do not read the window list from `list-panes`. It marks a focused pane per tab
   AND per layer, so it cannot name the one active tab; `list-tabs` is the query
   that reports tab activeness.
-- Do not treat a non-zero session-listing exit as an unreachable host. An idle
+- Do not treat a non-zero session-listing exit as an unreachable source. An idle
   zellij writes `No active zellij sessions found.` to stderr and exits 1.
 - Do not assume an action always answers. On WINDOWS an action addressed at a
-  stale session never returns, which would freeze that host's whole poll loop; the
+  stale session never returns, which would freeze that source's whole poll loop; the
   mux layer's per-command poll budget is what bounds it. Verify zellij behavior on
   Linux, where the same queries answer immediately.
 
@@ -105,7 +105,7 @@ tmux and psmux.
 ## Verification
 
 - Exercise the plan argv, both parsers, and the driver decision for the seam you
-  touched, and re-check the app and host surfaces when the event source, death
+  touched, and re-check the app and connection surfaces when the event source, death
   signal, or display decision changes.
 - Set `XMUX_LOG=xmux::mux::zellij=debug` to trace the driver's show and inventory
   decisions.

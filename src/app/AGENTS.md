@@ -11,11 +11,11 @@ reads and mutates.
 
 The runtime is a persistent supervisor. It keeps ONE real attached mux client
 per session alive in a PTY across selections and renders the SELECTED session's
-live grid on the right. A separate control-mode client per remote host supplies
+live grid on the right. A separate control-mode client per remote source supplies
 the nav view inventory, mux-side change events, and programmatic window
 selection; a local mux is enumerated or polled with plain commands. One async
-loop interleaves stdin, host events, PTY events, the control socket, terminal
-resize, and an animation tick. It folds domain actions and inbound host events
+loop interleaves stdin, source events, PTY events, the control socket, terminal
+resize, and an animation tick. It folds domain actions and inbound source events
 through the runtime state, dispatches the returned commands and effects, keeps
 the state in sync with the switcher selection, drives the debounced attach, and
 draws the split view.
@@ -29,20 +29,20 @@ or a grid is rendered.
 
 - `runtime/` owns the main event loop as one struct: the entry point builds it,
   keeps the loop's receivers, timers, and terminal as loop-locals, and drives a
-  select where each arm is one method on that struct. It resolves the host's own
+  select where each arm is one method on that struct. It resolves the source's own
   driver for display and reads the grid back from it; it branches on nothing
   mux-specific. The canonical selection it reads lives in `src/model`.
 - `runtime/` also owns MUX DISCOVERY's async half: one fire-and-forget probe per
-  remote machine that named no mux, spawned right after the startup scans, whose
+  remote host that named no mux, spawned right after the startup scans, whose
   answers become new sources through an effect. It is the loop's job because only
-  the loop holds the host registry (what a machine already serves, and where a
-  new host goes) and the manager that kicks the new source's first scan.
+  the loop holds the source registry (what a host already serves, and where a
+  new source goes) and the manager that kicks the new source's first scan.
 - Input routing has a pure, stateless core (key resolution, mouse chains, the
   predicates, the input outcome types); the stateful handlers are runtime methods
   that call into it.
 - Focus holds the focus and modal state plus the transition helpers. The runtime
   state embeds it; the app reads and mutates it through those helpers.
-- The display mechanics (PTY, grid, input) live in `src/display`; host connection
+- The display mechanics (PTY, grid, input) live in `src/display`; per-source connection
   management lives in `src/host`; the domain vocabulary lives in `src/model`; the
   durable runtime state bag lives in `src/state`.
 

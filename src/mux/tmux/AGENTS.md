@@ -8,7 +8,7 @@ tmux code sits at the `src` root. It owns BOTH sides of the mux:
 - the metadata mux: binary name, a shared server model, aggregate session-listing
   enumeration, attach argv, the control-mode argv, event source, death signal,
   and the window and session operation plans;
-- the display driver: the per-host display orchestration for a shared-server mux.
+- the display driver: the per-source display orchestration for a shared-server mux.
 
 The mux constructs its own driver, so tmux selection lives in this family and
 never in a central match on server model. The control-mode wire protocol lives
@@ -17,20 +17,20 @@ beside them, behind the shared control-protocol trait.
 ## Mental Model
 
 tmux is a SHARED-server mux: one aggregate server holds every session. The display
-driver keeps ONE PTY per host, warmed on the first session and MOVED to another
+driver keeps ONE PTY per source, warmed on the first session and MOVED to another
 session with `switch-client`, an in-place move with no teardown. A remote shared
-attach records its OWN controlling tty to a per-host file before exec, so a later
+attach records its OWN controlling tty to a per-source file before exec, so a later
 switch targets xmux's own display client and never the user's own attached client.
-A LOCAL shared host has no remote shell to record or read the tty, so it
+A LOCAL shared source has no remote shell to record or read the tty, so it
 reattaches instead.
 
 The mux supplies mux vocabulary (argv, model, enumeration, control payload); the
 driver consumes it and owns the concrete attach-or-switch decision. The transport
-lowers the machine execution, and the tmux family never hardcodes ssh.
+lowers the host execution, and the tmux family never hardcodes ssh.
 
 ## Module Seams
 
-- The family root holds the mux itself, the per-host display-tty file helpers
+- The family root holds the mux itself, the per-source display-tty file helpers
   (the path, the family-private record prefix, and the in-place switch plan that
   reads the recorded tty), the control argv, and the control-protocol
   implementation.
@@ -44,14 +44,14 @@ lowers the machine execution, and the tmux family never hardcodes ssh.
 
 ## Invariants
 
-- A shared host keeps ONE PTY, keyed by host id; a session change MOVES it rather
+- A shared source keeps ONE PTY, keyed by source id; a session change MOVES it rather
   than tearing it down.
-- A remote in-place switch reads the tty the attach recorded to its per-host file,
+- A remote in-place switch reads the tty the attach recorded to its per-source file,
   so it moves xmux's own display client and never the user's. It never runs with
   an empty client tty.
-- Sync warms the host PTY on the first session and reaps it when the host has no
+- Sync warms the source PTY on the first session and reaps it when the source has no
   sessions. The driver value itself carries no state, so constructing a fresh one
-  per call is fine: the state lives on the host and the attachment registry.
+  per call is fine: the state lives on the source and the attachment registry.
 - A reachable empty tmux enumerates as an empty list; unreachable is an error.
 
 ## Common Pitfalls
@@ -75,7 +75,7 @@ lowers the machine execution, and the tmux family never hardcodes ssh.
 ## Verification
 
 - Exercise the plan argv, the control-mode line classification, and the driver
-  decision for the seam you touched, and re-check the app and host surfaces when
+  decision for the seam you touched, and re-check the app and connection surfaces when
   the event source, death signal, or display decision changes.
 - Set `XMUX_LOG=xmux::mux::tmux=debug` to trace the driver's show, inventory, and
   attach decisions.

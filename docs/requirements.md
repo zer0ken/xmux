@@ -17,13 +17,14 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-A1** - `xmux ls` lists every reachable session across all sources as
   `<source>/<name>` lines.
 - **FR-A2** - A reachable mux with zero sessions is reported as empty, not failed;
-  a dead host is reported unreachable; "every source unreachable" is distinguished.
+  a source on a dead host is reported unreachable; "every source unreachable" is
+  distinguished.
 - **FR-A3** - `xmux doctor` reports config health, ssh availability, and per-source
   reachability with session counts.
 - **FR-A4** - Sessions are ordered by recency (most-recently-attached first) within
   their source, and the sources themselves by their most recent session, so one source's
   cards are contiguous and the nav never names a source twice.
-- **FR-A5** - The roster (which ssh targets are offered) comes from providers the
+- **FR-A5** - The roster (which HOSTS are offered) comes from providers the
   `[discovery]` table selects: `~/.ssh/config` aliases and this machine's tailnet peers,
   both on by default. A tailnet peer is offered under its DNS label; this machine and
   offline peers are skipped. A provider that cannot answer contributes nothing instead
@@ -38,48 +39,48 @@ no function, and no test, so renaming code is never a documentation change.
   the shape of what each plan prints. zellij is that case: it is enumerated from its
   session listing, its windows come from its tab listing, and its sessions are polled
   because it offers no push channel.
-- **FR-A7** - A SOURCE is one mux on one machine, so a machine running several
+- **FR-A7** - A SOURCE is one mux on one host, so a host running several
   muxes at once contributes one source per mux and every one of them is listed. A `mux`
-  value is a name or a LIST of names, in `[local]` and in `[[hosts]]` alike. A machine
-  given several muxes has its sources named `<machine>:<mux>`; a machine given one keeps
-  the bare machine alias, so an existing setup's ids, addresses, and typed targets do
-  not move. `exclude` names machines, so it drops every mux on one. A listed mux that is
+  value is a name or a LIST of names, in `[local]` and in `[[hosts]]` alike. A host
+  given several muxes has its sources named `<host>:<mux>`; a host given one keeps
+  the bare host alias, so an existing setup's ids, addresses, and typed targets do
+  not move. `exclude` names hosts, so it drops every mux on one. A listed mux that is
   not installed there surfaces as unreachable rather than being dropped, because a name
   the user wrote is a name they meant.
-- **FR-A8** - A polled host cannot wedge on one unanswered command. Every command in
+- **FR-A8** - A polled source cannot wedge on one unanswered command. Every command in
   a poll sweep runs under a fixed per-command budget, because the poll ticker only
-  advances once the sweep returns: a timed-out listing surfaces as that host's error
+  advances once the sweep returns: a timed-out listing surfaces as that source's error
   (the nav shows it unreachable), and a timed-out pane query still emits an EMPTY panes
   answer, since a card whose panes never arrive would keep its spinner forever.
-- **FR-A9** - No mux list needs configuring, on any machine. A machine that named no
+- **FR-A9** - No mux list needs configuring, on any host. A host that named no
   mux is asked which of the ones xmux SUPPORTS it has, and each one that answers becomes a
   source. The candidate set is what xmux can drive, and each candidate is asked with the
   same identity probe a configured mux gets, so a binary carrying a mux's name while being
   another mux is not counted as that mux: where psmux answers, a `tmux` that also answers
   is psmux's own alias of itself (which names itself by the name it was invoked under, so
   no probe can tell it apart) and is dropped. A WRITTEN value is never probed, keeping
-  FR-A7's rule that a name the user wrote stays visible even when it is missing; a machine
+  FR-A7's rule that a name the user wrote stays visible even when it is missing; a host
   where nothing answers keeps the mux it was assumed to run, so the nav names what is
   unreachable rather than showing nothing.
-- **FR-A10** - A REMOTE machine is discovered AFTER launch, asynchronously, and its
+- **FR-A10** - A REMOTE host is discovered AFTER launch, asynchronously, and its
   answer only ADDS. The app paints the sources the config names first (a remote probe is
-  an ssh round trip per mux, and nothing may wait for that), then each machine's answer
-  arrives and every mux it reports that the machine does not already serve becomes a
+  an ssh round trip per mux, and nothing may wait for that), then each host's answer
+  arrives and every mux it reports that the host does not already serve becomes a
   scanning card on the spot. An added source's id is always qualified (`prod:zellij`)
   while the mux already served keeps the id it was painted with: that id is what the
   frozen order, the persisted selection, and anything the user typed are keyed to, so
   nothing is renamed and nothing is removed. New cards APPEND, so a card the user is
-  looking at does not move because another machine answered. An added source is
+  looking at does not move because another host answered. An added source is
   OPERABLE, not merely visible: creating a session on it, reading its panes, and reading
   its border styles work exactly as on a configured source.
 - **FR-A11** - A mux running inside a WSL distribution is a source like any other. A
-  distribution is a MACHINE of its own, named `wsl.<distribution>` so which family it
+  distribution is a HOST of its own, named `wsl.<distribution>` so which family it
   belongs to is readable in the id and in every address typed at it, and no ssh alias may
   claim a name spelled that way. Distributions are offered either by the `[discovery] wsl`
   provider (off by default: it runs an external CLI, and a box with Docker Desktop carries
   distributions that run no mux at all) or by naming one in a `[[wsl]]` entry, which also
   overrides its mux list. Everything FR-A7 to FR-A10 say then holds unchanged: several
-  muxes in one distribution are several sources, `exclude` names the machine, an unlisted
+  muxes in one distribution are several sources, `exclude` names the host, an unlisted
   mux surfaces as unreachable, and the distribution is asked which muxes it has after
   launch. The family is added at the end of the source list, so every id an existing
   install already had keeps the position it had.
@@ -93,7 +94,7 @@ no function, and no test, so renaming code is never a documentation change.
   its own windows. The window is written in its own mux's convention, `{index}:{name}`
   for tmux and psmux and the bare tab name for zellij, so a card reads the way that
   mux's own status line reads.
-- **FR-B2** - Render-first: the host skeleton paints instantly; each source's
+- **FR-B2** - Render-first: the source skeleton paints instantly; each source's
   sessions and each session's panes stream in independently.
 - **FR-B3** - The terminal view shows the confirmed session's live grid and follows
   the cursor. A switch keeps the prior grid on screen until the new one is ready
@@ -200,12 +201,12 @@ no function, and no test, so renaming code is never a documentation change.
   client and repaints; without one it reattaches. The attach is debounced so rapid
   navigation does not storm.
 - **FR-C2** - A cross-host pick switches entirely in process, with no picker and no
-  detach between. Each host keeps its own live PTY attachment; the target host's driver
-  takes over, the previously shown session stays on screen until the fresh grid is ready
+  detach between. Each source keeps its own live PTY attachment; the target
+  source's driver takes over, the previously shown session stays on screen until the fresh grid is ready
   (stale-while-revalidate), and the canonical selection is synced immediately.
-- **FR-C3** - Host degradation is graceful, never a silent loss: an unreachable host
-  is marked `⚠ unreachable: <reason>`, a reachable-but-serverless host reads
-  `(empty)`, a once-connected host keeps its last-known cards on a transient drop, and
+- **FR-C3** - Source degradation is graceful, never a silent loss: an unreachable source
+  is marked `⚠ unreachable: <reason>`, a reachable-but-serverless source reads
+  `(empty)`, a once-connected source keeps its last-known cards on a transient drop, and
   the reconnect sweep self-heals; a dropped display client is reaped and re-attached.
 - **FR-C4** - A switch lands on the picked window. A fresh first attach folds the
   window into the attach argv (ssh folds the pre-selection into one `ssh -t`);
@@ -218,7 +219,7 @@ no function, and no test, so renaming code is never a documentation change.
 
 - **FR-D1** - `xmux` (no subcommand) is a persistent supervisor that owns the
   terminal and runs one mux-client child at a time per session, plus one `-CC`
-  metadata client per remote host, over a single async event loop.
+  metadata client per remote source, over a single async event loop.
 - **FR-D2** - The app serves its control socket concurrently while a session is
   displayed (attach spawning is off-loop), so `ping` / `dump` / `status` / `switch`
   are answered without blocking.
@@ -237,7 +238,7 @@ no function, and no test, so renaming code is never a documentation change.
 ## E. Session management
 
 xmux aggregates and switches; it does not edit what a mux already edits. Starting a
-session is the one mutation it keeps, because a reachable host with no sessions has
+session is the one mutation it keeps, because a reachable source with no sessions has
 nothing to switch to until one exists.
 
 - **FR-E1** - Create a session on a HOST card (`prefix n`), then it appears in the
@@ -305,7 +306,7 @@ nothing to switch to until one exists.
   session is untouched. *(FR-B5)*
 - **UC-4, find one session among many then go.** Filter to narrow, Enter on the
   visible match. *(FR-B4, FR-B6)*
-- **UC-5, the remote is down and I am not left in the dark.** An unreachable host shows
+- **UC-5, the remote is down and I am not left in the dark.** An unreachable source shows
   `⚠ unreachable`; a failed attach is logged and the nav stays usable.
   *(FR-A2, FR-B7, FR-C5)*
 - **UC-6, deep in a remote, get back home.** Native detach (`prefix d`) inside the

@@ -2,42 +2,42 @@
 
 ## Purpose
 
-`machine/` is the MACHINE axis: how a mux argv reaches the server it runs on,
+`machine/` is the HOST axis: how a mux argv reaches the server it runs on,
 SEPARATE from which mux runs there (that is `src/mux`). It owns argv assembly and
 the per-family execution wrapping only, never a server model and never a mux
 verb.
 
 ## Mental Model
 
-A machine family is a `Transport` implementation. The local family runs a command
-on this machine, injecting the server socket for a non-default mux server; the
+A host family is a `Transport` implementation. The local family runs a command on
+this host, injecting the server socket for a non-default mux server; the
 ssh family wraps the command in an ssh connection with the right tty, batch-mode,
 and multiplexing options; the WSL family runs it inside a distribution on this
 box, exec'd through a login shell so the launcher's own command-line parsing
 never re-reads the quoting and the user's own mux is on `PATH`. Which family a
-machine belongs to is read out of its NAME, so a machine named after launch
-reaches its family without anything extra being threaded alongside it.
+host belongs to is read out of its NAME, so a host named after launch reaches
+its family without anything extra being threaded alongside it.
 
 Each transport also carries the SOURCE ID it answers as, separate from where it
-connects: one machine running several muxes is several sources, all reaching the
+connects: one host running several muxes is several sources, all reaching the
 same place, so the id cannot be the ssh destination.
 The plain factories derive the id from the destination; their explicit variants
-state it. A host holds one transport and never branches on which family it is: it
-calls trait methods. This mirrors the MUX axis, where the mux trait plays the
+state it. A source holds one transport and never branches on which family it is:
+it calls trait methods. This mirrors the MUX axis, where the mux trait plays the
 same role.
 
 ## Module Seams
 
-- The module root holds the `Transport` trait, the machine kind and its
+- The module root holds the `Transport` trait, the host kind and its
   construction method (the single construction-time match mapping a kind to a
   concrete transport), the factories that method delegates to plus the variants
   naming the source id explicitly, the lowered-switch execution shape, and the
   boxing impls that let a stored transport pass where a borrowed one is expected.
-- Each machine family is its own module: the local machine issues no remote shell
-  command and uses none of the shared vocabulary; the ssh machine owns the
-  private option assembly (tty, batch mode, multiplexing); the WSL machine owns
+- Each host family is its own module: the local family issues no remote shell
+  command and uses none of the shared vocabulary; the ssh family owns the
+  private option assembly (tty, batch mode, multiplexing); the WSL family owns
   its launcher wrapping, and also the provider that lists this box's
-  distributions as machine names, because listing them is launcher mechanics
+  distributions as host names, because listing them is launcher mechanics
   rather than roster policy.
 - The shared shell vocabulary renders an argv injection-safe for the POSIX shell
   a family hands its command to. It is the peer of the mux axis's own vocabulary.
@@ -53,7 +53,7 @@ and nothing in `machine/` imports a mux type or a source.
   tty-record gate) and whether this box's mux registry is authoritative (the
   registry-merge gate). None of the three derives from another, and no code reads
   them to pick a server model.
-- The machine kind's own query methods are the ONLY code that matches on the
+- The host kind's own query methods are the ONLY code that matches on the
   kind: one maps a kind to a concrete transport, another reads its server socket.
   No match on the kind is scattered across call sites; the trait object carries
   the choice everywhere else.
@@ -84,15 +84,15 @@ and nothing in `machine/` imports a mux type or a source.
 
 ## Before Editing
 
-- Adding a machine family: add its module with a type implementing `Transport`,
+- Adding a host family: add its module with a type implementing `Transport`,
   overriding the capability predicates for its own combination rather than
-  deriving them from remoteness, add its factory, and add a machine-kind variant
+  deriving them from remoteness, add its factory, and add a host-kind variant
   plus one arm in each of the kind's methods. The compiler forces every arm, and
   no match on the kind exists outside the kind itself. If the family needs its
-  own machine names, make them recognizable from the name alone, the way `local`
+  own host names, make them recognizable from the name alone, the way `local`
   and the WSL prefix are, and refuse that spelling in the families that would
   otherwise claim it.
-- Adding per-machine execution behavior to an existing family: edit that family
+- Adding per-host execution behavior to an existing family: edit that family
   and keep the shared shell vocabulary where it is.
 
 ## Verification

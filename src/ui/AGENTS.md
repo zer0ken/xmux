@@ -110,7 +110,7 @@ flatten renders for the dump verb.
 
 ## Common Pitfalls
 
-- Do not put host process management or PTY writes in UI modules.
+- Do not put source process management or PTY writes in UI modules.
 - Do not reach for an RGB colour to get a tone the sixteen slots lack (a raised
   surface, a slightly-off bar). There is no theme-safe way to pick one, and a
   terminal may answer no colour query at all. Use an attribute, or take the colour

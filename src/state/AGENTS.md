@@ -19,7 +19,7 @@ configured source list.
 
 Applying an ACTION is the single domain-mutation site: it folds one intent into
 the state and returns the effects for the run loop to dispatch. It touches only
-the state, never reading the clock or any registry or host state directly. The
+the state, never reading the clock or any registry or source state directly. The
 clock and the runtime attach facts enter as DATA on the tick action. A selection
 action records a moved selection and marks the attach pending; the trailing tick
 re-arms the attach deadline, on every pending selection, so rapid navigation
@@ -36,13 +36,13 @@ session.
 
 Applying an EVENT is the inbound mirror: the single event-driven mutation site.
 It folds the arms whose data is SELF-CONTAINED in the event (an active-window
-marker, a pane subtree, a poll enumeration, an exit marking a host unreachable)
+marker, a pane subtree, a poll enumeration, an exit marking a source unreachable)
 into the state through the switcher, and returns the mux follow-ups it cannot
 perform itself as effects for the run loop. The once-connected set enters as
-DATA, like the clock on a tick: an exit from a once-connected host is a transient
+DATA, like the clock on a tick: an exit from a once-connected source is a transient
 drop that keeps the last-known inventory. Connection and inventory events carry
-their parsed sessions, which the loop folds into the host's own inventory, the
-single owner; that fold needs the host registry the state layer does not hold, so
+their parsed sessions, which the loop folds into the source's own inventory, the
+single owner; that fold needs the source registry the state layer does not hold, so
 it is the loop's job.
 
 The modal is ONE optional value: at most one of help or inline input. A single
@@ -57,7 +57,7 @@ holds the modal state plus its popup geometry and forwards to that module.
 - The state depends on the domain layer for the selection and the action, command,
   and effect vocabularies; on the UI layer for the inventory groups, the open
   modal, and the switcher it rebuilds rows against; on the app layer for the focus
-  state machine; and on the host layer for the inbound events.
+  state machine; and on the connection layer for the inbound events.
 - It stores state facts plus the two mutation sites. The run loop owns effect
   dispatch, both the synchronous commands from an action (switcher selection move,
   attach, preferences IO, quit) and the mux follow-ups from an event (inventory
@@ -94,7 +94,7 @@ holds the modal state plus its popup geometry and forwards to that module.
   when state ownership is clear.
 - Do not perform IO, spawning, channel sends, or registry mutation from this
   module. Return a command for the loop to run instead.
-- Do not read the clock or registry and host state inside apply; both enter as
+- Do not read the clock or registry and source state inside apply; both enter as
   data on the tick.
 
 ## Before Editing
