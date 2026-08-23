@@ -1,6 +1,6 @@
 [package]
 name = "xmux"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2021"
 description = "Cross-environment tmux/psmux session switcher"
 license = "MIT"
