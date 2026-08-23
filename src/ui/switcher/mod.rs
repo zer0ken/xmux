@@ -63,8 +63,8 @@ fn color_hint() -> Color {
 pub use crate::ui::chrome::ViewBorderColors;
 
 /// Which way the two views stack. `Side` (default) puts the tree in a left column;
-/// `Top` stacks the tree above the terminal for a portrait (taller-than-wide) screen,
-/// so a narrow phone-shaped terminal stays usable.
+/// `Top` stacks the tree above the terminal once a side column would leave the terminal
+/// no wider than it is tall, so a narrow phone-shaped terminal stays usable.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ViewLayout {
     Side,
@@ -73,13 +73,19 @@ pub enum ViewLayout {
 
 /// Picks the layout from the TERMINAL VIEW's aspect, not the whole screen's: putting the
 /// tree in a side column costs the terminal `nav_width + 1` columns, and if that would
-/// leave the terminal view taller than wide (portrait), the tree stacks on `Top` instead so
+/// leave the terminal view no wider than it is tall, the tree stacks on `Top` instead so
 /// the terminal keeps full width. So a screen that is landscape overall can still go `Top`
-/// once the tree squeezes the terminal into a portrait shape. `nav_width` is the width the
-/// tree would occupy in `Side` (the natural/unhidden width).
+/// once the tree squeezes the terminal into a square-or-taller shape. `nav_width` is the
+/// width the tree would occupy in `Side` (the natural/unhidden width).
+///
+/// The aspect is always measured AS IF the tree were in its side column, never from the
+/// terminal's live size: going `Top` gives the terminal back the tree's columns and takes
+/// the band's rows instead, so measuring the result would make the test flip its own input
+/// and the layout oscillate at the boundary. One side of the comparison, one answer: the
+/// side terminal is wider than tall (`x > y`) or it is not (`x <= y`).
 pub fn view_layout(area: Rect, nav_width: u16) -> ViewLayout {
     let side_term_w = area.width.saturating_sub(nav_width.saturating_add(1));
-    if area.height > side_term_w {
+    if side_term_w <= area.height {
         ViewLayout::Top
     } else {
         ViewLayout::Side

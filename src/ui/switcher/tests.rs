@@ -2039,6 +2039,32 @@ async fn flash_clears_on_next_key_restoring_the_hint_bar() {
 }
 
 #[test]
+fn the_layout_turns_over_where_the_side_terminal_stops_being_wider_than_tall() {
+    use ratatui::layout::Rect;
+    // The test is the aspect of the terminal AS IF the tree kept its side column: with a
+    // 48-wide tree that terminal is `w - 49` columns over the window's full height. It
+    // stays Side while that is wider than tall, and turns over the moment it is not.
+    //
+    // Measuring the LIVE terminal instead would oscillate: going Top hands it the tree's
+    // columns back and takes the band's rows, which lands it back on the other side of
+    // the same test.
+    for (w, h, want) in [
+        (100u16, 50u16, ViewLayout::Side), // 51 x 50: one column wider than tall
+        (100, 51, ViewLayout::Top),        // 51 x 51: square, so the band takes over
+        (100, 52, ViewLayout::Top),        // 51 x 52: taller than wide
+        (61, 11, ViewLayout::Side),        // 12 x 11: one column wider than tall
+        (60, 11, ViewLayout::Top),         // 11 x 11: square, on a small window too
+    ] {
+        assert_eq!(
+            view_layout(Rect::new(0, 0, w, h), 48),
+            want,
+            "{w}x{h} with a 48-wide tree leaves a {}x{h} side terminal",
+            w.saturating_sub(49)
+        );
+    }
+}
+
+#[test]
 fn compute_regions_side_top_and_hidden() {
     use ratatui::layout::Rect;
     // Landscape → Side: tree left, 1-col border, terminal right. The hint bar is the
