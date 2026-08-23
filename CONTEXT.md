@@ -18,8 +18,8 @@ module hides, and which dependencies are allowed to cross into it.
 
 One concept, one word. The two axes and the runtime:
 
-- `Transport` (MACHINE axis) - the per-machine execution trait (local / ssh); a
-  host holds one. It owns where a command runs and how its argv is executed, and
+- `Transport` (MACHINE axis) - the per-machine execution trait (local / ssh /
+  wsl); a host holds one. It owns where a command runs and how its argv is executed, and
   knows nothing about the mux. "machine" is the family/concept; `Transport` is the
   trait.
 - `Mux` (MUX axis) - the per-mux behavior trait (tmux / psmux / zellij); a host
@@ -204,7 +204,13 @@ UI elements a user perceives as distinct things:
   through the same `Transport`. A source id is the bare machine alias (`local`, `prod`)
   when its machine serves a single mux, and `<machine>:<mux>` (`local:zellij`) when it
   serves several, so a one-mux setup is spelled exactly as it always was. The two halves
-  are read back through accessors; nothing compares a source id to `local` directly. The
+  are read back through accessors; nothing compares a source id to `local` directly. A
+  MACHINE name says which family reaches it wherever the name alone would be ambiguous:
+  `local` is this box and `wsl.<distribution>` is a WSL distribution on it, everything
+  else being an ssh destination. That is what lets a machine named LATER (a mux-discovery
+  answer carries a bare machine name and nothing else) be reached exactly as one named at
+  launch, and it is why an ssh alias spelled either reserved way is refused rather than
+  served as the wrong family. The
   nav renders the halves separately (`local/zellij`), so the id
   never appears with its mux twice. A source is held TWICE, once per consumer, and both
   copies resolve the machine the same way: the event loop drives a host out of its

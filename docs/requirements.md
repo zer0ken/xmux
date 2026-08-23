@@ -71,6 +71,17 @@ no function, and no test, so renaming code is never a documentation change.
   looking at does not move because another machine answered. An added source is
   OPERABLE, not merely visible: creating a session on it, reading its panes, and reading
   its border styles work exactly as on a configured source.
+- **FR-A11** - A mux running inside a WSL distribution is a source like any other. A
+  distribution is a MACHINE of its own, named `wsl.<distribution>` so which family it
+  belongs to is readable in the id and in every address typed at it, and no ssh alias may
+  claim a name spelled that way. Distributions are offered either by the `[discovery] wsl`
+  provider (off by default: it runs an external CLI, and a box with Docker Desktop carries
+  distributions that run no mux at all) or by naming one in a `[[wsl]]` entry, which also
+  overrides its mux list. Everything FR-A7 to FR-A10 say then holds unchanged: several
+  muxes in one distribution are several sources, `exclude` names the machine, an unlisted
+  mux surfaces as unreachable, and the distribution is asked which muxes it has after
+  launch. The family is added at the end of the source list, so every id an existing
+  install already had keeps the position it had.
 
 ## B. The switcher: "see the list, decide whether & where to move"
 
@@ -265,6 +276,12 @@ nothing to switch to until one exists.
 - **FR-G4** - A remote attach folds the window pre-selection into the single
   `ssh -t` connection (no second connection to hang or lose), and the mux axis supplies
   the attach argv (local psmux routes to its per-session server).
+- **FR-G5** - A command bound for a WSL distribution is exec'd there rather than handed
+  to the launcher as a command LINE, so Windows quoting is never re-read as shell syntax
+  and the POSIX quoting of FR-G2 stays the only boundary a session name crosses. The
+  command then runs in a LOGIN shell, because a mux installed under the user's own home is
+  not on the bare environment's `PATH`. A distribution's attach folds its pre-selection
+  into one command exactly as FR-G4's remote attach does.
 
 ---
 
@@ -307,3 +324,7 @@ The seamless cross-host switch is bought with three costs, accepted by design:
 - Handing the display from one mux client to another can flash a repaint.
 - On Windows, ssh has no ControlMaster multiplexing, so each remote round trip
   pays a fresh connection.
+- A push-channel mux inside a WSL distribution needs a terminal allocated on the
+  distribution's side, because a control stream reads its terminal attributes and exits
+  without one. A distribution that cannot allocate one reports that mux unreachable; a
+  polled mux there is unaffected.

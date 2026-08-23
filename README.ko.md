@@ -150,6 +150,7 @@ mux = ["tmux", "zellij"]
 [discovery]
 ssh-config = true   # 기본값. false로 두면 아래 제공자만 쓴다
 tailscale = false   # 기본값. 이 기계가 속한 tailnet의 온라인 피어
+wsl = false         # 기본값. 이 상자에 설치된 WSL 배포판
 ```
 
 tailnet 피어는 DNS 라벨(`jupiter00`)로 올라온다. 실제로 이름이 풀리는 형태이고, ssh
@@ -157,6 +158,39 @@ tailnet 피어는 DNS 라벨(`jupiter00`)로 올라온다. 실제로 이름이 �
 이고, 오프라인 피어는 훑을 것이 없다. 답하지 못하는 제공자(CLI 없음, 데몬 정지)는 실행을
 실패시키지 않고 아무것도 보태지 않는다. `~/.ssh/config`의 이름이 먼저 오고 제공자가 같은
 이름을 다시 보고해도 아무 일도 없으므로, 직접 설정한 호스트는 준 자리를 그대로 지킨다.
+
+## WSL 안의 mux
+
+WSL 배포판은 그 자체로 하나의 기계다. 그래서 배포판 안에서 도는 tmux도 다른 소스와
+똑같다. 목록에 올라오고, 세션이 흘러 들어오고, 그 안으로 들어가는 조작은 원격으로
+들어가는 것과 같은 키다. 이 상자가 가진 배포판을 모두 올리려면 이렇게 켠다.
+
+```toml
+[discovery]
+wsl = true
+```
+
+하나만 지정할 수도 있고, 이때 mux도 같이 정한다.
+
+```toml
+[[wsl]]
+distro = "Ubuntu-24.04"   # `wsl -l`이 찍는 이름
+mux = "tmux"              # 생략하면 "tmux". 목록도 된다
+```
+
+기계 이름은 `wsl.Ubuntu-24.04`가 된다. 그래서 그 안의 세션은
+`wsl.Ubuntu-24.04/editor`이고, `xmux ls`가 찍는 이름도 `xmux send switch`가 받는
+이름도 그것이다. 접두사가 "같은 이름의 호스트가 아니라 이 배포판"이라고 말해 주는
+장치이므로, `exclude`도 같은 방식으로 적고(`exclude = ["wsl.docker-desktop"]`) ssh
+별칭은 `wsl.무엇` 형태로 쓸 수 없다.
+
+목록 조회가 기본으로 꺼져 있는 이유가 있다. `wsl.exe`를 실행하는 일이고, Docker
+Desktop이 설치된 상자에는 mux를 아예 돌리지 않는 배포판이 있어서 unreachable로만
+보이게 된다. 배포판을 전부 올리지 않고 하나만 쓰려면 `[[wsl]]`이 그 방법이다.
+
+배포판 안에서 명령은 로그인 셸로 돌기 때문에, 홈 아래에 설치한 mux도 xmux가 찾는다.
+tmux를 쓰는 배포판에는 `script`(util-linux)도 있어야 한다. tmux의 push 채널이 요구하는
+터미널을 그것으로 만들어 준다. zellij처럼 폴링하는 mux는 따로 필요한 것이 없다.
 
 ## 설정
 
@@ -178,8 +212,13 @@ mux = "auto"          # "auto"(기본값): xmux가 지원하는 mux 중 이 컴�
 ssh = "prod"          # ssh-config 별칭
 mux = "tmux"          # 생략하면 "tmux"
 
-# 이 ssh 별칭들은 목록에서 숨긴다.
-exclude = ["bastion"]
+# 이 상자의 WSL 배포판을 올리거나, 올라온 배포판의 mux를 바꾼다.
+[[wsl]]
+distro = "Ubuntu-24.04"   # `wsl -l`이 찍는 이름. 기계 이름은 wsl.Ubuntu-24.04
+mux = "tmux"              # 생략하면 "tmux"
+
+# 이 기계들은 목록에서 숨긴다.
+exclude = ["bastion", "wsl.docker-desktop"]
 
 [ui]
 prefix = "C-g"                        # xmux prefix (예: C-g, C-Space, C-b)
