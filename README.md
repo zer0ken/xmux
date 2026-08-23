@@ -158,17 +158,16 @@ A **host** is a machine that hosts muxes and that xmux can reach; this list is w
 decides the set. One host can serve several muxes, and each of those pairings is a
 **source** (see above).
 
-The ssh providers are on by default, so the hosts you can reach are the hosts xmux
-offers with nothing to keep in sync by hand: the `Host` aliases in `~/.ssh/config`,
-the online peers of this machine's tailnet, and `local`. WSL starts off, since a box
-with Docker Desktop carries distributions that run no mux at all. Turn any of them the
-other way:
+Every provider is on by default, so the hosts you can reach are the hosts xmux offers
+with nothing to keep in sync by hand: the `Host` aliases in `~/.ssh/config`, the online
+peers of this machine's tailnet, this box's WSL distributions, and `local`. Turn one off
+when you do not want it:
 
 ```toml
 [discovery]
 ssh-config = true   # default; the `Host` aliases in ~/.ssh/config
 tailscale = true    # default; the online peers of this machine's tailnet
-wsl = false         # default; the WSL distributions installed on this box
+wsl = true          # default; the WSL distributions installed on this box
 ```
 
 A tailnet peer is offered under its DNS label (`jupiter00`), the name that resolves
@@ -182,15 +181,15 @@ adds nothing, so a host you configured by hand keeps the position you gave it.
 
 A WSL distribution is a host of its own, so a tmux running inside one is a source
 like any other: it appears in the list, its sessions stream in, and landing in one is
-the same keystroke as landing in a remote. Turn the family on and every distribution
-this box has is offered:
+the same keystroke as landing in a remote. Every distribution this box has is offered,
+like every other provider:
 
 ```toml
 [discovery]
-wsl = true
+wsl = true   # default
 ```
 
-Or name one, which also sets its mux:
+Or turn the listing off and name one, which also sets its mux:
 
 ```toml
 [[wsl]]
@@ -204,10 +203,10 @@ takes. The prefix is what says which distribution is meant rather than a host of
 same name, so `exclude` names it the same way (`exclude = ["wsl.docker-desktop"]`) and
 an ssh alias may not be spelled `wsl.something`.
 
-Listing is off by default for a reason: it runs `wsl.exe`, and a box with Docker
-Desktop installed carries distributions that run no mux at all and would only show up
-unreachable. `[[wsl]]` is the way to serve one distribution without listing every one
-of them.
+Listing runs `wsl.exe`, and a box with Docker Desktop installed carries distributions
+that run no mux at all, which show up unreachable. Drop those by name
+(`exclude = ["wsl.docker-desktop"]`), or turn the listing off and let `[[wsl]]` serve
+the one distribution you want.
 
 xmux finds a mux installed under your own home inside the distribution, because the
 command runs in a login shell there. A distribution running tmux also needs `script`

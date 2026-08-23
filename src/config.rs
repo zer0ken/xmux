@@ -25,14 +25,11 @@ pub struct Config {
 /// The optional `[discovery]` table: which providers contribute ssh targets to the
 /// roster (see [`crate::roster`]).
 ///
-/// The ssh providers are ON by default, so a machine xmux can reach is a machine xmux
+/// Every provider is ON by default, so a machine xmux can reach is a machine xmux
 /// offers with nothing to configure. Each flag is how a user narrows that: `ssh-config`
 /// off for someone who keeps no ssh config, `tailscale` off for someone who does not
 /// want the roster to depend on an external CLI. A provider that cannot run costs an
 /// empty list, not an error, so leaving one on is safe on a machine without it.
-///
-/// `wsl` is the one that starts off: a box with Docker Desktop carries distributions
-/// that run no mux at all, so it costs noise rather than an empty list.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DiscoveryConfig {
     /// Read host aliases from `~/.ssh/config`.
@@ -42,7 +39,7 @@ pub struct DiscoveryConfig {
     #[serde(default = "default_true")]
     pub tailscale: bool,
     /// Offer this box's WSL distributions, by the name `wsl.exe` lists them under.
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub wsl: bool,
 }
 
@@ -51,7 +48,7 @@ impl Default for DiscoveryConfig {
         DiscoveryConfig {
             ssh_config: true,
             tailscale: true,
-            wsl: false,
+            wsl: true,
         }
     }
 }
@@ -1129,11 +1126,27 @@ mux = "tmux"
     }
 
     #[test]
-    fn wsl_discovery_is_off_until_asked_for() {
-        // `wsl.exe` is an external CLI, and a box with Docker Desktop has distributions
-        // that run no mux, so the family does not change an existing install's host list
-        // on its own.
-        assert!(!DiscoveryConfig::default().wsl);
+    fn every_roster_provider_answers_by_default() {
+        // No provider waits to be asked for. One that cannot run on this box costs an
+        // empty list rather than an error, so being on where there is nothing to say
+        // costs nothing.
+        let d = DiscoveryConfig::default();
+        assert!(d.ssh_config && d.tailscale && d.wsl);
+    }
+
+    #[test]
+    fn a_partial_discovery_table_leaves_the_others_on() {
+        // The default is per KEY, not per table: a config that names one provider to
+        // narrow the roster must not silently drop the ones it did not mention.
+        let path = write_temp(
+            "[discovery]
+tailscale = false
+",
+            "partial-discovery.toml",
+        );
+        let d = load(&path).unwrap().discovery;
+        assert!(!d.tailscale, "the key that was written is honoured");
+        assert!(d.ssh_config && d.wsl, "the keys left out stay on");
     }
 
     #[test]
