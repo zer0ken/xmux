@@ -3,109 +3,99 @@
 ## Purpose
 
 `state` is the app's single source of truth: the reachable inventory plus the
-selection/display runtime fields that need stable ownership outside the main
-loop's local variables, and `State::apply` / `State::apply_event` — the two
-domain-mutation sites (intent-driven and event-driven). UI components read
-`&State` instead of reaching into the row model.
+selection and display runtime fields that need stable ownership outside the main
+loop's local variables, and the two domain-mutation sites (intent-driven and
+event-driven). UI components read the state instead of reaching into the row
+model.
 
 ## Mental Model
 
-`State` is the app's durable runtime state bag. It owns the inventory
-(`groups`/`panes`/`scanning`/`panes_loaded`) and the active `filter`, the
-canonical `selection`, the confirmed `displayed` address, the `focus` state
-machine (which view keys go to; whether a modal is open), the open modal
-`modal`, the debounced `attach_deadline` + `attach_pending` flag, and the last
-session address persisted to prefs. `from_scan` / `from_sources` seed the
-inventory.
+The state is the app's durable runtime state bag. It owns the inventory and the
+active filter, the canonical selection, the confirmed displayed address, the
+focus state machine (which view keys go to, and whether a modal is open), the
+open modal, the debounced attach deadline with its pending flag, and the last
+session address persisted to preferences. It is seeded from either a scan or the
+configured source list.
 
-`State::apply(Action) -> Vec<Command>` is the single domain-mutation site: it
-folds one intent into the state and returns the effects for the run loop to
-dispatch. `apply` touches only `State` — it never reads the clock or any
-registry/host state directly. The clock and the runtime attach facts enter as
-DATA on `Action::Tick { now, key_live, in_flight }`. `Action::Select` records a
-moved selection and marks `attach_pending`; the trailing `Tick` (re)arms
-`attach_deadline = now + 90ms` — re-armed on every pending Select so rapid
-navigation coalesces into one trailing attach — and, once the deadline elapses
-and the `should_attach` gate holds, returns `Command::Attach` (plus
-`Command::PersistLastSession` on an address change). `should_attach` is the pure
-gate method that reads `selection` / `displayed`; the terminal view renders and
-routes input to `displayed` (the confirmed session), which lags `selection`
-until the new attach is confirmed (stale-while-revalidate). `CreateSession` is the
-one session-lifecycle intent, and it is a pure effect emitter: `apply` mutates no
-domain state and returns a single `Command::RunOp(MuxOp::Create)` the run loop runs
-off-loop (the inventory change arrives later as the op's result). There is no
-rename, kill, or window intent — the mux owns editing a session.
+Applying an ACTION is the single domain-mutation site: it folds one intent into
+the state and returns the effects for the run loop to dispatch. It touches only
+the state, never reading the clock or any registry or host state directly. The
+clock and the runtime attach facts enter as DATA on the tick action. A selection
+action records a moved selection and marks the attach pending; the trailing tick
+re-arms the attach deadline, on every pending selection, so rapid navigation
+coalesces into one trailing attach. Once the deadline elapses and the pure attach
+gate holds, the attach command is returned, plus a persist command on an address
+change. The gate reads the selection against the displayed address; the terminal
+view renders and routes input to the DISPLAYED session, which lags the selection
+until the new attach is confirmed (stale-while-revalidate). Creating a session is
+the one session-lifecycle intent, and it is a pure effect emitter: no domain
+state is mutated, and a single deferred operation is returned for the run loop to
+run off-loop, with the inventory change arriving later as that operation's
+result. There is no rename, kill, or window intent; the mux owns editing a
+session.
 
-`State::apply_event(HostEvent, &mut Switcher, &mut connected) -> Vec<EventEffect>`
-is the inbound mirror of `apply`: the single event-driven mutation site. It folds
-the arms whose data is SELF-CONTAINED in the event (the `Focus` active-window
-marker, a `Panes` subtree, a `Sessions` poll enumeration, the `Exited`
-unreachable mark) into `State` through the switcher, and returns the mux
-follow-ups it cannot perform itself as `EventEffect`s for the run loop to run
-(`ApplyInventory` / `Refetch` / `ProbeActiveWindow` / `ReapHost` /
-`ReapDisplayAttach` / `DispatchScanned` / `SyncPollSessions` /
-`AddDiscoveredSources`). The `connected`
-once-connected set enters as DATA (like the clock on `Tick`): an `Exited` of a
-once-connected host is a transient drop that keeps the last-known inventory. The
-`Connected`/`Inventory` events carry their parsed sessions, which the loop folds
-into `model::Host.inventory` (the single owner) via `ApplyInventory` — the fold
-needs the `hosts` registry the state layer does not hold, so it is the loop's job.
+Applying an EVENT is the inbound mirror: the single event-driven mutation site.
+It folds the arms whose data is SELF-CONTAINED in the event (an active-window
+marker, a pane subtree, a poll enumeration, an exit marking a host unreachable)
+into the state through the switcher, and returns the mux follow-ups it cannot
+perform itself as effects for the run loop. The once-connected set enters as
+DATA, like the clock on a tick: an exit from a once-connected host is a transient
+drop that keeps the last-known inventory. Connection and inventory events carry
+their parsed sessions, which the loop folds into the host's own inventory, the
+single owner; that fold needs the host registry the state layer does not hold, so
+it is the loop's job.
 
-`modal` is one `Option<ui::modal::Modal>` — at most one of help / inline input.
-A single Option (not two independent fields) makes the modals' mutual exclusion
-structural: opening one drops whatever was open. The query helpers
-`is_modal_popup_open` / `is_inputting` / `modal_kind` read it (delegating to
-`ui::modal`). `ui::modal`
-owns the modal types, classifiers, and self-contained behavior (help feed /
-popup-drag geometry); the switcher holds the modal state plus its
-`PopupGeometry` and forwards to `ui::modal`.
+The modal is ONE optional value: at most one of help or inline input. A single
+option, rather than independent fields, makes the modals' mutual exclusion
+structural, so opening one drops whatever was open. The query helpers read it,
+delegating to the UI modal module, which owns the modal types, classifiers, and
+self-contained behavior (the help feed, the popup drag geometry); the switcher
+holds the modal state plus its popup geometry and forwards to that module.
 
 ## Module Seams
 
-- `State` depends on `model::Selection` for selected source/session/window,
-  `ui::tree::Group` + `session::WindowPanes` for the inventory,
-  `app::focus::Focus` for the focus state machine, `ui::modal::Modal` for the
-  open modal, `model::{Action, Command}` for the `apply` vocabulary, and
-  `host::HostEvent` + `model::EventEffect` + `&mut ui::switcher::Switcher` for
-  `apply_event` (the switcher rebuilds its rows against `&mut State`).
-- It stores state facts + the two mutation sites (`apply` / `apply_event`); the
-  run loop owns effect dispatch — for `apply` the synchronous `Command`s (switcher
-  selection move, attach, prefs IO, quit) and for `apply_event` the `EventEffect`
-  mux follow-ups (inventory fold+apply, refetch, probe, reap, sync, scan-dispatch,
-  source-add) — and feeds back the runtime attach facts on `Tick`. No
-  IO/spawning/channel sends happen here.
+- The state depends on the domain layer for the selection and the action, command,
+  and effect vocabularies; on the UI layer for the inventory groups, the open
+  modal, and the switcher it rebuilds rows against; on the app layer for the focus
+  state machine; and on the host layer for the inbound events.
+- It stores state facts plus the two mutation sites. The run loop owns effect
+  dispatch, both the synchronous commands from an action (switcher selection move,
+  attach, preferences IO, quit) and the mux follow-ups from an event (inventory
+  fold and apply, refetch, probe, reap, sync, scan dispatch, source add), and
+  feeds the runtime attach facts back on the tick. No IO, spawning, or channel
+  sends happen here.
 
 ## Invariants
 
-- `selection` is the source/session/window the display SHOULD show.
-- `displayed` is the address whose content is confirmed live on screen; it is set
-  only at confirmation (a synchronous in-place switch/select-window, or
-  `DisplayReady`). The terminal view always renders `displayed`'s grid, so on a
+- The selection is the source / session / window the display SHOULD show.
+- The displayed address is the one whose content is confirmed live on screen; it
+  is set only at confirmation, by a synchronous in-place switch or by the display
+  becoming ready. The terminal view always renders the displayed grid, so on a
   switch the prior session stays on screen until the new one is confirmed
   (stale-while-revalidate); there is no transitional placeholder.
-- `focus` is the single source of truth for which view owns keys and which modal
-  (if any) is open; a modal carries the view it restores to.
-- `modal` is the single source of truth for WHICH modal is open and its content;
-  `focus`'s modal dimension is reconciled from it each loop-top via `modal_kind`.
-  At most one modal can be open because it is one Option, not four fields.
-- `attach_deadline` is the debounce gate for settled selection attachment;
-  `attach_pending` marks a moved selection awaiting its first `Tick` arm.
-  Re-arming on every pending Select is the freeze fix — never arm-once.
-- `last_saved_session` prevents rewriting prefs on every window step within the
-  same session.
-- This layer branches on nothing mux-specific: `apply` / `apply_event` fold
-  intents and events over `State` without a `match` on tmux vs psmux vs zellij. Per-mux
-  behavior lives behind the `Mux`/`MuxDriver` seam the run loop reaches; the
-  mux enters here only as domain data (sessions, windows, events).
+- The focus is the single source of truth for which view owns keys and which
+  modal, if any, is open; a modal carries the view it restores to.
+- The modal is the single source of truth for WHICH modal is open and its
+  content; the focus's modal dimension is reconciled from it at each loop top. At
+  most one modal can be open, because it is one option rather than several fields.
+- The attach deadline is the debounce gate for settled selection attachment, and
+  the pending flag marks a moved selection awaiting its first tick arm. Re-arming
+  on every pending selection is the freeze fix; never arm once.
+- The last saved session address prevents rewriting preferences on every window
+  step within the same session.
+- This layer branches on nothing mux-specific: both apply sites fold intents and
+  events over the state without a match on mux kind. Per-mux behavior lives behind
+  the mux and driver seam the run loop reaches; the mux enters here only as domain
+  data (sessions, windows, events).
 
 ## Common Pitfalls
 
 - Do not add fields here just to shorten a function signature; add fields only
   when state ownership is clear.
 - Do not perform IO, spawning, channel sends, or registry mutation from this
-  module — return a `Command` for the loop to run instead.
-- Do not read `Instant::now()` or registry/host state inside `apply`; both enter
-  as data on `Action::Tick`.
+  module. Return a command for the loop to run instead.
+- Do not read the clock or registry and host state inside apply; both enter as
+  data on the tick.
 
 ## Before Editing
 
@@ -114,5 +104,5 @@ popup-drag geometry); the switcher holds the modal state plus its
 
 ## Verification
 
-- Run `state` tests and the app tests that exercise selection sync and attach
-  debounce.
+- Exercise selection sync and the attach debounce end to end: they are where a
+  state change most easily desynchronizes from the loop.

@@ -6,37 +6,24 @@ Accepted
 
 ## Context
 
-Working Notes are being introduced to give people and agents directory-local
-architecture context and editing guardrails before they read or change code.
-
-The first pass covers the directories most involved in the current
-rearchitecture. Some smaller directories may not need much explanation yet, but
-missing files make it harder to rely on Working Notes as a consistent pre-edit
-entry point.
+Working Notes give people and agents directory-local architecture context and
+editing guardrails before they read or change code. They are only dependable as
+a pre-edit entry point if a reader can assume one exists wherever they land. A
+missing file is indistinguishable from a directory with nothing worth saying, so
+the reader falls back to reading code and the convention stops paying.
 
 ## Decision
 
-The first pass will cover only the core architecture seams:
+Every directory in the repository carries a local `AGENTS.md`, even when the
+content is short.
 
-- repository root
-- `src/`
-- `src/app/`
-- `src/mux/`
-- `src/host/`
-- `src/display/`
-- `src/state/`
-- `src/ui/`
-- `src/model/`
-- `legacy-go/`
-- `docs/`
-
-Before release, every directory in the repository must have a local
-`AGENTS.md`, even when the content is short.
+A new directory gets its Working Notes when it is created, using the format
+`CONTEXT.md` defines.
 
 ## Consequences
 
-The first pass stays focused on the directories with the highest architectural
-risk.
+Release preparation includes a Working Notes coverage audit, so a directory
+added between releases is not left undocumented.
 
-The release checklist must include a Working Notes coverage audit so newly
-created or lower-risk directories are not left undocumented.
+Directories with little architectural risk still carry a short file rather than
+none, which keeps the entry point uniform.

@@ -2,72 +2,69 @@
 
 ## Purpose
 
-`model` holds runtime domain values shared across mux, transport, host,
-control, and app code: host state, host collections, the
-`Action`/`Command`/`EventEffect` unidirectional-flow vocabulary, transport
-lowering results, server models, plans, and death-signal helpers.
+`model` holds runtime domain values shared across mux, transport, host, control,
+and app code: host state, host collections, the action / command / event-effect
+unidirectional-flow vocabulary, transport lowering results, server models, plans,
+and death-signal helpers.
 
 ## Mental Model
 
-The model layer carries facts and intent, not live process ownership. A `Host`
-combines machine transport and mux state. `Action` is the single domain
-intent vocabulary shared by key handling and ctl; `Command` is the matching
-effect vocabulary the run loop dispatches. `State::apply(Action) -> Vec<Command>`
-(in `crate::state`) is the one site that turns an `Action` into state changes +
-`Command`s. `EventEffect` is the inbound mirror: `State::apply_event(HostEvent)
--> Vec<EventEffect>` (in `crate::state`) folds a mux event's self-contained
-state mutation and returns the mux follow-ups (refetch / probe / reap / sync /
-scan-dispatch / source-add) the run loop runs against the host clients + registry.
+The model layer carries facts and intent, not live process ownership. A host
+combines machine transport and mux state. An action is the single domain intent
+vocabulary shared by key handling and ctl; a command is the matching effect
+vocabulary the run loop dispatches. Applying an action, in `src/state`, is the
+one site that turns intent into state changes plus commands. An event effect is
+the inbound mirror: applying a host event folds that event's self-contained state
+mutation and returns the mux follow-ups (refetch, probe, reap, sync, scan
+dispatch, source add) the run loop runs against the host clients and the
+registry.
 
 ## Module Seams
 
-- `action.rs` defines the domain `Action` (intent) and `Command` (effect)
-  enums, `FocusTarget`, `MuxOp` (the slow-mux-action descriptor `Command::RunOp`
-  carries and `ui::ops::run_op` runs off-loop), and `EventEffect` (the mux
-  follow-up `State::apply_event` returns for a `HostEvent`). The app's
-  raw-byte input `Action` (`display::dispatch`) projects INTO this via `as_action`;
-  the two are distinct types in separate modules. `EventEffect` is not
-  `Clone`/`Eq` (its `DispatchScanned` carries a `Box<dyn Mux>`) and has a
-  hand-written `Debug`.
-- The MACHINE axis lives in `crate::machine` (not here): the `Transport` trait +
-  `Local`/`Ssh` families. A `Host`'s `transport` field is `Box<dyn machine::Transport>`.
-- `host.rs` and `hosts.rs` store per-host domain state and collections. A `Host`
-  carries no control client, no display-key derivation, and no attach/reap plan:
-  the live control client is owned by `HostManager`, the live warm/reap by
-  `MuxDriver::sync`, and the live display-key authority is
-  `app::host_selection_key` (the host id for BOTH server models).
-- `death.rs`, `plan.rs`, and `server_model.rs` provide value types used by
-  app, mux, and host management. `server_model.rs` is just the
-  `Shared`/`PerSession` discriminant the supervisor reads to shape the attach
-  fan-out.
+- The action module defines the domain intent and effect vocabularies, the focus
+  target, the slow-operation descriptor a deferred command carries for the UI to
+  run off-loop, and the event effect returned for a host event. The raw-byte
+  input action from `src/display` projects INTO the domain action; the two are
+  distinct types in separate modules. The event effect carries a boxed mux, so it
+  is neither cloneable nor comparable and has a hand-written debug form.
+- The MACHINE axis lives in `src/machine`, not here; a host holds one transport
+  from it.
+- Host state and host collections store per-host domain state. A host carries no
+  control client, no display-key derivation, and no attach or reap plan: the live
+  control client belongs to the host manager, the live warm and reap to the
+  driver, and the display-key authority to the app, which uses the host id for
+  both server models.
+- The death signal, the plans, and the server model are value types used by app,
+  mux, and host management. The server model is just the shared-versus-
+  per-session discriminant the supervisor reads to shape the attach fan-out.
 
 ## Invariants
 
-- `Action` variants represent user-visible domain intents, not key strokes;
-  `Command` variants represent effects the run loop carries out; `EventEffect`
-  variants represent the mux I/O an inbound `HostEvent` requires after its
-  state mutation has been folded.
+- Action variants represent user-visible domain intents, not key strokes; command
+  variants represent effects the run loop carries out; event-effect variants
+  represent the mux I/O an inbound host event requires after its state mutation
+  has been folded.
 - Live control clients, polling tasks, and PTY attachments are owned outside
   `model`.
-- Transport lowering should preserve mux intent without introducing mux
-  policy.
+- Transport lowering should preserve mux intent without introducing mux policy.
 
 ## Common Pitfalls
 
 - Do not put task lifecycle or process handles into domain model values.
-- Do not add an `Action`/`Command` for behavior that is only a test hook; raw
-  ctl input already covers low-level injection.
-- Do not split host state between new registries without checking `Hosts`,
-  `Host`, and `HostManager` ownership.
+- Do not add an action or command for behavior that is only a low-level hook; the
+  raw ctl namespace already covers low-level injection.
+- Do not split host state between new registries without checking who already
+  owns it: the host, the host collection, and the host manager.
 
 ## Before Editing
 
 - Confirm whether a new field is durable domain state or live runtime machinery.
-- Check whether an existing plan/value type can express the behavior.
+- Check whether an existing plan or value type can express the behavior.
 - Keep parsing aliases close to the value type they construct.
 
 ## Verification
 
-- Run model tests for equality, parsing, lowering, and collection behavior.
-- Run state, ctl, and app tests when changing `Action`, `Command`, or
-  `FocusTarget` (`State::apply` and its debounce live in `crate::state`).
+- Check equality, parsing, lowering, and collection behavior for the value you
+  touched.
+- Re-check the state, ctl, and app surfaces when the intent or effect vocabulary
+  changes: all three read it, and the apply site is in `src/state`.

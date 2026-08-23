@@ -3,91 +3,85 @@
 ## Purpose
 
 `machine/` is the MACHINE axis: how a mux argv reaches the server it runs on,
-SEPARATE from which mux runs there (that is `crate::mux`). It owns argv assembly
-and the ssh wrapping only — never a server model, never a mux verb.
+SEPARATE from which mux runs there (that is `src/mux`). It owns argv assembly and
+the ssh wrapping only, never a server model and never a mux verb.
 
 ## Mental Model
 
-A machine family is a `Transport` implementation. `Local` runs a command on this
-machine (injecting `-S <socket>` for a non-default mux server); `Ssh` wraps the
-command in an ssh connection with the right tty / BatchMode / ControlMaster
-options. Each transport also carries the SOURCE ID it answers as (`host_id()`),
-separate from where it connects: one machine running several muxes is several
-sources (`local:zellij`), all reaching the same place, so the id cannot be the ssh
-destination. `local()` / `ssh()` derive the id from the destination;
-`local_as()` / `ssh_as()` state it. A host holds one as `Box<dyn Transport>` and
-never branches on which family it is — it calls trait methods. This mirrors the
-MUX axis: `Transport` is to `machine/` what `Mux` is to `mux/`.
+A machine family is a `Transport` implementation. The local family runs a command
+on this machine, injecting the server socket for a non-default mux server; the
+ssh family wraps the command in an ssh connection with the right tty, batch-mode,
+and multiplexing options. Each transport also carries the SOURCE ID it answers
+as, separate from where it connects: one machine running several muxes is several
+sources, all reaching the same place, so the id cannot be the ssh destination.
+The plain factories derive the id from the destination; their explicit variants
+state it. A host holds one transport and never branches on which family it is: it
+calls trait methods. This mirrors the MUX axis, where the mux trait plays the
+same role.
 
 ## Module Seams
 
-- `mod.rs` holds the `Transport` trait, the `MachineKind` enum + its `transport()`
-  method (the single construction-time match that maps a kind to a concrete transport),
-  the `machine::local()` / `machine::ssh()` factory functions `transport()` delegates to
-  and their `*_as` variants that name the SOURCE ID explicitly,
-  the `LoweredSwitch` execution-shape enum, the `Clone for Box<dyn Transport>`
-  impl (via `clone_box`), and the blanket `impl Transport for Box<dyn Transport>`
-  (so a stored box passes where `&dyn Transport` is expected).
-- `local.rs` = `Local` (the local machine). Issues no remote shell command, so it
-  uses none of `vocab`.
-- `ssh.rs` = `Ssh` (a remote over ssh). Owns the private `ssh_opts` (tty/batch/
-  ControlMaster) and is the sole consumer of `vocab::remote_command`.
-- `vocab.rs` = the shared shell vocabulary (`quote`, `remote_command`) that renders
-  an argv injection-safe for the POSIX shell ssh hands its command to. Peer of
-  `mux/vocab.rs`.
+- The module root holds the `Transport` trait, the machine kind and its
+  construction method (the single construction-time match mapping a kind to a
+  concrete transport), the factories that method delegates to plus the variants
+  naming the source id explicitly, the lowered-switch execution shape, and the
+  boxing impls that let a stored transport pass where a borrowed one is expected.
+- Each machine family is its own module: the local machine issues no remote shell
+  command and uses none of the shared vocabulary; the ssh machine owns the
+  private option assembly (tty, batch mode, multiplexing) and is the sole
+  consumer of remote-command rendering.
+- The shared shell vocabulary renders an argv injection-safe for the POSIX shell
+  ssh hands its command to. It is the peer of the mux axis's own vocabulary.
 
-The dependency is one-way: `ssh.rs` imports `vocab`; nothing in `machine/`
-imports a mux type or a `Source`.
+The dependency is one-way: the ssh family imports the shared vocabulary, and
+nothing in `machine/` imports a mux type or a source.
 
 ## Invariants
 
-- `Transport` names no mux and no server model. `is_remote()` is a semantic ssh-vs-local marker exercised by tests, read on no production path;
-  the capability predicates `runs_through_shell()` (a display attach runs through a host
-  shell — the tty-record gate) and `local_registry_scope()` (this box's mux registry is
-  authoritative — the registry-merge / local `list-clients` gate) express what the mux
-  sites need. None of the three derives from another, and no code reads them to pick a
-  server model (that is `ServerModel`).
-- The `MachineKind` query methods are the ONLY code that matches on the kind:
-  `transport()` maps a kind to a concrete transport (via the `machine::local` /
-  `machine::ssh` factories) and `local_socket()` reads its `-S` socket. No match on the
-  kind is scattered across call sites — `Source::local_socket` delegates to the kind, and
-  the trait object carries the choice everywhere else.
-- `exec_argv` lowers a non-interactive command; `interactive_attach_argv` lowers an
-  attach into the terminal handover (local `-S` injection, or `ssh -t` running
-  `[<select-window> ;] exec <attach>` — the `exec`/window-fold lives here, never in
-  the mux or the caller); `control_argv` lowers a `-CC` child; `raw_ssh_argv` wraps
-  a raw remote command (default `None`; only `Ssh` returns `Some`).
-- The mux argv always comes from a `Mux::*_plan` method; a `Transport` only decides
-  HOW to run it, never WHAT.
-- Every untrusted argv element crossing into a remote shell passes through
-  `vocab::quote` — the single injection-safe boundary.
+- `Transport` names no mux and no server model. Remoteness is a semantic
+  ssh-versus-local marker only. What the mux sites actually read are the
+  capability predicates: whether a display attach runs through a host shell (the
+  tty-record gate) and whether this box's mux registry is authoritative (the
+  registry-merge gate). None of the three derives from another, and no code reads
+  them to pick a server model.
+- The machine kind's own query methods are the ONLY code that matches on the
+  kind: one maps a kind to a concrete transport, another reads its server socket.
+  No match on the kind is scattered across call sites; the trait object carries
+  the choice everywhere else.
+- The transport lowers four shapes and no more: a non-interactive command, an
+  attach into the terminal handover (local socket injection, or an ssh tty
+  session that folds the window pre-selection ahead of the attach, which lives
+  here and never in the mux or the caller), a control-mode child, and a raw
+  remote command (which only the ssh family answers).
+- The mux argv always comes from a mux command plan; a transport only decides HOW
+  to run it, never WHAT.
+- Every untrusted argv element crossing into a remote shell passes through the
+  shared quoting, the single injection-safe boundary.
 
 ## Common Pitfalls
 
 - Do not add mux-kind knowledge here. If a decision needs the mux, it belongs in
-  `mux/` or the caller, not the transport.
-- `&Box<dyn Transport>` does not coerce to `&dyn Transport` on its own; the blanket
-  impl in `mod.rs` is what lets `&host.transport` be passed to a `&dyn Transport`
-  parameter. If you remove it, every such call site needs an explicit `&*`.
-- `remote_command`/`quote` assume a POSIX remote shell. A cmd.exe remote is NOT a
-  supported target (see the `remote_command` doc). Do not weaken the quoting to
-  accommodate one without an explicit per-host shell feature.
+  `src/mux` or the caller, not the transport.
+- A boxed transport does not coerce to a borrowed trait object on its own; the
+  blanket impl in the module root is what lets a stored transport be passed
+  directly. Removing it forces an explicit reborrow at every call site.
+- The shared quoting assumes a POSIX remote shell. A `cmd.exe` remote is NOT a
+  supported target. Do not weaken the quoting to accommodate one without an
+  explicit per-host shell feature.
 
 ## Before Editing
 
-- Adding a machine family (e.g. wsl): add `src/machine/<kind>.rs` with a struct
-  implementing `Transport` — override the capability predicates for its combination
-  (WSL is `runs_through_shell() = true`, `local_registry_scope() = false`) rather than
-  deriving from `is_remote` — add a `machine::<kind>()` factory, and add a
-  `MachineKind::<Kind>` variant plus one arm in each `MachineKind` method that matches the
-  kind (`transport()`, `local_socket()`). The compiler forces both arms; no match on the
-  kind exists outside `MachineKind`.
-- Adding per-machine execution behavior to an existing family: edit `local.rs` /
-  `ssh.rs`; keep the shared shell vocab in `vocab.rs`.
+- Adding a machine family (for example WSL): add its module with a type
+  implementing `Transport`, overriding the capability predicates for its own
+  combination rather than deriving them from remoteness, add its factory, and add
+  a machine-kind variant plus one arm in each of the kind's methods. The compiler
+  forces every arm, and no match on the kind exists outside the kind itself.
+- Adding per-machine execution behavior to an existing family: edit that family
+  and keep the shared shell vocabulary where it is.
 
 ## Verification
 
-- Run the module tests (`cargo test`): `machine::local`, `machine::ssh`, and
-  `machine::vocab` each carry unit tests pinning the exact argv each method emits.
-- When touching quoting, exercise `vocab::quote` against shell metacharacters and
-  confirm `remote_command` joins quoted (the injection-safety tests).
+- Pin the exact argv each lowering emits, per family: that argv is the contract
+  the rest of the app composes against.
+- When touching quoting, exercise it against shell metacharacters and confirm the
+  remote command joins quoted.
