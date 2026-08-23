@@ -154,14 +154,14 @@ or selected changes under you.
 
 ## Where the host list comes from
 
-By default xmux offers the `Host` aliases in `~/.ssh/config`, plus `local`. A tailnet
-can supply the list instead, so the machines you can reach are the machines xmux
-offers with nothing to keep in sync by hand:
+By default xmux offers the `Host` aliases in `~/.ssh/config`, the online peers of this
+machine's tailnet, and `local`. The machines you can reach are the machines xmux offers,
+with nothing to keep in sync by hand. Each provider can be turned off:
 
 ```toml
 [discovery]
-ssh-config = true   # default; set false to use only the providers below
-tailscale = false   # default; the online peers of this machine's tailnet
+ssh-config = true   # default; the `Host` aliases in ~/.ssh/config
+tailscale = true    # default; the online peers of this machine's tailnet
 ```
 
 A tailnet peer is offered under its DNS label (`jupiter00`), the name that resolves

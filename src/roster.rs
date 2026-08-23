@@ -19,10 +19,15 @@ use std::process::Command;
 /// Runs `tailscale status --json` and returns the peer aliases it reports. An absent
 /// CLI, a stopped daemon, or a non-zero exit yields no aliases.
 pub fn tailscale_aliases() -> Vec<String> {
-    let out = Command::new(tailscale_bin())
-        .args(["status", "--json"])
-        .output();
-    match out {
+    status_aliases(&tailscale_bin())
+}
+
+/// The provider itself, over a named binary. Every way the call can fail - the binary
+/// does not exist, it cannot be spawned, it exits non-zero, it prints something that is
+/// not the expected JSON - lands on the same empty list, so a machine without tailscale
+/// simply contributes no aliases.
+fn status_aliases(bin: &str) -> Vec<String> {
+    match Command::new(bin).args(["status", "--json"]).output() {
         Ok(o) if o.status.success() => parse_tailscale_status(&String::from_utf8_lossy(&o.stdout)),
         _ => Vec::new(),
     }
@@ -189,6 +194,13 @@ mod tests {
         ] {
             assert!(parse_tailscale_status(bad).is_empty(), "refused: {bad}");
         }
+    }
+
+    #[test]
+    fn a_missing_cli_yields_nothing_rather_than_an_error() {
+        // The provider is on by default, so a machine with no tailscale installed must
+        // reach an empty list, never a spawn error that would fail the run.
+        assert!(status_aliases("xmux-no-such-tailscale-binary").is_empty());
     }
 
     #[test]

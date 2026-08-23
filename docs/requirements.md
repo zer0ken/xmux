@@ -24,11 +24,12 @@ no function, and no test, so renaming code is never a documentation change.
   their source, and the sources themselves by their most recent session, so one source's
   cards are contiguous and the nav never names a source twice.
 - **FR-A5** - The roster (which ssh targets are offered) comes from providers the
-  `[discovery]` table selects: `~/.ssh/config` aliases (on by default) and this
-  machine's tailnet peers (off by default, since it runs an external CLI). A tailnet
-  peer is offered under its DNS label; this machine and offline peers are skipped. A
-  provider that cannot answer contributes nothing instead of failing the run, and
-  ssh-config names keep their position when a provider repeats them.
+  `[discovery]` table selects: `~/.ssh/config` aliases and this machine's tailnet peers,
+  both on by default. A tailnet peer is offered under its DNS label; this machine and
+  offline peers are skipped. A provider that cannot answer contributes nothing instead
+  of failing the run, so a machine without the tailscale CLI installed reaches an empty
+  list rather than an error, and ssh-config names keep their position when a provider
+  repeats them.
 - **FR-A6** - A host's mux is identified by what its binary answers as, not by the
   name it was invoked under, so tmux, psmux, and zellij mix freely across hosts with no
   configuration. Each mux is one family behind the mux axis: the command plans
@@ -86,7 +87,7 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-B3** - The terminal view shows the confirmed session's live grid and follows
   the cursor. A switch keeps the prior grid on screen until the new one is ready
   (stale-while-revalidate); only the first launch, before any grid exists, shows a
-  blank view. The `scanning…` / `loading…` state hints live in the nav, not here.
+  blank view. The waiting and unreachable state hints live in the nav, not here.
 - **FR-B4** - Navigation: up/down/home/end/pgup/pgdn; fuzzy filter over
   `<source>/<name>`; manual `prefix r` rescan.
 - **FR-B5** - Surveying without committing is first-class: xmux is a switcher, not a
@@ -94,7 +95,13 @@ no function, and no test, so renaming code is never a documentation change.
   mux session untouched: it is never killed or altered by exiting.
 - **FR-B6** - Under a filter, `Enter` attaches the **visible (filtered)** session,
   never a filtered-out one, even when a host row is selected.
-- **FR-B7** - Per-element state hints: `scanning…`, `loading…`, `(empty)`,
+- **FR-B7** - A card that is WAITING turns ONE spinner, standing in the first of its
+  levels that has no answer yet: the mux while the source's own id does not name one,
+  the session while the source is still being listed, the window while the session's
+  panes are in flight. The levels behind it stay blank, so the card says WHICH answer
+  is outstanding instead of only that it is busy, and no status word repeats what the
+  spinner already says. The nav's scan progress turns the same spinner on the same
+  frame. A card that has SETTLED reads a word instead: `no sessions`,
   `⚠ unreachable: <reason>`.
 - **FR-B8** - A session running xmux is never mirrored into the terminal view.
   This is prevented structurally, not by a runtime check: the nest guard (FR-D3)

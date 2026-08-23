@@ -23,17 +23,18 @@ pub struct Config {
 /// The optional `[discovery]` table: which providers contribute ssh targets to the
 /// roster (see [`crate::roster`]).
 ///
-/// `ssh-config` is on by default because it is where the host list has always come
-/// from; turning it off is how a user who keeps no ssh config opts out. The network
-/// providers are OFF by default: they run an external CLI and would otherwise change
-/// the host list of an existing install without being asked.
+/// Every provider is ON by default, so a machine xmux can reach is a machine xmux
+/// offers with nothing to configure. Each flag is how a user narrows that: `ssh-config`
+/// off for someone who keeps no ssh config, `tailscale` off for someone who does not
+/// want the roster to depend on an external CLI. A provider that cannot run costs an
+/// empty list, not an error, so leaving one on is safe on a machine without it.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DiscoveryConfig {
     /// Read host aliases from `~/.ssh/config`.
     #[serde(rename = "ssh-config", default = "default_true")]
     pub ssh_config: bool,
     /// Offer the online peers of this machine's tailnet, by their DNS label.
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub tailscale: bool,
 }
 
@@ -41,7 +42,7 @@ impl Default for DiscoveryConfig {
     fn default() -> Self {
         DiscoveryConfig {
             ssh_config: true,
-            tailscale: false,
+            tailscale: true,
         }
     }
 }
