@@ -212,15 +212,34 @@ pub(crate) enum BarFill {
     Content,
 }
 
-/// Which host screen fills the terminal-view region in place of a mux. One variant per
-/// state a selected host can be in with no session to show, and no variant for a host
-/// still scanning: an in-flight state is the nav's to show, so the view keeps its grid.
+/// Which screen fills the terminal-view region in place of a mux: one variant per state
+/// that has no grid to mirror. Two are host states with no session to show; the third is
+/// the one session that has a grid and must not be shown anyway. There is no variant for
+/// a host still scanning - an in-flight state is the nav's to show, so the view keeps the
+/// grid it already has.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum HostScreen {
+pub(crate) enum ViewScreen {
+    /// The session xmux is ITSELF running in. Mirroring it would attach a second client
+    /// to the session holding xmux - moving the user's own client and painting xmux
+    /// inside itself - so the screen stands in place of that grid.
+    SelfSession,
     /// The host could not be reached.
     Unreachable,
     /// The host answered and is serving no session.
     Empty,
+}
+
+impl ViewScreen {
+    /// The state word under the headline. The two SETTLED HOST states read theirs from
+    /// the one source the nav cards read, so a card and the screen reached from it can
+    /// never name the same state two ways; the self-session state is not a host state and
+    /// names itself.
+    fn word(self) -> &'static str {
+        match self {
+            ViewScreen::SelfSession => "running xmux",
+            other => crate::ui::tree::host_state_word(other == ViewScreen::Unreachable),
+        }
+    }
 }
 
 /// The left cell of a host-screen row: what the row is about, and how it reads.
@@ -476,26 +495,26 @@ impl Chrome {
     /// that apply to it. A row is the help modal's row borrowed whole - a right-aligned
     /// left cell, the `│` rule, the value - so a key offered on a screen looks like a key
     /// offered anywhere else, and a datum's name stays quieter than the datum.
-    pub(crate) fn render_host_screen(
+    pub(crate) fn render_view_screen(
         &self,
         frame: &mut Frame,
         area: Rect,
         state: &crate::state::State,
         source: &str,
-        kind: HostScreen,
+        kind: ViewScreen,
     ) {
-        let lines = self.host_screen_lines(state, source, kind, area.width);
+        let lines = self.view_screen_lines(state, source, kind, area.width);
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
     }
 
-    /// The lines of [`render_host_screen`](Self::render_host_screen). Split out because
+    /// The lines of [`render_view_screen`](Self::render_view_screen). Split out because
     /// the layout IS the list of rows: both states build one, so neither can drift into a
     /// paragraph of its own shape.
-    fn host_screen_lines(
+    fn view_screen_lines(
         &self,
         state: &crate::state::State,
         source: &str,
-        kind: HostScreen,
+        kind: ViewScreen,
         width: u16,
     ) -> Vec<Line<'static>> {
         let pal = crate::ui::palette::get();
@@ -505,7 +524,22 @@ impl Chrome {
         // the ssh stanza it was reached through, which is what a fix needs; a reachable
         // empty host has no why, so its screen is the keys alone.
         let mut rows: Vec<(ScreenCell, String)> = Vec::new();
-        if kind == HostScreen::Unreachable {
+        if kind == ViewScreen::SelfSession {
+            // The whole screen is the why. No key is offered: nothing the user could
+            // press here would make this session showable, and the session is reachable
+            // from its own mux without xmux in the middle.
+            rows.push((
+                ScreenCell::Label("mirror"),
+                "refused: xmux is running in this session".into(),
+            ));
+            rows.push((ScreenCell::Gap, String::new()));
+            rows.push((
+                ScreenCell::Label("why"),
+                "showing it would attach a second client to the session holding xmux, \
+                 which moves your own client and paints xmux inside itself"
+                    .into(),
+            ));
+        } else if kind == ViewScreen::Unreachable {
             let reason = state
                 .groups
                 .iter()
@@ -549,7 +583,9 @@ impl Chrome {
                 "start a new session".into(),
             ));
         }
-        rows.push((ScreenCell::Key(format!("{p} r")), "rescan this host".into()));
+        if kind != ViewScreen::SelfSession {
+            rows.push((ScreenCell::Key(format!("{p} r")), "rescan this host".into()));
+        }
 
         // One column width for keys and labels alike: every row of a screen meets the
         // same rule, whichever kind of cell it carries.
@@ -591,8 +627,8 @@ impl Chrome {
 
         let rule = Span::styled("│ ", Style::default().fg(pal.overlay));
         let state_style = Style::default().fg(match kind {
-            HostScreen::Unreachable => pal.danger,
-            HostScreen::Empty => pal.overlay,
+            ViewScreen::Unreachable => pal.danger,
+            ViewScreen::Empty | ViewScreen::SelfSession => pal.overlay,
         });
         let mut out = vec![
             Line::from(""),
@@ -600,13 +636,7 @@ impl Chrome {
                 format!(" {source}"),
                 Style::default().fg(pal.host).add_modifier(Modifier::BOLD),
             )),
-            Line::from(Span::styled(
-                format!(
-                    " {}",
-                    crate::ui::tree::host_state_word(kind == HostScreen::Unreachable)
-                ),
-                state_style,
-            )),
+            Line::from(Span::styled(format!(" {}", kind.word()), state_style)),
             Line::from(""),
         ];
         for (cell, value) in rows {

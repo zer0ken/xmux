@@ -317,7 +317,10 @@ impl Runtime {
         // The app's runtime state (single source of truth), seeded from the host ids;
         // events stream the nav in.
         let mut state = crate::state::State::from_sources(hosts.ids().to_vec());
-        let switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
+        let mut switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
+        // The one session the terminal view refuses: the one xmux is running in. Named
+        // once here, because the environment that names it cannot change under a run.
+        switcher.set_own_session(env.own_session.clone());
         // Feed the switcher the ssh config so an unreachable host's screen can show
         // its Host/Match stanza. Read once; a missing file just yields no stanza.
         state.chrome.set_ssh_config_text(
