@@ -2,7 +2,7 @@
 //! runs there (that is `Mux`). A `Transport` owns argv assembly and the ssh
 //! wrapping only — it never decides a server model. Each machine family lives in
 //! its own file behind the `Transport` trait — `Local` (`local.rs`), `Ssh`
-//! (`ssh.rs`) — mirroring how each mux family lives behind `Mux`. Shared shell
+//! (`ssh.rs`), `Wsl` (`wsl.rs`) — mirroring how each mux family lives behind `Mux`. Shared shell
 //! vocabulary (`quote`/`remote_command`) is in `vocab.rs`, the peer of
 //! `mux/vocab.rs`. A new family is a new file implementing `Transport` plus a
 //! factory here; the trait and its callers name no concrete family.
@@ -10,16 +10,19 @@
 pub mod local;
 pub mod ssh;
 pub mod vocab;
+pub mod wsl;
 
 pub use local::Local;
 pub use ssh::Ssh;
+pub use wsl::Wsl;
 
 /// The machine boundary: turns a full mux argv (`argv[0]` = the mux binary) into a
 /// runnable `(command, args)`, and wraps interactive/control/raw execution for the
-/// machine it targets. Implementors are the machine families (`Local`, `Ssh`); no
+/// machine it targets. Implementors are the machine families (`Local`, `Ssh`, `Wsl`); no
 /// caller branches on which one — it addresses a machine through this trait.
 pub trait Transport: Send + Sync {
-    /// `"local"` or the ssh alias — the stable host id and `Hosts` map key.
+    /// `"local"`, the ssh alias, or `wsl.<distro>` — the stable host id and `Hosts` map
+    /// key.
     fn host_id(&self) -> &str;
 
     /// True for a remote (ssh) machine. Used only to SHAPE ssh options — not to decide a
@@ -62,7 +65,7 @@ pub trait Transport: Send + Sync {
 
     /// Joins a raw remote shell command behind the machine's execution wrapper.
     /// `None` when the machine issues no remote shell command (a local machine).
-    fn raw_ssh_argv(&self, _remote_cmd: &str) -> Option<Vec<String>> {
+    fn raw_shell_argv(&self, _remote_cmd: &str) -> Option<Vec<String>> {
         None
     }
 
@@ -106,8 +109,8 @@ impl Transport for Box<dyn Transport> {
     fn control_argv(&self, mux_control_argv: &[String]) -> Vec<String> {
         (**self).control_argv(mux_control_argv)
     }
-    fn raw_ssh_argv(&self, remote_cmd: &str) -> Option<Vec<String>> {
-        (**self).raw_ssh_argv(remote_cmd)
+    fn raw_shell_argv(&self, remote_cmd: &str) -> Option<Vec<String>> {
+        (**self).raw_shell_argv(remote_cmd)
     }
     fn clone_box(&self) -> Box<dyn Transport> {
         (**self).clone_box()
@@ -150,6 +153,9 @@ pub enum MachineKind {
         control_path: String,
         os: String,
     },
+    /// A WSL distribution on this box: the source `id` it answers as (empty means the
+    /// bare machine name `wsl.<distro>`) and the `distro` name `wsl.exe -d` takes.
+    Wsl { id: String, distro: String },
 }
 
 /// The [`MachineKind`] for `machine`, answering as the source `id`.
@@ -170,6 +176,14 @@ pub fn kind_for(
         MachineKind::Local {
             id,
             socket: local_socket,
+        }
+    } else if let Some(distro) = crate::session::wsl_distro_of(machine) {
+        // The family is read back OUT of the machine name, so a source added later (an
+        // async mux-discovery answer carries a bare machine name and nothing else) reaches
+        // its distribution the same way one built at launch does.
+        MachineKind::Wsl {
+            id,
+            distro: distro.to_string(),
         }
     } else {
         MachineKind::Ssh {
@@ -204,17 +218,21 @@ impl MachineKind {
                 control_path,
                 os,
             } => ssh_as(id, alias, control_path, os),
+            MachineKind::Wsl { id, distro } if id.is_empty() => wsl(distro),
+            MachineKind::Wsl { id, distro } => wsl_as(id, distro),
         }
     }
 
     /// The local mux server socket (`-S`) this machine targets — `Some` only for a local
-    /// machine on a non-default socket, `None` for a remote machine or the default socket.
+    /// machine on a non-default socket, `None` for any other family or the default socket.
     /// Like [`transport`](Self::transport), the match on the kind lives HERE on the type, so
     /// a new family is compiler-forced to state its socket in one place.
     pub fn local_socket(&self) -> Option<String> {
         match self {
             MachineKind::Local { socket, .. } => socket.clone(),
-            MachineKind::Ssh { .. } => None,
+            // A WSL distribution is a machine of its own: the `$TMUX` socket this box is
+            // running inside is a Windows-side path that names nothing in the distro.
+            MachineKind::Ssh { .. } | MachineKind::Wsl { .. } => None,
         }
     }
 }
@@ -256,6 +274,21 @@ pub fn ssh_as(id: String, alias: String, control_path: String, os: String) -> Bo
     })
 }
 
+/// A WSL machine transport for `distro`, answering as the bare machine name
+/// `wsl.<distro>` — that distribution serving one mux.
+pub fn wsl(distro: String) -> Box<dyn Transport> {
+    Box::new(Wsl {
+        id: crate::session::WSL_PREFIX.to_string() + &distro,
+        distro,
+    })
+}
+
+/// A WSL machine transport answering as the source `id` while still reaching the same
+/// `distro`. Used when a distribution serves SEVERAL muxes.
+pub fn wsl_as(id: String, distro: String) -> Box<dyn Transport> {
+    Box::new(Wsl { id, distro })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,7 +325,7 @@ mod tests {
         assert_eq!(t.host_id(), "local");
         assert!(!t.is_remote());
         assert!(
-            t.raw_ssh_argv("anything").is_none(),
+            t.raw_shell_argv("anything").is_none(),
             "a local machine issues no remote shell command"
         );
     }
@@ -342,6 +375,64 @@ mod tests {
     }
 
     #[test]
+    fn a_wsl_machine_name_selects_the_wsl_family() {
+        // `kind_for` is the single assembly site, and the WSL family is chosen by the
+        // machine NAME — nothing else is threaded in to say which family this is.
+        let kind = kind_for(
+            "wsl.Ubuntu-24.04",
+            String::new(),
+            "windows",
+            std::path::Path::new("/x"),
+            Some("/tmp/tmux-1000/work".into()),
+        );
+        assert!(matches!(kind, MachineKind::Wsl { .. }));
+        assert_eq!(
+            kind.local_socket(),
+            None,
+            "this box's $TMUX socket names nothing inside the distribution"
+        );
+        let t = kind.transport();
+        assert_eq!(t.host_id(), "wsl.Ubuntu-24.04");
+        assert!(!t.is_remote());
+        let (name, args) = t.exec_argv(false, &["tmux".to_string(), "ls".to_string()]);
+        assert_eq!(name, "wsl.exe");
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["-d".to_string(), "Ubuntu-24.04".to_string()]),
+            "the distribution threads into the transport as -d: {args:?}"
+        );
+    }
+
+    #[test]
+    fn a_qualified_wsl_transport_keeps_reaching_the_same_distribution() {
+        // Two muxes in one distribution are two SOURCES at one destination, exactly as
+        // for ssh: the id tells them apart and the wsl.exe argv must not change.
+        let one = kind_for(
+            "wsl.Ubuntu",
+            String::new(),
+            "windows",
+            std::path::Path::new("/x"),
+            None,
+        )
+        .transport();
+        let two = kind_for(
+            "wsl.Ubuntu",
+            "wsl.Ubuntu:zellij".to_string(),
+            "windows",
+            std::path::Path::new("/x"),
+            None,
+        )
+        .transport();
+        assert_eq!(one.host_id(), "wsl.Ubuntu");
+        assert_eq!(two.host_id(), "wsl.Ubuntu:zellij");
+        assert_eq!(
+            one.exec_argv(false, &["tmux".to_string(), "ls".to_string()]),
+            two.exec_argv(false, &["tmux".to_string(), "ls".to_string()]),
+            "same destination, same argv"
+        );
+    }
+
+    #[test]
     fn local_socket_is_some_only_for_a_local_nondefault_socket() {
         assert_eq!(
             MachineKind::Local {
@@ -377,13 +468,18 @@ mod tests {
         // The two capability predicates split the meanings `is_remote` conflated: local
         // psmux is the authority for THIS box's registry (registry scope) yet attaches
         // without a shell; ssh attaches THROUGH a shell yet has no local-registry
-        // authority here. They are NOT derived from `is_remote`, so a future local-but-
-        // shell family (WSL) can override a new combination.
+        // authority here. Neither is derived from `is_remote`, which is what lets WSL take
+        // the third combination: local, so no ssh option is shaped, yet shell-based, and
+        // holding a registry of its own inside the distribution.
         let local = local(None);
         assert!(local.local_registry_scope());
         assert!(!local.runs_through_shell());
         let ssh = ssh("prod".into(), String::new(), "linux".into());
         assert!(ssh.runs_through_shell());
         assert!(!ssh.local_registry_scope());
+        let wsl = wsl("Ubuntu".into());
+        assert!(!wsl.is_remote());
+        assert!(wsl.runs_through_shell());
+        assert!(!wsl.local_registry_scope());
     }
 }
