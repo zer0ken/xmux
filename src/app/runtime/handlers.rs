@@ -31,6 +31,7 @@ impl Runtime {
         // Split-borrow the world state into the loose names the arms below use, so this
         // body stays the loop's imperative effect executor without a per-line `self.`.
         let Self {
+            env,
             mgr,
             hosts,
             registry,
@@ -167,6 +168,37 @@ impl Runtime {
                     terminal_focus,
                     "display_client_session_changed"
                 );
+            }
+            EventEffect::AddDiscoveredSources { machine, muxes } => {
+                // A machine answered which muxes it has. Every one it does not already
+                // serve becomes a source of its own, RIGHT NOW: the card appears scanning
+                // and streams its sessions in like any other.
+                //
+                // The id of an added source is always qualified (`prod:zellij`). The mux
+                // already served keeps the id it was painted with, bare or not, because
+                // that id is what the frozen order, the persisted selection, and anything
+                // the user typed are keyed to - renaming it mid-run would break all three.
+                let (vc, vr) = terminal_view_size(cols, rows, nav_width, nav_height);
+                for bin in muxes {
+                    if hosts.machine_serves(&machine, &bin) {
+                        continue;
+                    }
+                    let id = crate::session::source_id(&machine, &bin, true);
+                    if hosts.get(&id).is_some() {
+                        continue;
+                    }
+                    tracing::info!(machine = %machine, mux = %bin, source = %id, "mux discovered");
+                    hosts.insert(crate::model::host_for(
+                        &machine,
+                        &bin,
+                        id.clone(),
+                        std::env::consts::OS,
+                        &env.xmux_dir,
+                        env.local_socket.clone(),
+                    ));
+                    switcher.add_source(id.clone(), state);
+                    scan_or_dispatch_host(mgr, hosts, detecting, &id, vc, vr);
+                }
             }
             EventEffect::DispatchScanned { source, detected } => {
                 // A detection probe resolved: (re)identify the mux, then dispatch the

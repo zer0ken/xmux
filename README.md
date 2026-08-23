@@ -146,9 +146,11 @@ appears as unreachable with the mux's own message, because a name you wrote is a
 you meant. A DISCOVERED list works the other way round, since nothing was written: only
 the muxes that answered are offered. `xmux doctor` says which of the two you have.
 
-A remote host is not probed. Its mux is what you configured, defaulting to `tmux`,
-because asking every host about every mux would mean an ssh connection per mux before
-the first thing is on screen.
+Remote machines are asked too, but AFTER the app is up. A remote probe is an ssh round
+trip per mux, so nothing waits for it: the sources you configured paint immediately, and a
+mux nobody wrote down appears as its machine answers, a second or several later. Discovery
+only ever ADDS. The mux a machine was already showing keeps its name, so nothing you typed
+or selected changes under you.
 
 ## Where the host list comes from
 

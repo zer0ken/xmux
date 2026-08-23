@@ -116,6 +116,13 @@ pub enum HostEvent {
     /// ConPTY consumes the marker's OSC before the pump can read it). Recorded on
     /// `Host.display_tty` so a later `switch-client -c <tty>` targets xmux's own client.
     DisplayTty { host: String, tty: Option<String> },
+    /// A machine's MUX DISCOVERY resolved: `muxes` is every mux xmux supports that
+    /// answered on `machine`. Emitted once per machine by a fire-and-forget task, AFTER
+    /// launch, so the app paints its configured sources immediately and the muxes nobody
+    /// wrote down arrive as they are found. Carries the machine (not a source id): the
+    /// answer is about the machine, and each mux beyond the one already served becomes a
+    /// source of its own.
+    MuxesFound { machine: String, muxes: Vec<String> },
     /// A detection probe resolved (`detect_and_correct`): the host's mux was
     /// (re)identified. `None` = still undetected / unreachable. Folded back via
     /// `apply_scan_result`; emitted by the fire-and-forget detection task.

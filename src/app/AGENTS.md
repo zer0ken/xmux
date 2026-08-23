@@ -35,6 +35,11 @@ pumped or a grid is rendered.
   `driver_for(host).show(sel, ctx)` for display and reads back the grid via
   `driver.grid`; it branches on nothing mux-specific. The canonical `Selection`
   (`source`/`session`/`window`) it reads lives in `src/model`.
+- `runtime/` also owns MUX DISCOVERY's async half: `discover_machine_muxes` spawns one
+  fire-and-forget probe per remote machine that named no mux, right after the startup
+  scans, and the `AddDiscoveredSources` effect turns each answer into new sources. It is
+  the loop's job because only it holds the host registry (what a machine already serves,
+  and where a new `Host` goes) and the manager (kicking the new source's first scan).
 - `input.rs` holds the pure, stateless input-routing core (`resolve_nav_key`,
   `resolve_mouse_chain`, the predicates, `MouseState`/`StdinOutcome`); the stateful
   handlers are `Runtime` methods that call into it.

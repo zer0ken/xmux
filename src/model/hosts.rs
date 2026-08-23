@@ -53,13 +53,14 @@ impl Hosts {
         // The list is the one `Env` resolved, so these ids match the source ids.
         let qualified = local_muxes.len() > 1;
         for bin in local_muxes {
-            hosts.insert(Host::new(
-                crate::machine::MachineKind::Local {
-                    id: crate::session::source_id(LOCAL_SOURCE, bin, qualified),
-                    socket: local_socket.clone(),
-                }
-                .transport(),
-                for_binary(bin),
+            let id = crate::session::source_id(LOCAL_SOURCE, bin, qualified);
+            hosts.insert(host_for(
+                LOCAL_SOURCE,
+                bin,
+                id,
+                os,
+                xmux_dir,
+                local_socket.clone(),
             ));
         }
 
@@ -67,24 +68,26 @@ impl Hosts {
             if spec.alias == LOCAL_SOURCE {
                 continue; // "local" is reserved for this box's sources.
             }
-            // The ControlMaster socket is per MACHINE, not per source: several muxes on
-            // one machine share the one multiplexed connection.
-            let control_path = xmux_dir
-                .join(format!("cm-{}.sock", spec.alias))
-                .to_string_lossy()
-                .into_owned();
-            hosts.insert(Host::new(
-                crate::machine::MachineKind::Ssh {
-                    id: spec.id,
-                    alias: spec.alias,
-                    control_path,
-                    os: os.to_string(),
-                }
-                .transport(),
-                for_binary(&spec.bin),
+            hosts.insert(host_for(
+                &spec.alias,
+                &spec.bin,
+                spec.id,
+                os,
+                xmux_dir,
+                local_socket.clone(),
             ));
         }
         hosts
+    }
+
+    /// Whether `machine` already serves a source running the mux binary `bin`. The
+    /// discovery add path asks before adding, so a mux the machine was already
+    /// configured (or assumed) to run is never duplicated under a second id.
+    pub fn machine_serves(&self, machine: &str, bin: &str) -> bool {
+        self.order.iter().any(|id| {
+            crate::session::machine_of(id) == machine
+                && self.map.get(id).is_some_and(|h| h.mux.bin() == bin)
+        })
     }
 
     pub fn get(&self, id: &str) -> Option<&Host> {
@@ -139,12 +142,47 @@ impl Hosts {
                     h.record_display_tty(tty.clone());
                 }
             }
-            // Poll-host data carriers (enumeration results) + the detection probe. Their
-            // sessions/mux are applied by the caller (apply_source_result /
-            // apply_scan_result); they fold no Host-owned liveness here.
-            Scanned { .. } | Sessions { .. } | Panes { .. } => {}
+            // Poll-host data carriers (enumeration results), the detection probe, and a
+            // machine's mux-discovery answer. Their sessions/mux/source set are applied by
+            // the caller (apply_source_result / apply_scan_result / the discovery-add
+            // effect); they fold no Host-owned liveness here. A discovery answer names a
+            // MACHINE, not a host in this map, so it could not route here anyway.
+            Scanned { .. } | Sessions { .. } | Panes { .. } | MuxesFound { .. } => {}
         }
     }
+}
+
+/// One [`Host`] for the mux binary `bin` on `machine`, answering as the source `id`.
+///
+/// The SINGLE place a machine's transport construction data is assembled, so a source
+/// added LATER (an async mux discovery result) reaches its machine exactly as one built
+/// at launch does. The ControlMaster socket is per MACHINE, not per source: several muxes
+/// on one machine share the one multiplexed connection.
+pub fn host_for(
+    machine: &str,
+    bin: &str,
+    id: String,
+    os: &str,
+    xmux_dir: &std::path::Path,
+    local_socket: Option<String>,
+) -> Host {
+    let kind = if machine == LOCAL_SOURCE {
+        crate::machine::MachineKind::Local {
+            id,
+            socket: local_socket,
+        }
+    } else {
+        crate::machine::MachineKind::Ssh {
+            id,
+            alias: machine.to_string(),
+            control_path: xmux_dir
+                .join(format!("cm-{machine}.sock"))
+                .to_string_lossy()
+                .into_owned(),
+            os: os.to_string(),
+        }
+    };
+    Host::new(kind.transport(), for_binary(bin))
 }
 
 #[cfg(test)]
@@ -185,6 +223,27 @@ mod tests {
             ServerModel::PerSession,
             "psmux replaced tmux"
         );
+    }
+
+    #[test]
+    fn machine_serves_asks_by_machine_and_mux_not_by_id() {
+        // The discovery add path asks this before adding, and it must see through the id
+        // spelling: `prod` (bare) serves tmux just as `prod:tmux` would.
+        let cfg = Config::default();
+        let hosts = Hosts::build(
+            &cfg,
+            &["prod".to_string()],
+            "linux",
+            &local(),
+            std::path::Path::new("/x"),
+            None,
+        );
+        assert!(
+            hosts.machine_serves("prod", "tmux"),
+            "the bare id serves it"
+        );
+        assert!(!hosts.machine_serves("prod", "zellij"));
+        assert!(!hosts.machine_serves("other", "tmux"), "machine-scoped");
     }
 
     #[test]

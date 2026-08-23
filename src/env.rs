@@ -118,12 +118,7 @@ pub async fn build_env() -> (Env, Option<anyhow::Error>) {
     // transport, because "is this mux here" has nothing to do with which server socket a
     // session lives on - and a `-S <socket>` injection is a flag zellij would refuse.
     let installed = if cfg.local.mux.is_auto() {
-        crate::mux::installed_muxes(
-            &*crate::machine::local(None),
-            os,
-            &crate::source::ExecRunner,
-        )
-        .await
+        crate::mux::installed_muxes(&*crate::machine::local(None), &crate::source::ExecRunner).await
     } else {
         Vec::new()
     };

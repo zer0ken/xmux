@@ -297,6 +297,20 @@ impl Config {
         warnings
     }
 
+    /// Whether `machine`'s mux list is xmux's to decide: unset, or exactly `"auto"`.
+    /// A machine that named its muxes is never probed - a written name is taken verbatim,
+    /// and probing could only add ones the user did not ask for.
+    pub fn mux_is_auto(&self, machine: &str) -> bool {
+        if machine == crate::session::LOCAL_SOURCE {
+            return self.local.mux.is_auto();
+        }
+        // First entry wins, mirroring `host_specs`; no entry at all is auto.
+        self.hosts
+            .iter()
+            .find(|h| h.ssh == machine)
+            .is_none_or(|h| h.mux.is_auto())
+    }
+
     /// xmux's configured prefix spec.
     pub fn ui_prefix(&self) -> &str {
         &self.ui.prefix
@@ -719,6 +733,38 @@ bogus = "nope"
         let c = Config::default();
         assert_eq!(c.local_muxes("windows", &[]), vec!["psmux"]);
         assert_eq!(c.local_muxes("linux", &[]), vec!["tmux"]);
+    }
+
+    #[test]
+    fn only_a_machine_that_named_no_mux_is_xmuxs_to_decide() {
+        // Discovery probes a machine only when the config left the choice open. A written
+        // name is verbatim, so probing it could only add muxes nobody asked for.
+        let cfg = Config {
+            local: LocalConfig { mux: "auto".into() },
+            hosts: vec![
+                HostConfig {
+                    ssh: "written".into(),
+                    mux: "zellij".into(),
+                },
+                HostConfig {
+                    ssh: "blank".into(),
+                    mux: MuxSpec::default(),
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(cfg.mux_is_auto("local"), "unset/auto local");
+        assert!(cfg.mux_is_auto("blank"), "an entry with no mux");
+        assert!(cfg.mux_is_auto("never-configured"), "no entry at all");
+        assert!(!cfg.mux_is_auto("written"), "a written mux is not probed");
+
+        let explicit_local = Config {
+            local: LocalConfig {
+                mux: vec!["psmux", "zellij"].into(),
+            },
+            ..Default::default()
+        };
+        assert!(!explicit_local.mux_is_auto("local"));
     }
 
     #[test]
