@@ -44,6 +44,13 @@ impl TermInput {
         self.armed
     }
 
+    /// Drops a pending prefix. A prefix waits for the NEXT input, and a mouse action is
+    /// input - but mouse bytes are scanned out of the stream before `feed` ever sees them,
+    /// so the mouse path says so here instead of leaving the chord half-open.
+    pub fn disarm(&mut self) {
+        self.armed = false;
+    }
+
     fn track_paste(&mut self, byte: u8) {
         self.paste_scan.push(byte);
         if self.paste_scan.len() > PASTE_START.len().max(PASTE_END.len()) {

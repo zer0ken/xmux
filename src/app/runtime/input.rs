@@ -115,6 +115,7 @@ impl Runtime {
         // Split-borrow the world state into the loose names the (verbatim) gesture body uses.
         let Self {
             mouse_state: st,
+            term_input,
             switcher,
             state,
             registry,
@@ -130,6 +131,18 @@ impl Runtime {
         } = self;
         let (cols, body_rows, nav_width) = (*cols, *body_rows, *nav_width);
         let mut dirty = false;
+        // A prefix is armed only until the next INPUT, and a mouse action is input. Mouse
+        // bytes are scanned out of the stream before either focus path's key handling sees
+        // them, so the disarm happens here or not at all - and a chord left half-open keeps
+        // its cheatsheet floating over the window, then eats the next key as a command the
+        // user meant for the pane. Bare hover is not an action: the pointer drifting across
+        // the screen must not break a chord that is still being typed.
+        let idle_motion = ev.pressed && (ev.cb & 0x23) == 0x23;
+        if !idle_motion && (st.nav_armed || term_input.is_armed()) {
+            st.nav_armed = false;
+            term_input.disarm();
+            dirty = true;
+        }
         let in_mux = to_grid_local(term_area, ev.col, ev.row);
         // A LEFT-button press in the UNFOCUSED view switches focus to that
         // view: focus only, the click is not delivered. Within the focused
@@ -223,7 +236,7 @@ impl Runtime {
         // Elsewhere it falls through to the routing below, so a hover over the
         // terminal view IS forwarded to the child (the inner app gets hover); over
         // the nav it is harmlessly dropped.
-        if ev.pressed && (ev.cb & 0x23) == 0x23 {
+        if idle_motion {
             let over_view_border = on_view_border;
             if over_view_border != st.hovered_view_border {
                 st.hovered_view_border = over_view_border;

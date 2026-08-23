@@ -1915,6 +1915,69 @@ fn prefix_r_in_terminal_focus_kicks_rescan() {
 }
 
 #[test]
+fn a_mouse_action_disarms_the_prefix_and_a_hover_does_not() {
+    use crate::ui::switcher::{Scan, Switcher};
+    // A prefix waits for the NEXT input, and a mouse action is input. Mouse bytes are
+    // scanned out of the stream before either focus path's key handling sees them, so
+    // without an explicit disarm the chord stays half-open: its cheatsheet keeps floating
+    // over the window, and the next key it swallows is one meant for the pane.
+    let ev = |cb: u16, pressed: bool| crate::display::mouse::MouseEvent {
+        cb,
+        col: 10,
+        row: 3,
+        pressed,
+    };
+    let nav_width = crate::ui::switcher::NAV_WIDTH;
+    let (vw, vh) = terminal_view_size(80, 24, crate::ui::switcher::NavSize::visible(nav_width));
+    let term_area = ratatui::layout::Rect::new(nav_width + 1, 0, vw, vh);
+    // cb 0 = left press, cb 64 = wheel up, cb 0 with pressed=false = release.
+    for (cb, pressed, what) in [
+        (0u16, true, "a click"),
+        (0, false, "a release"),
+        (64, true, "a wheel"),
+        (32, true, "a drag"), // motion WITH a button held
+    ] {
+        let mut state = crate::state::State::from_scan(Scan {
+            groups: vec![],
+            panes: Default::default(),
+        });
+        let switcher = Switcher::new(&mut state);
+        let mut rt = test_rt(fake_env_with_sources(&["local"]));
+        rt.state = state;
+        rt.switcher = switcher;
+        rt.mouse_state.nav_armed = true;
+        let dirty = rt.handle_mouse_event(
+            &ev(cb, pressed),
+            &Selection::default(),
+            &mut false,
+            &mut false,
+            term_area,
+        );
+        assert!(!rt.armed(), "{what} disarms the prefix");
+        assert!(dirty, "{what} redraws, so the cheatsheet goes at once");
+    }
+    // Bare hover is the pointer sitting there, not an action: it must not break a chord
+    // the user is still typing. cb 35 = motion bit with no button held.
+    let mut state = crate::state::State::from_scan(Scan {
+        groups: vec![],
+        panes: Default::default(),
+    });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.mouse_state.nav_armed = true;
+    rt.handle_mouse_event(
+        &ev(35, true),
+        &Selection::default(),
+        &mut false,
+        &mut false,
+        term_area,
+    );
+    assert!(rt.armed(), "a hover leaves the chord alone");
+}
+
+#[test]
 fn handle_mouse_event_view_border_grab_sets_dragging() {
     use crate::ui::switcher::{Scan, Switcher};
     // A left-press exactly on the view border column sets dragging_view_border, as the
