@@ -72,9 +72,10 @@ UI elements a user perceives as distinct things:
   filter outrank both, in that order. A long flash wraps across as many nav rows as
   it needs instead of clipping. A shown flash paints it in the error style.
 - host screen - what fills the terminal-view region in place of a mux, for a selected
-  host with no session to show. One screen in two states, so a reader of either reads
-  the other: the host's name as the headline, under it the same status word its card
-  carries, then the rows that apply. A row is the key-column row the help also uses - a
+  host with no session to show. Where a card states the host's STATE, the screen states
+  WHY: it is the one surface with the room to hold a tool's diagnostic whole. One screen
+  in two states, so a reader of either reads the other: the host's name as the headline,
+  under it the same status word its card carries, then the rows that apply. A row is the key-column row the help also uses - a
   right-aligned cell, the `│` rule, the value - where a bold cell is a key that can be
   pressed here and a muted cell names a datum. The UNREACHABLE state's rows are why it
   failed (the reason its transport gave, the provider that put it on the roster, the ssh
@@ -91,8 +92,9 @@ UI elements a user perceives as distinct things:
   never the nav selection.
 - card - one nav entry: a context line (`{host}/{mux}`, or `{host}` on a
   host-state card) over a detail line (`{session}/{window}` of the focused (active)
-  window behind a connector; the settled host state; or a spinner in the card's
-  unresolved level).
+  window behind a connector; the settled host state, the state word alone; or a spinner
+  in the card's unresolved level). A card states WHAT something is; WHY it is that way
+  is the screen's, never a card's.
   The window part is written the way its own mux writes it - see `window label`. The muted connector hangs the detail
   under its context line - on a collapsed card, under the shared context
   above: `├` while a collapsed sibling follows below, `└` on the run's last
