@@ -158,10 +158,8 @@ fn decode_wsl_output(bytes: &[u8]) -> String {
     if !bytes.contains(&0) {
         return String::from_utf8_lossy(bytes).into_owned();
     }
-    let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-        .collect();
+    let (pairs, _odd_tail) = bytes.as_chunks::<2>();
+    let units: Vec<u16> = pairs.iter().copied().map(u16::from_le_bytes).collect();
     String::from_utf16_lossy(&units)
 }
 
