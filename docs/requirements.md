@@ -168,7 +168,7 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   `long_flash_wraps_in_narrow_hint_bar_instead_of_clipping`.
 - **FR-B10** — Every unselected card carries a 0-based number in its gutter, on the
   row of the session it addresses, and `prefix <digit>` jumps to it. The selected card
-  shows none: the accent bar beside it already says you are there. Selecting a card
+  shows none: the selection mark beside it already says you are there. Selecting a card
   moves nothing on its rows - the number column stays spent and the connector stays
   drawn - so a name holds its column as the selection passes over it. The popup stays
   open so the number can grow, and accepts a digit only while the result still addresses

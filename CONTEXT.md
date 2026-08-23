@@ -77,7 +77,7 @@ UI elements a user perceives as distinct things:
   session name + a loading spinner). The muted connector hangs the detail
   under its context line - on a collapsed card, under the shared context
   above: `├` while a collapsed sibling follows below, `└` on the run's last
-  line; the selected card drops the connector (the accent bar and the inverted
+  line; the selected card drops the connector (the selection mark and the inverted
   rows already bind its lines).
   One card per SESSION; the mux segment names the mux kind serving it
   (`Session.mux`, stamped at enumeration), so several muxes on one host stay
@@ -90,10 +90,11 @@ UI elements a user perceives as distinct things:
   renderer and mouse hit-testing share one `card_height` so the screen-row
   mapping never diverges.
 - level color - the per-segment card color, from the palette (`ui::palette`).
-  Every foreground role is ANSI-16, so the terminal theme resolves the hue: host
-  and session cyan (the two name levels share one color), mux green, the
-  window part (`{index}:{name}`) bright-black - the quietest level, so the
-  session name anchors the detail line; a host-state card's detail line is
+  Every foreground role is ANSI-16, so the terminal theme resolves the hue: host blue,
+  mux green, session red, the window part (`{index}:{name}`) bright-black - the quietest
+  level, so the session name anchors the detail line. The four read as one code-theme
+  palette, and the level a user actually picks (the session) is the one that stands out.
+  A host-state card's detail line is
   colored by state - scanning yellow, unreachable red, settled "no sessions"
   muted. The hint bar is two slots as well (black under white, blue keys). Nothing here
   is an RGB value; see "Colour ownership" below for why, and `[ui] selection-style` /
@@ -103,9 +104,12 @@ UI elements a user perceives as distinct things:
   re-sorts). `preselect` / `reselect` are the launch and post-rescan selections.
 - selection highlight - the selected card's rendering: reverse video (ratatui's
   `highlight_style`, filling the whole card), the terminal theme's own selected look,
-  plus an accent `▌` bar in the gutter of both card lines, in its own column left of the
+  plus a `❯` mark in the gutter of both card lines, in its own column left of the
   number. The inversion is uniform because the highlight pins fg and bg to `Reset`:
   inverting per span would turn each level color into a background and stripe the card.
+  That same pinning is why the mark is an open shape and never a solid block: it draws
+  inverted too, so a block fills its cell and disappears into the bar while an outline
+  keeps a readable silhouette.
   `[ui] selection-style` paints a named background instead. `selected` + `highlight`
   follow ratatui's list vocabulary.
 - spinner - the braille activity glyph on a loading card (and, historically, a
@@ -117,7 +121,7 @@ UI elements a user perceives as distinct things:
 - card number - the dim 0-based index in a card's left gutter, and the address
   `prefix <digit>` jumps to. Every UNSELECTED card carries one; the selected card shows
   none, because its number is the address you would type to reach where you already are
-  and the accent bar in the column beside it says so. The column is still spent, blank,
+  and the selection mark in the column beside it says so. The column is still spent, blank,
   so a card's name never moves as the selection passes over it. It sits on the DETAIL
   line, beside the session it addresses, so a collapsed card puts it in the same place
   as an expanded one. The number column is one width per frame, so the names stay

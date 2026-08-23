@@ -44,6 +44,14 @@ fn hint_bar_rect(nav_local: Rect, area: Rect, hint_bar_h: u16, floating: bool) -
     }
 }
 
+/// The glyph marking the SELECTED card, in its own gutter column.
+///
+/// A SHAPE, never a solid block. The selected card is reverse video, which swaps that
+/// cell's own pair, so a filled block inverts into a background-coloured half-cell and is
+/// absorbed into the inverted row's left edge - the mark vanishes exactly where it is
+/// needed. An outline keeps its silhouette either way round.
+pub(super) const SELECTED_MARK: &str = "\u{276f}";
+
 /// Braille spinner frames for pending states (connecting session, loading panes).
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -224,14 +232,14 @@ impl Switcher {
     /// card's `{session}/{index}:{window-name}` - the focused (active) window,
     /// what the mux shows on attach - in the session / window colours, a loading
     /// card's `{session}/` + spinner, a host-state card's state coloured by kind
-    /// (pending / danger / muted). The gutter is the selection bar column, then the
+    /// (pending / danger / muted). The gutter is the selection mark column, then the
     /// card's dim 0-based number, then a space. The number sits on the DETAIL line,
     /// never the context line: the number addresses a session, so it reads beside the
     /// session it names, and a collapsed card (detail line only) then puts it in the
     /// same place as an expanded one.
     ///
     /// The SELECTED card shows no number. Its number is the address you would type to
-    /// reach it, and you are already there; the accent bar in the column beside it says
+    /// reach it, and you are already there; the selection mark in the column beside it says
     /// so. The column is still spent, blank, because every card's name has to start at
     /// the same screen column - moving the selected card's text is what makes a list
     /// twitch as the cursor runs down it.
@@ -243,11 +251,11 @@ impl Switcher {
         let muted = Style::default().fg(color_hint());
         let selected = self.list_state.selected() == Some(i);
         let bar = Style::default().fg(palette::get().accent);
-        // `numbered` is the detail line: the selection bar runs down every line of the
+        // `numbered` is the detail line: the selection mark runs down every line of the
         // card, the number appears once, next to the session it addresses.
         let gutter = move |numbered: bool| -> Vec<Span<'static>> {
             let mark = if selected {
-                Span::styled("▌", bar)
+                Span::styled(SELECTED_MARK, bar)
             } else {
                 Span::raw(" ")
             };
@@ -326,7 +334,7 @@ impl Switcher {
         // collapsed card it hangs under the SHARED context above, so a run of
         // collapsed cards reads as siblings of one context: ├ while a collapsed
         // sibling follows below, └ on the run's last line. The SELECTED card keeps it:
-        // the accent bar and surface already say which card is selected, and dropping
+        // the selection mark and surface already say which card is selected, and dropping
         // two columns of connector would slide the session name left of every name
         // above and below it.
         let mut detail = gutter(true);

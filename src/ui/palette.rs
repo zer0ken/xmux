@@ -27,7 +27,7 @@ use ratatui::style::{Color, Modifier, Style};
 /// The semantic colour set. One field per UI role - callers name the role, never
 /// a hue, so the assignments below stay changeable in one place.
 pub(crate) struct Palette {
-    /// The single accent: the selection bar, key hints, and popup titles all
+    /// The single accent: the selection mark, key hints, and popup titles all
     /// share it, so "interactive / current" is one colour everywhere.
     pub accent: Color,
     /// Secondary text: panel prose.
