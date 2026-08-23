@@ -1218,8 +1218,8 @@ async fn the_selected_card_is_painted_in_the_terminals_own_reverse_video() {
     );
     assert_eq!(
         h.buf()[(0, sel)].symbol(),
-        "▌",
-        "the accent bar still marks the selected card in the gutter"
+        super::render::SELECTED_MARK,
+        "the selection mark stands in the selected card's address column"
     );
 }
 
@@ -1515,6 +1515,49 @@ async fn session_card_context_shows_host_mux_session() {
     assert_eq!(h.nav_fg_of("0:w-alpha"), Some(color_window()));
 }
 
+#[tokio::test]
+async fn a_host_card_colours_its_levels_like_a_session_card_does() {
+    // A level's colour belongs to the LEVEL, not to the kind of card it lands on, so the
+    // host card is spanned host / separator / mux exactly as a session card's context
+    // line is. A single-colour run would read as if the mux were part of the host's name.
+    let scan = Scan {
+        groups: vec![
+            Group {
+                source: "srv:zellij".into(),
+                err: None,
+                sessions: vec![sess_mux("srv:zellij", "alpha", "zellij", 200)],
+            },
+            // A reachable machine with no session left: the host-state card.
+            Group {
+                source: "srv:psmux".into(),
+                err: None,
+                sessions: vec![],
+            },
+        ],
+        panes: HashMap::new(),
+    };
+    let h = Harness::new(scan);
+    let out = h.nav_text();
+    assert!(
+        out.contains("srv/psmux"),
+        "the host card names its mux:
+{out}"
+    );
+    assert_eq!(
+        h.nav_fg_of("psmux"),
+        Some(color_mux()),
+        "the mux segment is the mux colour, not the host's"
+    );
+    // The separator is furniture on both card kinds, and the host half is the host's.
+    let (x, y) = locate(h.buf(), "srv/psmux", NAV_WIDTH).expect("the host card");
+    assert_eq!(h.buf()[(x, y)].fg, color_host(), "the host half");
+    assert_eq!(
+        h.buf()[(x + 3, y)].fg,
+        color_hint(),
+        "the separator is furniture"
+    );
+}
+
 /// The full content of screen row `y`, across the nav width.
 fn nav_line(h: &Harness, y: u16) -> String {
     (0..NAV_WIDTH.min(h.buf().area.width))
@@ -1576,8 +1619,9 @@ async fn repeated_host_mux_collapses_the_card_to_one_row() {
         nav_line(&h, gamma_row).contains("└"),
         "gamma ends the collapsed run"
     );
-    // delta runs a different mux: a full context line, host included.
-    let delta_row = h.nav_row_of("delta/0:w-delta").expect("delta detail");
+    // delta runs a different mux: a full context line, host included. Its window part
+    // is written zellij's way - the tab name alone, no index prefix.
+    let delta_row = h.nav_row_of("delta/w-delta").expect("delta detail");
     let delta_context = nav_line(&h, delta_row - 1);
     assert!(
         delta_context.contains("srv/zellij"),
@@ -1619,9 +1663,17 @@ async fn focused_collapsed_card_expands_to_two_rows() {
         "the selected card KEEPS the connector, so its session name stays in the column          every other name is in: {:?}",
         nav_line(&h, beta_row)
     );
-    // The selection bar marks both rows of the expanded card.
-    assert_eq!(h.buf()[(0, beta_row - 1)].symbol(), "▌");
-    assert_eq!(h.buf()[(0, beta_row)].symbol(), "▌");
+    // The mark stands in the address column, on the detail row - the row that carries
+    // the session, the same row every other card puts its number on.
+    assert_eq!(
+        h.buf()[(0, beta_row)].symbol(),
+        super::render::SELECTED_MARK
+    );
+    assert_eq!(
+        h.buf()[(0, beta_row - 1)].symbol(),
+        " ",
+        "the context row spends the column blank"
+    );
     h.key(KeyCode::Up).await; // move off - beta collapses again
     assert_eq!(
         h.nav_row_of("beta/0:w-beta"),
@@ -1999,8 +2051,8 @@ async fn selecting_a_card_never_moves_its_session_name() {
             sess_mux("srv", "beta", "tmux", 200),
         ],
     ));
-    // The COLUMN, not the byte offset: the gutter holds `▌` and `└`, which are three
-    // bytes each, so a byte index would report a shift that is not on screen.
+    // The COLUMN, not the byte offset: the address column and the `└` connector hold
+    // multi-byte glyphs, so a byte index would report a shift that is not on screen.
     let col_of = |h: &Harness, name: &str| -> Option<usize> {
         let row = h.nav_row_of(&format!("{name}/0:w-{name}"))?;
         let line = nav_line(h, row);
@@ -2027,11 +2079,11 @@ fn every_unselected_card_carries_its_0_based_number_beside_its_session() {
     term.draw(|f| sw.render(f, None, false, NAV_WIDTH, 0, &state))
         .unwrap();
     let buf = term.backend().buffer();
-    // Column 0 is the selection bar's own column; the number follows it, right-aligned
-    // in one width for the whole frame, and sits on the card's DETAIL line - the row
-    // carrying the session it addresses, not the host/mux context above it. The SELECTED
-    // card shows no number: it is the address you would type to get where you already
-    // are, and the accent bar beside it says so.
+    // The address column starts at column 0, right-aligned in one width for the whole
+    // frame, and sits on the card's DETAIL line - the row carrying the session it
+    // addresses, not the host/mux context above it. The SELECTED card holds the mark
+    // there instead of a number: it is the address you would type to get where you
+    // already are.
     let selected = sw.list_state.selected().unwrap();
     let num_w = sw.rows.len().saturating_sub(1).to_string().len().max(1) as u16;
     let read =
@@ -2040,27 +2092,22 @@ fn every_unselected_card_carries_its_0_based_number_beside_its_session() {
     for i in 0..sw.rows.len() {
         let detail = top + sw.card_height(i) - 1;
         let want = if i == selected {
-            String::new()
+            super::render::SELECTED_MARK.to_string()
         } else {
             i.to_string()
         };
         assert_eq!(
-            read(1, detail, num_w).trim(),
+            read(0, detail, num_w).trim(),
             want,
-            "card {i} number on its detail row {detail} (selected={selected})"
+            "card {i} address on its detail row {detail} (selected={selected})"
         );
         if sw.card_height(i) > 1 {
             assert_eq!(
-                read(1, top, num_w).trim(),
+                read(0, top, num_w).trim(),
                 "",
-                "card {i}'s context row leaves the number column blank"
+                "card {i}'s context row leaves the address column blank"
             );
         }
-        assert_eq!(
-            buf[(0u16, detail)].symbol() == "▌",
-            i == selected,
-            "only the selected card marks column 0 with the accent bar"
-        );
         top += sw.card_height(i);
     }
 }

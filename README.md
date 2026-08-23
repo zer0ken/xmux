@@ -89,7 +89,7 @@ screen. Keyboard focus is on one region at a time.
 | `Home` / `End` | jump to the first / last card |
 | `PageUp` / `PageDown` | jump ten cards |
 | `Enter` | move focus into the selected session's live screen |
-| `prefix 0`-`prefix 9` | jump to a session by the number in its gutter (keep typing for 10+) |
+| `prefix 0`-`prefix 9` | jump to a session by the number in its left column (keep typing for 10+) |
 | `prefix n` | start a new session on the selected host |
 | `/` | fuzzy-filter the list |
 | `prefix r` | re-scan every host |

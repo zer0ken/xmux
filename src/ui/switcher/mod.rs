@@ -823,11 +823,6 @@ pub(crate) fn fit(candidates: &[String], width: u16) -> String {
         .unwrap_or_else(|| candidates.last().cloned().unwrap_or_default())
 }
 
-/// Adds a space each side so the reverse-video selection has breathing room.
-fn pad_label(s: &str) -> String {
-    format!(" {s} ")
-}
-
 /// The context parts of a card: `(host, mux, session)`. A host-state card
 /// carries only its host; a session/loading card names its session's host, mux
 /// kind (empty when not yet known), and session name.

@@ -27,7 +27,7 @@ use ratatui::style::{Color, Modifier, Style};
 /// The semantic colour set. One field per UI role - callers name the role, never
 /// a hue, so the assignments below stay changeable in one place.
 pub(crate) struct Palette {
-    /// The single accent: the selection bar, key hints, and popup titles all
+    /// The single accent: the selection mark, key hints, and popup titles all
     /// share it, so "interactive / current" is one colour everywhere.
     pub accent: Color,
     /// Secondary text: panel prose.
@@ -41,14 +41,17 @@ pub(crate) struct Palette {
     /// The hint bar's text, and the text of the refusal bar. Paired with `bar_bg`, so
     /// the two are legible together in any theme that keeps its own slots legible.
     pub bar_fg: Color,
-    /// Level colour: host.
+    /// Level colour: host. Blue, the slot a code theme gives a keyword, so the machine
+    /// reads as the outermost level.
     pub host: Color,
     /// Level colour: mux.
     pub mux: Color,
-    /// Level colour: window (the `{index}:{name}` part of the detail line) - the
+    /// Level colour: window (the detail line's window part) - the
     /// quietest level, so the session name reads as the detail line's anchor.
     pub window: Color,
-    /// Level colour: session.
+    /// Level colour: session. Red, so the level a user actually picks stands out from
+    /// the machine and mux above it. Shares the slot with [`danger`](Self::danger), which
+    /// only ever paints a STATUS line - never a name - so the two never sit side by side.
     pub session: Color,
     /// In-flight state: the scanning status and the loading spinner.
     pub pending: Color,
@@ -71,10 +74,10 @@ const fn base() -> Palette {
         overlay: Color::DarkGray,
         bar_bg: Color::Black,
         bar_fg: Color::White,
-        host: Color::Cyan,
+        host: Color::Blue,
         mux: Color::Green,
         window: Color::DarkGray,
-        session: Color::Cyan,
+        session: Color::Red,
         pending: Color::Yellow,
         danger: Color::Red,
         selection_bg: None,

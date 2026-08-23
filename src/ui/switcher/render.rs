@@ -44,6 +44,14 @@ fn hint_bar_rect(nav_local: Rect, area: Rect, hint_bar_h: u16, floating: bool) -
     }
 }
 
+/// The glyph marking the SELECTED card, in its address column.
+///
+/// A SHAPE, never a solid block. The selected card is reverse video, which swaps that
+/// cell's own pair, so a filled block inverts into a background-coloured half-cell and is
+/// absorbed into the inverted row's left edge - the mark vanishes exactly where it is
+/// needed. An outline keeps its silhouette either way round.
+pub(super) const SELECTED_MARK: &str = "\u{276f}";
+
 /// Braille spinner frames for pending states (connecting session, loading panes).
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -217,24 +225,23 @@ impl Switcher {
 
     /// Builds one navigation card as a [`ListItem`]: a context line over a detail
     /// line, or the detail line alone when the card is collapsed (see
-    /// [`Switcher::card_collapsed`]). The context line is the gutter +
+    /// [`Switcher::card_collapsed`]). The context line is the address column +
     /// `{host}/{mux}` in the host / mux colours (the mux segment only when known -
     /// a just-created session is stamped by the next enumeration; just `{host}` on
-    /// a host-state card). The detail line is the gutter + detail: a session
-    /// card's `{session}/{index}:{window-name}` - the focused (active) window,
-    /// what the mux shows on attach - in the session / window colours, a loading
+    /// a host-state card). The detail line is the address column + detail: a session
+    /// card's `{session}/{window}` - the focused (active) window, written as its own
+    /// mux writes it - in the session / window colours, a loading
     /// card's `{session}/` + spinner, a host-state card's state coloured by kind
-    /// (pending / danger / muted). The gutter is the selection bar column, then the
-    /// card's dim 0-based number, then a space. The number sits on the DETAIL line,
-    /// never the context line: the number addresses a session, so it reads beside the
-    /// session it names, and a collapsed card (detail line only) then puts it in the
-    /// same place as an expanded one.
+    /// (pending / danger / muted). Ahead of both lines runs the ADDRESS column: the
+    /// card's dim 0-based number, the thing `prefix <digit>` types. It sits on the
+    /// DETAIL line, never the context line, so it reads beside the session it names and
+    /// a collapsed card (detail line only) puts it in the same place as an expanded one.
     ///
-    /// The SELECTED card shows no number. Its number is the address you would type to
-    /// reach it, and you are already there; the accent bar in the column beside it says
-    /// so. The column is still spent, blank, because every card's name has to start at
-    /// the same screen column - moving the selected card's text is what makes a list
-    /// twitch as the cursor runs down it.
+    /// On the SELECTED card that column holds the mark instead of a number, because
+    /// "you are here" answers the same question the number answers, and one column pays
+    /// for both. Every card's name therefore starts at the same screen column whatever
+    /// the selection is doing - a name that shifts as the cursor passes is what makes a
+    /// list twitch.
     ///
     /// The surface background comes from the List's `highlight_style`, so no per-span
     /// background is baked in here.
@@ -242,21 +249,18 @@ impl Switcher {
         let row = &self.rows[i];
         let muted = Style::default().fg(color_hint());
         let selected = self.list_state.selected() == Some(i);
-        let bar = Style::default().fg(palette::get().accent);
-        // `numbered` is the detail line: the selection bar runs down every line of the
-        // card, the number appears once, next to the session it addresses.
-        let gutter = move |numbered: bool| -> Vec<Span<'static>> {
-            let mark = if selected {
-                Span::styled("▌", bar)
+        let accent = Style::default().fg(palette::get().accent);
+        // `numbered` is the detail line, the only line the address column writes on: a
+        // context line spends the same width blank so the two stay in one column.
+        let address = move |numbered: bool| -> Vec<Span<'static>> {
+            if !numbered {
+                return vec![Span::raw(" ".repeat(num_w + 1))];
+            }
+            if selected {
+                vec![Span::styled(format!("{SELECTED_MARK:>num_w$} "), accent)]
             } else {
-                Span::raw(" ")
-            };
-            let number = if numbered && !selected {
-                Span::styled(format!("{i:>num_w$} "), muted)
-            } else {
-                Span::raw(" ".repeat(num_w + 1))
-            };
-            vec![mark, number]
+                vec![Span::styled(format!("{i:>num_w$} "), muted)]
+            }
         };
 
         // Host-state card: the host name over its status, coloured by kind -
@@ -264,18 +268,24 @@ impl Switcher {
         // (soft red), a settled empty host is muted.
         if let RowRef::Host { unreachable, .. } = &row.reference {
             let (host, mux, _) = context_of(&row.reference);
-            let mut line1 = gutter(false);
+            let mut line1 = address(false);
             // A machine serving several muxes has one host card per mux, so the mux has
-            // to be on the line or the two cards read identically.
-            let label = if mux.is_empty() {
-                host.to_string()
-            } else {
-                format!("{host}/{mux}")
-            };
+            // to be on the line or the two cards read identically. It is spanned exactly
+            // as a session card's context line is - host, separator, mux - because a
+            // level's colour is the level's, not the card kind's: a single-colour run reading
+            // `local/psmux` would say the mux is part of the host's name.
             line1.push(Span::styled(
-                pad_label(&label),
+                host.to_string(),
                 Style::default().fg(color_host()),
             ));
+            if !mux.is_empty() {
+                line1.push(Span::styled("/", muted));
+                line1.push(Span::styled(
+                    mux.to_string(),
+                    Style::default().fg(color_mux()),
+                ));
+            }
+            line1.push(Span::raw(" "));
             let style = if *unreachable {
                 Style::default().fg(palette::get().danger)
             } else if row.line2.starts_with("scanning") {
@@ -283,8 +293,8 @@ impl Switcher {
             } else {
                 muted
             };
-            let mut line2 = gutter(true);
-            line2.push(Span::styled(pad_label(&row.line2), style));
+            let mut line2 = address(true);
+            line2.push(Span::styled(format!("{} ", row.line2), style));
             return ListItem::new(vec![Line::from(line1), Line::from(line2)]);
         }
 
@@ -293,7 +303,7 @@ impl Switcher {
         let collapsed = self.card_collapsed(i);
         let mut lines: Vec<Line> = Vec::new();
         if !collapsed {
-            let mut context: Vec<Span> = gutter(false);
+            let mut context: Vec<Span> = address(false);
             context.push(Span::styled(
                 host.to_string(),
                 Style::default().fg(color_host()),
@@ -319,10 +329,10 @@ impl Switcher {
         // collapsed card it hangs under the SHARED context above, so a run of
         // collapsed cards reads as siblings of one context: ├ while a collapsed
         // sibling follows below, └ on the run's last line. The SELECTED card keeps it:
-        // the accent bar and surface already say which card is selected, and dropping
+        // the inverted rows already say which card is selected, and dropping
         // two columns of connector would slide the session name left of every name
         // above and below it.
-        let mut detail = gutter(true);
+        let mut detail = address(true);
         let connector = if self.card_collapsed(i + 1) {
             "├ "
         } else {

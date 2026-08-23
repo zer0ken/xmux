@@ -126,6 +126,14 @@ impl Mux for Zellij {
         parse::parse_tabs(out)
     }
 
+    fn window_label(&self, _index: i64, name: &str) -> String {
+        // zellij's tab bar shows tab NAMES and nothing else - no index, no prefix - and
+        // a tab it names itself is already called `Tab #1`, so the number a reader looks
+        // for is inside the name. Prefixing tmux's `{index}:` would invent a second
+        // number, and a zero-based one at that, while `Ctrl t` + a digit counts from one.
+        name.to_string()
+    }
+
     fn show_option_plan(&self, _name: &str) -> Vec<String> {
         // zellij has no server options: its appearance is configured in a KDL file the
         // server never reports. An empty plan tells the caller so without running

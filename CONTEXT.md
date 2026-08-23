@@ -72,12 +72,12 @@ UI elements a user perceives as distinct things:
   while the terminal view is focused. "cursor" always means this text cursor,
   never the nav selection.
 - card - one nav entry: a context line (`{host}/{mux}`, or `{host}` on a
-  host-state card) over a detail line (`{session}/{index}:{window-name}` of
-  the focused (active) window behind a connector; the host state; or the
-  session name + a loading spinner). The muted connector hangs the detail
+  host-state card) over a detail line (`{session}/{window}` of the focused (active)
+  window behind a connector; the host state; or the session name + a loading spinner).
+  The window part is written the way its own mux writes it - see `window label`. The muted connector hangs the detail
   under its context line - on a collapsed card, under the shared context
   above: `├` while a collapsed sibling follows below, `└` on the run's last
-  line; the selected card drops the connector (the accent bar and the inverted
+  line; the selected card drops the connector (the selection mark and the inverted
   rows already bind its lines).
   One card per SESSION; the mux segment names the mux kind serving it
   (`Session.mux`, stamped at enumeration), so several muxes on one host stay
@@ -90,22 +90,32 @@ UI elements a user perceives as distinct things:
   renderer and mouse hit-testing share one `card_height` so the screen-row
   mapping never diverges.
 - level color - the per-segment card color, from the palette (`ui::palette`).
-  Every foreground role is ANSI-16, so the terminal theme resolves the hue: host
-  and session cyan (the two name levels share one color), mux green, the
-  window part (`{index}:{name}`) bright-black - the quietest level, so the
-  session name anchors the detail line; a host-state card's detail line is
+  Every foreground role is ANSI-16, so the terminal theme resolves the hue: host blue,
+  mux green, session red, the window part bright-black - the quietest
+  level, so the session name anchors the detail line. The four read as one code-theme
+  palette, and the level a user actually picks (the session) is the one that stands out.
+  A host-state card's detail line is
   colored by state - scanning yellow, unreachable red, settled "no sessions"
   muted. The hint bar is two slots as well (black under white, blue keys). Nothing here
   is an RGB value; see "Colour ownership" below for why, and `[ui] selection-style` /
   `[ui] hint-bar-style` for naming one anyway.
+- window label - how a card writes its focused window, in the CONVENTION OF ITS OWN MUX
+  rather than one xmux imposes: tmux and psmux get `{index}:{name}`, which is what
+  their own status line and `list-windows` print; zellij gets the tab name alone,
+  because zellij's tab bar shows names and nothing else and a tab it names itself is
+  already called `Tab #1`. The mux owns the rule (`Mux::window_label`), so a reader who
+  knows one mux reads its cards without learning a second notation.
 - selection - the nav's current pick (its card index is `selected`), advanced by
   navigation; a routine poll or restream never moves it (only launch / rescan
   re-sorts). `preselect` / `reselect` are the launch and post-rescan selections.
 - selection highlight - the selected card's rendering: reverse video (ratatui's
   `highlight_style`, filling the whole card), the terminal theme's own selected look,
-  plus an accent `▌` bar in the gutter of both card lines, in its own column left of the
-  number. The inversion is uniform because the highlight pins fg and bg to `Reset`:
-  inverting per span would turn each level color into a background and stripe the card.
+  plus a `❯` mark standing in the address column of the card's detail line, where
+  every other card carries its number. The inversion is uniform because the highlight
+  pins fg and bg to `Reset`: inverting per span would turn each level color into a
+  background and stripe the card. That same pinning is why the mark is an open shape and
+  never a solid block: it draws inverted too, so a block fills its cell and disappears
+  into the band while an outline keeps a readable silhouette.
   `[ui] selection-style` paints a named background instead. `selected` + `highlight`
   follow ratatui's list vocabulary.
 - spinner - the braille activity glyph on a loading card (and, historically, a
@@ -114,14 +124,14 @@ UI elements a user perceives as distinct things:
   its detail line is `{session}/` + a spinner rather than a window part.
 - status - a host-state card's detail-line state text (`scanning…` / `no sessions` /
   `⚠ unreachable`). Not to be confused with the hint bar (below) or the `chrome`.
-- card number - the dim 0-based index in a card's left gutter, and the address
-  `prefix <digit>` jumps to. Every UNSELECTED card carries one; the selected card shows
-  none, because its number is the address you would type to reach where you already are
-  and the accent bar in the column beside it says so. The column is still spent, blank,
-  so a card's name never moves as the selection passes over it. It sits on the DETAIL
-  line, beside the session it addresses, so a collapsed card puts it in the same place
-  as an expanded one. The number column is one width per frame, so the names stay
-  aligned and the numbers line up by units place as the count crosses 10.
+- address column - the leftmost column set of every card, holding the one thing that
+  answers "where is this": the dim 0-based number `prefix <digit>` jumps to, or, on the
+  SELECTED card, the selection mark - the number there would be the address of where you
+  already are. One column carries both, so a card's name never moves as the selection
+  passes over it. It is written on the DETAIL line, beside the session it addresses, so a
+  collapsed card puts it in the same place as an expanded one; a context line spends the
+  same width blank. The column is one width per frame, so the names stay aligned and the
+  numbers line up by units place as the count crosses 10.
 - jump - the digits-only popup `prefix <digit>` opens. It acts WHILE open: each edit
   moves the selection, so Enter only closes it and Esc restores where it started. It
   accepts only a digit that keeps the number addressing a real card, so one-, two-,
