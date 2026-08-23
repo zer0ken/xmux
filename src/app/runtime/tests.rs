@@ -2124,3 +2124,50 @@ fn resize_keys_adjust_height_in_top_layout() {
     assert!(rt.resize_axis(false, -1), "shrink changes the height");
     assert_eq!(rt.nav_height, auto, "and shrinks it back");
 }
+
+/// The tty a live display attach gives its host is decided by the transport's own shape.
+/// A machine that spawns the mux binary DIRECTLY puts the mux client in the very PTY xmux
+/// opened, so that PTY's name IS the client's tty: identity by ownership, known before the
+/// mux even registers a client, and unaffected by an external client sharing the session.
+/// A machine that hops through a shell puts the client on a pty of the FAR side, so the
+/// local PTY's name belongs to a stranger there and is dropped (switching that tty would
+/// move someone else's terminal); such a host learns its tty from the attach's own record.
+#[tokio::test(flavor = "current_thread")]
+async fn ready_adopts_the_pty_name_only_where_the_child_is_the_mux_client() {
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut hosts = crate::model::Hosts::default();
+    hosts.insert(crate::model::Host::new(
+        crate::machine::local(None),
+        crate::mux::for_binary("tmux"),
+    ));
+    hosts.insert(crate::model::Host::new(
+        crate::machine::ssh("jup".into(), String::new(), "linux".into()),
+        crate::mux::for_binary("tmux"),
+    ));
+    rt.hosts = hosts;
+
+    for (host, id) in [("local", 7u64), ("jup", 8u64)] {
+        {
+            let h = rt.hosts.get_mut(host).unwrap();
+            h.display.set_shows(host, "work");
+            h.display.mark_in_flight(host, 1);
+            h.display.mark_pending(id, host);
+        }
+        rt.on_display_event(crate::display::DisplayEvent::Ready {
+            seq: 1,
+            key: host.to_string(),
+            attachment: crate::display::attachment::fake_attachment_with_tty(id, "/dev/pts/3"),
+        });
+    }
+
+    assert_eq!(
+        rt.hosts.get("local").unwrap().display_tty.0.as_deref(),
+        Some("/dev/pts/3"),
+        "the mux client runs in the PTY xmux opened, so that PTY's name is its tty"
+    );
+    assert_eq!(
+        rt.hosts.get("jup").unwrap().display_tty.0,
+        None,
+        "past a shell hop the client is elsewhere, so the local PTY names nothing here"
+    );
+}

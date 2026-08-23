@@ -50,8 +50,8 @@ and nothing in `machine/` imports a mux type or a source.
 - `Transport` names no mux and no server model. Remoteness is a semantic
   ssh-versus-local marker only. What the mux sites actually read are the
   capability predicates: whether a display attach runs through a host shell (the
-  tty-record gate) and whether this box's mux registry is authoritative (the
-  registry-merge gate). None of the three derives from another, and no code reads
+  gate deciding which source names its client's tty) and whether this box's mux
+  registry is authoritative (the registry-merge gate). None of the three derives from another, and no code reads
   them to pick a server model.
 - The host kind's own query methods are the ONLY code that matches on the
   kind: one maps a kind to a concrete transport, another reads its server socket.

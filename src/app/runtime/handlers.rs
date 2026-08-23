@@ -21,7 +21,7 @@ impl Runtime {
     }
 
     /// Carries out one [`EventEffect`](crate::model::EventEffect) `State::apply_event`
-    /// returned — the mux I/O the state layer cannot perform (the single-owner inventory
+    /// returned - the mux I/O the state layer cannot perform (the single-owner inventory
     /// fold into `model::Host`, a control-mode probe, the attach registry, the detection
     /// dispatch). Returns `true` only for the matched-client display-attach reap, which
     /// asks the caller to rearm `attach_deadline` + mark `dirty` (the recover-from-detach
@@ -102,12 +102,12 @@ impl Runtime {
                 refetch_host(mgr, panes_requested, &host);
             }
             EventEffect::ProbeActiveWindow { host, session_ref } => {
-                // A session's ACTIVE WINDOW switched — the structure did NOT change, so do
+                // A session's ACTIVE WINDOW switched - the structure did NOT change, so do
                 // NOT refetch the whole inventory: a full list-sessions + per-session
                 // list-panes per change storms the single-threaded loop and freezes the UI
                 // during rapid window navigation (each nav step issues select-window,
                 // which echoes back as this notification). Probe ONLY the session the
-                // notification names (its tmux id, `session_ref`) — never a guessed displayed
+                // notification names (its tmux id, `session_ref`) - never a guessed displayed
                 // session; the reply (Focus) resolves the session name + new active window
                 // and updates THAT session's marker without any refetch.
                 if let Some(client) = mgr.get(&host) {
@@ -120,7 +120,7 @@ impl Runtime {
             EventEffect::ReapDisplayAttach { host, client } => {
                 // Reap our display attach ONLY when the detaching client is OUR display client
                 // (matched against the in-memory Host.display_tty). An unrelated client's detach
-                // can never match, so it is structurally inert — no blanket reap.
+                // can never match, so it is structurally inert - no blanket reap.
                 let Some(h) = hosts.get(&host) else {
                     return false;
                 };
@@ -142,7 +142,7 @@ impl Runtime {
             } => {
                 // Follow ONLY when the switched client is OUR display attach (matched against
                 // Host.display_tty). A third party's own client (e.g. the user's separate tmux
-                // client on a real server) can never match, so it is structurally inert — the
+                // client on a real server) can never match, so it is structurally inert - the
                 // nav never chases someone else's switch. The display tty is captured right
                 // after attach (the record snippet echoes it on the first pump read, before the
                 // user can drive the client), so a real prefix+s always matches; only a switch
@@ -231,7 +231,7 @@ impl Runtime {
             EventEffect::SyncPollSessions { source, sessions } => {
                 // A poll host's SUCCESSFUL enumeration (the nav group is already applied).
                 // The `poll enum` debug line is logged UNCONDITIONALLY at the producer
-                // (`run_poll`), where `err` is in hand — `apply_event` drops the error path
+                // (`run_poll`), where `err` is in hand - `apply_event` drops the error path
                 // before reaching here, so logging here would only ever see successes.
                 // PerSession psmux: a session whose registry .port disappeared is dead even
                 // if its PTY has not EOF'd. Drop the stale attach so it cannot show a dead grid.
@@ -274,7 +274,7 @@ impl Runtime {
 
 impl Runtime {
     /// Builds the world state from `env` and returns it alongside the loop's receiver
-    /// halves ([`LoopIo`]). Pure construction — it starts NO probes (the startup scan
+    /// halves ([`LoopIo`]). Pure construction - it starts NO probes (the startup scan
     /// is kicked from `run_app`), so a headless unit test can build a `Runtime`.
     pub(super) fn new(env: Arc<Env>) -> (Runtime, LoopIo) {
         let size = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
@@ -353,7 +353,7 @@ impl Runtime {
                 &env.cfg.ui.hint_bar_style,
             ));
 
-        // The live mutate ops (create/rename/kill) — NOT nav probing.
+        // The live mutate ops (create/rename/kill) - NOT nav probing.
         let ops = env.ops();
         let prefix = crate::display::term::parse_prefix(Some(&env.ui_prefix));
         let term_input = crate::display::input::TermInput::new(prefix);
@@ -614,7 +614,7 @@ impl Runtime {
             }
         }
 
-        // Draw the split (nav + selected session's live grid). GATED — redraw only when
+        // Draw the split (nav + selected session's live grid). GATED - redraw only when
         // something changed AND at most once per frame, so rapid navigation / a busy PTY
         // cannot flood the terminal.
         if self.dirty && self.last_draw.elapsed() >= Duration::from_millis(FRAME_MS) {
@@ -685,7 +685,7 @@ impl Runtime {
                 tracing::warn!(error = %e, "term_draw_failed");
             }
             DrawObserver::slow_step("draw", t_draw);
-            // The grids are now on screen — clear every attachment's output-coalescing flag.
+            // The grids are now on screen - clear every attachment's output-coalescing flag.
             self.registry.clear_all_pending();
             self.dirty = false;
             self.last_draw = std::time::Instant::now();
@@ -787,7 +787,7 @@ impl Runtime {
             }
         }
         if detached {
-            // The viewed session's client detached/exited — recover by re-attaching it
+            // The viewed session's client detached/exited - recover by re-attaching it
             // (reaped above, so the loop-top attach re-fires once its PTY is gone).
             self.state.apply(crate::model::Action::RearmAttach {
                 now: std::time::Instant::now(),
@@ -817,31 +817,51 @@ impl Runtime {
                 match outcome {
                     Some(crate::model::ReadyOutcome::Install { shown }) => {
                         // Swap: tear down the stale attachment held under this key (the prior
-                        // session, kept on screen until now) and install the fresh one.
+                        // session, kept on screen until now) and install the fresh one. The
+                        // attach child's own PTY name is read off the attachment first,
+                        // since installing it hands ownership to the registry.
+                        let child_tty = attachment.child_tty().map(str::to_string);
                         self.registry.remove(&key);
                         self.registry.insert(&key, attachment);
-                        // Capture xmux's display-client tty for a psmux host now that the
-                        // attach is confirmed LIVE (Ready): at this point our client is
-                        // registered, so a sole client on the shown session is unambiguously
-                        // ours and a second one (an external client sharing it) means
-                        // ambiguity → the guard leaves the tty unset → the next switch
-                        // reattaches. This is the TOCTOU-free #60 capture — at spawn our
-                        // client may not be registered yet, which let an external client be
-                        // misread as ours. Transport-lowered so local runs it directly and
-                        // remote over ssh.
-                        if let Some(h) = self.hosts.get(&hid) {
-                            if h.mux.kind() == "psmux" {
-                                let mux_argv =
-                                    vec![h.mux.bin().to_string(), "list-clients".to_string()];
-                                let (cmd, args) = h.transport.exec_argv(false, &mux_argv);
-                                let mut argv = vec![cmd];
-                                argv.extend(args);
-                                crate::mux::spawn_psmux_tty_capture(
-                                    argv,
-                                    shown.clone(),
-                                    id,
-                                    self.driver_pty_tx.clone(),
-                                );
+                        // xmux's display-client tty, established now that the attach is
+                        // confirmed LIVE (Ready). Two sources, split exactly where the
+                        // transport splits: a machine that spawns the mux binary DIRECTLY
+                        // puts the mux client in the PTY xmux opened, so that PTY's own
+                        // name IS the client's tty; a machine that hops through a shell
+                        // puts the client on a pty of the far side, which only the attach
+                        // shell's own record can name.
+                        let pty_tx = self.driver_pty_tx.clone();
+                        if let Some(h) = self.hosts.get_mut(&hid) {
+                            match child_tty.filter(|_| !h.transport.runs_through_shell()) {
+                                // Identity by ownership: xmux opened this PTY, so no probe
+                                // and no wait for the mux to register a client, and an
+                                // external client sharing the session cannot be mistaken
+                                // for ours.
+                                Some(tty) => {
+                                    tracing::debug!(host = %hid, tty, "display_tty_from_pty");
+                                    h.record_display_tty(Some(tty));
+                                }
+                                // The PTY carries no name (a ConPTY): psmux instead
+                                // correlates its own client from the client list, which is
+                                // sound HERE because our attach is registered by Ready, so
+                                // a sole client on the shown session is unambiguously ours
+                                // and a second one leaves the tty unset (the next switch
+                                // reattaches). Transport-lowered, so local runs it directly
+                                // and remote over ssh.
+                                None if h.mux.kind() == "psmux" => {
+                                    let mux_argv =
+                                        vec![h.mux.bin().to_string(), "list-clients".to_string()];
+                                    let (cmd, args) = h.transport.exec_argv(false, &mux_argv);
+                                    let mut argv = vec![cmd];
+                                    argv.extend(args);
+                                    crate::mux::spawn_psmux_tty_capture(
+                                        argv,
+                                        shown.clone(),
+                                        id,
+                                        pty_tx,
+                                    );
+                                }
+                                None => {}
                             }
                         }
                         self.state
