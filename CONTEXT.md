@@ -239,8 +239,8 @@ UI elements a user perceives as distinct things:
   ADD-ONLY: an added source's id is always qualified (`prod:zellij`) and the mux already
   served keeps the id it was painted with, because that id is what the frozen order, the
   persisted selection, and typed ctl targets are keyed to.
-- roster - which HOSTS xmux offers, assembled from PROVIDERS, both on unless
-  `[discovery]` turns one off: `~/.ssh/config` aliases and the online peers of this
+- roster - which HOSTS xmux offers, assembled from PROVIDERS, EVERY one on unless
+  `[discovery]` turns it off: `~/.ssh/config` aliases and the online peers of this
   machine's tailnet. Every provider yields plain ssh target names, so nothing
   downstream can tell where a name came from. The roster is what makes a machine a
   host: a machine no provider names is one xmux has nothing to say about. Distinct

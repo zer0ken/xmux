@@ -18,8 +18,8 @@ sessions from one terminal.
 
 - **One list over every host.** One card per session, local and over ssh, in a
   single view, ordered by how recently you were in it. Each card names the host, the
-  mux serving it, and the session's focused window. Hosts are auto-discovered from your
-  `~/.ssh/config`.
+  mux serving it, and the session's focused window. Hosts are auto-discovered from
+  your `~/.ssh/config` and your tailnet.
 - **In-place cross-host switching.** Selecting a session on another machine
   re-attaches to it within the same terminal window; selecting another session
   on the current server switches the client in place. No manual detach, and
@@ -158,14 +158,15 @@ A **host** is a machine that hosts muxes and that xmux can reach; this list is w
 decides the set. One host can serve several muxes, and each of those pairings is a
 **source** (see above).
 
-By default xmux offers the `Host` aliases in `~/.ssh/config`, plus `local`. A tailnet
-can supply the list instead, so the hosts you can reach are the hosts xmux
-offers with nothing to keep in sync by hand:
+Every provider is on by default, so the hosts you can reach are the hosts xmux
+offers with nothing to keep in sync by hand: the `Host` aliases in
+`~/.ssh/config`, the online peers of this machine's tailnet, and `local`. Turn
+one off when you do not want it:
 
 ```toml
 [discovery]
-ssh-config = true   # default; set false to use only the providers below
-tailscale = false   # default; the online peers of this machine's tailnet
+ssh-config = true   # default; the `Host` aliases in ~/.ssh/config
+tailscale = true    # default; the online peers of this machine's tailnet
 ```
 
 A tailnet peer is offered under its DNS label (`jupiter00`), the name that resolves

@@ -25,10 +25,11 @@ no function, and no test, so renaming code is never a documentation change.
   their source, and the sources themselves by their most recent session, so one source's
   cards are contiguous and the nav never names a source twice.
 - **FR-A5** - The roster (which HOSTS are offered) comes from providers the
-  `[discovery]` table selects: `~/.ssh/config` aliases (on by default) and this
-  machine's tailnet peers (off by default, since it runs an external CLI). A tailnet
+  `[discovery]` table selects, and EVERY provider is on by default: `~/.ssh/config`
+  aliases and this machine's tailnet peers. A tailnet
   peer is offered under its DNS label; this machine and offline peers are skipped. A
-  provider that cannot answer contributes nothing instead of failing the run, and
+  provider that cannot answer contributes nothing instead of failing the run, so a
+  provider being on costs nothing where it has nothing to say, and
   ssh-config names keep their position when a provider repeats them.
 - **FR-A6** - A host's mux is identified by what its binary answers as, not by the
   name it was invoked under, so tmux, psmux, and zellij mix freely across hosts with no
