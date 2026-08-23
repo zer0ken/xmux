@@ -1494,6 +1494,121 @@ fn one_host_scan(source: &str, sessions: Vec<Session>) -> Scan {
     }
 }
 
+/// Several sources, each carrying `sessions`, every session with one loaded window
+/// named `w-<session>`.
+fn sources_scan(sources: Vec<(&str, Vec<Session>)>) -> Scan {
+    let mut panes = HashMap::new();
+    let mut groups = Vec::new();
+    for (source, sessions) in sources {
+        for sess in &sessions {
+            panes.insert(
+                sess.address(),
+                vec![win(
+                    0,
+                    &format!("w-{}", sess.name),
+                    true,
+                    vec![pane(0, true, "sh")],
+                )],
+            );
+        }
+        groups.push(Group {
+            source: source.into(),
+            err: None,
+            sessions,
+        });
+    }
+    Scan { groups, panes }
+}
+
+#[tokio::test]
+async fn a_sources_cards_are_contiguous_and_the_sources_run_most_recent_first() {
+    // Recency applies to the SOURCE. Ordering sessions by global recency alone would
+    // interleave these two hosts - alpha 500, beta 400, beta 300, alpha 200 - and alpha
+    // would state its context twice, in two places, with a connector under each claiming
+    // the cards below it. Instead alpha's cards sit together (it holds the most recent
+    // session of all), then beta's, and inside each host the recent session leads.
+    let h = Harness::new(sources_scan(vec![
+        (
+            "alpha",
+            vec![
+                sess_mux("alpha", "a-old", "tmux", 200),
+                sess_mux("alpha", "a-new", "tmux", 500),
+            ],
+        ),
+        (
+            "beta",
+            vec![
+                sess_mux("beta", "b-new", "tmux", 400),
+                sess_mux("beta", "b-old", "tmux", 300),
+            ],
+        ),
+    ]));
+    let out = h.nav_text();
+    let row = |name: &str| {
+        h.nav_row_of(name).unwrap_or_else(|| {
+            panic!(
+                "{name}:
+{out}"
+            )
+        })
+    };
+    let (a_new, a_old, b_new, b_old) = (row("a-new"), row("a-old"), row("b-new"), row("b-old"));
+    assert!(
+        a_new < a_old && a_old < b_new && b_new < b_old,
+        "alpha then beta, each most recent first: a-new {a_new}, a-old {a_old}, b-new {b_new}, b-old {b_old}
+{out}"
+    );
+    // One context line per source: the run's cards collapse under the one above them.
+    assert_eq!(
+        out.matches("alpha/tmux").count(),
+        1,
+        "alpha named once:
+{out}"
+    );
+    assert_eq!(
+        out.matches("beta/tmux").count(),
+        1,
+        "beta named once:
+{out}"
+    );
+}
+
+#[tokio::test]
+async fn a_session_found_later_lands_inside_its_own_source() {
+    // The order is frozen once the hosts settle, so a session that appears afterwards
+    // cannot be placed by re-sorting. It is inserted after the last card of its own
+    // source - never appended to the bottom, which would strand it under another host's
+    // context line and split the source it belongs to.
+    let mut h = Harness::new(sources_scan(vec![
+        ("alpha", vec![sess_mux("alpha", "a-one", "tmux", 500)]),
+        ("beta", vec![sess_mux("beta", "b-one", "tmux", 400)]),
+    ]));
+    h.sw.apply_source_result(
+        "alpha".into(),
+        vec![
+            sess_mux("alpha", "a-one", "tmux", 500),
+            sess_mux("alpha", "a-two", "tmux", 100),
+        ],
+        None,
+        &mut h.state,
+    );
+    h.draw();
+    let out = h.nav_text();
+    let row = |name: &str| {
+        h.nav_row_of(name).unwrap_or_else(|| {
+            panic!(
+                "{name}:
+{out}"
+            )
+        })
+    };
+    assert!(
+        row("a-one") < row("a-two") && row("a-two") < row("b-one"),
+        "the new session joins alpha's run, above beta:
+{out}"
+    );
+}
+
 #[tokio::test]
 async fn session_card_context_shows_host_mux_session() {
     // The context line is {host}/{mux}, each segment in its own colour (the mux

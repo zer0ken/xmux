@@ -23,8 +23,12 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
 - **FR-A3** — `xmux doctor` reports config health, ssh availability, and per-source
   reachability with session counts. **Tests:** per-source probe via
   `list_sessions_*`; the doctor print wiring is in `cli.rs` (`run_doctor`, not unit-tested).
-- **FR-A4** — Sessions are ordered by recency (most-recently-attached first).
-  **Tests:** `to_groups_sorts_sessions_by_recency`, `sort_by_recency_orders` (tree).
+- **FR-A4** — Sessions are ordered by recency (most-recently-attached first) within
+  their source, and the sources themselves by their most recent session, so one source's
+  cards are contiguous and the nav never names a source twice.
+  **Tests:** `to_groups_sorts_sessions_by_recency`, `sort_by_recency_orders` (tree),
+  `a_sources_cards_are_contiguous_and_the_sources_run_most_recent_first`,
+  `a_session_found_later_lands_inside_its_own_source`.
 - **FR-A5** — The roster (which ssh targets are offered) comes from providers the
   `[discovery]` table selects: `~/.ssh/config` aliases (on by default) and this
   machine's tailnet peers (off by default, since it runs an external CLI). A tailnet
@@ -107,7 +111,10 @@ Each requirement has a stable ID and a **Tests** line naming the covering tests
   while the mux already served keeps the id it was painted with: that id is what the
   frozen order, the persisted selection, and anything the user typed are keyed to, so
   nothing is renamed and nothing is removed. New cards APPEND, so a card the user is
-  looking at does not move because another machine answered. **Tests:**
+  looking at does not move because another machine answered. An added source is
+  OPERABLE, not merely visible: the loop's host registry and the off-loop source list
+  both learn it, so creating a session on it, reading its panes, and reading its border
+  styles work exactly as on a configured source. **Tests:**
   `a_discovered_mux_becomes_a_source_on_the_spot`,
   `a_discovered_source_appends_and_leaves_the_selection_put`,
   `muxes_found_forwards_the_add_to_the_loop`,

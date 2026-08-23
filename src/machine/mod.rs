@@ -152,6 +152,38 @@ pub enum MachineKind {
     },
 }
 
+/// The [`MachineKind`] for `machine`, answering as the source `id`.
+///
+/// The SINGLE place a machine's construction data is assembled, so a source added LATER
+/// (an async mux discovery result) reaches its machine exactly as one built at launch
+/// does, and the `Host` the loop drives and the `Source` the off-loop ops use cannot
+/// disagree about how to get there. The ControlMaster socket is per MACHINE, not per
+/// source: several muxes on one machine share the one multiplexed connection.
+pub fn kind_for(
+    machine: &str,
+    id: String,
+    os: &str,
+    xmux_dir: &std::path::Path,
+    local_socket: Option<String>,
+) -> MachineKind {
+    if machine == crate::session::LOCAL_SOURCE {
+        MachineKind::Local {
+            id,
+            socket: local_socket,
+        }
+    } else {
+        MachineKind::Ssh {
+            id,
+            alias: machine.to_string(),
+            control_path: xmux_dir
+                .join(format!("cm-{machine}.sock"))
+                .to_string_lossy()
+                .into_owned(),
+            os: os.to_string(),
+        }
+    }
+}
+
 impl MachineKind {
     /// The one site that maps a machine kind to a concrete [`Transport`] (Decision A).
     /// A new family = a variant above + one arm here (and in the sibling `local_socket`);

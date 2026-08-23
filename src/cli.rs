@@ -168,7 +168,7 @@ async fn run_direct_attach(env: &Env, addr: &str) -> i32 {
             return 1;
         }
     };
-    let Some(src) = env.by_alias.get(&target.source).cloned() else {
+    let Some(src) = env.source(&target.source) else {
         eprintln!(
             "xmux: unknown source {:?} (not local or an ssh-config host)",
             target.source
@@ -230,7 +230,7 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
     }
 
     println!("sources:");
-    for s in &env.srcs {
+    for s in &env.source_list() {
         match probe(s).await {
             Ok(n) => println!("  {} ({}): ok, {} session(s)", s.alias, s.binary, n),
             Err(e) => println!("  {} ({}): UNREACHABLE — {}", s.alias, s.binary, e),

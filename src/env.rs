@@ -4,7 +4,6 @@
 //! over the live mux — including the per-source/per-session probes the event
 //! loop streams in.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,8 +24,13 @@ const DETAIL_TIMEOUT: Duration = Duration::from_secs(6);
 pub struct Env {
     pub cfg: Config,
     pub cfg_warnings: Vec<String>,
-    pub srcs: Vec<Source>,
-    pub by_alias: HashMap<String, Source>,
+    /// Every source this process knows: the ones config named at launch, plus the ones
+    /// async mux discovery adds while the app runs. Behind a lock because of the latter -
+    /// a source missing from this list is invisible to every off-loop op, so a discovered
+    /// mux could be enumerated and painted but not created on, its panes never read.
+    /// Read it through [`Env::source_list`] / [`Env::source`]; never hold the guard across
+    /// an await.
+    pub sources: std::sync::RwLock<Vec<Source>>,
     pub local_muxes: Vec<String>,
     pub ui_prefix: String,
     pub xmux_dir: PathBuf,
@@ -124,7 +128,6 @@ pub async fn build_env() -> (Env, Option<anyhow::Error>) {
     };
     let local_muxes = cfg.local_muxes(os, &installed);
     let srcs = source::build(&cfg, &aliases, os, &local_muxes, &xmux_dir, local_socket);
-    let by_alias = srcs.iter().map(|s| (s.alias.clone(), s.clone())).collect();
     let ui_prefix = cfg.ui_prefix().to_string();
     // The local host's `-S` socket, read back from the assembled local source so the
     // host registry (`Hosts::build`) targets the same server the source list does.
@@ -136,8 +139,7 @@ pub async fn build_env() -> (Env, Option<anyhow::Error>) {
         Env {
             cfg,
             cfg_warnings,
-            srcs,
-            by_alias,
+            sources: std::sync::RwLock::new(srcs),
             local_muxes,
             ui_prefix,
             xmux_dir,
@@ -165,10 +167,37 @@ fn to_groups(results: Vec<discovery::ScanResult>) -> Vec<Group> {
 }
 
 impl Env {
+    /// A snapshot of every known source, in order.
+    pub fn source_list(&self) -> Vec<Source> {
+        self.sources.read().expect("sources lock").clone()
+    }
+
+    /// The source answering as `alias`, if this process knows one.
+    pub fn source(&self, alias: &str) -> Option<Source> {
+        self.sources
+            .read()
+            .expect("sources lock")
+            .iter()
+            .find(|s| s.alias == alias)
+            .cloned()
+    }
+
+    /// Registers a source found after launch (async mux discovery). Idempotent: false
+    /// when one already answers as that alias.
+    pub fn add_source(&self, src: Source) -> bool {
+        let mut list = self.sources.write().expect("sources lock");
+        if list.iter().any(|s| s.alias == src.alias) {
+            return false;
+        }
+        list.push(src);
+        true
+    }
+
     /// Probes every source and returns the merged, recency-sorted host/session
     /// groups (used by `ls`, which needs no window/pane detail).
     pub async fn scan(&self) -> Vec<Group> {
-        let results = discovery::scan_all(&self.srcs, SCAN_TIMEOUT, SCAN_CONCURRENCY).await;
+        let srcs = self.source_list();
+        let results = discovery::scan_all(&srcs, SCAN_TIMEOUT, SCAN_CONCURRENCY).await;
         to_groups(results)
     }
 
@@ -219,9 +248,7 @@ struct EnvOps {
 impl EnvOps {
     fn source(&self, alias: &str) -> anyhow::Result<Source> {
         self.env
-            .by_alias
-            .get(alias)
-            .cloned()
+            .source(alias)
             .ok_or_else(|| anyhow::anyhow!("unknown source {alias:?}"))
     }
 }
@@ -240,7 +267,11 @@ async fn with_timeout<T>(
 #[async_trait::async_trait]
 impl Ops for EnvOps {
     fn sources(&self) -> Vec<String> {
-        self.env.srcs.iter().map(|s| s.alias.clone()).collect()
+        self.env
+            .source_list()
+            .iter()
+            .map(|s| s.alias.clone())
+            .collect()
     }
 
     async fn list_sessions(&self, source: &str) -> anyhow::Result<Vec<Session>> {
@@ -359,13 +390,11 @@ mod tests {
         let env = Arc::new(Env {
             cfg: Config::default(),
             cfg_warnings: Vec::new(),
-            srcs: vec![test_source("local", false, "2\t1\t100\teditor\n")],
-            by_alias: [(
-                "local".to_string(),
-                test_source("local", false, "2\t1\t100\teditor\n"),
-            )]
-            .into_iter()
-            .collect(),
+            sources: std::sync::RwLock::new(vec![test_source(
+                "local",
+                false,
+                "2\t1\t100\teditor\n",
+            )]),
             local_muxes: vec!["tmux".into()],
             ui_prefix: "C-g".into(),
             xmux_dir: PathBuf::from("."),

@@ -36,7 +36,8 @@ One concept, one word. The two axes and the runtime:
 UI elements a user perceives as distinct things:
 
 - split view - the whole two-region layout.
-- nav view - the region holding the flat, MRU-ordered list of session cards (a
+- nav view - the region holding the flat list of session cards, ordered by source
+  recency (a
   left column in `Side`, a top band in portrait `Top`). Never the "sidebar", and
   never the "tree": the on-screen VIEW is the nav view; `tree` names only the
   internal row-model module (`ui::tree`), which is still a Host→Session→Window
@@ -105,6 +106,16 @@ UI elements a user perceives as distinct things:
   because zellij's tab bar shows names and nothing else and a tab it names itself is
   already called `Tab #1`. The mux owns the rule (`Mux::window_label`), so a reader who
   knows one mux reads its cards without learning a second notation.
+- card order - the one order the flat card list follows (`Switcher::nav_order`, held as
+  addresses). Recency is measured per SOURCE, not per session: a source's cards are
+  contiguous, sources run most-recently-used first, and inside a source its own sessions
+  run most-recently-used first. Global session recency would split a source across the
+  list, restating its context line and leaving a connector claiming cards that belong to
+  another host. One insertion rule carries it: a session lands after the last card of its
+  own source, or at the end when its source has none yet - which also keeps a session
+  discovered later inside its group. The order is rebuilt while any host is still
+  scanning and frozen once they settle, so a routine poll never reshuffles cards under
+  the user.
 - selection - the nav's current pick (its card index is `selected`), advanced by
   navigation; a routine poll or restream never moves it (only launch / rescan
   re-sorts). `preselect` / `reselect` are the launch and post-rescan selections.
@@ -149,7 +160,11 @@ UI elements a user perceives as distinct things:
   serves several, so a one-mux setup is spelled exactly as it always was. `machine_of`
   / `mux_of` / `is_local_source` read the two halves back; nothing compares a source id
   to `local` directly. The nav renders the halves separately (`local/zellij`), so the id
-  never appears with its mux twice.
+  never appears with its mux twice. A source is held TWICE, once per consumer, and both
+  copies are built from `machine::kind_for` so they reach the machine the same way: the
+  event loop drives a `model::Host` out of `Hosts`, and the off-loop ops resolve a
+  `source::Source` out of `Env`. Discovery adds to BOTH - a source in only one of them
+  paints and scans but refuses every operation, or the reverse.
 - mux discovery - how a machine's mux list is decided when it named no mux (`mux` unset
   or `auto`): every mux xmux supports is asked whether it is installed there, and each one
   that answers becomes a source. Two halves, in that order: the candidate set is what xmux
