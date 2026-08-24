@@ -43,6 +43,12 @@ impl Zellij {
 
 #[async_trait]
 impl Mux for Zellij {
+    /// zellij has no server-socket flag and refuses an unexpected one before it reads
+    /// the verb, so a socket must never reach it.
+    fn takes_server_socket(&self) -> bool {
+        false
+    }
+
     fn kind(&self) -> &str {
         "zellij"
     }
@@ -65,19 +71,25 @@ impl Mux for Zellij {
         })
     }
 
+    /// `-n` (no formatting) is the machine-readable listing: `-s` prints bare names but
+    /// drops the marker that separates a live session from a resurrectable record, and
+    /// the default output wraps every field in colour escapes. zellij takes none of the
+    /// tmux listing's format flags, so it names its own listing rather than inheriting
+    /// the shared one.
+    fn list_sessions_plan(&self) -> Vec<String> {
+        vec![
+            self.bin.clone(),
+            "list-sessions".to_string(),
+            "-n".to_string(),
+        ]
+    }
+
     async fn enumerate(
         &self,
         transport: &dyn Transport,
         runner: &dyn Runner,
     ) -> Result<Vec<Session>, RunError> {
-        // `-n` (no formatting) is the machine-readable listing: `-s` prints bare names
-        // but drops the marker that separates a live session from a resurrectable
-        // record, and the default output wraps every field in colour escapes.
-        let argv = vec![
-            self.bin.clone(),
-            "list-sessions".to_string(),
-            "-n".to_string(),
-        ];
+        let argv = self.list_sessions_plan();
         let (name, args) = transport.exec_argv(false, &argv);
         match runner.run(&name, &args).await {
             Ok(out) => Ok(parse::parse_sessions(
@@ -359,5 +371,15 @@ mod tests {
             code: 127,
         });
         assert!(zellij().enumerate(&ssh("jup"), &missing).await.is_err());
+    }
+    #[test]
+    fn the_listed_plan_is_the_argv_enumerate_issues() {
+        // The plan exists to be SHOWN on the unreachable screen, so it must be the real
+        // listing: zellij takes none of the tmux format flags, and a screen stating one
+        // would name a command zellij never ran.
+        assert_eq!(
+            zellij().list_sessions_plan(),
+            vec!["zellij", "list-sessions", "-n"]
+        );
     }
 }

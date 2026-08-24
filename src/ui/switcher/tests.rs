@@ -979,7 +979,7 @@ async fn apply_source_result_empty_shows_empty_status() {
 }
 
 #[tokio::test]
-async fn apply_source_result_unreachable_marks_tree_and_reason_on_the_screen() {
+async fn apply_source_result_marks_the_card_and_states_the_reason_on_the_screen() {
     let mut h = Harness::from_sources(&["prod"]);
     h.sw.apply_source_result(
         "prod".into(),
@@ -988,18 +988,16 @@ async fn apply_source_result_unreachable_marks_tree_and_reason_on_the_screen() {
         &mut h.state,
     );
     h.draw();
-    // Tree: the ⚠ marker and the clause that NAMES the failure. The context the tool
-    // wrapped it in stays out, so the card says why without taking the nav to say it.
+    // Nav: the ⚠ marker and nothing more. No part of the message reaches the card -
+    // the screen is where it is stated, and a card is too narrow to hold it whole.
     let tree = h.nav_text();
     assert!(tree.contains('⚠'), "the host row is marked with ⚠:\n{tree}");
-    assert!(
-        tree.contains("connection refused"),
-        "the card names the failure:\n{tree}"
-    );
-    assert!(
-        !tree.contains("command failed"),
-        "the verbose context does NOT clutter the tree:\n{tree}"
-    );
+    for absent in ["connection refused", "command failed"] {
+        assert!(
+            !tree.contains(absent),
+            "the card states no reason, found {absent:?}:\n{tree}"
+        );
+    }
     // The lone unreachable host is auto-selected → its host screen states it is
     // unreachable and shows why.
     let out = h.text();
@@ -1030,6 +1028,69 @@ async fn unreachable_host_screen_keeps_a_long_reason_whole() {
 {out}"
         );
     }
+}
+
+#[tokio::test]
+async fn the_session_xmux_runs_in_is_never_a_terminal_view_target() {
+    // Attaching to it would put a second client on the session holding xmux: that moves
+    // the user's own client and paints xmux inside itself. The refusal is on the TARGET,
+    // which is the one value the display reconcile, the attach and the mux-side switch
+    // all read, so none of them can reach the session by another path.
+    let mut h = Harness::from_sources(&["local"]);
+    h.sw.set_own_session(Some("local/xmus".to_string()));
+    h.sw.apply_source_result(
+        "local".into(),
+        vec![sess_mux("local", "xmus", "psmux", 100)],
+        None,
+        &mut h.state,
+    );
+    h.draw();
+
+    assert_eq!(
+        h.sw.terminal_view_target().target,
+        "",
+        "no target, so nothing downstream attaches"
+    );
+    assert!(
+        h.sw.current_attach_target(&h.state).is_none(),
+        "and the mux-side switch has nothing to switch to"
+    );
+}
+
+#[tokio::test]
+async fn the_session_xmux_runs_in_shows_a_screen_instead_of_its_grid() {
+    // Refusing silently would leave the last session's grid standing under the wrong
+    // card. The screen says whose session it is and why it is not shown.
+    let mut h = Harness::from_sources(&["local"]);
+    h.sw.set_own_session(Some("local/xmus".to_string()));
+    h.sw.apply_source_result(
+        "local".into(),
+        vec![sess_mux("local", "xmus", "psmux", 100)],
+        None,
+        &mut h.state,
+    );
+    h.draw();
+    let out = h.view_text();
+    assert!(out.contains("local/xmus"), "headlined by address:\n{out}");
+    assert!(out.contains("running xmux"), "and by its state:\n{out}");
+    assert!(out.contains("refused"), "and says it is refused:\n{out}");
+}
+
+#[tokio::test]
+async fn another_instances_session_is_shown_like_any_other() {
+    // Only xmux's OWN session is refused. A session running a DIFFERENT xmux mirrors
+    // like anything else - that is a real screen a user may want to look at.
+    let mut h = Harness::from_sources(&["local"]);
+    h.sw.set_own_session(Some("local/xmus".to_string()));
+    h.sw.apply_source_result(
+        "local".into(),
+        vec![sess_mux("local", "other", "psmux", 100)],
+        None,
+        &mut h.state,
+    );
+    h.draw();
+    assert_eq!(h.sw.terminal_view_target().target, "other");
+    assert!(h.sw.current_attach_target(&h.state).is_some());
 }
 
 #[tokio::test]
@@ -3575,5 +3636,188 @@ fn the_side_lists_scrollbar_column_is_outside_every_card() {
     assert!(
         buf[(0, 0)].modifier.contains(Modifier::REVERSED),
         "while the selected card itself is still inverted"
+    );
+}
+
+/// A reach entry for `source`, so a screen test states what the app would have resolved.
+fn reach(mux: &str, machine: &str, socket: &str, probe: &str) -> crate::ui::chrome::SourceReach {
+    crate::ui::chrome::SourceReach {
+        probe: probe.into(),
+        machine: machine.into(),
+        mux: mux.into(),
+        socket: socket.into(),
+    }
+}
+
+/// Selects the first unreachable host card, whatever else the nav holds.
+async fn select_unreachable_host(h: &mut Harness) {
+    h.key(KeyCode::End).await;
+    for _ in 0..64 {
+        if matches!(
+            h.sw.current_ref(),
+            Some(RowRef::Host {
+                unreachable: true,
+                ..
+            })
+        ) {
+            return;
+        }
+        h.key(KeyCode::Up).await;
+    }
+    panic!("no unreachable host card in the nav");
+}
+
+#[tokio::test]
+async fn unreachable_host_screen_states_what_was_asked_and_over_what() {
+    // The message alone says a host failed, not what xmux asked of it. The mux and the
+    // machine are separate rows because they are the two things that can be wrong
+    // independently, and the probe is the command itself, so the user can run it by hand
+    // instead of taking the app's word for the failure.
+    let mut h = Harness::from_sources(&["prod"]);
+    h.state.chrome.set_source_reach(
+        [(
+            "prod".to_string(),
+            reach(
+                "tmux",
+                "ssh to prod, given 5s to connect",
+                "/tmp/cm-prod.sock",
+                "ssh -o BatchMode=yes -- prod tmux list-sessions",
+            ),
+        )]
+        .into_iter()
+        .collect(),
+    );
+    h.sw.apply_source_result(
+        "prod".into(),
+        vec![],
+        Some("connection refused".into()),
+        &mut h.state,
+    );
+    h.draw();
+    let out = h.view_text();
+    for want in [
+        "mux",
+        "tmux",
+        "machine",
+        "ssh to prod, given 5s to connect",
+        "socket",
+        "/tmp/cm-prod.sock",
+        "probe",
+        "prod tmux list-sessions",
+    ] {
+        assert!(out.contains(want), "the screen states {want:?}:\n{out}");
+    }
+}
+
+#[tokio::test]
+async fn a_source_nothing_was_resolved_for_gets_no_reach_rows() {
+    // An empty map is not "reached by nothing": it is nothing resolved. Those rows are
+    // absent rather than blank, the provider row's own rule, so the screen never names a
+    // datum it does not have.
+    let mut h = Harness::from_sources(&["prod"]);
+    h.sw.apply_source_result(
+        "prod".into(),
+        vec![],
+        Some("connection refused".into()),
+        &mut h.state,
+    );
+    h.draw();
+    let out = h.view_text();
+    for absent in ["probe", "socket", "machine"] {
+        assert!(!out.contains(absent), "no {absent:?} row:\n{out}");
+    }
+    assert!(
+        out.contains("connection refused"),
+        "the reason stands:\n{out}"
+    );
+}
+
+#[tokio::test]
+async fn unreachable_host_screen_names_the_other_muxes_on_the_machine() {
+    // Which HALF is down is the question a bare error cannot answer: a sibling mux on the
+    // same machine serving sessions says the box is up and this mux is not. The row
+    // carries each sibling's own state, so the answer is on the screen rather than being
+    // something the user reconstructs from the nav.
+    let mut h = Harness::from_sources(&["prod:tmux", "prod:zellij", "local"]);
+    h.sw.apply_source_result(
+        "prod:zellij".into(),
+        vec![sess_mux("prod:zellij", "infer", "zellij", 100)],
+        None,
+        &mut h.state,
+    );
+    h.sw.apply_source_result("local".into(), vec![], None, &mut h.state);
+    h.sw.apply_source_result(
+        "prod:tmux".into(),
+        vec![],
+        Some("no server running".into()),
+        &mut h.state,
+    );
+    select_unreachable_host(&mut h).await;
+    h.draw();
+    let out = h.view_text();
+    assert!(out.contains("same machine"), "the row is named:\n{out}");
+    assert!(
+        out.contains("prod:zellij · 1 session"),
+        "and states the sibling's own answer:\n{out}"
+    );
+    assert!(
+        !out.contains("local ·"),
+        "a source on ANOTHER machine is not a sibling:\n{out}"
+    );
+}
+
+#[tokio::test]
+async fn unreachable_host_screen_separates_a_standing_failure_from_a_blip() {
+    // One failed sweep and a host that has not answered since launch read identically in
+    // the message. The run length is what parts them, and it clears the moment the host
+    // answers - a stale count would keep calling a live host a standing failure.
+    let mut h = Harness::from_sources(&["prod"]);
+    for _ in 0..3 {
+        h.sw.apply_source_result(
+            "prod".into(),
+            vec![],
+            Some("connection refused".into()),
+            &mut h.state,
+        );
+    }
+    h.draw();
+    let out = h.view_text();
+    assert!(out.contains("failures"), "the row is named:\n{out}");
+    assert!(out.contains("3 in a row"), "and counts them:\n{out}");
+
+    h.sw.apply_source_result(
+        "prod".into(),
+        vec![sess("prod", "editor", 1, false, 100)],
+        None,
+        &mut h.state,
+    );
+    assert!(
+        !h.state.failure_runs.contains_key("prod"),
+        "an answer clears the run: {:?}",
+        h.state.failure_runs
+    );
+}
+
+#[tokio::test]
+async fn unreachable_host_screen_names_the_log_file() {
+    // Everything xmux lowered and what came back is written down. The screen names the
+    // file, so the full history is findable rather than being something the user has to
+    // already know about.
+    let mut h = Harness::from_sources(&["prod"]);
+    h.state
+        .chrome
+        .set_log_path("/home/h/.xmux/xmux.log.<date>".into());
+    h.sw.apply_source_result(
+        "prod".into(),
+        vec![],
+        Some("connection refused".into()),
+        &mut h.state,
+    );
+    h.draw();
+    let out = h.view_text();
+    assert!(out.contains("log"), "the row is named:\n{out}");
+    assert!(
+        out.contains("/home/h/.xmux/xmux.log.<date>"),
+        "and carries the path:\n{out}"
     );
 }

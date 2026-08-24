@@ -88,6 +88,16 @@ it prints are one decision, so they move together.
   source's error; a timed-out pane query still emits an EMPTY panes event, because a
   card whose panes never arrive keeps its spinner forever.
 - Transport-specific command wrapping belongs to the host axis.
+- A mux answers for its OWN flags, and a flag question added to the trait carries no
+  tmux-compatible default. Whether a mux takes a server-socket flag is asked of the mux
+  for exactly this reason: zellij refuses an unexpected flag before it reads the verb, so
+  a default answer inherited from tmux would make a source permanently unreachable, and a
+  mux added later would inherit the same break.
+- Where a machine has to know something mux-specific to address a mux correctly, the
+  answer is computed where BOTH are known - the source list and the host registry - and
+  handed to the machine. The machine axis names no mux, so it can only use what it is
+  given; both sites derive their answer from one raw value the same way, which is what
+  keeps a source and its host addressing one server.
 - Mux methods should stay at the exact behavior surface used by app, source
   metadata, and management code.
 

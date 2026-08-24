@@ -160,11 +160,11 @@ impl Switcher {
         // A selected host with no session to show has no live grid to mirror: its host
         // screen fills the region instead, so neither state is ever a blank view with no
         // next step. One call for both, because they are one screen in two states.
-        if let Some(kind) = self.current_host_screen(state) {
-            let source = self.current_source().unwrap_or_default();
+        if let Some(kind) = self.current_view_screen(state) {
+            let headline = self.view_screen_headline(state, kind);
             state
                 .chrome
-                .render_host_screen(frame, term_area, state, &source, kind);
+                .render_view_screen(frame, term_area, state, &headline, kind);
         } else {
             self.render_terminal_view(frame, term_area, grid);
         }

@@ -35,6 +35,10 @@ pub struct Env {
     pub local_muxes: Vec<String>,
     pub ui_prefix: String,
     pub xmux_dir: PathBuf,
+    /// The ADDRESS of the session xmux is ITSELF running in (`local:psmux/xmus`), or
+    /// `None` when it is not inside a mux or the session could not be named. The one
+    /// session the terminal view refuses to mirror; see [`crate::attach::own_mux_session`].
+    pub own_session: Option<String>,
     /// Which provider put each host on the roster, keyed by HOST name (the machine half
     /// of a source id). Read only to be SHOWN: the unreachable host screen names it, so
     /// a host that fails is traceable to the thing that offered it. See
@@ -160,16 +164,16 @@ pub async fn build_env() -> (Env, Option<anyhow::Error>) {
         os,
         &local_muxes,
         &xmux_dir,
-        local_socket,
+        local_socket.clone(),
     );
     let roster_providers = roster_providers(&cfg, &offered, &wsl_distros);
+    let own_session = own_session_address(&srcs);
     let ui_prefix = cfg.ui_prefix().to_string();
-    // The local host's `-S` socket, read back from the assembled local source so the
-    // host registry (`Hosts::build`) targets the same server the source list does.
-    let host_local_socket = srcs
-        .iter()
-        .find(|s| crate::session::is_local_source(&s.alias))
-        .and_then(|s| s.local_socket());
+    // The local server socket this box named, handed on RAW: the host registry filters
+    // it per mux exactly as the source list does, so both derive one answer from one
+    // value. Reading it back off an assembled source would instead make it depend on
+    // WHICH local mux happens to be first, and a first source that takes no socket
+    // (zellij) would drop it for every host behind it.
     (
         Env {
             cfg,
@@ -181,10 +185,49 @@ pub async fn build_env() -> (Env, Option<anyhow::Error>) {
             ssh_aliases: aliases,
             wsl_distros,
             roster_providers,
-            local_socket: host_local_socket,
+            own_session,
+            local_socket,
         },
         cfg_err,
     )
+}
+
+/// The address of the session xmux is running in, resolved against the LOCAL sources.
+///
+/// The mux names the session; this pairs it with the source id that mux answers as on
+/// this box, because an address is a source and a session and the refusal has to match
+/// the card exactly. A mux xmux does not serve here leaves it unresolved, which blocks
+/// nothing - the same as not being inside a mux at all.
+fn own_session_address(srcs: &[Source]) -> Option<String> {
+    let (kind, session) = crate::attach::own_mux_session()?;
+    Some(crate::session::address_of(
+        own_source_id(srcs, &kind)?,
+        &session,
+    ))
+}
+
+/// The LOCAL source id serving mux `kind`, as the mux named itself.
+///
+/// A source spells the binary the user CONFIGURED, which need not be what the mux calls
+/// itself: psmux answers to `tmux` as well, so a box whose config says `tmux` is served
+/// by psmux all the same. The spelling is matched first, then the tmux family, which is
+/// unambiguous while the box serves one member of it. Neither matching leaves the
+/// session unresolved, and an unresolved session blocks nothing.
+fn own_source_id<'a>(srcs: &'a [Source], kind: &str) -> Option<&'a str> {
+    let local: Vec<&Source> = srcs
+        .iter()
+        .filter(|s| crate::session::is_local_source(&s.alias))
+        .collect();
+    if let Some(s) = local.iter().find(|s| s.binary == kind) {
+        return Some(&s.alias);
+    }
+    let tmux_family = |b: &str| b == "tmux" || b == "psmux";
+    if !tmux_family(kind) {
+        return None;
+    }
+    let mut it = local.iter().filter(|s| tmux_family(&s.binary));
+    let only = it.next()?;
+    it.next().is_none().then_some(only.alias.as_str())
 }
 
 /// Which provider put each host on the roster, keyed by HOST name.
@@ -475,6 +518,7 @@ mod tests {
             ssh_aliases: Vec::new(),
             wsl_distros: Vec::new(),
             roster_providers: HashMap::new(),
+            own_session: None,
             local_socket: None,
         });
         let ops = env.ops();

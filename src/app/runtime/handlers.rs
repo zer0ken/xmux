@@ -317,7 +317,10 @@ impl Runtime {
         // The app's runtime state (single source of truth), seeded from the host ids;
         // events stream the nav in.
         let mut state = crate::state::State::from_sources(hosts.ids().to_vec());
-        let switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
+        let mut switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
+        // The one session the terminal view refuses: the one xmux is running in. Named
+        // once here, because the environment that names it cannot change under a run.
+        switcher.set_own_session(env.own_session.clone());
         // Feed the switcher the ssh config so an unreachable host's screen can show
         // its Host/Match stanza. Read once; a missing file just yields no stanza.
         state.chrome.set_ssh_config_text(
@@ -331,6 +334,22 @@ impl Runtime {
                 .iter()
                 .map(|(host, p)| (host.clone(), p.label().to_string()))
                 .collect(),
+        );
+        // And how each source is REACHED, so an unreachable one states what was asked of
+        // it and over what, not only that it failed. Resolved to words here for the same
+        // reason the providers are: the screen prints them and nothing branches on them.
+        state.chrome.set_source_reach(
+            env.source_list()
+                .iter()
+                .map(|s| (s.alias.clone(), source_reach(s)))
+                .collect(),
+        );
+        // Where the whole history of lowered commands is written, so the screen can name
+        // the file instead of leaving the user to know about it.
+        state.chrome.set_log_path(
+            crate::logging::log_files(&env.xmux_dir)
+                .display()
+                .to_string(),
         );
         // View border colours: the config baseline (explicit overrides + stock fallback),
         // applied before any host is displayed and whenever no mux answers. Once a host is
@@ -1182,4 +1201,47 @@ impl Runtime {
             }
         }
     }
+}
+
+/// How xmux reaches `s`, reduced to the words the unreachable screen prints.
+///
+/// The reduction happens HERE, at the wiring, for the reason the roster providers are
+/// reduced here: the screen prints these and branches on none of them, so the UI layer
+/// never learns what a machine family or a mux binary is. Each field comes from the one
+/// place that owns it - the machine describes its own addressing, the host composes its
+/// own listing command - rather than being re-derived from a source id.
+pub(super) fn source_reach(s: &crate::source::Source) -> crate::ui::chrome::SourceReach {
+    crate::ui::chrome::SourceReach {
+        probe: shell_line(&s.host().list_sessions_command()),
+        machine: s.kind.addressed_as(),
+        mux: s.binary.clone(),
+        socket: s.kind.socket_path(),
+    }
+}
+
+/// An argv as one line, every word that is not shell-safe quoted, so the line the screen
+/// shows is the command the screen says was run.
+///
+/// A control character is written as its escape first: a session format carries TABs, and
+/// a terminal prints a raw TAB as nothing at all - the datum would be on screen and
+/// unreadable, which is the one thing this screen exists not to do.
+pub(super) fn shell_line(argv: &[String]) -> String {
+    argv.iter()
+        .map(|a| crate::machine::vocab::quote(&escape_controls(a)))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// `s` with every control character replaced by its two-character escape (TAB reads
+/// `\\t`), everything else untouched.
+fn escape_controls(s: &str) -> String {
+    s.chars()
+        .flat_map(|c| {
+            if c.is_control() {
+                c.escape_debug().collect::<Vec<_>>()
+            } else {
+                vec![c]
+            }
+        })
+        .collect()
 }

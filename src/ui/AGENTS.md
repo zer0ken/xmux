@@ -62,11 +62,20 @@ flatten renders for the dump verb.
   background with no slot for it is an attribute instead: the selected card is
   reverse video, not a computed surface. See "Colour ownership" in `CONTEXT.md`;
   the palette is guarded so a stray RGB colour cannot reach it.
-- The host screens are ONE screen in two states, not two panels: one builder lays both
-  out, so the headline, the state word, and the key rows cannot drift apart. A state
-  added later joins that grammar rather than bringing its own.
+- The view screens are ONE screen in several states, not a panel each: one builder lays
+  them all out, so the headline, the state word, and the key rows cannot drift apart. A
+  state added later joins that grammar rather than bringing its own.
+- The terminal view refuses exactly one address, the session xmux is running in, and it
+  refuses it by emptying the view TARGET rather than at each place that would attach.
+  The target is what the display reconcile, the attach and the mux-side switch all read,
+  so a refusal anywhere else would leave the other paths open.
 - A settled host's status word has one source, so the word on a card and the word on the
   screen reached from it are the same word.
+- A card states a STATE, never a REASON: the status word is all a settled host card
+  carries, and the message behind it (the diagnostic its transport gave, the provider
+  that offered the host, the config stanza it was reached through) is stated on the
+  screen that card selects. A card is only as wide as the nav, so a reason on it is a
+  cut-down copy of one the screen already holds whole.
 - A card that is waiting turns ONE spinner, in the first of its levels that has not
   resolved (mux, then session, then window); every level behind it stays blank. A
   second spinner on one card would say two separate things are in flight, when the
@@ -107,6 +116,20 @@ flatten renders for the dump verb.
   consumption) on that signal. This mutate-and-return-bool shape is deliberate; it
   is not split into a pure command and query pair, because the churn would exceed
   the value.
+- A surface that exists to be READ never shortens what it states. A value too wide for
+  its column hangs under the same rule, a multi-line value keeps its lines, and a
+  control character is written as its escape rather than printed as nothing: where a
+  datum does not fit, the surface grows, and the datum is never the thing that gives
+  way. This is why the reason, the probe command and the ssh stanza are on a screen and
+  not on a card - the card had the room for none of them.
+- A state screen states everything known about the state it explains, not the minimum
+  that identifies it. The user reached it because the one-line state word was not
+  enough, so the screen carries what failed, what was asked and over what, who put the
+  thing on the list, what else nearby answered, and where the full history is written. A
+  datum nothing recorded is an ABSENT row, never a blank one.
+- The words on a screen and the values the code runs come from one place: the ssh
+  connect wait is printed from the same constant the ssh option is built from, and a
+  status word from the one helper the cards read. Two spellings of one fact drift.
 
 ## Common Pitfalls
 

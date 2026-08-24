@@ -64,26 +64,41 @@ UI elements a user perceives as distinct things:
   `pane-border-lines`): `single │` (default), `double ║` (auto-hide-nav on),
   `heavy ┃` (hover - the drag-resize grab cue).
 - chrome - the furniture around the two views: the view border, the hint bar, and
-  the host screens.
+  the view screens.
 - hint bar - the nav's own status line: the bottom row(s) of the nav region, ending
   at the view border rather than spanning the screen, so the terminal view keeps
   every row it owns. At rest it shows only the prefix; while the prefix is ARMED it
   shows the keys that prefix unlocks. A flash, the scan indicator, and the active
   filter outrank both, in that order. A long flash wraps across as many nav rows as
   it needs instead of clipping. A shown flash paints it in the error style.
-- host screen - what fills the terminal-view region in place of a mux, for a selected
-  host with no session to show. One screen in two states, so a reader of either reads
-  the other: the host's name as the headline, under it the same status word its card
-  carries, then the rows that apply. A row is the key-column row the help also uses - a
+- view screen - what fills the terminal-view region in place of a mux, for a selection
+  with no grid to show there. Where a card states the selection's STATE, the screen
+  states WHY: it is the one surface with the room to hold a tool's diagnostic whole.
+  One screen in three states, so a reader of any of them reads the others: the subject
+  as the headline (a host for the two host states, the session address for
+  `own session`), under it the state word, then the rows that apply. A row is the key-column row the help also uses - a
   right-aligned cell, the `│` rule, the value - where a bold cell is a key that can be
-  pressed here and a muted cell names a datum. The UNREACHABLE state's rows are why it
-  failed (the reason its transport gave, the provider that put it on the roster, the ssh
-  stanza it was reached through) and the rescan key; the EMPTY state's rows are the keys that start a session or rescan. A host
-  still scanning gets no screen: an in-flight state is the nav's to show.
-- nesting - xmux running inside a mux session. Allowed, and not a special case: the
-  app attaches mux clients as PTY CHILDREN, so nothing it opens is a terminal handover
-  that a mux would refuse. A session running xmux mirrors like any other, its own
-  session included, which draws its screen one frame behind and holds there.
+  pressed here and a muted cell names a datum. No value on a screen is shortened to fit
+  its column: one too wide hangs under the same rule, a multi-line one keeps its lines,
+  and a control character is written as its escape rather than printed as nothing. The
+  UNREACHABLE state states everything known about the failure, in reading order: the
+  reason its transport gave, how many failures in a row it is, then what was asked and
+  over what (the mux binary, how the machine is addressed and the wait that bounds it,
+  the socket, and the session-listing command itself, spelled so it can be run by hand),
+  then the provider that put the host on the roster, the ssh stanza it was reached
+  through, what the OTHER muxes on that same machine answered, and the log file holding
+  the full history - then the rescan key. The EMPTY state's rows are the keys that start a session or rescan. A host
+  still scanning gets no screen: an in-flight state is the nav's to show. The
+  `own session` state's rows are why it is refused, and no key, because nothing pressed
+  here would make it showable.
+- nesting - xmux running inside a mux session. Allowed: the app attaches mux clients as
+  PTY CHILDREN, so nothing it opens is a terminal handover that a mux would refuse. It
+  costs one thing, the `own session`.
+- own session - the mux session xmux is ITSELF running in, named once at startup from
+  what the mux says (zellij and psmux put it in the environment; tmux is asked). The one
+  address the terminal view refuses: mirroring it would attach a second client to the
+  session holding xmux, moving the user's own client and painting xmux inside itself. A
+  session running a DIFFERENT xmux is not it, and mirrors like any other.
 - grid - the live terminal content drawn in the terminal view: xmux's in-memory
   cell mirror of the attached session's screen, fed by the terminal-emulation parser.
 - cursor - the real terminal cursor placed over the grid at the mux's cursor cell
@@ -91,8 +106,9 @@ UI elements a user perceives as distinct things:
   never the nav selection.
 - card - one nav entry: a context line (`{host}/{mux}`, or `{host}` on a
   host-state card) over a detail line (`{session}/{window}` of the focused (active)
-  window behind a connector; the settled host state; or a spinner in the card's
-  unresolved level).
+  window behind a connector; the settled host state, the state word alone; or a spinner
+  in the card's unresolved level). A card states WHAT something is; WHY it is that way
+  is the screen's, never a card's.
   The window part is written the way its own mux writes it - see `window label`. The muted connector hangs the detail
   under its context line - on a collapsed card, under the shared context
   above: `├` while a collapsed sibling follows below, `└` on the run's last
@@ -268,7 +284,7 @@ UI elements a user perceives as distinct things:
   `[discovery]` turns it off: `~/.ssh/config` aliases, the online peers of this
   machine's tailnet, and this box's WSL distributions. Every provider yields plain ssh
   target names, so nothing downstream BEHAVES differently for one; which provider
-  offered a name is kept beside it and shown on the unreachable host screen, never read
+  offered a name is kept beside it and shown on the unreachable host's view screen, never read
   to decide anything. The roster is what makes a machine a
   host: a machine no provider names is one xmux has nothing to say about. Distinct
   from `mux discovery`, which asks a host WHICH MUXES it serves, from `discovery`,

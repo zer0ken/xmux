@@ -36,6 +36,7 @@ fn fake_env_with_sources(aliases: &[&str]) -> Env {
         ssh_aliases,
         wsl_distros: Vec::new(),
         roster_providers: std::collections::HashMap::new(),
+        own_session: None,
         local_socket: None,
     }
 }
@@ -2169,5 +2170,50 @@ async fn ready_adopts_the_pty_name_only_where_the_child_is_the_mux_client() {
         rt.hosts.get("jup").unwrap().display_tty.0,
         None,
         "past a shell hop the client is elsewhere, so the local PTY names nothing here"
+    );
+}
+
+#[test]
+fn a_probe_line_shows_every_word_it_runs() {
+    // The words are what the user pastes into a shell, so a word with a space in it is
+    // quoted; and a TAB - which every session format carries - is written as its escape,
+    // because a terminal prints a raw one as nothing and the datum would be on screen
+    // and unreadable.
+    let argv: Vec<String> = ["tmux", "list-sessions", "-F", "a\tb", "two words"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let line = super::handlers::shell_line(&argv);
+    assert_eq!(line, r"tmux list-sessions -F 'a\tb' 'two words'");
+}
+
+#[test]
+fn a_sources_reach_names_its_mux_and_the_machine_it_is_asked_over() {
+    // What the unreachable screen states about a source, resolved from that source's own
+    // config: the binary asked for, how the machine is addressed, and the listing command
+    // itself.
+    let s = Source {
+        alias: "prod".into(),
+        binary: "tmux".into(),
+        kind: crate::machine::MachineKind::Ssh {
+            id: String::new(),
+            alias: "prod".into(),
+            control_path: "/tmp/cm-prod.sock".into(),
+            os: "linux".into(),
+        },
+        runner: None,
+    };
+    let reach = super::handlers::source_reach(&s);
+    assert_eq!(reach.mux, "tmux");
+    assert_eq!(reach.socket, "/tmp/cm-prod.sock");
+    assert!(
+        reach.machine.contains("ssh to prod"),
+        "the machine names its destination: {:?}",
+        reach.machine
+    );
+    assert!(
+        reach.probe.starts_with("ssh ") && reach.probe.contains("tmux list-sessions"),
+        "the probe is the command a listing runs: {:?}",
+        reach.probe
     );
 }

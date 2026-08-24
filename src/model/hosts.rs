@@ -168,6 +168,10 @@ pub fn host_for(
     xmux_dir: &std::path::Path,
     local_socket: Option<String>,
 ) -> Host {
+    // The socket reaches the machine only when `bin` takes one - the peer of the same
+    // filter on the source list, so a host and its source address one server. See
+    // `crate::mux::server_socket_for`.
+    let local_socket = crate::mux::server_socket_for(bin, local_socket);
     let kind = crate::machine::kind_for(machine, id, os, xmux_dir, local_socket);
     Host::new(kind.transport(), for_binary(bin))
 }
@@ -434,5 +438,39 @@ mod tests {
             sessions: vec![],
         });
         assert!(hosts.get("ghost").is_none());
+    }
+    #[test]
+    fn a_local_zellij_host_lists_sessions_without_a_socket_flag() {
+        // End to end on the registry side: the command the scan runs carries no `-S`, so
+        // the listing reaches zellij's own argument parsing instead of dying before it.
+        let h = host_for(
+            crate::session::LOCAL_SOURCE,
+            "zellij",
+            "local:zellij".to_string(),
+            "linux",
+            std::path::Path::new("/tmp/xmux"),
+            Some("/tmp/psmux-1/default".to_string()),
+        );
+        let cmd = h.list_sessions_command();
+        assert!(
+            !cmd.iter().any(|a| a == "-S"),
+            "no socket flag reaches zellij: {cmd:?}"
+        );
+
+        // And the tmux family keeps addressing the server it was given.
+        let t = host_for(
+            crate::session::LOCAL_SOURCE,
+            "psmux",
+            "local:psmux".to_string(),
+            "linux",
+            std::path::Path::new("/tmp/xmux"),
+            Some("/tmp/psmux-1/default".to_string()),
+        );
+        let cmd = t.list_sessions_command();
+        assert!(
+            cmd.windows(2)
+                .any(|w| w[0] == "-S" && w[1] == "/tmp/psmux-1/default"),
+            "psmux still targets its server: {cmd:?}"
+        );
     }
 }

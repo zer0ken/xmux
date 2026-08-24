@@ -6,8 +6,9 @@ use super::vocab::remote_command;
 use super::Transport;
 
 /// Bounds the ssh TCP connect; the per-host scan timeout must exceed it so a
-/// slow-but-alive remote is not cancelled mid-connect.
-const CONNECT_TIMEOUT: &str = "5";
+/// slow-but-alive remote is not cancelled mid-connect. Also the number the machine
+/// describes itself with, so what is SHOWN and what is passed to ssh are one value.
+pub(crate) const CONNECT_TIMEOUT: &str = "5";
 
 /// A remote over ssh. `control_path` is the ControlMaster socket (empty ⇒ no
 /// multiplex, e.g. a Windows local side); `os` is the LOCAL platform (gates

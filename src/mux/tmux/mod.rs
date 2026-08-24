@@ -56,6 +56,11 @@ pub struct Tmux {
 
 #[async_trait]
 impl Mux for Tmux {
+    /// `-S <path>` is tmux's own flag for choosing which server to talk to.
+    fn takes_server_socket(&self) -> bool {
+        true
+    }
+
     fn kind(&self) -> &str {
         "tmux"
     }
