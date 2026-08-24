@@ -1,14 +1,15 @@
 # xmux
 
-*A cross-host terminal-multiplexer switcher - tmux's `prefix + s` / `switch-client`, but reaching every machine.*
+English · [한국어](README.ko.md)
+
+*A cross-host terminal-multiplexer switcher.*
 
 xmux is a persistent, terminal-owning supervisor written in Rust. It owns the
 terminal you launch it in, keeps its live mux attachments running, and renders
 a split view: a **nav list** of every reachable session on the left, the
-selected session's **live screen** on the right. Move down the list and the
+selected session's **live screen** on the right. Move the cursor and the
 right pane switches to that session in place, whether it's a local psmux
-session, a tmux session over ssh, or a zellij session on a third machine. No
-detaching and reattaching, no picker to click through.
+session, a tmux session over ssh, or a zellij session on a third machine.
 
 ![The xmux split view: a nav list of psmux sessions on this machine and tmux
 sessions inside a WSL distribution, with the selected session's live screen
@@ -35,10 +36,10 @@ it answers as, so a mix of the three across your hosts needs no configuration.
 
 ## Usage
 
-Run xmux with no arguments to open the interactive split view:
+Run xmux with no arguments to open the app:
 
 ```sh
-xmux                          # the interactive nav + live-screen app
+xmux                          # open the app
 xmux ls                       # list every reachable session (scriptable)
 xmux attach <source>/<name>   # attach one session directly, e.g. xmux attach prod/api
 xmux doctor                   # check config and per-source reachability
