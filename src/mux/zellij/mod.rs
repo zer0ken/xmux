@@ -43,6 +43,12 @@ impl Zellij {
 
 #[async_trait]
 impl Mux for Zellij {
+    /// zellij has no server-socket flag and refuses an unexpected one before it reads
+    /// the verb, so a socket must never reach it.
+    fn takes_server_socket(&self) -> bool {
+        false
+    }
+
     fn kind(&self) -> &str {
         "zellij"
     }
