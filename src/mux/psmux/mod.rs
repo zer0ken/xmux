@@ -56,7 +56,7 @@ impl Mux for Psmux {
         // The local-registry merge is a LOCAL-psmux behavior: `~/.psmux` is THIS
         // machine's registry, with no remote awareness. A machine whose registry is NOT
         // authoritative here (a remote psmux host has its own on the far side) must
-        // enumerate the generic way (list-sessions over ssh) — identical to a remote tmux.
+        // enumerate the generic way (list-sessions over ssh) - identical to a remote tmux.
         // Folding the local registry into it would inject local session names as phantoms
         // and (worse) swallow an ssh failure into a fake empty/populated list.
         if !transport.local_registry_scope() {
@@ -91,8 +91,8 @@ impl Mux for Psmux {
     fn attach_plan(&self, session: &str) -> Vec<String> {
         // psmux is one-server-per-session: each session is its own server on its own
         // port (`~/.psmux/<name>.port`). A bare `attach -t <name>` on the DEFAULT
-        // socket does not reach that session's server — it lands on a warm clone / the
-        // default session — so selecting another session shows the wrong content.
+        // socket does not reach that session's server - it lands on a warm clone / the
+        // default session - so selecting another session shows the wrong content.
         // `new-session -A -s <name>` (attach-if-exists, no `-d`) routes to the
         // session's OWN server and attaches the REAL session (verified: `-A -s
         // <existing>` finds it without creating a duplicate; cf. the `-CC` form in
@@ -106,36 +106,14 @@ impl Mux for Psmux {
         ]
     }
 
-    fn switch_in_place(
-        &self,
-        _host_key: &str,
-        session: &str,
-        display_tty: Option<&str>,
-    ) -> Option<SwitchPlan> {
-        // The psmux in-place switch moves xmux's own display client across per-session
-        // servers on the default socket (`switch-client -c <tty> -t <session>`), then
-        // forces a full repaint (`refresh-client -t <tty>`) so the new session fills the
-        // grid. It runs ONLY with a non-empty captured tty; otherwise `None`, so the
-        // driver reattaches instead (the 4a5f053 guard — no regression).
-        display_tty.filter(|t| !t.is_empty()).map(|tty| {
-            SwitchPlan::Exec(vec![
-                vec![
-                    self.bin.clone(),
-                    "switch-client".to_string(),
-                    "-c".to_string(),
-                    tty.to_string(),
-                    "-t".to_string(),
-                    mux::quote_target(session),
-                ],
-                vec![
-                    self.bin.clone(),
-                    "refresh-client".to_string(),
-                    "-t".to_string(),
-                    tty.to_string(),
-                ],
-            ])
-        })
-    }
+    // No `switch_in_place` override: psmux can name no client from outside its own
+    // session, so every session change reattaches (the trait default is no plan).
+    // `switch-client` accepts a client selector and honors none of it: a `-c <tty>`
+    // naming a real client exits 0 and moves nothing, and one naming a client the
+    // command cannot resolve exits 0 and moves whatever client its own default route
+    // reached - the session most recently active on this machine, which is the user's
+    // own terminal. A reattach is addressed by session NAME, so it can only ever land
+    // on this driver's own PTY.
 
     fn control_argv(&self) -> Option<Vec<String>> {
         None
@@ -193,35 +171,25 @@ mod tests {
     }
 
     #[test]
-    fn psmux_switch_in_place_is_exec_plan_with_tty_and_none_without() {
-        // With a captured tty the psmux in-place switch is an exec plan: switch-client to
-        // move xmux's own display client across per-session servers, then refresh-client
-        // to force a full repaint. Without a tty there is no plan (the driver reattaches —
-        // the 4a5f053 guard), and an empty tty is treated the same.
+    fn psmux_has_no_in_place_switch_even_with_a_tty() {
+        // psmux honors no client selector, so a switch cannot be aimed at xmux's own
+        // client: a tty psmux cannot resolve moves whatever client the command's own
+        // route reached, which is the user's own terminal. There is NO in-place plan at
+        // any tty, so every session change reattaches by session name onto xmux's own PTY.
         let m = psmux();
-        let SwitchPlan::Exec(v) = m
-            .switch_in_place("local", "target", Some("/dev/pts/3"))
-            .expect("a captured tty yields an in-place exec plan")
-        else {
-            panic!("psmux switches via an exec plan, not a shell command");
-        };
-        assert_eq!(
-            v[0].iter().map(String::as_str).collect::<Vec<_>>(),
-            vec!["psmux", "switch-client", "-c", "/dev/pts/3", "-t", "target"]
-        );
-        assert_eq!(
-            v[1].iter().map(String::as_str).collect::<Vec<_>>(),
-            vec!["psmux", "refresh-client", "-t", "/dev/pts/3"]
-        );
-        assert!(m.switch_in_place("local", "target", None).is_none());
-        assert!(m.switch_in_place("local", "target", Some("")).is_none());
+        for tty in [Some("/dev/pts/3"), Some(""), None] {
+            assert!(
+                m.switch_in_place("local", "target", tty).is_none(),
+                "no client can be named from outside its session, so no in-place switch"
+            );
+        }
     }
 
     #[tokio::test]
     async fn remote_psmux_enumerates_via_list_sessions_no_local_registry() {
         // A REMOTE psmux host must NOT read this machine's `~/.psmux` registry: its
         // sessions come solely from the list-sessions output, tagged with the remote
-        // host id. The result is EXACTLY the parsed rows — no local registry name is
+        // host id. The result is EXACTLY the parsed rows - no local registry name is
         // merged in as a phantom (the regression `for_binary("psmux")` would cause).
         let m = psmux();
         let runner = CannedRunner::ok("2\t1\t100\teditor\n1\t0\t0\tbuild\n");
@@ -242,7 +210,7 @@ mod tests {
     async fn remote_psmux_ssh_failure_is_error_not_empty() {
         // An ssh-unreachable remote psmux host must surface as `Err`, exactly like a
         // remote tmux. The local-registry arm's `Err(_) => Vec::new()` would have
-        // hidden the failure as a (fake) reachable host — the second half of the bug.
+        // hidden the failure as a (fake) reachable host - the second half of the bug.
         let m = psmux();
         let runner = CannedRunner::err(RunError::Other(
             "ssh: connect to host prod port 22: Connection timed out".into(),
@@ -266,7 +234,7 @@ mod tests {
     async fn local_psmux_swallows_error_into_registry_merge() {
         // The LOCAL arm keeps its one-server-per-session registry-merge behavior: a
         // list-sessions error is swallowed to empty DETAIL and merged with the
-        // registry names, so it returns `Ok(...)` (the registry set, possibly empty) —
+        // registry names, so it returns `Ok(...)` (the registry set, possibly empty) -
         // it never errors. This is the exact opposite of the remote arm above, which
         // pins that the Local-vs-Ssh dispatch is intact.
         let m = psmux();

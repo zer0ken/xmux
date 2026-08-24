@@ -206,11 +206,14 @@ no function, and no test, so renaming code is never a documentation change.
 
 ## C. Switching (the keystone)
 
-- **FR-C1** - A same-server pick switches the live client in place via
-  `switch-client` (instant), pre-selecting the chosen window. Each mux's driver owns
-  the in-place-vs-reattach decision: with a known display tty it moves xmux's own
-  client and repaints; without one it reattaches. The attach is debounced so rapid
-  navigation does not storm.
+- **FR-C1** - A same-server pick lands on the picked session, pre-selecting the
+  chosen window. Each mux's driver owns the in-place-vs-reattach decision, and it
+  turns on whether that mux can name xmux's OWN client: one that can moves that
+  client with `switch-client` and repaints (instant, nothing torn down); one that
+  cannot reattaches by session name, which is the only address that can reach no
+  terminal but xmux's own. A switch aimed at a client the mux cannot resolve is
+  the failure this rules out: it moves a separate terminal of the user's. The
+  attach is debounced so rapid navigation does not storm.
 - **FR-C2** - A cross-host pick switches entirely in process, with no picker and no
   detach between. Each source keeps its own live PTY attachment; the target
   source's driver takes over, the previously shown session stays on screen until the fresh grid is ready
