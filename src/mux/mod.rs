@@ -286,12 +286,6 @@ pub trait Mux: Send + Sync {
         mux::parse_panes(out)
     }
 
-    /// Reads one global server option. An EMPTY plan means the mux has no server
-    /// options at all, and the caller yields no value without running anything - the
-    /// honest answer for a mux configured only by a file its server never reports.
-    fn show_option_plan(&self, name: &str) -> Vec<String> {
-        mux::show_option(self.bin(), name)
-    }
     fn select_window_plan(&self, target: &str) -> Vec<String> {
         mux::select_window(self.bin(), target)
     }

@@ -71,8 +71,8 @@ no function, and no test, so renaming code is never a documentation change.
   frozen order, the persisted selection, and anything the user typed are keyed to, so
   nothing is renamed and nothing is removed. New cards APPEND, so a card the user is
   looking at does not move because another host answered. An added source is
-  OPERABLE, not merely visible: creating a session on it, reading its panes, and reading
-  its border styles work exactly as on a configured source.
+  OPERABLE, not merely visible: creating a session on it and reading its panes work
+  exactly as on a configured source.
 - **FR-A11** - A mux running inside a WSL distribution is a source like any other. A
   distribution is a HOST of its own, named `wsl.<distribution>` so which family it
   belongs to is readable in the id and in every address typed at it, and no ssh alias may
@@ -149,7 +149,10 @@ no function, and no test, so renaming code is never a documentation change.
   and it cannot be computed from the terminal's own background either, since a terminal
   is free to answer no colour query at all. `[ui] selection-style` names a background
   anyway, in the same colour vocabulary as the view border, and `xmux doctor` reports
-  which of the two is in effect because it is invisible on a screenshot.
+  which of the two is in effect because it is invisible on a screenshot. The view
+  border's two halves hold the same two slots on every source: what the border states is
+  which VIEW holds focus, a fact about xmux, so no host and no mux may recolour it and a
+  selection moving between hosts leaves it exactly as it was.
 - **FR-B12** - On a portrait screen the nav is a wide, short band, and its cards flow
   into COLUMNS: down a column, then right. A column takes whole host/mux runs, so a
   source's cards stay together under the one context line naming them and the run that

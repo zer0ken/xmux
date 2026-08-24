@@ -146,13 +146,6 @@ impl Mux for Zellij {
         name.to_string()
     }
 
-    fn show_option_plan(&self, _name: &str) -> Vec<String> {
-        // zellij has no server options: its appearance is configured in a KDL file the
-        // server never reports. An empty plan tells the caller so without running
-        // anything, and the view border falls back to xmux's own configuration.
-        Vec::new()
-    }
-
     fn select_window_plan(&self, target: &str) -> Vec<String> {
         // `go-to-tab` counts tabs from ONE while xmux (and zellij's own `position`)
         // count from zero, so the index is shifted here, at the one place that speaks
@@ -325,13 +318,6 @@ mod tests {
             zellij().new_session_plan("dev"),
             argv(&["zellij", "attach", "-b", "dev"])
         );
-    }
-
-    #[test]
-    fn there_are_no_server_options_to_read() {
-        // An empty plan is the honest answer for a mux whose appearance lives in a KDL
-        // file its server never reports; `manage::show_option` runs nothing for it.
-        assert!(zellij().show_option_plan("pane-border-style").is_empty());
     }
 
     #[tokio::test]

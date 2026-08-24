@@ -46,19 +46,6 @@ pub async fn panes(
     Ok(host.mux.parse_panes(&String::from_utf8_lossy(&out)))
 }
 
-/// Reads one global mux server option's trimmed value (`show -gv <name>`). Used to
-/// match the view border colours to the displayed session's live `pane-*-border-style`.
-/// A mux with no server options returns an EMPTY plan, and the value is empty without
-/// a command being run.
-pub async fn show_option(host: &Host, runner: &dyn Runner, name: &str) -> Result<String, RunError> {
-    let plan = host.mux.show_option_plan(name);
-    if plan.is_empty() {
-        return Ok(String::new());
-    }
-    let out = run_plan(host, runner, &plan).await?;
-    Ok(String::from_utf8_lossy(&out).trim().to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

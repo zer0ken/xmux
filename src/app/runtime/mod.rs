@@ -1059,7 +1059,6 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
                 }
             }
             Some(result) = io.op_rx.recv() => rt.on_op_result(result),
-            Some((src, ra, ri)) = io.border_rx.recv() => rt.on_border_styles(src, ra, ri),
             _ = tick.tick() => rt.on_tick(&mut term),
             _ = reconnect.tick() => rt.on_reconnect(),
             _ = frame.tick() => {
@@ -1133,17 +1132,6 @@ struct Runtime {
     last_draw: std::time::Instant,
     width_dirty: bool,
     width_flush_at: Option<std::time::Instant>,
-    /// The sink a detached border-style query posts its `(source, active_raw, inactive_raw)`
-    /// result to; the loop's `border_rx` arm folds it via `on_border_styles`.
-    border_tx: tokio::sync::mpsc::UnboundedSender<(String, String, String)>,
-    /// Resolved view border colours per displayed source (border-style is server-global
-    /// and rarely changes, so one query per host is cached here).
-    border_cache: HashMap<String, crate::ui::switcher::ViewBorderColors>,
-    /// Sources with a border-style query in flight - prevents duplicate spawns.
-    border_inflight: HashSet<String>,
-    /// The source whose cached colours are currently applied to the chrome, so the
-    /// per-frame trigger re-applies only on a displayed-source change.
-    border_applied: Option<String>,
 }
 
 /// The loop's receiver halves, whose send halves `Runtime::new` wired into the world
@@ -1154,7 +1142,6 @@ struct LoopIo {
     host_rx: tokio::sync::mpsc::UnboundedReceiver<HostEvent>,
     pty_rx: tokio::sync::mpsc::UnboundedReceiver<PtyEvent>,
     op_rx: tokio::sync::mpsc::UnboundedReceiver<crate::ui::switcher::OpResult>,
-    border_rx: tokio::sync::mpsc::UnboundedReceiver<(String, String, String)>,
 }
 
 /// Runs a [`MuxOp`](crate::model::MuxOp) (the create/rename/kill/... a key resolved

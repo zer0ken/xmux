@@ -30,13 +30,6 @@ pub trait Ops: Send + Sync {
     async fn list_sessions(&self, source: &str) -> anyhow::Result<Vec<Session>>;
     async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session>;
     async fn panes(&self, s: &Session) -> anyhow::Result<Vec<WindowPanes>>;
-    /// Reads the source's live `pane-active-border-style` / `pane-border-style`,
-    /// returned as `(active_raw, inactive_raw)`. A default (both empty) makes the
-    /// view border fall back to config/defaults, so a mock or offline test needs no
-    /// override.
-    async fn border_styles(&self, _source: &str) -> anyhow::Result<(String, String)> {
-        Ok((String::new(), String::new()))
-    }
 }
 
 /// The outcome of a [`MuxOp`]. [`State::fold_op_result`] folds it into the

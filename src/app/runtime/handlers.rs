@@ -351,14 +351,12 @@ impl Runtime {
                 .display()
                 .to_string(),
         );
-        // View border colours: the config baseline (explicit overrides + stock fallback),
-        // applied before any host is displayed and whenever no mux answers. Once a host is
-        // displayed its live pane-*-border-style is queried and re-resolved (on_border_styles).
+        // View border colours: xmux's own pair with the `[ui] view-*-border-style`
+        // overrides applied. Set once here and never again - the border marks which VIEW
+        // holds focus, which no host or mux has a say in.
         state
             .chrome
             .set_view_border_colors(crate::ui::switcher::ViewBorderColors::resolve(
-                "",
-                "",
                 &env.cfg.ui.view_active_border_style,
                 &env.cfg.ui.view_border_style,
                 &env.cfg.ui.view_border_hover_style,
@@ -378,7 +376,6 @@ impl Runtime {
         let term_input = crate::display::input::TermInput::new(prefix);
         let nav_decoder = crate::display::decode::KeyDecoder::new();
         let (op_tx, op_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (border_tx, border_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let rt = Runtime {
             env,
@@ -419,10 +416,6 @@ impl Runtime {
             last_draw: std::time::Instant::now() - std::time::Duration::from_millis(FRAME_MS),
             width_dirty: false,
             width_flush_at: None,
-            border_tx,
-            border_cache: HashMap::new(),
-            border_inflight: HashSet::new(),
-            border_applied: None,
         };
         (
             rt,
@@ -430,28 +423,8 @@ impl Runtime {
                 host_rx,
                 pty_rx,
                 op_rx,
-                border_rx,
             },
         )
-    }
-
-    /// Folds a detached border-style query result: re-resolve the view border colours
-    /// (mux value < config override < stock default), cache them per source, clear the
-    /// in-flight mark, and apply to the chrome only if that source is still displayed.
-    pub(super) fn on_border_styles(&mut self, src: String, ra: String, ri: String) {
-        let c = crate::ui::switcher::ViewBorderColors::resolve(
-            &ra,
-            &ri,
-            &self.env.cfg.ui.view_active_border_style,
-            &self.env.cfg.ui.view_border_style,
-            &self.env.cfg.ui.view_border_hover_style,
-        );
-        self.border_inflight.remove(&src);
-        self.border_cache.insert(src.clone(), c);
-        if self.state.displayed.source == src {
-            self.state.chrome.set_view_border_colors(c);
-            self.border_applied = Some(src);
-        }
     }
 
     /// The loop top: advance the spinner, reconcile the modal/nav-width, run the `r`
@@ -609,28 +582,6 @@ impl Runtime {
             crate::prefs::save_nav_width(&self.env.xmux_dir, self.nav_width_natural);
             self.width_dirty = false;
             self.width_flush_at = None;
-        }
-
-        // Match the view border colours to the displayed host's live mux server. The
-        // resolved colours are cached per source (border-style is server-global and rarely
-        // changes), so a displayed host is queried at most once; a cache hit applies
-        // synchronously, a miss spawns one detached query whose result folds via
-        // on_border_styles. The chrome keeps the config baseline until the result lands.
-        {
-            let src = self.state.displayed.source.clone();
-            if !src.is_empty() && self.border_applied.as_deref() != Some(&src) {
-                if let Some(&c) = self.border_cache.get(&src) {
-                    self.state.chrome.set_view_border_colors(c);
-                    self.border_applied = Some(src);
-                } else if self.border_inflight.insert(src.clone()) {
-                    let ops = self.ops.clone();
-                    let tx = self.border_tx.clone();
-                    tokio::spawn(async move {
-                        let (ra, ri) = ops.border_styles(&src).await.unwrap_or_default();
-                        let _ = tx.send((src, ra, ri));
-                    });
-                }
-            }
         }
 
         // Draw the split (nav + selected session's live grid). GATED - redraw only when
