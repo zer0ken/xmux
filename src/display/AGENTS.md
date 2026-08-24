@@ -39,6 +39,9 @@ back to the app, which owns the registry.
 - Each attachment coalesces output wakeups so busy sessions cannot enqueue
   unbounded redraw events.
 - The metadata control path does not supply display pixels.
+- An attachment reports the name its own PTY carries as a plain fact about that
+  PTY. Whether that name identifies a mux client depends on where the attach child
+  actually runs, which is a transport question this layer never answers.
 - Teardown must signal child and control resources without blocking the runtime.
 - The pump answers the child's terminal QUERIES (device status, device
   attributes) itself, since there is no real terminal behind the PTY; otherwise

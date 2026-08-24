@@ -26,7 +26,7 @@ impl MuxDriver for TmuxDriver {
         let (cols, rows) = terminal_view_size(ctx.cols, ctx.body_rows, ctx.nav);
         // The host's open `-CC` control connection, if any. switch-client/select-window
         // ride it instead of a fresh `ssh` per switch (the slow path on Windows, which
-        // has no ssh ControlMaster — each exec re-handshakes, ~0.5s; see #2).
+        // has no ssh ControlMaster - each exec re-handshakes, ~0.5s; see #2).
         let control = ctx.mgr.get(&sel.source);
         let Some(host) = ctx.hosts.get_mut(&sel.source) else {
             return false;
@@ -38,7 +38,7 @@ impl MuxDriver for TmuxDriver {
 
         if !already {
             // Off-loop first-attach: request the spawn ONLY if one is not already in flight.
-            // Do NOT overwrite display.current while an attach is in flight — the in-flight
+            // Do NOT overwrite display.current while an attach is in flight - the in-flight
             // attach lands on its ORIGINAL target session, and the post-Ready re-evaluation
             // (see the Ready arm) issues a switch-client to the current selection. Overwriting
             // it here would make the switch-client guard think the PTY is already on the new
@@ -74,16 +74,24 @@ impl MuxDriver for TmuxDriver {
                 host.display.set_shows(&key, &sel.session);
             }
         } else if host.display.shows(&key) != Some(sel.session.as_str()) {
-            // IN-PLACE SWITCH: move the live display client to the selected session by
-            // reading, in-shell on the host, the tty the attach recorded to its per-host
-            // file — so `switch-client -c <that tty>` moves xmux's OWN client and never
-            // the user's own attached client (which `list-clients` cannot tell apart, the
-            // class of bug a "first non-control client" capture caused). The grid is NOT
+            // IN-PLACE SWITCH: move the live display client to the selected session, so
+            // `switch-client -c <that tty>` moves xmux's OWN client and never the user's
+            // own attached client (which `list-clients` cannot tell apart, the class of
+            // bug a "first non-control client" capture caused). The grid is NOT
             // pre-cleared: the switch's repaint replaces it, so the prior session stays on
-            // screen until the new content lands (stale-while-revalidate) — no blank frame.
+            // screen until the new content lands (stale-while-revalidate) - no blank frame.
+            //
+            // A machine that runs a host shell reads, in-shell, the tty the attach
+            // recorded to its per-host file. A machine that runs no shell has no such
+            // file, but its attach child IS the mux client and runs in a PTY xmux opened,
+            // whose name the supervisor recorded on the host - hand that over instead.
+            let tty = (!host.transport.runs_through_shell())
+                .then(|| host.display_tty.0.clone())
+                .flatten()
+                .filter(|t| !t.is_empty());
             let switched = host
                 .mux
-                .switch_in_place(&key, &sel.session, None)
+                .switch_in_place(&key, &sel.session, tty.as_deref())
                 .map(|plan| crate::app::runtime::run_switch_plan(host, plan))
                 .unwrap_or(false);
             if switched {
@@ -91,7 +99,7 @@ impl MuxDriver for TmuxDriver {
                     host = %sel.source,
                     model = "shared",
                     decision = "switch",
-                    reason = "recorded-tty",
+                    reason = if tty.is_some() { "pty-tty" } else { "recorded-tty" },
                     session = %sel.session,
                     "display_show"
                 );
@@ -170,7 +178,7 @@ impl MuxDriver for TmuxDriver {
                 if !ctx.registry.contains(source) && !host.display.in_flight_contains(source) =>
             {
                 // Compose the two axes: the MUX supplies the attach argv (attach_plan),
-                // the MACHINE lowers it (ssh -t + exec / local -S) — the same composition
+                // the MACHINE lowers it (ssh -t + exec / local -S) - the same composition
                 // `show()` uses. A remote shared attach records its own tty before exec
                 // (for a later in-place switch); local attaches and non-recording muxes
                 // stay bare. (Immutable host reads before the &mut host.display below.)
@@ -200,7 +208,7 @@ impl MuxDriver for TmuxDriver {
 }
 
 /// Folds the tmux record prefix into a shell-based shared attach's command (the last argv
-/// element), so the attach shell records its OWN tty before exec'ing the attach — the
+/// element), so the attach shell records its OWN tty before exec'ing the attach - the
 /// value a later `switch_in_place` reads back to target xmux's own display client, never
 /// the user's own attached client. An attach that does not run through a host shell has
 /// nowhere to run the snippet, so it is returned unchanged.
@@ -223,7 +231,7 @@ mod tests {
 
     /// A REMOTE shared attach gets the mux's record prefix folded into its remote
     /// command (the last argv element), so the attach shell records its OWN tty for a
-    /// later in-place switch — identifying xmux's display client and not the user's.
+    /// later in-place switch - identifying xmux's display client and not the user's.
     #[test]
     fn remote_shared_attach_records_its_display_tty() {
         let host = crate::model::Host::new(
@@ -244,7 +252,7 @@ mod tests {
         );
     }
 
-    /// A LOCAL attach has no shell to run the record snippet, so it is left bare —
+    /// A LOCAL attach has no shell to run the record snippet, so it is left bare -
     /// prepending the snippet would corrupt the local argv's session-name argument.
     #[test]
     fn local_shared_attach_is_not_prefixed() {
@@ -258,6 +266,71 @@ mod tests {
         ];
         let out = with_display_tty_record(argv.clone(), &host, "local");
         assert_eq!(out, argv, "local attach is untouched");
+    }
+
+    /// A LOCAL shared host runs no shell, so it can neither record nor read the tty file
+    /// the in-place switch normally reads. Its attach child IS the mux client though, and
+    /// the PTY xmux opened for it carries the client's tty, so a host holding that tty
+    /// switches IN PLACE: the live attachment stays (the terminal view never blanks) and
+    /// no reattach is requested.
+    #[tokio::test(flavor = "current_thread")]
+    async fn tmux_driver_show_switches_a_shell_less_host_in_place_when_tty_known() {
+        let mut hosts = crate::model::Hosts::default();
+        hosts.insert(crate::model::Host::new(
+            crate::machine::local(None),
+            crate::mux::for_binary("tmux"),
+        ));
+        {
+            let h = hosts.get_mut("local").unwrap();
+            h.display.set_shows("local", "old");
+            h.record_display_tty(Some("/dev/pts/3".into()));
+        }
+        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
+        let worker = crate::display::DisplayWorker::with_spawner(
+            ptx,
+            Box::new(|_argv, _cols, _rows, id, _events, _env_clear| {
+                Ok(crate::display::attachment::fake_attachment(id))
+            }),
+        );
+        let mut registry = AttachRegistry::new();
+        registry.insert("local", crate::display::attachment::fake_attachment(42));
+        let mut attach_seq = 0u64;
+        let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
+        let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let sel = Selection {
+            source: "local".into(),
+            session: "target".into(),
+            window: None,
+        };
+        let mut driver = TmuxDriver;
+        {
+            let mut ctx = DriverCtx {
+                registry: &mut registry,
+                hosts: &mut hosts,
+                worker: &worker,
+                mgr: &mgr,
+                pty_tx: &cap_tx,
+                attach_seq: &mut attach_seq,
+                cols: 80,
+                body_rows: 24,
+                nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+            };
+            assert!(driver.show(&sel, &mut ctx));
+        }
+        assert!(
+            registry.contains("local"),
+            "in-place switch keeps the live client, so the terminal view never blanks"
+        );
+        assert!(
+            hosts.get("local").unwrap().display.in_flight_is_empty(),
+            "in-place switch requests NO reattach"
+        );
+        assert_eq!(
+            hosts.get("local").unwrap().display.shows("local"),
+            Some("target"),
+            "the shown session updates to the switched-to session"
+        );
     }
 
     /// The tmux driver owns the shared-switch decision: the first `show()` for a host

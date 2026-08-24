@@ -3,8 +3,8 @@
 //! terminal view, route input from the app through a dedicated control thread,
 //! and tear down without blocking the async runtime.
 //!
-//! This is the DISPLAY path: the mux is actually USED inside xmux — a real attached
-//! client per session — not reconstructed from control-mode `%output`. Control mode
+//! This is the DISPLAY path: the mux is actually USED inside xmux - a real attached
+//! client per session - not reconstructed from control-mode `%output`. Control mode
 //! is retained only for inventory, change events, and programmatic window selection.
 
 use std::io::{Read, Write};
@@ -17,13 +17,13 @@ use crate::display::grid::Grid;
 
 /// An event a kept attachment's pump emits to the app's `select!` loop.
 pub enum PtyEvent {
-    /// The pump fed `id`'s grid with a chunk of child output — the app redraws
+    /// The pump fed `id`'s grid with a chunk of child output - the app redraws
     /// (coalescing a burst into one redraw, like the control-mode `%output` drain).
     Output { id: u64 },
-    /// The child's PTY master hit EOF (the attach exited / the connection dropped) —
+    /// The child's PTY master hit EOF (the attach exited / the connection dropped) -
     /// the registry reaps the attachment by id.
     Exited { id: u64 },
-    /// The attach shell self-reported its tty (the unique marker) — captured ONCE per
+    /// The attach shell self-reported its tty (the unique marker) - captured ONCE per
     /// attachment. The supervisor records it on the owning Host's `display_tty`, so a
     /// later switch-client targets xmux's OWN display client and a %client-detached is
     /// filtered against it. Identity-preserving: only this attachment's own shell
@@ -43,7 +43,7 @@ pub enum PtyCmd {
 
 /// Accumulates pump output into `acc` until ONE whole display-tty marker is seen,
 /// then sets `captured` and stops growing `acc` (a bounded one-shot). After
-/// capture, further reads are ignored here — the marker is xmux's attach shell's
+/// capture, further reads are ignored here - the marker is xmux's attach shell's
 /// single self-report. Pure so the pump's capture is unit-tested without a ConPTY.
 fn scan_marker_once(acc: &mut Vec<u8>, captured: &mut Option<String>, chunk: &[u8]) {
     if captured.is_some() {
@@ -136,14 +136,14 @@ trait PtySink {
 }
 
 /// Drains `rx` on a dedicated OS thread, performing each command on `sink`, until
-/// the channel closes. Both the writes and the resizes run here — never on the
-/// async runtime — so neither can stall the event loop. Input bytes are written in
+/// the channel closes. Both the writes and the resizes run here - never on the
+/// async runtime - so neither can stall the event loop. Input bytes are written in
 /// arrival order: one ordered channel, one reader.
 ///
 /// On channel close it returns; the caller (`spawn_attachment`) keeps the sink,
 /// which owns the master, so returning drops it here. Closing the ConPTY can block
 /// on Windows older than 24H2 (`ClosePseudoConsole` waits for clients to
-/// disconnect) — but only this control thread can stall on that, never the async
+/// disconnect) - but only this control thread can stall on that, never the async
 /// runtime or the caller's return. In the common teardown path the output pump is
 /// still draining the read pipe, which lets the close complete.
 fn pty_control_loop(rx: std::sync::mpsc::Receiver<PtyCmd>, mut sink: impl PtySink) {
@@ -181,7 +181,7 @@ impl PtySink for MasterSink {
 /// One kept live attach: a ConPTY + attach child + dedicated control thread (owns
 /// writer+master) + an output pump + a shared `Grid`. The pump always feeds the
 /// grid; the app renders the grid of whichever attachment the selection points
-/// at. There is no raw-stdout passthrough here — ratatui owns stdout and renders
+/// at. There is no raw-stdout passthrough here - ratatui owns stdout and renders
 /// every grid as a ratatui clip.
 pub struct Attachment {
     /// The vt100 grid the pump feeds; the app renders it when selected.
@@ -200,6 +200,9 @@ pub struct Attachment {
     pending: Arc<AtomicBool>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     id: u64,
+    /// The OS name this attachment's own PTY carries, read when the PTY was opened.
+    /// `None` where the platform's PTY has no name (a Windows ConPTY has none).
+    child_tty: Option<String>,
     #[cfg(test)]
     input_log: Option<Arc<Mutex<Vec<Vec<u8>>>>>,
 }
@@ -207,6 +210,13 @@ pub struct Attachment {
 impl Attachment {
     pub fn id(&self) -> u64 {
         self.id
+    }
+    /// The attach CHILD's controlling terminal: the name of the PTY this attachment
+    /// opened. It is the mux client's OWN tty only when the child IS the mux binary,
+    /// which is the transport's fact to know, so the supervisor decides whether to
+    /// trust it. `None` on a platform whose PTY carries no name.
+    pub fn child_tty(&self) -> Option<&str> {
+        self.child_tty.as_deref()
     }
     /// Queue input bytes to the child (FIFO, off the loop).
     pub fn input(&self, bytes: Vec<u8>) {
@@ -266,6 +276,16 @@ pub fn spawn_attachment(
         pixel_width: 0,
         pixel_height: 0,
     })?;
+    // The name the PTY carries, read at open time so it is known before the child even
+    // runs (no probing, no waiting for the mux to register a client). A Windows ConPTY
+    // has no name, so this side reports nothing there.
+    #[cfg(unix)]
+    let child_tty = pair
+        .master
+        .tty_name()
+        .map(|p| p.to_string_lossy().into_owned());
+    #[cfg(not(unix))]
+    let child_tty: Option<String> = None;
     let mut cmd = CommandBuilder::new(&argv[0]);
     for arg in &argv[1..] {
         cmd.arg(arg);
@@ -300,7 +320,7 @@ pub fn spawn_attachment(
     let pump_connecting = connecting.clone();
     let pump_pending = pending.clone();
     // The pump answers the child's terminal queries (DSR/DA) over this sender, since
-    // there is no real terminal behind the PTY to answer — without it the child
+    // there is no real terminal behind the PTY to answer - without it the child
     // stalls on startup and the grid stays blank.
     let pump_ctl = control_tx.clone();
     std::thread::spawn(move || {
@@ -322,7 +342,7 @@ pub fn spawn_attachment(
                         g.cursor()
                     };
                     // Answer DSR/DA queries so the child does not block (empty-pane bug).
-                    // Carry only an INCOMPLETE trailing query prefix to the next read —
+                    // Carry only an INCOMPLETE trailing query prefix to the next read -
                     // never a complete query (already answered), so no duplicate reply.
                     qtail.extend_from_slice(&buf[..n]);
                     let resp = query_responses(&qtail, cursor);
@@ -356,7 +376,7 @@ pub fn spawn_attachment(
                     if !pump_pending.swap(true, Ordering::AcqRel)
                         && events.send(PtyEvent::Output { id }).is_err()
                     {
-                        break; // the app is gone — stop pumping
+                        break; // the app is gone - stop pumping
                     }
                 }
                 Err(_) => break,
@@ -373,6 +393,7 @@ pub fn spawn_attachment(
         pending,
         child,
         id,
+        child_tty,
         #[cfg(test)]
         input_log: None,
     })
@@ -429,8 +450,18 @@ pub fn fake_attachment(id: u64) -> Attachment {
         pending: Arc::new(AtomicBool::new(false)),
         child: Box::new(DummyChild),
         id,
+        child_tty: None,
         input_log: None,
     }
+}
+
+/// A `fake_attachment` whose PTY reports `tty`, standing in for the unix PTY name a
+/// real attachment reads at open time (a ConPTY-backed test host reports none).
+#[cfg(test)]
+pub fn fake_attachment_with_tty(id: u64, tty: &str) -> Attachment {
+    let mut att = fake_attachment(id);
+    att.child_tty = Some(tty.to_string());
+    att
 }
 
 #[cfg(test)]
@@ -524,7 +555,7 @@ mod tests {
     #[test]
     fn split_query_answered_once_across_reads() {
         // Mirrors the pump's carry: a DSR split across reads 1-2, and a DA landing at
-        // the end of read 2 (a read boundary). Each must be answered EXACTLY ONCE —
+        // the end of read 2 (a read boundary). Each must be answered EXACTLY ONCE -
         // the boundary DA must NOT be re-answered on read 3 (the dup-reply bug).
         let mut qtail: Vec<u8> = Vec::new();
         let mut all: Vec<u8> = Vec::new();
@@ -547,7 +578,7 @@ mod tests {
     #[test]
     fn fake_attachment_input_and_resize_do_not_panic() {
         // The fake's control channel has no reader, so input/resize just drop into
-        // a dead channel — they must not panic, and resize updates the grid + size.
+        // a dead channel - they must not panic, and resize updates the grid + size.
         let mut att = fake_attachment(1);
         att.input(b"hello".to_vec());
         att.resize(100, 40);

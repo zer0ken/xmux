@@ -39,7 +39,7 @@ fn display_tty_path(host_key: &str) -> String {
 }
 
 /// The shell prefix a shared attach prepends to its remote command so the attach shell
-/// records its OWN controlling tty to the per-host file before exec'ing the attach — the
+/// records its OWN controlling tty to the per-host file before exec'ing the attach - the
 /// value `switch_in_place` reads back to move xmux's own display client, never the user's
 /// (which `list-clients` cannot tell apart). Out-of-band (a file, not the pty stream) so
 /// the Windows ConPTY cannot consume it. A family-private free fn (not a `Mux` method) so
@@ -99,17 +99,37 @@ impl Mux for Tmux {
         &self,
         host_key: &str,
         session: &str,
-        _display_tty: Option<&str>,
+        display_tty: Option<&str>,
     ) -> Option<SwitchPlan> {
-        // Read the tty THIS host's display attach recorded to its file, then move ONLY
-        // that client — guarded on a non-empty value so a missing/empty file never runs
-        // `switch-client -c ""` (which would move an arbitrary client). The follow-up
-        // `refresh-client` forces the new session to repaint the whole screen. tmux reads
-        // its recorded file, so `display_tty` is ignored; the switch is a raw shell command
-        // (the driver runs it via the host shell, and a LOCAL tmux has none → reattach).
-        let path = display_tty_path(host_key);
         let b = &self.bin;
         let s = mux::quote_target(session);
+        // A client tty the caller already knows moves that client with a plain exec, so a
+        // machine that runs no host shell still switches in place. The follow-up
+        // `refresh-client` forces the new session to repaint the whole screen.
+        if let Some(tty) = display_tty.filter(|t| !t.is_empty()) {
+            return Some(SwitchPlan::Exec(vec![
+                vec![
+                    b.clone(),
+                    "switch-client".to_string(),
+                    "-c".to_string(),
+                    tty.to_string(),
+                    "-t".to_string(),
+                    s,
+                ],
+                vec![
+                    b.clone(),
+                    "refresh-client".to_string(),
+                    "-t".to_string(),
+                    tty.to_string(),
+                ],
+            ]));
+        }
+        // Otherwise read the tty THIS host's display attach recorded to its file, then
+        // move ONLY that client - guarded on a non-empty value so a missing/empty file
+        // never runs `switch-client -c ""` (which would move an arbitrary client). The
+        // switch is a raw shell command, so a machine with no host shell cannot run it
+        // and the driver reattaches.
+        let path = display_tty_path(host_key);
         Some(SwitchPlan::Shell(format!(
             "c=$(cat {path} 2>/dev/null); [ -n \"$c\" ] && {{ {b} switch-client -c \"$c\" -t {s}; {b} refresh-client -t \"$c\"; }}"
         )))
@@ -138,7 +158,7 @@ static TMUX_CONTROL: TmuxControl = TmuxControl;
 
 /// The tmux `-CC` wire protocol: line classification, the notification→event policy
 /// table, and the control-mode command-line builders. A unit struct because it holds
-/// no state — `Tmux::control_protocol` hands out a shared `'static` reference.
+/// no state - `Tmux::control_protocol` hands out a shared `'static` reference.
 pub struct TmuxControl;
 
 impl ControlProtocol for TmuxControl {
@@ -187,7 +207,7 @@ impl ControlProtocol for TmuxControl {
             Notif::ClientSessionChanged { client, name, .. } => {
                 // ANOTHER client's attached session changed. When that client is xmux's OWN
                 // display attach (the app matches `client` against `Host.display_tty`), the
-                // display PTY was moved to `name` by the mux itself — e.g. the user pressed
+                // display PTY was moved to `name` by the mux itself - e.g. the user pressed
                 // `prefix`+`s` in the terminal view. Carry the client tty + new session name
                 // so the app can match and follow the nav selection. A third party's own
                 // client can never match the display tty, so it is structurally inert there.
@@ -199,7 +219,7 @@ impl ControlProtocol for TmuxControl {
             }
             // `%session-changed` (the metadata client's own auto-attached session) and
             // `%window-pane-changed` (a pane became active) do not affect the tree view
-            // tree — the per-session PTY attachments own the live pane — so they are inert.
+            // tree - the per-session PTY attachments own the live pane - so they are inert.
             Notif::SessionChanged { .. } | Notif::WindowPaneChanged { .. } => None,
             Notif::Exit { reason } => {
                 // `%exit` may carry its own reason; otherwise fall back to the last error
@@ -222,11 +242,11 @@ impl ControlProtocol for TmuxControl {
     }
 
     fn connect_lines(&self) -> Vec<String> {
-        // SUPPRESS %output — this control connection is a metadata / change-event /
+        // SUPPRESS %output - this control connection is a metadata / change-event /
         // `select-window` channel ONLY; the per-session PTY attaches own the pixels, so
         // streaming pane output here is pure waste (and risks flooding the loop).
         // `no-output` keeps notifications flowing but stops %output. An older mux that
-        // lacks the flag just %errors it (correlated as Ignore) — harmless.
+        // lacks the flag just %errors it (correlated as Ignore) - harmless.
         vec!["refresh-client -f no-output\n".to_string()]
     }
 
@@ -274,7 +294,7 @@ impl ControlProtocol for TmuxControl {
     }
 
     fn size_line(&self, cols: u16, rows: u16) -> String {
-        // `refresh-client -C WxH` — the `x`-form is correct for 3.3.x (`[research §7]`).
+        // `refresh-client -C WxH` - the `x`-form is correct for 3.3.x (`[research §7]`).
         format!("refresh-client -C {cols}x{rows}\n")
     }
 
@@ -303,7 +323,7 @@ mod display_identity_tests {
 
     /// tmux's in-place switch is an opaque `SwitchPlan::Shell`: a self-contained remote
     /// shell command that READS the tty the attach recorded to its per-host file, then
-    /// moves ONLY that client to the session — guarded on a non-empty value so a
+    /// moves ONLY that client to the session - guarded on a non-empty value so a
     /// missing/empty file never runs `switch-client -c ""`. (`display_tty` is ignored;
     /// tmux reads its own recorded file.)
     #[test]
@@ -328,9 +348,47 @@ mod display_identity_tests {
         );
     }
 
+    /// A caller that already KNOWS the client tty gets a plain exec plan instead: move
+    /// that client, then force the new session to repaint the whole screen. No host shell
+    /// is involved, so a machine that runs none still switches in place.
+    #[test]
+    fn tmux_switch_in_place_takes_a_known_tty_without_a_host_shell() {
+        let SwitchPlan::Exec(argvs) = Tmux { bin: "tmux".into() }
+            .switch_in_place("local", "test2", Some("/dev/pts/3"))
+            .expect("a known tty switches in place")
+        else {
+            panic!("a known tty needs no host shell");
+        };
+        let plan: Vec<Vec<&str>> = argvs
+            .iter()
+            .map(|a| a.iter().map(String::as_str).collect())
+            .collect();
+        assert_eq!(
+            plan,
+            vec![
+                vec!["tmux", "switch-client", "-c", "/dev/pts/3", "-t", "test2"],
+                vec!["tmux", "refresh-client", "-t", "/dev/pts/3"],
+            ],
+            "move ONLY that client, then repaint it"
+        );
+    }
+
+    /// An EMPTY tty is not a known one: `switch-client -c ""` moves an arbitrary client,
+    /// so it falls back to the recorded-file plan (itself guarded on a non-empty read).
+    #[test]
+    fn tmux_switch_in_place_treats_an_empty_tty_as_unknown() {
+        assert!(
+            matches!(
+                Tmux { bin: "tmux".into() }.switch_in_place("jup", "test2", Some("")),
+                Some(SwitchPlan::Shell(_))
+            ),
+            "an empty tty names no client, so the recorded file decides"
+        );
+    }
+
     /// tmux's display client records its OWN tty to a per-host file before exec'ing the
     /// attach (`record_prefix`), so a later `switch_in_place` reads that file and targets
-    /// THAT client — never the user's own attached client (the bug the `-CC` "first
+    /// THAT client - never the user's own attached client (the bug the `-CC` "first
     /// non-control client" heuristic caused). The prefix writes `$(tty)` to the per-host
     /// file and sanitizes the host key into a safe path token (it is embedded in a remote
     /// shell command, so a key with shell metacharacters must not break out of the path).
