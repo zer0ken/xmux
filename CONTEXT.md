@@ -52,11 +52,13 @@ UI elements a user perceives as distinct things:
 - terminal view - the right region (the selected session's live grid).
 - view border - the vertical line between the two views. Modelled on tmux's pane
   border, but it borders views (not panes), so it is a `view border`, never a
-  "pane border" or a bare "divider". Its color config keys are `view-border-style`
-  / `view-active-border-style` / `view-border-hover-style`. These keys are
-  OVERRIDES: unset (empty), each colour comes from the displayed source's live mux
-  `pane-*-border-style` (queried per displayed source), falling back to the stock
-  default (`green` / terminal-default / `yellow`). A non-empty key wins over both.
+  "pane border" or a bare "divider". Its colour is FIXED and the same on every
+  source: the palette accent on the lit half, the muted tone on the other, yellow
+  for the drag-hover cue. The border states which VIEW holds focus, which is a fact
+  about xmux and not about the mux on the other side of it, so nothing a host or a
+  mux reports may move it. Its color config keys are `view-border-style` /
+  `view-active-border-style` / `view-border-hover-style`. These keys are OVERRIDES:
+  unset (empty), that side keeps the fixed colour; a non-empty key replaces it.
 - active view border - the view border half painted the active color to mark which
   view holds focus (tmux `pane-active-border-style`; the top half is the active
   color for nav focus, the bottom half for terminal focus).
@@ -156,12 +158,12 @@ UI elements a user perceives as distinct things:
   show three cards in a band twenty rows wide and leave the rest of every row blank; the
   flow is what makes the band worth its rows.
 - level color - the per-segment card color, from the palette. Every foreground role
-  is ANSI-16, so the terminal theme resolves the hue: host blue,
+  is ANSI-16, so the terminal theme resolves the hue: host cyan,
   mux green, session red, the window part bright-black - the quietest
   level, so the session name anchors the detail line. The four read as one code-theme
   palette, and the level a user actually picks (the session) is the one that stands out.
   A spinner is pending yellow wherever it stands. A settled host-state card's detail
-  line is colored by state - unreachable red, "no sessions" muted. The hint bar is two slots as well (black under white, blue keys). Nothing here
+  line is colored by state - unreachable red, "no sessions" muted. The hint bar is two slots as well (black under white, cyan keys). Nothing here
   is an RGB value; see "Colour ownership" below for why, and `[ui] selection-style` /
   `[ui] hint-bar-style` for naming one anyway.
 - window label - how a card writes its focused window, in the CONVENTION OF ITS OWN MUX

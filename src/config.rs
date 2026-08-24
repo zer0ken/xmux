@@ -145,11 +145,8 @@ pub struct UiConfig {
     /// options: the focused side is `view-active-border-style`, the unfocused side
     /// `view-border-style`, the drag-hover cue `view-border-hover-style`. Values use
     /// tmux's colour vocabulary (parsed by [`crate::ui::chrome::map_color`]). Each
-    /// defaults to EMPTY (unset): when unset the colour comes from the displayed
-    /// host's live mux `pane-*-border-style`, falling back to the stock default
-    /// (`green` / terminal-default / `yellow`). A non-empty value here overrides both
-    /// — see [`crate::ui::chrome::ViewBorderColors::resolve`]. (`hover` has no live
-    /// mux source, so it is this override or the stock default only.)
+    /// defaults to EMPTY (unset), leaving that side at xmux's own colour
+    /// — see [`crate::ui::chrome::ViewBorderColors::resolve`].
     #[serde(rename = "view-active-border-style", default)]
     pub view_active_border_style: String,
     #[serde(rename = "view-border-style", default)]
@@ -180,8 +177,7 @@ impl Default for UiConfig {
         UiConfig {
             prefix: default_prefix(),
             auto_hide_nav: false,
-            // Empty = unset: the effective colour comes from the live mux
-            // pane-*-border-style, falling back to ViewBorderColors::default().
+            // Empty = unset: the effective colour is ViewBorderColors::default().
             view_active_border_style: String::new(),
             view_border_style: String::new(),
             view_border_hover_style: String::new(),
@@ -1214,10 +1210,10 @@ bogus = "nope"
     }
 
     #[test]
-    fn ui_border_styles_default_to_tmux_defaults() {
+    fn ui_border_styles_default_to_unset() {
         // The keys are OVERRIDE-only, so unset → empty. The effective visual default
-        // (green / terminal-default / yellow) comes from ViewBorderColors::default()
-        // via ViewBorderColors::resolve, not from these raw config values.
+        // comes from ViewBorderColors::default() via ViewBorderColors::resolve, not
+        // from these raw config values.
         let missing = std::env::temp_dir().join("xmux-border-absent-xyz.toml");
         let cfg = load(&missing).unwrap();
         assert_eq!(cfg.ui.view_active_border_style, "");

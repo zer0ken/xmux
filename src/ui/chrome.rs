@@ -67,10 +67,16 @@ pub fn map_color(s: &str) -> Color {
 }
 
 /// The tree|terminal view border's three colours: `active` marks the focused side,
-/// `inactive` the unfocused side, and `hover` the drag-resize grab cue. Resolved in
-/// three tiers by [`Self::resolve`] - an explicit xmux config override wins, else the
-/// displayed host's live mux `pane-*-border-style`, else the stock default. Defaults
-/// mirror tmux's own code defaults - `green` / terminal-default / `yellow`.
+/// `inactive` the unfocused side, and `hover` the drag-resize grab cue.
+///
+/// The defaults are xmux's own and the same on every source: the palette's `accent` for
+/// the lit half, its muted `overlay` for the other, and yellow for the grab cue. The
+/// border says which VIEW holds focus, which is a fact about xmux and not about the mux
+/// on the other side of it, so a border that changed hue as the selection moved between
+/// hosts was reading as a state change where there was none.
+///
+/// [`Self::resolve`] layers one tier over that: a `[ui] view-*-border-style` value the
+/// user named. Their terminal, their choice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ViewBorderColors {
     pub active: Color,
@@ -80,50 +86,32 @@ pub struct ViewBorderColors {
 
 impl Default for ViewBorderColors {
     fn default() -> Self {
+        let pal = crate::ui::palette::get();
         ViewBorderColors {
-            active: Color::Green,
-            inactive: Color::Reset,
+            active: pal.accent,
+            inactive: pal.overlay,
             hover: Color::Yellow,
         }
     }
 }
 
 impl ViewBorderColors {
-    /// Layers the three colour sources: an explicit xmux config value (`cfg_*`) wins,
-    /// else the fg extracted from the displayed host's live mux style (`mux_active`
-    /// / `mux_inactive`, e.g. `fg=blue,bg=default`), else the stock default. `hover`
-    /// has no mux source (tmux has no `pane-border-hover-style`), so it is config-or-
-    /// default only. An empty config string means "unset" - that is why the config
-    /// keys default to empty (see [`crate::config::UiConfig`]); a non-empty stock
-    /// default there would mask the mux query.
-    pub fn resolve(
-        mux_active: &str,
-        mux_inactive: &str,
-        cfg_active: &str,
-        cfg_inactive: &str,
-        cfg_hover: &str,
-    ) -> Self {
+    /// Applies the `[ui] view-*-border-style` overrides over the defaults. An empty
+    /// config string means "unset" - that is why the config keys default to empty (see
+    /// [`crate::config::UiConfig`]) - and leaves that role at its default colour.
+    pub fn resolve(cfg_active: &str, cfg_inactive: &str, cfg_hover: &str) -> Self {
         let d = ViewBorderColors::default();
-        let pick = |cfg: &str, muxs: &str, fb: Color| {
-            if !cfg.trim().is_empty() {
-                map_color(cfg)
+        let pick = |cfg: &str, fb: Color| {
+            if cfg.trim().is_empty() {
+                fb
             } else {
-                let fg = crate::mux::border_fg(muxs);
-                if fg.trim().is_empty() {
-                    fb
-                } else {
-                    map_color(&fg)
-                }
+                map_color(cfg)
             }
         };
         ViewBorderColors {
-            active: pick(cfg_active, mux_active, d.active),
-            inactive: pick(cfg_inactive, mux_inactive, d.inactive),
-            hover: if cfg_hover.trim().is_empty() {
-                d.hover
-            } else {
-                map_color(cfg_hover)
-            },
+            active: pick(cfg_active, d.active),
+            inactive: pick(cfg_inactive, d.inactive),
+            hover: pick(cfg_hover, d.hover),
         }
     }
 }
@@ -442,9 +430,9 @@ impl Chrome {
         self.view_border_hovered = on;
     }
 
-    /// Sets the tree|terminal view border colours. The app calls this with a config
-    /// baseline at startup, then again per displayed host once its live mux
-    /// `pane-*-border-style` is read (see [`ViewBorderColors::resolve`]).
+    /// Sets the tree|terminal view border colours. The app calls this once at startup
+    /// with the resolved set (see [`ViewBorderColors::resolve`]); nothing on the wire
+    /// changes them afterwards.
     pub(crate) fn set_view_border_colors(&mut self, colors: ViewBorderColors) {
         self.colors = colors;
     }
@@ -494,7 +482,7 @@ impl Chrome {
     }
 
     /// The vertical rule between the tree (left) and terminal (right). It splits into
-    /// a top and bottom half: the accent (green) half marks WHICH view holds focus -
+    /// a top and bottom half: the accent half marks WHICH view holds focus -
     /// top = tree (left), bottom = terminal (right) - and the other half stays dim. A single
     /// vertical rule cannot lean left/right, so the accent half's position carries the
     /// signal (adapting tmux's active-pane border). Replaces the per-pane box borders.
@@ -541,7 +529,7 @@ impl Chrome {
         // Hover (mouse over the rule, no button): box-drawing rules have no bold form
         // (the BOLD modifier does not thicken them), so swap the glyph itself to the
         // HEAVY vertical (┃) for a genuinely thicker line and recolour it with the
-        // configured hover colour (tmux's `pane-border-hover-style`) - same single rule,
+        // configured hover colour (`[ui] view-border-hover-style`) - same single rule,
         // just thicker + lit, as the grab cue.
         if self.view_border_hovered {
             let style = Style::default().fg(self.colors.hover);
@@ -1086,28 +1074,24 @@ mod tests {
     }
 
     #[test]
-    fn resolve_layers_override_over_mux_over_default() {
-        // Mux value used when config is unset; the comma-separated `fg=` is extracted.
-        // hover has no mux source, so it falls to the default (yellow).
-        let c = ViewBorderColors::resolve("fg=blue,bg=default", "fg=white", "", "", "");
-        assert_eq!(c.active, Color::Blue);
-        assert_eq!(c.inactive, Color::White);
-        assert_eq!(c.hover, Color::Yellow);
+    fn resolve_layers_the_config_override_over_the_fixed_defaults() {
+        // Unset → xmux's own pair, whatever source is displayed: the palette accent lit
+        // against its muted tone. Nothing outside this function can move them.
+        let pal = crate::ui::palette::get();
+        let d = ViewBorderColors::resolve("", "", "");
+        assert_eq!(d.active, pal.accent);
+        assert_eq!(d.inactive, pal.overlay);
+        assert_eq!(d.hover, Color::Yellow);
+        assert_eq!(d, ViewBorderColors::default());
 
-        // An explicit config override wins over the mux value.
-        let c = ViewBorderColors::resolve("fg=blue", "fg=white", "red", "green", "cyan");
+        // Each key overrides its own role and leaves the others at the default.
+        let c = ViewBorderColors::resolve("red", "", "cyan");
         assert_eq!(c.active, Color::Red);
-        assert_eq!(c.inactive, Color::Green);
+        assert_eq!(c.inactive, pal.overlay);
         assert_eq!(c.hover, Color::Cyan);
 
-        // Everything empty / unavailable → the stock default (the no-regression guarantee).
-        assert_eq!(
-            ViewBorderColors::resolve("", "", "", "", ""),
-            ViewBorderColors::default()
-        );
-
-        // Bare + `default` tokens resolve too (`default` → terminal default = Reset).
-        let c = ViewBorderColors::resolve("green", "default", "", "", "");
+        // The tmux colour vocabulary applies to the overrides (`default` = Reset).
+        let c = ViewBorderColors::resolve("fg=green", "default", "");
         assert_eq!(c.active, Color::Green);
         assert_eq!(c.inactive, Color::Reset);
     }

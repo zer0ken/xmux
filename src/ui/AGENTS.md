@@ -37,9 +37,8 @@ flatten renders for the dump verb.
 - Pure row and group transforms belong in the row model.
 - UI colours come from the semantic palette (accent and muted tiers, the hint
   bar's pair, the per-level card colours, and the selection style), so the theme
-  changes in one place. The one exception is the view border: its stock defaults
-  deliberately mirror tmux's pane-border defaults and live with their three-tier
-  resolve logic in the chrome.
+  changes in one place. The view border reads the same palette for its two halves;
+  what lives in the chrome is only the override layer over them.
 - A colour the USER named is parsed in the chrome, never in the palette: the
   palette holds xmux's own choices, which are slots only.
 - Chrome rendering and its view-local state belong in the chrome; it reads

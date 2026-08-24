@@ -2801,7 +2801,7 @@ async fn hint_bar_and_help_reflect_new_model() {
 
 #[tokio::test]
 async fn view_border_uses_configured_colors() {
-    // Colours set from config (pane-*-border-style) drive the view border: active on the
+    // The `[ui] view-*-border-style` colours drive the view border: active on the
     // focused half, inactive on the other, hover overrides both while hovered.
     let backend = TestBackend::new(140, 30);
     let mut term = Terminal::new(backend).unwrap();
@@ -2845,8 +2845,9 @@ async fn view_border_uses_configured_colors() {
 
 #[tokio::test]
 async fn view_border_splits_top_bottom_to_mark_focused_side() {
-    // The rule splits into halves: the accent (green) half marks WHICH pane has
-    // focus - top = tree (left), bottom = terminal (right) - and the other half is dim.
+    // The rule splits into halves: the accent half marks WHICH pane has focus - top =
+    // tree (left), bottom = terminal (right) - and the other half is the muted tone.
+    let pal = crate::ui::palette::get();
     let backend = TestBackend::new(140, 30);
     let mut term = Terminal::new(backend).unwrap();
     let mut state = crate::state::State::from_scan(sample());
@@ -2855,31 +2856,30 @@ async fn view_border_splits_top_bottom_to_mark_focused_side() {
     let (top, bottom) = (2u16, 27u16); // within the top / bottom halves of height 30
     let fg = |buf: &Buffer, y: u16| buf[(x, y)].fg;
 
-    // Terminal focused: accent on the bottom (terminal side), inactive on top. The inactive
-    // half is the tmux default (terminal default = Color::Reset), not a dim grey.
+    // Terminal focused: accent on the bottom (terminal side), the muted tone on top.
     term.draw(|f| sw.render(f, None, true, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(buf[(x, top)].symbol(), "│", "view border still drawn");
     assert_eq!(
         fg(&buf, bottom),
-        Color::Green,
+        pal.accent,
         "terminal-view focus: bottom half accent"
     );
     assert_eq!(
         fg(&buf, top),
-        Color::Reset,
-        "terminal-view focus: top half inactive (tmux default)"
+        pal.overlay,
+        "terminal-view focus: top half inactive"
     );
 
     // Tree focused: accent on the top (tree side), inactive on bottom.
     term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
-    assert_eq!(fg(&buf, top), Color::Green, "tree focus: top half accent");
+    assert_eq!(fg(&buf, top), pal.accent, "tree focus: top half accent");
     assert_eq!(
         fg(&buf, bottom),
-        Color::Reset,
+        pal.overlay,
         "tree focus: bottom half inactive"
     );
 }

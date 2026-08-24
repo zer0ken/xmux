@@ -39,8 +39,8 @@ pub(crate) struct Palette {
     /// The hint bar's text, and the text of the refusal bar. Paired with `bar_bg`, so
     /// the two are legible together in any theme that keeps its own slots legible.
     pub bar_fg: Color,
-    /// Level colour: host. Blue, the slot a code theme gives a keyword, so the machine
-    /// reads as the outermost level.
+    /// Level colour: host. Cyan, the same slot the focused view border is lit with, so
+    /// the machine reads as the outermost level and as the thing focus moves between.
     pub host: Color,
     /// Level colour: mux.
     pub mux: Color,
@@ -62,16 +62,16 @@ pub(crate) struct Palette {
 }
 
 /// The role-to-ANSI assignments. `DarkGray` is ANSI bright black, every theme's own muted
-/// tone. The hint bar is `Black` under `White` with `Blue` keys: the plain terminal
+/// tone. The hint bar is `Black` under `White` with `Cyan` keys: the plain terminal
 /// combination, legible on every theme, which is what lets the bar be a solid bar of
 /// chrome without xmux naming a colour of its own.
 const fn base() -> Palette {
     Palette {
-        accent: Color::Blue,
+        accent: Color::Cyan,
         overlay: Color::DarkGray,
         bar_bg: Color::Black,
         bar_fg: Color::White,
-        host: Color::Blue,
+        host: Color::Cyan,
         mux: Color::Green,
         window: Color::DarkGray,
         session: Color::Red,
