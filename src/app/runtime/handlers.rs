@@ -794,44 +794,22 @@ impl Runtime {
                         self.registry.remove(&key);
                         self.registry.insert(&key, attachment);
                         // xmux's display-client tty, established now that the attach is
-                        // confirmed LIVE (Ready). Two sources, split exactly where the
-                        // transport splits: a machine that spawns the mux binary DIRECTLY
-                        // puts the mux client in the PTY xmux opened, so that PTY's own
-                        // name IS the client's tty; a machine that hops through a shell
-                        // puts the client on a pty of the far side, which only the attach
-                        // shell's own record can name.
-                        let pty_tx = self.driver_pty_tx.clone();
+                        // confirmed LIVE (Ready), and recorded ONLY when the attach itself
+                        // proves the identity: a machine that spawns the mux binary
+                        // DIRECTLY puts the mux client in the PTY xmux opened, so that
+                        // PTY's own name IS the client's tty. A client list cannot stand in
+                        // for that proof, because a client the list names may be a separate
+                        // terminal of the user's; a mux that can name no client of its own
+                        // reattaches instead.
                         if let Some(h) = self.hosts.get_mut(&hid) {
-                            match child_tty.filter(|_| !h.transport.runs_through_shell()) {
-                                // Identity by ownership: xmux opened this PTY, so no probe
-                                // and no wait for the mux to register a client, and an
-                                // external client sharing the session cannot be mistaken
-                                // for ours.
-                                Some(tty) => {
-                                    tracing::debug!(host = %hid, tty, "display_tty_from_pty");
-                                    h.record_display_tty(Some(tty));
-                                }
-                                // The PTY carries no name (a ConPTY): psmux instead
-                                // correlates its own client from the client list, which is
-                                // sound HERE because our attach is registered by Ready, so
-                                // a sole client on the shown session is unambiguously ours
-                                // and a second one leaves the tty unset (the next switch
-                                // reattaches). Transport-lowered, so local runs it directly
-                                // and remote over ssh.
-                                None if h.mux.kind() == "psmux" => {
-                                    let mux_argv =
-                                        vec![h.mux.bin().to_string(), "list-clients".to_string()];
-                                    let (cmd, args) = h.transport.exec_argv(false, &mux_argv);
-                                    let mut argv = vec![cmd];
-                                    argv.extend(args);
-                                    crate::mux::spawn_psmux_tty_capture(
-                                        argv,
-                                        shown.clone(),
-                                        id,
-                                        pty_tx,
-                                    );
-                                }
-                                None => {}
+                            // Identity by ownership: xmux opened this PTY, so no probe and
+                            // no wait for the mux to register a client, and an external
+                            // client sharing the session cannot be mistaken for ours.
+                            if let Some(tty) =
+                                child_tty.filter(|_| !h.transport.runs_through_shell())
+                            {
+                                tracing::debug!(host = %hid, tty, "display_tty_from_pty");
+                                h.record_display_tty(Some(tty));
                             }
                         }
                         self.state

@@ -19,31 +19,28 @@ polled.
 
 psmux is a PER-SESSION mux: one server per session on its own port, recorded in a
 per-host registry under the user's home directory and coordinated over the
-default socket. The display driver holds ONE per-source PTY and, on a session
-change, either:
+default socket. The display driver holds ONE per-source PTY and REATTACHES it
+with `new-session -A -s <name>` on every session change, which routes to that
+session's OWN server. A bare `attach -t` lands on a warm clone instead, which is
+why it is not used.
 
-- SWITCHES it in place (`switch-client -c <tty> -t <session>`) when a live client
-  AND its captured tty are known, with no teardown, so the terminal view never
-  goes blank, followed by a `refresh-client` to force a full repaint; or
-- REATTACHES with `new-session -A -s <name>`, which routes to that session's OWN
-  server, when there is no live client or no captured tty. A bare `attach -t`
-  lands on a warm clone instead, which is why it is not used.
+There is no in-place switch, because psmux can name no client from outside its
+own session. A command that carries no session name reaches whichever server was
+most recently active on the machine, and `switch-client` honors no client
+selector: a `-c <tty>` naming a real client exits 0 and moves nothing, and one
+naming a client that command cannot resolve exits 0 and moves the client it
+reached instead, which is a separate psmux terminal of the user's. A reattach is
+addressed by session NAME, so it can only ever land on xmux's own PTY.
 
-The tty is captured off-loop by a read-only `list-clients` probe, correlating the
-client by the session it shows: with one server per session, the client showing a
-session is on that session's own server. A remote psmux source is enumerated and
-displayed the generic way, and the local probe is skipped there.
+A remote psmux source is enumerated and displayed the generic way.
 
 The mux supplies mux vocabulary (argv, model, enumeration); the driver consumes it
-and owns the concrete switch-or-reattach decision. The transport lowers the
-host execution.
+and owns the concrete display decision. The transport lowers the host execution.
 
 ## Module Seams
 
-- The family root holds the mux itself, the poll cadence, and the in-place switch
-  plan (the switch followed by the refresh) that the driver runs.
-- The driver sits beside it with the psmux-only client-tty parsing and the
-  off-loop tty capture.
+- The family root holds the mux itself and the poll cadence.
+- The driver sits beside it and owns the per-source display orchestration.
 - The session registry backs local enumeration: an existence set merged with one
   detail row from a session listing.
 - The driver pulls the mux-agnostic display seam from `src/driver.rs` and the
@@ -55,10 +52,9 @@ host execution.
 - A per-session attach uses `new-session -A -s <name>`, which routes to that
   session's own server, never a bare `attach -t` on the default socket, which
   yields a warm clone with the wrong content.
-- An in-place switch runs ONLY with a live client AND a non-empty captured tty;
-  otherwise it reattaches, so a box where the tty is never captured still lands
-  on the right session. An in-place switch with a guessed tty would move somebody
-  else's client.
+- A session change ALWAYS reattaches, at any client tty on record and whatever
+  the display bookkeeping says. psmux honors no client selector, so a switch
+  cannot be aimed at xmux's own client and would move somebody else's.
 - On a reattach the stale attachment is HELD, not removed, so its grid stays on
   screen until the fresh one is ready (stale-while-revalidate).
 - Sync never pre-warms, since attaches are selected on demand when a session is
@@ -70,8 +66,9 @@ host execution.
 
 - Do not name the concrete driver outside the mux tree; the supervisor resolves it
   through the mux, never through a match on server model.
-- Do not run a switch with an empty client tty. The capture is guarded, and an
-  empty or absent tty must fall back to reattach.
+- Do not reach for a client-addressed command (a switch, a refresh, a detach of
+  one client). psmux accepts the client selector, ignores it, and acts on the
+  client its own default route reached, with a success exit either way.
 - Do not fold the local registry into a REMOTE source: it would inject local session
   names as phantoms and swallow an ssh failure into a fake empty list.
 
@@ -80,7 +77,8 @@ host execution.
 - Decide whether the behavior is psmux mux vocabulary, display orchestration, or
   registry enumeration.
 - Keep the driver's behavior identical unless the change is explicitly a behavior
-  change; the switch-or-reattach decision is the highest-risk surface.
+  change; which client a command reaches is the highest-risk surface, since the
+  wrong answer moves a terminal the user owns.
 - Check tmux for parity when changing the shared driver or mux trait shape.
 
 ## Verification
@@ -88,5 +86,5 @@ host execution.
 - Exercise the plan argv, the registry merge, and the driver decision for the
   seam you touched, and re-check the app and connection surfaces when the event source,
   death signal, or display decision changes.
-- Set `XMUX_LOG=xmux::mux::psmux=debug` to trace the driver's show, tty probe, and
-  inventory decisions.
+- Set `XMUX_LOG=xmux::mux::psmux=debug` to trace the driver's show and inventory
+  decisions.

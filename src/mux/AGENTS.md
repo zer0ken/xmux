@@ -22,10 +22,10 @@ AND its display driver, and is re-exported from the root:
 - `tmux/` owns the tmux mux, the display-tty file helpers, its control argv, its
   driver with its attach helper, and its pure control-mode wire functions behind
   the control-protocol trait. See `tmux/AGENTS.md`.
-- `psmux/` owns the psmux mux, its poll cadence, its in-place switch plan, its
-  driver with the tty capture and refresh helpers, and the per-host session
-  registry that backs enumeration (one server per session, so there is no
-  aggregate session listing). See `psmux/AGENTS.md`.
+- `psmux/` owns the psmux mux, its poll cadence, its driver (which reattaches on
+  every change, since it can name no client from outside its own session), and
+  the per-host session registry that backs enumeration (one server per session,
+  so there is no aggregate session listing). See `psmux/AGENTS.md`.
 - `zellij/` owns the zellij mux, its poll cadence, the per-session action argv
   every zellij query is addressed with, its driver (which reattaches on every
   session change because no client can be named from outside its own session),
@@ -74,9 +74,8 @@ it prints are one decision, so they move together.
   values callers use instead of branching on mux names. The mux constructs the
   source's driver, so mux selection lives in the mux family and never in a central
   match on server model; the wrapper in `src/driver.rs` only resolves it. tmux
-  keeps one PTY per source with an in-place switch; psmux switches its client in
-  place or reattaches per session; zellij reattaches on every change, since it
-  can name no client from outside its own session.
+  keeps one PTY per source with an in-place switch; psmux and zellij reattach on
+  every change, since neither can name a client from outside its own session.
 
 ## Invariants
 
