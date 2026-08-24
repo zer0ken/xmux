@@ -156,12 +156,12 @@ UI elements a user perceives as distinct things:
   show three cards in a band twenty rows wide and leave the rest of every row blank; the
   flow is what makes the band worth its rows.
 - level color - the per-segment card color, from the palette. Every foreground role
-  is ANSI-16, so the terminal theme resolves the hue: host blue,
+  is ANSI-16, so the terminal theme resolves the hue: host cyan,
   mux green, session red, the window part bright-black - the quietest
   level, so the session name anchors the detail line. The four read as one code-theme
   palette, and the level a user actually picks (the session) is the one that stands out.
   A spinner is pending yellow wherever it stands. A settled host-state card's detail
-  line is colored by state - unreachable red, "no sessions" muted. The hint bar is two slots as well (black under white, blue keys). Nothing here
+  line is colored by state - unreachable red, "no sessions" muted. The hint bar is two slots as well (black under white, cyan keys). Nothing here
   is an RGB value; see "Colour ownership" below for why, and `[ui] selection-style` /
   `[ui] hint-bar-style` for naming one anyway.
 - window label - how a card writes its focused window, in the CONVENTION OF ITS OWN MUX
