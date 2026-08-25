@@ -58,7 +58,11 @@ impl MuxDriver for ScreenDriver {
         // REATTACH: the only way to move screen's display. The stale attachment is KEPT
         // in the registry so its grid stays on screen until DisplayReady swaps in the new
         // one (stale-while-revalidate).
-        let reason = if live { "other-session" } else { "no-live-client" };
+        let reason = if live {
+            "other-session"
+        } else {
+            "no-live-client"
+        };
         tracing::info!(
             host = %sel.source,
             model = "per-session",

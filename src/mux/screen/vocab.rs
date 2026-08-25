@@ -120,7 +120,6 @@ fn finish_window(index: i64, name_tokens: Vec<String>) -> WindowPanes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::{Pane, Session, WindowPanes};
 
     fn argv(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|s| s.to_string()).collect()
@@ -145,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn new_session_is_detached_dmS() {
+    fn new_session_is_detached_creation() {
         assert_eq!(
             new_session("screen", "dev"),
             argv(&["screen", "-dmS", "dev"])
@@ -153,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn new_session_empty_is_bare_dmS() {
+    fn new_session_empty_is_bare_creation() {
         assert_eq!(new_session("screen", ""), argv(&["screen", "-dmS"]));
     }
 

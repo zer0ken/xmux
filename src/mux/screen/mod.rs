@@ -171,7 +171,9 @@ mod tests {
             "screen's -S is a session name, not a socket"
         );
         assert!(m.control_argv().is_none() && m.control_protocol().is_none());
-        assert!(m.switch_in_place("jup", "api", Some("/dev/pts/3")).is_none());
+        assert!(m
+            .switch_in_place("jup", "api", Some("/dev/pts/3"))
+            .is_none());
         let _object_safe: Box<dyn Mux> = Box::new(screen());
     }
 
@@ -181,7 +183,7 @@ mod tests {
     }
 
     #[test]
-    fn new_session_is_a_silent_detached_dmS() {
+    fn new_session_is_a_silent_detached_creation() {
         assert_eq!(
             screen().new_session_plan("dev"),
             argv(&["screen", "-dmS", "dev"])
