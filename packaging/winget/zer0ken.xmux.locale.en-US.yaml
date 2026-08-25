@@ -1,7 +1,7 @@
-PackageIdentifier: Zer0ken.xmux
+PackageIdentifier: zer0ken.xmux
 PackageVersion: 0.4.0
 PackageLocale: en-US
-Publisher: Hyeonryeong Lee
+Publisher: zer0ken
 PackageName: xmux
 PackageUrl: https://github.com/zer0ken/xmux
 License: MIT

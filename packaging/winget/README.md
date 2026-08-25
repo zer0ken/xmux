@@ -4,7 +4,7 @@ These files are the [Windows Package Manager](https://github.com/microsoft/winge
 community manifest for xmux. They let users install with:
 
 ```powershell
-winget install --id Zer0ken.xmux
+winget install --id zer0ken.xmux
 ```
 
 ## Registering
@@ -15,7 +15,7 @@ because winget-pkgs requires a signed contribution agreement. The usual flow:
 
 1. Wait for a release, then download its `SHA256SUMS` artifact.
 2. Copy the `*.installer.yaml`, `*.locale.*.yaml`, and `*.yaml` files here
-   under `manifests/z/Ze/zer0ken/xmux/<version>/`, filling
+   under `manifests/z/ze/zer0ken/xmux/<version>/`, filling
    `InstallerSha256` from the release checksum.
 3. Open a pull request against `microsoft/winget-pkgs` with those files.
 
