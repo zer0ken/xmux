@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::Semaphore;
+use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
@@ -95,6 +95,70 @@ pub async fn scan_all(
     out.into_iter()
         .map(|o| o.expect("every index filled"))
         .collect()
+}
+
+/// Streams each source's scan outcome as it completes, in completion order. Like
+/// [`scan_all`] it probes concurrently with bounded concurrency and a per-source
+/// timeout, but it hands each result out the moment that source resolves instead
+/// of withholding everything until the slowest source answers. A caller
+/// (`xmux ls`) can print what it already knows while a dead host is still timing
+/// out, so the command never appears frozen. The receiver closes once every probe
+/// has produced its result.
+pub async fn scan_stream(
+    srcs: &[Source],
+    per_source_timeout: Duration,
+    max_concurrent: usize,
+) -> mpsc::Receiver<ScanResult> {
+    let max_concurrent = max_concurrent.max(1);
+    let (tx, rx) = mpsc::channel(srcs.len().max(1));
+    let sem = Arc::new(Semaphore::new(max_concurrent));
+    let mut set: JoinSet<()> = JoinSet::new();
+
+    for s in srcs.iter().cloned() {
+        let sem = sem.clone();
+        let tx = tx.clone();
+        set.spawn(async move {
+            // Acquire a slot BEFORE starting the timeout so a queued source does
+            // not burn its budget waiting for a free slot.
+            let _permit = sem.acquire().await.expect("semaphore not closed");
+            let alias = s.alias.clone();
+            // The same single enumeration path as [`scan_all`] (`Host::enumerate_with`),
+            // reused off the live loop.
+            let probe = async {
+                let mut host = s.host();
+                match host.enumerate_with(s.run_with()).await {
+                    Ok(()) => Ok(host.inventory.sessions),
+                    Err(e) => Err(e),
+                }
+            };
+            let result = match timeout(per_source_timeout, probe).await {
+                Ok(Ok(sessions)) => ScanResult {
+                    source: alias,
+                    sessions,
+                    err: None,
+                },
+                Ok(Err(e)) => ScanResult {
+                    source: alias,
+                    sessions: Vec::new(),
+                    err: Some(e.to_string()),
+                },
+                Err(_elapsed) => ScanResult {
+                    source: alias,
+                    sessions: Vec::new(),
+                    err: Some(format!(
+                        "timed out after {}s",
+                        per_source_timeout.as_secs_f64()
+                    )),
+                },
+            };
+            let _ = tx.send(result).await;
+        });
+    }
+    drop(tx);
+    // Drain the JoinSet off the caller's runtime so the channel alone signals
+    // completion; it closes after the last probe has sent its result.
+    tokio::spawn(async move { while set.join_next().await.is_some() {} });
+    rx
 }
 
 #[cfg(test)]
@@ -296,5 +360,28 @@ mod tests {
         );
         assert_eq!(got.len(), 1);
         assert!(got[0].err.is_some());
+    }
+
+    #[tokio::test]
+    async fn scan_stream_hands_each_result_out_as_it_completes() {
+        // A slow source and a fast one; the fast one must reach the receiver
+        // first, so a caller can print it without waiting on the slow one.
+        let srcs = vec![
+            scan_source("slow", Arc::new(BlockingRunner)),
+            scan_source("fast", static_ok("1\t0\t0\tready\n")),
+        ];
+        let mut rx = scan_stream(&srcs, Duration::from_secs(1), 4).await;
+        let first = rx.recv().await.expect("a result");
+        let second = rx.recv().await.expect("a result");
+        assert!(
+            rx.recv().await.is_none(),
+            "channel closes after every probe"
+        );
+        // The fast source completes before the slow one, regardless of input order.
+        assert_eq!(first.source, "fast");
+        assert!(first.err.is_none());
+        assert_eq!(first.sessions[0].name, "ready");
+        assert_eq!(second.source, "slow");
+        assert!(second.err.is_some(), "the slow source times out");
     }
 }
