@@ -1027,9 +1027,9 @@ impl Chrome {
                 width: vw,
                 height: painted.height,
             };
-            let muted = Style::default().fg(crate::ui::palette::get().overlay);
+            let white = Style::default().fg(Color::White);
             frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(version.0, muted)))
+                Paragraph::new(Line::from(Span::styled(version.0, white)))
                     .style(self.hint_bar_render_style()),
                 vrect,
             );
