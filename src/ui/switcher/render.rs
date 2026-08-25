@@ -247,11 +247,16 @@ impl Switcher {
         }
     }
 
-    /// The `Side` layout's nav: one vertically-scrolling list. Card heights vary - two
-    /// rows expanded, one collapsed (see [`Switcher::card_collapsed`]) - which ratatui's
-    /// `List` handles per item; `list_state` carries the scroll offset so the selected
-    /// card stays visible, and the selection highlight is ratatui's `highlight_style`
-    /// over the whole card area.
+    /// The `Side` layout's nav: two BANDS of cards in one vertically-scrolling region,
+    /// the session cards over the host-state cards, laid out by [`side::place`] - the one
+    /// geometry the paint, the mouse hit-test and the scrollbar all read.
+    ///
+    /// Card heights vary (two rows expanded, one collapsed - see
+    /// [`Switcher::card_collapsed`]), so a card's rect is recorded as it paints rather
+    /// than derived a second time from a row pitch. `list_state` carries the settled
+    /// scroll position for the next frame to resume from, and the selected card is painted
+    /// in the terminal theme's own selected look by inverting its rect, so the card spans
+    /// bake in no background of their own.
     fn render_nav_list(
         &mut self,
         frame: &mut Frame,
@@ -259,26 +264,65 @@ impl Switcher {
         num_w: usize,
         spinner_glyph: char,
     ) {
-        let total_h: u16 = (0..self.rows.len()).map(|i| self.card_height(i)).sum();
-        let (cards, bar) = reserve_bar(area, total_h > area.height, false);
-        let items: Vec<ListItem> = (0..self.rows.len())
-            .map(|i| {
-                ListItem::new(self.nav_row_lines(
-                    i,
-                    num_w,
-                    spinner_glyph,
-                    self.card_collapsed(i),
-                    self.card_collapsed(i + 1),
-                ))
-            })
-            .collect();
-        // The selected card is painted in the terminal theme's own selected look - reverse
-        // video - unless `[ui] selection-style` names a background instead. Either way the
-        // whole row is the List's business (`highlight_style` covers the row), so the card
-        // spans bake in no background of their own.
-        let list = List::new(items).highlight_style(palette::selection_style());
-        frame.render_stateful_widget(list, cards, &mut self.list_state);
-        self.render_nav_scrollbar(frame, cards, bar);
+        let heights: Vec<u16> = (0..self.rows.len()).map(|i| self.card_height(i)).collect();
+        // The placement decides whether the list scrolls, and the strip is a COLUMN, so
+        // reserving it after the fact takes nothing away from what was just laid out.
+        let flow = side::place(
+            &heights,
+            self.band_boundary(),
+            area.height,
+            self.list_state.offset(),
+            self.selected,
+        );
+        let (cards, bar) = reserve_bar(area, flow.scrolls, false);
+        *self.list_state.offset_mut() = flow.offset;
+        for slot in &flow.slots {
+            let rect = Rect {
+                x: cards.x,
+                y: cards.y + slot.y,
+                width: cards.width,
+                height: slot.h,
+            };
+            let lines = self.nav_row_lines(
+                slot.idx,
+                num_w,
+                spinner_glyph,
+                self.card_collapsed(slot.idx),
+                self.card_collapsed(slot.idx + 1),
+            );
+            frame.render_widget(Paragraph::new(lines), rect);
+            if self.list_state.selected() == Some(slot.idx) {
+                frame
+                    .buffer_mut()
+                    .set_style(rect, palette::selection_style());
+            }
+            self.nav_cells.push((slot.idx, rect));
+        }
+        if let Some(y) = flow.rule_y {
+            Self::render_band_rule(
+                frame,
+                Rect {
+                    x: cards.x,
+                    y: cards.y + y,
+                    width: cards.width,
+                    height: 1,
+                },
+            );
+        }
+        self.render_nav_scrollbar(frame, bar, &flow);
+    }
+
+    /// The rule parting the side list's two bands once they scroll as one run. A single
+    /// light horizontal line across the nav: it says the cards below it are a different
+    /// kind of thing, which is all the blank gap says while both bands fit on screen.
+    fn render_band_rule(frame: &mut Frame, rect: Rect) {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                BAND_RULE.repeat(rect.width as usize),
+                Style::default().fg(palette::get().overlay),
+            ))),
+            rect,
+        );
     }
 
     /// The portrait `Top` band's nav: the same cards flowed into columns that fill
@@ -418,25 +462,15 @@ impl Switcher {
     /// drawn only when the cards overflow the region - the offscreen-content cue the flat
     /// list otherwise lacks. Thumb only (no track / arrows) so it reads as a position
     /// marker, not furniture. Counted in cards (not screen rows) over the variable card
-    /// heights, reading the offset ratatui settled while rendering the list just before.
-    fn render_nav_scrollbar(&mut self, frame: &mut Frame, area: Rect, bar: Rect) {
+    /// heights, from the placement the cards were painted with.
+    fn render_nav_scrollbar(&mut self, frame: &mut Frame, bar: Rect, flow: &side::Flow) {
         let total = self.rows.len();
         if bar.width == 0 || bar.height == 0 {
             return;
         }
-        // The cards fully visible from the settled offset.
-        let mut visible = 0usize;
-        let mut used = 0u16;
-        for i in self.list_state.offset()..total {
-            used += self.card_height(i);
-            if used > area.height {
-                break;
-            }
-            visible += 1;
-        }
-        let mut sb = ScrollbarState::new(total.saturating_sub(visible))
-            .position(self.list_state.offset())
-            .viewport_content_length(visible);
+        let mut sb = ScrollbarState::new(total.saturating_sub(flow.visible))
+            .position(flow.offset)
+            .viewport_content_length(flow.visible);
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)

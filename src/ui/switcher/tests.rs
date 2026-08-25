@@ -1978,6 +1978,155 @@ async fn a_host_card_colours_its_levels_like_a_session_card_does() {
     );
 }
 
+/// A scan holding `n` sessions on one reachable source plus one unreachable source, so
+/// the nav has both of its bands: session cards over a host-state card.
+fn scan_with_bands(n: usize) -> Scan {
+    let mut scan = scan_with_sessions(n);
+    scan.groups.push(Group {
+        source: "db-2".into(),
+        err: Some("connection timed out".into()),
+        sessions: vec![],
+    });
+    scan
+}
+
+/// The rect the paint gave card `idx`.
+fn card_rect(h: &Harness, idx: usize) -> Rect {
+    h.sw.nav_cells
+        .iter()
+        .find(|(i, _)| *i == idx)
+        .map(|(_, r)| *r)
+        .expect("the card was drawn")
+}
+
+#[tokio::test]
+async fn every_host_state_card_sits_below_every_session_card() {
+    // The dead host is FIRST in group order, and its card still lands last: a host with
+    // no session to show is the tail of the list, whatever order the hosts were scanned in.
+    let mut groups = vec![Group {
+        source: "db-2".into(),
+        err: Some("connection timed out".into()),
+        sessions: vec![],
+    }];
+    groups.extend(sample().groups.into_iter().filter(|g| g.err.is_none()));
+    let h = Harness::new(Scan {
+        groups,
+        panes: sample().panes,
+    });
+    let boundary = h.sw.band_boundary().expect("the list has a host card");
+    assert!(boundary > 0, "the session cards come first");
+    for (i, row) in h.sw.rows.iter().enumerate() {
+        let host_card = matches!(row.reference, RowRef::Host { .. });
+        assert_eq!(
+            host_card,
+            i >= boundary,
+            "card {i} is on the wrong side of the boundary"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_bands_part_with_the_rows_left_over() {
+    // Both bands fit, so the parting is the blank rows between them: the session cards
+    // hold the top edge and the host-state card is pushed to the bottom.
+    let h = Harness::new(sample());
+    let boundary = h.sw.band_boundary().expect("the list has a host card");
+    let host = card_rect(&h, boundary);
+    let last_session = card_rect(&h, boundary - 1);
+    let region = h.sw.nav_inner;
+    assert_eq!(
+        host.y + host.height,
+        region.y + region.height,
+        "the host-state band ends on the region's bottom edge"
+    );
+    assert!(
+        host.y > last_session.y + last_session.height,
+        "blank rows part the two bands"
+    );
+    for y in (last_session.y + last_session.height)..host.y {
+        assert_eq!(
+            nav_line(&h, y).trim(),
+            "",
+            "the parting is blank, not a rule, while both bands fit"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_scrolling_list_parts_its_bands_with_a_rule() {
+    // Too many cards to fit: the gap would part what is no longer on screen together, so
+    // the list closes it up and a box-drawing rule takes the boundary's row instead.
+    let mut h = Harness::new(scan_with_bands(40));
+    h.key(KeyCode::End).await; // scroll down to the boundary
+    let boundary = h.sw.band_boundary().expect("the list has a host card");
+    let host = card_rect(&h, boundary);
+    assert!(host.y > 0, "the rule needs a row above the host card");
+    // Across the CARDS' width: the column beside them is the scrollbar's own strip.
+    let rule: String = (host.x..host.x + host.width)
+        .map(|x| h.buf()[(x, host.y - 1)].symbol().to_string())
+        .collect();
+    assert!(
+        rule.chars().all(|c| c.to_string() == BAND_RULE),
+        "a rule sits directly above the host-state band: {rule:?}"
+    );
+    let last_session = card_rect(&h, boundary - 1);
+    assert_eq!(
+        last_session.y + last_session.height,
+        host.y - 1,
+        "the rule is the only thing between the bands"
+    );
+}
+
+#[tokio::test]
+async fn the_bands_never_touch_on_screen() {
+    // 26 session cards plus a host card fill this nav's rows exactly, so the parting has
+    // no row left to take: rather than let the bands meet, the list scrolls a row early
+    // and the rule takes the boundary's row.
+    let h = Harness::new(scan_with_bands(26));
+    let cards: u16 = (0..h.sw.rows.len()).map(|i| h.sw.card_height(i)).sum();
+    assert_eq!(
+        cards, h.sw.nav_inner.height,
+        "the precondition: the cards alone fill the region exactly"
+    );
+    let boundary = h.sw.band_boundary().expect("the list has a host card");
+    let host = card_rect(&h, boundary);
+    let last_session = card_rect(&h, boundary - 1);
+    assert_eq!(
+        last_session.y + last_session.height,
+        host.y - 1,
+        "a row stands between the bands"
+    );
+    let rule: String = (host.x..host.x + host.width)
+        .map(|x| h.buf()[(x, host.y - 1)].symbol().to_string())
+        .collect();
+    assert!(
+        rule.chars().all(|c| c.to_string() == BAND_RULE),
+        "and that row is the rule: {rule:?}"
+    );
+    // Scrolling is on a row before the cards themselves would need it, so the strip beside
+    // them is reserved and the thumb is drawn.
+    let strip = h.sw.nav_inner.x + h.sw.nav_inner.width - 1;
+    assert!(
+        (h.sw.nav_inner.y..h.sw.nav_inner.y + h.sw.nav_inner.height)
+            .any(|y| h.buf()[(strip, y)].symbol().trim() != ""),
+        "the scrollbar strip is reserved and drawn"
+    );
+}
+
+#[tokio::test]
+async fn a_click_on_the_parting_selects_nothing() {
+    let mut h = Harness::new(sample());
+    let boundary = h.sw.band_boundary().expect("the list has a host card");
+    let before = h.sw.selected;
+    let gap_y = card_rect(&h, boundary - 1);
+    let gap_y = gap_y.y + gap_y.height;
+    h.sw.mouse_select(h.sw.nav_inner.x, gap_y, &h.state);
+    assert_eq!(
+        h.sw.selected, before,
+        "the blank parting is not a card, so a click on it moves nothing"
+    );
+}
+
 /// The full content of screen row `y`, across the nav width.
 fn nav_line(h: &Harness, y: u16) -> String {
     (0..NAV_WIDTH.min(h.buf().area.width))
@@ -2131,8 +2280,8 @@ async fn double_click_selects_node() {
 #[tokio::test]
 async fn single_click_moves_cursor() {
     let mut h = Harness::new(sample());
-    // Click the card the renderer actually drew at that screen row: card heights
-    // vary, so the hit-test must agree with `card_height`, not a fixed row pitch.
+    // Click the card the renderer actually drew at that screen row: card heights vary and
+    // the bands are parted, so the hit-test must read the paint, not a fixed row pitch.
     let target = row_index(
         &h,
         |r| matches!(r, RowRef::Session { sess } if sess.name == "build"),
@@ -2146,15 +2295,15 @@ async fn single_click_moves_cursor() {
     );
 }
 
-/// The screen (col,row) of the card at `idx`: its FIRST screen row. Card heights
-/// vary (a collapsed card is one row), so this walks `card_height` from the
-/// visible offset - the same mapping the renderer and mouse hit-testing use.
+/// The screen (col,row) of the card at `idx`: its FIRST screen row, read from the rect the
+/// paint recorded - the same geometry the renderer and mouse hit-testing use.
 fn row_screen_pos(h: &Harness, idx: usize) -> (u16, u16) {
-    let mut y = h.sw.nav_inner.y;
-    for i in h.sw.list_state.offset()..idx {
-        y += h.sw.card_height(i);
-    }
-    (h.sw.nav_inner.x, y)
+    let (_, rect) =
+        h.sw.nav_cells
+            .iter()
+            .find(|(i, _)| *i == idx)
+            .expect("the card was drawn");
+    (rect.x, rect.y)
 }
 
 fn row_index<F: Fn(&RowRef) -> bool>(h: &Harness, pred: F) -> usize {
@@ -2571,27 +2720,28 @@ fn every_unselected_card_carries_its_0_based_number_beside_its_session() {
     let num_w = sw.rows.len().saturating_sub(1).to_string().len().max(1) as u16;
     let read =
         |x: u16, y: u16, w: u16| -> String { (x..x + w).map(|c| buf[(c, y)].symbol()).collect() };
-    let mut top = 0u16;
-    for i in 0..sw.rows.len() {
-        let detail = top + sw.card_height(i) - 1;
+    // Read each card where the PAINT put it: the side list parts its two bands, so a card
+    // is not always the sum of the heights above it.
+    assert_eq!(sw.nav_cells.len(), sw.rows.len(), "every card was drawn");
+    for (i, rect) in sw.nav_cells.iter().copied() {
+        let detail = rect.y + rect.height - 1;
         let want = if i == selected {
             super::render::SELECTED_MARK.to_string()
         } else {
             i.to_string()
         };
         assert_eq!(
-            read(0, detail, num_w).trim(),
+            read(rect.x, detail, num_w).trim(),
             want,
             "card {i} address on its detail row {detail} (selected={selected})"
         );
-        if sw.card_height(i) > 1 {
+        if rect.height > 1 {
             assert_eq!(
-                read(0, top, num_w).trim(),
+                read(rect.x, rect.y, num_w).trim(),
                 "",
                 "card {i}'s context row leaves the address column blank"
             );
         }
-        top += sw.card_height(i);
     }
 }
 

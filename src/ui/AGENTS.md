@@ -87,6 +87,17 @@ flatten renders for the dump verb.
 - Row transforms do not mutate their inputs unless the function name and
   signature make mutation explicit.
 - The dump should reflect the same split view the main draw path renders.
+- The nav's two bands are parted by the ROOM between them while the cards can spare a row
+  for it, and by a rule once they cannot: a gap that scrolls out of view parts nothing a
+  reader can see. The parting is measured as part of the run, so the bands never meet with
+  nothing between them and the list scrolls a row before the cards alone would fill it.
+  Which parting applies is decided in the side list's placement, and the boundary itself is
+  one question asked once (the first host-state card), so the paint, the hit-test and the
+  scrollbar cannot part the list in three places.
+- A card's rect is decided by the PAINT and read back from it, in both layouts. Neither
+  layout puts cards on a fixed row pitch (heights vary, the side list parts its bands, the
+  portrait flow runs columns), so a hit-test that measured its own pitch would land clicks
+  on cards the renderer put elsewhere.
 - A scrollbar is RESERVED a column of the nav region, never overlaid on the cards: the
   selected card is painted by inverting its rect, so a thumb drawn inside one inverts with
   it and reads as a hole in the bar. The portrait flow scrolls sideways and puts its cue on
