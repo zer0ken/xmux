@@ -203,6 +203,18 @@ no function, and no test, so renaming code is never a documentation change.
   out of the stream before either focus path's key handling sees them and a chord left
   half-open keeps its cheatsheet on screen and then eats the next key. Bare hover is not
   an action: the pointer drifting must not break a chord being typed.
+- **FR-B19** - The nav is two BANDS, and the cards of a host with no session to show are
+  the lower one: a host card sits below every session card, whatever order the hosts were
+  scanned in. In the side column, while the cards can spare a row for it, the bands are
+  pushed APART - the session cards against the top edge, the host cards against the bottom
+  - and the blank rows between them are the parting, since a gap says a different kind of
+  thing follows without spending a glyph on saying it. Once they cannot the column is one
+  scrolling list, because a gap only parts what is on screen together, and a rule across
+  the cards takes the boundary's row instead. The parting always holds a row of its own:
+  the column is measured with the rule's row counted in, so the bands go from a gap of one
+  straight to a rule and never meet, and the list starts scrolling a row before the cards
+  alone would fill it. Neither the gap nor the rule is a card: a click on either moves
+  nothing.
 
 ## C. Switching (the keystone)
 

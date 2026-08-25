@@ -123,9 +123,9 @@ UI elements a user perceives as distinct things:
 - card collapse - a session/loading card whose `{host}/{mux}` repeats the
   previous card's drops its context line and renders one row tall, so runs on
   one server read grouped. In the SIDE list the selected card never collapses (focus
-  expands it to the full two-row card, so its context is always readable in place), and
-  the renderer and mouse hit-testing share one card-height rule so the screen-row mapping
-  never diverges. The column flow collapses by POSITION alone, never by selection: a
+  expands it to the full two-row card, so its context is always readable in place), and one
+  card-height rule feeds the placement the paint and the hit-test both read, so the
+  screen-row mapping never diverges. The column flow collapses by POSITION alone, never by selection: a
   column's first card always states its context, and heights that moved with the selection
   would reflow whole columns as the cursor passed.
 - nav size - the nav's live geometry as one value: the width the user SET, the width ON
@@ -157,6 +157,15 @@ UI elements a user perceives as distinct things:
   pure geometry, so the paint, the hit-test and the tests read one answer. A list would
   show three cards in a band twenty rows wide and leave the rest of every row blank; the
   flow is what makes the band worth its rows.
+- nav bands - the two bands the nav's cards fall into: the session cards, then the cards
+  of the hosts with no session to show, which sit below every session card whatever order
+  the hosts were scanned in. In the side column the parting is the ROOM between them while
+  the cards can spare a row for it (the sessions hold the top edge, the host cards the
+  bottom), and a rule across the cards once they cannot and the column scrolls as one list,
+  because a gap parts only what a reader sees at once. The parting always has a row: the
+  column is measured with the rule's row counted in, so a gap of one is the last thing
+  before the rule and the bands never meet, at the price of scrolling a row early. Neither
+  parting is a card, so a click on one selects nothing.
 - level color - the per-segment card color, from the palette. Every foreground role
   is ANSI-16, so the terminal theme resolves the hue: host cyan,
   mux green, session red, the window part bright-black - the quietest
