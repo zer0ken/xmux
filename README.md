@@ -57,6 +57,7 @@ xmux attach <source>/<name>   # attach one session directly, e.g. xmux attach pr
 xmux doctor                   # check config and per-source reachability
 xmux instances                # list running instances
 xmux send <name> <command…>  # drive one of them over its control socket
+xmux update                  # update the installed binary
 xmux version
 ```
 
