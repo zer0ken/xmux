@@ -65,13 +65,22 @@ fn color_window() -> Color {
 fn color_mux() -> Color {
     crate::ui::palette::get().mux
 }
-/// Settled per-element status (no sessions) renders muted so it reads apart
-/// from settled content; in-flight and failure states carry their own colours
-/// (the palette's `pending` / `danger`).
-fn color_hint() -> Color {
-    crate::ui::palette::get().overlay
+/// The card's number in the address column.
+fn color_number() -> Color {
+    crate::ui::palette::get().number
 }
-
+/// The `/` separator between a card line's parts.
+fn color_separator() -> Color {
+    crate::ui::palette::get().separator
+}
+/// The box-drawing connector (`├`/`└`) hanging a detail line under its context.
+fn color_connector() -> Color {
+    crate::ui::palette::get().connector
+}
+/// The "no sessions" status word on a reachable empty host's card.
+fn color_no_sessions() -> Color {
+    crate::ui::palette::get().no_sessions
+}
 pub use crate::ui::chrome::ViewBorderColors;
 
 /// Which way the two views stack. `Side` (default) puts the tree in a left column;

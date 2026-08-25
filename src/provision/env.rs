@@ -88,7 +88,7 @@ fn home_dir() -> PathBuf {
     dir
 }
 
-fn config_path() -> PathBuf {
+pub(crate) fn config_path() -> PathBuf {
     home_dir().join(".config").join("xmux").join("config.toml")
 }
 

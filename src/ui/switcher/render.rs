@@ -1,5 +1,6 @@
 use super::*;
 
+use ratatui::style::Modifier;
 use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 
 use crate::ui::palette;
@@ -401,14 +402,34 @@ impl Switcher {
             width: track.width.saturating_sub(PAD * 2),
             ..track
         };
-        let muted = Style::default().fg(palette::get().overlay);
+        // The overflow cue's OWN role, with the count BOLD so the number - the thing a
+        // user reaches for - stands off the `<< … more >>` furniture around it.
+        let more_style = Style::default().fg(palette::get().more);
+        let bold = more_style.add_modifier(Modifier::BOLD);
+        // `<< n more` / `n more >>`, the count the one bold cell in the run.
+        let make_label = |n: usize, left_arrow: bool| -> (Vec<Span<'static>>, u16) {
+            let n = n.to_string();
+            let (pre, post) = if left_arrow {
+                ("<< ", " more")
+            } else {
+                ("", " more >>")
+            };
+            let w = (pre.chars().count() + n.chars().count() + post.chars().count()) as u16;
+            (
+                vec![
+                    Span::styled(pre, more_style),
+                    Span::styled(n, bold),
+                    Span::styled(post, more_style),
+                ],
+                w,
+            )
+        };
         let mut used = 0u16;
         if left > 0 {
-            let label = format!("<< {left} more");
-            let w = label.chars().count() as u16;
+            let (spans, w) = make_label(left, true);
             if w <= track.width {
                 frame.render_widget(
-                    Paragraph::new(label).style(muted),
+                    Paragraph::new(Line::from(spans)),
                     Rect {
                         width: w,
                         height: 1,
@@ -419,11 +440,10 @@ impl Switcher {
             }
         }
         if right > 0 {
-            let label = format!("{right} more >>");
-            let w = label.chars().count() as u16;
+            let (spans, w) = make_label(right, false);
             if w + used <= track.width {
                 frame.render_widget(
-                    Paragraph::new(label).style(muted),
+                    Paragraph::new(Line::from(spans)),
                     Rect {
                         x: track.x + track.width - w,
                         width: w,
@@ -523,9 +543,16 @@ impl Switcher {
         next_hangs: bool,
     ) -> Vec<Line<'static>> {
         let row = &self.rows[i];
-        let muted = Style::default().fg(color_hint());
         let selected = self.list_state.selected() == Some(i);
         let accent = Style::default().fg(palette::get().accent);
+        let number = Style::default().fg(color_number());
+        let separator = Style::default().fg(color_separator());
+        let connector = Style::default().fg(color_connector());
+        // "no sessions" reads as a quiet placeholder - italic sets it apart from the
+        // settled content without shouting, matching how a muted tone already does.
+        let no_sessions = Style::default()
+            .fg(color_no_sessions())
+            .add_modifier(Modifier::ITALIC);
         // `numbered` is the detail line, the only line the address column writes on: a
         // context line spends the same width blank so the two stay in one column.
         let address = move |numbered: bool| -> Vec<Span<'static>> {
@@ -535,7 +562,7 @@ impl Switcher {
             if selected {
                 vec![Span::styled(format!("{SELECTED_MARK:>num_w$} "), accent)]
             } else {
-                vec![Span::styled(format!("{i:>num_w$} "), muted)]
+                vec![Span::styled(format!("{i:>num_w$} "), number)]
             }
         };
 
@@ -564,7 +591,7 @@ impl Switcher {
                 Style::default().fg(color_host()),
             ));
             if !mux.is_empty() {
-                line1.push(Span::styled("/", muted));
+                line1.push(Span::styled("/", separator));
                 line1.push(Span::styled(
                     mux.to_string(),
                     Style::default().fg(color_mux()),
@@ -573,7 +600,7 @@ impl Switcher {
                 // A source id names its mux only when its machine serves several, so on
                 // the rest the mux is genuinely not known yet: the scan stamps it onto
                 // the sessions it finds. The spinner sits where that name will land.
-                line1.push(Span::styled("/", muted));
+                line1.push(Span::styled("/", separator));
                 line1.push(Span::styled(spinner_glyph.to_string(), pending));
             }
             line1.push(Span::raw(" "));
@@ -588,7 +615,7 @@ impl Switcher {
                 let style = if *unreachable {
                     Style::default().fg(palette::get().danger)
                 } else {
-                    muted
+                    no_sessions
                 };
                 line2.push(Span::styled(format!("{} ", row.line2), style));
             }
@@ -605,7 +632,7 @@ impl Switcher {
                 Style::default().fg(color_host()),
             ));
             if !mux.is_empty() {
-                context.push(Span::styled("/", muted));
+                context.push(Span::styled("/", separator));
                 context.push(Span::styled(
                     mux.to_string(),
                     Style::default().fg(color_mux()),
@@ -629,16 +656,18 @@ impl Switcher {
         // two columns of connector would slide the session name left of every name
         // above and below it.
         let mut detail = address(true);
-        let connector = if next_hangs { "├ " } else { "└ " };
-        detail.push(Span::styled(connector, muted));
+        let connector_glyph = if next_hangs { "├ " } else { "└ " };
+        detail.push(Span::styled(connector_glyph, connector));
         detail.push(Span::styled(
             sess.to_string(),
-            Style::default().fg(color_session()),
+            Style::default()
+                .fg(color_session())
+                .add_modifier(Modifier::BOLD),
         ));
         // No window row to show (the mux named none): the card is the session alone,
         // without a trailing separator standing in for something absent.
         if !matches!(&row.reference, RowRef::Session { .. }) || !row.line2.is_empty() {
-            detail.push(Span::styled("/", muted));
+            detail.push(Span::styled("/", separator));
             detail.push(window_part);
         }
         detail.push(Span::raw(" "));

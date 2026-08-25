@@ -129,6 +129,13 @@ impl MuxSpec {
 /// The optional `[ui]` table: xmux's own prefix.
 #[derive(Debug, Clone, Deserialize)]
 pub struct UiConfig {
+    /// The built-in colour theme, named by [`crate::ui::palette`]: `auto-dark` (the
+    /// default) or `auto-light`, each painting only ANSI slots so the TERMINAL theme
+    /// resolves the actual hues. An unknown name falls back to `auto-dark` and the
+    /// doctor reports the resolution. Selecting a theme does not pick colours - the
+    /// theme IS the ANSI-slot mapping; see `Colour ownership` in `CONTEXT.md`.
+    #[serde(rename = "theme", default = "default_theme")]
+    pub theme: String,
     /// xmux's prefix spec (e.g. `C-g`, `C-Space`), config-only like tmux's
     /// `set -g prefix`. Parsed by `display::term::parse_prefix`.
     #[serde(default = "default_prefix")]
@@ -172,9 +179,14 @@ fn default_prefix() -> String {
     "C-g".to_string()
 }
 
+fn default_theme() -> String {
+    crate::ui::palette::AUTO_DARK.to_string()
+}
+
 impl Default for UiConfig {
     fn default() -> Self {
         UiConfig {
+            theme: default_theme(),
             prefix: default_prefix(),
             auto_hide_nav: false,
             // Empty = unset: the effective colour is ViewBorderColors::default().
@@ -1175,6 +1187,21 @@ prefix = "C-Space"
         );
         let cfg = load(&path).unwrap();
         assert_eq!(cfg.ui_prefix(), "C-Space");
+    }
+
+    #[test]
+    fn ui_theme_defaults_to_auto_dark_and_parses_any_name() {
+        // `[ui] theme` names a built-in theme; missing → `auto-dark`. Any string is
+        // stored (an unknown name is a resolution/fallback concern of the palette,
+        // not a config error), so the config test only pins the default and the round
+        // trip.
+        let missing = std::env::temp_dir().join("xmux-theme-absent-xyz.toml");
+        let cfg = load(&missing).unwrap();
+        assert_eq!(cfg.ui.theme, crate::ui::palette::AUTO_DARK);
+        let path = write_temp("[ui]\ntheme = \"auto-light\"\n", "ui-theme.toml");
+        let (cfg, warnings) = load_verbose(&path).unwrap();
+        assert_eq!(cfg.ui.theme, "auto-light");
+        assert!(warnings.is_empty(), "theme is a known key: {warnings:?}");
     }
 
     #[test]

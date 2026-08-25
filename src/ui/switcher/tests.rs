@@ -204,6 +204,10 @@ impl Harness {
     fn nav_fg_of(&self, text: &str) -> Option<Color> {
         fg_of(self.buf(), text, NAV_WIDTH)
     }
+
+    fn nav_mod_of(&self, text: &str) -> Option<Modifier> {
+        mod_of(self.buf(), text, NAV_WIDTH)
+    }
 }
 
 fn buffer_text(buf: &Buffer) -> String {
@@ -244,6 +248,10 @@ fn row_of(buf: &Buffer, text: &str, limit: u16) -> Option<u16> {
 
 fn fg_of(buf: &Buffer, text: &str, limit: u16) -> Option<Color> {
     locate(buf, text, limit).map(|(x, y)| buf[(x, y)].fg)
+}
+
+fn mod_of(buf: &Buffer, text: &str, limit: u16) -> Option<Modifier> {
+    locate(buf, text, limit).map(|(x, y)| buf[(x, y)].modifier)
 }
 
 // --- sample data --------------------------------------------------------
@@ -1462,8 +1470,8 @@ fn hint_bar_has_status_bar_background() {
     assert_eq!(buf[(1, y)].bg, bg, "a text cell has the dark bar bg");
     assert_eq!(
         buf[(1, y)].fg,
-        crate::ui::palette::get().accent,
-        "the leading key token is accented"
+        crate::ui::palette::get().bar_accent,
+        "the leading key token is accented with the bar's own accent"
     );
     // Resting text is " C-g" (4 cells) plus one cell of padding = 5 cells; the bar is
     // fit to that, so it stops well short of the nav column's width instead of filling it.
@@ -1842,6 +1850,26 @@ async fn levels_render_in_their_level_colors() {
     assert_eq!(h.nav_fg_of("shell"), Some(color_window()));
 }
 
+#[tokio::test]
+async fn the_session_reads_bold_on_its_card() {
+    // The session - the level a user actually picks - is BOLD, so it stands off the mux
+    // and window parts of the same line; the host and window parts stay plain so the
+    // session remains the detail line's anchor.
+    let h = Harness::new(sample());
+    assert!(
+        h.nav_mod_of("editor").unwrap().contains(Modifier::BOLD),
+        "the session reads bold on its card"
+    );
+    assert!(
+        !h.nav_mod_of("local").unwrap().contains(Modifier::BOLD),
+        "the host stays plain"
+    );
+    assert!(
+        !h.nav_mod_of("shell").unwrap().contains(Modifier::BOLD),
+        "the window part stays plain so the session anchors the detail line"
+    );
+}
+
 /// A session stamped with its mux kind, for the context-line tests.
 fn sess_mux(source: &str, name: &str, mux: &str, last: i64) -> Session {
     Session {
@@ -2052,8 +2080,8 @@ async fn a_host_card_colours_its_levels_like_a_session_card_does() {
     assert_eq!(h.buf()[(x, y)].fg, color_host(), "the host half");
     assert_eq!(
         h.buf()[(x + 3, y)].fg,
-        color_hint(),
-        "the separator is furniture"
+        color_separator(),
+        "the separator is its own role"
     );
 }
 
@@ -3093,12 +3121,12 @@ async fn view_border_splits_top_bottom_to_mark_focused_side() {
     assert_eq!(buf[(x, top)].symbol(), "│", "view border still drawn");
     assert_eq!(
         fg(&buf, bottom),
-        pal.accent,
+        pal.border_active,
         "terminal-view focus: bottom half accent"
     );
     assert_eq!(
         fg(&buf, top),
-        pal.overlay,
+        pal.border_inactive,
         "terminal-view focus: top half inactive"
     );
 
@@ -3106,10 +3134,14 @@ async fn view_border_splits_top_bottom_to_mark_focused_side() {
     term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
-    assert_eq!(fg(&buf, top), pal.accent, "tree focus: top half accent");
+    assert_eq!(
+        fg(&buf, top),
+        pal.border_active,
+        "tree focus: top half accent"
+    );
     assert_eq!(
         fg(&buf, bottom),
-        pal.overlay,
+        pal.border_inactive,
         "tree focus: bottom half inactive"
     );
 }
@@ -3135,8 +3167,8 @@ async fn view_border_highlights_on_hover() {
         );
         assert_eq!(
             cell.fg,
-            Color::Yellow,
-            "hover: yellow (psmux hover) at row {y}"
+            crate::ui::palette::get().border_hover,
+            "hover: the border_hover role at row {y}"
         );
         assert!(
             !cell.modifier.contains(Modifier::REVERSED),
