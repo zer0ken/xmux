@@ -344,7 +344,7 @@ impl Runtime {
 pub(super) fn poll_ui_config(
     last: &mut Option<std::time::SystemTime>,
     path: &std::path::Path,
-) -> Option<crate::config::UiConfig> {
+) -> Option<crate::provision::config::UiConfig> {
     let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
     if mtime == *last {
         return None;
@@ -356,7 +356,7 @@ pub(super) fn poll_ui_config(
     if prev.is_none() || mtime.is_none() {
         return None;
     }
-    crate::config::load(path).ok().map(|c| c.ui)
+    crate::provision::config::load(path).ok().map(|c| c.ui)
 }
 
 impl Runtime {
@@ -1167,8 +1167,10 @@ impl Runtime {
     /// prefix is input-side and deliberately not re-applied (it needs the key-decoder
     /// rebuild, which is not worth it on a setting that changes rarely).
     pub(super) fn on_config_check(&mut self) -> bool {
-        let Some(ui) = poll_ui_config(&mut self.config_last_mtime, &crate::env::config_path())
-        else {
+        let Some(ui) = poll_ui_config(
+            &mut self.config_last_mtime,
+            &crate::provision::env::config_path(),
+        ) else {
             return false;
         };
         crate::ui::palette::apply(
