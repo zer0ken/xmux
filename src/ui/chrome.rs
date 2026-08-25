@@ -974,7 +974,8 @@ impl Chrome {
         } else {
             (String::new(), 0)
         };
-        let version_w = version.0.chars().count() as u16 + version.1;
+        let right_margin = 1; // a one-cell margin between the label and the far right edge
+        let version_w = version.0.chars().count() as u16 + version.1 + right_margin;
         let text_w = area.width.saturating_sub(version_w);
         let lines = self.hint_bar_lines(text_w, state);
         // Key tokens get the accent only on the built-in default style with no flash
@@ -1021,7 +1022,7 @@ impl Chrome {
         if !version.0.is_empty() {
             let vw = version.0.chars().count() as u16;
             let vrect = Rect {
-                x: painted.x + painted.width.saturating_sub(vw),
+                x: painted.x + painted.width.saturating_sub(vw + right_margin),
                 y: painted.y,
                 width: vw,
                 height: painted.height,
