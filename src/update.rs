@@ -48,7 +48,10 @@ fn classify(exe: &Path, cargo_bins: &[PathBuf], platform: Platform) -> InstallMe
             }
         }
     }
-    if cargo_bins.iter().any(|b| exe.starts_with(b) || real.starts_with(b)) {
+    if cargo_bins
+        .iter()
+        .any(|b| exe.starts_with(b) || real.starts_with(b))
+    {
         return InstallMethod::Cargo;
     }
     InstallMethod::Self_
@@ -125,11 +128,10 @@ fn checksum_for_name(body: &str, file_name: &str) -> Result<String, String> {
 
 fn sha256_file(path: &Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
-    let mut f = std::fs::File::open(path)
-        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let mut f =
+        std::fs::File::open(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let mut h = Sha256::new();
-    std::io::copy(&mut f, &mut h)
-        .map_err(|e| format!("cannot hash {}: {e}", path.display()))?;
+    std::io::copy(&mut f, &mut h).map_err(|e| format!("cannot hash {}: {e}", path.display()))?;
     Ok(format!("{:x}", h.finalize()))
 }
 
@@ -171,8 +173,7 @@ fn install(exe: &Path, downloaded_bin: &Path) -> Result<(), String> {
     let dir = exe.parent().ok_or("cannot locate xmux install directory")?;
     let tmp = dir.join("xmux.new");
     let _ = std::fs::remove_file(&tmp);
-    std::fs::copy(downloaded_bin, &tmp)
-        .map_err(|e| format!("cannot stage new binary: {e}"))?;
+    std::fs::copy(downloaded_bin, &tmp).map_err(|e| format!("cannot stage new binary: {e}"))?;
     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
         .map_err(|e| format!("cannot mark binary executable: {e}"))?;
     std::fs::rename(&tmp, exe).map_err(|e| {
@@ -195,8 +196,7 @@ fn install(exe: &Path, downloaded: &Path) -> Result<(), String> {
     let dir = exe.parent().ok_or("cannot locate xmux install directory")?;
     let new = dir.join("xmux.exe.new");
     let _ = std::fs::remove_file(&new);
-    std::fs::copy(downloaded, &new)
-        .map_err(|e| format!("cannot stage new binary: {e}"))?;
+    std::fs::copy(downloaded, &new).map_err(|e| format!("cannot stage new binary: {e}"))?;
     let q = |p: &std::path::Path| format!("\"{}\"", p.display());
     let script = format!(
         "timeout /t 1 /nobreak >nul & move /y {} {}",
@@ -266,11 +266,10 @@ fn download(url: &str, dest: &Path) -> Result<(), String> {
         .header("User-Agent", concat!("xmux/", env!("CARGO_PKG_VERSION")))
         .call()
         .map_err(|e| format!("download failed: {e}"))?;
-    let mut out = std::fs::File::create(dest)
-        .map_err(|e| format!("cannot write {}: {e}", dest.display()))?;
+    let mut out =
+        std::fs::File::create(dest).map_err(|e| format!("cannot write {}: {e}", dest.display()))?;
     let mut reader = resp.into_body().into_reader();
-    std::io::copy(&mut reader, &mut out)
-        .map_err(|e| format!("download interrupted: {e}"))?;
+    std::io::copy(&mut reader, &mut out).map_err(|e| format!("download interrupted: {e}"))?;
     Ok(())
 }
 
@@ -305,16 +304,15 @@ fn asset_suffix() -> &'static str {
 
 /// Downloads, verifies, and installs the latest release over the running binary.
 fn self_update(check: bool) -> Result<(), String> {
-    let exe = std::env::current_exe()
-        .map_err(|e| format!("cannot locate own binary: {e}"))?;
+    let exe = std::env::current_exe().map_err(|e| format!("cannot locate own binary: {e}"))?;
     let cur = env!("CARGO_PKG_VERSION");
     let cur_v = parse_version(cur).ok_or(
         "current build is not a released version (a source/dev build); update it the same way it was built",
     )?;
 
     let release = latest_release()?;
-    let latest_v = parse_version(&release.version)
-        .ok_or("latest release has an unparseable version")?;
+    let latest_v =
+        parse_version(&release.version).ok_or("latest release has an unparseable version")?;
     if latest_v <= cur_v {
         println!("xmux is already up to date (v{cur})");
         return Ok(());
@@ -365,7 +363,9 @@ fn parse_method(s: &str) -> Result<InstallMethod, String> {
         "winget" => Ok(InstallMethod::Winget),
         "brew" => Ok(InstallMethod::Brew),
         "self" => Ok(InstallMethod::Self_),
-        _ => Err(format!("unknown method {s:?} (expected cargo|winget|brew|self)")),
+        _ => Err(format!(
+            "unknown method {s:?} (expected cargo|winget|brew|self)"
+        )),
     }
 }
 
@@ -379,8 +379,7 @@ fn resolve_method(forced: Option<&str>) -> Result<InstallMethod, String> {
     {
         return parse_method(&m);
     }
-    let exe = std::env::current_exe()
-        .map_err(|e| format!("cannot locate own binary: {e}"))?;
+    let exe = std::env::current_exe().map_err(|e| format!("cannot locate own binary: {e}"))?;
     Ok(classify(&exe, &cargo_bins(), platform()))
 }
 
@@ -400,7 +399,9 @@ fn run_delegated(program: &str, args: &[&str]) -> Result<(), String> {
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit());
-    let status = cmd.status().map_err(|e| format!("cannot run {program}: {e}"))?;
+    let status = cmd
+        .status()
+        .map_err(|e| format!("cannot run {program}: {e}"))?;
     if status.success() {
         Ok(())
     } else {
@@ -423,7 +424,9 @@ fn run_blocking(args: &Args) -> Result<(), String> {
         }
         InstallMethod::Winget => {
             if args.check {
-                println!("xmux is installed via winget; update with `winget upgrade --id zer0ken.xmux`");
+                println!(
+                    "xmux is installed via winget; update with `winget upgrade --id zer0ken.xmux`"
+                );
                 return Ok(());
             }
             if !tool_on_path("winget") {
@@ -433,7 +436,9 @@ fn run_blocking(args: &Args) -> Result<(), String> {
         }
         InstallMethod::Brew => {
             if args.check {
-                println!("xmux is installed via Homebrew; update with `brew upgrade zer0ken/xmux/xmux`");
+                println!(
+                    "xmux is installed via Homebrew; update with `brew upgrade zer0ken/xmux/xmux`"
+                );
                 return Ok(());
             }
             if !tool_on_path("brew") {
@@ -475,7 +480,11 @@ mod tests {
     #[test]
     fn cargo_bin_path_is_cargo() {
         assert_eq!(
-            classify("/home/u/.cargo/bin/xmux", &["/home/u/.cargo/bin"], Platform::Unix),
+            classify(
+                "/home/u/.cargo/bin/xmux",
+                &["/home/u/.cargo/bin"],
+                Platform::Unix
+            ),
             InstallMethod::Cargo
         );
     }
@@ -483,7 +492,11 @@ mod tests {
     #[test]
     fn brew_cellar_path_is_brew() {
         assert_eq!(
-            classify("/opt/homebrew/Cellar/xmux/0.5.0/bin/xmux", &[], Platform::Unix),
+            classify(
+                "/opt/homebrew/Cellar/xmux/0.5.0/bin/xmux",
+                &[],
+                Platform::Unix
+            ),
             InstallMethod::Brew
         );
     }
@@ -539,11 +552,9 @@ mod tests {
 
     #[test]
     fn checksum_line_parses_by_filename() {
-        let sums =
-            "abc  xmux-v0.5.1-x86_64-unknown-linux-gnu.tar.gz\ndef  SHA256SUMS\n";
+        let sums = "abc  xmux-v0.5.1-x86_64-unknown-linux-gnu.tar.gz\ndef  SHA256SUMS\n";
         assert_eq!(
-            checksum_for_name(sums, "xmux-v0.5.1-x86_64-unknown-linux-gnu.tar.gz")
-                .as_deref(),
+            checksum_for_name(sums, "xmux-v0.5.1-x86_64-unknown-linux-gnu.tar.gz").as_deref(),
             Ok("abc")
         );
         assert!(checksum_for_name(sums, "missing.tar.gz").is_err());
