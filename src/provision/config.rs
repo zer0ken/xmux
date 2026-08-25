@@ -515,19 +515,43 @@ fn host_specs_for(alias: &str, muxes: &[String]) -> Vec<HostSpec> {
 
 /// Parses an OpenSSH client config at `path` and returns the concrete host
 /// aliases declared by `Host` lines, in first-seen order and deduplicated. Glob
-/// patterns (containing `*` or `?`) and negations (starting with `!`) are
-/// skipped, as are comments, blank lines, and non-`Host` directives. `Include`
-/// and `Match` directives are not expanded. A missing file yields an empty list.
+/// patterns (containing `*`, `?`, or `[...]`) and negations (starting with `!`)
+/// are skipped, as are comments, blank lines, and non-`Host` directives.
+/// Backslash line continuations and `Include` directives are honored: an
+/// `Include` glob is expanded (relative to the including file, with `~` expanded
+/// to the home the shell ssh uses) and the included files are parsed in turn,
+/// with include cycles broken. `Match` blocks declare no aliases of their own —
+/// they only apply options to hosts named elsewhere — so they contribute nothing
+/// here; `host_stanza` still shows them for display. A missing file yields an
+/// empty list.
 pub fn ssh_host_aliases(path: &Path) -> Vec<String> {
-    let content = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-
     let mut aliases = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    let mut stack = Vec::new();
+    collect_ssh_aliases(path, &mut aliases, &mut seen, &mut stack);
+    aliases
+}
 
-    for line in content.lines() {
+/// Recursively reads `path`'s `Host` aliases into `aliases`, expanding `Include`
+/// directives. `stack` holds the canonical include chain so a cycle (A includes B
+/// includes A) terminates instead of looping.
+fn collect_ssh_aliases(
+    path: &Path,
+    aliases: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+    stack: &mut Vec<std::path::PathBuf>,
+) {
+    let content = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    if stack.contains(&canonical) {
+        return;
+    }
+    stack.push(canonical);
+
+    for line in logical_lines(&content) {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -536,21 +560,200 @@ pub fn ssh_host_aliases(path: &Path) -> Vec<String> {
         let Some(directive) = fields.next() else {
             continue;
         };
+        if directive.eq_ignore_ascii_case("Include") {
+            for pattern in fields {
+                for included in expand_include(pattern, path) {
+                    collect_ssh_aliases(&included, aliases, seen, stack);
+                }
+            }
+            continue;
+        }
         if !directive.eq_ignore_ascii_case("Host") {
             continue;
         }
         for pattern in fields {
-            if pattern.starts_with('!') || pattern.contains('*') || pattern.contains('?') {
+            if pattern.starts_with('!') || has_glob(pattern) {
                 continue;
             }
-            if seen.contains(pattern) {
-                continue;
+            if seen.insert(pattern.to_string()) {
+                aliases.push(pattern.to_string());
             }
-            aliases.push(pattern.to_string());
-            seen.insert(pattern.to_string());
         }
     }
-    aliases
+
+    stack.pop();
+}
+
+/// Splits `content` into logical config lines, joining a line that ends in a
+/// backslash with the following line (OpenSSH's continuation syntax). The
+/// backslash and newline collapse to a single space.
+fn logical_lines(content: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for raw in content.lines() {
+        let trimmed = raw.trim_end();
+        if let Some(stripped) = trimmed.strip_suffix('\\') {
+            current.push_str(stripped.trim_end());
+            current.push(' ');
+        } else {
+            current.push_str(raw);
+            out.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
+}
+
+/// Expands an `Include` pattern to the files it names: a leading `~` becomes the
+/// home the shell ssh uses, and a relative pattern is resolved against the
+/// directory of the including config file. Glob metacharacters are then matched
+/// against the filesystem.
+fn expand_include(pattern: &str, from: &Path) -> Vec<std::path::PathBuf> {
+    let expanded = if pattern == "~" {
+        crate::provision::env::ssh_home()
+    } else if let Some(rest) = pattern.strip_prefix("~/") {
+        crate::provision::env::ssh_home().join(rest)
+    } else {
+        std::path::PathBuf::from(pattern)
+    };
+    let full = if expanded.is_absolute() {
+        expanded
+    } else {
+        from.parent().unwrap_or(from).join(expanded)
+    };
+    glob_walk(&full)
+}
+
+/// Walks `pattern`, treating `*`, `?`, and `[...]` as globs and resolving literal
+/// segments as paths. Returns the matching files in sorted order.
+fn glob_walk(pattern: &std::path::Path) -> Vec<std::path::PathBuf> {
+    use std::path::Component;
+    let mut matches = Vec::new();
+    let mut base = std::path::PathBuf::new();
+    let mut segs: Vec<String> = Vec::new();
+    for comp in pattern.components() {
+        match comp {
+            Component::Prefix(p) => base.push(p.as_os_str()),
+            Component::RootDir => base.push(Component::RootDir.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => base.push(".."),
+            Component::Normal(s) => segs.push(s.to_string_lossy().into_owned()),
+        }
+    }
+    if segs.is_empty() {
+        return matches;
+    }
+    let last = segs.len() - 1;
+    let mut dirs = vec![base];
+    for (i, seg) in segs.iter().enumerate() {
+        let is_last = i == last;
+        let mut next = Vec::new();
+        for dir in &dirs {
+            if has_glob(seg) {
+                let Ok(entries) = std::fs::read_dir(dir) else {
+                    continue;
+                };
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    if !glob_match(seg, &name.to_string_lossy()) {
+                        continue;
+                    }
+                    let p = dir.join(&name);
+                    let is_file = entry.file_type().map(|t| t.is_file()).unwrap_or(false);
+                    if is_last {
+                        if is_file {
+                            matches.push(p);
+                        }
+                    } else if !is_file {
+                        next.push(p);
+                    }
+                }
+            } else {
+                let p = dir.join(seg);
+                if is_last {
+                    if p.is_file() {
+                        matches.push(p);
+                    }
+                } else if p.is_dir() {
+                    next.push(p);
+                }
+            }
+        }
+        dirs = next;
+    }
+    matches.sort();
+    matches
+}
+
+fn has_glob(s: &str) -> bool {
+    s.contains('*') || s.contains('?') || s.contains('[')
+}
+
+/// Matches `name` against the glob `pat`, supporting `*`, `?`, and `[...]`
+/// character classes (with `!`/`^` negation and `a-z` ranges).
+fn glob_match(pat: &str, name: &str) -> bool {
+    let p: Vec<char> = pat.chars().collect();
+    let n: Vec<char> = name.chars().collect();
+    fn rec(p: &[char], n: &[char]) -> bool {
+        if p.is_empty() {
+            return n.is_empty();
+        }
+        match p[0] {
+            '*' => {
+                if rec(&p[1..], n) {
+                    return true;
+                }
+                !n.is_empty() && rec(p, &n[1..])
+            }
+            '?' => !n.is_empty() && rec(&p[1..], &n[1..]),
+            '[' => {
+                if n.is_empty() {
+                    return false;
+                }
+                match parse_class(p, n[0]) {
+                    Some((matched, rest)) => matched && rec(rest, &n[1..]),
+                    None => false,
+                }
+            }
+            c => !n.is_empty() && n[0] == c && rec(&p[1..], &n[1..]),
+        }
+    }
+    rec(&p, &n)
+}
+
+/// Parses a `[...]` character class at the head of `p`. Returns whether `c` is in
+/// the class and the remaining pattern past the closing `]`; `None` for an
+/// unterminated class.
+fn parse_class(p: &[char], c: char) -> Option<(bool, &[char])> {
+    let mut i = 1;
+    let negate = i < p.len() && (p[i] == '!' || p[i] == '^');
+    if negate {
+        i += 1;
+    }
+    let mut matched = false;
+    let mut first = true;
+    while i < p.len() {
+        let ch = p[i];
+        if ch == ']' && !first {
+            return Some((matched != negate, &p[i + 1..]));
+        }
+        first = false;
+        if i + 2 < p.len() && p[i + 1] == '-' && p[i + 2] != ']' {
+            let (lo, hi) = (ch, p[i + 2]);
+            if lo <= c && c <= hi {
+                matched = true;
+            }
+            i += 3;
+        } else {
+            if ch == c {
+                matched = true;
+            }
+            i += 1;
+        }
+    }
+    None
 }
 
 /// Returns the raw ssh-config stanza(s) that name `alias`: every `Host`/`Match`
@@ -567,17 +770,17 @@ pub fn host_stanza(config_text: &str, alias: &str) -> String {
     };
     let names_alias = |l: &str| l.split_whitespace().skip(1).any(|tok| tok == alias);
 
-    let lines: Vec<&str> = config_text.lines().collect();
+    let lines = logical_lines(config_text);
     let mut out: Vec<String> = Vec::new();
     let mut i = 0;
     while i < lines.len() {
-        if is_header(lines[i]) && names_alias(lines[i]) {
+        if is_header(&lines[i]) && names_alias(&lines[i]) {
             if !out.is_empty() {
                 out.push(String::new());
             }
             out.push(lines[i].trim_end().to_string());
             i += 1;
-            while i < lines.len() && !is_header(lines[i]) {
+            while i < lines.len() && !is_header(&lines[i]) {
                 out.push(lines[i].trim_end().to_string());
                 i += 1;
             }
@@ -1342,5 +1545,67 @@ Host alpha
         );
         let got = ssh_host_aliases(&path);
         assert_eq!(got, vec!["alpha", "beta", "gamma", "realhost", "indented"]);
+    }
+
+    #[test]
+    fn ssh_host_aliases_line_continuation() {
+        // OpenSSH joins a line ending in a backslash with the next line, so a
+        // `Host` header split across lines must still yield all its aliases.
+        let path = write_temp(
+            r#"
+Host alpha \
+     beta
+    HostName 10.0.0.1
+
+Host gamma
+    HostName 10.0.0.2
+"#,
+            "ssh-config-cont",
+        );
+        let got = ssh_host_aliases(&path);
+        assert_eq!(got, vec!["alpha", "beta", "gamma"]);
+    }
+
+    #[test]
+    fn ssh_host_aliases_expands_include() {
+        let inc = write_temp("Host inc-host\n    HostName 10.0.0.9\n", "ssh-inc-a");
+        let dir = inc.parent().unwrap();
+        let sub = dir.join("inc-d");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("extra.conf"), "Host extra-host\n    Port 2200\n").unwrap();
+        std::fs::write(sub.join("skip.txt"), "Host not-included\n").unwrap();
+
+        // A direct include plus a glob include restricted to *.conf.
+        let glob_pat = sub.join("*.conf").to_string_lossy().into_owned();
+        let include_line = format!(
+            "Include {}\nInclude {glob_pat}\n\nHost main\n    HostName 10.0.0.1\n",
+            inc.display()
+        );
+        let path = write_temp(&include_line, "ssh-main");
+        let got = ssh_host_aliases(&path);
+        assert_eq!(got, vec!["inc-host", "extra-host", "main"]);
+    }
+
+    #[test]
+    fn ssh_host_aliases_include_cycle_terminates() {
+        // A includes B and B includes A: the cycle must not loop forever, and
+        // aliases from both files still come through exactly once.
+        let dir = std::env::temp_dir().join(format!("xmux-cfg-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a_path = dir.join("ssh-cycle-a");
+        let b_path = dir.join("ssh-cycle-b");
+        std::fs::write(
+            &a_path,
+            format!("Include {}\nHost a-host\n", b_path.display()),
+        )
+        .unwrap();
+        std::fs::write(
+            &b_path,
+            format!("Include {}\nHost b-host\n", a_path.display()),
+        )
+        .unwrap();
+        let mut got = ssh_host_aliases(&a_path);
+        got.sort();
+        assert_eq!(got, vec!["a-host", "b-host"]);
     }
 }
