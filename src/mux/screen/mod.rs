@@ -12,8 +12,8 @@ pub use display::ScreenDriver;
 /// The screen poll cadence. screen pushes no change events, so the session list is
 /// discovered by re-enumeration; one sweep costs one `-ls` plus one `-Q windows` per
 /// session, each a separate process (over ssh, a separate connection), so the cadence
-/// mirrors psmux's polled local read.
-const SCREEN_POLL_MS: u64 = 1500;
+/// mirrors zellij's polled read rather than psmux's single local registry stat.
+const SCREEN_POLL_MS: u64 = 3000;
 
 /// screen: one per-user daemon, enumerated from `-ls`, polled for change, each session
 /// displayed through its own attachment.
@@ -264,5 +264,13 @@ mod tests {
             got.as_ref().map(|m| (m.kind(), m.server_model()))
         );
         assert_eq!(got.as_ref().map(|m| m.kind()), Some("screen"));
+    }
+
+    #[test]
+    fn screen_poll_interval_matches_a_remote_multi_query_mux() {
+        // Each poll sweep is one `-ls` plus one `-Q windows` per session, every one a
+        // separate process (over ssh, a separate connection) — the same cost zellij's
+        // poll budgets for, so screen shares its cadence rather than psmux's local one.
+        assert_eq!(SCREEN_POLL_MS, 3000);
     }
 }
