@@ -391,7 +391,7 @@ impl Runtime {
         // Feed the switcher the ssh config so an unreachable host's screen can show
         // its Host/Match stanza. Read once; a missing file just yields no stanza.
         state.chrome.set_ssh_config_text(
-            std::fs::read_to_string(crate::env::ssh_config_path()).unwrap_or_default(),
+            std::fs::read_to_string(crate::provision::env::ssh_config_path()).unwrap_or_default(),
         );
         // And what offered each host, so an unreachable one can name the provider that
         // put it on the roster. Reduced to words here: the screen prints them and

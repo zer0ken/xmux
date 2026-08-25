@@ -98,7 +98,7 @@ impl Default for ViewBorderColors {
 impl ViewBorderColors {
     /// Applies the `[ui] view-*-border-style` overrides over the defaults. An empty
     /// config string means "unset" - that is why the config keys default to empty (see
-    /// [`crate::config::UiConfig`]) - and leaves that role at its default colour.
+    /// [`crate::provision::config::UiConfig`]) - and leaves that role at its default colour.
     pub fn resolve(cfg_active: &str, cfg_inactive: &str, cfg_hover: &str) -> Self {
         let d = ViewBorderColors::default();
         let pick = |cfg: &str, fb: Color| {
@@ -711,7 +711,7 @@ impl Chrome {
             {
                 rows.push((ScreenCell::Label("provider"), provider.clone()));
             }
-            let stanza = crate::config::host_stanza(&self.ssh_config_text, source);
+            let stanza = crate::provision::config::host_stanza(&self.ssh_config_text, source);
             if stanza.is_empty() {
                 rows.push((
                     ScreenCell::Label("ssh config"),

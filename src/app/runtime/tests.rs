@@ -13,8 +13,8 @@ fn fake_source(alias: &str) -> Source {
     }
 }
 
-fn fake_roster(aliases: &[&str]) -> crate::env::Roster {
-    crate::env::Roster {
+fn fake_roster(aliases: &[&str]) -> crate::provision::env::Roster {
+    crate::provision::env::Roster {
         sources: aliases.iter().map(|a| fake_source(a)).collect(),
         local_muxes: vec!["cmd.exe".into()],
         ssh_aliases: aliases

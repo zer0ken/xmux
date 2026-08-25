@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::config::Config;
+use crate::provision::config::Config;
 use crate::model::{Host, Liveness};
 use crate::mux::for_binary;
 use crate::session::LOCAL_SOURCE;
@@ -509,7 +509,7 @@ mod tests {
         // `env.srcs` seed — a reordered or dropped host would be a live regression.
         // A config-only host (declared in config.toml, not ssh-config) with a mux override.
         let cfg = Config {
-            hosts: vec![crate::config::HostConfig {
+            hosts: vec![crate::provision::config::HostConfig {
                 ssh: "cfgonly".into(),
                 mux: "psmux".into(),
             }],

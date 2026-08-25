@@ -10,8 +10,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::config::{self, Config};
-use crate::discovery;
+use crate::provision::config::{self, Config};
+use crate::provision::discovery;
 use crate::link::manage;
 use crate::session::{Session, WindowPanes};
 use crate::model::source::{self, Source};
@@ -40,8 +40,8 @@ pub struct Roster {
     /// Which provider put each host on the roster, keyed by HOST name (the machine half
     /// of a source id). Read only to be SHOWN: the unreachable host screen names it, so
     /// a host that fails is traceable to the thing that offered it. See
-    /// [`crate::roster::Provider`].
-    pub roster_providers: HashMap<String, crate::roster::Provider>,
+    /// [`crate::provision::roster::Provider`].
+    pub roster_providers: HashMap<String, crate::provision::roster::Provider>,
     /// The ssh-config host aliases this resolution offered (a config-assembly product).
     /// `Hosts::build` reruns `Config::host_specs` over these to seed the runtime host
     /// registry, so the registry is built from config, not by re-reading `sources`.
@@ -135,10 +135,10 @@ pub async fn resolve_roster(
     let os = current_os();
     // The ROSTER: which machines xmux offers. `~/.ssh/config` first, so a hand-written
     // alias keeps the position the user gave it; then each network provider the config
-    // enables. See `crate::roster`.
-    let offered = crate::roster::merge(&[
+    // enables. See `crate::provision::roster`.
+    let offered = crate::provision::roster::merge(&[
         (
-            crate::roster::Provider::SshConfig,
+            crate::provision::roster::Provider::SshConfig,
             if cfg.discovery.ssh_config {
                 config::ssh_host_aliases(&ssh_config_path())
             } else {
@@ -146,9 +146,9 @@ pub async fn resolve_roster(
             },
         ),
         (
-            crate::roster::Provider::Tailscale,
+            crate::provision::roster::Provider::Tailscale,
             if cfg.discovery.tailscale {
-                crate::roster::tailscale_aliases()
+                crate::provision::roster::tailscale_aliases()
             } else {
                 Vec::new()
             },
@@ -267,10 +267,10 @@ fn own_source_id<'a>(srcs: &'a [Source], kind: &str) -> Option<&'a str> {
 /// the roster.
 fn roster_providers(
     cfg: &Config,
-    offered: &[(String, crate::roster::Provider)],
+    offered: &[(String, crate::provision::roster::Provider)],
     wsl_distros: &[String],
-) -> HashMap<String, crate::roster::Provider> {
-    use crate::roster::Provider;
+) -> HashMap<String, crate::provision::roster::Provider> {
+    use crate::provision::roster::Provider;
     let mut out: HashMap<String, Provider> = HashMap::new();
     for (name, provider) in offered {
         out.entry(name.clone()).or_insert(*provider);
@@ -517,7 +517,7 @@ impl Ops for EnvOps {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
+    use crate::provision::config::Config;
     use crate::session::Session;
     use crate::model::source::{RunError, Runner};
 
@@ -702,16 +702,16 @@ mod tests {
 
     #[test]
     fn the_roster_records_what_offered_each_host() {
-        use crate::roster::Provider;
+        use crate::provision::roster::Provider;
         // `jupiter00` is on the roster twice over: a provider listed it AND a `[[hosts]]`
         // entry names it. The entry overrides its mux, it did not put it on the roster.
         let cfg = Config {
             hosts: vec![
-                crate::config::HostConfig {
+                crate::provision::config::HostConfig {
                     ssh: "written-down".into(),
                     mux: Default::default(),
                 },
-                crate::config::HostConfig {
+                crate::provision::config::HostConfig {
                     ssh: "jupiter00".into(),
                     mux: Default::default(),
                 },

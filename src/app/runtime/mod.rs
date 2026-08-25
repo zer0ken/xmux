@@ -27,7 +27,7 @@ use crate::display::attachment::PtyEvent;
 use crate::display::dispatch::Action;
 use crate::display::registry::AttachRegistry;
 use crate::display::{DisplayEnsure, DisplayEvent, DisplayWorker};
-use crate::env::Env;
+use crate::provision::env::Env;
 use crate::link::{HostEvent, HostManager};
 use crate::model::Selection;
 use crate::ui::switcher::TerminalViewTarget;
@@ -650,7 +650,7 @@ fn spawn_roster_resolve(
     tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
 ) {
     tokio::spawn(async move {
-        let (roster, err) = crate::env::resolve_roster(&xmux_dir, local_socket).await;
+        let (roster, err) = crate::provision::env::resolve_roster(&xmux_dir, local_socket).await;
         if let Some(e) = err {
             tracing::warn!(error = %e, "config did not parse; keeping the roster as it stands");
             return;
@@ -665,7 +665,7 @@ fn spawn_roster_resolve(
 /// after the first paint. One task per MACHINE (not per source): the answer is about the
 /// machine, and each mux it reports beyond the one already served becomes a source.
 fn discover_machine_muxes(
-    cfg: &crate::config::Config,
+    cfg: &crate::provision::config::Config,
     hosts: &crate::model::Hosts,
     tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
 ) {

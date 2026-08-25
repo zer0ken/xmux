@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::config::Config;
+use crate::provision::config::Config;
 use crate::transport::MachineKind;
 use crate::session;
 
