@@ -20,25 +20,57 @@
 //! A user who wants a specific colour names one (`[ui] selection-style`,
 //! `[ui] hint-bar-style`). Their terminal, their choice.
 
-use std::sync::OnceLock;
+use std::sync::RwLock;
 
 use ratatui::style::{Color, Modifier, Style};
 
 /// The semantic colour set. One field per UI role - callers name the role, never
 /// a hue, so the assignments below stay changeable in one place.
+#[derive(Clone, Copy)]
 pub(crate) struct Palette {
-    /// The single accent: the selection mark, key hints, and popup titles all
-    /// share it, so "interactive / current" is one colour everywhere.
+    /// The single accent: the selection mark, popup titles, and the view border's
+    /// FOCUS half all share it, so "interactive / current" is one colour everywhere.
+    /// Painted on the CARD / TERMINAL background, so it follows the theme.
     pub accent: Color,
-    /// Muted furniture: the digit gutter, separators, the └/├ connectors, popup
-    /// borders, the scrollbar thumb, and settled status text.
+    /// Content furniture, one role for the quiet supporting marks on the cards: the
+    /// "no sessions" status word, the `/` separator, the card number, the └/├
+    /// connectors, the popup borders, and the scrollbar thumb. All the marks a card
+    /// needs to read apart without being part of any level - see `bar_accent` and
+    /// `border_inactive` for the surfaces that live on a background of their own.
     pub overlay: Color,
-    /// The hint bar's background: ANSI black, the darkest slot every theme has, so the
-    /// bar reads as chrome rather than content. `[ui] hint-bar-style` overrides it.
+    /// The view border's FOCUS half - the lit side of the nav|mux divider that marks
+    /// which view holds focus. Its own role, apart from the card accent, so the divider
+    /// is tuned independently of the selection mark / popup titles.
+    pub border_active: Color,
+    /// The view border's NON-focus half - the dim side of the nav|mux divider that
+    /// marks which half does NOT hold focus.
+    pub border_inactive: Color,
+    /// The view border's DRAG-HOVER cue (the grab handle that appears while the mouse
+    /// hovers the rule). Its own role, no longer a fixed yellow.
+    pub border_hover: Color,
+    /// The card's NUMBER in the left column (the digit gutter) - the address a user
+    /// jumps to. Split from `overlay` so it can be tuned apart from the other marks.
+    pub number: Color,
+    /// The `/` separator between the host/mux/session/window parts of a card's lines.
+    pub separator: Color,
+    /// The box-drawing connector (`├`/`└`) hanging a card's detail line under its
+    /// context line.
+    pub connector: Color,
+    /// The "no sessions" status word on a reachable EMPTY host's card.
+    pub no_sessions: Color,
+    /// The scroll-overflow cue (`« n more` / `n more »`) when cards run off the band.
+    pub more: Color,
+    /// The hint bar's background: a single ANSI slot, so the bar reads as chrome
+    /// rather than content. `[ui] hint-bar-style` overrides it.
     pub bar_bg: Color,
     /// The hint bar's text, and the text of the refusal bar. Paired with `bar_bg`, so
     /// the two are legible together in any theme that keeps its own slots legible.
     pub bar_fg: Color,
+    /// The hint bar's KEY accent - the prefix and each key token in the cheatsheet.
+    /// Split from [`accent`](Self::accent) because the bar sits on `bar_bg` (a
+    /// different surface than the cards), so the slot that reads on one may not read
+    /// on the other: a light theme's dark `accent` is invisible on a dark bar.
+    pub bar_accent: Color,
     /// Level colour: host. Cyan, the same slot the focused view border is lit with, so
     /// the machine reads as the outermost level and as the thing focus moves between.
     pub host: Color,
@@ -47,9 +79,8 @@ pub(crate) struct Palette {
     /// Level colour: window (the detail line's window part) - the
     /// quietest level, so the session name reads as the detail line's anchor.
     pub window: Color,
-    /// Level colour: session. Red, so the level a user actually picks stands out from
-    /// the machine and mux above it. Shares the slot with [`danger`](Self::danger), which
-    /// only ever paints a STATUS line - never a name - so the two never sit side by side.
+    /// Level colour: session. The level a user actually picks, so it stands out from
+    /// the machine and mux above it.
     pub session: Color,
     /// In-flight state: the scanning status and the loading spinner.
     pub pending: Color,
@@ -61,46 +92,120 @@ pub(crate) struct Palette {
     pub selection_bg: Option<Color>,
 }
 
-/// The role-to-ANSI assignments. `DarkGray` is ANSI bright black, every theme's own muted
-/// tone. The hint bar is `Black` under `White` with `Cyan` keys: the plain terminal
-/// combination, legible on every theme, which is what lets the bar be a solid bar of
-/// chrome without xmux naming a colour of its own.
-const fn base() -> Palette {
+/// The two built-in themes' names. `[ui] theme` names one; `auto` is not a mode, the
+/// two names ARE the two ANSI-only themes - `auto-light` for a light terminal, `auto-
+/// dark` for a dark one, each following the terminal's own palette by painting only
+/// ANSI slots. See the module doc and `Colour ownership` in `CONTEXT.md`.
+pub(crate) const AUTO_DARK: &str = "auto-dark";
+pub(crate) const AUTO_LIGHT: &str = "auto-light";
+
+/// `auto-dark`: for a dark terminal background. Painted with the dark-slot ends of the
+/// ANSI set - the level colours read on black, the accent pops on it.
+const fn auto_dark() -> Palette {
     Palette {
-        accent: Color::Cyan,
+        accent: Color::LightGreen,
         overlay: Color::DarkGray,
-        bar_bg: Color::Black,
+        border_active: Color::White,
+        border_inactive: Color::DarkGray,
+        border_hover: Color::LightGreen,
+        number: Color::DarkGray,
+        separator: Color::DarkGray,
+        connector: Color::DarkGray,
+        no_sessions: Color::DarkGray,
+        more: Color::DarkGray,
+        bar_bg: Color::DarkGray,
         bar_fg: Color::White,
-        host: Color::Cyan,
-        mux: Color::Green,
+        bar_accent: Color::White,
+        host: Color::White,
+        mux: Color::LightGreen,
         window: Color::DarkGray,
-        session: Color::Red,
+        session: Color::White,
         pending: Color::Yellow,
         danger: Color::Red,
         selection_bg: None,
     }
 }
 
-/// The set served until [`init`] runs (tests, the headless dump path).
-static FALLBACK: Palette = base();
+/// `auto-light`: for a light terminal background. Painted with the dark-slot ends of
+/// the ANSI set (a light background washes the bright slots out), so the level colours
+/// and the accent read against white; the hint bar keeps the dark slots that read on a
+/// bar of its own.
+const fn auto_light() -> Palette {
+    Palette {
+        accent: Color::Green,
+        overlay: Color::DarkGray,
+        border_active: Color::Black,
+        border_inactive: Color::White,
+        border_hover: Color::Green,
+        number: Color::DarkGray,
+        separator: Color::DarkGray,
+        connector: Color::DarkGray,
+        no_sessions: Color::DarkGray,
+        more: Color::DarkGray,
+        bar_bg: Color::DarkGray,
+        bar_fg: Color::White,
+        bar_accent: Color::White,
+        host: Color::Black,
+        mux: Color::Green,
+        window: Color::DarkGray,
+        session: Color::Black,
+        pending: Color::LightYellow,
+        danger: Color::LightRed,
+        selection_bg: None,
+    }
+}
 
-/// The active set, installed once at startup. Unset reads as [`FALLBACK`].
-static ACTIVE: OnceLock<Palette> = OnceLock::new();
+/// The two built-in themes as statics, so [`THEMES`] and the fallback can hold
+/// `&'static` references to them.
+static AUTO_DARK_THEME: Palette = auto_dark();
+static AUTO_LIGHT_THEME: Palette = auto_light();
 
-/// Installs this run's palette, once, before any render; later calls are ignored
-/// (`OnceLock`). `selection_bg` is `[ui] selection-style` - the only colour xmux takes
+/// The theme registry. A theme is a role→ANSI-slot assignment, and adding a theme is
+/// adding one entry here (plus its tests). The two built-ins are ANSI-only by the
+/// invariant; a future theme that names a colour of its own would carry that exception
+/// on itself rather than loosening the guard.
+pub(crate) static THEMES: &[(&str, &Palette)] = &[
+    (AUTO_DARK, &AUTO_DARK_THEME),
+    (AUTO_LIGHT, &AUTO_LIGHT_THEME),
+];
+
+/// The active set, installable again on every config change so a `[ui]` edit applies
+/// live. A read guard on the render path is a cheap atomic; the write happens once per
+/// config reload, off the render's read path.
+static ACTIVE: RwLock<Palette> = RwLock::new(auto_dark());
+
+/// Resolves a theme name to its canonical name and [`Palette`]. Unknown names resolve
+/// to `None`, leaving the caller's fallback (the default `auto-dark`) to apply.
+pub(crate) fn resolve_theme(name: &str) -> Option<(&'static str, &'static Palette)> {
+    THEMES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(n, p)| (*n, *p))
+}
+
+/// Resolves a theme name, or the default `auto-dark` when unknown. Split from
+/// [`apply`] so the fallback is testable without touching the process-wide lock.
+fn resolve_or_default(name: &str) -> (&'static str, &'static Palette) {
+    resolve_theme(name).unwrap_or((AUTO_DARK, &AUTO_DARK_THEME))
+}
+
+/// Installs a theme + selection override, REPLACING the active palette. Called at
+/// startup and again on every config change, so a `[ui] theme` / `selection-style`
+/// edit applies live. `theme` names a built-in theme (an unknown name falls back to
+/// `auto-dark`); `selection_bg` is `[ui] selection-style` - the only colour xmux takes
 /// from outside the sixteen slots, because the user naming it is the one person who
 /// knows their own theme.
-pub(crate) fn init(selection_bg: Option<Color>) {
-    let _ = ACTIVE.set(Palette {
+pub(crate) fn apply(theme: &str, selection_bg: Option<Color>) {
+    let (_name, base) = resolve_or_default(theme);
+    *ACTIVE.write().unwrap() = Palette {
         selection_bg,
-        ..base()
-    });
+        ..*base
+    };
 }
 
 /// The active palette.
-pub(crate) fn get() -> &'static Palette {
-    ACTIVE.get().unwrap_or(&FALLBACK)
+pub(crate) fn get() -> std::sync::RwLockReadGuard<'static, Palette> {
+    ACTIVE.read().unwrap()
 }
 
 /// The style the SELECTED card is painted with.
@@ -159,35 +264,89 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_colour_xmux_chooses_is_an_ansi_slot() {
+    fn every_colour_every_theme_chooses_is_an_ansi_slot() {
         // THE invariant of this module. A `Color::Rgb`, or an `Indexed` above 15, is a
         // hue xmux picked for somebody else's terminal: it cannot follow a theme, and it
         // is wrong on every theme it was not picked for. Sixteen slots and attributes are
-        // the whole vocabulary.
-        let p = base();
-        for (role, c) in [
-            ("accent", p.accent),
-            ("overlay", p.overlay),
-            ("bar_bg", p.bar_bg),
-            ("bar_fg", p.bar_fg),
-            ("host", p.host),
-            ("mux", p.mux),
-            ("window", p.window),
-            ("session", p.session),
-            ("pending", p.pending),
-            ("danger", p.danger),
-        ] {
-            let ansi = match c {
-                Color::Rgb(..) => false,
-                Color::Indexed(n) => n < 16,
-                _ => true,
-            };
-            assert!(ansi, "{role} = {c:?} cannot follow the terminal theme");
+        // the whole vocabulary. Held for EVERY built-in theme, so a theme added later
+        // carries the guard with it.
+        for p in [auto_dark(), auto_light()] {
+            for (role, c) in [
+                ("accent", p.accent),
+                ("overlay", p.overlay),
+                ("border_active", p.border_active),
+                ("border_inactive", p.border_inactive),
+                ("border_hover", p.border_hover),
+                ("number", p.number),
+                ("separator", p.separator),
+                ("connector", p.connector),
+                ("no_sessions", p.no_sessions),
+                ("more", p.more),
+                ("bar_bg", p.bar_bg),
+                ("bar_fg", p.bar_fg),
+                ("bar_accent", p.bar_accent),
+                ("host", p.host),
+                ("mux", p.mux),
+                ("window", p.window),
+                ("session", p.session),
+                ("pending", p.pending),
+                ("danger", p.danger),
+            ] {
+                let ansi = match c {
+                    Color::Rgb(..) => false,
+                    Color::Indexed(n) => n < 16,
+                    _ => true,
+                };
+                assert!(ansi, "{role} = {c:?} cannot follow the terminal theme");
+            }
+            assert!(
+                p.selection_bg.is_none(),
+                "the only colour from outside the slots is one the USER named"
+            );
         }
-        assert!(
-            p.selection_bg.is_none(),
-            "the only colour from outside the slots is one the USER named"
-        );
+    }
+
+    #[test]
+    fn the_registry_names_the_two_builtin_themes() {
+        // The two ANSI-only themes are the whole current set. A new theme is a new
+        // entry; this test names what is on offer so a rename is a test change.
+        assert_eq!(theme_names_impl(), vec!["auto-dark", "auto-light"]);
+    }
+
+    #[test]
+    fn resolve_theme_resolves_both_and_rejects_unknown() {
+        let (name, p) = resolve_theme("auto-dark").unwrap();
+        assert_eq!(name, "auto-dark");
+        assert_eq!(p.accent, Color::LightGreen);
+        assert_eq!(p.host, Color::White);
+        assert_eq!(p.mux, Color::LightGreen);
+        assert_eq!(p.border_hover, Color::LightGreen);
+        assert_eq!(p.window, Color::DarkGray);
+        let (name, p) = resolve_theme("auto-light").unwrap();
+        assert_eq!(name, "auto-light");
+        assert_eq!(p.accent, Color::Green);
+        assert_eq!(p.overlay, Color::DarkGray);
+        assert_eq!(p.no_sessions, Color::DarkGray);
+        assert_eq!(p.border_inactive, Color::White);
+        assert_eq!(p.session, Color::Black);
+        assert!(resolve_theme("nope").is_none());
+        assert!(resolve_theme("").is_none());
+    }
+
+    #[test]
+    fn unknown_theme_name_falls_back_to_auto_dark() {
+        // `[ui] theme` naming something xmux does not ship must not paint a broken UI:
+        // it falls back to the safe dark theme, and the doctor reports the resolution.
+        let (name, p) = resolve_or_default("nope");
+        assert_eq!(name, "auto-dark");
+        assert_eq!(p.accent, auto_dark().accent);
+        let (name, p) = resolve_or_default("auto-light");
+        assert_eq!(name, "auto-light");
+        assert_eq!(p.accent, auto_light().accent);
+    }
+
+    fn theme_names_impl() -> Vec<&'static str> {
+        THEMES.iter().map(|(n, _)| *n).collect()
     }
 
     #[test]

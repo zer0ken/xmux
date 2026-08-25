@@ -147,7 +147,14 @@ no function, and no test, so renaming code is never a documentation change.
   a real session, so one-, two-, and three-digit numbers behave identically. Each edit
   moves the selection; `Enter` keeps it, `Esc` returns to where the jump started.
 - **FR-B11** - Every colour xmux paints is an ANSI-16 slot, so the TERMINAL THEME
-  resolves the hue and the whole UI recolours with the user's own scheme. What the
+  resolves the hue and the whole UI recolours with the user's own scheme. A THEME is a
+  named role→ANSI-slot assignment curated in a registry: the built-ins are
+  `auto-dark` (the default) and `auto-light`, one for a dark and one for a light
+  terminal background, and `[ui] theme` selects one (an unknown name falls back to
+  `auto-dark`, reported by `xmux doctor`). The session level reads BOLD so the level a
+  user actually picks stands off the host, mux, and window parts of the same line; the
+  hint bar keys read its own `bar_accent` slot, because a slot that reads on the cards
+  may not read on the bar's own background. What the
   sixteen slots cannot say is said with an attribute: the selected card is REVERSE VIDEO,
   the terminal swapping its own pair, which is what a theme itself means by "selected".
   A background xmux picked instead would be wrong on every theme it was not picked for,

@@ -53,8 +53,9 @@ UI elements a user perceives as distinct things:
 - view border - the vertical line between the two views. Modelled on tmux's pane
   border, but it borders views (not panes), so it is a `view border`, never a
   "pane border" or a bare "divider". Its colour is FIXED and the same on every
-  source: the palette accent on the lit half, the muted tone on the other, yellow
-  for the drag-hover cue. The border states which VIEW holds focus, which is a fact
+  source: the palette accent on the lit half, its own `border_inactive` muted tone on
+  the other, yellow for the drag-hover cue. The border states which VIEW holds focus,
+  which is a fact
   about xmux and not about the mux on the other side of it, so nothing a host or a
   mux reports may move it. Its color config keys are `view-border-style` /
   `view-active-border-style` / `view-border-hover-style`. These keys are OVERRIDES:
@@ -417,6 +418,22 @@ The remaining layers each own one concern:
 attributes; the terminal resolves them into actual hues. So the whole UI recolours with
 whatever scheme the user runs, and xmux never fights a theme it cannot see. This is a
 hard invariant, not a preference.
+
+A THEME is a named role→ANSI-slot assignment, and a theme system curates them: the
+built-ins are `auto-dark` (the default) and `auto-light`, each an ANSI-only theme for a
+dark or a light terminal background. `[ui] theme` names one; an unknown name falls back
+to `auto-dark` and `xmux doctor` reports the resolution. The two built-ins are the whole
+current set, and adding a theme is adding one registry entry plus its tests - the way
+the system keeps growing without loosening the invariant below. Selecting a theme does
+not pick colours: the theme IS the slot mapping, and both ends (the accent on the
+cards, the `bar_accent` on the hint bar) stay within the slots.
+
+The `[ui]` presentation settings - theme / selection-style / hint-bar-style /
+view-border styles - are re-applied LIVE when `config.toml` changes: the redraw
+cadence stats the file (a cheap poll, no watch dependency) and a changed mtime
+reloads just that section, keeping the previous settings on a malformed edit. The
+roster and hosts are not part of it - re-scanning sources is the `rescan` key's job
+and a config edit must not reset the user's sessions.
 
 - The vocabulary is the sixteen slots (one per UI role) plus ATTRIBUTES: reverse
   video, bold. Nothing else. An RGB colour, or an indexed colour above 15, is a hue

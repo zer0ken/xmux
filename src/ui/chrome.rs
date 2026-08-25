@@ -88,9 +88,9 @@ impl Default for ViewBorderColors {
     fn default() -> Self {
         let pal = crate::ui::palette::get();
         ViewBorderColors {
-            active: pal.accent,
-            inactive: pal.overlay,
-            hover: Color::Yellow,
+            active: pal.border_active,
+            inactive: pal.border_inactive,
+            hover: pal.border_hover,
         }
     }
 }
@@ -917,7 +917,13 @@ impl Chrome {
     /// style. Purely presentational - the text is exactly the [`Self::hint_bar_lines`]
     /// line, so the fit / wrap behaviour is untouched.
     fn hint_bar_line_spans(&self, line: String) -> Line<'static> {
-        let accent = Style::default().fg(crate::ui::palette::get().accent);
+        // The bar's OWN accent, not the card accent: the keys sit on `bar_bg`, a
+        // surface the card accent may not read on (see `Palette::bar_accent`). The keys
+        // are also BOLD, so a key reads as a key wherever it is offered (the help modal's
+        // key column and the host-screen rows are bold the same way).
+        let accent = Style::default()
+            .fg(crate::ui::palette::get().bar_accent)
+            .add_modifier(Modifier::BOLD);
         let sep_style = Style::default().fg(crate::ui::palette::get().overlay);
         let mut spans: Vec<Span> = Vec::new();
         for (i, seg) in line.split(" · ").enumerate() {
@@ -1212,15 +1218,15 @@ mod tests {
         // against its muted tone. Nothing outside this function can move them.
         let pal = crate::ui::palette::get();
         let d = ViewBorderColors::resolve("", "", "");
-        assert_eq!(d.active, pal.accent);
-        assert_eq!(d.inactive, pal.overlay);
-        assert_eq!(d.hover, Color::Yellow);
+        assert_eq!(d.active, pal.border_active);
+        assert_eq!(d.inactive, pal.border_inactive);
+        assert_eq!(d.hover, pal.border_hover);
         assert_eq!(d, ViewBorderColors::default());
 
         // Each key overrides its own role and leaves the others at the default.
         let c = ViewBorderColors::resolve("red", "", "cyan");
         assert_eq!(c.active, Color::Red);
-        assert_eq!(c.inactive, pal.overlay);
+        assert_eq!(c.inactive, pal.border_inactive);
         assert_eq!(c.hover, Color::Cyan);
 
         // The tmux colour vocabulary applies to the overrides (`default` = Reset).
