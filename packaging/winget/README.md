@@ -15,7 +15,7 @@ because winget-pkgs requires a signed contribution agreement. The usual flow:
 
 1. Wait for a release, then download its `SHA256SUMS` artifact.
 2. Copy the `*.installer.yaml`, `*.locale.*.yaml`, and `*.yaml` files here
-   under `manifests/z/ze/zer0ken/xmux/<version>/`, filling
+   under `manifests/z/zer0ken/xmux/<version>/`, filling
    `InstallerSha256` from the release checksum.
 3. Open a pull request against `microsoft/winget-pkgs` with those files.
 
