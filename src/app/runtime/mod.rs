@@ -908,21 +908,49 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     {
         let log = env.xmux_dir.join("panic.log");
         let prev_hook = std::panic::take_hook();
+        // How many times each panic SITE has fired. A recovered worker panic (a PTY pump's
+        // vt100 edge case) fires again on the next frame that hits it, so writing every one
+        // fills the file with one line repeated: the count is written at each power of two
+        // instead, which keeps the first, keeps the scale, and turns thousands of lines into
+        // a dozen. Keyed by the site, not the message, because a message carries the
+        // indexes that varied and would defeat the count.
+        let seen: std::sync::Mutex<std::collections::HashMap<String, u64>> =
+            std::sync::Mutex::new(std::collections::HashMap::new());
         std::panic::set_hook(Box::new(move |info| {
-            // Emit to the structured log first: the non-blocking writer flushes on
-            // WorkerGuard drop, which happens after main unwinds, so this record is
-            // not lost even though the subscriber may not have flushed yet.
-            tracing::error!("panic: {info}");
-            // Append to the raw file as a fallback readable without a log viewer.
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log)
-            {
-                let _ = writeln!(f, "{info}");
+            let site = match info.location() {
+                Some(l) => format!("{}:{}:{}", l.file(), l.line(), l.column()),
+                None => "<unknown>".to_string(),
+            };
+            // A poisoned lock is a panic inside this hook: report the site rather than
+            // counting it, so a hook that broke once still logs.
+            let count = match seen.lock() {
+                Ok(mut seen) => {
+                    let c = seen.entry(site).or_insert(0);
+                    *c += 1;
+                    *c
+                }
+                Err(_) => 1,
+            };
+            // A main-thread panic is the app dying, once: it is always written, whatever
+            // a worker has already counted at the same site, because the message on the
+            // way out names the file it says the detail is in.
+            let fatal = std::thread::current().name() == Some("main");
+            if fatal || count.is_power_of_two() {
+                // Emit to the structured log first: the non-blocking writer flushes on
+                // WorkerGuard drop, which happens after main unwinds, so this record is
+                // not lost even though the subscriber may not have flushed yet.
+                tracing::error!(count, "panic: {info}");
+                // Append to the raw file as a fallback readable without a log viewer.
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log)
+                {
+                    let _ = writeln!(f, "[x{count}] {info}");
+                }
             }
-            if std::thread::current().name() == Some("main") {
+            if fatal {
                 use ratatui::crossterm::{
                     event::DisableMouseCapture, execute, terminal::disable_raw_mode,
                     terminal::LeaveAlternateScreen,
@@ -936,7 +964,7 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
                 prev_hook(info);
             }
             // A worker-thread panic (a PTY pump's vt100 edge case) is caught and
-            // recovered by Grid::feed; it is already in the log + panic.log above. Do
+            // recovered by Grid::feed; the log and panic.log above carry it, counted. Do
             // NOT forward it to the default hook - its stderr print lands on the live
             // TUI's terminal and corrupts the screen (the panic-spam bug).
         }));
