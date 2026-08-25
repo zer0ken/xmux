@@ -91,11 +91,14 @@ jobs:
           # `secrets` is not available in `if` conditions (see the official
           # context-availability table), so the token is injected via `env` and
           # checked here, in the shell, where the secrets context is allowed.
-          if [ -n "$CARGO_REGISTRY_TOKEN" ]; then
-            cargo publish
-          else
-            echo "No CARGO_REGISTRY_TOKEN configured; skipping crates.io publish."
+          #
+          # A missing token must FAIL the job, not silently skip: a silent skip
+          # looked like a green release while crates.io was never updated.
+          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+            echo "::error::CARGO_REGISTRY_TOKEN is not configured on the crates-io environment; cannot publish to crates.io" >&2
+            exit 1
           fi
+          cargo publish
 
   # Refresh the winget and Homebrew packaging manifests with the new version
   # and the real checksums, commit them to main, and (when a token is
