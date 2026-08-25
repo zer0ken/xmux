@@ -18,6 +18,8 @@ use crate::session::{Session, WindowPanes};
 use crate::ui::switcher::Ops;
 use crate::ui::tree::{self, Group};
 
+use tokio::sync::mpsc;
+
 const SCAN_CONCURRENCY: usize = 8;
 const SCAN_TIMEOUT: Duration = Duration::from_secs(6); // must exceed the ssh connect timeout (5s)
 const DETAIL_TIMEOUT: Duration = Duration::from_secs(6);
@@ -407,6 +409,30 @@ impl Env {
         to_groups(results)
     }
 
+    /// Probes every source and streams each host/session group the moment its
+    /// probe resolves, in completion order. Used by `ls` so it can print a source
+    /// as soon as it answers instead of appearing frozen while a dead host is
+    /// still timing out. The receiver closes after the last probe resolves.
+    pub async fn scan_stream(&self) -> mpsc::Receiver<Group> {
+        let srcs = self.source_list();
+        let mut rx = discovery::scan_stream(&srcs, SCAN_TIMEOUT, SCAN_CONCURRENCY).await;
+        let (tx, out) = mpsc::channel(srcs.len().max(1));
+        tokio::spawn(async move {
+            while let Some(r) = rx.recv().await {
+                let mut sessions = r.sessions;
+                tree::sort_by_recency(&mut sessions);
+                let _ = tx
+                    .send(Group {
+                        source: r.source,
+                        err: r.err,
+                        sessions,
+                    })
+                    .await;
+            }
+        });
+        out
+    }
+
     /// Builds the switcher's side-effecting actions over the live mux. A shared
     /// semaphore bounds the concurrent probes (`list-sessions`/`list-panes`) the
     /// event loop streams through these ops.
@@ -418,48 +444,45 @@ impl Env {
     }
 }
 
-/// Renders scan groups for `xmux ls`: one `<source>/<name>` line per reachable
-/// session, an unreachable line per dead source, and whether EVERY source is
-/// unreachable (a reachable mux with zero sessions is empty, not failed).
-pub fn ls_lines(groups: &[Group]) -> (Vec<String>, Vec<String>, bool) {
-    // Tabs are not used as column separators: a tab advances to the next tab stop,
-    // so a first column (`<source>/<name>`) that varies in width pushes every later
-    // column onto a different stop and the rows do not line up. Instead each column
-    // is padded to the widest cell in that column, so all rows share one vertical
-    // line regardless of the terminal's tab-stop configuration.
-    let mut addr_w = 0usize;
-    let mut nw_w = 0usize;
-    for g in groups {
-        if g.err.is_some() {
-            addr_w = addr_w.max(g.source.len());
-            continue;
-        }
-        for s in &g.sessions {
-            addr_w = addr_w.max(s.address().len());
-            nw_w = nw_w.max(format!("{}w", s.windows).len());
-        }
+/// Renders one scan group for `xmux ls`: the `<source>/<name>` lines of a
+/// reachable source, or a single unreachable line for a dead one. Tabs are not
+/// used as column separators: a tab advances to the next tab stop, so a first
+/// column (`<source>/<name>`) that varies in width pushes every later column
+/// onto a different stop and the rows do not line up. Instead each column is
+/// padded to the widest cell in the group, so the group's rows share one
+/// vertical line regardless of the terminal's tab-stop configuration.
+pub fn ls_lines_one(g: &Group) -> (Vec<String>, Option<String>) {
+    if let Some(err) = &g.err {
+        return (
+            Vec::new(),
+            Some(format!("{}  (unreachable: {err})", g.source)),
+        );
     }
-
-    let mut lines = Vec::new();
-    let mut unreachable = Vec::new();
-    let mut reachable = 0;
-    for g in groups {
-        if let Some(err) = &g.err {
-            unreachable.push(format!("{:<addr_w$}  (unreachable: {err})", g.source));
-            continue;
-        }
-        reachable += 1;
-        for s in &g.sessions {
-            lines.push(format!(
+    let addr_w = g
+        .sessions
+        .iter()
+        .map(|s| s.address().len())
+        .max()
+        .unwrap_or(0);
+    let nw_w = g
+        .sessions
+        .iter()
+        .map(|s| format!("{}w", s.windows).len())
+        .max()
+        .unwrap_or(0);
+    let lines = g
+        .sessions
+        .iter()
+        .map(|s| {
+            format!(
                 "{:<addr_w$}  {:>nw_w$}  attached={}",
                 s.address(),
                 format!("{}w", s.windows),
                 s.attached
-            ));
-        }
-    }
-    let all_unreachable = reachable == 0 && !groups.is_empty();
-    (lines, unreachable, all_unreachable)
+            )
+        })
+        .collect();
+    (lines, None)
 }
 
 /// The live [`Ops`] implementation over a [`Env`].
@@ -684,19 +707,16 @@ mod tests {
     }
 
     #[test]
-    fn ls_lines_reachable_and_unreachable() {
-        let groups = vec![
-            group(
-                "local",
-                None,
-                vec![
-                    sess("local", "editor", 2, true),
-                    sess("local", "build", 1, false),
-                ],
-            ),
-            group("prod", Some("connection refused"), vec![]),
-        ];
-        let (lines, unreachable, all_unreachable) = ls_lines(&groups);
+    fn ls_lines_one_renders_a_reachable_group_aligned() {
+        let g = group(
+            "local",
+            None,
+            vec![
+                sess("local", "editor", 2, true),
+                sess("local", "build", 1, false),
+            ],
+        );
+        let (lines, unreachable) = ls_lines_one(&g);
         assert_eq!(
             lines,
             vec![
@@ -704,11 +724,18 @@ mod tests {
                 "local/build   1w  attached=false"
             ]
         );
+        assert!(unreachable.is_none());
+    }
+
+    #[test]
+    fn ls_lines_one_renders_an_unreachable_group() {
+        let g = group("prod", Some("connection refused"), vec![]);
+        let (lines, unreachable) = ls_lines_one(&g);
+        assert!(lines.is_empty());
         assert_eq!(
             unreachable,
-            vec!["prod          (unreachable: connection refused)"]
+            Some("prod  (unreachable: connection refused)".to_string())
         );
-        assert!(!all_unreachable);
     }
 
     #[test]
@@ -770,26 +797,20 @@ mod tests {
     }
 
     #[test]
-    fn ls_lines_all_unreachable() {
-        let groups = vec![group("prod", Some("boom"), vec![])];
-        let (lines, _unreachable, all_unreachable) = ls_lines(&groups);
-        assert!(lines.is_empty());
-        assert!(all_unreachable);
-    }
-
-    #[test]
-    fn ls_lines_reachable_empty_is_not_all_unreachable() {
+    fn ls_lines_one_empty_reachable_group_has_no_lines() {
         // A reachable mux with zero sessions is empty, not failed.
-        let groups = vec![group("local", None, vec![])];
-        let (lines, _unreachable, all_unreachable) = ls_lines(&groups);
+        let g = group("local", None, vec![]);
+        let (lines, unreachable) = ls_lines_one(&g);
         assert!(lines.is_empty());
-        assert!(!all_unreachable);
+        assert!(unreachable.is_none());
     }
 
     #[test]
-    fn ls_lines_empty_groups_not_all_unreachable() {
-        let (_l, _u, all_unreachable) = ls_lines(&[]);
-        assert!(!all_unreachable);
+    fn ls_lines_one_all_unreachable_returns_a_line() {
+        let g = group("prod", Some("boom"), vec![]);
+        let (lines, unreachable) = ls_lines_one(&g);
+        assert!(lines.is_empty());
+        assert!(unreachable.is_some());
     }
 
     #[tokio::test]

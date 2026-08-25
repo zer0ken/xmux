@@ -19,7 +19,7 @@ use crate::app::runtime;
 use crate::display::attach::{self, OsExecer};
 use crate::link::control;
 use crate::model::source::Source;
-use crate::provision::env::{self, ls_lines, Env};
+use crate::provision::env::{self, ls_lines_one, Env};
 use crate::session;
 
 #[derive(Parser)]
@@ -159,16 +159,34 @@ async fn interactive_env() -> Result<Env, i32> {
 
 /// Prints every reachable session as one `<source>/<name>` line; dead sources go
 /// to stderr. Fails only when every source is unreachable.
+///
+/// Results are streamed: each source's block is printed the moment its probe
+/// resolves, so a reachable source shows up immediately instead of the command
+/// looking frozen while a dead host is still timing out.
 async fn run_ls(env: &Env) -> i32 {
-    let groups = env.scan().await;
-    let (lines, unreachable, all_unreachable) = ls_lines(&groups);
-    for l in &lines {
-        println!("{l}");
+    let mut rx = env.scan_stream().await;
+    let mut total = 0usize;
+    let mut reachable = 0usize;
+    let mut first = true;
+    while let Some(g) = rx.recv().await {
+        total += 1;
+        let (lines, unreachable) = ls_lines_one(&g);
+        if unreachable.is_none() {
+            reachable += 1;
+        }
+        // A blank line between sources keeps each streamed block readable.
+        if !first {
+            println!();
+        }
+        first = false;
+        for l in &lines {
+            println!("{l}");
+        }
+        if let Some(u) = unreachable {
+            eprintln!("{u}");
+        }
     }
-    for u in &unreachable {
-        eprintln!("{u}");
-    }
-    if all_unreachable {
+    if total > 0 && reachable == 0 {
         1
     } else {
         0
