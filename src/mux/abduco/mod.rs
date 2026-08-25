@@ -78,11 +78,7 @@ impl Mux for Abduco {
     }
 
     fn attach_plan(&self, session: &str) -> Vec<String> {
-        vec![
-            self.bin.clone(),
-            "-a".to_string(),
-            session.to_string(),
-        ]
+        vec![self.bin.clone(), "-a".to_string(), session.to_string()]
     }
 
     fn control_argv(&self) -> Option<Vec<String>> {
@@ -135,11 +131,7 @@ impl Mux for Abduco {
         // `-n` creates a session without attaching, running abduco's default command
         // (typically dvtm, the user's tool inside the session — out of xmux's scope).
         // abduco cannot auto-name, so an empty name fails like zellij's detached create.
-        vec![
-            self.bin.clone(),
-            "-n".to_string(),
-            name.to_string(),
-        ]
+        vec![self.bin.clone(), "-n".to_string(), name.to_string()]
     }
 
     fn window_label(&self, _index: i64, name: &str) -> String {
@@ -252,10 +244,7 @@ mod tests {
     #[test]
     fn attach_is_plain_attach() {
         // `-a` attaches the client's stdio to that session's own server.
-        assert_eq!(
-            abduco().attach_plan("api"),
-            argv(&["abduco", "-a", "api"])
-        );
+        assert_eq!(abduco().attach_plan("api"), argv(&["abduco", "-a", "api"]));
     }
 
     #[test]
@@ -266,10 +255,7 @@ mod tests {
             abduco().new_session_plan("dev"),
             argv(&["abduco", "-n", "dev"])
         );
-        assert_eq!(
-            abduco().new_session_plan(""),
-            argv(&["abduco", "-n", ""])
-        );
+        assert_eq!(abduco().new_session_plan(""), argv(&["abduco", "-n", ""]));
     }
 
     #[test]
