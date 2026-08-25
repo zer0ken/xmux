@@ -48,6 +48,11 @@ and the composed control argv.
 - Ensuring a source is idempotent: re-ensuring a live source is a no-op.
 - The control argv is composed from the transport and mux axes; no mux verb or
   ssh invocation is hardcoded here.
+- A sweep logs what CHANGED, not that it ran. An unchanged listing and a failure already
+  standing are both counted, never rewritten: a polled source ticks tens of times a minute
+  for as long as xmux runs, so a line per tick is a file filled by one silent host. The
+  rule is a value the loop folds outcomes into, so it is tested rather than read out of a
+  log file afterwards.
 
 ## Common Pitfalls
 
