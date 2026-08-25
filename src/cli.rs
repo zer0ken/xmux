@@ -60,6 +60,15 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Update the installed xmux binary.
+    Update {
+        /// Check for a newer version and report it, but do not install.
+        #[arg(long)]
+        check: bool,
+        /// Force an update path: cargo, winget, brew, or self.
+        #[arg(long, value_name = "cargo|winget|brew|self")]
+        method: Option<String>,
+    },
     /// Print version.
     Version,
 }
@@ -103,6 +112,11 @@ pub async fn run() -> i32 {
         Some(Command::Send { id, args }) => {
             let (env, _cfg_err) = env::build_env().await;
             run_send(&env, &id, args).await
+        }
+        Some(Command::Update { check, method }) => {
+            // Like `version`, `update` needs no config or instance: it acts on the
+            // running binary alone, so a broken config must not block an update.
+            crate::update::run(crate::update::Args { check, method }).await
         }
         Some(Command::Version) => {
             println!("xmux {}", env!("CARGO_PKG_VERSION"));
