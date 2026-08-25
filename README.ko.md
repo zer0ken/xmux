@@ -15,16 +15,29 @@ xmux는 터미널에 상주하는 Rust 프로그램이다. xmux는 자신을 실
 
 ## 설치
 
-xmux는 Cargo 프로젝트다. 다음 명령이 릴리스 바이너리를 빌드한다.
+xmux는 단일 바이너리로, Windows·macOS·Linux용 사전빌드 패키지를
+[릴리스](https://github.com/zer0ken/xmux/releases) 페이지에서 제공한다.
+운영체제별 단계별 설치 방법(사전빌드 바이너리·패키지 매니저·소스 빌드)은
+[`INSTALL.md`](INSTALL.md)에 있다.
+
+패키지 매니저로 빠르게 설치한다.
 
 ```sh
-cargo build --release        # 바이너리 경로는 target/release/xmux
+winget install --id Zer0ken.xmux      # Windows
+brew install zer0ken/xmux/xmux        # macOS
+cargo install xmux                    # Linux / Rust가 있는 모든 OS
 ```
 
-다음 명령은 `PATH`에 설치한다.
+소스에서 `xmux` 명령을 `PATH`에 설치한다.
 
 ```sh
 cargo install --path .
+```
+
+설치하지 않고 릴리스 바이너리만 빌드하려면 다음과 같이 한다.
+
+```sh
+cargo build --release        # 바이너리 경로는 target/release/xmux
 ```
 
 xmux는 Windows와 unix 계열에서 동작한다. 원격 호스트를 사용하려면 xmux를
