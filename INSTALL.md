@@ -16,7 +16,7 @@ The fastest one-line installs, per OS:
 
 | OS | Command |
 |---|---|
-| Windows | `winget install --id zer0ken.xmux` |
+| Windows | `winget install --id z0k.xmux` |
 | macOS | `brew install zer0ken/xmux/xmux` |
 | Linux · any OS with Rust | `cargo install xmux` |
 
@@ -41,7 +41,7 @@ answers as, so a mix across your hosts needs no configuration. See the
 ### Package manager
 
 ```powershell
-winget install --id zer0ken.xmux
+winget install --id z0k.xmux
 ```
 
 This is enabled by the winget manifest in [`packaging/winget`](packaging/winget);

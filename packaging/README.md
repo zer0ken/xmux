@@ -15,5 +15,5 @@ that some of these manifests must carry are the ones printed by the release's
 | Command | Artifact | Registration |
 |---|---|---|
 | `cargo install xmux` | (none needed) | publish to crates.io via the `publish-crates` release job |
-| `winget install --id zer0ken.xmux` | `winget/` | submit the manifest to the microsoft/winget-pkgs community repo |
+| `winget install --id z0k.xmux` | `winget/` | submit the manifest to the microsoft/winget-pkgs community repo |
 | `brew install zer0ken/xmux/xmux` | `homebrew/` | host the formula in a `homebrew-xmux` tap repo under the project owner |
