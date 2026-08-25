@@ -8,8 +8,7 @@ xmux is a persistent, terminal-owning supervisor written in Rust. It owns the
 terminal you launch it in, keeps its live mux attachments running, and renders
 a split view: a **nav list** of every reachable session on the left, the
 selected session's **live screen** on the right. Move the cursor and the
-right pane switches to that session in place, whether it's a local psmux
-session, a tmux session over ssh, or a zellij session on a third machine.
+right pane switches to that session in place.
 
 ![The xmux split view: a nav list of psmux sessions on this machine and tmux
 sessions inside a WSL distribution, with the selected session's live screen
