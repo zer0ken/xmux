@@ -336,6 +336,29 @@ impl Runtime {
     }
 }
 
+/// Detects a config-file change and, on a real change, reloads the `[ui]` section.
+/// Returns `Some(ui)` only when the file genuinely changed since the last sight;
+/// the first sight just records a baseline and a missing/currently-unwritable file is
+/// ignored, so an editor mid-save never blanks the UI. Pure - it touches no global
+/// state, which is what lets a test drive it with a temp file.
+pub(super) fn poll_ui_config(
+    last: &mut Option<std::time::SystemTime>,
+    path: &std::path::Path,
+) -> Option<crate::provision::config::UiConfig> {
+    let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    if mtime == *last {
+        return None;
+    }
+    let prev = *last;
+    *last = mtime;
+    // First sight = baseline (the startup apply already ran); a missing file = an
+    // editor mid-save or a deletion. Record the state and wait for a real change.
+    if prev.is_none() || mtime.is_none() {
+        return None;
+    }
+    crate::provision::config::load(path).ok().map(|c| c.ui)
+}
+
 impl Runtime {
     /// Builds the world state from `env` and returns it alongside the loop's receiver
     /// halves ([`LoopIo`]). Pure construction - it starts NO probes (the startup scan
@@ -484,6 +507,9 @@ impl Runtime {
             spinner_start: std::time::Instant::now(),
             dirty: true,
             last_draw: std::time::Instant::now() - std::time::Duration::from_millis(FRAME_MS),
+            // The live config watch records a baseline on its first frame tick, so the
+            // startup `palette::apply` is not duplicated. `None` = no baseline yet.
+            config_last_mtime: None,
             width_dirty: false,
             width_flush_at: None,
         };
@@ -1129,6 +1155,41 @@ impl Runtime {
     /// The reconnect-sweep arm: re-ensure died metadata channels, re-detect undetected
     /// hosts, re-warm dropped control-host PTYs, capture display ttys, and re-attach the
     /// selected session if its display terminal dropped. The sole automatic retry path.
+    /// Live config reload, called on the redraw cadence. When [`poll_ui_config`] sees
+    /// the file change it re-applies the `[ui]` presentation settings - theme /
+    /// selection-style (the palette) and the hint-bar / view-border styles - so a
+    /// config edit lands without restarting. Returns true when something was
+    /// re-applied so the loop marks the frame dirty.
+    ///
+    /// A malformed edit keeps the current settings (and logs) rather than blanking the
+    /// UI; the roster and hosts are left alone, because re-scanning sources is the
+    /// `rescan` key's job and a config edit must not reset the user's sessions. The
+    /// prefix is input-side and deliberately not re-applied (it needs the key-decoder
+    /// rebuild, which is not worth it on a setting that changes rarely).
+    pub(super) fn on_config_check(&mut self) -> bool {
+        let Some(ui) = poll_ui_config(
+            &mut self.config_last_mtime,
+            &crate::provision::env::config_path(),
+        ) else {
+            return false;
+        };
+        crate::ui::palette::apply(
+            &ui.theme,
+            crate::ui::chrome::parse_selection_bg(&ui.selection_style),
+        );
+        self.state
+            .chrome
+            .set_view_border_colors(crate::ui::switcher::ViewBorderColors::resolve(
+                &ui.view_active_border_style,
+                &ui.view_border_style,
+                &ui.view_border_hover_style,
+            ));
+        self.state
+            .chrome
+            .set_hint_bar_style(crate::ui::chrome::parse_hint_bar_style(&ui.hint_bar_style));
+        true
+    }
+
     pub(super) fn on_reconnect(&mut self) {
         let (vc, vr) = terminal_view_size(self.cols, self.body_rows, self.nav_size());
         // Snapshot the ids so the loops can re-borrow `hosts` (incl. &mut) without holding

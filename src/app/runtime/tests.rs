@@ -1343,6 +1343,7 @@ fn test_rt(env: Env) -> Runtime {
         spinner_start: std::time::Instant::now(),
         dirty: true,
         last_draw: std::time::Instant::now(),
+        config_last_mtime: None,
         width_dirty: false,
         width_flush_at: None,
     }
@@ -2257,4 +2258,44 @@ fn a_sources_reach_names_its_mux_and_the_machine_it_is_asked_over() {
         "the probe is the command a listing runs: {:?}",
         reach.probe
     );
+}
+
+#[test]
+fn config_poll_records_baseline_then_reloads_on_change() {
+    // The live config watch is driven by mtime: the first sight is a baseline (the
+    // startup apply already ran), and only a real change reloads the [ui] section. A
+    // malformed edit keeps the last good config rather than blanking the UI.
+    let dir = std::env::temp_dir().join(format!("xmux-poll-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, "[ui]\ntheme = \"auto-dark\"\n").unwrap();
+    let mut last = None;
+    // First sight = baseline; the same file again = no change.
+    assert!(super::handlers::poll_ui_config(&mut last, &path).is_none());
+    assert!(super::handlers::poll_ui_config(&mut last, &path).is_none());
+    // A real edit reloads the [ui] section.
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    std::fs::write(&path, "[ui]\ntheme = \"auto-light\"\n").unwrap();
+    let ui = super::handlers::poll_ui_config(&mut last, &path).expect("a real change reloads");
+    assert_eq!(ui.theme, "auto-light");
+    // A malformed edit keeps the last good config (None) but is still recorded.
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    std::fs::write(&path, "not [[ valid toml").unwrap();
+    assert!(super::handlers::poll_ui_config(&mut last, &path).is_none());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn config_poll_ignores_a_missing_file() {
+    // A deletion (or an editor's atomic-rename mid-save) is not a reload: record the
+    // absence and wait. Only a file that comes back AND changes again reloads.
+    let dir = std::env::temp_dir().join(format!("xmux-poll-missing-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, "[ui]\ntheme = \"auto-dark\"\n").unwrap();
+    let mut last = None;
+    assert!(super::handlers::poll_ui_config(&mut last, &path).is_none()); // baseline
+    std::fs::remove_file(&path).unwrap();
+    assert!(super::handlers::poll_ui_config(&mut last, &path).is_none()); // gone: no reload
+    std::fs::remove_dir_all(&dir).ok();
 }
