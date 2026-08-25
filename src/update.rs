@@ -80,6 +80,54 @@ fn platform() -> Platform {
     }
 }
 
+/// A `major.minor.patch` release version, parsed strictly (a trailing `-dev`, extra
+/// segment, or non-numeric input is rejected — those are not released builds).
+fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
+    let v = v.trim_start_matches('v');
+    let mut it = v.split('.');
+    let major: u64 = it.next()?.parse().ok()?;
+    let minor: u64 = it.next()?.parse().ok()?;
+    let patch: u64 = it.next()?.parse().ok()?;
+    if it.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
+}
+
+/// The latest release's version, tag, and asset list (from the GitHub API).
+struct Release {
+    version: String,
+    #[allow(dead_code)]
+    tag: String,
+    assets: Vec<serde_json::Value>,
+}
+
+/// The asset (name, download URL) whose name ends with `suffix`.
+fn asset_for<'a>(release: &'a Release, suffix: &str) -> Option<(&'a str, &'a str)> {
+    for a in &release.assets {
+        let name = a["name"].as_str()?;
+        if name.ends_with(suffix) {
+            return Some((name, a["browser_download_url"].as_str()?));
+        }
+    }
+    None
+}
+
+/// The sha256 for `file_name` out of a `SHA256SUMS` body (`<hash>  <file>` per line).
+fn checksum_for_name(body: &str, file_name: &str) -> Result<String, String> {
+    body.lines()
+        .find_map(|l| {
+            let mut it = l.split_whitespace();
+            let hash = it.next()?.to_string();
+            if it.next()? == file_name {
+                Some(hash)
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| format!("SHA256SUMS has no entry for {file_name}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,5 +172,50 @@ mod tests {
             classify("/usr/local/bin/xmux", &[], Platform::Unix),
             InstallMethod::Self_
         );
+    }
+
+    #[test]
+    fn parses_x_y_z_versions() {
+        assert_eq!(parse_version("0.5.0"), Some((0, 5, 0)));
+        assert_eq!(parse_version("v1.2.3"), Some((1, 2, 3)));
+    }
+
+    #[test]
+    fn rejects_non_release_versions() {
+        assert_eq!(parse_version("0.5.0-dev"), None);
+        assert_eq!(parse_version("0.5"), None);
+        assert_eq!(parse_version("abc"), None);
+    }
+
+    #[test]
+    fn asset_for_matches_the_target_suffix() {
+        let release = Release {
+            version: "0.5.1".to_string(),
+            tag: "v0.5.1".to_string(),
+            assets: vec![
+                json_asset("xmux-v0.5.1-x86_64-unknown-linux-gnu.tar.gz", "u1"),
+                json_asset("xmux-v0.5.1-x86_64-pc-windows-msvc.exe", "u2"),
+            ],
+        };
+        let (name, url) = asset_for(&release, "x86_64-pc-windows-msvc.exe").unwrap();
+        assert_eq!(name, "xmux-v0.5.1-x86_64-pc-windows-msvc.exe");
+        assert_eq!(url, "u2");
+        assert!(asset_for(&release, "aarch64-apple-darwin.tar.gz").is_none());
+    }
+
+    #[test]
+    fn checksum_line_parses_by_filename() {
+        let sums =
+            "abc  xmux-v0.5.1-x86_64-unknown-linux-gnu.tar.gz\ndef  SHA256SUMS\n";
+        assert_eq!(
+            checksum_for_name(sums, "xmux-v0.5.1-x86_64-unknown-linux-gnu.tar.gz")
+                .as_deref(),
+            Ok("abc")
+        );
+        assert!(checksum_for_name(sums, "missing.tar.gz").is_err());
+    }
+
+    fn json_asset(name: &str, url: &str) -> serde_json::Value {
+        serde_json::json!({ "name": name, "browser_download_url": url })
     }
 }
