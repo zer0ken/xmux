@@ -43,8 +43,9 @@ cargo build --release        # binary at target/release/xmux
 
 It runs on Windows and on unix-likes. You need `ssh` on the machine running
 xmux for remote hosts, and a supported mux on each host you target: `tmux` on
-unix, `psmux` on Windows, or `zellij`. A host's mux is detected from the binary
-it answers as, so a mix of the three across your hosts needs no configuration.
+unix, `psmux` on Windows, or `zellij` / `abduco`. A host's mux is detected from the
+binary it answers as, so a mix of the four across your hosts needs no
+configuration.
 
 ## Usage
 
@@ -106,7 +107,7 @@ exclude = ["bastion", "wsl.docker-desktop"]   # hide these machines
 
 [local]
 mux = "auto"          # "auto" (default): every mux installed here,
-                      # or a list: ["psmux", "zellij"]
+                      # or a list: ["psmux", "zellij", "abduco"]
 
 [ui]
 theme = "auto-dark"                  # built-in ANSI theme: "auto-dark" (default)

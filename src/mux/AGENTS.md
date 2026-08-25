@@ -31,6 +31,11 @@ AND its display driver, and is re-exported from the root:
   session change because no client can be named from outside its own session),
   and its two output shapes: a human session line and a JSON tab listing. See
   `zellij/AGENTS.md`.
+- `abduco/` owns the abduco mux, its poll cadence, its listing parser (the bare
+  binary IS the listing), its driver (which reattaches on every session change),
+  and the single-window card rule. abduco is the simplest family: no control
+  stream, no server-socket flag, and no per-session query — a poll enumerates
+  once and resolves each session as the session alone. See `abduco/AGENTS.md`.
 
 Sub-modules pull the shared trait, value types, and imports from the parent. A
 mux's driver is constructed by the mux itself, so no caller names a concrete
@@ -43,8 +48,8 @@ execution. The `MuxDriver` trait in `src/driver.rs` is the mux-agnostic display
 seam; each mux's concrete driver lives in its own family directory and is
 constructed by the mux, so a mux owns BOTH its argv, server model, and
 enumeration AND its display orchestration. Shared muxes such as tmux use one
-aggregate server and a source-level control stream. Per-session muxes such as psmux
-and zellij enumerate differently and supply a per-session attach plan.
+aggregate server and a source-level control stream. Per-session muxes such as psmux,
+zellij, and abduco enumerate differently and supply a per-session attach plan.
 
 The command-plan verbs default to tmux-compatible argv, so a tmux-compatible mux
 is identity plus a few overrides. A mux that shares no argv with tmux overrides
@@ -74,8 +79,10 @@ it prints are one decision, so they move together.
   values callers use instead of branching on mux names. The mux constructs the
   source's driver, so mux selection lives in the mux family and never in a central
   match on server model; the wrapper in `src/driver.rs` only resolves it. tmux
-  keeps one PTY per source with an in-place switch; psmux and zellij reattach on
-  every change, since neither can name a client from outside its own session.
+  keeps one PTY per source with an in-place switch; psmux, zellij, and abduco
+  reattach on every change, since none can name a client from outside its own
+  session. abduco additionally has no per-session query, so its poll resolves each
+  session as the session alone rather than running one.
 
 ## Invariants
 

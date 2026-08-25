@@ -43,8 +43,9 @@ cargo build --release        # 바이너리 경로는 target/release/xmux
 xmux는 Windows와 unix 계열에서 동작한다. 원격 호스트를 사용하려면 xmux를
 실행한 머신에 `ssh`가 설치되어 있어야 한다. 대상 호스트에는 지원하는 mux가
 하나 이상 있어야 하며, 지원 대상은 unix의 `tmux`, Windows의 `psmux`, 그리고
-`zellij`다. xmux는 호스트가 어느 바이너리로 응답하는지를 보고 그 호스트의 mux를
-판별한다. 따라서 호스트마다 다른 mux가 설치되어 있어도 설정할 것이 없다.
+`zellij` / `abduco`다. xmux는 호스트가 어느 바이너리로 응답하는지를 보고 그
+호스트의 mux를 판별한다. 따라서 호스트마다 다른 mux가 설치되어 있어도 설정할
+것이 없다.
 
 ## 사용법
 
@@ -106,7 +107,7 @@ exclude = ["bastion", "wsl.docker-desktop"]   # 이 머신들은 목록에서 �
 
 [local]
 mux = "auto"          # "auto"(기본값)는 이 머신에 설치된 mux 전부를 뜻한다.
-                      # ["psmux", "zellij"]처럼 목록도 받는다.
+                      # ["psmux", "zellij", "abduco"]처럼 목록도 받는다.
 
 [ui]
 theme = "auto-dark"                  # 내장 ANSI 테마: "auto-dark"(기본값) 또는

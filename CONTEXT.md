@@ -22,7 +22,7 @@ One concept, one word. The two axes and the runtime:
   source holds one. It owns where a command runs and how its argv is executed, and
   knows nothing about the mux. "host" is the family/concept; `Transport` is the
   trait.
-- `Mux` (MUX axis) - the per-mux behavior trait (tmux / psmux / zellij); a source
+- `Mux` (MUX axis) - the per-mux behavior trait (tmux / psmux / zellij / abduco); a source
   holds one. "mux" is the family/concept; `Mux` is the trait.
 - host - a machine that HOSTS muxes and that xmux can reach. The `roster` decides
   the set: of all the machines there are, the hosts are the ones it names. "machine"
@@ -378,7 +378,8 @@ Two orthogonal axes describe every connection, and no module conflates them:
   never a central `match`. Shared shell vocabulary (quoting, remote command
   assembly) lives beside the families. `Transport` owns where a command runs and
   how its argv is executed; it knows nothing about the mux.
-- MUX - `src/mux/<kind>/`. Each mux family (`tmux/`, `psmux/`, `zellij/`) owns its
+- MUX - `src/mux/<kind>/`. Each mux family (`tmux/`, `psmux/`, `zellij/`,
+  `abduco/`) owns its
   metadata and command plans behind the `Mux` trait and its display driver beside
   them. A mux builds its OWN driver, so mux selection lives in the mux family,
   never a central `match`. Shared mux vocabulary lives beside the families. The

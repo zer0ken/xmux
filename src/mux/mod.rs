@@ -1126,6 +1126,7 @@ Usage: zellij [OPTIONS]",
     #[test]
     fn is_recognized_covers_tmux_and_known_muxes() {
         assert!(is_recognized("tmux"));
+        assert!(is_recognized("abduco"));
         assert!(is_recognized("psmux"));
         assert!(is_recognized("zellij"));
         assert!(!is_recognized("byobu"));
