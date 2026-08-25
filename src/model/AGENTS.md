@@ -2,10 +2,11 @@
 
 ## Purpose
 
-`model` holds runtime domain values shared across mux, transport, source, control,
-and app code: source state, source collections, the action / command / event-effect
-unidirectional-flow vocabulary, transport lowering results, server models, plans,
-and death-signal helpers.
+`model` holds runtime domain values shared across the mux and transport axes,
+connection management (`link`), and app code: the source definition and source
+state, source collections, the action / command / event-effect unidirectional-flow
+vocabulary, transport lowering results, server models, plans, and death-signal
+helpers.
 
 ## Mental Model
 

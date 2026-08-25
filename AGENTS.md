@@ -49,8 +49,9 @@ state; raw key and text injection is an unstable low-level surface.
   resolves a source's driver; it names no concrete mux type.
 - `src/display/` - PTY attachment, the grid, terminal input, and low-level input
   protocol mechanics.
-- `src/link/` - per-source connection management (control-mode reader and writer,
-  poll tasks, live client ownership).
+- `src/link/` - the live host-facing channels: per-source connection management
+  (control-mode reader and writer, poll tasks, live client ownership), the mux
+  operations xmux issues, and the control-socket protocol.
 - `src/ui/` - nav row transforms, interaction state, and rendering.
 - `src/state/` - the explicit app runtime state and its two mutation sites.
 - `src/session.rs` - the foundational cross-environment data types (a `Session`,
