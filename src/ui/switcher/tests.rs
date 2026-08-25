@@ -2964,8 +2964,8 @@ async fn hint_bar_and_help_reflect_new_model() {
     h.draw();
     let help = h.text();
     assert!(
-        help.contains("focus the terminal"),
-        "help explains focusing the terminal view:\n{help}"
+        help.contains("focus the mux"),
+        "help explains focusing the mux view:\n{help}"
     );
     assert!(
         !help.contains("select = attach"),
