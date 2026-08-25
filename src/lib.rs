@@ -26,3 +26,4 @@ pub mod session;
 pub mod source;
 pub mod state;
 pub mod ui;
+pub mod update;
