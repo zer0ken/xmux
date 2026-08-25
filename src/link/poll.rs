@@ -67,7 +67,7 @@ pub(super) async fn run_poll(
         // receiver dropping (its exit) is the loop's other stop condition besides abort,
         // so a failed send latches `gone` and the loop returns after this sweep.
         let mut gone = false;
-        mux.poll_once(&source, &transport, &crate::source::ExecRunner, &mut |ev| {
+        mux.poll_once(&source, &transport, &crate::model::source::ExecRunner, &mut |ev| {
             // Log enumeration at the producer (where `err` is in hand). A sweep that says
             // what the one before it said is not news, whichever way it went: an unchanged
             // session set is TRACE, and so is a failure already standing. WARN is for a

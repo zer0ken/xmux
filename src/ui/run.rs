@@ -16,7 +16,7 @@ use ratatui::Terminal;
 use tokio::io::BufReader;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::control;
+use crate::link::control;
 use crate::ui::switcher::Switcher;
 
 /// A unit of work the app loop processes, from the control socket.
@@ -160,28 +160,28 @@ fn enqueue_reply(sent: Result<(), mpsc::error::SendError<Cmd>>) -> String {
 }
 
 async fn dispatch(line: &str, cmd_tx: &mpsc::Sender<Cmd>) -> String {
-    match crate::control::parse_ctl_op(line) {
-        crate::control::CtlRequest::Ping => "pong".into(),
-        crate::control::CtlRequest::Dump => {
+    match crate::link::control::parse_ctl_op(line) {
+        crate::link::control::CtlRequest::Ping => "pong".into(),
+        crate::link::control::CtlRequest::Dump => {
             let (tx, rx) = oneshot::channel();
             if cmd_tx.send(Cmd::Dump(tx)).await.is_err() {
                 return String::new();
             }
             rx.await.unwrap_or_default()
         }
-        crate::control::CtlRequest::Status => {
+        crate::link::control::CtlRequest::Status => {
             let (tx, rx) = oneshot::channel();
             if cmd_tx.send(Cmd::Status(tx)).await.is_err() {
                 return String::new();
             }
             rx.await.unwrap_or_default()
         }
-        crate::control::CtlRequest::Op(op) => enqueue_reply(cmd_tx.send(Cmd::Op(op)).await),
-        crate::control::CtlRequest::RawKey(ev) => enqueue_reply(cmd_tx.send(Cmd::RawKey(ev)).await),
-        crate::control::CtlRequest::RawBytes(b) => {
+        crate::link::control::CtlRequest::Op(op) => enqueue_reply(cmd_tx.send(Cmd::Op(op)).await),
+        crate::link::control::CtlRequest::RawKey(ev) => enqueue_reply(cmd_tx.send(Cmd::RawKey(ev)).await),
+        crate::link::control::CtlRequest::RawBytes(b) => {
             enqueue_reply(cmd_tx.send(Cmd::RawBytes(b)).await)
         }
-        crate::control::CtlRequest::Unknown(_) => "err: unknown command".into(),
+        crate::link::control::CtlRequest::Unknown(_) => "err: unknown command".into(),
     }
 }
 

@@ -519,7 +519,7 @@ mod tests {
         let os = "linux";
         let dir = std::path::Path::new("/home/u/.xmux");
         let hosts = Hosts::build(&cfg, &aliases, &[], os, &local(), dir, None);
-        let srcs = crate::source::build(&cfg, &aliases, &[], os, &local(), dir, None);
+        let srcs = crate::model::source::build(&cfg, &aliases, &[], os, &local(), dir, None);
         let src_order: Vec<String> = srcs.iter().map(|s| s.alias.clone()).collect();
         assert_eq!(
             hosts.ids(),
@@ -548,7 +548,7 @@ mod tests {
         let distros = vec!["wsl.Ubuntu-24.04".to_string()];
         let dir = std::path::Path::new("/x");
         let hosts = Hosts::build(&cfg, &aliases, &distros, "windows", &local(), dir, None);
-        let srcs = crate::source::build(&cfg, &aliases, &distros, "windows", &local(), dir, None);
+        let srcs = crate::model::source::build(&cfg, &aliases, &distros, "windows", &local(), dir, None);
         let src_order: Vec<String> = srcs.iter().map(|s| s.alias.clone()).collect();
         assert_eq!(
             src_order,

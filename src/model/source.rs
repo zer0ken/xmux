@@ -111,7 +111,7 @@ impl Source {
 }
 
 // The reachable-but-empty classification lives in `mux/`. The app reaches its
-// `%exit`/`%error`-reason check through `crate::source::reason_is_no_sessions`, so the
+// `%exit`/`%error`-reason check through `crate::model::source::reason_is_no_sessions`, so the
 // name is re-exported here to keep that path resolving.
 pub(crate) use crate::mux::reason_is_no_sessions;
 

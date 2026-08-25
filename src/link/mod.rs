@@ -5,7 +5,9 @@
 use crate::mux::ControlProtocol;
 
 mod client;
+pub mod control;
 mod inventory;
+pub mod manage;
 mod manager;
 mod poll;
 mod reader;

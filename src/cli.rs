@@ -14,11 +14,11 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 
 use crate::app::runtime;
-use crate::attach::{self, OsExecer};
-use crate::control;
+use crate::display::attach::{self, OsExecer};
+use crate::link::control;
 use crate::env::{self, ls_lines, Env};
 use crate::session;
-use crate::source::Source;
+use crate::model::source::Source;
 
 #[derive(Parser)]
 #[command(

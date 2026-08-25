@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use crate::config::{self, Config};
 use crate::discovery;
-use crate::manage;
+use crate::link::manage;
 use crate::session::{Session, WindowPanes};
-use crate::source::{self, Source};
+use crate::model::source::{self, Source};
 use crate::ui::switcher::Ops;
 use crate::ui::tree::{self, Group};
 
@@ -62,7 +62,7 @@ pub struct Env {
     pub xmux_dir: PathBuf,
     /// The ADDRESS of the session xmux is ITSELF running in (`local:psmux/xmus`), or
     /// `None` when it is not inside a mux or the session could not be named. The one
-    /// session the terminal view refuses to mirror; see [`crate::attach::own_mux_session`].
+    /// session the terminal view refuses to mirror; see [`crate::display::attach::own_mux_session`].
     /// Fixed for the run: the environment that names it cannot change under one.
     pub own_session: Option<String>,
     /// The local mux server socket parsed from `$TMUX` (`-S` target), threaded into
@@ -170,7 +170,7 @@ pub async fn resolve_roster(
     // transport, because "is this mux here" has nothing to do with which server socket a
     // session lives on - and a `-S <socket>` injection is a flag zellij would refuse.
     let installed = if cfg.local.mux.is_auto() {
-        crate::mux::installed_muxes(&*crate::transport::local(None), &crate::source::ExecRunner).await
+        crate::mux::installed_muxes(&*crate::transport::local(None), &crate::model::source::ExecRunner).await
     } else {
         Vec::new()
     };
@@ -225,7 +225,7 @@ pub async fn build_env() -> (Env, Option<anyhow::Error>) {
 /// the card exactly. A mux xmux does not serve here leaves it unresolved, which blocks
 /// nothing - the same as not being inside a mux at all.
 fn own_session_address(srcs: &[Source]) -> Option<String> {
-    let (kind, session) = crate::attach::own_mux_session()?;
+    let (kind, session) = crate::display::attach::own_mux_session()?;
     Some(crate::session::address_of(
         own_source_id(srcs, &kind)?,
         &session,
@@ -519,7 +519,7 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::session::Session;
-    use crate::source::{RunError, Runner};
+    use crate::model::source::{RunError, Runner};
 
     #[test]
     fn env_carries_configured_prefix() {

@@ -15,7 +15,7 @@ use crate::model::plan::{DeathSignal, EventSource};
 use crate::model::server_model::ServerModel;
 use crate::mux::vocab as mux;
 use crate::session::{Session, WindowPanes};
-use crate::source::{RunError, Runner};
+use crate::model::source::{RunError, Runner};
 
 mod control;
 mod psmux;
@@ -635,7 +635,7 @@ mod tests {
     async fn tmux_enumerate_live() {
         let t = crate::transport::local(None);
         let sessions = tmux()
-            .enumerate(&t, &crate::source::ExecRunner)
+            .enumerate(&t, &crate::model::source::ExecRunner)
             .await
             .expect("reachable tmux (empty is Ok)");
         eprintln!(
@@ -995,7 +995,7 @@ Usage: zellij [OPTIONS]",
     #[ignore = "live: needs ssh jupiter00 and local psmux"]
     #[tokio::test]
     async fn detect_backend_live() {
-        use crate::source::ExecRunner;
+        use crate::model::source::ExecRunner;
         let ssh = crate::transport::ssh("jupiter00".into(), String::new(), "windows".into());
         let got = detect_backend(&ssh, "tmux", &ExecRunner).await;
         eprintln!(

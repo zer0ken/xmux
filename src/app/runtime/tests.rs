@@ -1,5 +1,5 @@
 use super::*;
-use crate::source::Source;
+use crate::model::source::Source;
 
 fn fake_source(alias: &str) -> Source {
     Source {

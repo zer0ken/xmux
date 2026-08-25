@@ -102,7 +102,7 @@ fn apply_width_delta(wd: i32, natural: &mut u16) -> bool {
 /// reconciled at the next loop top (`reconciled_nav_width`); the caller marks dirty.
 fn toggle_auto_hide(mode: &mut bool, xmux_dir: &std::path::Path) {
     *mode = !*mode;
-    crate::prefs::save_auto_hide_nav(xmux_dir, *mode);
+    crate::ui::prefs::save_auto_hide_nav(xmux_dir, *mode);
 }
 
 /// Folds ONE domain [`Action`] in at the single mutation site ([`State::apply`]) and
@@ -205,7 +205,7 @@ fn status_line(
     cwd: &str,
     tty: &str,
 ) -> String {
-    crate::control::format_status(&crate::control::StatusFields {
+    crate::link::control::format_status(&crate::link::control::StatusFields {
         name: name.to_string(),
         pid: std::process::id().to_string(),
         focus: if nav_focused { "nav" } else { "terminal" }.to_string(),
@@ -503,7 +503,7 @@ pub(crate) fn current_grid(
 /// plain subprocess; RawSsh variants run the full ssh argv non-interactively.
 pub(crate) fn run_lowered(lowered: crate::transport::LoweredSwitch) {
     use crate::transport::LoweredSwitch;
-    use crate::source::Runner;
+    use crate::model::source::Runner;
     let argv = match lowered {
         LoweredSwitch::Local(v) | LoweredSwitch::RawSsh(v) => v,
     };
@@ -515,7 +515,7 @@ pub(crate) fn run_lowered(lowered: crate::transport::LoweredSwitch) {
         // Log the exact spawned command + its result: a silent switch is invisible, so a
         // session-switch that does not land is diagnosed from the program's real output.
         tracing::debug!(cmd = %name, ?args, "lowered_run");
-        match crate::source::ExecRunner.run(&name, &args).await {
+        match crate::model::source::ExecRunner.run(&name, &args).await {
             Ok(out) => tracing::debug!(cmd = %name, out_bytes = out.len(), "lowered_ok"),
             Err(e) => tracing::debug!(cmd = %name, error = %e, "lowered_err"),
         }
@@ -608,7 +608,7 @@ fn spawn_host_detection(
 ) {
     tokio::spawn(async move {
         let mut host = crate::model::Host::new(transport, mux);
-        host.detect_and_correct(&crate::source::ExecRunner).await;
+        host.detect_and_correct(&crate::model::source::ExecRunner).await;
         let detected = host.detected.then_some(host.mux);
         let _ = tx.send(HostEvent::Scanned { source, detected });
     });
@@ -627,7 +627,7 @@ fn spawn_mux_discovery(
     tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
 ) {
     tokio::spawn(async move {
-        let muxes = crate::mux::installed_muxes(&*transport, &crate::source::ExecRunner).await;
+        let muxes = crate::mux::installed_muxes(&*transport, &crate::model::source::ExecRunner).await;
         if !muxes.is_empty() {
             let _ = tx.send(HostEvent::MuxesFound { machine, muxes });
         }
@@ -896,7 +896,7 @@ pub(crate) fn note_host_exited(
     }
     if reason
         .as_deref()
-        .is_some_and(crate::source::reason_is_no_sessions)
+        .is_some_and(crate::model::source::reason_is_no_sessions)
     {
         switcher.apply_source_result(host.to_string(), Vec::new(), None, state);
         return false;
@@ -1067,7 +1067,7 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
         Some(n) => n,
         None => {
             let _ = std::fs::create_dir_all(&rt.env.xmux_dir);
-            crate::control::pick_free_name(&rt.env.xmux_dir, std::process::id() as u64).await
+            crate::link::control::pick_free_name(&rt.env.xmux_dir, std::process::id() as u64).await
         }
     };
     rt.instance_name = instance_name.clone();
@@ -1079,7 +1079,7 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     {
         let dir = rt.env.xmux_dir.clone();
         let keep = instance_name.clone();
-        tokio::spawn(async move { crate::control::prune_stale(&dir, &keep).await });
+        tokio::spawn(async move { crate::link::control::prune_stale(&dir, &keep).await });
     }
 
     let mut tick = tokio::time::interval(Duration::from_millis(SPINNER_FRAME_MS));
@@ -1138,7 +1138,7 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     // unreached, so the final width is still pending - persist it on the way out so the
     // nav width the user left with survives the next launch.
     if rt.width_dirty {
-        crate::prefs::save_nav_width(&rt.env.xmux_dir, rt.nav_width_natural);
+        crate::ui::prefs::save_nav_width(&rt.env.xmux_dir, rt.nav_width_natural);
     }
     rt.registry.teardown_all();
     rt.mgr.teardown_all();
@@ -1235,7 +1235,7 @@ fn pick_control_path(env: &Env, name: &str) -> Option<PathBuf> {
         return None;
     }
     let _ = std::fs::create_dir_all(&env.xmux_dir);
-    Some(crate::control::socket_path(&env.xmux_dir, name))
+    Some(crate::link::control::socket_path(&env.xmux_dir, name))
 }
 
 mod handlers;

@@ -8,7 +8,7 @@
 
 use crate::model::Host;
 use crate::session::WindowPanes;
-use crate::source::{RunError, Runner};
+use crate::model::source::{RunError, Runner};
 
 /// Composes a mux argv (from the host's `Mux`) through the machine `Transport` and
 /// runs it via the injected runner, returning stdout.
@@ -50,7 +50,7 @@ pub async fn panes(
 mod tests {
     use super::*;
     use crate::mux;
-    use crate::source::Runner;
+    use crate::model::source::Runner;
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
 

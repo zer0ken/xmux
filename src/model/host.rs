@@ -10,7 +10,7 @@ use crate::link::HostInventory;
 use crate::transport::Transport;
 use crate::model::DisplayTty;
 use crate::mux::Mux;
-use crate::source::Runner;
+use crate::model::source::Runner;
 
 /// Connecting / live / unreachable — the single per-host reachability state the
 /// supervisor and the tree read (no separate `connecting` flag or `connected` set).
@@ -246,7 +246,7 @@ impl Host {
     pub async fn enumerate_with(
         &mut self,
         runner: &dyn Runner,
-    ) -> Result<(), crate::source::RunError> {
+    ) -> Result<(), crate::model::source::RunError> {
         match self.mux.enumerate(&self.transport, runner).await {
             Ok(sessions) => {
                 self.inventory.sessions = sessions;
@@ -261,8 +261,8 @@ impl Host {
     }
 
     /// [`enumerate_with`](Self::enumerate_with) over the real exec runner.
-    pub async fn enumerate(&mut self) -> Result<(), crate::source::RunError> {
-        self.enumerate_with(&crate::source::ExecRunner).await
+    pub async fn enumerate(&mut self) -> Result<(), crate::model::source::RunError> {
+        self.enumerate_with(&crate::model::source::ExecRunner).await
     }
 
     /// The command a session listing spawns on this host, `argv[0]` first.
@@ -347,7 +347,7 @@ mod tests {
     use crate::model::{DeathSignal, EventSource, ServerModel};
     use crate::mux::Mux;
     use crate::session::Session;
-    use crate::source::{RunError, Runner};
+    use crate::model::source::{RunError, Runner};
 
     /// A minimal in-test mux: only `server_model` is exercised in these tests. The other
     /// methods return trivially since they wire no I/O — including the window and session
@@ -379,7 +379,7 @@ mod tests {
         async fn enumerate(
             &self,
             _t: &dyn Transport,
-            _r: &dyn crate::source::Runner,
+            _r: &dyn crate::model::source::Runner,
         ) -> Result<Vec<Session>, RunError> {
             Ok(vec![])
         }
@@ -717,7 +717,7 @@ mod tests {
         async fn enumerate(
             &self,
             _t: &dyn Transport,
-            _r: &dyn crate::source::Runner,
+            _r: &dyn crate::model::source::Runner,
         ) -> Result<Vec<Session>, RunError> {
             self.result.lock().unwrap().take().unwrap_or(Ok(vec![]))
         }

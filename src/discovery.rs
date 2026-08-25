@@ -11,7 +11,7 @@ use tokio::task::JoinSet;
 use tokio::time::timeout;
 
 use crate::session::Session;
-use crate::source::Source;
+use crate::model::source::Source;
 
 /// One source's scan outcome. A non-`None` `err` means the source was
 /// unreachable, in which case `sessions` is empty.
@@ -100,7 +100,7 @@ pub async fn scan_all(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source::{RunError, Runner};
+    use crate::model::source::{RunError, Runner};
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicI32, Ordering};
 

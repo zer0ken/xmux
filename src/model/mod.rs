@@ -11,6 +11,7 @@ pub mod hosts;
 pub mod plan;
 pub mod selection;
 pub mod server_model;
+pub mod source;
 
 pub use action::{Action, Command, EventEffect, FocusTarget, MuxOp};
 pub use death::{
