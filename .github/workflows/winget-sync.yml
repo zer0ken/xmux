@@ -78,7 +78,7 @@ jobs:
           API: https://api.github.com
           FORK: zer0ken/winget-pkgs
           UPSTREAM: microsoft/winget-pkgs
-          AUTH: Authorization: Bearer ${{ secrets.WINGET_PKGS_TOKEN }}
+          AUTH: "Authorization: Bearer ${{ secrets.WINGET_PKGS_TOKEN }}"
         run: |
           set -euo pipefail
           VERSION="${{ steps.version.outputs.version }}"
