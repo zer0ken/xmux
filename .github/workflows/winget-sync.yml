@@ -1,0 +1,163 @@
+# Keep the winget (Windows Package Manager) manifest in sync with the latest
+# released xmux version.
+#
+# The release workflow refreshes the manifests at release time, but the actual
+# submission to the community microsoft/winget-pkgs repository is gated on the
+# WINGET_PKGS_TOKEN secret. If a release is tagged while that secret is unset,
+# its version never reaches winget. This workflow is an idempotent backstop: on
+# a schedule and on manual dispatch it detects the newest released version, and
+# if that version is not yet present in winget-pkgs it opens a fresh submission
+# PR. It therefore also self-heals the gap left by 0.5.0 / 0.6.0.
+#
+# Requires a WINGET_PKGS_TOKEN secret: a PAT able to write to the
+# zer0ken/winget-pkgs fork and open PRs against microsoft/winget-pkgs.
+
+name: winget-sync
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 3 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Sync latest release to winget-pkgs
+    runs-on: ubuntu-latest
+    env:
+      WINGET_PKGS_TOKEN: ${{ secrets.WINGET_PKGS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve latest released version
+        id: version
+        run: |
+          set -euo pipefail
+          TAG=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
+          if [ -z "$TAG" ]; then
+            echo "No version tag found." >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected latest release: v$VERSION"
+
+      - name: Check if version already in winget-pkgs
+        id: present
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/z/zer0ken/xmux/$VERSION")
+          if [ "$HTTP" = "200" ]; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "zer0ken.xmux $VERSION already present in winget-pkgs."
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+            echo "zer0ken.xmux $VERSION missing from winget-pkgs."
+          fi
+
+      - name: Compute installer checksum
+        id: checksum
+        if: steps.present.outputs.already == 'false'
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          URL="https://github.com/zer0ken/xmux/releases/download/v${VERSION}/xmux-v${VERSION}-x86_64-pc-windows-msvc.exe"
+          curl -sL -o /tmp/xmux.exe "$URL"
+          SHA=$(sha256sum /tmp/xmux.exe | cut -d' ' -f1)
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Submit to winget-pkgs
+        if: steps.present.outputs.already == 'false' && env.WINGET_PKGS_TOKEN != ''
+        env:
+          API: https://api.github.com
+          FORK: zer0ken/winget-pkgs
+          UPSTREAM: microsoft/winget-pkgs
+          AUTH: Authorization: Bearer ${{ secrets.WINGET_PKGS_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          SHA="${{ steps.checksum.outputs.sha }}"
+          BR="add/zer0ken.xmux.v${VERSION}"
+
+          # Sync the fork branch onto the latest upstream master.
+          UP=$(curl -s -H "$AUTH" "$API/repos/$UPSTREAM/commits/master" | jq -r .sha)
+          REF="refs/heads/$BR"
+          if curl -s -H "$AUTH" "$API/repos/$FORK/git/ref/$REF" | jq -e '.ref' >/dev/null 2>&1; then
+            curl -s -X PATCH -H "$AUTH" -H "Accept: application/vnd.github+json" \
+              "$API/repos/$FORK/git/refs/$BR" -d "{\"sha\":\"$UP\",\"force\":true}" >/dev/null
+          else
+            curl -s -X POST -H "$AUTH" -H "Accept: application/vnd.github+json" \
+              "$API/repos/$FORK/git/refs" -d "{\"ref\":\"$REF\",\"sha\":\"$UP\"}" >/dev/null
+          fi
+
+          # Build the three manifests in a temp dir.
+          mkdir -p "/tmp/manifests/z/zer0ken/xmux/$VERSION"
+          cat > "/tmp/manifests/z/zer0ken/xmux/$VERSION/zer0ken.xmux.yaml" <<EOF
+          PackageIdentifier: zer0ken.xmux
+          PackageVersion: $VERSION
+          DefaultLocale: en-US
+          ManifestType: version
+          ManifestVersion: 1.6.0
+          EOF
+          cat > "/tmp/manifests/z/zer0ken/xmux/$VERSION/zer0ken.xmux.installer.yaml" <<EOF
+          PackageIdentifier: zer0ken.xmux
+          PackageVersion: $VERSION
+          InstallerType: portable
+          Installers:
+            - Architecture: x64
+              InstallerUrl: https://github.com/zer0ken/xmux/releases/download/v${VERSION}/xmux-v${VERSION}-x86_64-pc-windows-msvc.exe
+              InstallerSha256: $SHA
+              Commands:
+                - xmux
+          ManifestType: installer
+          ManifestVersion: 1.6.0
+          EOF
+          cat > "/tmp/manifests/z/zer0ken/xmux/$VERSION/zer0ken.xmux.locale.en-US.yaml" <<EOF
+          PackageIdentifier: zer0ken.xmux
+          PackageVersion: $VERSION
+          PackageLocale: en-US
+          Publisher: zer0ken
+          PackageName: xmux
+          PackageUrl: https://github.com/zer0ken/xmux
+          License: MIT
+          ShortDescription: Cross-environment tmux/psmux session switcher
+          ManifestType: defaultLocale
+          ManifestVersion: 1.6.0
+          EOF
+
+          # Push each manifest via the fork contents API.
+          for f in zer0ken.xmux.yaml zer0ken.xmux.installer.yaml zer0ken.xmux.locale.en-US.yaml; do
+            B64=$(base64 -w0 "/tmp/manifests/z/zer0ken/xmux/$VERSION/$f")
+            jq -n --arg b64 "$B64" --arg msg "Add zer0ken.xmux $VERSION manifest" --arg br "$BR" \
+              '{message:$msg, content:$b64, branch:$br}' > /tmp/body.json
+            curl -s -X PUT -H "$AUTH" -H "Accept: application/vnd.github+json" \
+              "$API/repos/$FORK/contents/manifests/z/zer0ken/xmux/$VERSION/$f" \
+              --data-binary @/tmp/body.json >/dev/null
+          done
+
+          # Open a PR if one does not already exist for this branch.
+          PR_EXISTS=$(curl -s -H "$AUTH" "$API/repos/$UPSTREAM/pulls?head=zer0ken:$BR" | jq 'length')
+          if [ "$PR_EXISTS" = "0" ]; then
+            jq -n --arg head "zer0ken:$BR" --arg title "New version: zer0ken.xmux version $VERSION" \
+              --arg body "Updates the winget manifest to zer0ken.xmux $VERSION. Generated automatically by the xmux winget-sync workflow." \
+              '{title:$title, head:$head, base:"master", body:$body}' > /tmp/pr.json
+            curl -s -X POST -H "$AUTH" -H "Accept: application/vnd.github+json" \
+              "$API/repos/$UPSTREAM/pulls" --data-binary @/tmp/pr.json | jq -r '.html_url'
+          else
+            echo "winget-pkgs PR already exists for $BR."
+          fi
+
+      - name: Skip submission
+        if: steps.present.outputs.already == 'true' || env.WINGET_PKGS_TOKEN == ''
+        run: |
+          if [ -z "$WINGET_PKGS_TOKEN" ]; then
+            echo "WINGET_PKGS_TOKEN is not configured; skipping submission."
+          else
+            echo "Latest version already synced to winget-pkgs."
+          fi
