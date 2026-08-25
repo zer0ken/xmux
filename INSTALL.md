@@ -29,9 +29,10 @@ registration steps.
 ## Prerequisites
 
 Running xmux needs `ssh` on the machine that runs it, for remote hosts, and a
-supported multiplexer on each host you target: `tmux` on unix-likes, `psmux` on
-Windows, or `zellij`. A host's multiplexer is detected from the binary it
-answers as, so a mix across your hosts needs no configuration. See the
+supported multiplexer on each host you target: `tmux` or GNU `screen` on
+unix-likes, `psmux` on Windows, or `zellij`. A host's multiplexer is detected
+from the binary it answers as, so a mix across your hosts needs no
+configuration. See the
 [README](README.md) for what the program does and how to use it.
 
 ---

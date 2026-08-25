@@ -36,6 +36,9 @@ AND its display driver, and is re-exported from the root:
   and the single-window card rule. abduco is the simplest family: no control
   stream, no server-socket flag, and no per-session query — a poll enumerates
   once and resolves each session as the session alone. See `abduco/AGENTS.md`.
+- `screen/` owns the GNU screen mux, its poll cadence, its `-ls` / `-Q windows`
+  parsers, and its driver (which reattaches on every session change because
+  screen offers no client switch). See `screen/AGENTS.md`.
 
 Sub-modules pull the shared trait, value types, and imports from the parent. A
 mux's driver is constructed by the mux itself, so no caller names a concrete
@@ -49,7 +52,7 @@ seam; each mux's concrete driver lives in its own family directory and is
 constructed by the mux, so a mux owns BOTH its argv, server model, and
 enumeration AND its display orchestration. Shared muxes such as tmux use one
 aggregate server and a source-level control stream. Per-session muxes such as psmux,
-zellij, and abduco enumerate differently and supply a per-session attach plan.
+zellij, abduco, and screen enumerate differently and supply a per-session attach plan.
 
 The command-plan verbs default to tmux-compatible argv, so a tmux-compatible mux
 is identity plus a few overrides. A mux that shares no argv with tmux overrides

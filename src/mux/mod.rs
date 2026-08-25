@@ -20,6 +20,7 @@ use crate::transport::Transport;
 mod abduco;
 mod control;
 mod psmux;
+mod screen;
 mod tmux;
 pub mod vocab;
 mod zellij;
@@ -27,6 +28,7 @@ mod zellij;
 pub use abduco::{Abduco, AbducoDriver};
 pub use control::{ControlProtocol, Line, Notif};
 pub use psmux::Psmux;
+pub use screen::Screen;
 pub use tmux::{Tmux, TmuxControl};
 pub use zellij::Zellij;
 // Re-export the pure mux vocabulary at the crate::mux root so `crate::mux::<fn>`
@@ -328,6 +330,10 @@ fn known_muxes() -> &'static [MuxKind] {
             name: "zellij",
             make: |bin| Box::new(Zellij { bin }),
         },
+        MuxKind {
+            name: "screen",
+            make: |bin| Box::new(Screen { bin }),
+        },
     ]
 }
 
@@ -488,8 +494,9 @@ pub async fn detect_backend(
         }
         return Some(tmux_fallback(bin));
     }
-    // `-v` is abduco's version flag (it rejects `-V`). Only reached when `-V` already
-    // failed, so the binary is not a tmux that would hang on tmux's verbose `-v`.
+    // `-v` is the version flag abduco and screen share (both reject `-V`). Only reached
+    // when `-V` already failed, so the binary is not a tmux that would hang on tmux's
+    // verbose `-v`. `mux_from_marker` picks the mux each one's output names.
     let (name, args) = transport.exec_argv(false, &[bin.to_string(), "-v".to_string()]);
     if let Ok(out) = runner.run(&name, &args).await {
         let low = String::from_utf8_lossy(&out).to_lowercase();
@@ -833,7 +840,7 @@ mod tests {
         // The candidate set IS the supported set, so discovery can never turn up a name
         // xmux has no family for: every candidate resolves to a mux of its own kind.
         let names = supported_muxes();
-        assert_eq!(names, vec!["tmux", "abduco", "psmux", "zellij"]);
+        assert_eq!(names, vec!["tmux", "abduco", "psmux", "zellij", "screen"]);
         for name in names {
             assert_eq!(for_binary(name).kind(), name, "{name} must be drivable");
         }
@@ -1129,8 +1136,32 @@ Usage: zellij [OPTIONS]",
         assert!(is_recognized("abduco"));
         assert!(is_recognized("psmux"));
         assert!(is_recognized("zellij"));
+        assert!(is_recognized("screen"));
         assert!(!is_recognized("byobu"));
         assert!(!is_recognized(""));
+    }
+
+    #[test]
+    fn screen_resolves_by_binary_name_and_by_kind() {
+        // The registry is what makes a mux reachable from config: a `mux = "screen"`
+        // entry and a `screen` binary must both land on the screen impl, and the
+        // invoked binary is preserved either way.
+        assert_eq!(for_binary("screen").kind(), "screen");
+        assert_eq!(for_kind("screen", "screen-custom").kind(), "screen");
+        assert_eq!(for_kind("screen", "screen-custom").bin(), "screen-custom");
+    }
+
+    #[tokio::test]
+    async fn detect_backend_classifies_screen_via_dash_v() {
+        // screen's positive signal is `-v` ("Screen version ... (GNU)"), NOT `-V`
+        // (which errors), so the `-V` tmux fallback must never catch it and detection
+        // lands on the `-v` probe it shares with abduco.
+        let transport = crate::transport::local(None);
+        let runner = ProbeRunner::new(Some("Must be connected to a terminal."), None)
+            .low_version(Some("Screen version 4.09.00 (GNU) 30-Jan-22"));
+        let got = detect_backend(&transport, "screen", &runner).await.unwrap();
+        assert_eq!(got.kind(), "screen");
+        assert_eq!(got.server_model(), ServerModel::PerSession);
     }
 
     #[test]
