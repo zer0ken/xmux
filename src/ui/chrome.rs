@@ -956,7 +956,7 @@ impl Chrome {
         Line::from(spans)
     }
 
-    /// The version the expanded bar pins to its far right: `xmux v0.5.0`, built from the
+    /// The version the expanded bar pins to its far right: `xmux v<version>`, built from the
     /// crate's own name and version so it always matches what `xmux --version` reports.
     pub(crate) fn version_label(&self) -> String {
         format!("{} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
@@ -1117,7 +1117,6 @@ mod tests {
             format!("{} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
         );
         assert!(label.starts_with("xmux v"), "label: {label:?}");
-        assert_eq!(label, "xmux v0.5.0", "label: {label:?}");
     }
 
     #[test]
