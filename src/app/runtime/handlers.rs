@@ -956,6 +956,19 @@ impl Runtime {
                     self.body_rows,
                     self.nav_width,
                 );
+                // `rescan` only ARMS the kick; the same consumer the key paths run has to
+                // fire it here too. Without this a ctl re-scan clears every card to its
+                // scanning skeleton and then never re-enumerates, so the nav spins until
+                // the user happens to press a key.
+                kick_rescan(
+                    &self.env,
+                    &mut self.switcher,
+                    &self.hosts,
+                    &mut self.detecting,
+                    &mut self.mgr,
+                    &mut self.panes_requested,
+                    (self.cols, self.body_rows),
+                );
                 if sync_selection_from_switcher(&mut self.state, &self.switcher) {
                     self.dirty = true;
                 }
