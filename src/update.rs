@@ -128,6 +128,93 @@ fn checksum_for_name(body: &str, file_name: &str) -> Result<String, String> {
         .ok_or_else(|| format!("SHA256SUMS has no entry for {file_name}"))
 }
 
+fn sha256_file(path: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let mut f = std::fs::File::open(path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let mut h = Sha256::new();
+    std::io::copy(&mut f, &mut h)
+        .map_err(|e| format!("cannot hash {}: {e}", path.display()))?;
+    Ok(format!("{:x}", h.finalize()))
+}
+
+fn checksum_matches(expected: String, actual: String) -> Result<(), String> {
+    if expected.eq_ignore_ascii_case(&actual) {
+        Ok(())
+    } else {
+        Err(format!(
+            "checksum mismatch (expected {expected}, got {actual}); refusing to install"
+        ))
+    }
+}
+
+/// Extracts the `xmux` binary from a release `.tar.gz` archive into `dest`.
+#[cfg(not(windows))]
+fn extract_binary(tar_gz: &Path, dest: &Path) -> Result<(), String> {
+    use std::ffi::OsStr;
+    let gz = std::fs::File::open(tar_gz)
+        .map_err(|e| format!("cannot open {}: {e}", tar_gz.display()))?;
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(gz));
+    let entries = archive.entries().map_err(|e| format!("bad archive: {e}"))?;
+    for entry in entries {
+        let mut entry = entry.map_err(|e| format!("bad archive entry: {e}"))?;
+        let name = entry.path().map_err(|e| format!("bad entry path: {e}"))?;
+        if name.file_name() == Some(OsStr::new("xmux")) {
+            entry
+                .unpack(dest)
+                .map_err(|e| format!("cannot extract xmux: {e}"))?;
+            return Ok(());
+        }
+    }
+    Err("release archive contains no xmux binary".to_string())
+}
+
+/// Replaces the running executable's file with `downloaded_bin`.
+#[cfg(not(windows))]
+fn install(exe: &Path, downloaded_bin: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = exe.parent().ok_or("cannot locate xmux install directory")?;
+    let tmp = dir.join("xmux.new");
+    let _ = std::fs::remove_file(&tmp);
+    std::fs::copy(downloaded_bin, &tmp)
+        .map_err(|e| format!("cannot stage new binary: {e}"))?;
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("cannot mark binary executable: {e}"))?;
+    std::fs::rename(&tmp, exe).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
+            format!(
+                "cannot write {} (permission denied); retry with elevated privileges, e.g. `sudo xmux update`",
+                exe.display()
+            )
+        } else {
+            format!("cannot replace {}: {e}", exe.display())
+        }
+    })
+}
+
+/// Replaces the running executable on Windows. The running `.exe` cannot be overwritten,
+/// so the new binary is staged beside it and a detached `cmd` moves it into place after
+/// this process has exited.
+#[cfg(windows)]
+fn install(exe: &Path, downloaded: &Path) -> Result<(), String> {
+    let dir = exe.parent().ok_or("cannot locate xmux install directory")?;
+    let new = dir.join("xmux.exe.new");
+    let _ = std::fs::remove_file(&new);
+    std::fs::copy(downloaded, &new)
+        .map_err(|e| format!("cannot stage new binary: {e}"))?;
+    let q = |p: &std::path::Path| format!("\"{}\"", p.display());
+    let script = format!(
+        "timeout /t 1 /nobreak >nul & move /y {} {}",
+        q(&new),
+        q(exe)
+    );
+    std::process::Command::new("cmd")
+        .args(["/c", "start", "\"\"", "/b", "cmd", "/c", &script])
+        .spawn()
+        .map_err(|e| format!("cannot schedule replacement: {e}"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,5 +304,45 @@ mod tests {
 
     fn json_asset(name: &str, url: &str) -> serde_json::Value {
         serde_json::json!({ "name": name, "browser_download_url": url })
+    }
+
+    #[test]
+    fn sha256_of_a_file_matches_expected() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("xmux-sha-test.bin");
+        std::fs::write(&path, b"hello world").unwrap();
+        assert_eq!(
+            super::sha256_file(&path).unwrap(),
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn checksum_mismatch_is_rejected() {
+        assert!(super::checksum_matches("expected".to_string(), "expected".to_string()).is_ok());
+        assert!(super::checksum_matches("expected".to_string(), "actual".to_string()).is_err());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn extract_binary_pulls_xmux_out_of_tar_gz() {
+        let dir = std::env::temp_dir();
+        let src = dir.join("xmux-extract-src.txt");
+        std::fs::write(&src, b"fake-binary").unwrap();
+        let tgz = dir.join("xmux-extract.tar.gz");
+        let file = std::fs::File::create(&tgz).unwrap();
+        let enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut ar = tar::Builder::new(enc);
+        ar.append_path_with_name(&src, "xmux").unwrap();
+        ar.into_inner().unwrap().finish().unwrap();
+
+        let out = dir.join("xmux-extracted-bin");
+        let _ = std::fs::remove_file(&out);
+        super::extract_binary(&tgz, &out).unwrap();
+        assert_eq!(std::fs::read(&out).unwrap(), b"fake-binary");
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&tgz);
+        let _ = std::fs::remove_file(&out);
     }
 }
