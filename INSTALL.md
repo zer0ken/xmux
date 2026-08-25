@@ -207,6 +207,25 @@ xmux version
 xmux doctor
 ```
 
-To upgrade from a prebuilt binary, download the newer package and replace the
-binary. To upgrade a Cargo install, re-run `cargo install --path .` (or, if you
-installed from crates.io, `cargo install xmux`).
+To upgrade, run `xmux update`. It looks at where the `xmux` binary lives and
+picks the update that matches how you installed it: a cargo install updates
+with `cargo install xmux`, a winget install with `winget upgrade --id
+zer0ken.xmux`, and a Homebrew install with `brew upgrade
+zer0ken/xmux/xmux`. Any other placement (a prebuilt binary copied onto your
+`PATH`) is updated in place from the latest GitHub release, after verifying the
+downloaded binary's SHA256 against the release's published checksum.
+
+Preview what an update would do without installing it:
+
+```sh
+xmux update --check
+```
+
+Force a specific update path with `--method cargo|winget|brew|self`, or the
+`XMUX_UPDATE_METHOD` environment variable. A source/dev build (not a released
+version) is not overwritten — update it the same way it was built.
+
+To upgrade from a prebuilt binary manually, download the newer package and
+replace the binary. To upgrade a Cargo install by hand, re-run
+`cargo install --path .` (or, if you installed from crates.io,
+`cargo install xmux`).

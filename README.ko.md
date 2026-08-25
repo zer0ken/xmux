@@ -57,6 +57,7 @@ xmux attach <source>/<name>   # 세션 하나에 바로 attach 한다, 예: xmux
 xmux doctor                   # 설정과 소스별 접근 가능 여부를 점검한다
 xmux instances                # 실행 중인 인스턴스를 나열한다
 xmux send <name> <command…>  # 그중 하나를 컨트롤 소켓으로 조작한다
+xmux update                  # 설치된 바이너리를 갱신한다
 xmux version
 ```
 
