@@ -124,7 +124,7 @@ pub enum MuxOp {
     Create { source: String, name: String },
 }
 
-/// A mux follow-up a [`HostEvent`](crate::host::HostEvent) requires after
+/// A mux follow-up a [`HostEvent`](crate::link::HostEvent) requires after
 /// [`State::apply_event`](crate::state::State::apply_event) has folded the event's
 /// self-contained state mutation. `apply_event` owns the domain-state changes (tree
 /// rebuild, marker move, unreachable mark); these effects carry the mux I/O the
@@ -165,7 +165,9 @@ pub enum EventEffect {
     /// source list the off-loop ops resolve against, and the nav), then scan what was
     /// added and tear down what was dropped. The loop owns it because every one of those
     /// lives behind it.
-    ApplyRoster { roster: Box<crate::env::Roster> },
+    ApplyRoster {
+        roster: Box<crate::provision::env::Roster>,
+    },
     /// `Exited`: reap `host`'s metadata client. (`apply_event` has already folded the
     /// tree/connected-set state change; this is the mux teardown.)
     ReapHost { host: String },

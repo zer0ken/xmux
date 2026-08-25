@@ -10,8 +10,8 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
+use crate::model::source::Source;
 use crate::session::Session;
-use crate::source::Source;
 
 /// One source's scan outcome. A non-`None` `err` means the source was
 /// unreachable, in which case `sessions` is empty.
@@ -100,7 +100,7 @@ pub async fn scan_all(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source::{RunError, Runner};
+    use crate::model::source::{RunError, Runner};
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicI32, Ordering};
 
@@ -133,7 +133,7 @@ mod tests {
         Source {
             alias: alias.into(),
             binary: "tmux".into(),
-            kind: crate::machine::MachineKind::Ssh {
+            kind: crate::transport::MachineKind::Ssh {
                 id: String::new(),
                 alias: alias.into(),
                 control_path: String::new(),

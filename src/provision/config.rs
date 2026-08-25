@@ -23,7 +23,7 @@ pub struct Config {
 }
 
 /// The optional `[discovery]` table: which providers contribute ssh targets to the
-/// roster (see [`crate::roster`]).
+/// roster (see [`crate::provision::roster`]).
 ///
 /// Every provider is ON by default, so a machine xmux can reach is a machine xmux
 /// offers with nothing to configure. Each flag is how a user narrows that: `ssh-config`

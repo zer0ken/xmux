@@ -6,7 +6,7 @@
 //! state machine + FIFO correlation but names no tmux protocol specifics directly —
 //! it reaches them only through `Mux::control_protocol`.
 
-use crate::host::HostEvent;
+use crate::link::HostEvent;
 
 pub use crate::mux::tmux::control_proto::{Line, Notif};
 

@@ -225,7 +225,7 @@ mod tests {
     }
 
     fn ssh(alias: &str) -> Box<dyn Transport> {
-        crate::machine::ssh(alias.into(), String::new(), "linux".into())
+        crate::transport::ssh(alias.into(), String::new(), "linux".into())
     }
 
     #[test]

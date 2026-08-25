@@ -1,11 +1,13 @@
-# Working Notes: /src/host
+# Working Notes: /src/link
 
 ## Purpose
 
-`host` owns per-source connection management: the control-mode reader and writer
-machinery, poll task lifecycle, per-source session and window inventory, and the
-source events the app folds into the runtime state. It is a METADATA channel only:
-the per-session PTY attachments in `src/display` own the pixels.
+`link` owns the live host-facing channels: per-source connection management (the
+control-mode reader and writer machinery, poll task lifecycle, per-source session
+and window inventory, and the source events the app folds into the runtime
+state), the mux operations xmux issues against a live host, and the control-socket
+protocol for headless driving. The connection-management part is a METADATA
+channel only: the per-session PTY attachments in `src/display` own the pixels.
 
 ## Mental Model
 
@@ -18,6 +20,13 @@ pending-reply correlation ties a control command to its reply so the right event
 is emitted. The app folds those events into the source's own inventory, the single
 owner of per-source session and window inventory, and rebuilds the nav rows from
 it.
+
+The operations concern composes a mux argv through the transport and runs it via an
+injected runner to perform the mux actions xmux itself issues (create a session,
+read a host's panes or options); nothing is cached and no state is held. The
+control-socket concern is the headless driving protocol: length-framed messages,
+request and key parsing, and the ctl client that injects keystrokes and dumps the
+rendered screen over a local socket.
 
 ## Module Seams
 
@@ -40,11 +49,15 @@ and the composed control argv.
   display worker.
 - Depends on the mux axis for control-protocol parsing and on the domain types
   for sessions and their panes.
+- The operations concern composes each mux argv across the two axes and runs it
+  through the injected runner, exactly like enumeration; it hardcodes no mux verb.
+- The control-socket concern speaks semantic verbs and resolves them to domain
+  actions at one site, so raw key/text injection stays a low-level namespace.
 
 ## Invariants
 
-- This is a metadata path only: source events update inventory and selection aids,
-  not display grids.
+- The connection-management concern is a metadata path only: source events update
+  inventory and selection aids, not display grids.
 - Ensuring a source is idempotent: re-ensuring a live source is a no-op.
 - The control argv is composed from the transport and mux axes; no mux verb or
   ssh invocation is hardcoded here.

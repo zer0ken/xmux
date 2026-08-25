@@ -226,7 +226,7 @@ fn with_display_tty_record(mut argv: Vec<String>, host: &Host, host_key: &str) -
 mod tests {
     use super::*;
     use crate::display::registry::AttachRegistry;
-    use crate::host::HostManager;
+    use crate::link::HostManager;
     use crate::model::Selection;
 
     /// A REMOTE shared attach gets the mux's record prefix folded into its remote
@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn remote_shared_attach_records_its_display_tty() {
         let host = crate::model::Host::new(
-            crate::machine::ssh("jup".into(), String::new(), "linux".into()),
+            crate::transport::ssh("jup".into(), String::new(), "linux".into()),
             crate::mux::for_binary("tmux"),
         );
         let argv = vec![
@@ -256,8 +256,10 @@ mod tests {
     /// prepending the snippet would corrupt the local argv's session-name argument.
     #[test]
     fn local_shared_attach_is_not_prefixed() {
-        let host =
-            crate::model::Host::new(crate::machine::local(None), crate::mux::for_binary("tmux"));
+        let host = crate::model::Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("tmux"),
+        );
         let argv = vec![
             "tmux".to_string(),
             "attach".to_string(),
@@ -277,7 +279,7 @@ mod tests {
     async fn tmux_driver_show_switches_a_shell_less_host_in_place_when_tty_known() {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
-            crate::machine::local(None),
+            crate::transport::local(None),
             crate::mux::for_binary("tmux"),
         ));
         {
@@ -340,7 +342,7 @@ mod tests {
     async fn tmux_driver_show_warms_the_shared_host_pty_on_first_attach() {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
-            crate::machine::ssh("jup".into(), String::new(), "linux".into()),
+            crate::transport::ssh("jup".into(), String::new(), "linux".into()),
             crate::mux::for_binary("tmux"),
         ));
 
@@ -397,7 +399,7 @@ mod tests {
     async fn tmux_driver_sync_warms_the_host_pty_on_the_first_session() {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
-            crate::machine::local(None),
+            crate::transport::local(None),
             crate::mux::for_binary("tmux"),
         ));
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
@@ -448,7 +450,7 @@ mod tests {
     async fn tmux_driver_sync_reaps_the_host_pty_when_empty() {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
-            crate::machine::local(None),
+            crate::transport::local(None),
             crate::mux::for_binary("tmux"),
         ));
         hosts

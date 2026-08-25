@@ -1,4 +1,4 @@
-//! The machine axis: how a mux argv reaches the server, SEPARATE from which mux
+//! The transport axis: how a mux argv reaches the server, SEPARATE from which mux
 //! runs there (that is `Mux`). A `Transport` owns argv assembly and the ssh
 //! wrapping only — it never decides a server model. Each machine family lives in
 //! its own file behind the `Transport` trait — `Local` (`local.rs`), `Ssh`

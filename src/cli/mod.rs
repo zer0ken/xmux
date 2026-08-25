@@ -8,17 +8,19 @@
 //! resolved by exact match first, then by unique prefix, so `xmux send am <cmd>`
 //! reaches `amber-otter` when nothing else starts with `am`.
 
+pub mod update;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 
 use crate::app::runtime;
-use crate::attach::{self, OsExecer};
-use crate::control;
-use crate::env::{self, ls_lines, Env};
+use crate::display::attach::{self, OsExecer};
+use crate::link::control;
+use crate::model::source::Source;
+use crate::provision::env::{self, ls_lines, Env};
 use crate::session;
-use crate::source::Source;
 
 #[derive(Parser)]
 #[command(
@@ -116,7 +118,7 @@ pub async fn run() -> i32 {
         Some(Command::Update { check, method }) => {
             // Like `version`, `update` needs no config or instance: it acts on the
             // running binary alone, so a broken config must not block an update.
-            crate::update::run(crate::update::Args { check, method }).await
+            crate::cli::update::run(crate::cli::update::Args { check, method }).await
         }
         Some(Command::Version) => {
             println!("xmux {}", env!("CARGO_PKG_VERSION"));

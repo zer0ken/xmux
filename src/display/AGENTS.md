@@ -4,9 +4,12 @@
 
 `display` is the shared PTY / grid / input display-mechanics layer: PTY
 attachment spawn and lifecycle, the off-runtime attach worker, the attachment
-registry, the grid state, terminal input decoding, mouse parsing, and terminal
-setup. It is mux-agnostic (it names no mux verb at all) and application-agnostic
-(it holds no app UI state; the focus and modal state machine lives in `app`).
+registry, the grid state, terminal input decoding, mouse parsing, terminal setup,
+and the terminal handover into a session (the exec that hands the controlling
+terminal to the mux client when xmux is not the interactive app). It also names
+xmux's own session so it can refuse to mirror itself. It is mux-agnostic (it names
+no mux verb at all) and application-agnostic (it holds no app UI state; the focus
+and modal state machine lives in `app`).
 
 ## Mental Model
 

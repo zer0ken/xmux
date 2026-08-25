@@ -209,7 +209,7 @@ impl Runtime {
                     // panes, read border styles) resolve a source by id through `Env`. Both
                     // have to learn the source, or it paints and scans but refuses every
                     // operation with `unknown source`.
-                    env.add_source(crate::source::for_machine_mux(
+                    env.add_source(crate::model::source::for_machine_mux(
                         &machine,
                         &bin,
                         id.clone(),
@@ -344,7 +344,7 @@ impl Runtime {
 pub(super) fn poll_ui_config(
     last: &mut Option<std::time::SystemTime>,
     path: &std::path::Path,
-) -> Option<crate::config::UiConfig> {
+) -> Option<crate::provision::config::UiConfig> {
     let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
     if mtime == *last {
         return None;
@@ -356,7 +356,7 @@ pub(super) fn poll_ui_config(
     if prev.is_none() || mtime.is_none() {
         return None;
     }
-    crate::config::load(path).ok().map(|c| c.ui)
+    crate::provision::config::load(path).ok().map(|c| c.ui)
 }
 
 impl Runtime {
@@ -369,17 +369,18 @@ impl Runtime {
                                                                     // Restore the natural nav width the user last set; clamp a stale out-of-range
                                                                     // value, fall back to the default when none is saved.
         let nav_width_natural = adjust_nav_width(
-            crate::prefs::load_nav_width(&env.xmux_dir).unwrap_or(crate::ui::switcher::NAV_WIDTH),
+            crate::ui::prefs::load_nav_width(&env.xmux_dir)
+                .unwrap_or(crate::ui::switcher::NAV_WIDTH),
             0,
         );
         let nav_width = nav_width_natural;
         // Restore the Top-layout nav height (0 = auto ~40%); a stale value is clamped at
         // render time by compute_regions, so no clamp is needed here.
-        let nav_height = crate::prefs::load_nav_height(&env.xmux_dir).unwrap_or(0);
+        let nav_height = crate::ui::prefs::load_nav_height(&env.xmux_dir).unwrap_or(0);
         // One read of the roster for the whole construction, so every product below is
         // built from ONE answer about which machines exist.
         let roster = env.roster();
-        let auto_hide_nav = crate::prefs::load_auto_hide_nav(&env.xmux_dir)
+        let auto_hide_nav = crate::ui::prefs::load_auto_hide_nav(&env.xmux_dir)
             .unwrap_or_else(|| roster.cfg.ui_auto_hide_nav());
 
         // The control-mode metadata clients: one per remote host.
@@ -414,7 +415,7 @@ impl Runtime {
         // Feed the switcher the ssh config so an unreachable host's screen can show
         // its Host/Match stanza. Read once; a missing file just yields no stanza.
         state.chrome.set_ssh_config_text(
-            std::fs::read_to_string(crate::env::ssh_config_path()).unwrap_or_default(),
+            std::fs::read_to_string(crate::provision::env::ssh_config_path()).unwrap_or_default(),
         );
         // And what offered each host, so an unreachable one can name the provider that
         // put it on the roster. Reduced to words here: the screen prints them and
@@ -615,7 +616,7 @@ impl Runtime {
             for cmd in cmds {
                 match cmd {
                     crate::model::Command::PersistLastSession(addr) => {
-                        crate::prefs::save_last_session(&self.env.xmux_dir, &addr);
+                        crate::ui::prefs::save_last_session(&self.env.xmux_dir, &addr);
                     }
                     crate::model::Command::Attach(sel) => {
                         let t = std::time::Instant::now();
@@ -674,7 +675,7 @@ impl Runtime {
                 .width_flush_at
                 .is_some_and(|d| std::time::Instant::now() >= d)
         {
-            crate::prefs::save_nav_width(&self.env.xmux_dir, self.nav_width_natural);
+            crate::ui::prefs::save_nav_width(&self.env.xmux_dir, self.nav_width_natural);
             self.width_dirty = false;
             self.width_flush_at = None;
         }
@@ -1166,8 +1167,10 @@ impl Runtime {
     /// prefix is input-side and deliberately not re-applied (it needs the key-decoder
     /// rebuild, which is not worth it on a setting that changes rarely).
     pub(super) fn on_config_check(&mut self) -> bool {
-        let Some(ui) = poll_ui_config(&mut self.config_last_mtime, &crate::env::config_path())
-        else {
+        let Some(ui) = poll_ui_config(
+            &mut self.config_last_mtime,
+            &crate::provision::env::config_path(),
+        ) else {
             return false;
         };
         crate::ui::palette::apply(
@@ -1280,7 +1283,7 @@ impl Runtime {
 /// never learns what a machine family or a mux binary is. Each field comes from the one
 /// place that owns it - the machine describes its own addressing, the host composes its
 /// own listing command - rather than being re-derived from a source id.
-pub(super) fn source_reach(s: &crate::source::Source) -> crate::ui::chrome::SourceReach {
+pub(super) fn source_reach(s: &crate::model::source::Source) -> crate::ui::chrome::SourceReach {
     crate::ui::chrome::SourceReach {
         probe: shell_line(&s.host().list_sessions_command()),
         machine: s.kind.addressed_as(),
@@ -1298,7 +1301,7 @@ pub(super) fn source_reach(s: &crate::source::Source) -> crate::ui::chrome::Sour
 /// unreadable, which is the one thing this screen exists not to do.
 pub(super) fn shell_line(argv: &[String]) -> String {
     argv.iter()
-        .map(|a| crate::machine::vocab::quote(&escape_controls(a)))
+        .map(|a| crate::transport::vocab::quote(&escape_controls(a)))
         .collect::<Vec<_>>()
         .join(" ")
 }

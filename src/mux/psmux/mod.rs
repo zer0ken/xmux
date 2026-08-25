@@ -167,7 +167,7 @@ mod tests {
     }
 
     fn ssh(alias: &str) -> Box<dyn Transport> {
-        crate::machine::ssh(alias.into(), String::new(), "linux".into())
+        crate::transport::ssh(alias.into(), String::new(), "linux".into())
     }
 
     #[test]
@@ -239,7 +239,7 @@ mod tests {
         // pins that the Local-vs-Ssh dispatch is intact.
         let m = psmux();
         let runner = CannedRunner::err(RunError::Other("psmux: default route is dead".into()));
-        let got = m.enumerate(&crate::machine::local(None), &runner).await;
+        let got = m.enumerate(&crate::transport::local(None), &runner).await;
         assert!(
             got.is_ok(),
             "local psmux swallows the error into the registry merge, never errors: {got:?}"

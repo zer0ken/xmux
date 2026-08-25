@@ -9,13 +9,13 @@
 
 use async_trait::async_trait;
 
-use crate::host::HostEvent;
-use crate::machine::Transport;
+use crate::link::HostEvent;
 use crate::model::plan::{DeathSignal, EventSource};
 use crate::model::server_model::ServerModel;
+use crate::model::source::{RunError, Runner};
 use crate::mux::vocab as mux;
 use crate::session::{Session, WindowPanes};
-use crate::source::{RunError, Runner};
+use crate::transport::Transport;
 
 mod control;
 mod psmux;
@@ -114,7 +114,7 @@ async fn within_poll_budget<T>(
 /// An opaque, mux-authored plan for an in-place display-client switch. The driver runs
 /// it BLIND through the host's transport and never inspects which variant it is — the
 /// variant↔lowering mapping is `run_switch_plan`'s job, not the driver's. Each variant
-/// lowers 1:1 to a [`crate::machine::LoweredSwitch`].
+/// lowers 1:1 to a [`crate::transport::LoweredSwitch`].
 pub enum SwitchPlan {
     /// Mux argv(s) to run non-interactively in order via the exec path (psmux:
     /// `switch-client` then `refresh-client`).
@@ -399,8 +399,8 @@ pub fn for_binary(bin: &str) -> Box<dyn Mux> {
 /// `None` for a mux that takes no socket flag.
 ///
 /// The two composition sites (the source list and the host registry) call this before
-/// handing a socket to the machine axis, so a socket only ever reaches a mux that
-/// understands it. The machine axis cannot make this call itself: it names no mux by
+/// handing a socket to the transport axis, so a socket only ever reaches a mux that
+/// understands it. The transport axis cannot make this call itself: it names no mux by
 /// design, so it injects the socket it is GIVEN and asks nothing about it.
 pub fn server_socket_for(bin: &str, socket: Option<String>) -> Option<String> {
     socket.filter(|_| for_binary(bin).takes_server_socket())
@@ -633,9 +633,9 @@ mod tests {
     #[ignore = "live: needs a running local tmux server"]
     #[tokio::test]
     async fn tmux_enumerate_live() {
-        let t = crate::machine::local(None);
+        let t = crate::transport::local(None);
         let sessions = tmux()
-            .enumerate(&t, &crate::source::ExecRunner)
+            .enumerate(&t, &crate::model::source::ExecRunner)
             .await
             .expect("reachable tmux (empty is Ok)");
         eprintln!(
@@ -805,7 +805,7 @@ mod tests {
     async fn a_machine_offers_every_supported_mux_it_actually_has() {
         // The reported case: zellij is up on this box but nothing in the config says so.
         // Discovery asks each supported mux whether it is here, in the supported order.
-        let t = crate::machine::local(None);
+        let t = crate::transport::local(None);
         let got = installed_muxes(&t, &MachineWith::new(&["tmux", "zellij"])).await;
         assert_eq!(got, vec!["tmux", "zellij"]);
     }
@@ -816,7 +816,7 @@ mod tests {
         // it was invoked under, so the identity probe reads it as a real tmux. Taking it
         // would drive a per-session mux through tmux's shared-server driver. Decided from
         // what ANSWERED, not from the OS - which xmux does not know for a remote.
-        let t = crate::machine::local(None);
+        let t = crate::transport::local(None);
         assert_eq!(
             installed_muxes(&t, &MachineWith::new(&["tmux", "psmux"])).await,
             vec!["psmux"]
@@ -832,7 +832,7 @@ mod tests {
     async fn a_machine_with_no_mux_installed_discovers_none() {
         // Nothing answered, so discovery reports nothing; the CONVENTIONAL fallback is
         // the config layer's job (`Config::local_muxes`), not this probe's.
-        let t = crate::machine::local(None);
+        let t = crate::transport::local(None);
         assert!(installed_muxes(&t, &MachineWith::new(&[])).await.is_empty());
     }
 
@@ -841,7 +841,7 @@ mod tests {
         // A `tmux` on the PATH that is really psmux (psmux mimics tmux's `-V`, so only
         // `help` tells them apart): counting it as tmux would create a source whose every
         // command is aimed at the wrong mux. Present-but-lying is not installed.
-        let t = crate::machine::local(None);
+        let t = crate::transport::local(None);
         let runner = MachineWith {
             present: vec!["tmux"],
             help_marker: Some("psmux"),
@@ -885,7 +885,7 @@ mod tests {
         // nothing leaves the card on a loading spinner no later sweep resolves.
         // Reaching the assertions at all is the proof that the sweep returned.
         let m = tmux();
-        let transport = crate::machine::local(None);
+        let transport = crate::transport::local(None);
         let mut events = Vec::new();
         m.poll_once("local", &transport, &HangingPanesRunner, &mut |ev| {
             events.push(ev)
@@ -914,7 +914,7 @@ mod tests {
         // the host's error, which the nav shows as unreachable, instead of stalling the
         // loop forever with nothing on screen.
         let m = tmux();
-        let transport = crate::machine::local(None);
+        let transport = crate::transport::local(None);
         let mut events = Vec::new();
         m.poll_once("local", &transport, &HangingRunner, &mut |ev| {
             events.push(ev)
@@ -936,7 +936,7 @@ mod tests {
 
     #[tokio::test]
     async fn detect_backend_classifies_psmux_by_help_marker() {
-        let transport = crate::machine::local(None);
+        let transport = crate::transport::local(None);
         // psmux names itself in `help`; `-V` is never reached (it would lie "tmux 3.3.6").
         let runner = ProbeRunner::new(Some("usage: PsMuX help"), Some("tmux 3.3.6"));
         let got = detect_backend(&transport, "tmux", &runner).await.unwrap();
@@ -952,7 +952,7 @@ mod tests {
     async fn detect_backend_classifies_zellij_by_help_marker() {
         // zellij names itself in its help banner, the same positive signal psmux gives,
         // so it is identified without ever reaching the `-V` tmux fallback.
-        let transport = crate::machine::local(None);
+        let transport = crate::transport::local(None);
         let runner = ProbeRunner::new(
             Some(
                 "A terminal workspace with batteries included
@@ -972,7 +972,7 @@ Usage: zellij [OPTIONS]",
         // Regression: real tmux has no `help` command (`tmux help` exits non-zero), so
         // the help probe errors. The `-V` fallback must still identify it as tmux —
         // otherwise a correctly-configured tmux host never gets detected/connected.
-        let transport = crate::machine::local(None);
+        let transport = crate::transport::local(None);
         let runner = ProbeRunner::new(None, Some("tmux 3.5a"));
         let got = detect_backend(&transport, "tmux", &runner).await.unwrap();
         assert_eq!(got.kind(), "tmux");
@@ -982,7 +982,7 @@ Usage: zellij [OPTIONS]",
     #[tokio::test]
     async fn detect_backend_classifies_tmux_when_help_lacks_marker() {
         // A `help` that succeeds without a known-mux marker still falls through to `-V`.
-        let transport = crate::machine::local(None);
+        let transport = crate::transport::local(None);
         let runner = ProbeRunner::new(Some("usage: tmux commands"), Some("tmux 3.5a"));
         let got = detect_backend(&transport, "tmux", &runner).await.unwrap();
         assert_eq!(got.kind(), "tmux");
@@ -995,14 +995,14 @@ Usage: zellij [OPTIONS]",
     #[ignore = "live: needs ssh jupiter00 and local psmux"]
     #[tokio::test]
     async fn detect_backend_live() {
-        use crate::source::ExecRunner;
-        let ssh = crate::machine::ssh("jupiter00".into(), String::new(), "windows".into());
+        use crate::model::source::ExecRunner;
+        let ssh = crate::transport::ssh("jupiter00".into(), String::new(), "windows".into());
         let got = detect_backend(&ssh, "tmux", &ExecRunner).await;
         eprintln!(
             "DETECT jupiter00/tmux -> {:?}",
             got.as_ref().map(|m| (m.kind(), m.server_model()))
         );
-        let local = crate::machine::local(None);
+        let local = crate::transport::local(None);
         let got = detect_backend(&local, "psmux", &ExecRunner).await;
         eprintln!(
             "DETECT local/psmux -> {:?}",
@@ -1013,7 +1013,7 @@ Usage: zellij [OPTIONS]",
     #[tokio::test]
     async fn detect_backend_both_probes_fail_is_inconclusive() {
         // Unreachable host / missing binary: both probes error ⇒ None (retry later).
-        let transport = crate::machine::local(None);
+        let transport = crate::transport::local(None);
         let runner = ProbeRunner::new(None, None);
         assert!(detect_backend(&transport, "tmux", &runner).await.is_none());
     }
@@ -1134,8 +1134,8 @@ Usage: zellij [OPTIONS]",
     /// `Sessions { err: Some(_) }`.
     #[tokio::test]
     async fn poll_once_surfaces_enumeration_error_on_sessions_event() {
-        use crate::host::HostEvent;
-        let transport = crate::machine::ssh("down-host".into(), String::new(), "linux".into());
+        use crate::link::HostEvent;
+        let transport = crate::transport::ssh("down-host".into(), String::new(), "linux".into());
         let mut events: Vec<HostEvent> = Vec::new();
         psmux()
             .poll_once("down-host", &transport, &FailRunner, &mut |e| {
@@ -1173,7 +1173,7 @@ Usage: zellij [OPTIONS]",
     /// session — the order and payloads a control client's metadata path produces.
     #[tokio::test]
     async fn poll_once_emits_sessions_then_panes_on_success() {
-        use crate::host::HostEvent;
+        use crate::link::HostEvent;
 
         /// Answers list-sessions with one session, then list-panes with one pane.
         struct OkRunner;
@@ -1191,7 +1191,7 @@ Usage: zellij [OPTIONS]",
             }
         }
 
-        let transport = crate::machine::ssh("host".into(), String::new(), "linux".into());
+        let transport = crate::transport::ssh("host".into(), String::new(), "linux".into());
         let mut events: Vec<HostEvent> = Vec::new();
         psmux()
             .poll_once("host", &transport, &OkRunner, &mut |e| events.push(e))

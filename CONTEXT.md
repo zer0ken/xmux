@@ -373,7 +373,7 @@ the argv of the muxes xmux drives.
 
 Two orthogonal axes describe every connection, and no module conflates them:
 
-- HOST - `src/machine/`. Each host family owns its execution behind the
+- HOST - `src/transport/`. Each host family owns its execution behind the
   `Transport` trait; a source builds one at construction, so host selection is
   never a central `match`. Shared shell vocabulary (quoting, remote command
   assembly) lives beside the families. `Transport` owns where a command runs and
@@ -402,10 +402,13 @@ The remaining layers each own one concern:
 - `src/display/` - the mux- and app-agnostic PTY/grid/input mechanics (attach
   spawning, the grid, input decode, terminal setup, dispatch, the registry, the
   worker).
-- `src/host/` - per-source connection management (control-mode reader/writer,
+- `src/link/` - per-source connection management (control-mode reader/writer,
   poll tasks, live client ownership).
-- `src/machine/` - the host axis: the `Transport` trait, the local and ssh
+- `src/transport/` - the transport axis: the `Transport` trait, the local and ssh
   families, and the shared shell vocabulary.
+- `src/provision/` - resolution: the TOML config, the roster of ssh targets, the
+  concurrent source probe, and the resolved runtime view over them.
+- `src/cli/` - the CLI surface: argument parsing and command dispatch.
 - `src/model/` - domain types: sources, selection, actions, commands, event
   effects, and the server model.
 - `src/driver.rs` - the mux-agnostic `MuxDriver` trait, the supervisor
@@ -459,14 +462,16 @@ A new colour goes into the palette as a slot, or it does not go in.
 
 At creation time, place a new source file by the axis it belongs to:
 
-- Host-specific → a new host family is a new module under `src/machine/`
+- Host-specific → a new host family is a new module under `src/transport/`
   implementing `Transport` (plus its factory); new per-host execution goes in
   the existing local or ssh family.
 - Mux-specific (a new mux family or per-mux behavior) → `src/mux/<kind>/`.
 - PTY / grid / terminal-protocol mechanics → `src/display/`.
 - Orchestration (runtime loop, focus) → `src/app/`.
-- Per-source connection management → `src/host/`.
+- Per-source connection management → `src/link/`.
 - Domain types → `src/model/`.
+- Provisioning (config / roster / discovery / resolved env) → `src/provision/`.
+- CLI command surface → `src/cli/`.
 - Switcher / nav rows / status UI → `src/ui/`.
 - Runtime state → `src/state/`.
 

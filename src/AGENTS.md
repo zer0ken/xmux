@@ -2,9 +2,11 @@
 
 ## Purpose
 
-`src/` contains the runtime application: CLI and config assembly, mux discovery,
-the app event loop, source metadata management, display attachment spawning, the
-control socket, and the app / ui / model / mux / machine / state submodules.
+`src/` contains the runtime application: the CLI command surface, provisioning
+(config, roster, discovery, and the resolved environment), the app event loop,
+per-source connection management, display attachment spawning, the control socket,
+and the app / ui / model / mux / transport / state submodules, all built on the
+foundational session data types.
 
 ## Mental Model
 
@@ -16,13 +18,20 @@ the debounced attach, and renders the live split view.
 
 ## Module Seams
 
-- The control socket owns ctl wire parsing, framing, endpoint naming, and the
-  ctl client. Semantic ctl verbs resolve to domain actions; the `raw:` namespace
-  is low-level injection.
+- `cli/` is the command surface: parsing and dispatch for the commands and the
+  default interactive app, plus the self-update subcommand. `cli::run` is the sole
+  entry the binary shim calls.
+- `provision/` resolves what exists on this box: the optional TOML config merged
+  with ssh-config discovery, the roster of ssh targets, the concurrent source
+  probe, and the resolved runtime view over them.
+- The control socket (in `link/`) owns ctl wire parsing, framing, endpoint
+  naming, and the ctl client. Semantic ctl verbs resolve to domain actions; the
+  `raw:` namespace is low-level injection.
 - `display/` is the shared PTY / grid / input display-mechanics layer, both
-  mux-agnostic and app-agnostic: attach spawn and lifecycle, an off-runtime
-  worker that spawns attachments and returns display events without owning the
-  registry, the registry itself, the grid, and the terminal input mechanics.
+  mux-agnostic and app-agnostic: the terminal handover and attach spawn/lifecycle,
+  an off-runtime worker that spawns attachments and returns display events without
+  owning the registry, the registry itself, the grid, and the terminal input
+  mechanics.
 - `app/` holds the application orchestration layer: the persistent supervisor
   and main event loop (which also owns the selection) and the focus/modal
   routing state machine. Focus is UI state, not display mechanics.
@@ -36,25 +45,32 @@ the debounced attach, and renders the live split view.
   is the sole site for that per-mux decision. The runtime resolves the driver
   and calls it; it branches on nothing mux-specific. The dependency is one-way:
   a mux family imports the seam, and the seam never imports a concrete driver.
-- `host/` owns control-mode reader/writer machinery, poll task management, source
-  inventory, and source events. It is a metadata path only. Spawning the
-  control-mode child composes its argv across the two orthogonal axes: the mux
-  supplies the control payload and the transport wraps it for local or ssh
-  execution. Nothing here hardcodes a mux verb or hand-rolls ssh.
+- `link/` owns the live host-facing channels: per-source connection management
+  (control-mode reader/writer, poll task management, inventory, and source
+  events), the mux operations xmux issues against a live host, and the
+  control-socket protocol for headless driving. Spawning the control-mode child
+  composes its argv across the two orthogonal axes: the mux supplies the control
+  payload and the transport wraps it for local or ssh execution. Nothing here
+  hardcodes a mux verb or hand-rolls ssh.
+- `transport/` is the TRANSPORT axis: the `Transport` trait, the local/ssh/wsl
+  families, and the shared shell vocabulary. A source builds one at construction.
+- `mux/` is the MUX axis: the `Mux` trait, the per-mux families owning metadata,
+  command plans, and a display driver, and the shared mux vocabulary.
 - The runtime coordinates these modules and owns the main event loop. Inbound
   source events route through the event-driven mutation site on the state; the
   handler is then a thin executor running the returned effects against the source
   clients, the registry, and the display worker.
-- A source definition is a thin config adapter: an alias, a mux binary, a host
-  kind, an injectable runner, and the assembly of a runtime source for the
-  off-loop and CLI paths that cannot borrow the event loop's live one.
+- A source definition (`model/source`) is a thin config adapter: an alias, a mux
+  binary, a host kind, an injectable runner, and the assembly of a runtime source
+  for the off-loop and CLI paths that cannot borrow the event loop's live one.
   Enumeration, manage lifecycle operations, and interactive-attach argv are NOT
   here: they live on the runtime source, the mux, and the transport, which the
   adapter reaches by building one and injecting its runner. The host axis is
   solely the transport, whose shared shell vocabulary lives beside it; the adapter
   carries no transport-wrapping implementation of its own.
-- The environment is config assembly plumbing for source definitions and command
-  construction, and the ONE place this host's mux list is resolved. That
+- The resolved environment (`provision/env`) is config assembly plumbing for
+  source definitions and command construction, and the ONE place this host's mux
+  list is resolved. That
   answer is threaded into the construction of both the source list and the runtime
   registry rather than re-derived, so the two cannot disagree on which sources
   exist, and resolving it
@@ -65,16 +81,20 @@ the debounced attach, and renders the live split view.
   what off-loop operations resolve, the registry is what the loop drives, and a
   source in one but not the other is a card that scans and refuses every
   operation.
-- The roster answers only "which HOSTS does xmux offer": one or
-  more providers, each yielding plain ssh target names, so nothing downstream
-  can tell which provider a name came from. A provider that cannot run yields an
-  empty list rather than an error. Distinct from the host axis (how a command
-  REACHES a host) and from discovery (scanning a source for sessions).
-- Preferences persist the lightweight UI hints across runs (last-selected
-  session address, nav width and height, auto-hide-nav), one small file each
-  under the xmux dir. Every value is best-effort: a stale, missing, or
+- The roster (`provision/roster`) answers only "which HOSTS does xmux offer":
+  one or more providers, each yielding plain ssh target names, so nothing
+  downstream can tell which provider a name came from. A provider that cannot run
+  yields an empty list rather than an error. Distinct from the transport axis
+  (how a command REACHES a host) and from discovery (scanning a source for
+  sessions).
+- Preferences (`ui/prefs`) persist the lightweight UI hints across runs
+  (last-selected session address, nav width and height, auto-hide-nav), one small
+  file each under the xmux dir. Every value is best-effort: a stale, missing, or
   unparsable file falls back to the built-in default, so xmux stays stateless
   about sessions themselves.
+- `session.rs` is the foundational cross-environment data types (a `Session`, its
+  windows-and-panes detail, and the `<source>/<name>` address) that the axes and
+  the model build on.
 - Logging sets up the process-wide structured log: a daily rolling file appender
   writing to `<xmux_dir>/xmux.log` behind a non-blocking worker, with ANSI
   disabled, targets emitted, and span lifetimes recorded. The filter reads the

@@ -50,7 +50,7 @@ pub fn run_writer<W: Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::test_control_proto;
+    use crate::link::test_control_proto;
 
     #[test]
     fn writer_serializes_commands_and_correlates() {

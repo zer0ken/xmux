@@ -1,8 +1,8 @@
-//! The host model: `Host` (its `transport` is a `machine::Transport`, its `mux` a
+//! The host model: `Host` (its `transport` is a `transport::Transport`, its `mux` a
 //! `Box<dyn Mux>`), the mux's server model (`ServerModel`), and the plan/value types
 //! they exchange. The mux layer is transport-blind: it supplies mux argv and the
-//! `machine::Transport` decides how to run it. The two axes themselves live in
-//! `crate::machine` (MACHINE) and `crate::mux` (MUX).
+//! `transport::Transport` decides how to run it. The two axes themselves live in
+//! `crate::transport` (TRANSPORT) and `crate::mux` (MUX).
 
 pub mod action;
 pub mod death;
@@ -11,6 +11,7 @@ pub mod hosts;
 pub mod plan;
 pub mod selection;
 pub mod server_model;
+pub mod source;
 
 pub use action::{Action, Command, EventEffect, FocusTarget, MuxOp};
 pub use death::{

@@ -104,7 +104,7 @@ impl MuxDriver for PsmuxDriver {
 mod tests {
     use super::*;
     use crate::display::registry::AttachRegistry;
-    use crate::host::HostManager;
+    use crate::link::HostManager;
     use crate::model::Selection;
 
     /// The psmux driver owns the per-session reattach decision: `show()` REPLACES the
@@ -115,7 +115,7 @@ mod tests {
     async fn psmux_driver_show_replaces_the_display_attachment() {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
-            crate::machine::local(None),
+            crate::transport::local(None),
             crate::mux::for_binary("psmux"),
         ));
         hosts
@@ -184,7 +184,7 @@ mod tests {
     async fn psmux_driver_sync_does_not_warm_and_reaps_only_when_empty() {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
-            crate::machine::local(None),
+            crate::transport::local(None),
             crate::mux::for_binary("psmux"),
         ));
         hosts
@@ -263,7 +263,7 @@ mod tests {
     async fn psmux_driver_show_reattaches_even_when_a_client_tty_is_known() {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
-            crate::machine::local(None),
+            crate::transport::local(None),
             crate::mux::for_binary("psmux"),
         ));
         {
@@ -330,7 +330,7 @@ mod tests {
     async fn psmux_driver_show_reattaches_when_tty_unknown() {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
-            crate::machine::local(None),
+            crate::transport::local(None),
             crate::mux::for_binary("psmux"),
         ));
         hosts

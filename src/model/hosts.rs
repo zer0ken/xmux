@@ -4,9 +4,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::config::Config;
 use crate::model::{Host, Liveness};
 use crate::mux::for_binary;
+use crate::provision::config::Config;
 use crate::session::LOCAL_SOURCE;
 
 /// Every host, keyed by host id, in display order (local first). The single owner of
@@ -171,8 +171,8 @@ impl Hosts {
     /// are folded into `model::Host.inventory` by the run loop (or via `Host::enumerate`);
     /// this sets liveness. An unknown host id is a no-op — there is no second registry to
     /// grow a ghost host.
-    pub fn apply_host_event(&mut self, ev: &crate::host::HostEvent) {
-        use crate::host::HostEvent::*;
+    pub fn apply_host_event(&mut self, ev: &crate::link::HostEvent) {
+        use crate::link::HostEvent::*;
         match ev {
             Connected { host, .. } | Inventory { host, .. } => {
                 if let Some(h) = self.get_mut(host) {
@@ -216,7 +216,7 @@ impl Hosts {
 }
 
 /// One [`Host`] for the mux binary `bin` on `machine`, answering as the source `id`.
-/// The transport comes from [`crate::machine::kind_for`], the one place a machine's
+/// The transport comes from [`crate::transport::kind_for`], the one place a machine's
 /// construction data is assembled, so this host and the matching `Source` agree.
 pub fn host_for(
     machine: &str,
@@ -230,7 +230,7 @@ pub fn host_for(
     // filter on the source list, so a host and its source address one server. See
     // `crate::mux::server_socket_for`.
     let local_socket = crate::mux::server_socket_for(bin, local_socket);
-    let kind = crate::machine::kind_for(machine, id, os, xmux_dir, local_socket);
+    let kind = crate::transport::kind_for(machine, id, os, xmux_dir, local_socket);
     Host::new(kind.transport(), for_binary(bin))
 }
 
@@ -243,9 +243,9 @@ mod tests {
     }
 
     use super::*;
-    use crate::host::HostEvent;
-    use crate::machine::Transport;
+    use crate::link::HostEvent;
     use crate::model::{Liveness, ServerModel};
+    use crate::transport::Transport;
 
     #[test]
     fn default_and_new_are_empty() {
@@ -256,11 +256,11 @@ mod tests {
     #[test]
     fn insert_keys_on_host_id_and_appends_order_once() {
         let mut hosts = Hosts::default();
-        let local = Host::new(crate::machine::local(None), for_binary("tmux"));
+        let local = Host::new(crate::transport::local(None), for_binary("tmux"));
         hosts.insert(local);
         assert_eq!(hosts.ids(), &["local".to_string()]);
         // Re-inserting the same id replaces in place, does not duplicate the order.
-        let local2 = Host::new(crate::machine::local(None), for_binary("psmux"));
+        let local2 = Host::new(crate::transport::local(None), for_binary("psmux"));
         hosts.insert(local2);
         assert_eq!(
             hosts.ids(),
@@ -509,7 +509,7 @@ mod tests {
         // `env.srcs` seed — a reordered or dropped host would be a live regression.
         // A config-only host (declared in config.toml, not ssh-config) with a mux override.
         let cfg = Config {
-            hosts: vec![crate::config::HostConfig {
+            hosts: vec![crate::provision::config::HostConfig {
                 ssh: "cfgonly".into(),
                 mux: "psmux".into(),
             }],
@@ -519,7 +519,7 @@ mod tests {
         let os = "linux";
         let dir = std::path::Path::new("/home/u/.xmux");
         let hosts = Hosts::build(&cfg, &aliases, &[], os, &local(), dir, None);
-        let srcs = crate::source::build(&cfg, &aliases, &[], os, &local(), dir, None);
+        let srcs = crate::model::source::build(&cfg, &aliases, &[], os, &local(), dir, None);
         let src_order: Vec<String> = srcs.iter().map(|s| s.alias.clone()).collect();
         assert_eq!(
             hosts.ids(),
@@ -548,7 +548,8 @@ mod tests {
         let distros = vec!["wsl.Ubuntu-24.04".to_string()];
         let dir = std::path::Path::new("/x");
         let hosts = Hosts::build(&cfg, &aliases, &distros, "windows", &local(), dir, None);
-        let srcs = crate::source::build(&cfg, &aliases, &distros, "windows", &local(), dir, None);
+        let srcs =
+            crate::model::source::build(&cfg, &aliases, &distros, "windows", &local(), dir, None);
         let src_order: Vec<String> = srcs.iter().map(|s| s.alias.clone()).collect();
         assert_eq!(
             src_order,

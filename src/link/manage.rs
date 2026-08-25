@@ -6,9 +6,9 @@
 //! Nothing is cached and no state is held. Off-loop `Ops` assemble a value host from
 //! config and pass the source's runner.
 
+use crate::model::source::{RunError, Runner};
 use crate::model::Host;
 use crate::session::WindowPanes;
-use crate::source::{RunError, Runner};
 
 /// Composes a mux argv (from the host's `Mux`) through the machine `Transport` and
 /// runs it via the injected runner, returning stdout.
@@ -49,8 +49,8 @@ pub async fn panes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::source::Runner;
     use crate::mux;
-    use crate::source::Runner;
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
 
@@ -95,7 +95,10 @@ mod tests {
     /// (local `-S`), run via the injected runner (`name = binary`, `args = the mux
     /// argv WITHOUT the leading binary`).
     fn local_host() -> Host {
-        Host::new(crate::machine::local(None), crate::mux::for_binary("psmux"))
+        Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("psmux"),
+        )
     }
 
     /// A REMOTE tmux host: its ops route through `Mux` (mux argv) x `Transport`
@@ -103,7 +106,7 @@ mod tests {
     /// joined per-arg-quoted as the trailing remote command.
     fn remote_host() -> Host {
         Host::new(
-            crate::machine::ssh("prod".into(), String::new(), "linux".into()),
+            crate::transport::ssh("prod".into(), String::new(), "linux".into()),
             crate::mux::for_binary("tmux"),
         )
     }

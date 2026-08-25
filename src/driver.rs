@@ -18,7 +18,7 @@ use crate::app::runtime::run_lowered;
 use crate::display::grid::Grid;
 use crate::display::registry::AttachRegistry;
 use crate::display::DisplayWorker;
-use crate::host::HostManager;
+use crate::link::HostManager;
 use crate::model::Selection;
 use crate::model::{Host, Hosts};
 
@@ -139,7 +139,7 @@ pub(crate) use log_display_inventory;
 /// select-window subprocess. Shared by both drivers' window-row handling.
 pub(crate) fn lower_select_window(
     host: &Host,
-    control: Option<&crate::host::HostClient>,
+    control: Option<&crate::link::HostClient>,
     session: &str,
     win: i64,
 ) {
@@ -151,7 +151,7 @@ pub(crate) fn lower_select_window(
         let (cmd, args) = host.transport.exec_argv(false, &mux_argv);
         let mut argv = vec![cmd];
         argv.extend(args);
-        run_lowered(crate::machine::LoweredSwitch::Local(argv));
+        run_lowered(crate::transport::LoweredSwitch::Local(argv));
     }
 }
 
@@ -190,12 +190,16 @@ pub(crate) mod tests {
         // non-dispatchable method this stops compiling. Obtained via the production
         // path (`Mux::driver()` through `driver_for`) so this seam names no
         // concrete driver type — those live in `crate::mux::{tmux, psmux}`.
-        let tmux_host =
-            crate::model::Host::new(crate::machine::local(None), crate::mux::for_binary("tmux"));
-        let psmux_host =
-            crate::model::Host::new(crate::machine::local(None), crate::mux::for_binary("psmux"));
+        let tmux_host = crate::model::Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("tmux"),
+        );
+        let psmux_host = crate::model::Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("psmux"),
+        );
         let zellij_host = crate::model::Host::new(
-            crate::machine::local(None),
+            crate::transport::local(None),
             crate::mux::for_binary("zellij"),
         );
         let _t: Box<dyn MuxDriver> = driver_for(&tmux_host);
@@ -210,11 +214,13 @@ pub(crate) mod tests {
     #[test]
     fn driver_for_picks_the_mux_specific_driver_by_backend() {
         let tmux_host = crate::model::Host::new(
-            crate::machine::ssh("jup".into(), String::new(), "linux".into()),
+            crate::transport::ssh("jup".into(), String::new(), "linux".into()),
             crate::mux::for_binary("tmux"),
         );
-        let psmux_host =
-            crate::model::Host::new(crate::machine::local(None), crate::mux::for_binary("psmux"));
+        let psmux_host = crate::model::Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("psmux"),
+        );
         assert_eq!(driver_for(&tmux_host).kind(), "tmux");
         assert_eq!(driver_for(&psmux_host).kind(), "psmux");
     }
@@ -228,7 +234,7 @@ pub(crate) mod tests {
     async fn seam_show_replaces_the_psmux_display_attachment() {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
-            crate::machine::local(None),
+            crate::transport::local(None),
             crate::mux::for_binary("psmux"),
         ));
         // A stale attachment + bookkeeping for a different session: show() must drop it

@@ -2,10 +2,11 @@
 
 ## Purpose
 
-`model` holds runtime domain values shared across mux, transport, source, control,
-and app code: source state, source collections, the action / command / event-effect
-unidirectional-flow vocabulary, transport lowering results, server models, plans,
-and death-signal helpers.
+`model` holds runtime domain values shared across the mux and transport axes,
+connection management (`link`), and app code: the source definition and source
+state, source collections, the action / command / event-effect unidirectional-flow
+vocabulary, transport lowering results, server models, plans, and death-signal
+helpers.
 
 ## Mental Model
 
@@ -27,7 +28,7 @@ registry.
   input action from `src/display` projects INTO the domain action; the two are
   distinct types in separate modules. The event effect carries a boxed mux, so it
   is neither cloneable nor comparable and has a hand-written debug form.
-- The HOST axis lives in `src/machine`, not here; a source holds one transport
+- The HOST axis lives in `src/transport`, not here; a source holds one transport
   from it.
 - Source state and source collections store per-source domain state. A source
   carries no control client, no display-key derivation, and no attach or reap plan:

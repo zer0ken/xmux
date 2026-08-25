@@ -6,11 +6,11 @@
 
 use std::collections::HashMap;
 
-use crate::host::HostInventory;
-use crate::machine::Transport;
+use crate::link::HostInventory;
+use crate::model::source::Runner;
 use crate::model::DisplayTty;
 use crate::mux::Mux;
-use crate::source::Runner;
+use crate::transport::Transport;
 
 /// Connecting / live / unreachable — the single per-host reachability state the
 /// supervisor and the tree read (no separate `connecting` flag or `connected` set).
@@ -246,7 +246,7 @@ impl Host {
     pub async fn enumerate_with(
         &mut self,
         runner: &dyn Runner,
-    ) -> Result<(), crate::source::RunError> {
+    ) -> Result<(), crate::model::source::RunError> {
         match self.mux.enumerate(&self.transport, runner).await {
             Ok(sessions) => {
                 self.inventory.sessions = sessions;
@@ -261,8 +261,8 @@ impl Host {
     }
 
     /// [`enumerate_with`](Self::enumerate_with) over the real exec runner.
-    pub async fn enumerate(&mut self) -> Result<(), crate::source::RunError> {
-        self.enumerate_with(&crate::source::ExecRunner).await
+    pub async fn enumerate(&mut self) -> Result<(), crate::model::source::RunError> {
+        self.enumerate_with(&crate::model::source::ExecRunner).await
     }
 
     /// The command a session listing spawns on this host, `argv[0]` first.
@@ -344,10 +344,10 @@ impl Host {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::source::{RunError, Runner};
     use crate::model::{DeathSignal, EventSource, ServerModel};
     use crate::mux::Mux;
     use crate::session::Session;
-    use crate::source::{RunError, Runner};
 
     /// A minimal in-test mux: only `server_model` is exercised in these tests. The other
     /// methods return trivially since they wire no I/O — including the window and session
@@ -379,7 +379,7 @@ mod tests {
         async fn enumerate(
             &self,
             _t: &dyn Transport,
-            _r: &dyn crate::source::Runner,
+            _r: &dyn crate::model::source::Runner,
         ) -> Result<Vec<Session>, RunError> {
             Ok(vec![])
         }
@@ -447,12 +447,12 @@ mod tests {
     #[test]
     fn host_id_is_the_transport_host_id() {
         let h = Host::new(
-            crate::machine::local(None),
+            crate::transport::local(None),
             Box::new(StubMux(ServerModel::Shared)),
         );
         assert_eq!(h.id(), "local");
         let r = Host::new(
-            crate::machine::ssh("jup".into(), String::new(), "linux".into()),
+            crate::transport::ssh("jup".into(), String::new(), "linux".into()),
             Box::new(StubMux(ServerModel::Shared)),
         );
         assert_eq!(r.id(), "jup");
@@ -461,7 +461,7 @@ mod tests {
     #[test]
     fn new_host_starts_connecting_with_empty_inventory_and_tty() {
         let h = Host::new(
-            crate::machine::local(None),
+            crate::transport::local(None),
             Box::new(StubMux(ServerModel::PerSession)),
         );
         assert_eq!(h.liveness, Liveness::Connecting);
@@ -717,7 +717,7 @@ mod tests {
         async fn enumerate(
             &self,
             _t: &dyn Transport,
-            _r: &dyn crate::source::Runner,
+            _r: &dyn crate::model::source::Runner,
         ) -> Result<Vec<Session>, RunError> {
             self.result.lock().unwrap().take().unwrap_or(Ok(vec![]))
         }
@@ -747,7 +747,7 @@ mod tests {
     #[tokio::test]
     async fn enumerate_ok_fills_inventory_and_goes_live() {
         let mut h = Host::new(
-            crate::machine::local(None),
+            crate::transport::local(None),
             Box::new(EnumMux::ok(ServerModel::PerSession, &["work", "build"])),
         );
         h.enumerate().await.unwrap();
@@ -765,7 +765,7 @@ mod tests {
     async fn enumerate_empty_is_live_not_unreachable() {
         // A reachable mux with zero sessions is Live (the "(empty)" case), not Unreachable.
         let mut h = Host::new(
-            crate::machine::local(None),
+            crate::transport::local(None),
             Box::new(EnumMux::ok(ServerModel::Shared, &[])),
         );
         h.enumerate().await.unwrap();
@@ -776,7 +776,7 @@ mod tests {
     #[tokio::test]
     async fn enumerate_err_marks_unreachable_and_propagates() {
         let mut h = Host::new(
-            crate::machine::local(None),
+            crate::transport::local(None),
             Box::new(EnumMux::err(ServerModel::Shared)),
         );
         assert!(h.enumerate().await.is_err());
@@ -813,7 +813,10 @@ mod tests {
     fn list_sessions_command_is_the_listing_a_scan_runs() {
         // Shown on the unreachable screen, so it has to be the real command: the mux
         // binary, its listing verb, and the machine's own wrapping around them.
-        let h = Host::new(crate::machine::local(None), crate::mux::for_binary("tmux"));
+        let h = Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("tmux"),
+        );
         let cmd = h.list_sessions_command();
         assert_eq!(cmd[0], "tmux");
         assert!(
@@ -826,7 +829,10 @@ mod tests {
     async fn enumerate_with_runner_parses_sessions_and_goes_live() {
         // The aggregate-server path: a single list-sessions returns every session,
         // parsed into the host's inventory, with liveness Live.
-        let mut h = Host::new(crate::machine::local(None), crate::mux::for_binary("tmux"));
+        let mut h = Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("tmux"),
+        );
         let r = CannedRunner::ok("3\t1\t1781246739\teditor\n1\t0\t\tbuild\n");
         h.enumerate_with(&r).await.unwrap();
         assert_eq!(h.liveness, Liveness::Live);
@@ -846,7 +852,7 @@ mod tests {
     async fn enumerate_with_benign_no_server_is_empty_not_error() {
         // A reachable mux with no server is empty (Live), not an error.
         let mut h = Host::new(
-            crate::machine::ssh("prod".into(), String::new(), "linux".into()),
+            crate::transport::ssh("prod".into(), String::new(), "linux".into()),
             crate::mux::for_binary("tmux"),
         );
         let r = CannedRunner::err(RunError::Exit {
@@ -861,7 +867,7 @@ mod tests {
     #[tokio::test]
     async fn enumerate_with_unreachable_is_error() {
         let mut h = Host::new(
-            crate::machine::ssh("prod".into(), String::new(), "linux".into()),
+            crate::transport::ssh("prod".into(), String::new(), "linux".into()),
             crate::mux::for_binary("tmux"),
         );
         let r = CannedRunner::err(RunError::Other(
@@ -875,9 +881,9 @@ mod tests {
     /// `remote` picks the ssh vs local transport.
     fn attach_host(binary: &str, remote: bool) -> Host {
         let transport = if remote {
-            crate::machine::ssh("prod".into(), String::new(), "linux".into())
+            crate::transport::ssh("prod".into(), String::new(), "linux".into())
         } else {
-            crate::machine::local(None)
+            crate::transport::local(None)
         };
         Host::new(transport, crate::mux::for_binary(binary))
     }
@@ -947,7 +953,7 @@ mod tests {
     #[test]
     fn record_and_clear_display_tty_round_trips() {
         let mut h = Host::new(
-            crate::machine::ssh("jup".into(), String::new(), "linux".into()),
+            crate::transport::ssh("jup".into(), String::new(), "linux".into()),
             Box::new(StubMux(ServerModel::Shared)),
         );
         assert!(h.display_tty.0.is_none(), "starts with no tty");
@@ -965,7 +971,7 @@ mod tests {
     fn matches_display_tty_only_for_our_own_client_under_control_notice() {
         use crate::model::DisplayTty;
         let mut h = Host::new(
-            crate::machine::ssh("jup".into(), String::new(), "linux".into()),
+            crate::transport::ssh("jup".into(), String::new(), "linux".into()),
             crate::mux::for_binary("tmux"), // Shared → DeathSignal::ControlNotice
         );
         assert!(
@@ -986,7 +992,7 @@ mod tests {
     #[test]
     fn psmux_host_session_liveness_uses_the_port_stat() {
         let h = Host::new(
-            crate::machine::local(None),
+            crate::transport::local(None),
             crate::mux::for_binary("psmux"), // PerSession → DeathSignal::PathStat
         );
         let name = format!("xmux-hostlive-{}", std::process::id());
@@ -1001,7 +1007,7 @@ mod tests {
     #[test]
     fn tmux_host_session_is_always_live_by_port_stat() {
         let h = Host::new(
-            crate::machine::ssh("jup".into(), String::new(), "linux".into()),
+            crate::transport::ssh("jup".into(), String::new(), "linux".into()),
             crate::mux::for_binary("tmux"), // Shared → not PathStat
         );
         // A Shared host never dies by a .port file — liveness here is unconditionally true.
@@ -1050,7 +1056,10 @@ mod tests {
 
     #[tokio::test]
     async fn detect_and_correct_replaces_behavior_and_preserves_bin() {
-        let mut h = Host::new(crate::machine::local(None), crate::mux::for_binary("tmux"));
+        let mut h = Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("tmux"),
+        );
         let runner = DetectRunner::ok("psmux command help");
         h.detect_and_correct(&runner).await;
         assert_eq!(h.mux.kind(), "psmux");
@@ -1067,7 +1076,10 @@ mod tests {
 
     #[tokio::test]
     async fn detect_and_correct_retries_after_inconclusive_probe() {
-        let mut h = Host::new(crate::machine::local(None), crate::mux::for_binary("tmux"));
+        let mut h = Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("tmux"),
+        );
         let runner = DetectRunner::err();
         h.detect_and_correct(&runner).await;
         assert_eq!(h.mux.kind(), "tmux");

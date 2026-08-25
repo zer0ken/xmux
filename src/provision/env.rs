@@ -10,11 +10,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::config::{self, Config};
-use crate::discovery;
-use crate::manage;
+use crate::link::manage;
+use crate::model::source::{self, Source};
+use crate::provision::config::{self, Config};
+use crate::provision::discovery;
 use crate::session::{Session, WindowPanes};
-use crate::source::{self, Source};
 use crate::ui::switcher::Ops;
 use crate::ui::tree::{self, Group};
 
@@ -40,8 +40,8 @@ pub struct Roster {
     /// Which provider put each host on the roster, keyed by HOST name (the machine half
     /// of a source id). Read only to be SHOWN: the unreachable host screen names it, so
     /// a host that fails is traceable to the thing that offered it. See
-    /// [`crate::roster::Provider`].
-    pub roster_providers: HashMap<String, crate::roster::Provider>,
+    /// [`crate::provision::roster::Provider`].
+    pub roster_providers: HashMap<String, crate::provision::roster::Provider>,
     /// The ssh-config host aliases this resolution offered (a config-assembly product).
     /// `Hosts::build` reruns `Config::host_specs` over these to seed the runtime host
     /// registry, so the registry is built from config, not by re-reading `sources`.
@@ -62,7 +62,7 @@ pub struct Env {
     pub xmux_dir: PathBuf,
     /// The ADDRESS of the session xmux is ITSELF running in (`local:psmux/xmus`), or
     /// `None` when it is not inside a mux or the session could not be named. The one
-    /// session the terminal view refuses to mirror; see [`crate::attach::own_mux_session`].
+    /// session the terminal view refuses to mirror; see [`crate::display::attach::own_mux_session`].
     /// Fixed for the run: the environment that names it cannot change under one.
     pub own_session: Option<String>,
     /// The local mux server socket parsed from `$TMUX` (`-S` target), threaded into
@@ -135,10 +135,10 @@ pub async fn resolve_roster(
     let os = current_os();
     // The ROSTER: which machines xmux offers. `~/.ssh/config` first, so a hand-written
     // alias keeps the position the user gave it; then each network provider the config
-    // enables. See `crate::roster`.
-    let offered = crate::roster::merge(&[
+    // enables. See `crate::provision::roster`.
+    let offered = crate::provision::roster::merge(&[
         (
-            crate::roster::Provider::SshConfig,
+            crate::provision::roster::Provider::SshConfig,
             if cfg.discovery.ssh_config {
                 config::ssh_host_aliases(&ssh_config_path())
             } else {
@@ -146,9 +146,9 @@ pub async fn resolve_roster(
             },
         ),
         (
-            crate::roster::Provider::Tailscale,
+            crate::provision::roster::Provider::Tailscale,
             if cfg.discovery.tailscale {
-                crate::roster::tailscale_aliases()
+                crate::provision::roster::tailscale_aliases()
             } else {
                 Vec::new()
             },
@@ -160,7 +160,7 @@ pub async fn resolve_roster(
     // than an error. A `[[wsl]]` entry still names one distribution without listing
     // every one of them.
     let wsl_distros = if cfg.discovery.wsl {
-        crate::machine::wsl::distros()
+        crate::transport::wsl::distros()
     } else {
         Vec::new()
     };
@@ -170,7 +170,11 @@ pub async fn resolve_roster(
     // transport, because "is this mux here" has nothing to do with which server socket a
     // session lives on - and a `-S <socket>` injection is a flag zellij would refuse.
     let installed = if cfg.local.mux.is_auto() {
-        crate::mux::installed_muxes(&*crate::machine::local(None), &crate::source::ExecRunner).await
+        crate::mux::installed_muxes(
+            &*crate::transport::local(None),
+            &crate::model::source::ExecRunner,
+        )
+        .await
     } else {
         Vec::new()
     };
@@ -225,7 +229,7 @@ pub async fn build_env() -> (Env, Option<anyhow::Error>) {
 /// the card exactly. A mux xmux does not serve here leaves it unresolved, which blocks
 /// nothing - the same as not being inside a mux at all.
 fn own_session_address(srcs: &[Source]) -> Option<String> {
-    let (kind, session) = crate::attach::own_mux_session()?;
+    let (kind, session) = crate::display::attach::own_mux_session()?;
     Some(crate::session::address_of(
         own_source_id(srcs, &kind)?,
         &session,
@@ -267,10 +271,10 @@ fn own_source_id<'a>(srcs: &'a [Source], kind: &str) -> Option<&'a str> {
 /// the roster.
 fn roster_providers(
     cfg: &Config,
-    offered: &[(String, crate::roster::Provider)],
+    offered: &[(String, crate::provision::roster::Provider)],
     wsl_distros: &[String],
-) -> HashMap<String, crate::roster::Provider> {
-    use crate::roster::Provider;
+) -> HashMap<String, crate::provision::roster::Provider> {
+    use crate::provision::roster::Provider;
     let mut out: HashMap<String, Provider> = HashMap::new();
     for (name, provider) in offered {
         out.entry(name.clone()).or_insert(*provider);
@@ -517,9 +521,9 @@ impl Ops for EnvOps {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
+    use crate::model::source::{RunError, Runner};
+    use crate::provision::config::Config;
     use crate::session::Session;
-    use crate::source::{RunError, Runner};
 
     #[test]
     fn env_carries_configured_prefix() {
@@ -544,14 +548,14 @@ mod tests {
 
     fn test_source(alias: &str, remote: bool, line: &str) -> Source {
         let kind = if remote {
-            crate::machine::MachineKind::Ssh {
+            crate::transport::MachineKind::Ssh {
                 id: String::new(),
                 alias: alias.into(),
                 control_path: String::new(),
                 os: "linux".into(),
             }
         } else {
-            crate::machine::MachineKind::Local {
+            crate::transport::MachineKind::Local {
                 id: String::new(),
                 socket: None,
             }
@@ -702,16 +706,16 @@ mod tests {
 
     #[test]
     fn the_roster_records_what_offered_each_host() {
-        use crate::roster::Provider;
+        use crate::provision::roster::Provider;
         // `jupiter00` is on the roster twice over: a provider listed it AND a `[[hosts]]`
         // entry names it. The entry overrides its mux, it did not put it on the roster.
         let cfg = Config {
             hosts: vec![
-                crate::config::HostConfig {
+                crate::provision::config::HostConfig {
                     ssh: "written-down".into(),
                     mux: Default::default(),
                 },
-                crate::config::HostConfig {
+                crate::provision::config::HostConfig {
                     ssh: "jupiter00".into(),
                     mux: Default::default(),
                 },

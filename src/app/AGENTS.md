@@ -43,7 +43,7 @@ or a grid is rendered.
 - Focus holds the focus and modal state plus the transition helpers. The runtime
   state embeds it; the app reads and mutates it through those helpers.
 - The display mechanics (PTY, grid, input) live in `src/display`; per-source connection
-  management lives in `src/host`; the domain vocabulary lives in `src/model`; the
+  management lives in `src/link`; the domain vocabulary lives in `src/model`; the
   durable runtime state bag lives in `src/state`.
 
 ## Invariants

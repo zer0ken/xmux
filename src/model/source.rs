@@ -12,9 +12,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::config::Config;
-use crate::machine::MachineKind;
+use crate::provision::config::Config;
 use crate::session;
+use crate::transport::MachineKind;
 
 /// A failed command's outcome. Only a real non-zero exit carries stderr (and can
 /// be classified benign); a missing binary or a connection failure surfaces as
@@ -111,7 +111,7 @@ impl Source {
 }
 
 // The reachable-but-empty classification lives in `mux/`. The app reaches its
-// `%exit`/`%error`-reason check through `crate::source::reason_is_no_sessions`, so the
+// `%exit`/`%error`-reason check through `crate::model::source::reason_is_no_sessions`, so the
 // name is re-exported here to keep that path resolving.
 pub(crate) use crate::mux::reason_is_no_sessions;
 
@@ -166,7 +166,7 @@ pub fn build(
 }
 
 /// One [`Source`] for the mux binary `bin` on `machine`, answering as the source `id`.
-/// The machine half comes from [`crate::machine::kind_for`], so this source and the
+/// The machine half comes from [`crate::transport::kind_for`], so this source and the
 /// `Host` the loop drives for the same pair reach the machine the same way. A source
 /// DISCOVERED after launch is built here too, which is what makes it as operable as a
 /// configured one (create / panes / border styles all resolve through the source list).
@@ -187,7 +187,7 @@ pub fn for_machine_mux(
     Source {
         alias: id.clone(),
         binary: bin.to_string(),
-        kind: crate::machine::kind_for(machine, id, os, xmux_dir, local_socket),
+        kind: crate::transport::kind_for(machine, id, os, xmux_dir, local_socket),
         runner: None,
     }
 }
