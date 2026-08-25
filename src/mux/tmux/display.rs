@@ -77,14 +77,20 @@ impl MuxDriver for TmuxDriver {
             // IN-PLACE SWITCH: move the live display client to the selected session, so
             // `switch-client -c <that tty>` moves xmux's OWN client and never the user's
             // own attached client (which `list-clients` cannot tell apart, the class of
-            // bug a "first non-control client" capture caused). The grid is NOT
-            // pre-cleared: the switch's repaint replaces it, so the prior session stays on
-            // screen until the new content lands (stale-while-revalidate) - no blank frame.
+            // bug a "first non-control client" capture caused).
+            //
+            // The shared grid is REUSED across sessions, so it is cleared before the
+            // switch: the one host PTY mirrors one screen, and a switch to a session
+            // whose repaint does not clear every prior cell (a partial or interrupted
+            // switch-client repaint, e.g. a rapid jump that is cancelled) would leave
+            // the prior session's stale cells lingering behind the new content. Clearing
+            // first makes the new repaint start from a blank slate, so no residue.
             //
             // A machine that runs a host shell reads, in-shell, the tty the attach
             // recorded to its per-host file. A machine that runs no shell has no such
             // file, but its attach child IS the mux client and runs in a PTY xmux opened,
             // whose name the supervisor recorded on the host - hand that over instead.
+            ctx.registry.clear_grid(&key);
             let tty = (!host.transport.runs_through_shell())
                 .then(|| host.display_tty.0.clone())
                 .flatten()
@@ -332,6 +338,73 @@ mod tests {
             hosts.get("local").unwrap().display.shows("local"),
             Some("target"),
             "the shown session updates to the switched-to session"
+        );
+    }
+
+    /// The IN-PLACE SWITCH clears the shared grid so the prior session's stale cells
+    /// cannot linger behind the new repaint. The one host PTY mirrors one screen; a
+    /// switch to a session whose repaint does not clear every prior cell (a partial or
+    /// interrupted switch-client repaint) would otherwise leave the old session's
+    /// residue. Clearing first makes the new repaint start blank - the documented
+    /// `Grid::clear` purpose, wired here and nowhere else.
+    #[tokio::test(flavor = "current_thread")]
+    async fn tmux_driver_in_place_switch_clears_the_shared_grid() {
+        let mut hosts = crate::model::Hosts::default();
+        hosts.insert(crate::model::Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("tmux"),
+        ));
+        {
+            let h = hosts.get_mut("local").unwrap();
+            h.display.set_shows("local", "old");
+            h.record_display_tty(Some("/dev/pts/3".into()));
+        }
+        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
+        let worker = crate::display::DisplayWorker::with_spawner(
+            ptx,
+            Box::new(|_argv, _cols, _rows, id, _events, _env_clear| {
+                Ok(crate::display::attachment::fake_attachment(id))
+            }),
+        );
+        let mut registry = AttachRegistry::new();
+        registry.insert("local", crate::display::attachment::fake_attachment(42));
+        // The shared grid holds the prior session's content.
+        if let Some(g) = registry.grid("local") {
+            g.lock().unwrap().feed(b"stale prior-session residue");
+            assert!(!g.lock().unwrap().is_blank(), "precondition: grid has content");
+        }
+        let mut attach_seq = 0u64;
+        let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
+        let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let sel = Selection {
+            source: "local".into(),
+            session: "target".into(),
+            window: None,
+        };
+        let mut driver = TmuxDriver;
+        {
+            let mut ctx = DriverCtx {
+                registry: &mut registry,
+                hosts: &mut hosts,
+                worker: &worker,
+                mgr: &mgr,
+                pty_tx: &cap_tx,
+                attach_seq: &mut attach_seq,
+                cols: 80,
+                body_rows: 24,
+                nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+            };
+            assert!(driver.show(&sel, &mut ctx));
+        }
+        assert!(
+            registry.grid("local").unwrap().lock().unwrap().is_blank(),
+            "the in-place switch clears the shared grid so no prior-session residue lingers"
+        );
+        assert_eq!(
+            hosts.get("local").unwrap().display.shows("local"),
+            Some("target"),
+            "the shown session still updates to the switched-to session"
         );
     }
 
