@@ -362,12 +362,12 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
         HelpRow::Gap,
         // Focus section - prefix rows built from `prefix`.
         HelpRow::Head(format!("focus ({p} = prefix)")),
-        HelpRow::Key(format!("Enter · {p} →/↓"), "focus the terminal".into()),
+        HelpRow::Key(format!("Enter · {p} →/↓"), "focus the mux".into()),
         HelpRow::Key(
             format!("{p} Tab"),
-            "toggle focus between tree and terminal".into(),
+            "toggle focus between nav and mux".into(),
         ),
-        HelpRow::Key(format!("{p} ←/↑ · {p} Esc"), "focus the tree".into()),
+        HelpRow::Key(format!("{p} ←/↑ · {p} Esc"), "focus the nav".into()),
         HelpRow::Key(
             format!("{p} C-←/→"),
             "resize tree width (Side); h/l too. repeats briefly".into(),

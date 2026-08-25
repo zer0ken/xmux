@@ -838,12 +838,15 @@ impl Chrome {
         } else if self.armed {
             // The prefix is held: name what it unlocks. Longest-first so a narrow nav
             // drops the rarer chords rather than clipping mid-word.
+            // Order: focus nav, focus mux, jump, new, hide, rescan, filter, help, quit.
+            // The focus rows use arrow symbols that point at the view they focus. The
+            // resize keys are left out of the cheatsheet (the help modal has them).
             fit(
                 &[
-                    format!(" {p} 0-9 jump to a session · n new session · r rescan · / filter · Tab terminal · t hide · h/l size · ? help · q quit"),
-                    format!(" {p} 0-9 jump · n new · r rescan · Tab term · t hide · ? help · q quit"),
-                    format!(" {p} 0-9 · n · r · Tab · t · h/l · ? · q"),
-                    format!(" {p} 0-9 n r Tab t ? q"),
+                    format!(" {p} ←/↑ focus nav · →/↓ focus mux · 0-9 jump to a session · n new session · t hide nav · r rescan · / filter · ? help · q quit"),
+                    format!(" {p} ←/↑ nav · →/↓ mux · 0-9 jump to · n new · t hide · r rescan · / filter · ? help · q quit"),
+                    format!(" {p} ←/↑ nav · →/↓ mux · 0-9 jump · n new · t hide · r · / · ? · q"),
+                    format!(" {p} ←/↑ · →/↓ · 0-9 · n · t · r · / · ? · q"),
                     format!(" {p}…"),
                 ],
                 width,
@@ -1067,10 +1070,41 @@ mod tests {
         let state = crate::state::State::default();
         // At rest: the prefix alone. That is the whole resting cheatsheet.
         assert_eq!(c.hint_bar_text(80, &state).trim(), "C-g");
-        // Armed: the keys the prefix unlocks.
+        // Armed: the keys the prefix unlocks. Wide enough for the full descriptions,
+        // the rows run in the bar's fixed order (focus nav, focus mux, jump, new,
+        // hide, rescan, filter, help, quit) and the focus rows use arrow symbols that
+        // point at the view they focus.
         c.set_armed(true);
+        let full = c.hint_bar_text(400, &state);
+        assert!(full.starts_with(" C-g "), "{full:?}");
+        let order = [
+            "←/↑ focus nav",
+            "→/↓ focus mux",
+            "0-9 jump to a session",
+            "n new session",
+            "t hide nav",
+            "r rescan",
+            "/ filter",
+            "? help",
+            "q quit",
+        ];
+        let mut last = 0;
+        for seg in order {
+            let pos = full
+                .find(seg)
+                .unwrap_or_else(|| panic!("armed bar lists {seg:?}: {full:?}"));
+            assert!(
+                pos > last,
+                "armed bar order keeps {seg:?} after the previous: {full:?}"
+            );
+            last = pos;
+        }
+        // A narrower bar drops to short descriptions while keeping the focus guidance.
         let armed = c.hint_bar_text(120, &state);
-        assert!(armed.starts_with(" C-g "), "{armed:?}");
+        assert!(
+            armed.contains("→/↓ mux"),
+            "short bar keeps focus-mux: {armed:?}"
+        );
         for key in ["n new", "r rescan", "? help", "q quit"] {
             assert!(armed.contains(key), "armed bar lists {key:?}: {armed:?}");
         }
