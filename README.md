@@ -16,16 +16,29 @@ filling the right pane.](docs/assets/xmux.png)
 
 ## Install
 
-xmux is a Cargo project. Build the release binary:
+xmux is one self-contained binary, provided as a prebuilt package for Windows,
+macOS, and Linux on the [releases](https://github.com/zer0ken/xmux/releases)
+page. Step-by-step instructions for each OS — prebuilt binary, package manager,
+or build from source — are in [`INSTALL.md`](INSTALL.md).
+
+Quick package-manager installs:
 
 ```sh
-cargo build --release        # binary at target/release/xmux
+winget install --id zer0ken.xmux      # Windows
+brew install zer0ken/xmux/xmux        # macOS
+cargo install xmux                    # Linux / any OS with Rust
 ```
 
-Or install it onto your `PATH`:
+Install the `xmux` command onto your `PATH` from source:
 
 ```sh
 cargo install --path .
+```
+
+Or build the release binary without installing it:
+
+```sh
+cargo build --release        # binary at target/release/xmux
 ```
 
 It runs on Windows and on unix-likes. You need `ssh` on the machine running
