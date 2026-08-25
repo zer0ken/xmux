@@ -256,8 +256,10 @@ mod tests {
     /// prepending the snippet would corrupt the local argv's session-name argument.
     #[test]
     fn local_shared_attach_is_not_prefixed() {
-        let host =
-            crate::model::Host::new(crate::transport::local(None), crate::mux::for_binary("tmux"));
+        let host = crate::model::Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("tmux"),
+        );
         let argv = vec![
             "tmux".to_string(),
             "attach".to_string(),

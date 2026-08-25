@@ -10,11 +10,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::link::manage;
+use crate::model::source::{self, Source};
 use crate::provision::config::{self, Config};
 use crate::provision::discovery;
-use crate::link::manage;
 use crate::session::{Session, WindowPanes};
-use crate::model::source::{self, Source};
 use crate::ui::switcher::Ops;
 use crate::ui::tree::{self, Group};
 
@@ -170,7 +170,11 @@ pub async fn resolve_roster(
     // transport, because "is this mux here" has nothing to do with which server socket a
     // session lives on - and a `-S <socket>` injection is a flag zellij would refuse.
     let installed = if cfg.local.mux.is_auto() {
-        crate::mux::installed_muxes(&*crate::transport::local(None), &crate::model::source::ExecRunner).await
+        crate::mux::installed_muxes(
+            &*crate::transport::local(None),
+            &crate::model::source::ExecRunner,
+        )
+        .await
     } else {
         Vec::new()
     };
@@ -517,9 +521,9 @@ impl Ops for EnvOps {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::source::{RunError, Runner};
     use crate::provision::config::Config;
     use crate::session::Session;
-    use crate::model::source::{RunError, Runner};
 
     #[test]
     fn env_carries_configured_prefix() {

@@ -27,7 +27,7 @@ registry.
   input action from `src/display` projects INTO the domain action; the two are
   distinct types in separate modules. The event effect carries a boxed mux, so it
   is neither cloneable nor comparable and has a hand-written debug form.
-- The HOST axis lives in `src/machine`, not here; a source holds one transport
+- The HOST axis lives in `src/transport`, not here; a source holds one transport
   from it.
 - Source state and source collections store per-source domain state. A source
   carries no control client, no display-key derivation, and no attach or reap plan:

@@ -10,12 +10,12 @@
 use async_trait::async_trait;
 
 use crate::link::HostEvent;
-use crate::transport::Transport;
 use crate::model::plan::{DeathSignal, EventSource};
 use crate::model::server_model::ServerModel;
+use crate::model::source::{RunError, Runner};
 use crate::mux::vocab as mux;
 use crate::session::{Session, WindowPanes};
-use crate::model::source::{RunError, Runner};
+use crate::transport::Transport;
 
 mod control;
 mod psmux;
@@ -399,8 +399,8 @@ pub fn for_binary(bin: &str) -> Box<dyn Mux> {
 /// `None` for a mux that takes no socket flag.
 ///
 /// The two composition sites (the source list and the host registry) call this before
-/// handing a socket to the machine axis, so a socket only ever reaches a mux that
-/// understands it. The machine axis cannot make this call itself: it names no mux by
+/// handing a socket to the transport axis, so a socket only ever reaches a mux that
+/// understands it. The transport axis cannot make this call itself: it names no mux by
 /// design, so it injects the socket it is GIVEN and asks nothing about it.
 pub fn server_socket_for(bin: &str, socket: Option<String>) -> Option<String> {
     socket.filter(|_| for_binary(bin).takes_server_socket())

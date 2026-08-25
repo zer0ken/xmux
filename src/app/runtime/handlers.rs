@@ -346,7 +346,8 @@ impl Runtime {
                                                                     // Restore the natural nav width the user last set; clamp a stale out-of-range
                                                                     // value, fall back to the default when none is saved.
         let nav_width_natural = adjust_nav_width(
-            crate::ui::prefs::load_nav_width(&env.xmux_dir).unwrap_or(crate::ui::switcher::NAV_WIDTH),
+            crate::ui::prefs::load_nav_width(&env.xmux_dir)
+                .unwrap_or(crate::ui::switcher::NAV_WIDTH),
             0,
         );
         let nav_width = nav_width_natural;

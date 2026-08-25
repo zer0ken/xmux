@@ -310,8 +310,10 @@ mod tests {
         mgr.insert_fake("jupiter06");
         assert!(mgr.get("jupiter06").is_some());
         // ensure on an already-connected host returns Ok(false) (no fresh connect).
-        let host =
-            crate::model::Host::new(crate::transport::local(None), crate::mux::for_binary("psmux"));
+        let host = crate::model::Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("psmux"),
+        );
         assert!(!mgr.ensure("jupiter06", &host, 80, 24).unwrap());
     }
 

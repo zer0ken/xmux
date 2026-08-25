@@ -18,9 +18,9 @@ use clap::{Parser, Subcommand};
 use crate::app::runtime;
 use crate::display::attach::{self, OsExecer};
 use crate::link::control;
+use crate::model::source::Source;
 use crate::provision::env::{self, ls_lines, Env};
 use crate::session;
-use crate::model::source::Source;
 
 #[derive(Parser)]
 #[command(

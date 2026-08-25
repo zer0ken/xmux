@@ -10,8 +10,8 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
-use crate::session::Session;
 use crate::model::source::Source;
+use crate::session::Session;
 
 /// One source's scan outcome. A non-`None` `err` means the source was
 /// unreachable, in which case `sessions` is empty.

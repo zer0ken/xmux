@@ -1,8 +1,8 @@
-# Working Notes: /src/machine
+# Working Notes: /src/transport
 
 ## Purpose
 
-`machine/` is the HOST axis: how a mux argv reaches the server it runs on,
+`transport/` is the HOST axis: how a mux argv reaches the server it runs on,
 SEPARATE from which mux runs there (that is `src/mux`). It owns argv assembly and
 the per-family execution wrapping only, never a server model and never a mux
 verb.
@@ -43,7 +43,7 @@ same role.
   a family hands its command to. It is the peer of the mux axis's own vocabulary.
 
 The dependency is one-way: the shell-based families import the shared vocabulary,
-and nothing in `machine/` imports a mux type or a source.
+and nothing in `transport/` imports a mux type or a source.
 
 ## Invariants
 

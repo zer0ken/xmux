@@ -177,7 +177,9 @@ async fn dispatch(line: &str, cmd_tx: &mpsc::Sender<Cmd>) -> String {
             rx.await.unwrap_or_default()
         }
         crate::link::control::CtlRequest::Op(op) => enqueue_reply(cmd_tx.send(Cmd::Op(op)).await),
-        crate::link::control::CtlRequest::RawKey(ev) => enqueue_reply(cmd_tx.send(Cmd::RawKey(ev)).await),
+        crate::link::control::CtlRequest::RawKey(ev) => {
+            enqueue_reply(cmd_tx.send(Cmd::RawKey(ev)).await)
+        }
         crate::link::control::CtlRequest::RawBytes(b) => {
             enqueue_reply(cmd_tx.send(Cmd::RawBytes(b)).await)
         }

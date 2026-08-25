@@ -47,9 +47,11 @@ runtime source registry, per-source inventory.
 The test for such a sentence is whether it stays true when one host serves two
 muxes. If it does not, it is about a source.
 
-Two directory names now sit against the vocabulary: `src/machine/` holds the host
-axis, and `src/host/` holds per-source connection management. Renaming a
-directory is a code change and is not decided here.
+Two directory names sat against the vocabulary: `src/machine/` held the host
+axis, and `src/host/` held per-source connection management. The later
+reorganization resolved the collision by renaming them to `src/transport/` (the
+Transport axis) and `src/link/` (per-source connection management), leaving the
+domain type `Host` in `src/model/host.rs`.
 
 The scan indicator prints `scanning hosts` while the things it counts are
 sources.

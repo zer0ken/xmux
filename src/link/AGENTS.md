@@ -1,8 +1,8 @@
-# Working Notes: /src/host
+# Working Notes: /src/link
 
 ## Purpose
 
-`host` owns per-source connection management: the control-mode reader and writer
+`link` owns per-source connection management: the control-mode reader and writer
 machinery, poll task lifecycle, per-source session and window inventory, and the
 source events the app folds into the runtime state. It is a METADATA channel only:
 the per-session PTY attachments in `src/display` own the pixels.

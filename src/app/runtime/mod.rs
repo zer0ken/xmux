@@ -27,9 +27,9 @@ use crate::display::attachment::PtyEvent;
 use crate::display::dispatch::Action;
 use crate::display::registry::AttachRegistry;
 use crate::display::{DisplayEnsure, DisplayEvent, DisplayWorker};
-use crate::provision::env::Env;
 use crate::link::{HostEvent, HostManager};
 use crate::model::Selection;
+use crate::provision::env::Env;
 use crate::ui::switcher::TerminalViewTarget;
 
 /// Milliseconds per braille-spinner frame. The frame index is derived from
@@ -502,8 +502,8 @@ pub(crate) fn current_grid(
 /// Spawns the lowered switch command off the event loop. Local variants run as a
 /// plain subprocess; RawSsh variants run the full ssh argv non-interactively.
 pub(crate) fn run_lowered(lowered: crate::transport::LoweredSwitch) {
-    use crate::transport::LoweredSwitch;
     use crate::model::source::Runner;
+    use crate::transport::LoweredSwitch;
     let argv = match lowered {
         LoweredSwitch::Local(v) | LoweredSwitch::RawSsh(v) => v,
     };
@@ -529,8 +529,8 @@ pub(crate) fn run_lowered(lowered: crate::transport::LoweredSwitch) {
 /// a `Shell` plan has no host shell (a local machine), so the caller falls back to a
 /// reattach. The variant→lowering mapping is 1:1 with [`crate::transport::LoweredSwitch`].
 pub(crate) fn run_switch_plan(host: &crate::model::Host, plan: crate::mux::SwitchPlan) -> bool {
-    use crate::transport::LoweredSwitch;
     use crate::mux::SwitchPlan;
+    use crate::transport::LoweredSwitch;
     match plan {
         SwitchPlan::Exec(argvs) => {
             for a in &argvs {
@@ -608,7 +608,8 @@ fn spawn_host_detection(
 ) {
     tokio::spawn(async move {
         let mut host = crate::model::Host::new(transport, mux);
-        host.detect_and_correct(&crate::model::source::ExecRunner).await;
+        host.detect_and_correct(&crate::model::source::ExecRunner)
+            .await;
         let detected = host.detected.then_some(host.mux);
         let _ = tx.send(HostEvent::Scanned { source, detected });
     });
@@ -627,7 +628,8 @@ fn spawn_mux_discovery(
     tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
 ) {
     tokio::spawn(async move {
-        let muxes = crate::mux::installed_muxes(&*transport, &crate::model::source::ExecRunner).await;
+        let muxes =
+            crate::mux::installed_muxes(&*transport, &crate::model::source::ExecRunner).await;
         if !muxes.is_empty() {
             let _ = tx.send(HostEvent::MuxesFound { machine, muxes });
         }

@@ -67,50 +67,55 @@ pub(super) async fn run_poll(
         // receiver dropping (its exit) is the loop's other stop condition besides abort,
         // so a failed send latches `gone` and the loop returns after this sweep.
         let mut gone = false;
-        mux.poll_once(&source, &transport, &crate::model::source::ExecRunner, &mut |ev| {
-            // Log enumeration at the producer (where `err` is in hand). A sweep that says
-            // what the one before it said is not news, whichever way it went: an unchanged
-            // session set is TRACE, and so is a failure already standing. WARN is for a
-            // failure arriving or changing, INFO for a set changing or a source answering
-            // again. So the log carries the source's HISTORY rather than its cadence, and
-            // an unreachable source cannot fill the file on its own.
-            if let HostEvent::Sessions {
-                source: ref host,
-                ref sessions,
-                ref err,
-            } = ev
-            {
-                let n = sessions.len();
-                if let Some(error) = err {
-                    match failures.failed(error) {
-                        Some(sweeps) => {
-                            tracing::trace!(host, sweeps, "enumeration_failing_still")
+        mux.poll_once(
+            &source,
+            &transport,
+            &crate::model::source::ExecRunner,
+            &mut |ev| {
+                // Log enumeration at the producer (where `err` is in hand). A sweep that says
+                // what the one before it said is not news, whichever way it went: an unchanged
+                // session set is TRACE, and so is a failure already standing. WARN is for a
+                // failure arriving or changing, INFO for a set changing or a source answering
+                // again. So the log carries the source's HISTORY rather than its cadence, and
+                // an unreachable source cannot fill the file on its own.
+                if let HostEvent::Sessions {
+                    source: ref host,
+                    ref sessions,
+                    ref err,
+                } = ev
+                {
+                    let n = sessions.len();
+                    if let Some(error) = err {
+                        match failures.failed(error) {
+                            Some(sweeps) => {
+                                tracing::trace!(host, sweeps, "enumeration_failing_still")
+                            }
+                            None => tracing::warn!(host, error, "enumeration_failed"),
                         }
-                        None => tracing::warn!(host, error, "enumeration_failed"),
-                    }
-                } else {
-                    // A failure that stopped is as much news as one that started: without
-                    // this line the log would end on a failure the source has since
-                    // recovered from.
-                    if let Some((stood, sweeps)) = failures.recovered() {
-                        tracing::info!(host, sweeps, was = %stood, "enumeration_recovered");
-                    }
-                    let names: std::collections::BTreeSet<String> =
-                        sessions.iter().map(|s| s.name.clone()).collect();
-                    if first_poll || names != last_names {
-                        let names_list: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
-                        tracing::info!(host, n, names = ?names_list, "sessions_enumerated");
-                        last_names = names;
-                        first_poll = false;
                     } else {
-                        tracing::trace!(host, n, "sessions_enumerated_unchanged");
+                        // A failure that stopped is as much news as one that started: without
+                        // this line the log would end on a failure the source has since
+                        // recovered from.
+                        if let Some((stood, sweeps)) = failures.recovered() {
+                            tracing::info!(host, sweeps, was = %stood, "enumeration_recovered");
+                        }
+                        let names: std::collections::BTreeSet<String> =
+                            sessions.iter().map(|s| s.name.clone()).collect();
+                        if first_poll || names != last_names {
+                            let names_list: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+                            tracing::info!(host, n, names = ?names_list, "sessions_enumerated");
+                            last_names = names;
+                            first_poll = false;
+                        } else {
+                            tracing::trace!(host, n, "sessions_enumerated_unchanged");
+                        }
                     }
                 }
-            }
-            if events.send(ev).is_err() {
-                gone = true;
-            }
-        })
+                if events.send(ev).is_err() {
+                    gone = true;
+                }
+            },
+        )
         .await;
         if gone {
             return;

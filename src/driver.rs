@@ -190,10 +190,14 @@ pub(crate) mod tests {
         // non-dispatchable method this stops compiling. Obtained via the production
         // path (`Mux::driver()` through `driver_for`) so this seam names no
         // concrete driver type — those live in `crate::mux::{tmux, psmux}`.
-        let tmux_host =
-            crate::model::Host::new(crate::transport::local(None), crate::mux::for_binary("tmux"));
-        let psmux_host =
-            crate::model::Host::new(crate::transport::local(None), crate::mux::for_binary("psmux"));
+        let tmux_host = crate::model::Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("tmux"),
+        );
+        let psmux_host = crate::model::Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("psmux"),
+        );
         let zellij_host = crate::model::Host::new(
             crate::transport::local(None),
             crate::mux::for_binary("zellij"),
@@ -213,8 +217,10 @@ pub(crate) mod tests {
             crate::transport::ssh("jup".into(), String::new(), "linux".into()),
             crate::mux::for_binary("tmux"),
         );
-        let psmux_host =
-            crate::model::Host::new(crate::transport::local(None), crate::mux::for_binary("psmux"));
+        let psmux_host = crate::model::Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("psmux"),
+        );
         assert_eq!(driver_for(&tmux_host).kind(), "tmux");
         assert_eq!(driver_for(&psmux_host).kind(), "psmux");
     }

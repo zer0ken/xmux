@@ -128,7 +128,9 @@ pub enum HostEvent {
     /// the subprocess each provider runs never blocks the loop. The loop reconciles it
     /// against the registries, because deciding what to add and what to tear down needs
     /// the host registry and the live connections.
-    RosterResolved { roster: Box<crate::provision::env::Roster> },
+    RosterResolved {
+        roster: Box<crate::provision::env::Roster>,
+    },
     /// A detection probe resolved (`detect_and_correct`): the host's mux was
     /// (re)identified. `None` = still undetected / unreachable. Folded back via
     /// `apply_scan_result`; emitted by the fire-and-forget detection task.

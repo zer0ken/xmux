@@ -84,7 +84,7 @@ fn display_key_is_per_host_for_shared_and_reattach_psmux() {
         crate::mux::for_binary("tmux"), // Shared
     ));
     hosts.insert(crate::model::Host::new(
-        crate::transport::local(None),     // host id == "local"
+        crate::transport::local(None),   // host id == "local"
         crate::mux::for_binary("psmux"), // PerSession
     ));
     let rsel = Selection {

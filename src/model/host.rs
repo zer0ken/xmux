@@ -7,10 +7,10 @@
 use std::collections::HashMap;
 
 use crate::link::HostInventory;
-use crate::transport::Transport;
+use crate::model::source::Runner;
 use crate::model::DisplayTty;
 use crate::mux::Mux;
-use crate::model::source::Runner;
+use crate::transport::Transport;
 
 /// Connecting / live / unreachable — the single per-host reachability state the
 /// supervisor and the tree read (no separate `connecting` flag or `connected` set).
@@ -344,10 +344,10 @@ impl Host {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::source::{RunError, Runner};
     use crate::model::{DeathSignal, EventSource, ServerModel};
     use crate::mux::Mux;
     use crate::session::Session;
-    use crate::model::source::{RunError, Runner};
 
     /// A minimal in-test mux: only `server_model` is exercised in these tests. The other
     /// methods return trivially since they wire no I/O — including the window and session
@@ -813,7 +813,10 @@ mod tests {
     fn list_sessions_command_is_the_listing_a_scan_runs() {
         // Shown on the unreachable screen, so it has to be the real command: the mux
         // binary, its listing verb, and the machine's own wrapping around them.
-        let h = Host::new(crate::transport::local(None), crate::mux::for_binary("tmux"));
+        let h = Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("tmux"),
+        );
         let cmd = h.list_sessions_command();
         assert_eq!(cmd[0], "tmux");
         assert!(
@@ -826,7 +829,10 @@ mod tests {
     async fn enumerate_with_runner_parses_sessions_and_goes_live() {
         // The aggregate-server path: a single list-sessions returns every session,
         // parsed into the host's inventory, with liveness Live.
-        let mut h = Host::new(crate::transport::local(None), crate::mux::for_binary("tmux"));
+        let mut h = Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("tmux"),
+        );
         let r = CannedRunner::ok("3\t1\t1781246739\teditor\n1\t0\t\tbuild\n");
         h.enumerate_with(&r).await.unwrap();
         assert_eq!(h.liveness, Liveness::Live);
@@ -1050,7 +1056,10 @@ mod tests {
 
     #[tokio::test]
     async fn detect_and_correct_replaces_behavior_and_preserves_bin() {
-        let mut h = Host::new(crate::transport::local(None), crate::mux::for_binary("tmux"));
+        let mut h = Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("tmux"),
+        );
         let runner = DetectRunner::ok("psmux command help");
         h.detect_and_correct(&runner).await;
         assert_eq!(h.mux.kind(), "psmux");
@@ -1067,7 +1076,10 @@ mod tests {
 
     #[tokio::test]
     async fn detect_and_correct_retries_after_inconclusive_probe() {
-        let mut h = Host::new(crate::transport::local(None), crate::mux::for_binary("tmux"));
+        let mut h = Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("tmux"),
+        );
         let runner = DetectRunner::err();
         h.detect_and_correct(&runner).await;
         assert_eq!(h.mux.kind(), "tmux");

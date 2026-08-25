@@ -13,8 +13,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::provision::config::Config;
-use crate::transport::MachineKind;
 use crate::session;
+use crate::transport::MachineKind;
 
 /// A failed command's outcome. Only a real non-zero exit carries stderr (and can
 /// be classified benign); a missing binary or a connection failure surfaces as

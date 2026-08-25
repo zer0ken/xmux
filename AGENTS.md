@@ -19,7 +19,7 @@ host serving several muxes is several sources under one host.
 
 There are two mux-facing paths:
 
-- Metadata path: `src/host/` runs control-mode or poll enumeration, tracks
+- Metadata path: `src/link/` runs control-mode or poll enumeration, tracks
   inventory, and emits source events.
 - Display path: `src/display/` runs real PTY attachments and feeds grids; the
   driver seam owns the per-source display decision (which PTY to use and whether to
@@ -34,7 +34,11 @@ state; raw key and text injection is an unstable low-level surface.
 
 - `src/app/` - the app: the runtime loop that owns the terminal, plus the focus
   and modal routing state.
-- `src/machine/` - the HOST axis: the `Transport` trait, the per-host
+- `src/cli/` - the CLI surface: argument parsing and command dispatch, plus the
+  `xmux update` subcommand. `cli::run` is the sole public entry.
+- `src/provision/` - resolution: the TOML config, the roster of ssh targets, the
+  concurrent source probe, and the resolved runtime view over them.
+- `src/transport/` - the TRANSPORT axis: the `Transport` trait, the per-host
   families, and the shared shell vocabulary. A source builds one at construction.
 - `src/mux/` - the MUX axis: the `Mux` trait, the per-mux families (`tmux/`,
   `psmux/`, `zellij/`) owning metadata, command plans, and a display driver, and
@@ -45,10 +49,13 @@ state; raw key and text injection is an unstable low-level surface.
   resolves a source's driver; it names no concrete mux type.
 - `src/display/` - PTY attachment, the grid, terminal input, and low-level input
   protocol mechanics.
-- `src/host/` - per-source connection management (control-mode reader and writer,
+- `src/link/` - per-source connection management (control-mode reader and writer,
   poll tasks, live client ownership).
 - `src/ui/` - nav row transforms, interaction state, and rendering.
 - `src/state/` - the explicit app runtime state and its two mutation sites.
+- `src/session.rs` - the foundational cross-environment data types (a `Session`,
+  its windows-and-panes detail, and the `<source>/<name>` address) that the axes
+  and the model build on.
 
 ## Invariants
 

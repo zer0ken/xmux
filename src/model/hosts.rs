@@ -4,9 +4,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::provision::config::Config;
 use crate::model::{Host, Liveness};
 use crate::mux::for_binary;
+use crate::provision::config::Config;
 use crate::session::LOCAL_SOURCE;
 
 /// Every host, keyed by host id, in display order (local first). The single owner of
@@ -244,8 +244,8 @@ mod tests {
 
     use super::*;
     use crate::link::HostEvent;
-    use crate::transport::Transport;
     use crate::model::{Liveness, ServerModel};
+    use crate::transport::Transport;
 
     #[test]
     fn default_and_new_are_empty() {
@@ -548,7 +548,8 @@ mod tests {
         let distros = vec!["wsl.Ubuntu-24.04".to_string()];
         let dir = std::path::Path::new("/x");
         let hosts = Hosts::build(&cfg, &aliases, &distros, "windows", &local(), dir, None);
-        let srcs = crate::model::source::build(&cfg, &aliases, &distros, "windows", &local(), dir, None);
+        let srcs =
+            crate::model::source::build(&cfg, &aliases, &distros, "windows", &local(), dir, None);
         let src_order: Vec<String> = srcs.iter().map(|s| s.alias.clone()).collect();
         assert_eq!(
             src_order,
