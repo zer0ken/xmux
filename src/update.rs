@@ -10,11 +10,6 @@ pub struct Args {
     pub method: Option<String>,
 }
 
-pub async fn run(_args: Args) -> i32 {
-    eprintln!("xmux update: not implemented");
-    1
-}
-
 /// Which OS family the binary runs on. A parameter (not `cfg`) so detection logic
 /// is unit-testable on any host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -364,6 +359,109 @@ fn self_update(check: bool) -> Result<(), String> {
     Ok(())
 }
 
+fn parse_method(s: &str) -> Result<InstallMethod, String> {
+    match s {
+        "cargo" => Ok(InstallMethod::Cargo),
+        "winget" => Ok(InstallMethod::Winget),
+        "brew" => Ok(InstallMethod::Brew),
+        "self" => Ok(InstallMethod::Self_),
+        _ => Err(format!("unknown method {s:?} (expected cargo|winget|brew|self)")),
+    }
+}
+
+fn resolve_method(forced: Option<&str>) -> Result<InstallMethod, String> {
+    if let Some(m) = forced {
+        return parse_method(m);
+    }
+    if let Some(m) = std::env::var("XMUX_UPDATE_METHOD")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        return parse_method(&m);
+    }
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("cannot locate own binary: {e}"))?;
+    Ok(classify(&exe, &cargo_bins(), platform()))
+}
+
+fn tool_on_path(tool: &str) -> bool {
+    std::process::Command::new(tool)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok()
+}
+
+fn run_delegated(program: &str, args: &[&str]) -> Result<(), String> {
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit());
+    let status = cmd.status().map_err(|e| format!("cannot run {program}: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{program} exited with {status}"))
+    }
+}
+
+fn run_blocking(args: &Args) -> Result<(), String> {
+    let method = resolve_method(args.method.as_deref())?;
+    match method {
+        InstallMethod::Cargo => {
+            if args.check {
+                println!("xmux is installed via cargo; update with `cargo install xmux`");
+                return Ok(());
+            }
+            if !tool_on_path("cargo") {
+                return Err("cargo is not on PATH; use `xmux update --method self`".to_string());
+            }
+            run_delegated("cargo", &["install", "xmux"])
+        }
+        InstallMethod::Winget => {
+            if args.check {
+                println!("xmux is installed via winget; update with `winget upgrade --id zer0ken.xmux`");
+                return Ok(());
+            }
+            if !tool_on_path("winget") {
+                return Err("winget is not on PATH; use `xmux update --method self`".to_string());
+            }
+            run_delegated("winget", &["upgrade", "--id", "zer0ken.xmux"])
+        }
+        InstallMethod::Brew => {
+            if args.check {
+                println!("xmux is installed via Homebrew; update with `brew upgrade zer0ken/xmux/xmux`");
+                return Ok(());
+            }
+            if !tool_on_path("brew") {
+                return Err("brew is not on PATH; use `xmux update --method self`".to_string());
+            }
+            run_delegated("brew", &["upgrade", "zer0ken/xmux/xmux"])
+        }
+        InstallMethod::Self_ => self_update(args.check),
+    }
+}
+
+/// The public entry: runs the blocking update flow on a worker thread so no blocking
+/// network or file work sits on the async runtime path, then maps the outcome to an
+/// exit code.
+pub async fn run(args: Args) -> i32 {
+    match tokio::task::spawn_blocking(move || run_blocking(&args)).await {
+        Ok(Ok(())) => 0,
+        Ok(Err(e)) => {
+            eprintln!("xmux update: {e}");
+            1
+        }
+        Err(_) => {
+            eprintln!("xmux update: internal panic");
+            1
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -504,5 +602,12 @@ mod tests {
                 || s == "x86_64-apple-darwin.tar.gz"
                 || s == "x86_64-unknown-linux-gnu.tar.gz"
         );
+    }
+
+    #[test]
+    fn parses_known_method_names() {
+        assert_eq!(super::parse_method("cargo").unwrap(), InstallMethod::Cargo);
+        assert_eq!(super::parse_method("self").unwrap(), InstallMethod::Self_);
+        assert!(super::parse_method("bogus").is_err());
     }
 }
