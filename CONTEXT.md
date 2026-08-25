@@ -157,6 +157,15 @@ UI elements a user perceives as distinct things:
   pure geometry, so the paint, the hit-test and the tests read one answer. A list would
   show three cards in a band twenty rows wide and leave the rest of every row blank; the
   flow is what makes the band worth its rows.
+- source label - how a host and its mux are SHOWN: `{host}/{mux}`, one grammar wherever
+  the pair is read (a card's context line, the screen it selects, the doctor's source
+  list). Not the id's own separator, because an id is typed and a label is read, and a
+  label parts its levels the way the rest of an address on screen does. Both halves
+  always: a host serving one mux carries no mux in its id and still shows one, since a
+  host seen with its mux on one card and without it on the next reads as two hosts. The
+  name comes from the mux's KIND, not the binary that reached it, so an alias or a path
+  cannot put a second spelling on screen. Empty only where nothing knows the mux yet,
+  which a card marks with its spinner rather than by dropping the separator.
 - nav bands - the two bands the nav's cards fall into: the session cards, then the cards
   of the hosts with no session to show, which sit below every session card whatever order
   the hosts were scanned in. In the side column the parting is the ROOM between them while

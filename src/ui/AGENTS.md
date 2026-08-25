@@ -70,6 +70,10 @@ flatten renders for the dump verb.
   so a refusal anywhere else would leave the other paths open.
 - A settled host's status word has one source, so the word on a card and the word on the
   screen reached from it are the same word.
+- A host and its mux are shown as ONE label, and the mux in it is resolved ONCE per card,
+  so a session card, its host's card and the screen behind either cannot spell one mux
+  three ways. A source id's own separator never reaches a surface: an id is typed, a label
+  is read, and the two grammars are not interchangeable.
 - A card states a STATE, never a REASON: the status word is all a settled host card
   carries, and the message behind it (the diagnostic its transport gave, the provider
   that offered the host, the config stanza it was reached through) is stated on the

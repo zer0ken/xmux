@@ -215,6 +215,17 @@ no function, and no test, so renaming code is never a documentation change.
   straight to a rule and never meet, and the list starts scrolling a row before the cards
   alone would fill it. Neither the gap nor the rule is a card: a click on either moves
   nothing.
+- **FR-B20** - A host and its mux are SHOWN as one label, `{host}/{mux}`, wherever the pair
+  is read: a nav card's context line, the screen a card selects, the doctor's source list.
+  Always that separator, never the one a source id parts its two halves with, because an id
+  is typed and a label is read. And always both halves: a host serving a single mux carries
+  no mux in its id, but its label still names one, since a host that appears with its mux on
+  one card and without it on the next reads as two hosts. The mux each card names is
+  resolved once, from the kind the enumeration stamped or from the host's own configured
+  mux where no session carries one, so two cards on one source cannot name it two ways. The
+  one thing that omits it is a mux nothing knows yet: there is no name to write, and the
+  card turns its spinner in that place instead. A session's own ADDRESS is unaffected - it
+  is what the user types and what xmux is sent, so its grammar is the id's.
 
 ## C. Switching (the keystone)
 
