@@ -123,11 +123,14 @@ pub fn conin_mode() -> u32 {
     0
 }
 
-/// Re-applies the mouse-capture console mode + SGR tracking if the console has lost
-/// `ENABLE_MOUSE_INPUT`. Spawning a `portable-pty` child (ConPTY) clears that bit on the
-/// PARENT's CONIN, silently killing mouse capture mid-session (VT-input survives, so the
-/// keyboard keeps working — only the mouse dies). The app calls this each loop
-/// iteration; it is a cheap mode read and re-applies only on drift. No-op off Windows.
+/// Re-applies the mouse-capture console mode + SGR tracking when the console drifts
+/// from the state `TermGuard` established. Spawning a `portable-pty` child (ConPTY) can
+/// silently mutate the PARENT's CONIN mid-session: clearing `ENABLE_MOUSE_INPUT` kills
+/// mouse capture (keyboard survives, only the mouse dies), and re-enabling
+/// `ENABLE_QUICK_EDIT_MODE` lets the terminal's native drag-to-select text selection back
+/// in. Both violate the no-selection invariant, so either bit drifting off the desired
+/// state re-asserts the full mode. The app calls this each loop iteration; it is a cheap
+/// mode read and re-applies only on drift. No-op off Windows.
 #[cfg(windows)]
 pub fn ensure_mouse_capture() {
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -135,10 +138,10 @@ pub fn ensure_mouse_capture() {
         ENABLE_MOUSE_INPUT, ENABLE_QUICK_EDIT_MODE, ENABLE_VIRTUAL_TERMINAL_INPUT,
     };
     // Observe CONIN mode transitions: mouse capture on Windows is fragile (a portable-pty
-    // child spawn can silently clear input bits), so logging exactly which bit drifts —
+    // child spawn can silently mutate the input bits), so logging exactly which bit drifts —
     // vt-input / mouse-input / quick-edit — the instant it changes turns an intermittent
-    // "mouse stopped working" report into a pinpointed cause. Logged only on change (silent
-    // in steady state).
+    // "mouse stopped working" / "text selected itself" report into a pinpointed cause.
+    // Logged only on change (silent in steady state).
     static LAST: AtomicU32 = AtomicU32::new(u32::MAX);
     let m = conin_mode();
     if LAST.swap(m, Ordering::Relaxed) != m {
@@ -150,7 +153,9 @@ pub fn ensure_mouse_capture() {
             "conin_mode_changed"
         );
     }
-    if m & ENABLE_MOUSE_INPUT == 0 {
+    // Re-assert when mouse capture is lost OR quick-edit (drag-to-select) is enabled;
+    // `windows_mouse::enable` restores both the desired bits and the SGR tracking.
+    if m & ENABLE_MOUSE_INPUT == 0 || m & ENABLE_QUICK_EDIT_MODE != 0 {
         let _ = windows_mouse::enable();
     }
 }
