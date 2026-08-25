@@ -24,7 +24,7 @@ or build from source — are in [`INSTALL.md`](INSTALL.md).
 Quick package-manager installs:
 
 ```sh
-winget install --id z0k.xmux             # Windows
+winget install --id zer0ken.xmux      # Windows
 brew install zer0ken/xmux/xmux        # macOS
 cargo install xmux                    # Linux / any OS with Rust
 ```
