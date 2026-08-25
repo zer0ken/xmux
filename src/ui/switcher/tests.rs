@@ -1445,10 +1445,10 @@ async fn armed_hint_bar_fits_a_narrow_nav() {
 
 #[test]
 fn hint_bar_has_status_bar_background() {
-    // The hint bar is a solid dark status bar spanning the NAV column - including
-    // cells past the text - so it reads as the nav's own status line, clearly set off
-    // from the cards above and stopping at the view border. Key tokens carry the
-    // accent over that base.
+    // The hint bar is a solid dark status bar fit to what it has to say: resting it is
+    // the prefix alone, so in the side layout it reads as a label on the nav's last
+    // row - the cells it owns carry the dark bar bg, and the columns past the text are
+    // left to the view beneath, not painted. Key tokens carry the accent over that base.
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     // Wide enough that the terminal view stays landscape, so the layout is Side and the
@@ -1465,15 +1465,18 @@ fn hint_bar_has_status_bar_background() {
         crate::ui::palette::get().accent,
         "the leading key token is accented"
     );
+    // Resting text is " C-g" (4 cells) plus one cell of padding = 5 cells; the bar is
+    // fit to that, so it stops well short of the nav column's width instead of filling it.
+    let bar_w = 5;
     assert_eq!(
-        buf[(NAV_WIDTH - 1, y)].bg,
+        buf[(bar_w - 1, y)].bg,
         bg,
-        "a trailing cell past the text is also the bar bg (fills the nav width)"
+        "the last padded cell of the bar is also bar bg"
     );
     assert_ne!(
-        buf[(NAV_WIDTH + 1, y)].bg,
+        buf[(bar_w, y)].bg,
         bg,
-        "the bar stops at the view border - the terminal view keeps that row"
+        "the bar is fit to content - cells past the text are not painted"
     );
 }
 
@@ -2862,8 +2865,9 @@ fn the_armed_hint_bar_floats_across_the_whole_window() {
         armed.contains("quit") || armed.contains("q "),
         "the armed bar spans past the nav column: {armed:?}"
     );
+    let after_nav: String = armed.chars().skip(NAV_WIDTH as usize).collect();
     assert!(
-        armed.len() > NAV_WIDTH as usize && !armed[NAV_WIDTH as usize..].trim().is_empty(),
+        armed.chars().count() > NAV_WIDTH as usize && !after_nav.trim().is_empty(),
         "and paints over the view beneath it: {armed:?}"
     );
     // Covering, not just recolouring: a style alone leaves the grid's own characters in

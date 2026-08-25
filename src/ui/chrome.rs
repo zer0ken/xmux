@@ -843,10 +843,10 @@ impl Chrome {
             // resize keys are left out of the cheatsheet (the help modal has them).
             fit(
                 &[
-                    format!(" {p} ←/↑ focus nav · →/↓ focus mux · 0-9 jump to a session · n new session · t hide nav · r rescan · / filter · ? help · q quit"),
-                    format!(" {p} ←/↑ nav · →/↓ mux · 0-9 jump to · n new · t hide · r rescan · / filter · ? help · q quit"),
-                    format!(" {p} ←/↑ nav · →/↓ mux · 0-9 jump · n new · t hide · r · / · ? · q"),
-                    format!(" {p} ←/↑ · →/↓ · 0-9 · n · t · r · / · ? · q"),
+                    format!(" {p} · ←/↑ focus nav · →/↓ focus mux · 0-9 jump to a session · n new session · t hide nav · r rescan · / filter · ? help · q quit"),
+                    format!(" {p} · ←/↑ nav · →/↓ mux · 0-9 jump to · n new · t hide · r rescan · / filter · ? help · q quit"),
+                    format!(" {p} · ←/↑ nav · →/↓ mux · 0-9 jump · n new · t hide · r · / · ? · q"),
+                    format!(" {p} · ←/↑ · →/↓ · 0-9 · n · t · r · / · ? · q"),
                     format!(" {p}…"),
                 ],
                 width,
@@ -912,10 +912,10 @@ impl Chrome {
     }
 
     /// One hint-bar line as styled spans: each ` · `-separated segment's leading key
-    /// token (two tokens when the first is the prefix, e.g. `C-g n`) gets the accent,
-    /// the separators go muted, and the rest inherits the bar's base style. Purely
-    /// presentational - the text is exactly the [`Self::hint_bar_lines`] line, so the
-    /// fit / wrap behaviour is untouched.
+    /// token (the prefix `C-g` is its own segment, so every other segment is one key)
+    /// gets the accent, the separators go muted, and the rest inherits the bar's base
+    /// style. Purely presentational - the text is exactly the [`Self::hint_bar_lines`]
+    /// line, so the fit / wrap behaviour is untouched.
     fn hint_bar_line_spans(&self, line: String) -> Line<'static> {
         let accent = Style::default().fg(crate::ui::palette::get().accent);
         let sep_style = Style::default().fg(crate::ui::palette::get().overlay);

@@ -172,16 +172,16 @@ impl Switcher {
         // terminal view. At rest it stays inside the nav (its own status line); floating,
         // it widens to the whole window - the layout never reflows, only the paint reaches
         // further, so arming the prefix cannot shift a single card.
-        // The portrait band's bar shares its row with the flow's offscreen counts: the bar
-        // keeps its own background but takes only the cells it needs, and the counts sit at
-        // the ends of what is left. An ARMED bar takes the whole row back, because a
-        // cheatsheet has to be readable over whatever it covers.
+        // The bar is fit to what it has to say in either nav layout: the side layout's
+        // status line reads as a label on its row, and the portrait band's bar shares its
+        // row with the flow's offscreen counts (the bar keeps its own background but takes
+        // only the cells it needs, and the counts sit at the ends of what is left). An
+        // ARMED or flashing bar takes the whole row back, because a cheatsheet has to be
+        // readable over whatever it covers.
         let fill = if floating || !state.chrome.flash.is_empty() {
             crate::ui::chrome::BarFill::Row
-        } else if r.layout == ViewLayout::Top {
-            crate::ui::chrome::BarFill::Content
         } else {
-            crate::ui::chrome::BarFill::Row
+            crate::ui::chrome::BarFill::Content
         };
         if let (Some(counts), crate::ui::chrome::BarFill::Content) = (hidden, fill) {
             let chip = state
