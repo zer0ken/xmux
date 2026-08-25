@@ -422,20 +422,38 @@ impl Env {
 /// session, an unreachable line per dead source, and whether EVERY source is
 /// unreachable (a reachable mux with zero sessions is empty, not failed).
 pub fn ls_lines(groups: &[Group]) -> (Vec<String>, Vec<String>, bool) {
+    // Tabs are not used as column separators: a tab advances to the next tab stop,
+    // so a first column (`<source>/<name>`) that varies in width pushes every later
+    // column onto a different stop and the rows do not line up. Instead each column
+    // is padded to the widest cell in that column, so all rows share one vertical
+    // line regardless of the terminal's tab-stop configuration.
+    let mut addr_w = 0usize;
+    let mut nw_w = 0usize;
+    for g in groups {
+        if g.err.is_some() {
+            addr_w = addr_w.max(g.source.len());
+            continue;
+        }
+        for s in &g.sessions {
+            addr_w = addr_w.max(s.address().len());
+            nw_w = nw_w.max(format!("{}w", s.windows).len());
+        }
+    }
+
     let mut lines = Vec::new();
     let mut unreachable = Vec::new();
     let mut reachable = 0;
     for g in groups {
         if let Some(err) = &g.err {
-            unreachable.push(format!("{}\t(unreachable: {})", g.source, err));
+            unreachable.push(format!("{:<addr_w$}  (unreachable: {err})", g.source));
             continue;
         }
         reachable += 1;
         for s in &g.sessions {
             lines.push(format!(
-                "{}\t{}w\tattached={}",
+                "{:<addr_w$}  {:>nw_w$}  attached={}",
                 s.address(),
-                s.windows,
+                format!("{}w", s.windows),
                 s.attached
             ));
         }
@@ -682,11 +700,14 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "local/editor\t2w\tattached=true",
-                "local/build\t1w\tattached=false"
+                "local/editor  2w  attached=true",
+                "local/build   1w  attached=false"
             ]
         );
-        assert_eq!(unreachable, vec!["prod\t(unreachable: connection refused)"]);
+        assert_eq!(
+            unreachable,
+            vec!["prod          (unreachable: connection refused)"]
+        );
         assert!(!all_unreachable);
     }
 
