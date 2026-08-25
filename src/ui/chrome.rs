@@ -950,6 +950,12 @@ impl Chrome {
         Line::from(spans)
     }
 
+    /// The version the expanded bar pins to its far right: `xmux v0.5.0`, built from the
+    /// crate's own name and version so it always matches what `xmux --version` reports.
+    pub(crate) fn version_label(&self) -> String {
+        format!("{} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
+    }
+
     pub(crate) fn render_hint_bar(
         &self,
         frame: &mut Frame,
@@ -957,7 +963,20 @@ impl Chrome {
         state: &crate::state::State,
         fill: BarFill,
     ) {
-        let lines = self.hint_bar_lines(area.width, state);
+        // While the prefix is HELD the bar is expanded, and it pins its name and version to
+        // the far right: a cheap build pointer that never crowds the cheatsheet. A flash is
+        // a refusal and must own the whole row, so it displaces the version. The version
+        // only appears on a solid (Row) bar, which is exactly what an armed bar always is.
+        let version = if self.armed && self.flash.is_empty() && fill == BarFill::Row {
+            let label = self.version_label();
+            let gap = 2; // a two-cell breathing room between the cheatsheet and the label
+            (label, gap)
+        } else {
+            (String::new(), 0)
+        };
+        let version_w = version.0.chars().count() as u16 + version.1;
+        let text_w = area.width.saturating_sub(version_w);
+        let lines = self.hint_bar_lines(text_w, state);
         // Key tokens get the accent only on the built-in default style with no flash
         // showing: a `[ui] hint-bar-style` override keeps its exact colours (uniform,
         // as configured), and a flash stays solid error-red.
@@ -992,10 +1011,28 @@ impl Chrome {
             BarFill::Content => Self::bar_content_rect(area, width),
         };
         frame.render_widget(Clear, painted);
+        // The cheatsheet takes the left of the bar; the version the rightmost cells. The
+        // cheatsheet was fit to `text_w`, so painting it across the whole bar fills the gap
+        // with the status background while the label sits clear of the text at the right.
         frame.render_widget(
             Paragraph::new(text).style(self.hint_bar_render_style()),
             painted,
         );
+        if !version.0.is_empty() {
+            let vw = version.0.chars().count() as u16;
+            let vrect = Rect {
+                x: painted.x + painted.width.saturating_sub(vw),
+                y: painted.y,
+                width: vw,
+                height: painted.height,
+            };
+            let muted = Style::default().fg(crate::ui::palette::get().overlay);
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(version.0, muted)))
+                    .style(self.hint_bar_render_style()),
+                vrect,
+            );
+        }
     }
 
     /// How many cells a [`BarFill::Content`] bar paints, so whatever else is on the row
@@ -1062,6 +1099,18 @@ mod tests {
         assert_eq!(s.fg, Some(Color::White));
         // A bare colour token is the foreground (tmux convention).
         assert_eq!(parse_hint_bar_style("red").fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn version_label_names_the_crate_and_its_version() {
+        let c = Chrome::default();
+        let label = c.version_label();
+        assert_eq!(
+            label,
+            format!("{} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
+        );
+        assert!(label.starts_with("xmux v"), "label: {label:?}");
+        assert_eq!(label, "xmux v0.5.0", "label: {label:?}");
     }
 
     #[test]
