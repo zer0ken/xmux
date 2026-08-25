@@ -3,7 +3,7 @@
 
 use super::*;
 
-use crate::host::HostEvent;
+use crate::link::HostEvent;
 use crate::mux::ControlProtocol;
 use crate::mux::{quote_target, PANE_FORMAT, SESSION_FORMAT};
 

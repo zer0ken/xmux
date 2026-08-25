@@ -262,7 +262,7 @@ impl HostClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::test_control_proto;
+    use crate::link::test_control_proto;
 
     #[test]
     #[ignore = "real -CC is the live gate; this just proves a piped child spawns + tears down"]

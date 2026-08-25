@@ -28,7 +28,7 @@ use crate::display::dispatch::Action;
 use crate::display::registry::AttachRegistry;
 use crate::display::{DisplayEnsure, DisplayEvent, DisplayWorker};
 use crate::env::Env;
-use crate::host::{HostEvent, HostManager};
+use crate::link::{HostEvent, HostManager};
 use crate::model::Selection;
 use crate::ui::switcher::TerminalViewTarget;
 
@@ -501,8 +501,8 @@ pub(crate) fn current_grid(
 
 /// Spawns the lowered switch command off the event loop. Local variants run as a
 /// plain subprocess; RawSsh variants run the full ssh argv non-interactively.
-pub(crate) fn run_lowered(lowered: crate::machine::LoweredSwitch) {
-    use crate::machine::LoweredSwitch;
+pub(crate) fn run_lowered(lowered: crate::transport::LoweredSwitch) {
+    use crate::transport::LoweredSwitch;
     use crate::source::Runner;
     let argv = match lowered {
         LoweredSwitch::Local(v) | LoweredSwitch::RawSsh(v) => v,
@@ -527,9 +527,9 @@ pub(crate) fn run_lowered(lowered: crate::machine::LoweredSwitch) {
 /// type. `Exec` argv(s) run non-interactively in order; a `Shell` command runs over the
 /// host's raw shell (`raw_shell_argv`). Returns whether the switch was issued - `false` when
 /// a `Shell` plan has no host shell (a local machine), so the caller falls back to a
-/// reattach. The variant→lowering mapping is 1:1 with [`crate::machine::LoweredSwitch`].
+/// reattach. The variant→lowering mapping is 1:1 with [`crate::transport::LoweredSwitch`].
 pub(crate) fn run_switch_plan(host: &crate::model::Host, plan: crate::mux::SwitchPlan) -> bool {
-    use crate::machine::LoweredSwitch;
+    use crate::transport::LoweredSwitch;
     use crate::mux::SwitchPlan;
     match plan {
         SwitchPlan::Exec(argvs) => {
@@ -602,7 +602,7 @@ fn ensure_current_host(
 /// probe fails) is emitted as `HostEvent::Scanned`.
 fn spawn_host_detection(
     source: String,
-    transport: Box<dyn crate::machine::Transport>,
+    transport: Box<dyn crate::transport::Transport>,
     mux: Box<dyn crate::mux::Mux>,
     tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
 ) {
@@ -623,7 +623,7 @@ fn spawn_host_detection(
 /// machine that never answers costs a task and no more.
 fn spawn_mux_discovery(
     machine: String,
-    transport: Box<dyn crate::machine::Transport>,
+    transport: Box<dyn crate::transport::Transport>,
     tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
 ) {
     tokio::spawn(async move {
@@ -811,7 +811,7 @@ fn connect_all_sources(
 /// on the "loading…" placeholder. The control client never volunteers pane data -
 /// it must be asked, once per session (`requested` dedupes repeat Inventory events).
 fn request_session_panes(
-    client: &crate::host::HostClient,
+    client: &crate::link::HostClient,
     sessions: &[crate::session::Session],
     requested: &mut HashSet<String>,
 ) {

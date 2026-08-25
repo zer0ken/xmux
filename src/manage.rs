@@ -95,7 +95,7 @@ mod tests {
     /// (local `-S`), run via the injected runner (`name = binary`, `args = the mux
     /// argv WITHOUT the leading binary`).
     fn local_host() -> Host {
-        Host::new(crate::machine::local(None), crate::mux::for_binary("psmux"))
+        Host::new(crate::transport::local(None), crate::mux::for_binary("psmux"))
     }
 
     /// A REMOTE tmux host: its ops route through `Mux` (mux argv) x `Transport`
@@ -103,7 +103,7 @@ mod tests {
     /// joined per-arg-quoted as the trailing remote command.
     fn remote_host() -> Host {
         Host::new(
-            crate::machine::ssh("prod".into(), String::new(), "linux".into()),
+            crate::transport::ssh("prod".into(), String::new(), "linux".into()),
             crate::mux::for_binary("tmux"),
         )
     }

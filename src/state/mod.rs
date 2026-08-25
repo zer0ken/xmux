@@ -253,15 +253,15 @@ impl State {
     /// `Tick`: an `Exited` of a once-connected host is a transient drop that keeps the
     /// last-known tree; otherwise it resolves the host's real state.
     ///
-    /// [`HostEvent`]: crate::host::HostEvent
+    /// [`HostEvent`]: crate::link::HostEvent
     /// [`EventEffect`]: crate::model::EventEffect
     pub fn apply_event(
         &mut self,
-        ev: crate::host::HostEvent,
+        ev: crate::link::HostEvent,
         switcher: &mut crate::ui::switcher::Switcher,
         connected: &mut std::collections::HashSet<String>,
     ) -> Vec<crate::model::EventEffect> {
-        use crate::host::HostEvent;
+        use crate::link::HostEvent;
         use crate::model::EventEffect;
         match ev {
             HostEvent::Connected { host, sessions } | HostEvent::Inventory { host, sessions } => {
@@ -880,7 +880,7 @@ mod tests {
     // arms (Focus marker, Panes subtree, Sessions enumeration, Exited unreachable
     // mark) into State directly, and returns the mux follow-ups (refetch /
     // probe / reap / sync / scan-dispatch) as EventEffects for the run loop to run.
-    use crate::host::HostEvent;
+    use crate::link::HostEvent;
     use crate::model::EventEffect;
     use crate::session::{Pane, Session, WindowPanes};
     use crate::ui::switcher::{Scan, Switcher};

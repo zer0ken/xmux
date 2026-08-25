@@ -160,7 +160,7 @@ pub async fn resolve_roster(
     // than an error. A `[[wsl]]` entry still names one distribution without listing
     // every one of them.
     let wsl_distros = if cfg.discovery.wsl {
-        crate::machine::wsl::distros()
+        crate::transport::wsl::distros()
     } else {
         Vec::new()
     };
@@ -170,7 +170,7 @@ pub async fn resolve_roster(
     // transport, because "is this mux here" has nothing to do with which server socket a
     // session lives on - and a `-S <socket>` injection is a flag zellij would refuse.
     let installed = if cfg.local.mux.is_auto() {
-        crate::mux::installed_muxes(&*crate::machine::local(None), &crate::source::ExecRunner).await
+        crate::mux::installed_muxes(&*crate::transport::local(None), &crate::source::ExecRunner).await
     } else {
         Vec::new()
     };
@@ -544,14 +544,14 @@ mod tests {
 
     fn test_source(alias: &str, remote: bool, line: &str) -> Source {
         let kind = if remote {
-            crate::machine::MachineKind::Ssh {
+            crate::transport::MachineKind::Ssh {
                 id: String::new(),
                 alias: alias.into(),
                 control_path: String::new(),
                 os: "linux".into(),
             }
         } else {
-            crate::machine::MachineKind::Local {
+            crate::transport::MachineKind::Local {
                 id: String::new(),
                 socket: None,
             }

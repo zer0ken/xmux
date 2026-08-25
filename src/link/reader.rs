@@ -184,7 +184,7 @@ fn clear_connecting(state: &ReaderState) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::test_control_proto;
+    use crate::link::test_control_proto;
     use crate::session::Session;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;

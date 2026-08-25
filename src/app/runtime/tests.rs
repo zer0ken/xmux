@@ -5,7 +5,7 @@ fn fake_source(alias: &str) -> Source {
     Source {
         alias: alias.into(),
         binary: "cmd.exe".into(),
-        kind: crate::machine::MachineKind::Local {
+        kind: crate::transport::MachineKind::Local {
             id: String::new(),
             socket: None,
         },
@@ -80,11 +80,11 @@ fn display_key_is_per_host_for_shared_and_reattach_psmux() {
     // by mux behavior, read off the Host - never the transport's remote flag.
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
-        crate::machine::ssh("jup".into(), String::new(), "linux".into()),
+        crate::transport::ssh("jup".into(), String::new(), "linux".into()),
         crate::mux::for_binary("tmux"), // Shared
     ));
     hosts.insert(crate::model::Host::new(
-        crate::machine::local(None),     // host id == "local"
+        crate::transport::local(None),     // host id == "local"
         crate::mux::for_binary("psmux"), // PerSession
     ));
     let rsel = Selection {
@@ -109,7 +109,7 @@ fn display_key_is_per_host_for_shared_and_reattach_psmux() {
 fn scan_result_corrects_tmux_config_to_psmux_poll() {
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
-        crate::machine::local(None),
+        crate::transport::local(None),
         crate::mux::for_binary("tmux"),
     ));
 
@@ -133,7 +133,7 @@ fn scan_result_corrects_tmux_config_to_psmux_poll() {
 fn scan_result_corrects_psmux_config_to_tmux_control() {
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
-        crate::machine::local(None),
+        crate::transport::local(None),
         crate::mux::for_binary("psmux"),
     ));
 
@@ -163,7 +163,7 @@ async fn connect_all_sources_connects_remote_hosts() {
     let mut mgr = HostManager::new(tx);
     let mut hosts = crate::model::Hosts::default();
     let mut host = crate::model::Host::new(
-        crate::machine::ssh("jupiter06".into(), String::new(), "linux".into()),
+        crate::transport::ssh("jupiter06".into(), String::new(), "linux".into()),
         crate::mux::for_binary("tmux"), // Control event source
     );
     host.detected = true;
@@ -193,7 +193,7 @@ async fn scan_or_dispatch_host_detects_from_hosts_without_env() {
     let mut mgr = HostManager::new(tx);
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
-        crate::machine::local(None),
+        crate::transport::local(None),
         crate::mux::for_kind("psmux", "psmux-no-such-binary"),
     )); // Host::new leaves it undetected
     let mut detecting = HashSet::new();
@@ -643,7 +643,7 @@ fn apply_inventory_effect_folds_sessions_into_host_inventory() {
     let switcher = Switcher::new(&mut state);
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
-        crate::machine::ssh("jup".into(), String::new(), "linux".into()),
+        crate::transport::ssh("jup".into(), String::new(), "linux".into()),
         crate::mux::for_binary("tmux"),
     ));
     let mut rt = test_rt(fake_env_with_sources(&[]));
@@ -733,7 +733,7 @@ async fn r_rescan_reloads_control_host_panes() {
     // A detected CONTROL (tmux) host with a live control client sink.
     let mut hosts = crate::model::Hosts::default();
     let mut host = crate::model::Host::new(
-        crate::machine::ssh("jup".into(), String::new(), "linux".into()),
+        crate::transport::ssh("jup".into(), String::new(), "linux".into()),
         crate::mux::for_binary("tmux"),
     );
     host.detected = true;
@@ -804,7 +804,7 @@ fn current_grid_returns_none_for_empty_displayed() {
     let mut registry = AttachRegistry::new();
     let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
     let worker = crate::display::DisplayWorker::new(ptx);
-    let (etx, _erx) = tokio::sync::mpsc::unbounded_channel::<crate::host::HostEvent>();
+    let (etx, _erx) = tokio::sync::mpsc::unbounded_channel::<crate::link::HostEvent>();
     let mgr = HostManager::new(etx);
     let (pty_tx, _pty_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
     let mut attach_seq = 0u64;
@@ -843,7 +843,7 @@ fn draw_observer_reports_change_only_on_new_fingerprint() {
 async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
-        crate::machine::ssh("jup".into(), String::new(), "linux".into()),
+        crate::transport::ssh("jup".into(), String::new(), "linux".into()),
         crate::mux::for_binary("tmux"),
     ));
     let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
@@ -852,7 +852,7 @@ async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
     let mut attach_seq = 0u64;
     // No control client registered ⇒ select_attach falls back to the lowered-switch
     // path (this test exercises attach/in-flight latching, not the switch transport).
-    let (etx, _erx) = tokio::sync::mpsc::unbounded_channel::<crate::host::HostEvent>();
+    let (etx, _erx) = tokio::sync::mpsc::unbounded_channel::<crate::link::HostEvent>();
     let mgr = HostManager::new(etx);
     let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
 
@@ -915,7 +915,7 @@ async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
 async fn psmux_selection_replaces_the_single_display_attachment() {
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
-        crate::machine::local(None),
+        crate::transport::local(None),
         crate::mux::for_binary("psmux"),
     ));
     let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
@@ -1013,7 +1013,7 @@ async fn psmux_selection_replaces_the_single_display_attachment() {
 async fn psmux_select_attach_does_not_trust_stale_display_bookkeeping() {
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
-        crate::machine::local(None),
+        crate::transport::local(None),
         crate::mux::for_binary("psmux"),
     ));
     hosts
@@ -1098,7 +1098,7 @@ fn should_attach_fires_on_change_and_recovery_never_storms_in_flight() {
 async fn psmux_select_attach_supersedes_in_flight_attach() {
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
-        crate::machine::local(None),
+        crate::transport::local(None),
         crate::mux::for_binary("psmux"),
     ));
     hosts
@@ -1351,7 +1351,7 @@ fn test_rt(env: Env) -> Runtime {
 fn detach_test_hosts(alias: &str) -> crate::model::Hosts {
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
-        crate::machine::ssh(alias.to_string(), String::new(), "linux".into()),
+        crate::transport::ssh(alias.to_string(), String::new(), "linux".into()),
         crate::mux::for_binary("tmux"),
     ));
     hosts
@@ -2179,11 +2179,11 @@ async fn ready_adopts_the_pty_name_only_where_the_child_is_the_mux_client() {
     let mut rt = test_rt(fake_env_with_sources(&[]));
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
-        crate::machine::local(None),
+        crate::transport::local(None),
         crate::mux::for_binary("tmux"),
     ));
     hosts.insert(crate::model::Host::new(
-        crate::machine::ssh("jup".into(), String::new(), "linux".into()),
+        crate::transport::ssh("jup".into(), String::new(), "linux".into()),
         crate::mux::for_binary("tmux"),
     ));
     rt.hosts = hosts;
@@ -2236,7 +2236,7 @@ fn a_sources_reach_names_its_mux_and_the_machine_it_is_asked_over() {
     let s = Source {
         alias: "prod".into(),
         binary: "tmux".into(),
-        kind: crate::machine::MachineKind::Ssh {
+        kind: crate::transport::MachineKind::Ssh {
             id: String::new(),
             alias: "prod".into(),
             control_path: "/tmp/cm-prod.sock".into(),

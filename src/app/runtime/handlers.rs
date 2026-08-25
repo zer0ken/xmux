@@ -1239,7 +1239,7 @@ pub(super) fn source_reach(s: &crate::source::Source) -> crate::ui::chrome::Sour
 /// unreadable, which is the one thing this screen exists not to do.
 pub(super) fn shell_line(argv: &[String]) -> String {
     argv.iter()
-        .map(|a| crate::machine::vocab::quote(&escape_controls(a)))
+        .map(|a| crate::transport::vocab::quote(&escape_controls(a)))
         .collect::<Vec<_>>()
         .join(" ")
 }

@@ -44,7 +44,7 @@ impl Failures {
 /// (app exit). Mirrors a control client's connect-then-stream role for poll muxes.
 pub(super) async fn run_poll(
     source: String,
-    transport: Box<dyn crate::machine::Transport>,
+    transport: Box<dyn crate::transport::Transport>,
     mux: Box<dyn crate::mux::Mux>,
     interval_ms: u64,
     events: tokio::sync::mpsc::UnboundedSender<HostEvent>,

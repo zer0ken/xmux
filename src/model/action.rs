@@ -124,7 +124,7 @@ pub enum MuxOp {
     Create { source: String, name: String },
 }
 
-/// A mux follow-up a [`HostEvent`](crate::host::HostEvent) requires after
+/// A mux follow-up a [`HostEvent`](crate::link::HostEvent) requires after
 /// [`State::apply_event`](crate::state::State::apply_event) has folded the event's
 /// self-contained state mutation. `apply_event` owns the domain-state changes (tree
 /// rebuild, marker move, unreachable mark); these effects carry the mux I/O the

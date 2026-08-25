@@ -2,7 +2,7 @@
 //! `Box<dyn Mux>`), the mux's server model (`ServerModel`), and the plan/value types
 //! they exchange. The mux layer is transport-blind: it supplies mux argv and the
 //! `machine::Transport` decides how to run it. The two axes themselves live in
-//! `crate::machine` (MACHINE) and `crate::mux` (MUX).
+//! `crate::transport` (MACHINE) and `crate::mux` (MUX).
 
 pub mod action;
 pub mod death;
