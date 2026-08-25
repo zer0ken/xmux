@@ -922,9 +922,10 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     // the terminal but the theme the terminal already has: no colour query, no probing,
     // no fallback to guess at. The one colour from outside those slots is the one the
     // user names in `[ui] selection-style`.
-    crate::ui::palette::init(crate::ui::chrome::parse_selection_bg(
-        &env.roster().cfg.ui.selection_style,
-    ));
+    crate::ui::palette::apply(
+        &env.roster().cfg.ui.theme,
+        crate::ui::chrome::parse_selection_bg(&env.roster().cfg.ui.selection_style),
+    );
 
     let _term_guard = match TermGuard::enter() {
         Ok(g) => g,
@@ -1126,6 +1127,12 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
             _ = reconnect.tick() => rt.on_reconnect(),
             _ = frame.tick() => {
                 from_frame = true;
+                // Cheap live config reload: on the redraw cadence, stat the config
+                // file and re-apply the `[ui]` presentation settings when it changed.
+                // Marked dirty so the re-applied styles actually repaint this frame.
+                if rt.on_config_check() {
+                    rt.dirty = true;
+                }
             }
         }
         // Any real event (not the bare frame wake) means the UI may have changed.
@@ -1193,6 +1200,10 @@ struct Runtime {
     spinner_start: std::time::Instant,
     dirty: bool,
     last_draw: std::time::Instant,
+    /// The last modified time of `~/.config/xmux/config.toml`, for the live config
+    /// watch. `None` until the first frame tick records a baseline, so the startup
+    /// apply (which already ran) is not duplicated.
+    config_last_mtime: Option<std::time::SystemTime>,
     width_dirty: bool,
     width_flush_at: Option<std::time::Instant>,
 }

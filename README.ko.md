@@ -109,6 +109,8 @@ mux = "auto"          # "auto"(기본값)는 이 머신에 설치된 mux 전부�
                       # ["psmux", "zellij"]처럼 목록도 받는다.
 
 [ui]
+theme = "auto-dark"                  # 내장 ANSI 테마: "auto-dark"(기본값) 또는
+                                      # "auto-light"(밝은 터미널용)
 prefix = "C-g"                        # xmux의 prefix (예: C-g, C-Space, C-b)
 auto-hide-nav = false                 # auto-hide-nav의 초기 상태
 view-active-border-style = "green"    # 포커스된 view border의 색
@@ -118,6 +120,10 @@ hint-bar-style = "bg=blue,fg=white"   # 힌트 바의 색 (tmux status-style)
 ssh = "prod"          # ssh-config 별칭
 mux = "tmux"          # 생략하면 "tmux"
 ```
+
+`[ui]` 표시 설정(테마, selection-style, hint-bar-style, view-border 스타일)은
+`config.toml`이 바뀌면 재시작 없이 실시간으로 다시 적용됩니다. 호스트/로스터 변경은
+여전히 `prefix r`로 재스캔해야 합니다.
 
 xmux는 호스트를 먼저 `~/.ssh/config`에서 읽는다. 설정 파일은 그 발견을 보완하며
 대체하지 않는다. 다음 실행까지 남는 상태(마지막에 선택한 세션, auto-hide-nav
