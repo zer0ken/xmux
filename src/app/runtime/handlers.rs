@@ -1144,6 +1144,7 @@ pub(super) fn source_reach(s: &crate::source::Source) -> crate::ui::chrome::Sour
         probe: shell_line(&s.host().list_sessions_command()),
         machine: s.kind.addressed_as(),
         mux: s.binary.clone(),
+        kind: crate::mux::for_binary(&s.binary).kind().to_string(),
         socket: s.kind.socket_path(),
     }
 }

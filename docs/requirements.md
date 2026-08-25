@@ -215,6 +215,17 @@ no function, and no test, so renaming code is never a documentation change.
   straight to a rule and never meet, and the list starts scrolling a row before the cards
   alone would fill it. Neither the gap nor the rule is a card: a click on either moves
   nothing.
+- **FR-B20** - A host and its mux are SHOWN as one label, `{host}/{mux}`, wherever the pair
+  is read: a nav card's context line, the screen a card selects, the doctor's source list.
+  Always that separator, never the one a source id parts its two halves with, because an id
+  is typed and a label is read. And always both halves: a host serving a single mux carries
+  no mux in its id, but its label still names one, since a host that appears with its mux on
+  one card and without it on the next reads as two hosts. The mux each card names is
+  resolved once, from the kind the enumeration stamped or from the host's own configured
+  mux where no session carries one, so two cards on one source cannot name it two ways. The
+  one thing that omits it is a mux nothing knows yet: there is no name to write, and the
+  card turns its spinner in that place instead. A session's own ADDRESS is unaffected - it
+  is what the user types and what xmux is sent, so its grammar is the id's.
 
 ## C. Switching (the keystone)
 
@@ -270,6 +281,18 @@ no function, and no test, so renaming code is never a documentation change.
   terminal view) with the cursor preselected: the persisted last session if set,
   else a local-first recency preselect. There is no separate picker mode; `prefix q`
   quits.
+- **FR-D6** - The log records what HAPPENED, never the rate xmux asks. A sweep that says
+  what the sweep before it said is not written: an unchanged session list is not, and
+  neither is a failure already standing, which is counted instead. A failure is written
+  when it arrives and when its message changes, and the source answering again is written
+  too, with how many sweeps failed, so a run of failures reads as one event with a
+  beginning and an end. Without this a source that cannot answer writes one line every
+  poll for as long as xmux runs, and it alone fills the file.
+- **FR-D7** - No log grows without end. The daily files are kept for a bounded window and
+  the oldest goes as a new day opens. A panic that a worker recovers from and hits again on
+  the next frame is written by its SITE at each doubling of its count, not once per
+  occurrence, so the first is kept, the scale is kept, and a repeating internal error
+  cannot bury the file. A panic that ends the app is always written whole.
 
 ## E. Session management
 

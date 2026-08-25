@@ -34,6 +34,25 @@ pub fn source_id(machine: &str, mux: &str, qualified: bool) -> String {
     }
 }
 
+/// Parts a host from its mux wherever the pair is SHOWN. Not [`MUX_SEP`]: an id is typed
+/// and a label is read, and a label is parted the way every other level of an address on
+/// screen is, so one grammar covers the machine, the mux, the session and the window.
+pub const MUX_LABEL_SEP: char = '/';
+
+/// The label a host and its mux are READ as: both halves, parted by [`MUX_LABEL_SEP`].
+///
+/// Always both halves. A machine serving one mux carries no mux in its ID, but it still
+/// shows one, because a machine that appears with its mux on one card and without it on
+/// the next reads as two different machines. The one exception is a mux nothing knows yet:
+/// there is no name to put there, and the surface says so its own way (a card turns a
+/// spinner in the mux's place).
+pub fn source_label(machine: &str, mux: &str) -> String {
+    if mux.is_empty() {
+        return machine.to_string();
+    }
+    format!("{machine}{MUX_LABEL_SEP}{mux}")
+}
+
 /// The MACHINE half of a source id (`local:zellij` -> `local`, `prod` -> `prod`).
 /// Everything before the first [`MUX_SEP`]; an unqualified id is returned whole.
 pub fn machine_of(source: &str) -> &str {
@@ -142,6 +161,20 @@ pub fn parse_target(addr: &str) -> Result<Session, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_label_always_parts_the_pair_with_a_slash() {
+        assert_eq!(source_label("local", "psmux"), "local/psmux");
+        assert_eq!(source_label("prod", "zellij"), "prod/zellij");
+        // The id's own separator never reaches a label.
+        assert_eq!(
+            source_label(machine_of("local:zellij"), mux_of("local:zellij")),
+            "local/zellij"
+        );
+        // Nothing known to name: the machine stands alone rather than trailing a bare
+        // separator.
+        assert_eq!(source_label("prod", ""), "prod");
+    }
 
     #[test]
     fn address() {

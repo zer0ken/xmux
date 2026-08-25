@@ -13,6 +13,12 @@ use tracing_subscriber::{EnvFilter, Layer};
 /// The base name the daily appender writes under; the date it suffixes makes the rest.
 const LOG_BASE: &str = "xmux.log";
 
+/// How many daily files are kept. A rolling log that only ever rolls is a log that grows
+/// without end: the oldest file goes when a new day opens, so the directory holds a bounded
+/// window rather than every day xmux has ever run. Two weeks, because the window has to be
+/// long enough to answer "when did this host start failing" from what is on disk.
+const KEEP_DAYS: usize = 14;
+
 /// The files this log is written to, as the pattern the appender produces: the daily
 /// suffix means no single path is the log for long, so the pattern is what a reader needs
 /// to find them. Named to be SHOWN - the unreachable screen states it - and opened by
@@ -27,11 +33,19 @@ pub fn log_files(xmux_dir: &Path) -> std::path::PathBuf {
 /// the writer and silences any subsequent log calls.
 ///
 /// All output goes to `xmux_dir/xmux.log` via a daily rolling appender wrapped
-/// in a non-blocking writer. The env-filter reads `XMUX_LOG`; when the variable
+/// in a non-blocking writer, keeping [`KEEP_DAYS`] days and dropping what is older. The env-filter reads `XMUX_LOG`; when the variable
 /// is absent or contains an invalid directive the subscriber falls back to
 /// `xmux=info`, which logs all `info`-and-above events inside the `xmux` crate.
 pub fn init(xmux_dir: &Path) -> WorkerGuard {
-    let file_appender = tracing_appender::rolling::daily(xmux_dir, LOG_BASE);
+    // The bounded window is the whole reason this is built rather than taken from the
+    // one-line `daily` helper, which keeps every file it ever opens. A builder that cannot
+    // be built falls back to that helper: logging without retention beats no logging.
+    let file_appender = tracing_appender::rolling::Builder::new()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix(LOG_BASE)
+        .max_log_files(KEEP_DAYS)
+        .build(xmux_dir)
+        .unwrap_or_else(|_| tracing_appender::rolling::daily(xmux_dir, LOG_BASE));
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
     // Parse XMUX_LOG; fall back to "xmux=info" when the variable is absent or
