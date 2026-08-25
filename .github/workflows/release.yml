@@ -89,3 +89,137 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         if: env.CARGO_REGISTRY_TOKEN != ''
         run: cargo publish
+
+  # Refresh the winget and Homebrew packaging manifests with the new version
+  # and the real checksums, commit them to main, and (when a token is
+  # configured) open the winget-pkgs submission PR.
+  update-packaging:
+    name: Update packaging manifests
+    needs: [build, release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Resolve version and checksums
+        run: |
+          set -euo pipefail
+          echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          echo "WIN_SHA=$(sha256sum artifacts/*windows-msvc.exe | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          echo "ARM_SHA=$(sha256sum artifacts/*aarch64-apple-darwin.tar.gz | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          echo "INTEL_SHA=$(sha256sum artifacts/*x86_64-apple-darwin.tar.gz | cut -d' ' -f1)" >> "$GITHUB_ENV"
+
+      - name: Update winget manifest
+        run: |
+          set -euo pipefail
+          sed -i "s/^PackageVersion: .*/PackageVersion: $VERSION/" \
+            packaging/winget/zer0ken.xmux.yaml \
+            packaging/winget/zer0ken.xmux.locale.en-US.yaml
+          cat > packaging/winget/zer0ken.xmux.installer.yaml <<EOF
+          PackageIdentifier: zer0ken.xmux
+          PackageVersion: $VERSION
+          InstallerType: portable
+          Installers:
+            - Architecture: x64
+              InstallerUrl: https://github.com/zer0ken/xmux/releases/download/v${VERSION}/xmux-v${VERSION}-x86_64-pc-windows-msvc.exe
+              InstallerSha256: $WIN_SHA
+              Commands:
+                - xmux
+          ManifestType: installer
+          ManifestVersion: 1.6.0
+          EOF
+
+      - name: Update Homebrew formula
+        run: |
+          set -euo pipefail
+          cat > packaging/homebrew/xmux.rb <<EOF
+          class Xmux < Formula
+            desc "Cross-environment tmux/psmux session switcher"
+            homepage "https://github.com/zer0ken/xmux"
+            license "MIT"
+            version "$VERSION"
+
+            on_arm do
+              url "https://github.com/zer0ken/xmux/releases/download/v${VERSION}/xmux-v${VERSION}-aarch64-apple-darwin.tar.gz"
+              sha256 "$ARM_SHA"
+            end
+
+            on_intel do
+              url "https://github.com/zer0ken/xmux/releases/download/v${VERSION}/xmux-v${VERSION}-x86_64-apple-darwin.tar.gz"
+              sha256 "$INTEL_SHA"
+            end
+
+            def install
+              bin.install "xmux"
+            end
+
+            test do
+              system "#{bin}/xmux", "version"
+            end
+          end
+          EOF
+
+      - name: Commit and push to main
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add packaging
+          if git diff --cached --quiet; then
+            echo "No packaging changes for v$VERSION."
+          else
+            git commit -m "packaging: refresh manifests for v$VERSION"
+            git push origin HEAD:main
+          fi
+
+      # Optional: submit the refreshed manifests to the community winget-pkgs
+      # repository. Requires a WINGET_PKGS_TOKEN secret (a PAT able to write to
+      # the zer0ken/winget-pkgs fork and open PRs there).
+      - name: Submit to winget-pkgs
+        if: env.WINGET_PKGS_TOKEN != ''
+        env:
+          WINGET_PKGS_TOKEN: ${{ secrets.WINGET_PKGS_TOKEN }}
+        run: |
+          set -euo pipefail
+          API=https://api.github.com
+          FORK=zer0ken/winget-pkgs
+          UPSTREAM=microsoft/winget-pkgs
+          BR="add/zer0ken.xmux.v${VERSION}"
+          AUTH="Authorization: Bearer $WINGET_PKGS_TOKEN"
+
+          UP=$(curl -s -H "$AUTH" "$API/repos/$UPSTREAM/commits/master" | jq -r .sha)
+          REF="refs/heads/$BR"
+          if curl -s -H "$AUTH" "$API/repos/$FORK/git/ref/$REF" | jq -e '.ref' >/dev/null 2>&1; then
+            curl -s -X PATCH -H "$AUTH" -H "Accept: application/vnd.github+json" \
+              "$API/repos/$FORK/git/refs/$BR" \
+              -d "{\"sha\":\"$UP\",\"force\":true}" >/dev/null
+          else
+            curl -s -X POST -H "$AUTH" -H "Accept: application/vnd.github+json" \
+              "$API/repos/$FORK/git/refs" \
+              -d "{\"ref\":\"$REF\",\"sha\":\"$UP\"}" >/dev/null
+          fi
+
+          for f in zer0ken.xmux.yaml zer0ken.xmux.installer.yaml zer0ken.xmux.locale.en-US.yaml; do
+            B64=$(base64 -w0 "packaging/winget/$f")
+            jq -n --arg b64 "$B64" --arg msg "Add zer0ken.xmux $VERSION manifest" --arg br "$BR" \
+              '{message:$msg, content:$b64, branch:$br}' > /tmp/body.json
+            curl -s -X PUT -H "$AUTH" -H "Accept: application/vnd.github+json" \
+              "$API/repos/$FORK/contents/manifests/z/zer0ken/xmux/$VERSION/$f" \
+              --data-binary @/tmp/body.json >/dev/null
+          done
+
+          PR_EXISTS=$(curl -s -H "$AUTH" "$API/repos/$UPSTREAM/pulls?head=zer0ken:$BR" | jq 'length')
+          if [ "$PR_EXISTS" = "0" ]; then
+            jq -n --arg head "zer0ken:$BR" --arg title "New version: zer0ken.xmux version $VERSION" \
+              --arg body "Updates the winget manifest to zer0ken.xmux $VERSION. Generated automatically by the xmux release workflow." \
+              '{title:$title, head:$head, base:"master", body:$body}' > /tmp/pr.json
+            curl -s -X POST -H "$AUTH" -H "Accept: application/vnd.github+json" \
+              "$API/repos/$UPSTREAM/pulls" --data-binary @/tmp/pr.json | jq -r '.html_url'
+          else
+            echo "winget-pkgs PR already exists for $BR."
+          fi
