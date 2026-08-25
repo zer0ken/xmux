@@ -1619,25 +1619,32 @@ async fn slow_op_is_deferred_off_the_key_path() {
 }
 
 #[tokio::test]
-async fn n_on_a_session_card_refuses_with_a_flash() {
-    // `n` only starts a SESSION, and only a host card names a host to start it on.
-    // xmux does not create windows, so a session card has nothing to create.
+async fn n_on_a_session_card_opens_new_for_its_host() {
+    // `n` starts a new SESSION on the selected card's host/mux. A session card
+    // names its source, so `n` there opens the create input seeded with it rather
+    // than refusing - you can add a session to a host that already has sessions.
     let mut h = Harness::new(sample());
     assert!(h.sw.select_address("local/editor", &h.state));
     h.ch('n').await;
     assert!(
-        !h.state.is_inputting(),
-        "no input opens on a session card: {}",
+        h.state.is_inputting(),
+        "the new-session input opens on a session card: {}",
         h.text()
     );
-    assert!(
-        h.state.chrome.flash.contains("host card"),
-        "the refusal says where to press it: {:?}",
-        h.state.chrome.flash
-    );
+    match &h.state.modal {
+        Some(Modal::Input(i)) => {
+            assert!(matches!(i.mode, InputMode::New), "new-session mode");
+            assert_eq!(
+                i.source.as_deref(),
+                Some("local"),
+                "seeded with the selected card's source"
+            );
+        }
+        _ => panic!("expected a New input modal"),
+    }
     assert!(
         h.ops.created.lock().unwrap().is_empty(),
-        "nothing is created"
+        "nothing is created yet"
     );
 }
 
