@@ -94,8 +94,20 @@ pub(crate) fn config_path() -> PathBuf {
     home_dir().join(".config").join("xmux").join("config.toml")
 }
 
+/// The home the shell ssh reads `~` and its config from: `$HOME` when set, else
+/// the platform home. OpenSSH resolves `~` off `$HOME`, and on Windows Git
+/// Bash/msys sets `$HOME` to a path that can differ from `USERPROFILE`, so
+/// preferring `$HOME` keeps the config xmux reads identical to the one the
+/// user's ssh actually reads.
+pub(crate) fn ssh_home() -> PathBuf {
+    match std::env::var_os("HOME") {
+        Some(h) => PathBuf::from(h),
+        None => dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")),
+    }
+}
+
 pub(crate) fn ssh_config_path() -> PathBuf {
-    home_dir().join(".ssh").join("config")
+    ssh_home().join(".ssh").join("config")
 }
 
 pub(crate) fn xmux_dir_path() -> PathBuf {
@@ -794,6 +806,22 @@ mod tests {
             (PathBuf::from("/home/u"), false)
         );
         assert_eq!(home_or_cwd(None), (PathBuf::from("."), true));
+    }
+
+    #[test]
+    fn ssh_config_path_prefers_home() {
+        // Windows Git Bash/msys can set `$HOME` to a path different from
+        // `USERPROFILE`; the ssh config must follow `$HOME` so it matches what the
+        // user's ssh reads.
+        let saved = std::env::var_os("HOME");
+        let tmp = std::env::temp_dir();
+        std::env::set_var("HOME", &tmp);
+        let got = ssh_config_path();
+        assert_eq!(got, tmp.join(".ssh").join("config"));
+        match saved {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
     }
 
     #[test]
