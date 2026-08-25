@@ -25,5 +25,6 @@ because winget-pkgs requires a signed contribution agreement. The usual flow:
 - `zer0ken.xmux.installer.yaml` — the installer (portable binary)
 - `zer0ken.xmux.locale.en-US.yaml` — display metadata
 
-`InstallerSha256` is a placeholder; replace it with the value from the release
-`SHA256SUMS` artifact before submitting.
+For this version the `InstallerSha256` is already filled from the release's
+`SHA256SUMS`; for each later release, replace it with the new value before
+submitting.
