@@ -215,6 +215,155 @@ fn install(exe: &Path, downloaded: &Path) -> Result<(), String> {
     Ok(())
 }
 
+use std::time::Duration;
+
+fn http() -> ureq::Agent {
+    let cfg = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(30)))
+        .build();
+    ureq::Agent::new_with_config(cfg)
+}
+
+fn latest_release() -> Result<Release, String> {
+    let resp = http()
+        .get("https://api.github.com/repos/zer0ken/xmux/releases/latest")
+        .header("User-Agent", concat!("xmux/", env!("CARGO_PKG_VERSION")))
+        .header("Accept", "application/vnd.github+json")
+        .call()
+        .map_err(|e| format!("could not reach GitHub: {e}"))?;
+    let json: serde_json::Value = serde_json::from_reader(resp.into_body().into_reader())
+        .map_err(|e| format!("bad release response: {e}"))?;
+    let version = json["tag_name"]
+        .as_str()
+        .ok_or("release response has no tag_name")?
+        .trim_start_matches('v')
+        .to_string();
+    let tag = json["tag_name"].as_str().unwrap_or("").to_string();
+    let assets = json["assets"].as_array().cloned().unwrap_or_default();
+    Ok(Release {
+        version,
+        tag,
+        assets,
+    })
+}
+
+fn checksum_for(release: &Release, asset_name: &str) -> Result<String, String> {
+    let url = release
+        .assets
+        .iter()
+        .find(|a| a["name"].as_str() == Some("SHA256SUMS"))
+        .and_then(|a| a["browser_download_url"].as_str())
+        .ok_or("release has no SHA256SUMS asset")?;
+    let body = http()
+        .get(url)
+        .header("User-Agent", concat!("xmux/", env!("CARGO_PKG_VERSION")))
+        .call()
+        .map_err(|e| format!("could not fetch SHA256SUMS: {e}"))?
+        .into_body()
+        .read_to_string()
+        .map_err(|e| format!("bad SHA256SUMS body: {e}"))?;
+    checksum_for_name(&body, asset_name)
+}
+
+fn download(url: &str, dest: &Path) -> Result<(), String> {
+    let resp = http()
+        .get(url)
+        .header("User-Agent", concat!("xmux/", env!("CARGO_PKG_VERSION")))
+        .call()
+        .map_err(|e| format!("download failed: {e}"))?;
+    let mut out = std::fs::File::create(dest)
+        .map_err(|e| format!("cannot write {}: {e}", dest.display()))?;
+    let mut reader = resp.into_body().into_reader();
+    std::io::copy(&mut reader, &mut out)
+        .map_err(|e| format!("download interrupted: {e}"))?;
+    Ok(())
+}
+
+/// The release-asset suffix for this platform, matching the release workflow's naming.
+fn asset_suffix() -> &'static str {
+    #[cfg(windows)]
+    {
+        "x86_64-pc-windows-msvc.exe"
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        "aarch64-apple-darwin.tar.gz"
+    }
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    {
+        "x86_64-apple-darwin.tar.gz"
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        "x86_64-unknown-linux-gnu.tar.gz"
+    }
+    #[cfg(not(any(
+        windows,
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "macos", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    )))]
+    {
+        compile_error!("xmux update: unsupported platform for release assets")
+    }
+}
+
+/// Downloads, verifies, and installs the latest release over the running binary.
+fn self_update(check: bool) -> Result<(), String> {
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("cannot locate own binary: {e}"))?;
+    let cur = env!("CARGO_PKG_VERSION");
+    let cur_v = parse_version(cur).ok_or(
+        "current build is not a released version (a source/dev build); update it the same way it was built",
+    )?;
+
+    let release = latest_release()?;
+    let latest_v = parse_version(&release.version)
+        .ok_or("latest release has an unparseable version")?;
+    if latest_v <= cur_v {
+        println!("xmux is already up to date (v{cur})");
+        return Ok(());
+    }
+
+    let suffix = asset_suffix();
+    let (asset_name, url) = asset_for(&release, suffix)
+        .ok_or_else(|| format!("latest release has no asset matching {suffix}"))?;
+    if check {
+        println!(
+            "update available: v{cur} -> v{} ({asset_name})",
+            release.version
+        );
+        return Ok(());
+    }
+
+    println!("updating xmux v{cur} -> v{}", release.version);
+    let expected = checksum_for(&release, asset_name)?;
+
+    let dir = std::env::temp_dir();
+    #[cfg(windows)]
+    let download_name = format!("xmux-{}.exe", release.version);
+    #[cfg(not(windows))]
+    let download_name = format!("xmux-{}.tar.gz", release.version);
+    let dl = dir.join(download_name);
+    let _ = std::fs::remove_file(&dl);
+    download(url, &dl)?;
+    checksum_matches(expected, sha256_file(&dl)?)?;
+
+    #[cfg(windows)]
+    {
+        install(&exe, &dl)?;
+    }
+    #[cfg(not(windows))]
+    {
+        let bin = dir.join(format!("xmux-{}", release.version));
+        let _ = std::fs::remove_file(&bin);
+        extract_binary(&dl, &bin)?;
+        install(&exe, &bin)?;
+    }
+    println!("updated to v{}", release.version);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,5 +493,16 @@ mod tests {
         let _ = std::fs::remove_file(&src);
         let _ = std::fs::remove_file(&tgz);
         let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn asset_suffix_maps_to_release_naming() {
+        let s = super::asset_suffix();
+        assert!(
+            s == "x86_64-pc-windows-msvc.exe"
+                || s == "aarch64-apple-darwin.tar.gz"
+                || s == "x86_64-apple-darwin.tar.gz"
+                || s == "x86_64-unknown-linux-gnu.tar.gz"
+        );
     }
 }
