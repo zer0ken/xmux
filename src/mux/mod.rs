@@ -17,12 +17,14 @@ use crate::mux::vocab as mux;
 use crate::session::{Session, WindowPanes};
 use crate::transport::Transport;
 
+mod abduco;
 mod control;
 mod psmux;
 mod tmux;
 pub mod vocab;
 mod zellij;
 
+pub use abduco::{Abduco, AbducoDriver};
 pub use control::{ControlProtocol, Line, Notif};
 pub use psmux::Psmux;
 pub use tmux::{Tmux, TmuxControl};
@@ -315,6 +317,10 @@ struct MuxKind {
 fn known_muxes() -> &'static [MuxKind] {
     &[
         MuxKind {
+            name: "abduco",
+            make: |bin| Box::new(Abduco { bin }),
+        },
+        MuxKind {
             name: "psmux",
             make: |bin| Box::new(Psmux { bin }),
         },
@@ -447,26 +453,49 @@ pub fn is_recognized(name: &str) -> bool {
 /// `Some(mux)` means a probe was conclusive. `None` means BOTH probes failed
 /// (unreachable host / missing binary), so the caller keeps its current mux and
 /// retries on a later scan.
+/// A known-mux marker in a probe's output names that mux (psmux/zellij in `help`,
+/// abduco in `-v`). tmux has no marker anywhere, so a markerless working probe falls
+/// through to the tmux fallback.
+fn mux_from_marker(text: &str, bin: &str) -> Option<Box<dyn Mux>> {
+    for k in known_muxes() {
+        if text.contains(k.name) {
+            return Some((k.make)(bin.to_string()));
+        }
+    }
+    None
+}
+
 pub async fn detect_backend(
     transport: &dyn Transport,
     bin: &str,
     runner: &dyn Runner,
 ) -> Option<Box<dyn Mux>> {
-    // psmux identifies itself in `help`; check it first because it lies in `-V`.
+    // psmux and zellij identify themselves in `help`; check it first because psmux lies in `-V`.
     let (name, args) = transport.exec_argv(false, &[bin.to_string(), "help".to_string()]);
     if let Ok(out) = runner.run(&name, &args).await {
         let low = String::from_utf8_lossy(&out).to_lowercase();
-        for k in known_muxes() {
-            if low.contains(k.name) {
-                return Some((k.make)(bin.to_string()));
-            }
+        if let Some(m) = mux_from_marker(&low, bin) {
+            return Some(m);
         }
     }
-    // No known-mux marker. A working `-V` is a real tmux (its only positive signal);
-    // both probes failing is inconclusive (unreachable / not a mux) → retry later.
+    // `-V` is tmux's version flag: a working one with no marker is a real tmux. abduco
+    // rejects `-V` outright, so it falls through to its own probe below.
     let (name, args) = transport.exec_argv(false, &[bin.to_string(), "-V".to_string()]);
-    if runner.run(&name, &args).await.is_ok() {
+    if let Ok(out) = runner.run(&name, &args).await {
+        let low = String::from_utf8_lossy(&out).to_lowercase();
+        if let Some(m) = mux_from_marker(&low, bin) {
+            return Some(m);
+        }
         return Some(tmux_fallback(bin));
+    }
+    // `-v` is abduco's version flag (it rejects `-V`). Only reached when `-V` already
+    // failed, so the binary is not a tmux that would hang on tmux's verbose `-v`.
+    let (name, args) = transport.exec_argv(false, &[bin.to_string(), "-v".to_string()]);
+    if let Ok(out) = runner.run(&name, &args).await {
+        let low = String::from_utf8_lossy(&out).to_lowercase();
+        if let Some(m) = mux_from_marker(&low, bin) {
+            return Some(m);
+        }
     }
     None
 }
@@ -723,12 +752,14 @@ mod tests {
         assert_eq!(m.kind(), "tmux");
     }
 
-    /// Answers the two detection probes (`help` and `-V`) independently so a test can
-    /// model a real tmux (help fails, `-V` succeeds), a psmux (help names itself), or
-    /// an unreachable host (both fail). `None` for a probe ⇒ that probe errors.
+    /// Answers the three detection probes (`help`, `-V`, `-v`) independently so a test
+    /// can model a real tmux (help fails, `-V` succeeds), a psmux (help names itself),
+    /// an abduco (`-V` fails, `-v` names itself), or an unreachable host (all fail).
+    /// `None` for a probe ⇒ that probe errors.
     struct ProbeRunner {
         help: Option<Vec<u8>>,
         version: Option<Vec<u8>>,
+        low_version: Option<Vec<u8>>,
     }
 
     impl ProbeRunner {
@@ -736,17 +767,24 @@ mod tests {
             ProbeRunner {
                 help: help.map(|s| s.as_bytes().to_vec()),
                 version: version.map(|s| s.as_bytes().to_vec()),
+                low_version: None,
             }
+        }
+        fn low_version(mut self, v: Option<&str>) -> Self {
+            self.low_version = v.map(|s| s.as_bytes().to_vec());
+            self
         }
     }
 
     #[async_trait]
     impl Runner for ProbeRunner {
         async fn run(&self, _name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
-            // The `-V` probe's arg is `-V` (local) or `<bin> -V` (ssh-wrapped); anything
-            // else is the `help` probe.
+            // The `-V` probe's arg is `-V` (local) or `<bin> -V` (ssh-wrapped); `-v` is
+            // abduco's lower-case version flag; anything else is the `help` probe.
             let probe = if args.iter().any(|a| a.contains("-V")) {
                 &self.version
+            } else if args.iter().any(|a| a.contains("-v")) {
+                &self.low_version
             } else {
                 &self.help
             };
@@ -795,7 +833,7 @@ mod tests {
         // The candidate set IS the supported set, so discovery can never turn up a name
         // xmux has no family for: every candidate resolves to a mux of its own kind.
         let names = supported_muxes();
-        assert_eq!(names, vec!["tmux", "psmux", "zellij"]);
+        assert_eq!(names, vec!["tmux", "abduco", "psmux", "zellij"]);
         for name in names {
             assert_eq!(for_binary(name).kind(), name, "{name} must be drivable");
         }
@@ -1011,6 +1049,28 @@ Usage: zellij [OPTIONS]",
     }
 
     #[tokio::test]
+    async fn detect_backend_classifies_abduco_by_low_version_marker() {
+        // abduco rejects `-V` (uppercase, exit 1) and names itself in `-v` (lowercase)
+        // output: `abduco-0.6 © …`. The `-V` probe fails, then `-v` identifies it.
+        let transport = crate::transport::local(None);
+        let runner = ProbeRunner::new(None, None).low_version(Some("abduco-0.6 © 2013-2018"));
+        let got = detect_backend(&transport, "abduco", &runner).await.unwrap();
+        assert_eq!(got.kind(), "abduco");
+        assert_eq!(got.server_model(), ServerModel::PerSession);
+        assert_eq!(got.attach_plan("api"), argv(&["abduco", "-a", "api"]));
+    }
+
+    #[tokio::test]
+    async fn detect_backend_does_not_classify_tmux_as_abduco() {
+        // A real tmux answers `-V` ("tmux 3.5a") and must stay tmux: the marker check
+        // finds no known-mux marker and the fallback fires before the `-v` stage.
+        let transport = crate::transport::local(None);
+        let runner = ProbeRunner::new(None, Some("tmux 3.5a"));
+        let got = detect_backend(&transport, "tmux", &runner).await.unwrap();
+        assert_eq!(got.kind(), "tmux");
+    }
+
+    #[tokio::test]
     async fn detect_backend_both_probes_fail_is_inconclusive() {
         // Unreachable host / missing binary: both probes error ⇒ None (retry later).
         let transport = crate::transport::local(None);
@@ -1219,6 +1279,7 @@ Usage: zellij [OPTIONS]",
         assert_eq!(server_socket_for("tmux", sock()), sock());
         assert_eq!(server_socket_for("psmux", sock()), sock());
         assert_eq!(server_socket_for("zellij", sock()), None);
+        assert_eq!(server_socket_for("abduco", sock()), None);
         // An unknown binary is reached the tmux way, and takes a socket the same way.
         assert_eq!(server_socket_for("mux-of-the-future", sock()), sock());
         // No socket to hand on stays no socket, whoever the mux is.
