@@ -57,8 +57,9 @@ while the live screen is focused:
 | `prefix n` | start a new session on the selected host |
 | `prefix r` | re-scan: refresh which machines exist, and every source's sessions |
 
-`prefix n` needs a host row: a session row has nothing to create, and it says so
-with a brief message. Creating under an unreachable host is likewise refused.
+`prefix n` starts the new session on the host/mux the selected card belongs to -
+a host row or a session row both name one. Creating under an unreachable host is
+refused.
 
 ### Jumping by number
 

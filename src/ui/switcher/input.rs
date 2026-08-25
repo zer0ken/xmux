@@ -131,9 +131,12 @@ impl Switcher {
         }
     }
 
-    /// The `n` action: a new SESSION on a host card. A session card has nothing to
-    /// create - xmux does not edit a session's windows - so it refuses with a flash.
-    /// The host is captured up front so a streamed selection move cannot retarget it.
+    /// The `n` action: a new SESSION on the selected card's host/mux. Every card
+    /// names a source - a session or loading card by its session, a host card by
+    /// itself - so `n` adds a session to the source in front of the user, not only
+    /// to an empty host. (xmux does not edit a session's windows, so there is
+    /// nothing else `n` could add.) The source is captured up front so a streamed
+    /// selection move cannot retarget it.
     pub(super) fn open_new(&mut self, state: &mut crate::state::State) {
         state.chrome.flash.clear();
         self.dismiss_modals(state);
@@ -141,22 +144,15 @@ impl Switcher {
             state.flash("host unreachable, cannot create here");
             return;
         }
-        let Some(reference) = self.current_ref().cloned() else {
+        let Some(source) = self.current_source() else {
             return;
         };
-        match reference {
-            RowRef::Host { source, .. } => {
-                state.modal = Some(Modal::Input(Input::new(
-                    InputMode::New,
-                    " new session name (empty = auto)".into(),
-                    String::new(),
-                    Some(source),
-                )));
-            }
-            RowRef::Session { .. } | RowRef::Loading { .. } => {
-                state.flash("select a host card to start a session");
-            }
-        }
+        state.modal = Some(Modal::Input(Input::new(
+            InputMode::New,
+            " new session name (empty = auto)".into(),
+            String::new(),
+            Some(source),
+        )));
     }
 
     /// The row `number` addresses, or `None` when no card carries it. The numbers run
