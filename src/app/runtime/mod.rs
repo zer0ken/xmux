@@ -634,6 +634,33 @@ fn spawn_mux_discovery(
     });
 }
 
+/// Re-resolves the ROSTER off the loop and hands the answer back as
+/// `HostEvent::RosterResolved`.
+///
+/// Off the loop for the same reason mux discovery is: resolving reads the config and asks
+/// each roster provider, and a provider is a subprocess (`tailscale status`, `wsl.exe -l`).
+/// Running that on the loop would freeze rendering and input for its whole duration.
+///
+/// A config that stopped PARSING resolves to defaults, which would silently narrow the
+/// roster to this box. That answer is dropped rather than applied: a typo must cost the
+/// user a warning, never every remote card on screen.
+fn spawn_roster_resolve(
+    xmux_dir: std::path::PathBuf,
+    local_socket: Option<String>,
+    tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
+) {
+    tokio::spawn(async move {
+        let (roster, err) = crate::env::resolve_roster(&xmux_dir, local_socket).await;
+        if let Some(e) = err {
+            tracing::warn!(error = %e, "config did not parse; keeping the roster as it stands");
+            return;
+        }
+        let _ = tx.send(HostEvent::RosterResolved {
+            roster: Box::new(roster),
+        });
+    });
+}
+
 /// Starts mux discovery for every machine that left its mux list to xmux, once, right
 /// after the first paint. One task per MACHINE (not per source): the answer is about the
 /// machine, and each mux it reports beyond the one already served becomes a source.
@@ -720,18 +747,26 @@ fn apply_scan_result(
 /// every detected source via the manager - a control host re-lists sessions, a poll
 /// host respawns its task for an immediate re-enumeration - and (re)detects an
 /// undetected one. A no-op when no kick is pending. Shared by the key and menu paths.
+///
+/// It also re-resolves the ROSTER, so a re-scan refreshes WHICH MACHINES exist and not
+/// only which sessions each one has. Without it a machine that came online, and a config
+/// the user just edited, would both wait for a restart.
 fn kick_rescan(
+    env: &Env,
     switcher: &mut crate::ui::switcher::Switcher,
     hosts: &crate::model::Hosts,
     detecting: &mut HashSet<String>,
     mgr: &mut HostManager,
     panes_requested: &mut HashSet<String>,
-    cols: u16,
-    rows: u16,
+    size: (u16, u16),
 ) {
     if !switcher.take_rescan_kick() {
         return;
     }
+    let (cols, rows) = size;
+    // Answers back on the host bus as `RosterResolved`; the sources standing right now are
+    // re-enumerated below regardless, so a slow provider delays no card already on screen.
+    spawn_roster_resolve(env.xmux_dir.clone(), env.local_socket.clone(), mgr.events());
     // `request_rescan` cleared every session's panes from `state.panes`; clear the
     // loop-local pane-request dedup in lockstep so each control host's re-`list_sessions`
     // reply actually re-issues `list-panes` (`request_session_panes` only asks for
@@ -888,7 +923,7 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     // no fallback to guess at. The one colour from outside those slots is the one the
     // user names in `[ui] selection-style`.
     crate::ui::palette::init(crate::ui::chrome::parse_selection_bg(
-        &env.cfg.ui.selection_style,
+        &env.roster().cfg.ui.selection_style,
     ));
 
     let _term_guard = match TermGuard::enter() {
@@ -985,7 +1020,7 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     // Then ask each auto machine which muxes it has. Deliberately last and deliberately
     // async: the sources the config already names are painting by now, and a mux nobody
     // wrote down appears as its machine answers.
-    discover_machine_muxes(&rt.env.cfg, &rt.hosts, rt.mgr.events());
+    discover_machine_muxes(&rt.env.roster().cfg, &rt.hosts, rt.mgr.events());
     // Take the worker's reply receiver out so the loop can `select!` on it while `&mut rt`
     // is borrowed for the arm body (the send half stays on `rt.worker`).
     let mut worker_events = rt.worker.take_events();

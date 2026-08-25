@@ -39,6 +39,7 @@ impl Runtime {
             state,
             panes_requested,
             detecting,
+            connected,
             worker,
             driver_pty_tx: pty_tx,
             attach_seq,
@@ -220,6 +221,69 @@ impl Runtime {
                     scan_or_dispatch_host(mgr, hosts, detecting, &id, vc, vr);
                 }
             }
+            EventEffect::ApplyRoster { roster } => {
+                // A re-scan re-resolved the roster. Three registries have to agree about
+                // which machines exist, so all three are reconciled from this ONE answer:
+                // the host registry the loop drives, the source list the off-loop ops
+                // resolve against, and the nav.
+                let fresh = crate::model::Hosts::build(
+                    &roster.cfg,
+                    &roster.ssh_aliases,
+                    &roster.wsl_distros,
+                    std::env::consts::OS,
+                    &roster.local_muxes,
+                    &env.xmux_dir,
+                    env.local_socket.clone(),
+                );
+                // What offered each host, refreshed with the roster: a host added by this
+                // resolution has to be able to name the provider that offered it, exactly
+                // as one present since launch can.
+                state.chrome.set_roster_providers(
+                    roster
+                        .roster_providers
+                        .iter()
+                        .map(|(host, p)| (host.clone(), p.label().to_string()))
+                        .collect(),
+                );
+                env.replace_roster(*roster);
+                state.chrome.set_source_reach(
+                    env.source_list()
+                        .iter()
+                        .map(|s| (s.alias.clone(), source_reach(s)))
+                        .collect(),
+                );
+                let delta = hosts.reconcile(fresh);
+                for id in &delta.removed {
+                    tracing::info!(source = %id, "roster dropped a source");
+                    // Everything this source held: its metadata channel, the live PTY
+                    // attachments showing its sessions, and its card. A card left behind
+                    // would paint a session nothing can reach any more.
+                    mgr.reap(id);
+                    connected.remove(id);
+                    detecting.remove(id);
+                    panes_requested.retain(|addr| crate::session::source_of(addr) != id);
+                    for address in registry.addresses() {
+                        if crate::session::source_of(&address) == id {
+                            registry.remove(&address);
+                        }
+                    }
+                    switcher.remove_source(id, state);
+                }
+                let (vc, vr) = terminal_view_size(cols, rows, nav);
+                for id in &delta.added {
+                    tracing::info!(source = %id, "roster offered a new source");
+                    switcher.add_source(id.clone(), state);
+                    scan_or_dispatch_host(mgr, hosts, detecting, id, vc, vr);
+                }
+                // Which muxes a machine serves is answered by PROBING it, and the answer
+                // outlives no roster resolution, so re-ask. Without this a machine the
+                // roster just named back shows only the mux config assumed for it, while
+                // the same machine carried every mux it runs a moment earlier. Asking
+                // every machine (not only the added ones) is what makes a re-scan notice a
+                // mux installed since launch; a mux already served is skipped where the
+                // answer lands, so re-asking adds no duplicate card.
+                discover_machine_muxes(&env.roster().cfg, hosts, mgr.events());
+            }
             EventEffect::DispatchScanned { source, detected } => {
                 // A detection probe resolved: (re)identify the mux, then dispatch the
                 // now-detected host onto its metadata channel (control client or poll task).
@@ -289,8 +353,11 @@ impl Runtime {
         // Restore the Top-layout nav height (0 = auto ~40%); a stale value is clamped at
         // render time by compute_regions, so no clamp is needed here.
         let nav_height = crate::prefs::load_nav_height(&env.xmux_dir).unwrap_or(0);
+        // One read of the roster for the whole construction, so every product below is
+        // built from ONE answer about which machines exist.
+        let roster = env.roster();
         let auto_hide_nav = crate::prefs::load_auto_hide_nav(&env.xmux_dir)
-            .unwrap_or_else(|| env.cfg.ui_auto_hide_nav());
+            .unwrap_or_else(|| roster.cfg.ui_auto_hide_nav());
 
         // The control-mode metadata clients: one per remote host.
         let (host_tx, host_rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
@@ -305,11 +372,11 @@ impl Runtime {
         // ssh alias in config order), built from the config-assembly products on `Env`.
         let host_os = std::env::consts::OS;
         let hosts = crate::model::Hosts::build(
-            &env.cfg,
-            &env.ssh_aliases,
-            &env.wsl_distros,
+            &roster.cfg,
+            &roster.ssh_aliases,
+            &roster.wsl_distros,
             host_os,
-            &env.local_muxes,
+            &roster.local_muxes,
             &env.xmux_dir,
             env.local_socket.clone(),
         );
@@ -330,7 +397,8 @@ impl Runtime {
         // put it on the roster. Reduced to words here: the screen prints them and
         // nothing branches on which provider it was.
         state.chrome.set_roster_providers(
-            env.roster_providers
+            roster
+                .roster_providers
                 .iter()
                 .map(|(host, p)| (host.clone(), p.label().to_string()))
                 .collect(),
@@ -357,9 +425,9 @@ impl Runtime {
         state
             .chrome
             .set_view_border_colors(crate::ui::switcher::ViewBorderColors::resolve(
-                &env.cfg.ui.view_active_border_style,
-                &env.cfg.ui.view_border_style,
-                &env.cfg.ui.view_border_hover_style,
+                &roster.cfg.ui.view_active_border_style,
+                &roster.cfg.ui.view_border_style,
+                &roster.cfg.ui.view_border_hover_style,
             ));
         // The help modal must show the prefix the user configured, not a literal.
         state.chrome.set_ui_prefix(env.ui_prefix.clone());
@@ -367,8 +435,9 @@ impl Runtime {
         state
             .chrome
             .set_hint_bar_style(crate::ui::chrome::parse_hint_bar_style(
-                &env.cfg.ui.hint_bar_style,
+                &roster.cfg.ui.hint_bar_style,
             ));
+        drop(roster);
 
         // The live mutate ops (create/rename/kill) - NOT nav probing.
         let ops = env.ops();

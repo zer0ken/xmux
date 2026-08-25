@@ -677,6 +677,47 @@ async fn the_spinner_marks_the_first_unresolved_level_only() {
 }
 
 #[tokio::test]
+async fn remove_source_drops_the_card_and_everything_keyed_to_it() {
+    let mut h = Harness::from_sources(&["local", "jupiter00"]);
+    h.sw.apply_source_result(
+        "jupiter00".into(),
+        vec![sess("jupiter00", "api", 2, false, 100)],
+        None,
+        &mut h.state,
+    );
+    h.sw.apply_panes("jupiter00/api".into(), Vec::new(), &mut h.state);
+    assert!(h.state.panes_loaded.contains("jupiter00/api"));
+
+    h.sw.remove_source("jupiter00", &mut h.state);
+    h.draw();
+    let out = h.nav_text();
+    assert!(
+        !out.contains("jupiter00"),
+        "the card is gone:
+{out}"
+    );
+    assert!(
+        !out.contains("api"),
+        "its sessions went with it:
+{out}"
+    );
+    assert!(
+        !h.state.panes_loaded.contains("jupiter00/api"),
+        "the per-session entries are keyed by address, so they are dropped by name"
+    );
+    assert!(!h.state.panes.contains_key("jupiter00/api"));
+    assert!(!h.state.scanning.contains("jupiter00"));
+}
+
+#[tokio::test]
+async fn remove_source_ignores_a_source_the_nav_does_not_show() {
+    let mut h = Harness::from_sources(&["local"]);
+    let before = h.state.groups.len();
+    h.sw.remove_source("jupiter00", &mut h.state);
+    assert_eq!(h.state.groups.len(), before, "idempotent");
+}
+
+#[tokio::test]
 async fn apply_source_result_turns_scanning_into_sessions() {
     let mut h = Harness::from_sources(&["local"]);
     assert!(

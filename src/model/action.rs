@@ -160,6 +160,12 @@ pub enum EventEffect {
     /// the machine already serves, and to insert the new hosts) and the manager (to kick
     /// each new source's first scan).
     AddDiscoveredSources { machine: String, muxes: Vec<String> },
+    /// `RosterResolved`: reconcile the freshly resolved roster against the three
+    /// registries that must agree about which machines exist (the host registry, the
+    /// source list the off-loop ops resolve against, and the nav), then scan what was
+    /// added and tear down what was dropped. The loop owns it because every one of those
+    /// lives behind it.
+    ApplyRoster { roster: Box<crate::env::Roster> },
     /// `Exited`: reap `host`'s metadata client. (`apply_event` has already folded the
     /// tree/connected-set state change; this is the mux teardown.)
     ReapHost { host: String },
@@ -217,6 +223,10 @@ impl std::fmt::Debug for EventEffect {
                 .debug_struct("ProbeActiveWindow")
                 .field("host", host)
                 .field("session_ref", session_ref)
+                .finish(),
+            EventEffect::ApplyRoster { roster } => f
+                .debug_struct("ApplyRoster")
+                .field("sources", &roster.sources.len())
                 .finish(),
             EventEffect::ReapHost { host } => {
                 f.debug_struct("ReapHost").field("host", host).finish()

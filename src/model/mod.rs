@@ -18,7 +18,7 @@ pub use death::{
     psmux_session_is_live,
 };
 pub use host::{Host, HostDisplay, Liveness, ReadyOutcome};
-pub use hosts::{host_for, Hosts};
+pub use hosts::{host_for, Hosts, RosterDelta};
 pub use plan::{DeathSignal, DisplayTty, EventSource};
 pub use selection::Selection;
 pub use server_model::ServerModel;

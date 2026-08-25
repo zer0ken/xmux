@@ -1,5 +1,4 @@
 use super::*;
-use crate::config::Config;
 use crate::source::Source;
 
 fn fake_source(alias: &str) -> Source {
@@ -14,31 +13,26 @@ fn fake_source(alias: &str) -> Source {
     }
 }
 
+fn fake_roster(aliases: &[&str]) -> crate::env::Roster {
+    crate::env::Roster {
+        sources: aliases.iter().map(|a| fake_source(a)).collect(),
+        local_muxes: vec!["cmd.exe".into()],
+        ssh_aliases: aliases
+            .iter()
+            .filter(|a| **a != crate::session::LOCAL_SOURCE)
+            .map(|a| a.to_string())
+            .collect(),
+        ..Default::default()
+    }
+}
+
 fn fake_env_with_sources(aliases: &[&str]) -> Env {
-    let srcs: Vec<Source> = aliases.iter().map(|a| fake_source(a)).collect();
-    let ssh_aliases: Vec<String> = aliases
-        .iter()
-        .filter(|a| **a != crate::session::LOCAL_SOURCE)
-        .map(|a| a.to_string())
-        .collect();
     // A real throwaway dir, not `.`: tests that exercise pref persistence (e.g.
     // resize_axis saving nav_height) write `<xmux_dir>/<file>`, and `.` would
     // pollute the repository root with stray pref files.
     let xmux_dir = std::env::temp_dir().join(format!("xmux-test-env-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&xmux_dir);
-    Env {
-        cfg: Config::default(),
-        cfg_warnings: Vec::new(),
-        sources: std::sync::RwLock::new(srcs),
-        local_muxes: vec!["cmd.exe".into()],
-        ui_prefix: "C-g".into(),
-        xmux_dir,
-        ssh_aliases,
-        wsl_distros: Vec::new(),
-        roster_providers: std::collections::HashMap::new(),
-        own_session: None,
-        local_socket: None,
-    }
+    Env::new(fake_roster(aliases), "C-g".into(), xmux_dir, None, None)
 }
 
 #[test]
@@ -689,8 +683,10 @@ fn apply_inventory_effect_folds_sessions_into_host_inventory() {
     assert_eq!(group.sessions[0].name, "api");
 }
 
-#[test]
-fn r_rescan_reloads_control_host_panes() {
+// A re-scan starts the roster re-resolution off the loop, so the harness needs the
+// runtime the real loop always runs inside.
+#[tokio::test]
+async fn r_rescan_reloads_control_host_panes() {
     // Regression (S4-M5 follow-up): the client-initiated `r` re-scan must not
     // strand a control host's window/pane subtrees on "loading…". `request_rescan`
     // clears every session's panes from `state.panes`, so the loop-local
@@ -765,13 +761,13 @@ fn r_rescan_reloads_control_host_panes() {
 
     // The loop consumes the kick and re-lists each host.
     kick_rescan(
+        &rt.env,
         &mut rt.switcher,
         &rt.hosts,
         &mut rt.detecting,
         &mut rt.mgr,
         &mut rt.panes_requested,
-        80,
-        24,
+        (80, 24),
     );
     // The dedup must no longer block re-requesting this session's panes; otherwise
     // the re-list below silently skips `list-panes` and the subtree stays "loading…".
@@ -1156,6 +1152,52 @@ fn empty_manager() -> HostManager {
 /// attach worker (no real PTYs), dropped receiver halves, hosts built from `env`.
 /// A test overrides the fields it cares about (`rt.hosts`, `rt.state`, ...).
 #[tokio::test]
+async fn a_re_scan_roster_adds_a_machine_it_now_names() {
+    // The point of re-resolving on a re-scan: a machine that was not reachable at launch
+    // (a tailnet peer that has since come online, a host the user just wrote into the
+    // config) turns into a card without a restart.
+    let mut rt = test_rt(fake_env_with_sources(&["prod"]));
+    assert!(rt.hosts.get("stage").is_none(), "nothing knows stage yet");
+    rt.run_event_effect(crate::model::EventEffect::ApplyRoster {
+        roster: Box::new(fake_roster(&["prod", "stage"])),
+    });
+    assert!(
+        rt.hosts.get("stage").is_some(),
+        "the loop's registry has it"
+    );
+    assert!(
+        rt.env.source("stage").is_some(),
+        "and so do the off-loop ops, which resolve a source through Env"
+    );
+    assert!(
+        rt.state.groups.iter().any(|g| g.source == "stage"),
+        "and it has a card"
+    );
+    assert!(
+        rt.hosts.get("prod").is_some(),
+        "a machine that was already there is untouched"
+    );
+}
+
+#[tokio::test]
+async fn a_re_scan_roster_drops_a_machine_it_stopped_naming() {
+    // The mirror case: the config turned a provider off, or a peer went offline. All
+    // three registries have to let go, or the nav paints a card nothing can reach.
+    let mut rt = test_rt(fake_env_with_sources(&["prod", "stage"]));
+    assert!(rt.hosts.get("stage").is_some(), "precondition");
+    rt.run_event_effect(crate::model::EventEffect::ApplyRoster {
+        roster: Box::new(fake_roster(&["prod"])),
+    });
+    assert!(rt.hosts.get("stage").is_none(), "the registry let go");
+    assert!(rt.env.source("stage").is_none(), "the off-loop ops let go");
+    assert!(
+        !rt.state.groups.iter().any(|g| g.source == "stage"),
+        "and the card is gone"
+    );
+    assert!(rt.hosts.get("prod").is_some(), "prod is still named");
+}
+
+#[tokio::test]
 async fn a_discovered_mux_becomes_a_source_on_the_spot() {
     // The whole point of discovering asynchronously: the machine's answer arrives after
     // the app is up, and the mux nobody wrote down turns into a card RIGHT THEN.
@@ -1254,15 +1296,17 @@ fn test_rt(env: Env) -> Runtime {
         }),
     );
     let (pty_tx, _pty_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
+    let roster = env.roster();
     let hosts = crate::model::Hosts::build(
-        &env.cfg,
-        &env.ssh_aliases,
-        &env.wsl_distros,
+        &roster.cfg,
+        &roster.ssh_aliases,
+        &roster.wsl_distros,
         "windows",
-        &env.local_muxes,
+        &roster.local_muxes,
         &env.xmux_dir,
         env.local_socket.clone(),
     );
+    drop(roster);
     let mut state = crate::state::State::from_sources(hosts.ids().to_vec());
     let switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
     let ops = env.ops();
@@ -1896,8 +1940,10 @@ fn rt_terminal_focus_with_session() -> Runtime {
     rt
 }
 
-#[test]
-fn prefix_r_in_terminal_focus_kicks_rescan() {
+// A re-scan starts the roster re-resolution off the loop, so the harness needs the
+// runtime the real loop always runs inside.
+#[tokio::test]
+async fn prefix_r_in_terminal_focus_kicks_rescan() {
     // prefix r is focus-independent: from the terminal view it re-scans every host. The
     // re-scan clears each group's sessions and re-arms scanning - and kick_rescan must
     // run for it to fire, which the terminal arm now does.

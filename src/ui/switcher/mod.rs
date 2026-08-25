@@ -929,6 +929,35 @@ impl Switcher {
         self.restore_focus(prior, state);
     }
 
+    /// Drops a source whose MACHINE the roster no longer names, and everything the nav
+    /// held for it. Idempotent: a source the nav does not show is left alone.
+    ///
+    /// Focus is restored exactly as a streamed rebuild restores it, so a selection
+    /// sitting on the dropped card lands on the previous card instead of vanishing.
+    pub fn remove_source(&mut self, source: &str, state: &mut crate::state::State) {
+        if !state.groups.iter().any(|g| g.source == source) {
+            return;
+        }
+        let prior = self.capture_focus();
+        // The per-session entries are keyed by ADDRESS, not by source, so they have to be
+        // dropped by name; leaving them would keep a dead session's panes addressable.
+        let addresses: Vec<String> = state
+            .groups
+            .iter()
+            .filter(|g| g.source == source)
+            .flat_map(|g| g.sessions.iter().map(|s| s.address()))
+            .collect();
+        for address in &addresses {
+            state.panes.remove(address);
+            state.panes_loaded.remove(address);
+        }
+        state.groups.retain(|g| g.source != source);
+        state.scanning.remove(source);
+        state.failure_runs.remove(source);
+        self.rebuild(state);
+        self.restore_focus(prior, state);
+    }
+
     /// Streams in one session's `list-panes` outcome, clearing its loading
     /// placeholder. An empty `panes` (a failed/timed-out fetch) still resolves the
     /// session - it shows no children rather than spinning forever.

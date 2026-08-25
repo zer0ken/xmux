@@ -330,6 +330,11 @@ impl State {
                 // host registry, so the whole decision is the loop's.
                 vec![EventEffect::AddDiscoveredSources { machine, muxes }]
             }
+            HostEvent::RosterResolved { roster } => {
+                // Nothing to fold: which machines the registries already hold is the
+                // loop's to know, so the whole decision is the loop's.
+                vec![EventEffect::ApplyRoster { roster }]
+            }
             HostEvent::Scanned { source, detected } => {
                 vec![EventEffect::DispatchScanned { source, detected }]
             }
