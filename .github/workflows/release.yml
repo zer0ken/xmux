@@ -76,7 +76,6 @@ jobs:
 
   publish-crates:
     name: Publish to crates.io
-    if: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
     runs-on: ubuntu-latest
     environment: crates-io
     steps:
@@ -86,6 +85,7 @@ jobs:
         with:
           key: publish-crates
       - name: Publish
+        if: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish
