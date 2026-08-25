@@ -22,7 +22,8 @@ One concept, one word. The two axes and the runtime:
   source holds one. It owns where a command runs and how its argv is executed, and
   knows nothing about the mux. "host" is the family/concept; `Transport` is the
   trait.
-- `Mux` (MUX axis) - the per-mux behavior trait (tmux / psmux / zellij / abduco); a source
+- `Mux` (MUX axis) - the per-mux behavior trait (tmux / psmux / zellij / abduco /
+  screen); a source
   holds one. "mux" is the family/concept; `Mux` is the trait.
 - host - a machine that HOSTS muxes and that xmux can reach. The `roster` decides
   the set: of all the machines there are, the hosts are the ones it names. "machine"
@@ -186,8 +187,8 @@ UI elements a user perceives as distinct things:
   is an RGB value; see "Colour ownership" below for why, and `[ui] selection-style` /
   `[ui] hint-bar-style` for naming one anyway.
 - window label - how a card writes its focused window, in the CONVENTION OF ITS OWN MUX
-  rather than one xmux imposes: tmux and psmux get `{index}:{name}`, which is what
-  their own status line and window listing print; zellij gets the tab name alone,
+  rather than one xmux imposes: tmux, psmux, and screen get `{index}:{name}`, which is
+  what their own status line and window listing print; zellij gets the tab name alone,
   because zellij's tab bar shows names and nothing else and a tab it names itself is
   already called `Tab #1`. The mux owns the rule, so a reader who knows one mux reads
   its cards without learning a second notation.
@@ -379,9 +380,9 @@ Two orthogonal axes describe every connection, and no module conflates them:
   assembly) lives beside the families. `Transport` owns where a command runs and
   how its argv is executed; it knows nothing about the mux.
 - MUX - `src/mux/<kind>/`. Each mux family (`tmux/`, `psmux/`, `zellij/`,
-  `abduco/`) owns its
-  metadata and command plans behind the `Mux` trait and its display driver beside
-  them. A mux builds its OWN driver, so mux selection lives in the mux family,
+  `abduco/`, `screen/`) owns its metadata and command plans behind the `Mux` trait
+  and its display driver beside them. A mux builds its OWN driver, so mux selection
+  lives in the mux family,
   never a central `match`. Shared mux vocabulary lives beside the families. The
   trait's command plans default to tmux-compatible argv, so a tmux-compatible mux
   is identity plus a few overrides; a mux that shares no argv (zellij) overrides

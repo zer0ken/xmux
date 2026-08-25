@@ -42,10 +42,10 @@ cargo build --release        # binary at target/release/xmux
 ```
 
 It runs on Windows and on unix-likes. You need `ssh` on the machine running
-xmux for remote hosts, and a supported mux on each host you target: `tmux` on
-unix, `psmux` on Windows, or `zellij` / `abduco`. A host's mux is detected from the
-binary it answers as, so a mix of the four across your hosts needs no
-configuration.
+xmux for remote hosts, and a supported mux on each host you target: `tmux` or
+GNU `screen` on unix, `psmux` on Windows, or `zellij` / `abduco`. A host's mux is
+detected from the binary it answers as, so a mix of these across your hosts needs
+no configuration.
 
 ## Usage
 
