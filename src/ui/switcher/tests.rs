@@ -1077,6 +1077,34 @@ async fn the_session_xmux_runs_in_shows_a_screen_instead_of_its_grid() {
 }
 
 #[tokio::test]
+async fn the_self_session_screen_headline_carries_the_mux_too() {
+    // The screen is reached by an ADDRESS, and an address names three levels: the machine,
+    // its mux, the session. The headline states all three, in the cards' own grammar.
+    let mut h = Harness::from_sources(&["local"]);
+    h.state.chrome.set_source_reach(
+        [(
+            "local".to_string(),
+            reach("psmux", "this box", "", "psmux ls"),
+        )]
+        .into_iter()
+        .collect(),
+    );
+    h.sw.set_own_session(Some("local/xmus".to_string()));
+    h.sw.apply_source_result(
+        "local".into(),
+        vec![sess_mux("local", "xmus", "psmux", 100)],
+        None,
+        &mut h.state,
+    );
+    h.draw();
+    let out = h.view_text();
+    assert!(
+        out.contains("local/psmux/xmus"),
+        "machine, mux, session:\n{out}"
+    );
+}
+
+#[tokio::test]
 async fn another_instances_session_is_shown_like_any_other() {
     // Only xmux's OWN session is refused. A session running a DIFFERENT xmux mirrors
     // like anything else - that is a real screen a user may want to look at.
@@ -3789,12 +3817,94 @@ fn the_side_lists_scrollbar_column_is_outside_every_card() {
     );
 }
 
+#[tokio::test]
+async fn a_host_card_names_its_mux_even_where_the_id_does_not() {
+    // A machine serving ONE mux carries no mux in its source id. The card still names it:
+    // a machine that reads `local/psmux` on one card and `local` on the next reads as two
+    // machines.
+    let mut h = Harness::from_sources(&["local"]);
+    h.state.chrome.set_source_reach(
+        [(
+            "local".to_string(),
+            reach("psmux", "this box", "", "psmux ls"),
+        )]
+        .into_iter()
+        .collect(),
+    );
+    h.sw.apply_source_result("local".into(), vec![], None, &mut h.state);
+    h.draw();
+    let out = h.text();
+    assert!(
+        out.contains("local/psmux"),
+        "the host card names the machine and its mux:\n{out}"
+    );
+}
+
+#[tokio::test]
+async fn a_session_with_no_stamped_mux_takes_its_source_mux() {
+    // A session created since the last enumeration carries no mux of its own. Its card
+    // takes the source's, so it does not stand out from the cards beside it.
+    let mut h = Harness::from_sources(&["local"]);
+    h.state.chrome.set_source_reach(
+        [(
+            "local".to_string(),
+            reach("psmux", "this box", "", "psmux ls"),
+        )]
+        .into_iter()
+        .collect(),
+    );
+    h.sw.apply_source_result(
+        "local".into(),
+        vec![sess_mux("local", "fresh", "", 100)],
+        None,
+        &mut h.state,
+    );
+    h.draw();
+    let out = h.text();
+    assert!(
+        out.contains("local/psmux"),
+        "the context line names the mux anyway:\n{out}"
+    );
+}
+
+#[tokio::test]
+async fn a_host_screen_headline_reads_as_host_over_mux() {
+    let mut h = Harness::from_sources(&["prod:zellij"]);
+    h.state.chrome.set_source_reach(
+        [(
+            "prod:zellij".to_string(),
+            reach("zellij", "ssh to prod", "", "ssh -- prod zellij ls"),
+        )]
+        .into_iter()
+        .collect(),
+    );
+    h.sw.apply_source_result(
+        "prod:zellij".into(),
+        vec![],
+        Some("connection refused".into()),
+        &mut h.state,
+    );
+    select_unreachable_host(&mut h).await;
+    h.draw();
+    let out = h.view_text();
+    assert!(
+        out.contains("prod/zellij"),
+        "the headline is the label:\n{out}"
+    );
+    assert!(
+        !out.contains("prod:zellij"),
+        "an id's own separator never reaches a screen:\n{out}"
+    );
+}
+
 /// A reach entry for `source`, so a screen test states what the app would have resolved.
 fn reach(mux: &str, machine: &str, socket: &str, probe: &str) -> crate::ui::chrome::SourceReach {
     crate::ui::chrome::SourceReach {
         probe: probe.into(),
         machine: machine.into(),
         mux: mux.into(),
+        // The binary a test names IS its kind: no test reaches a mux through an alias.
+        kind: mux.into(),
         socket: socket.into(),
     }
 }
@@ -3907,8 +4017,12 @@ async fn unreachable_host_screen_names_the_other_muxes_on_the_machine() {
     let out = h.view_text();
     assert!(out.contains("same machine"), "the row is named:\n{out}");
     assert!(
-        out.contains("prod:zellij · 1 session"),
-        "and states the sibling's own answer:\n{out}"
+        out.contains("prod/zellij · 1 session"),
+        "and states the sibling's own answer, in the label's grammar:\n{out}"
+    );
+    assert!(
+        !out.contains("prod:zellij"),
+        "an id's own separator never reaches the screen:\n{out}"
     );
     assert!(
         !out.contains("local ·"),

@@ -453,6 +453,9 @@ impl Switcher {
         // lives in `tree::flatten`; rebuild orchestrates capture → order → flatten →
         // preselect → restore around it.
         self.reorder(state);
+        // The mux each card NAMES comes from one resolver, so a session card, its host's
+        // card and the screen behind either cannot spell one mux three ways.
+        let named_mux = |source: &str| state.chrome.source_mux(source).to_string();
         let rows = tree::flatten(
             &state.groups,
             &state.panes,
@@ -460,6 +463,7 @@ impl Switcher {
             &state.scanning,
             &state.filter,
             &self.nav_order,
+            &named_mux,
         );
 
         self.rows = rows;
@@ -575,8 +579,8 @@ impl Switcher {
         {
             return false;
         }
-        let (host, mux, _) = context_of(&row.reference);
-        let (prev_host, prev_mux, _) = context_of(&prev.reference);
+        let (host, mux, _) = context_of(row);
+        let (prev_host, prev_mux, _) = context_of(prev);
         host == prev_host && mux == prev_mux
     }
 
@@ -1031,21 +1035,17 @@ pub(crate) fn fit(candidates: &[String], width: u16) -> String {
 /// The context parts of a card: `(host, mux, session)`. A host-state card
 /// carries only its host; a session/loading card names its session's host, mux
 /// kind (empty when not yet known), and session name.
-fn context_of(reference: &RowRef) -> (&str, &str, &str) {
+fn context_of(row: &Row) -> (&str, &str, &str) {
     // The MACHINE half, never the whole source id: a source id already carries the mux
     // when its machine serves several, and the card renders the mux as its own span, so
-    // returning the id whole would read `local:zellij/zellij`. A session card takes the
-    // mux from the session (the kind the enumeration stamped); a host card has no
-    // session to read, so it takes it from its id.
-    match reference {
-        RowRef::Host { source, .. } => (
-            crate::session::machine_of(source),
-            crate::session::mux_of(source),
-            "",
-        ),
+    // returning the id whole would read `local:zellij/zellij`. The mux comes off the card
+    // itself, resolved once when the card was built, so every card on one source names its
+    // mux the same way whatever each of them had to read it from.
+    match &row.reference {
+        RowRef::Host { source, .. } => (crate::session::machine_of(source), &row.mux, ""),
         RowRef::Session { sess } | RowRef::Loading { sess } => (
             crate::session::machine_of(&sess.source),
-            &sess.mux,
+            &row.mux,
             &sess.name,
         ),
     }

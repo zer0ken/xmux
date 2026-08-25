@@ -227,9 +227,19 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
 
     println!("sources:");
     for s in &env.source_list() {
+        // The pair reads as one label, the way every surface shows it. The binary follows
+        // only where it is not the mux's own name (an alias, a path), which is a fact the
+        // label cannot carry and a diagnostic wants.
+        let kind = crate::mux::for_binary(&s.binary).kind().to_string();
+        let label = crate::session::source_label(crate::session::machine_of(&s.alias), &kind);
+        let via = if s.binary == kind {
+            String::new()
+        } else {
+            format!(" ({})", s.binary)
+        };
         match probe(s).await {
-            Ok(n) => println!("  {} ({}): ok, {} session(s)", s.alias, s.binary, n),
-            Err(e) => println!("  {} ({}): UNREACHABLE — {}", s.alias, s.binary, e),
+            Ok(n) => println!("  {label}{via}: ok, {n} session(s)"),
+            Err(e) => println!("  {label}{via}: UNREACHABLE — {e}"),
         }
     }
     i32::from(config_broken)

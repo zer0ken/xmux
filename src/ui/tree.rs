@@ -232,6 +232,12 @@ pub(crate) struct Row {
     /// scanning host card alike - because a spinner renders in place of the level that
     /// has not resolved.
     pub(crate) line2: String,
+    /// The mux the context line NAMES, resolved once here so every card on one source
+    /// names its mux the same way: the kind the enumeration stamped on the session, or the
+    /// source's own mux where no session carries one (a host-state card, a session created
+    /// since the last enumeration). Empty only while nothing knows it yet, which is the
+    /// state the card turns a spinner for.
+    pub(crate) mux: String,
     pub(crate) reference: RowRef,
 }
 
@@ -313,7 +319,13 @@ fn push_session_card(
     sess: &Session,
     panes: &HashMap<String, Vec<WindowPanes>>,
     panes_loaded: &HashSet<String>,
+    mux_of_source: &dyn Fn(&str) -> String,
 ) {
+    let mux = if sess.mux.is_empty() {
+        mux_of_source(&sess.source)
+    } else {
+        sess.mux.clone()
+    };
     let addr = sess.address();
     if panes_loaded.contains(&addr) {
         if let Some(windows) = panes.get(&addr) {
@@ -330,6 +342,7 @@ fn push_session_card(
             };
             rows.push(Row {
                 line2,
+                mux,
                 reference: RowRef::Session { sess: sess.clone() },
             });
             return;
@@ -337,6 +350,7 @@ fn push_session_card(
     }
     rows.push(Row {
         line2: String::new(),
+        mux,
         reference: RowRef::Loading { sess: sess.clone() },
     });
 }
@@ -358,8 +372,9 @@ pub(crate) fn host_state_word(unreachable: bool) -> &'static str {
 /// the user; sessions absent from `order` (just appeared) follow in group order.
 /// Hosts with no session to show (scanning / unreachable / empty) get one host-state
 /// card each, sunk to the bottom. Colour and the context line are derived at render
-/// time from each card's [`RowRef`], so this stays terminal-free. Inputs are not
-/// mutated.
+/// time from each card's [`RowRef`], so this stays terminal-free; the mux each card NAMES
+/// is resolved here instead, through `mux_of_source`, so a card cannot exist without it
+/// and two cards on one source cannot name their mux two ways. Inputs are not mutated.
 pub(crate) fn flatten(
     groups: &[Group],
     panes: &HashMap<String, Vec<WindowPanes>>,
@@ -367,6 +382,7 @@ pub(crate) fn flatten(
     scanning: &HashSet<String>,
     filter: &str,
     order: &[String],
+    mux_of_source: &dyn Fn(&str) -> String,
 ) -> Vec<Row> {
     let groups = visible_groups(groups, filter);
     // Reachable sessions indexed by address, so the frozen order can emit them directly.
@@ -385,7 +401,7 @@ pub(crate) fn flatten(
     // 1. Session / loading cards in the frozen MRU order.
     for addr in order {
         if let Some(sess) = by_addr.get(addr) {
-            push_session_card(&mut rows, sess, panes, panes_loaded);
+            push_session_card(&mut rows, sess, panes, panes_loaded, mux_of_source);
             emitted.insert(addr.clone());
         }
     }
@@ -396,7 +412,7 @@ pub(crate) fn flatten(
         }
         for sess in &g.sessions {
             if emitted.insert(sess.address()) {
-                push_session_card(&mut rows, sess, panes, panes_loaded);
+                push_session_card(&mut rows, sess, panes, panes_loaded, mux_of_source);
             }
         }
     }
@@ -419,6 +435,7 @@ pub(crate) fn flatten(
         };
         rows.push(Row {
             line2,
+            mux: mux_of_source(&g.source),
             reference: RowRef::Host {
                 source: g.source.clone(),
                 unreachable,
@@ -433,6 +450,12 @@ pub(crate) fn flatten(
 mod tests {
     use super::*;
     use crate::session::Pane;
+
+    /// What the app's resolver answers with: the source's own mux. A test source id
+    /// carries its mux when its machine serves several and nothing else knows one.
+    fn mux_of_source(source: &str) -> String {
+        crate::session::mux_of(source).to_string()
+    }
 
     fn sess(source: &str, name: &str, last: i64) -> Session {
         Session {
@@ -906,7 +929,15 @@ mod tests {
         // A flat list: ONE card per session, line2 the focused (active) window's
         // `{index}:{name}`. No host rows (the host has sessions to show).
         let (groups, panes, loaded) = loaded_fixture();
-        let rows = flatten(&groups, &panes, &loaded, &HashSet::new(), "", &[]);
+        let rows = flatten(
+            &groups,
+            &panes,
+            &loaded,
+            &HashSet::new(),
+            "",
+            &[],
+            &mux_of_source,
+        );
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["session"]);
         assert_eq!(addr_of(&rows[0].reference), "jup/api");
@@ -924,7 +955,15 @@ mod tests {
         for w in panes.get_mut("jup/api").unwrap() {
             w.active = false;
         }
-        let rows = flatten(&groups, &panes, &loaded, &HashSet::new(), "", &[]);
+        let rows = flatten(
+            &groups,
+            &panes,
+            &loaded,
+            &HashSet::new(),
+            "",
+            &[],
+            &mux_of_source,
+        );
         assert_eq!(rows[0].line2, "0:w0");
     }
 
@@ -943,6 +982,7 @@ mod tests {
             &HashSet::new(),
             "",
             &[],
+            &mux_of_source,
         );
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["loading"]);
@@ -965,6 +1005,7 @@ mod tests {
             &scanning,
             "",
             &[],
+            &mux_of_source,
         );
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["host"]);
@@ -1003,6 +1044,7 @@ mod tests {
             &HashSet::new(),
             "",
             &[],
+            &mux_of_source,
         );
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["host", "host"]);
@@ -1040,6 +1082,7 @@ mod tests {
             &HashSet::new(),
             "",
             &[],
+            &mux_of_source,
         );
         assert_eq!(rows[0].line2, host_state_word(true));
     }
@@ -1062,6 +1105,7 @@ mod tests {
             &scanning,
             "",
             &[],
+            &mux_of_source,
         );
         // No word at all, and the card is marked in flight: the render turns a spinner
         // in the level it is waiting on, which is what says "doing it now".
@@ -1094,7 +1138,15 @@ mod tests {
         loaded.insert("h/a".to_string());
         loaded.insert("h/b".to_string());
         let order = vec!["h/b".to_string(), "h/a".to_string()];
-        let rows = flatten(&groups, &panes, &loaded, &HashSet::new(), "", &order);
+        let rows = flatten(
+            &groups,
+            &panes,
+            &loaded,
+            &HashSet::new(),
+            "",
+            &order,
+            &mux_of_source,
+        );
         let addrs: Vec<String> = rows.iter().map(|r| addr_of(&r.reference)).collect();
         assert_eq!(addrs, vec!["h/b", "h/a"]);
     }

@@ -551,7 +551,7 @@ impl Switcher {
             ..
         } = &row.reference
         {
-            let (host, mux, _) = context_of(&row.reference);
+            let (host, mux, _) = context_of(row);
             let pending = Style::default().fg(palette::get().pending);
             let mut line1 = address(false);
             // A machine serving several muxes has one host card per mux, so the mux has
@@ -596,7 +596,7 @@ impl Switcher {
         }
 
         // Session / loading card.
-        let (host, mux, sess) = context_of(&row.reference);
+        let (host, mux, sess) = context_of(row);
         let mut lines: Vec<Line> = Vec::new();
         if !collapsed {
             let mut context: Vec<Span> = address(false);

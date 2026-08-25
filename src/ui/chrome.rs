@@ -251,7 +251,11 @@ fn failure_run_words(runs: u32) -> String {
 /// independently: this is what says whether the machine or the mux is the thing that is
 /// down. Empty when the machine serves this source alone, and then the screen carries no
 /// such row rather than an empty one.
-fn siblings(state: &crate::state::State, source: &str) -> Vec<String> {
+fn siblings(
+    state: &crate::state::State,
+    source: &str,
+    label: &dyn Fn(&str) -> String,
+) -> Vec<String> {
     let machine = crate::session::machine_of(source);
     state
         .groups
@@ -269,9 +273,7 @@ fn siblings(state: &crate::state::State, source: &str) -> Vec<String> {
                     n => format!("{n} sessions"),
                 }
             };
-            // A source id can itself carry the `:` that parts machine from mux, so the
-            // two are parted by a middot instead - the hint bar's own separator.
-            format!("{} · {word}", g.source)
+            format!("{} · {word}", label(&g.source))
         })
         .collect()
 }
@@ -291,6 +293,11 @@ pub struct SourceReach {
     pub machine: String,
     /// The mux binary asked for on that machine.
     pub mux: String,
+    /// What that mux is CALLED, which is the name every surface shows: the binary above is
+    /// what was asked for, and the two part company wherever a binary is an alias or a
+    /// path. One spelling, so a card and the screen reached from it cannot name one mux two
+    /// ways.
+    pub kind: String,
     /// The socket / ControlMaster path the mux is addressed through. Empty ⇒ no row,
     /// which is the honest answer for a machine addressed without one.
     pub socket: String,
@@ -471,6 +478,22 @@ impl Chrome {
     /// Sets how xmux reaches each source, keyed by source id. The app calls this once at
     /// startup from the assembled source list; a source missing from the map shows the
     /// rows it has and no blanks for the rest.
+    /// What the mux on `source` is CALLED. The resolved reach answers it; a source id that
+    /// carries its own mux (a machine serving several) is the fallback, for the paths that
+    /// have a list of sources and no resolved reach yet. Empty while neither knows, which
+    /// is the state a card turns a spinner for.
+    pub(crate) fn source_mux<'a>(&'a self, source: &'a str) -> &'a str {
+        match self.source_reach.get(source) {
+            Some(reach) if !reach.kind.is_empty() => &reach.kind,
+            _ => crate::session::mux_of(source),
+        }
+    }
+
+    /// How `source` is SHOWN: `{host}/{mux}`, the one grammar the pair is read in.
+    pub(crate) fn source_label(&self, source: &str) -> String {
+        crate::session::source_label(crate::session::machine_of(source), self.source_mux(source))
+    }
+
     pub(crate) fn set_source_reach(&mut self, reach: HashMap<String, SourceReach>) {
         self.source_reach = reach;
     }
@@ -584,6 +607,29 @@ impl Chrome {
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
     }
 
+    /// The name a view screen carries at its top, in the grammar the nav cards use:
+    /// `{host}/{mux}` for a host's screen, and that with the session under it for the
+    /// session xmux is itself running in. What arrives is the ADDRESS the screen was
+    /// reached by, which is the source id and, for the session screen, its session name.
+    fn headline(&self, address: &str, kind: ViewScreen) -> String {
+        if address.is_empty() {
+            return String::new();
+        }
+        match kind {
+            // A source id carries no `/`, so the first one parts it from the session name
+            // (which may carry more).
+            ViewScreen::SelfSession => match address.split_once('/') {
+                Some((source, session)) => format!(
+                    "{}{}{session}",
+                    self.source_label(source),
+                    crate::session::MUX_LABEL_SEP
+                ),
+                None => self.source_label(address),
+            },
+            ViewScreen::Unreachable | ViewScreen::Empty => self.source_label(address),
+        }
+    }
+
     /// The lines of [`render_view_screen`](Self::render_view_screen). Split out because
     /// the layout IS the list of rows: both states build one, so neither can drift into a
     /// paragraph of its own shape.
@@ -684,7 +730,10 @@ impl Chrome {
             // The other muxes on the SAME machine, each with what it answered. This is
             // the one row that tells the user which half is broken without leaving the
             // screen: a sibling serving sessions says the box is up and this mux is not.
-            for (i, sib) in siblings(state, source).into_iter().enumerate() {
+            for (i, sib) in siblings(state, source, &|s| self.source_label(s))
+                .into_iter()
+                .enumerate()
+            {
                 let cell = if i == 0 {
                     ScreenCell::Label("same machine")
                 } else {
@@ -754,7 +803,7 @@ impl Chrome {
         let mut out = vec![
             Line::from(""),
             Line::from(Span::styled(
-                format!(" {source}"),
+                format!(" {}", self.headline(source, kind)),
                 Style::default().fg(pal.host).add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(format!(" {}", kind.word()), state_style)),
