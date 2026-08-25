@@ -306,7 +306,11 @@ UI elements a user perceives as distinct things:
   target names, so nothing downstream BEHAVES differently for one; which provider
   offered a name is kept beside it and shown on the unreachable host's view screen, never read
   to decide anything. The roster is what makes a machine a
-  host: a machine no provider names is one xmux has nothing to say about. Distinct
+  host: a machine no provider names is one xmux has nothing to say about. It is resolved
+  at launch and again on every re-scan, and what a re-scan resolves is reconciled by
+  MACHINE: a machine that is still named keeps the sources it serves, including the ones
+  `mux discovery` found rather than config, and a machine that is not named loses every
+  source it served. Distinct
   from `mux discovery`, which asks a host WHICH MUXES it serves, from `discovery`,
   which scans a source for sessions, and from the host axis, which reaches one.
 - filter - the type-to-filter input over the nav list.

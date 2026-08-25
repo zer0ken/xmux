@@ -194,31 +194,35 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
     // exit code (like `ls` does for all-unreachable); an unreachable source is reported
     // but not itself a doctor failure.
     let config_broken = cfg_err.is_some();
+    // Taken from the roster in one read, as owned values: the probes below are awaited,
+    // and a lock guard has no business spanning an ssh round trip.
+    let (warnings, mux_source, local_muxes, selection_bg) = env.with_roster(|r| {
+        (
+            r.cfg_warnings.clone(),
+            // Where the list came from matters when it is short a mux the user expected:
+            // a discovered list means the mux did not answer here, a configured one means
+            // it was never asked for.
+            if r.cfg.local.mux.is_auto() {
+                "discovered"
+            } else {
+                "from config.toml"
+            },
+            r.local_muxes.join(", "),
+            crate::ui::chrome::parse_selection_bg(&r.cfg.ui.selection_style),
+        )
+    });
     if let Some(e) = cfg_err {
         println!("config.toml: ERROR — {e} (using defaults)");
-    } else if !env.cfg_warnings.is_empty() {
-        for w in &env.cfg_warnings {
+    } else if !warnings.is_empty() {
+        for w in &warnings {
             println!("config.toml: WARNING — {w}");
         }
     } else {
         println!("config.toml: ok");
     }
 
-    // Where the list came from matters when it is short a mux the user expected: a
-    // discovered list means the mux did not answer here, a configured one means it was
-    // never asked for.
-    let source = if env.cfg.local.mux.is_auto() {
-        "discovered"
-    } else {
-        "from config.toml"
-    };
-    println!("local mux: {} ({source})", env.local_muxes.join(", "));
-    println!(
-        "{}",
-        crate::ui::palette::selection_report(crate::ui::chrome::parse_selection_bg(
-            &env.cfg.ui.selection_style
-        ))
-    );
+    println!("local mux: {local_muxes} ({mux_source})");
+    println!("{}", crate::ui::palette::selection_report(selection_bg));
     if ssh_on_path() {
         println!("ssh: ok");
     } else {

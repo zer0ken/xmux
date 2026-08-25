@@ -76,7 +76,7 @@ xmux version
 | `prefix 0`-`prefix 9` | 왼쪽 열의 번호로 세션을 선택한다 (10 이상은 계속 입력한다) |
 | `prefix n` | 선택한 호스트에 새 세션을 만든다 |
 | `/` | 목록을 퍼지 필터로 좁힌다 |
-| `prefix r` | 모든 소스를 다시 스캔한다 |
+| `prefix r` | 다시 스캔한다. 머신 목록과 각 소스의 세션을 모두 갱신한다 |
 
 xmux에는 tmux의 `set -g prefix`처럼 자체 prefix가 있다. 기본값은 `Ctrl-g`이며,
 `[ui] prefix` 설정이 이 값을 대체한다. prefix를 누른 다음 조합키를 입력한다.

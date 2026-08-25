@@ -2,7 +2,7 @@
 //! order (local first). The single owner of each machine's `Host`, so display and host
 //! management cannot disagree about which machines exist.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::config::Config;
 use crate::model::{Host, Liveness};
@@ -15,6 +15,15 @@ use crate::session::LOCAL_SOURCE;
 pub struct Hosts {
     order: Vec<String>,
     map: HashMap<String, Host>,
+}
+
+/// What one [`Hosts::reconcile`] changed: the host ids it added, and the ids it dropped
+/// because the fresh roster no longer names their machine. The loop acts on both, so the
+/// registry, the source list, the nav, and the live connections stay one answer.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct RosterDelta {
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
 }
 
 impl Hosts {
@@ -85,6 +94,51 @@ impl Hosts {
         hosts
     }
 
+    /// Reconciles this registry against a freshly built one, so a re-scan reflects a
+    /// config edit, or a machine coming online, without a restart. Returns what changed.
+    ///
+    /// A surviving host keeps its LIVE `Host` untouched. The detected mux, the display
+    /// tty, and the connection the loop drives all live on it, and replacing it would
+    /// tear down a channel that has nothing wrong with it.
+    ///
+    /// Removal is decided by MACHINE, never by id. Which muxes a machine serves is
+    /// answered by PROBING the machine, and building a registry probes nothing, so a
+    /// source that async mux discovery added is absent from `fresh` while its machine is
+    /// perfectly well named. Dropping by id would tear those cards down on every re-scan
+    /// and re-find them a moment later.
+    ///
+    /// A surviving host keeps the display position it had and an added one appends, so a
+    /// card the user is looking at does not move because another machine answered.
+    pub fn reconcile(&mut self, mut fresh: Hosts) -> RosterDelta {
+        let machines: HashSet<&str> = fresh
+            .order
+            .iter()
+            .map(|id| crate::session::machine_of(id))
+            .collect();
+        let removed: Vec<String> = self
+            .order
+            .iter()
+            .filter(|id| !machines.contains(crate::session::machine_of(id)))
+            .cloned()
+            .collect();
+        drop(machines);
+        self.order.retain(|id| !removed.contains(id));
+        for id in &removed {
+            self.map.remove(id);
+        }
+        let mut added = Vec::new();
+        for id in std::mem::take(&mut fresh.order) {
+            if self.map.contains_key(&id) {
+                continue;
+            }
+            if let Some(host) = fresh.map.remove(&id) {
+                self.insert(host);
+                added.push(id);
+            }
+        }
+        RosterDelta { added, removed }
+    }
+
     /// Whether `machine` already serves a source running the mux binary `bin`. The
     /// discovery add path asks before adding, so a mux the machine was already
     /// configured (or assumed) to run is never duplicated under a second id.
@@ -152,7 +206,11 @@ impl Hosts {
             // the caller (apply_source_result / apply_scan_result / the discovery-add
             // effect); they fold no Host-owned liveness here. A discovery answer names a
             // MACHINE, not a host in this map, so it could not route here anyway.
-            Scanned { .. } | Sessions { .. } | Panes { .. } | MuxesFound { .. } => {}
+            Scanned { .. }
+            | Sessions { .. }
+            | Panes { .. }
+            | MuxesFound { .. }
+            | RosterResolved { .. } => {}
         }
     }
 }
@@ -214,6 +272,100 @@ mod tests {
             ServerModel::PerSession,
             "psmux replaced tmux"
         );
+    }
+
+    /// A registry for the ssh aliases named, on a box serving one local mux.
+    fn built(aliases: &[&str]) -> Hosts {
+        let aliases: Vec<String> = aliases.iter().map(|a| a.to_string()).collect();
+        Hosts::build(
+            &Config::default(),
+            &aliases,
+            &[],
+            "linux",
+            &local(),
+            std::path::Path::new("/x"),
+            None,
+        )
+    }
+
+    #[test]
+    fn reconcile_adds_the_machines_the_fresh_roster_names() {
+        let mut hosts = built(&["prod"]);
+        let delta = hosts.reconcile(built(&["prod", "stage"]));
+        assert_eq!(delta.added, vec!["stage".to_string()]);
+        assert!(delta.removed.is_empty());
+        assert_eq!(
+            hosts.ids(),
+            &["local".to_string(), "prod".to_string(), "stage".to_string()],
+            "an added host appends, so a card the user is looking at does not move"
+        );
+    }
+
+    #[test]
+    fn reconcile_drops_the_machines_the_fresh_roster_stopped_naming() {
+        let mut hosts = built(&["prod", "stage"]);
+        let delta = hosts.reconcile(built(&["prod"]));
+        assert_eq!(delta.removed, vec!["stage".to_string()]);
+        assert!(delta.added.is_empty());
+        assert_eq!(hosts.ids(), &["local".to_string(), "prod".to_string()]);
+        assert!(hosts.get("stage").is_none(), "dropped from the map too");
+    }
+
+    #[test]
+    fn reconcile_leaves_a_surviving_host_live() {
+        // The detected mux, the display tty, and the connection the loop drives all live
+        // on the `Host`. Replacing a survivor would tear down a channel with nothing
+        // wrong with it, so the live object must come through untouched.
+        let mut hosts = built(&["prod"]);
+        hosts.get_mut("prod").unwrap().liveness = Liveness::Live;
+        hosts.get_mut("prod").unwrap().detected = true;
+        hosts.reconcile(built(&["prod", "stage"]));
+        let prod = hosts.get("prod").unwrap();
+        assert_eq!(prod.liveness, Liveness::Live);
+        assert!(prod.detected, "a survivor is not rebuilt from config");
+    }
+
+    #[test]
+    fn reconcile_keeps_a_discovered_mux_on_a_machine_that_survives() {
+        // `prod:zellij` exists because a probe ANSWERED, not because config named it, so
+        // a freshly built registry cannot contain it. Removing by id would tear the card
+        // down on every re-scan and re-find it a moment later; removal is by MACHINE.
+        let mut hosts = built(&["prod"]);
+        hosts.insert(host_for(
+            "prod",
+            "zellij",
+            "prod:zellij".to_string(),
+            "linux",
+            std::path::Path::new("/x"),
+            None,
+        ));
+        let delta = hosts.reconcile(built(&["prod"]));
+        assert!(
+            delta.removed.is_empty(),
+            "prod is still named, so nothing it serves is dropped: {delta:?}"
+        );
+        assert!(hosts.get("prod:zellij").is_some());
+    }
+
+    #[test]
+    fn reconcile_drops_a_discovered_mux_when_its_machine_goes() {
+        let mut hosts = built(&["prod"]);
+        hosts.insert(host_for(
+            "prod",
+            "zellij",
+            "prod:zellij".to_string(),
+            "linux",
+            std::path::Path::new("/x"),
+            None,
+        ));
+        let mut delta = hosts.reconcile(built(&[]));
+        delta.removed.sort();
+        assert_eq!(
+            delta.removed,
+            vec!["prod".to_string(), "prod:zellij".to_string()],
+            "the machine is gone, so every source it served goes with it"
+        );
+        assert_eq!(hosts.ids(), &["local".to_string()]);
     }
 
     #[test]
