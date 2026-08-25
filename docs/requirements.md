@@ -37,13 +37,15 @@ no function, and no test, so renaming code is never a documentation change.
   is serving, including any that were found by asking the machine rather than by
   configuration.
 - **FR-A6** - A host's mux is identified by what its binary answers as, not by the
-  name it was invoked under, so tmux, psmux, and zellij mix freely across hosts with no
-  configuration. Each mux is one family behind the mux axis: the command plans
-  default to tmux-compatible argv (so a tmux-compatible mux is identity plus a few
+  name it was invoked under, so tmux, psmux, zellij, and abduco mix freely across
+  hosts with no configuration. Each mux is one family behind the mux axis: the command
+  plans default to tmux-compatible argv (so a tmux-compatible mux is identity plus a few
   overrides), and a mux that shares no argv with tmux overrides every plan together with
   the shape of what each plan prints. zellij is that case: it is enumerated from its
   session listing, its windows come from its tab listing, and its sessions are polled
-  because it offers no push channel.
+  because it offers no push channel. abduco is the simplest case: one server per
+  session, no windows, no control stream, and no per-session query, so its sessions are
+  polled from the bare listing and each resolves as the session alone.
 - **FR-A7** - A SOURCE is one mux on one host, so a host running several
   muxes at once contributes one source per mux and every one of them is listed. A `mux`
   value is a name or a LIST of names, in `[local]` and in `[[hosts]]` alike. A host

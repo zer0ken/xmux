@@ -306,7 +306,7 @@ impl Config {
         for name in self.local.mux.names() {
             if name != "auto" && !crate::mux::is_recognized(&name) {
                 warnings.push(format!(
-                    "local mux {name:?} is not a recognized mux (tmux/psmux/zellij); treating it as tmux-compatible"
+                    "local mux {name:?} is not a recognized mux (tmux/psmux/zellij/abduco); treating it as tmux-compatible"
                 ));
             }
         }
@@ -314,7 +314,7 @@ impl Config {
             for name in h.mux.names() {
                 if !crate::mux::is_recognized(&name) {
                     warnings.push(format!(
-                        "host {:?} mux {name:?} is not a recognized mux (tmux/psmux/zellij); treating it as tmux-compatible",
+                        "host {:?} mux {name:?} is not a recognized mux (tmux/psmux/zellij/abduco); treating it as tmux-compatible",
                         h.ssh
                     ));
                 }
@@ -324,7 +324,7 @@ impl Config {
             for name in w.mux.names() {
                 if !crate::mux::is_recognized(&name) {
                     warnings.push(format!(
-                        "wsl {:?} mux {name:?} is not a recognized mux (tmux/psmux/zellij); treating it as tmux-compatible",
+                        "wsl {:?} mux {name:?} is not a recognized mux (tmux/psmux/zellij/abduco); treating it as tmux-compatible",
                         w.distro
                     ));
                 }
