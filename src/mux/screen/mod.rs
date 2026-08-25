@@ -248,4 +248,19 @@ mod tests {
         let got = screen().enumerate(&ssh, &ExecRunner).await;
         eprintln!("jupiter00/screen sessions: {got:?}");
     }
+
+    // LIVE: the `-v` detection probe identifies a real remote screen. `#[ignore]`.
+    //   cargo test --lib screen::tests::screen_detect_live -- --ignored --nocapture
+    #[ignore = "live: needs ssh jupiter00 with screen"]
+    #[tokio::test]
+    async fn screen_detect_live() {
+        use crate::model::source::ExecRunner;
+        let ssh = crate::transport::ssh("jupiter00".into(), String::new(), "linux".into());
+        let got = crate::mux::detect_backend(&ssh, "screen", &ExecRunner).await;
+        eprintln!(
+            "jupiter00/screen detected -> {:?}",
+            got.as_ref().map(|m| (m.kind(), m.server_model()))
+        );
+        assert_eq!(got.as_ref().map(|m| m.kind()), Some("screen"));
+    }
 }
