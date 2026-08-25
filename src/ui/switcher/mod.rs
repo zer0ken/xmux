@@ -12,7 +12,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, List, ListItem, ListState};
+use ratatui::widgets::{Clear, ListState};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
@@ -30,8 +30,9 @@ pub const NAV_WIDTH: u16 = 48;
 
 /// A navigation card's EXPANDED height: two screen rows (a context line over a
 /// detail line). A collapsed card (see [`Switcher::card_collapsed`]) drops the
-/// context line and is one row tall; the renderer and mouse hit-testing share
-/// [`Switcher::card_height`] so the screen-row-to-card mapping never diverges.
+/// context line and is one row tall; the layout is measured from
+/// [`Switcher::card_height`] alone, and the paint records the rect it gave each card, so
+/// the screen-row-to-card mapping has one answer.
 pub(super) const CARD_H: u16 = 2;
 
 /// How much taller than wide a terminal cell is. A row is about two half-width columns
@@ -44,6 +45,10 @@ pub(super) const CELL_ASPECT: u32 = 2;
 /// part them: every card opens with its address column, so a gutter reads as a gap
 /// between a name and the next number rather than two names running together.
 pub(super) const COL_GUTTER: u16 = 1;
+
+/// The glyph the side list's band rule is drawn from, repeated across the nav. A light
+/// box-drawing line, so it parts the bands without reading as a border around either.
+pub(super) const BAND_RULE: &str = "\u{2500}";
 
 // Per-level node colours (the shared semantic palette), so the tree levels read
 // apart at a glance. Functions, not consts: the active palette (dark / light) is
@@ -309,10 +314,10 @@ pub struct Switcher {
 
     list_state: ListState,
     nav_inner: Rect,
-    /// The card rects of the last paint, in the portrait `Top` layout's column flow:
-    /// mouse hit-testing reads them so a click lands on the card the user sees, whatever
-    /// column it flowed into. Empty in the `Side` layout, where the list's own row
-    /// arithmetic answers the same question.
+    /// The card rects of the last paint, in either layout: mouse hit-testing reads them
+    /// so a click lands on the card the user sees, whatever column it flowed into or
+    /// whichever band it sits in. The paint is the only thing that decides a card's rect,
+    /// so a click cannot land on a card the renderer put elsewhere.
     nav_cells: Vec<(usize, Rect)>,
     /// The leftmost drawn column of the `Top` column flow: the horizontal scroll
     /// position, moved only as far as keeping the selected card visible requires.
@@ -339,6 +344,7 @@ mod columns;
 mod input;
 mod mouse;
 mod render;
+mod side;
 
 impl Switcher {
     fn blank() -> Self {
@@ -581,6 +587,16 @@ impl Switcher {
         } else {
             CARD_H
         }
+    }
+
+    /// Where the nav's two bands meet: the first host-state card, the flatten having sunk
+    /// every host with no session to show to the end of the list. `None` when no host card
+    /// is on the list at all; whether a boundary actually parts anything (both bands need
+    /// a card) is [`side::place`]'s to judge.
+    fn band_boundary(&self) -> Option<usize> {
+        self.rows
+            .iter()
+            .position(|r| matches!(r.reference, RowRef::Host { .. }))
     }
 
     fn set_selected(&mut self, idx: usize, state: &crate::state::State) {
