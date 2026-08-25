@@ -63,7 +63,7 @@ In the nav list:
 | `prefix 0`-`prefix 9` | jump to a session by the number in its left column (keep typing for 10+) |
 | `prefix n` | start a new session on the selected host |
 | `/` | fuzzy-filter the list |
-| `prefix r` | re-scan every source |
+| `prefix r` | re-scan: refresh which machines exist, and every source's sessions |
 
 xmux has its own prefix, like tmux's `set -g prefix`. The default is `Ctrl-g`,
 configurable via `[ui] prefix`. Press the prefix, then a chord: `prefix q`

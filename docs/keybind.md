@@ -55,7 +55,7 @@ while the live screen is focused:
 | `/` | fuzzy-filter the list by `<source>/<name>` (no prefix) |
 | `prefix 0`-`prefix 9` | jump to a session by its number |
 | `prefix n` | start a new session on the selected host |
-| `prefix r` | re-scan every source |
+| `prefix r` | re-scan: refresh which machines exist, and every source's sessions |
 
 `prefix n` needs a host row: a session row has nothing to create, and it says so
 with a brief message. Creating under an unreachable host is likewise refused.

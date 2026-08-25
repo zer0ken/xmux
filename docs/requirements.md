@@ -30,7 +30,12 @@ no function, and no test, so renaming code is never a documentation change.
   offline peers are skipped. A provider that cannot answer contributes nothing instead
   of failing the run, so a machine without the tailscale CLI installed reaches an empty
   list rather than an error, and ssh-config names keep their position when a provider
-  repeats them.
+  repeats them. The roster is resolved again on every re-scan, so a machine that has
+  come online, and an edit to the `[discovery]` table, both take effect without a
+  restart. A machine the roster stops naming is dropped along with every source it
+  served and everything on screen for it; a machine it still names keeps the sources it
+  is serving, including any that were found by asking the machine rather than by
+  configuration.
 - **FR-A6** - A host's mux is identified by what its binary answers as, not by the
   name it was invoked under, so tmux, psmux, and zellij mix freely across hosts with no
   configuration. Each mux is one family behind the mux axis: the command plans
