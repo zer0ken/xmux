@@ -8,10 +8,9 @@
 //! the roster's ssh providers, kept here because listing distributions is `wsl.exe`
 //! mechanics (its own flags, its own output encoding) rather than roster policy.
 
-use std::process::Command;
-
 use super::vocab::remote_command;
 use super::Transport;
+use crate::model::source::{ExecRunner, Runner};
 use crate::session;
 
 /// The Windows-side launcher every WSL command goes through. Spelled with `.exe` so it
@@ -140,13 +139,16 @@ impl Transport for Wsl {
 /// A box without WSL, a `wsl.exe` that cannot start, and unreadable output all yield an
 /// empty list rather than an error - the same rule the roster's providers follow, for the
 /// same reason: one quiet provider must not stop the machines that did answer.
-pub fn distros() -> Vec<String> {
+pub async fn distros() -> Vec<String> {
     if !cfg!(windows) {
         return Vec::new();
     }
-    match Command::new(WSL_BIN).args(["--list", "--quiet"]).output() {
-        Ok(o) if o.status.success() => parse_distros(&decode_wsl_output(&o.stdout)),
-        _ => Vec::new(),
+    match ExecRunner
+        .run(WSL_BIN, &["--list".to_string(), "--quiet".to_string()])
+        .await
+    {
+        Ok(o) => parse_distros(&decode_wsl_output(&o)),
+        Err(_) => Vec::new(),
     }
 }
 

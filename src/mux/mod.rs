@@ -378,13 +378,22 @@ const DETECT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(150
 /// gating ControlMaster). A machine that really serves both writes them in the config,
 /// where a name is taken verbatim.
 pub async fn installed_muxes(transport: &dyn Transport, runner: &dyn Runner) -> Vec<String> {
-    let mut found: Vec<String> = Vec::new();
-    for name in supported_muxes() {
+    // Probe every candidate mux CONCURRENTLY (each with the same `DETECT_TIMEOUT`
+    // budget) rather than one after another, so a machine's mux set resolves in ~one
+    // probe-time instead of the sum of them.
+    let names = supported_muxes();
+    let futures = names.iter().map(|name| async {
         let probe = detect_backend(transport, name, runner);
-        if let Ok(Some(mux)) = tokio::time::timeout(DETECT_TIMEOUT, probe).await {
-            if mux.kind() == name {
-                found.push(name.to_string());
-            }
+        match tokio::time::timeout(DETECT_TIMEOUT, probe).await {
+            Ok(Some(mux)) => mux.kind() == *name,
+            _ => false,
+        }
+    });
+    let hits: Vec<bool> = futures::future::join_all(futures).await;
+    let mut found: Vec<String> = Vec::new();
+    for (name, hit) in names.iter().zip(hits) {
+        if hit {
+            found.push((*name).to_string());
         }
     }
     if found.iter().any(|m| m == "psmux") {

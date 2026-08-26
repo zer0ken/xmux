@@ -274,8 +274,8 @@ impl Config {
     /// An unset or `"auto"` value means "whatever this box actually has", so `installed`
     /// (from `mux::installed_muxes`) becomes the list, with the `os`'s conventional mux
     /// first so a single-mux box reads exactly as it always did. A box where discovery
-    /// finds nothing still gets the conventional mux, so the nav says the mux is
-    /// unreachable instead of showing no sources and no reason.
+    /// finds nothing yields an empty list: the local sources name what the box actually
+    /// has, so nothing installed means no local source, not a mux that is not there.
     pub fn local_muxes(&self, os: &str, installed: &[String]) -> Vec<String> {
         if !self.local.mux.is_auto() {
             return self.local.mux.names();
@@ -291,9 +291,6 @@ impl Config {
                 .filter(|m| m.as_str() != conventional)
                 .cloned(),
         );
-        if out.is_empty() {
-            out.push(conventional.to_string());
-        }
         out
     }
 
@@ -992,8 +989,7 @@ bogus = "nope"
     #[test]
     fn a_written_mux_is_taken_verbatim_and_auto_is_what_the_box_has() {
         // A name the user wrote wins over anything discovered, on either OS. `auto` and
-        // unset take the discovered list instead - that is the whole point of the
-        // default - and fall back to the OS's conventional mux when nothing answered.
+        // unset take the discovered list instead - that is the whole point of the default.
         let installed = vec!["tmux".to_string(), "zellij".to_string()];
         let cases: &[(&str, &str, &[&str])] = &[
             ("", "windows", &["tmux", "zellij"]),
@@ -1034,13 +1030,13 @@ bogus = "nope"
     }
 
     #[test]
-    fn a_box_where_nothing_answered_still_offers_its_conventional_mux() {
-        // Discovery finding nothing is not the same as having no sources: an empty nav
-        // with no host card says nothing at all, while one unreachable card names the
-        // mux that is missing.
+    fn a_box_where_nothing_answered_offers_no_local_source() {
+        // Discovery finding nothing is a box with no mux installed: the source list must
+        // say so rather than fabricate the conventional mux. A mux that is not there
+        // must not appear as a local source.
         let c = Config::default();
-        assert_eq!(c.local_muxes("windows", &[]), vec!["psmux"]);
-        assert_eq!(c.local_muxes("linux", &[]), vec!["tmux"]);
+        assert!(c.local_muxes("windows", &[]).is_empty());
+        assert!(c.local_muxes("linux", &[]).is_empty());
     }
 
     #[test]

@@ -150,48 +150,54 @@ pub async fn resolve_roster(
     // The ROSTER: which machines xmux offers. `~/.ssh/config` first, so a hand-written
     // alias keeps the position the user gave it; then each network provider the config
     // enables. See `crate::provision::roster`.
-    let offered = crate::provision::roster::merge(&[
-        (
-            crate::provision::roster::Provider::SshConfig,
-            if cfg.discovery.ssh_config {
-                config::ssh_host_aliases(&ssh_config_path())
-            } else {
-                Vec::new()
-            },
-        ),
-        (
-            crate::provision::roster::Provider::Tailscale,
+    //
+    // The providers that spawn a process (tailscale, wsl.exe, and the local mux probe)
+    // run CONCURRENTLY over the async runner, so the roster build is not serialized on
+    // however long each one takes, and none of them blocks the single-threaded runtime.
+    // The `~/.ssh/config` read is local file I/O (fast), so it stays inline.
+    let ssh_aliases = if cfg.discovery.ssh_config {
+        config::ssh_host_aliases(&ssh_config_path())
+    } else {
+        Vec::new()
+    };
+    let (tailscale, wsl_distros, installed) = tokio::join!(
+        async {
             if cfg.discovery.tailscale {
-                crate::provision::roster::tailscale_aliases()
+                crate::provision::roster::tailscale_aliases().await
             } else {
                 Vec::new()
-            },
-        ),
+            }
+        },
+        async {
+            if cfg.discovery.wsl {
+                crate::transport::wsl::distros().await
+            } else {
+                Vec::new()
+            }
+        },
+        async {
+            // The local mux list, resolved ONCE here and threaded on: `auto` (the default)
+            // asks this box which of the muxes xmux supports it actually has, so a zellij
+            // you just installed shows up without being written down. Probed over a
+            // socket-LESS local transport, because "is this mux here" has nothing to do
+            // with which server socket a session lives on - and a `-S <socket>` injection
+            // is a flag zellij would refuse.
+            if cfg.local.mux.is_auto() {
+                crate::mux::installed_muxes(
+                    &*crate::transport::local(None),
+                    &crate::model::source::ExecRunner,
+                )
+                .await
+            } else {
+                Vec::new()
+            }
+        },
+    );
+    let offered = crate::provision::roster::merge(&[
+        (crate::provision::roster::Provider::SshConfig, ssh_aliases),
+        (crate::provision::roster::Provider::Tailscale, tailscale),
     ]);
     let aliases: Vec<String> = offered.iter().map(|(name, _)| name.clone()).collect();
-    // This box's WSL distributions, on by default like every other provider: a box
-    // without WSL, and a `wsl.exe` that cannot start, both cost an empty list rather
-    // than an error. A `[[wsl]]` entry still names one distribution without listing
-    // every one of them.
-    let wsl_distros = if cfg.discovery.wsl {
-        crate::transport::wsl::distros()
-    } else {
-        Vec::new()
-    };
-    // The local mux list, resolved ONCE here and threaded on: `auto` (the default) asks
-    // this box which of the muxes xmux supports it actually has, so a zellij you just
-    // installed shows up without being written down. Probed over a socket-LESS local
-    // transport, because "is this mux here" has nothing to do with which server socket a
-    // session lives on - and a `-S <socket>` injection is a flag zellij would refuse.
-    let installed = if cfg.local.mux.is_auto() {
-        crate::mux::installed_muxes(
-            &*crate::transport::local(None),
-            &crate::model::source::ExecRunner,
-        )
-        .await
-    } else {
-        Vec::new()
-    };
     let local_muxes = cfg.local_muxes(os, &installed);
     let srcs = source::build(
         &cfg,
