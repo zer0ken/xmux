@@ -89,19 +89,19 @@ pub(super) fn place(cards: &[Card], col_h: u16) -> Vec<Placed> {
             col += 1;
             used = 0;
         }
-        for k in i..j {
+        for (k, card) in cards.iter().enumerate().take(j).skip(i) {
             let mut collapsed = squat || (k > i && used > 0);
             // A card's natural height is its line count; collapsing it to its detail
             // line shrinks a two-line card to one (a one-line card is already as short
             // as it gets).
-            let mut h = if collapsed { 1 } else { cards[k].lines };
+            let mut h = if collapsed { 1 } else { card.lines };
             if used > 0 && used + h > col_h {
                 // Only reachable for a run taller than a whole column: it splits, and
                 // the continuation opens a column, so it states its context again.
                 col += 1;
                 used = 0;
                 collapsed = squat;
-                h = if collapsed { 1 } else { cards[k].lines };
+                h = if collapsed { 1 } else { card.lines };
             }
             out.push(Placed {
                 col,

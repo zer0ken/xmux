@@ -2883,7 +2883,10 @@ fn every_unselected_card_carries_its_0_based_number_beside_its_session() {
         let (numbered, other) = if is_host {
             (rect.y, (rect.height > 1).then_some(rect.y + 1))
         } else {
-            (rect.y + rect.height - 1, (rect.height > 1).then_some(rect.y))
+            (
+                rect.y + rect.height - 1,
+                (rect.height > 1).then_some(rect.y),
+            )
         };
         assert_eq!(
             read(rect.x, numbered, num_w).trim(),
