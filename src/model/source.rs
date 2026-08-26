@@ -314,20 +314,14 @@ mod tests {
         #[cfg(windows)]
         let (name, args) = (
             "cmd",
-            vec![
-                "/C".to_string(),
-                "echo boom 1>&2 & exit 1".to_string(),
-            ],
+            vec!["/C".to_string(), "echo boom 1>&2 & exit 1".to_string()],
         );
         #[cfg(not(windows))]
         let (name, args) = (
             "sh",
             vec!["-c".to_string(), "echo boom >&2; exit 1".to_string()],
         );
-        let err = ExecRunner
-            .run(&name, &args)
-            .await
-            .expect_err("must fail");
+        let err = ExecRunner.run(&name, &args).await.expect_err("must fail");
         let RunError::Exit { stderr, .. } = &err else {
             panic!("expected an exit error, got {err:?}");
         };
