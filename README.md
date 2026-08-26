@@ -42,10 +42,18 @@ cargo build --release        # binary at target/release/xmux
 ```
 
 It runs on Windows and on unix-likes. You need `ssh` on the machine running
-xmux for remote hosts, and a supported mux on each host you target: `tmux` or
-GNU `screen` on unix, `psmux` on Windows, or `zellij` / `abduco`. A host's mux is
-detected from the binary it answers as, so a mix of these across your hosts needs
-no configuration.
+xmux for remote hosts, and at least one supported mux on each host you target.
+
+## Supported muxes
+
+xmux supports the following muxes:
+
+- `tmux` and GNU `screen` on unix
+- `psmux` on Windows
+- `zellij` / `abduco`
+
+A host's mux is detected from the binary it answers as, so a mix of these across
+your hosts needs no configuration.
 
 ## Usage
 
@@ -69,16 +77,16 @@ screen. Keyboard focus is on one region at a time.
 
 In the nav list:
 
-| Key | Action |
-|---|---|
-| `↑` / `↓` (or `k` / `j`) | move one card (wraps at both ends) |
-| `Home` / `End` | jump to the first / last card |
-| `PageUp` / `PageDown` | jump ten cards |
-| `Enter` | move focus into the selected session's live screen |
-| `prefix 0`-`prefix 9` | jump to a session by the number in its left column (keep typing for 10+) |
-| `prefix n` | start a new session on the selected host |
-| `/` | fuzzy-filter the list |
-| `prefix r` | re-scan: refresh which machines exist, and every source's sessions |
+| Key                      | Action                                                                   |
+| ------------------------ | ------------------------------------------------------------------------ |
+| `↑` / `↓` (or `k` / `j`) | move one card (wraps at both ends)                                       |
+| `Home` / `End`           | jump to the first / last card                                            |
+| `PageUp` / `PageDown`    | jump ten cards                                                           |
+| `Enter`                  | move focus into the selected session's live screen                       |
+| `prefix 0`-`prefix 9`    | jump to a session by the number in its left column (keep typing for 10+) |
+| `prefix n`               | start a new session on the selected host                                 |
+| `/`                      | fuzzy-filter the list                                                    |
+| `prefix r`               | re-scan: refresh which machines exist, and every source's sessions       |
 
 xmux has its own prefix, like tmux's `set -g prefix`. The default is `Ctrl-g`,
 configurable via `[ui] prefix`. Press the prefix, then a chord: `prefix q`
@@ -87,16 +95,36 @@ the nav and the screen. The mouse works too: click a row to select it, click
 the right pane to focus it. See [`docs/keybind.md`](docs/keybind.md) for the
 rest.
 
+## Roster
+
+The roster assembles the machine candidates xmux offers as hosts. It gathers
+ssh target names from three providers:
+
+- `~/.ssh/config` aliases
+- online peers on this machine's tailnet
+- this machine's WSL distributions
+
+Every provider yields ssh target names. Whichever provider suggested a name, the
+downstream behavior is the same; the suggesting provider is kept alongside the
+name and shown when the host becomes unreachable, so you can tell which provider
+to inspect or disable. When a provider's CLI is missing, its daemon is down, or
+its output cannot be parsed, the roster treats it as an empty list rather than
+an error, so one dead provider never hides the hosts the others suggest.
+
+The roster decides which machines become hosts. A machine no provider names is
+a machine xmux has nothing to do with. `local`, this machine reached without
+ssh, is not part of the roster. The roster is rebuilt at startup and on every
+rescan. The `[discovery]` table is how you disable providers individually; all
+are on by default.
+
 ## Hosts and sources
 
-A **host** is a machine that hosts muxes and that xmux can reach. Hosts are
-auto-discovered from `~/.ssh/config`, the tailnet, this box's WSL
-distributions, and `local`. One host can serve several muxes at once, so a host
-running both psmux and zellij exposes both. Each host and mux pairing is a
-**source**, named `local:psmux` when a host serves several and `prod` when it
-serves one. That name is what the nav shows and what commands address as
-`<source>/<session>`. Remote hosts are probed after the app is up, so a
-discovered source appears as its host answers.
+A **host** is a machine that hosts muxes and that xmux can reach. One host can
+serve several muxes at once, so a host running both psmux and zellij is exposed
+as two sources. Each host and mux pairing is a **source**, named `local:psmux`
+when a host serves several and `prod` when it serves one. That name is what the
+nav shows and what commands address as `<source>/<session>`. Remote hosts are
+probed after the app is up, so a discovered source appears as its host answers.
 
 ## Configuration
 
