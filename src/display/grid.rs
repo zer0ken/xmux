@@ -25,7 +25,13 @@ impl Grid {
         // the next mux repaint refills the grid cleanly instead of re-panicking on the
         // same stale cursor.
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.parser.process(bytes);
+            // ONLCR: expand a bare LF into CRLF before the emulator sees it. ConPTY
+            // hands the grid LF-only newlines, and vt100 treats LF as
+            // down-without-column-reset, so a line closed with `\n` alone would leave
+            // the cursor mid-row and stagger every line below it by the width of the
+            // line above. The real terminal driver does this same translation in
+            // cooked mode.
+            self.parser.process(&onlcr(bytes));
         }));
         if res.is_err() {
             let (rows, cols) = self.parser.screen().size();
@@ -131,6 +137,24 @@ pub fn vt_color_to_ratatui(c: vt100::Color) -> RColor {
     }
 }
 
+/// ONLCR: returns `bytes` with every bare LF (0x0A) expanded to CRLF. An LF already
+/// preceded by a CR is left alone (the CR already resets the cursor), so an incoming
+/// CRLF passes through unchanged and only LF-only newlines gain the reset they need.
+/// The check is per-read: a trailing CR split onto the next read (CR in one chunk,
+/// LF in the next) still lands correctly, because that LF then gains its own CR.
+fn onlcr(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut prev_is_cr = false;
+    for &b in bytes {
+        if b == b'\n' && !prev_is_cr {
+            out.push(b'\r');
+        }
+        out.push(b);
+        prev_is_cr = b == b'\r';
+    }
+    out
+}
+
 /// Maps a vt100 cell's colours and attributes to a ratatui `Style`.
 fn vt_cell_style(cell: &vt100::Cell) -> Style {
     let mut style = Style::default()
@@ -217,6 +241,35 @@ mod tests {
         g.render_into(&mut buf, Rect::new(0, 0, 80, 24));
         assert_eq!(buf[(0, 0)].symbol(), "A");
         assert_eq!(buf[(1, 0)].symbol(), "B");
+    }
+
+    #[test]
+    fn onlcr_starts_a_line_after_a_long_one_at_the_left_edge() {
+        // A line closed with a bare LF (no CR) must reset the cursor to column 0, or
+        // every line below a wide one would start indented by that line's width. The
+        // pty hands the grid LF-only newlines (ConPTY does not add the CR); the grid
+        // applies ONLCR so the emulator renders them like a real terminal driver.
+        let mut g = Grid::new(24, 120);
+        g.feed(
+            b"wsl.docker-desktop  (unreachable: command failed (exit 127): sh: tmux: not found)\n\njupiter00/if  7w  attached=true\n",
+        );
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 24));
+        g.render_into(&mut buf, Rect::new(0, 0, 120, 24));
+        assert_eq!(
+            buf[(0, 2)].symbol(),
+            "j",
+            "the line after a long LF-only line starts at column 0"
+        );
+        assert_eq!(
+            buf[(81, 2)].symbol(),
+            " ",
+            "nothing is left stranded at the previous line's width"
+        );
+        assert_eq!(
+            buf[(0, 1)].symbol(),
+            " ",
+            "the blank line between them stays blank"
+        );
     }
 
     #[test]
