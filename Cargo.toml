@@ -46,6 +46,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 vt100 = "0.16"
 portable-pty = "0.9"
 unicode-width = "0.2"
+ureq = "2"
+sha2 = "0.10"
 
 [dev-dependencies]
 # `test-util` gives the paused clock the poll-budget tests use: they let a 6s timeout
