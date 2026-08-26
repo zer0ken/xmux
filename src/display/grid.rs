@@ -343,6 +343,35 @@ mod tests {
         );
     }
 
+    // NOTE: this test deliberately triggers the vt100 panic that Grid::feed catches, so
+    // `cargo test` prints one "thread panicked at vt100 ..." line to stderr — expected,
+    // not a failure. (The hook is not silenced here because it is process-global and
+    // tests run in parallel.)
+    #[test]
+    fn feed_survives_clear_wide_panic_at_last_column() {
+        // Regression: vt100 0.16.2's `Row::clear_wide` (row.rs:89/91) panics when an
+        // erase/remove lands on the boundary of a wide (CJK) glyph — most often a
+        // double-width char whose first half sits at the last column (col+1 OOB, the
+        // row.rs:89 the panic.log shows as "len is 130 but the index is 130") or whose
+        // continuation wraps to column 0 (col-1 underflow). Both are the same code path
+        // and are caught by Grid::feed's catch_unwind; this pins the survival so a
+        // change to the catch does not silently re-expose the PTY pump to it.
+        let mut g = Grid::new(1, 4);
+        g.feed(b"\x1b[1;4H"); // cursor to 0-based col 3 (the right edge)
+        g.feed("한".as_bytes()); // wide glyph straddles/overflows the last column
+        g.feed(b"\x1b[K"); // erase-in-line on the dangling wide boundary → vt100 panics
+                           // Recovered grid must still repaint: a later clear+redraw lands cleanly.
+        g.clear();
+        g.feed(b"OK");
+        let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));
+        g.render_into(&mut buf, Rect::new(0, 0, 3, 1));
+        assert_eq!(
+            buf[(0, 0)].symbol(),
+            "O",
+            "grid usable after the clear_wide edge case"
+        );
+    }
+
     #[test]
     fn fingerprint_different_contents_different_hash() {
         // A grid whose visible content changed must produce a different fingerprint so
