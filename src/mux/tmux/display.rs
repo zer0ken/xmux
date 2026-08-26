@@ -371,7 +371,10 @@ mod tests {
         // The shared grid holds the prior session's content.
         if let Some(g) = registry.grid("local") {
             g.lock().unwrap().feed(b"stale prior-session residue");
-            assert!(!g.lock().unwrap().is_blank(), "precondition: grid has content");
+            assert!(
+                !g.lock().unwrap().is_blank(),
+                "precondition: grid has content"
+            );
         }
         let mut attach_seq = 0u64;
         let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
