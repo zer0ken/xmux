@@ -525,7 +525,9 @@ impl Switcher {
     /// ADDRESS column: the card's dim 0-based number, the thing `prefix <digit>` types.
     /// It sits on the DETAIL line, never the context line, so it reads beside the
     /// session it names and a collapsed card (detail line only) puts it in the same
-    /// place as an expanded one.
+    /// place as an expanded one. A host-state card is the exception: its number sits
+    /// beside the host/mux name, because its status line is a word about the host, not
+    /// the thing the number names.
     ///
     /// On the SELECTED card that column holds the mark instead of a number, because
     /// "you are here" answers the same question the number answers, and one column pays
@@ -576,10 +578,12 @@ impl Switcher {
         {
             let (host, mux, _) = context_of(row);
             let pending = Style::default().fg(palette::get().pending);
-            let mut line1 = address(false);
-            // A reachable empty host is a single host row: no session and no status
-            // word to carry, so the context line alone IS the card.
+            // A host-state card's number sits on the host/mux line: the status line
+            // below is a word about the host, not the thing the number names. A
+            // reachable empty host is that host line alone - a single row with no
+            // status word to carry.
             let one_line = !*unreachable && !*scanning;
+            let mut line1 = address(true);
             // A machine serving several muxes has one host card per mux, so the mux has
             // to be on the line or the two cards read identically. It is spanned exactly
             // as a session card's context line is - host, separator, mux - because a
@@ -606,7 +610,7 @@ impl Switcher {
             if one_line {
                 return vec![Line::from(line1)];
             }
-            let mut line2 = address(true);
+            let mut line2 = address(false);
             if *scanning {
                 // The session level, once the mux above it is settled.
                 if !mux.is_empty() {
