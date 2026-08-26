@@ -166,10 +166,7 @@ mod tests {
     #[test]
     fn each_mux_is_recognized_by_its_own_marker() {
         // zellij first: it is the only one that sets `ZELLIJ`.
-        assert_eq!(
-            own_mux_kind(Some("0"), None, None),
-            Some(MuxKind::Zellij)
-        );
+        assert_eq!(own_mux_kind(Some("0"), None, None), Some(MuxKind::Zellij));
         // psmux sets `TMUX` too, so `PSMUX_SESSION` is what tells the family apart.
         assert_eq!(
             own_mux_kind(None, Some("/tmp/psmux-8648/default,60836,0"), Some("xmus")),
