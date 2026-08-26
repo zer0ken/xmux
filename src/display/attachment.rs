@@ -297,6 +297,12 @@ pub fn spawn_attachment(
         cmd.env_remove(k);
     }
     let child = pair.slave.spawn_command(cmd)?;
+    // A ConPTY child spawn silently mutates the parent CONIN (clears ENABLE_MOUSE_INPUT /
+    // re-enables ENABLE_QUICK_EDIT_MODE), letting the terminal's native drag-to-select back
+    // in. Re-assert the capture bits synchronously HERE, at the mutation source, so there
+    // is no window before the loop's per-frame poll in which a drag selects text. This runs
+    // on the worker thread, so it writes no SGR to the terminal (see `reassert_conin_mode`).
+    crate::display::term::reassert_conin_mode();
     drop(pair.slave);
 
     let mut reader = pair.master.try_clone_reader()?;

@@ -78,6 +78,24 @@ mod windows_mouse {
     };
 
     pub(super) fn enable() -> anyhow::Result<()> {
+        set_conin_mode();
+        let mut out = std::io::stdout();
+        out.write_all(super::SGR_MOUSE_ON)?;
+        out.flush()?;
+        Ok(())
+    }
+
+    /// Re-asserts only the CONIN input-mode bits, without touching the terminal output.
+    /// Called at a ConPTY child spawn (the mutation source), from the worker thread, where
+    /// writing SGR to stdout would interleave with the main loop's draw.
+    pub(super) fn reassert_conin_mode() -> anyhow::Result<()> {
+        set_conin_mode();
+        Ok(())
+    }
+
+    /// Applies the desired CONIN input-mode bits: sets VT-input, mouse-input, extended
+    /// flags; clears quick-edit, line-input, echo-input, processed-input.
+    fn set_conin_mode() {
         // SAFETY: standard console handle; the calls are read-then-write of a mode flag.
         unsafe {
             let h = GetStdHandle(STD_INPUT_HANDLE);
@@ -94,10 +112,6 @@ mod windows_mouse {
                 SetConsoleMode(h, want);
             }
         }
-        let mut out = std::io::stdout();
-        out.write_all(super::SGR_MOUSE_ON)?;
-        out.flush()?;
-        Ok(())
     }
 }
 
@@ -122,6 +136,29 @@ pub fn conin_mode() -> u32 {
 pub fn conin_mode() -> u32 {
     0
 }
+
+/// Whether a CONIN mode has drifted off the desired mouse-capture state and must be
+/// re-asserted: mouse input cleared, quick-edit (drag-to-select) re-enabled, or VT input
+/// cleared. Pure over the mode bits so it is unit-testable on any target.
+fn should_reassert(mode: u32) -> bool {
+    use windows_sys::Win32::System::Console::{
+        ENABLE_MOUSE_INPUT, ENABLE_QUICK_EDIT_MODE, ENABLE_VIRTUAL_TERMINAL_INPUT,
+    };
+    mode & ENABLE_MOUSE_INPUT == 0
+        || mode & ENABLE_QUICK_EDIT_MODE != 0
+        || mode & ENABLE_VIRTUAL_TERMINAL_INPUT == 0
+}
+
+/// Re-asserts the CONIN mouse-capture bits only, without writing to the terminal. Called
+/// synchronously at a ConPTY child spawn (the mutation source), from the worker thread,
+/// where a stdout write would interleave with the main loop's draw. No-op off Windows.
+#[cfg(windows)]
+pub fn reassert_conin_mode() {
+    let _ = windows_mouse::reassert_conin_mode();
+}
+
+#[cfg(not(windows))]
+pub fn reassert_conin_mode() {}
 
 /// Re-applies the mouse-capture console mode + SGR tracking when the console drifts
 /// from the state `TermGuard` established. Spawning a `portable-pty` child (ConPTY) can
@@ -156,9 +193,9 @@ pub fn ensure_mouse_capture() {
             "conin_mode_changed"
         );
     }
-    // Re-assert when mouse capture is lost OR quick-edit (drag-to-select) is enabled;
-    // `windows_mouse::enable` restores both the desired bits and the SGR tracking.
-    if m & ENABLE_MOUSE_INPUT == 0 || m & ENABLE_QUICK_EDIT_MODE != 0 {
+    // Re-assert when mouse capture is lost OR quick-edit (drag-to-select) is enabled OR
+    // VT input is lost; `windows_mouse::enable` restores the desired bits and the SGR tracking.
+    if should_reassert(m) {
         let _ = windows_mouse::enable();
     }
 }
@@ -195,6 +232,38 @@ pub fn parse_prefix(spec: Option<&str>) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows_sys::Win32::System::Console::{
+        ENABLE_EXTENDED_FLAGS, ENABLE_MOUSE_INPUT, ENABLE_QUICK_EDIT_MODE,
+        ENABLE_VIRTUAL_TERMINAL_INPUT,
+    };
+
+    #[test]
+    fn should_reassert_healthy_mode_is_false() {
+        // All desired bits set, quick-edit cleared: no re-assert.
+        let mode = ENABLE_MOUSE_INPUT | ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_EXTENDED_FLAGS;
+        assert!(!should_reassert(mode));
+    }
+
+    #[test]
+    fn should_reassert_when_mouse_input_cleared() {
+        let mode = ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_EXTENDED_FLAGS; // no MOUSE_INPUT
+        assert!(should_reassert(mode));
+    }
+
+    #[test]
+    fn should_reassert_when_quick_edit_re_enabled() {
+        // A ConPTY child spawn re-enables drag-to-select (the selection symptom).
+        let mode = ENABLE_MOUSE_INPUT | ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_QUICK_EDIT_MODE;
+        assert!(should_reassert(mode));
+    }
+
+    #[test]
+    fn should_reassert_when_vt_input_cleared() {
+        // A child stripping VT input kills SGR mouse delivery but leaves MOUSE_INPUT set
+        // and quick-edit clear, so it is only caught by the VT-input check.
+        let mode = ENABLE_MOUSE_INPUT | ENABLE_EXTENDED_FLAGS; // no VIRTUAL_TERMINAL_INPUT
+        assert!(should_reassert(mode));
+    }
 
     #[test]
     fn parse_prefix_recognises_specs_and_defaults() {
