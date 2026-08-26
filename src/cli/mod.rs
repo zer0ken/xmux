@@ -167,22 +167,31 @@ async fn run_ls(env: &Env) -> i32 {
     let mut rx = env.scan_stream().await;
     let mut total = 0usize;
     let mut reachable = 0usize;
-    let mut first = true;
+    // A blank line between blocks keeps each source readable. The two streams are
+    // separated independently: a dead source prints only to stderr, so its blank
+    // must not open a gap on stdout (and a source with sessions neither on stderr).
+    let mut out_emitted = false;
+    let mut err_emitted = false;
     while let Some(g) = rx.recv().await {
         total += 1;
         let (lines, unreachable) = ls_lines_one(&g);
         if unreachable.is_none() {
             reachable += 1;
         }
-        // A blank line between sources keeps each streamed block readable.
-        if !first {
-            println!();
-        }
-        first = false;
-        for l in &lines {
-            println!("{l}");
+        if !lines.is_empty() {
+            if out_emitted {
+                println!();
+            }
+            out_emitted = true;
+            for l in &lines {
+                println!("{l}");
+            }
         }
         if let Some(u) = unreachable {
+            if err_emitted {
+                eprintln!();
+            }
+            err_emitted = true;
             eprintln!("{u}");
         }
     }
