@@ -233,3 +233,40 @@ jobs:
           else
             echo "winget-pkgs PR already exists for $BR."
           fi
+
+          # Microsoft requires the author to agree to the CLA before the PR can
+          # merge. The microsoft-github-policy-service bot reacts to an
+          # `@microsoft-github-policy-service agree` comment from the author; post
+          # it as the token owner (the PR author) on every submission, whether the
+          # PR was just opened or already exists, so a stale PR is also unblocked.
+          PR_NUM=$(curl -s -H "$AUTH" "$API/repos/$UPSTREAM/pulls?head=zer0ken:$BR" | jq -r '.[0].number')
+          if [ -n "$PR_NUM" ] && [ "$PR_NUM" != "null" ]; then
+            curl -s -X POST -H "$AUTH" -H "Accept: application/vnd.github+json" \
+              "$API/repos/$UPSTREAM/issues/$PR_NUM/comments" \
+              -d '{"body":"@microsoft-github-policy-service agree"}' >/dev/null
+            echo "Posted Microsoft policy agreement on winget-pkgs PR #$PR_NUM."
+          fi
+
+      # Optional: sync the refreshed formula into the homebrew-xmux tap repo.
+      # The GitHub token is scoped to this repo, so pushing to the separate
+      # tap repo needs a dedicated HOMEBREW_TAP_TOKEN secret (a PAT able to
+      # write to zer0ken/homebrew-xmux).
+      - name: Sync Homebrew tap
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAP=zer0ken/homebrew-xmux
+          git clone "https://github.com/${TAP}.git" tap
+          cp packaging/homebrew/xmux.rb tap/Formula/xmux.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/xmux.rb
+          if git diff --cached --quiet; then
+            echo "No Homebrew tap changes for v$VERSION."
+          else
+            git commit -m "formula: refresh for v$VERSION"
+            git push "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${TAP}.git" HEAD:main
+          fi

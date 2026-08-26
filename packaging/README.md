@@ -21,8 +21,9 @@ pushing the `v*` tag.
   When set, the release workflow opens the winget-pkgs submission PR for you;
   it still needs the winget-pkgs maintainers to merge it.
 - **Homebrew tap**: host the formula in a `homebrew-xmux` tap repo under the
-  project owner. The release workflow refreshes the formula; hosting the tap is
-a one-time step.
+  project owner, and add a `HOMEBREW_TAP_TOKEN` secret (a PAT able to write to
+  that tap repo). When the secret is set, the release workflow syncs the
+  refreshed formula into the tap; hosting the tap is a one-time step.
 
 ## Channels
 
