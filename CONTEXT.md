@@ -183,7 +183,8 @@ UI elements a user perceives as distinct things:
   level, so the session name anchors the detail line. The four read as one code-theme
   palette, and the level a user actually picks (the session) is the one that stands out.
   A spinner is pending yellow wherever it stands. A settled host-state card's detail
-  line is colored by state - unreachable red, "no sessions" muted. The hint bar is two slots as well (black under white, cyan keys). Nothing here
+  line is colored by state: an unreachable host's is red, and a reachable empty host's
+  card is a single host row with no status word (its screen states "no sessions"). The hint bar is two slots as well (black under white, cyan keys). Nothing here
   is an RGB value; see "Colour ownership" below for why, and `[ui] selection-style` /
   `[ui] hint-bar-style` for naming one anyway.
 - window label - how a card writes its focused window, in the CONVENTION OF ITS OWN MUX

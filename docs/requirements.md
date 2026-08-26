@@ -123,8 +123,10 @@ no function, and no test, so renaming code is never a documentation change.
   panes are in flight. The levels behind it stay blank, so the card says WHICH answer
   is outstanding instead of only that it is busy, and no status word repeats what the
   spinner already says. The nav's scan progress turns the same spinner on the same
-  frame. A card that has SETTLED reads a word instead: `no sessions`, or
-  `⚠ unreachable`. The word is all a card carries: WHY a host failed is stated on
+  frame. A card that has SETTLED reads a word only when it has one to carry: an unreachable
+  host reads `⚠ unreachable`, while a reachable empty host is a single host row with
+  no status word, and its view screen states `no sessions`. The word is all a card
+  carries: WHY a host failed is stated on
   its view screen, which has the room to keep a tool's diagnostic whole, while a card
   is only as wide as the nav and could carry no more than a cut-down copy of it.
 - **FR-B8** - The session xmux is ITSELF running in is never mirrored into the terminal

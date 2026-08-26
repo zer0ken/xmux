@@ -424,11 +424,13 @@ pub(crate) fn flatten(
             continue;
         }
         // A scanning card carries no status WORD: the spinner in its unresolved level
-        // is the status, so the card does not say the same thing twice. A settled card
-        // carries the status word and nothing else: WHY a host is unreachable is the
-        // screen's to state, where the message fits whole, while a card is only as wide
-        // as the nav and would carry a cut-down copy of it.
-        let line2 = if is_scanning {
+        // is the status, so the card does not say the same thing twice. A reachable empty
+        // host carries none either: it reads as a single host row with no session to
+        // name. An UNREACHABLE card is the one settled host that carries a word, and
+        // nothing else: WHY a host is unreachable is the screen's to state, where the
+        // message fits whole, while a card is only as wide as the nav and would carry a
+        // cut-down copy of it.
+        let line2 = if is_scanning || !unreachable {
             String::new()
         } else {
             host_state_word(unreachable).to_string()
@@ -1049,7 +1051,7 @@ mod tests {
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["host", "host"]);
         assert_eq!(addr_of(&rows[0].reference), "empty");
-        assert_eq!(rows[0].line2, "no sessions");
+        assert_eq!(rows[0].line2, "", "a reachable empty host carries no word");
         assert_eq!(addr_of(&rows[1].reference), "dead");
         assert_eq!(rows[1].line2, "⚠ unreachable");
         assert!(matches!(

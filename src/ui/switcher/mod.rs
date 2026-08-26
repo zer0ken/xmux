@@ -77,10 +77,6 @@ fn color_separator() -> Color {
 fn color_connector() -> Color {
     crate::ui::palette::get().connector
 }
-/// The "no sessions" status word on a reachable empty host's card.
-fn color_no_sessions() -> Color {
-    crate::ui::palette::get().no_sessions
-}
 pub use crate::ui::chrome::ViewBorderColors;
 
 /// Which way the two views stack. `Side` (default) puts the tree in a left column;
@@ -593,9 +589,26 @@ impl Switcher {
         host == prev_host && mux == prev_mux
     }
 
-    /// The screen rows card `i` occupies: [`CARD_H`] expanded, one when collapsed.
+    /// Whether card `i` is a host-state card for a REACHABLE empty host: it has no
+    /// session and no status word, so it reads as a single host row rather than a
+    /// two-line card (an unreachable host keeps its status word; a scanning host keeps
+    /// its spinner).
+    fn is_one_line_host(&self, i: usize) -> bool {
+        matches!(
+            self.rows.get(i).map(|r| &r.reference),
+            Some(RowRef::Host {
+                unreachable: false,
+                scanning: false,
+                ..
+            })
+        )
+    }
+
+    /// The screen rows card `i` occupies: [`CARD_H`] expanded, one when collapsed or
+    /// when the card is a single host row (a reachable empty host, see
+    /// [`Switcher::is_one_line_host`]).
     fn card_height(&self, i: usize) -> u16 {
-        if self.card_collapsed(i) {
+        if self.card_collapsed(i) || self.is_one_line_host(i) {
             1
         } else {
             CARD_H
