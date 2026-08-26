@@ -138,14 +138,17 @@ pub fn ensure_mouse_capture() {
         ENABLE_MOUSE_INPUT, ENABLE_QUICK_EDIT_MODE, ENABLE_VIRTUAL_TERMINAL_INPUT,
     };
     // Observe CONIN mode transitions: mouse capture on Windows is fragile (a portable-pty
-    // child spawn can silently mutate the input bits), so logging exactly which bit drifts —
+    // child spawn can silently mutate the input bits), so tracing exactly which bit drifts —
     // vt-input / mouse-input / quick-edit — the instant it changes turns an intermittent
     // "mouse stopped working" / "text selected itself" report into a pinpointed cause.
-    // Logged only on change (silent in steady state).
+    // Logged only on change (silent in steady state) AND at trace level: a ConPTY child
+    // keeps mutating the parent's mouse bit, so this fires on (almost) every loop iteration
+    // and would otherwise be the bulk of a day's log (one file was ~98% these lines).
+    // Keep it trace: enable with `XMUX_LOG=xmux::display=debug` when hunting a capture bug.
     static LAST: AtomicU32 = AtomicU32::new(u32::MAX);
     let m = conin_mode();
     if LAST.swap(m, Ordering::Relaxed) != m {
-        tracing::info!(
+        tracing::trace!(
             mode = format!("{m:#010x}"),
             vt_input = (m & ENABLE_VIRTUAL_TERMINAL_INPUT != 0),
             mouse_input = (m & ENABLE_MOUSE_INPUT != 0),
