@@ -234,6 +234,19 @@ jobs:
             echo "winget-pkgs PR already exists for $BR."
           fi
 
+          # Microsoft requires the author to agree to the CLA before the PR can
+          # merge. The microsoft-github-policy-service bot reacts to an
+          # `@microsoft-github-policy-service agree` comment from the author; post
+          # it as the token owner (the PR author) on every submission, whether the
+          # PR was just opened or already exists, so a stale PR is also unblocked.
+          PR_NUM=$(curl -s -H "$AUTH" "$API/repos/$UPSTREAM/pulls?head=zer0ken:$BR" | jq -r '.[0].number')
+          if [ -n "$PR_NUM" ] && [ "$PR_NUM" != "null" ]; then
+            curl -s -X POST -H "$AUTH" -H "Accept: application/vnd.github+json" \
+              "$API/repos/$UPSTREAM/issues/$PR_NUM/comments" \
+              -d '{"body":"@microsoft-github-policy-service agree"}' >/dev/null
+            echo "Posted Microsoft policy agreement on winget-pkgs PR #$PR_NUM."
+          fi
+
       # Optional: sync the refreshed formula into the homebrew-xmux tap repo.
       # The GitHub token is scoped to this repo, so pushing to the separate
       # tap repo needs a dedicated HOMEBREW_TAP_TOKEN secret (a PAT able to
