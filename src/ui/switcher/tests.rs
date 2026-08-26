@@ -656,18 +656,22 @@ async fn the_spinner_marks_the_first_unresolved_level_only() {
     // its ids), so the mux is the level in flight and the session line stays empty.
     let h = Harness::from_sources(&["local"]);
     let card = card_rows(&h);
-    assert_eq!(card[0], format!("local/{sp}"), "the mux level spins");
-    assert_eq!(card[1], SELECTED_MARK, "and nothing below it does");
+    assert_eq!(
+        card[0],
+        format!("{SELECTED_MARK} local/{sp}"),
+        "the host line carries the mark and the mux level spins"
+    );
+    assert_eq!(card[1], "", "and nothing below it does");
 
     // A qualified id already names its mux, so the session level is the one in flight.
     let h = Harness::from_sources(&["local:zellij"]);
     let card = card_rows(&h);
-    assert_eq!(card[0], "local/zellij", "the mux is known");
     assert_eq!(
-        card[1],
-        format!("{SELECTED_MARK} {sp}"),
-        "so the session level spins"
+        card[0],
+        format!("{SELECTED_MARK} local/zellij"),
+        "the mux is known"
     );
+    assert_eq!(card[1], sp.to_string(), "so the session level spins");
 
     // The session landed and stamped its mux; its focused window has not, so the spinner
     // moves one level down, into the window slot.
@@ -2866,22 +2870,31 @@ fn every_unselected_card_carries_its_0_based_number_beside_its_session() {
     // is not always the sum of the heights above it.
     assert_eq!(sw.nav_cells.len(), sw.rows.len(), "every card was drawn");
     for (i, rect) in sw.nav_cells.iter().copied() {
-        let detail = rect.y + rect.height - 1;
         let want = if i == selected {
             super::render::SELECTED_MARK.to_string()
         } else {
             i.to_string()
         };
+        // The number sits on the row that NAMES the thing: a session card's detail row
+        // (which carries the session), a host-state card's host row (which carries the
+        // host/mux name). The other row of a two-line card leaves the address column
+        // blank.
+        let is_host = matches!(sw.rows[i].reference, RowRef::Host { .. });
+        let (numbered, other) = if is_host {
+            (rect.y, (rect.height > 1).then_some(rect.y + 1))
+        } else {
+            (rect.y + rect.height - 1, (rect.height > 1).then_some(rect.y))
+        };
         assert_eq!(
-            read(rect.x, detail, num_w).trim(),
+            read(rect.x, numbered, num_w).trim(),
             want,
-            "card {i} address on its detail row {detail} (selected={selected})"
+            "card {i} address on its named row {numbered} (selected={selected})"
         );
-        if rect.height > 1 {
+        if let Some(blank) = other {
             assert_eq!(
-                read(rect.x, rect.y, num_w).trim(),
+                read(rect.x, blank, num_w).trim(),
                 "",
-                "card {i}'s context row leaves the address column blank"
+                "card {i}'s other row leaves the address column blank"
             );
         }
     }
