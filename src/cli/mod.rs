@@ -157,6 +157,37 @@ async fn interactive_env() -> Result<Env, i32> {
     Ok(env)
 }
 
+/// Prints one line to stdout, closing it with the platform's line ending.
+///
+/// A Windows console renders a bare LF as move-down-without-column-reset once a
+/// subprocess has cleared its processed-output mode, so a command that runs long
+/// enough for the ssh/wsl probes to change that mode (like `xmux ls`) would
+/// otherwise indent every line after the first by the width of the line above.
+/// Writing the CR explicitly keeps the line ending independent of the console's
+/// current mode. On Unix LF is correct, so the line is printed as-is.
+fn print_stdout(line: &str) {
+    #[cfg(windows)]
+    {
+        use std::io::Write;
+        let mut out = std::io::stdout().lock();
+        let _ = write!(out, "{line}\r\n");
+    }
+    #[cfg(not(windows))]
+    println!("{line}");
+}
+
+/// [`print_stdout`] to stderr.
+fn print_stderr(line: &str) {
+    #[cfg(windows)]
+    {
+        use std::io::Write;
+        let mut out = std::io::stderr().lock();
+        let _ = write!(out, "{line}\r\n");
+    }
+    #[cfg(not(windows))]
+    eprintln!("{line}");
+}
+
 /// Prints every reachable session as one `<source>/<name>` line; dead sources go
 /// to stderr. Fails only when every source is unreachable.
 ///
@@ -180,19 +211,19 @@ async fn run_ls(env: &Env) -> i32 {
         }
         if !lines.is_empty() {
             if out_emitted {
-                println!();
+                print_stdout("");
             }
             out_emitted = true;
             for l in &lines {
-                println!("{l}");
+                print_stdout(l);
             }
         }
         if let Some(u) = unreachable {
             if err_emitted {
-                eprintln!();
+                print_stderr("");
             }
             err_emitted = true;
-            eprintln!("{u}");
+            print_stderr(&u);
         }
     }
     if total > 0 && reachable == 0 {
