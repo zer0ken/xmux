@@ -1,8 +1,11 @@
-//! The `xmux update` command: detects how xmux was installed from the running
-//! executable's path and delegates to the owning package manager (cargo, winget,
-//! Homebrew) when one can be identified. Directly downloading and replacing the
-//! binary from a release is intentionally not supported; the package manager (or a
-//! fresh install) is always the update path.
+//! The `xmux update` command. It detects how xmux was installed from the running
+//! executable's path and either delegates to the owning package manager (cargo,
+//! winget, Homebrew) on Unix, or downloads a checksum-verified build from the latest
+//! GitHub release and replaces the running binary in place. Windows routes every
+//! path through the release download because no package manager can overwrite a
+//! running executable there; the swap is handed to a detached updater.
+
+pub mod release;
 
 use std::path::{Path, PathBuf};
 
@@ -133,52 +136,60 @@ fn run_delegated(program: &str, args: &[&str]) -> Result<(), String> {
 
 fn run_blocking(args: &Args) -> Result<(), String> {
     let method = resolve_method(args.method.as_deref())?;
-    match method {
-        InstallMethod::Cargo => {
-            if args.check {
-                println!("xmux is installed via cargo; update with `cargo install xmux`");
-                return Ok(());
-            }
-            if !tool_on_path("cargo") {
-                return Err(
-                    "cargo is not on PATH; install a release build for your platform".to_string()
-                );
-            }
-            run_delegated("cargo", &["install", "xmux"])
+    let p = platform();
+    // The package-manager delegations only make sense where the package manager can
+    // replace the running binary. On Windows no package manager can overwrite a
+    // running executable, so every path uses the release download + detached
+    // updater; on Unix the package managers work in place and are preferred when an
+    // install method is known.
+    let use_release = match method {
+        InstallMethod::Self_ => true,
+        InstallMethod::Cargo | InstallMethod::Winget | InstallMethod::Brew => {
+            p == Platform::Windows
         }
-        InstallMethod::Winget => {
-            if args.check {
-                println!(
-                    "xmux is installed via winget; update with `winget upgrade --id zer0ken.xmux`"
-                );
-                return Ok(());
-            }
-            if !tool_on_path("winget") {
-                return Err(
-                    "winget is not on PATH; install a release build for your platform".to_string()
-                );
-            }
-            run_delegated("winget", &["upgrade", "--id", "zer0ken.xmux"])
-        }
-        InstallMethod::Brew => {
-            if args.check {
-                println!(
-                    "xmux is installed via Homebrew; update with `brew upgrade zer0ken/xmux/xmux`"
-                );
-                return Ok(());
-            }
-            if !tool_on_path("brew") {
-                return Err(
-                    "brew is not on PATH; install a release build for your platform".to_string()
-                );
-            }
-            run_delegated("brew", &["upgrade", "zer0ken/xmux/xmux"])
-        }
-        InstallMethod::Self_ => Err(
-            "xmux does not update itself; update through the package manager you installed it with (`cargo install xmux`, `winget upgrade`, or `brew upgrade`) or install a fresh release build"
-                .to_string(),
-        ),
+    };
+    if use_release {
+        return release::update(args, p);
     }
+    match method {
+        InstallMethod::Cargo => run_cargo(args),
+        InstallMethod::Winget => run_winget(args),
+        InstallMethod::Brew => run_brew(args),
+        InstallMethod::Self_ => unreachable!(),
+    }
+}
+
+fn run_cargo(args: &Args) -> Result<(), String> {
+    if args.check {
+        println!("xmux is installed via cargo; update with `cargo install --force xmux`");
+        return Ok(());
+    }
+    if !tool_on_path("cargo") {
+        return Err("cargo is not on PATH; install a release build for your platform".to_string());
+    }
+    run_delegated("cargo", &["install", "--force", "xmux"])
+}
+
+fn run_winget(args: &Args) -> Result<(), String> {
+    if args.check {
+        println!("xmux is installed via winget; update with `winget upgrade --id zer0ken.xmux`");
+        return Ok(());
+    }
+    if !tool_on_path("winget") {
+        return Err("winget is not on PATH; install a release build for your platform".to_string());
+    }
+    run_delegated("winget", &["upgrade", "--id", "zer0ken.xmux"])
+}
+
+fn run_brew(args: &Args) -> Result<(), String> {
+    if args.check {
+        println!("xmux is installed via Homebrew; update with `brew upgrade zer0ken/xmux/xmux`");
+        return Ok(());
+    }
+    if !tool_on_path("brew") {
+        return Err("brew is not on PATH; install a release build for your platform".to_string());
+    }
+    run_delegated("brew", &["upgrade", "zer0ken/xmux/xmux"])
 }
 
 /// The public entry: runs the blocking update flow on a worker thread so no blocking
