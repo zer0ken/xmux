@@ -99,7 +99,9 @@ impl Runner for ExecRunner {
             Ok(out)
         } else {
             Err(RunError::Exit {
-                stderr: String::from_utf8_lossy(&err).into_owned(),
+                // Trim the trailing newline the command's stderr carries, so the
+                // error reads as one line wherever it is rendered.
+                stderr: String::from_utf8_lossy(&err).trim_end().to_string(),
                 code: status.code().unwrap_or(-1),
             })
         }
@@ -302,6 +304,34 @@ mod tests {
             "stdout captured, got {:?}",
             String::from_utf8_lossy(&out)
         );
+    }
+
+    #[tokio::test]
+    async fn exec_runner_trims_the_trailing_newline_from_stderr() {
+        // A failing command's captured stderr ends in a newline ("... not found\n");
+        // the error must not carry it, or every render of the message wraps the tail
+        // onto its own line (`xmux ls` showed the closing paren alone on a line).
+        #[cfg(windows)]
+        let (name, args) = (
+            "cmd",
+            vec![
+                "/C".to_string(),
+                "echo boom 1>&2 & exit 1".to_string(),
+            ],
+        );
+        #[cfg(not(windows))]
+        let (name, args) = (
+            "sh",
+            vec!["-c".to_string(), "echo boom >&2; exit 1".to_string()],
+        );
+        let err = ExecRunner
+            .run(&name, &args)
+            .await
+            .expect_err("must fail");
+        let RunError::Exit { stderr, .. } = &err else {
+            panic!("expected an exit error, got {err:?}");
+        };
+        assert_eq!(stderr, "boom", "trailing newline trimmed, got {stderr:?}");
     }
 
     // LIVE: the timeout path runs a real hung command for the full POLL_CMD_TIMEOUT
