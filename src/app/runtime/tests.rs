@@ -154,7 +154,7 @@ fn scan_result_corrects_psmux_config_to_tmux_control() {
 }
 
 #[tokio::test]
-async fn connect_all_sources_connects_remote_hosts() {
+async fn dispatch_detected_host_connects_remote_hosts() {
     // Control-event (tmux) hosts get a control client at startup; poll hosts
     // enumerate off the loop (no control client). The gate is the host's
     // event_source, read off the Host - not the transport remote flag. The cmd.exe
@@ -168,15 +168,7 @@ async fn connect_all_sources_connects_remote_hosts() {
     );
     host.detected = true;
     hosts.insert(host);
-    let mut detecting = HashSet::new();
-    connect_all_sources(
-        &mut mgr,
-        &hosts,
-        &mut detecting,
-        80,
-        24,
-        crate::ui::switcher::NAV_WIDTH,
-    );
+    dispatch_detected_host(&mut mgr, &hosts, "jupiter06", 80, 24);
     assert!(
         mgr.get("jupiter06").is_some(),
         "control host got a control client from the registry alone"

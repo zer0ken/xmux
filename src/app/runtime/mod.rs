@@ -745,14 +745,11 @@ fn apply_scan_result(
     }
 }
 
-/// Consumes a pending re-scan kick (set by `r` or a menu "reconnect"): re-enumerates
-/// every detected source via the manager - a control host re-lists sessions, a poll
-/// host respawns its task for an immediate re-enumeration - and (re)detects an
-/// undetected one. A no-op when no kick is pending. Shared by the key and menu paths.
-///
-/// It also re-resolves the ROSTER, so a re-scan refreshes WHICH MACHINES exist and not
-/// only which sessions each one has. Without it a machine that came online, and a config
-/// the user just edited, would both wait for a restart.
+/// Consumes a pending re-scan kick (set by `r` or a menu "reconnect"): runs the shared
+/// discovery pass over the current hosts with the rescan flag, so a re-scan refreshes
+/// WHICH MACHINES exist (re-resolves the roster) and re-enumerates sessions, exactly the
+/// work a fresh launch runs. A no-op when no kick is pending. Shared by the key and menu
+/// paths.
 fn kick_rescan(
     env: &Env,
     switcher: &mut crate::ui::switcher::Switcher,
@@ -765,47 +762,55 @@ fn kick_rescan(
     if !switcher.take_rescan_kick() {
         return;
     }
+    run_discovery(env, hosts, detecting, mgr, panes_requested, size, true);
+}
+
+/// The shared discovery pass a fresh launch and a re-scan both run, so the two are
+/// functionally identical: (re)resolve the roster (rescan only), then for each source
+/// detect its mux (or re-list its sessions once known) and ask each auto machine which
+/// muxes it serves, all concurrently over the async runtime.
+///
+/// On a re-scan `rescan` is true: the roster is re-resolved (a slow provider then delays
+/// no card already on screen, since the standing sources are re-enumerated regardless)
+/// and detected hosts are re-listed; at launch they are first dispatched onto their
+/// metadata channel instead.
+fn run_discovery(
+    env: &Env,
+    hosts: &crate::model::Hosts,
+    detecting: &mut HashSet<String>,
+    mgr: &mut HostManager,
+    panes_requested: &mut HashSet<String>,
+    size: (u16, u16),
+    rescan: bool,
+) {
     let (cols, rows) = size;
-    // Answers back on the host bus as `RosterResolved`; the sources standing right now are
-    // re-enumerated below regardless, so a slow provider delays no card already on screen.
-    spawn_roster_resolve(env.xmux_dir.clone(), env.local_socket.clone(), mgr.events());
-    // `request_rescan` cleared every session's panes from `state.panes`; clear the
-    // loop-local pane-request dedup in lockstep so each control host's re-`list_sessions`
-    // reply actually re-issues `list-panes` (`request_session_panes` only asks for
-    // addresses not already in this set - otherwise the subtree stays "loading…" until a
-    // `%`-change or relaunch). A global clear is safe: this set gates only control hosts;
-    // poll hosts re-emit their panes regardless.
-    panes_requested.clear();
+    if rescan {
+        // Answers back on the host bus as `RosterResolved`; the sources standing right now
+        // are re-enumerated below regardless, so a slow provider delays no card already
+        // on screen.
+        spawn_roster_resolve(env.xmux_dir.clone(), env.local_socket.clone(), mgr.events());
+        // `request_rescan` cleared every session's panes from `state.panes`; clear the
+        // loop-local pane-request dedup in lockstep so each control host's re-`list_sessions`
+        // reply actually re-issues `list-panes` (`request_session_panes` only asks for
+        // addresses not already in this set - otherwise the subtree stays "loading…" until
+        // a `%`-change or relaunch). A global clear is safe: this set gates only control
+        // hosts; poll hosts re-emit their panes regardless.
+        panes_requested.clear();
+    }
     for id in hosts.ids() {
         if let Some(host) = hosts.get(id) {
             if host.detected {
-                mgr.rescan(id, host, cols, rows);
+                if rescan {
+                    mgr.rescan(id, host, cols, rows);
+                } else {
+                    dispatch_detected_host(mgr, hosts, id, cols, rows);
+                }
                 continue;
             }
         }
         scan_or_dispatch_host(mgr, hosts, detecting, id, cols, rows);
     }
-}
-
-/// Starts each host's first scan at startup, so each host's rows stream in without
-/// waiting for a selection move. Control hosts connect a `-CC` client; poll hosts start
-/// their self-looping enumeration task - both owned by the manager. PTYs are attached
-/// as each source's sessions arrive (see [`sync_source_terminals`]).
-fn connect_all_sources(
-    mgr: &mut HostManager,
-    hosts: &crate::model::Hosts,
-    detecting: &mut HashSet<String>,
-    cols: u16,
-    rows: u16,
-    nav_width: u16,
-) {
-    // Auto height (0): the initial metadata-client size only; the display PTY and on_tick
-    // resize carry the real nav_height. (See ensure_current_host.)
-    let (cols, rows) =
-        terminal_view_size(cols, rows, crate::ui::switcher::NavSize::visible(nav_width));
-    for id in hosts.ids() {
-        scan_or_dispatch_host(mgr, hosts, detecting, id, cols, rows);
-    }
+    discover_machine_muxes(&env.roster().cfg, hosts, mgr.events());
 }
 
 /// Requests `list-panes` for each of a host's sessions whose panes have not been
@@ -1010,20 +1015,28 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
 
     // Build the world state (Runtime) + the loop's I/O (the receivers `select!` polls).
     let (mut rt, mut io) = Runtime::new(env);
-    // Kick each host's first scan here (NOT in `Runtime::new`), so a headless unit test
-    // can build a `Runtime` without launching real detection probes / control clients.
-    connect_all_sources(
-        &mut rt.mgr,
-        &rt.hosts,
-        &mut rt.detecting,
+    // Kick the shared discovery pass at launch - the same one a re-scan runs, so a fresh
+    // launch and a re-scan are functionally identical. Each host's first scan streams its
+    // rows in without waiting for a selection move: control hosts connect a `-CC` client,
+    // poll hosts start their self-looping enumeration task, both owned by the manager, and
+    // each auto machine is asked which muxes it has (a mux nobody wrote down appears as
+    // its machine answers). Deliberately off `Runtime::new` so a headless unit test can
+    // build a `Runtime` without launching real detection probes / control clients.
+    // PTYs are attached as each source's sessions arrive (see [`sync_source_terminals`]).
+    let init_size = terminal_view_size(
         rt.cols,
         rt.body_rows,
-        rt.nav_width,
+        crate::ui::switcher::NavSize::visible(rt.nav_width),
     );
-    // Then ask each auto machine which muxes it has. Deliberately last and deliberately
-    // async: the sources the config already names are painting by now, and a mux nobody
-    // wrote down appears as its machine answers.
-    discover_machine_muxes(&rt.env.roster().cfg, &rt.hosts, rt.mgr.events());
+    run_discovery(
+        &rt.env,
+        &rt.hosts,
+        &mut rt.detecting,
+        &mut rt.mgr,
+        &mut rt.panes_requested,
+        init_size,
+        false,
+    );
     // Take the worker's reply receiver out so the loop can `select!` on it while `&mut rt`
     // is borrowed for the arm body (the send half stays on `rt.worker`).
     let mut worker_events = rt.worker.take_events();
