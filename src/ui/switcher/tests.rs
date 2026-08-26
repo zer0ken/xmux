@@ -1015,15 +1015,50 @@ async fn apply_source_result_empty_shows_empty_status() {
     let mut h = Harness::from_sources(&["local"]);
     h.sw.apply_source_result("local".into(), vec![], None, &mut h.state);
     h.draw();
-    let out = h.text();
+    // The empty status lives on the HOST SCREEN the card selects; the card itself is a
+    // single host row that carries no status word.
+    let cards = h.nav_cards_text();
     assert!(
-        out.contains("no sessions"),
-        "a reachable host with no sessions reads (no sessions):\n{out}"
+        !cards.contains("no sessions"),
+        "the card carries no status word:\n{cards}"
     );
-    assert!(!out.contains("scanning"), "no longer scanning:\n{out}");
     assert!(
-        !spins(&h.nav_cards_text()),
-        "and the card stops spinning once it has its answer:\n{out}"
+        !spins(&cards),
+        "and the card stops spinning once it has its answer:\n{cards}"
+    );
+    let view = h.view_text();
+    assert!(
+        view.contains("no sessions"),
+        "the host screen reads (no sessions):\n{view}"
+    );
+    assert!(!h.text().contains("scanning"), "no longer scanning");
+}
+
+#[tokio::test]
+async fn a_reachable_empty_host_card_is_a_single_row() {
+    let mut h = Harness::from_sources(&["local"]);
+    h.sw.apply_source_result("local".into(), vec![], None, &mut h.state);
+    h.draw();
+    let idx =
+        h.sw.rows
+            .iter()
+            .position(|r| {
+                matches!(
+                    &r.reference,
+                    RowRef::Host {
+                        source,
+                        unreachable: false,
+                        scanning: false,
+                        ..
+                    } if source == "local"
+                )
+            })
+            .expect("the reachable empty host has a card");
+    assert_eq!(h.sw.card_height(idx), 1, "the card is a single row");
+    let cards = h.nav_cards_text();
+    assert!(
+        cards.contains("local"),
+        "the card still names the host:\n{cards}"
     );
 }
 

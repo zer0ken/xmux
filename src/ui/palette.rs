@@ -56,8 +56,6 @@ pub(crate) struct Palette {
     /// The box-drawing connector (`├`/`└`) hanging a card's detail line under its
     /// context line.
     pub connector: Color,
-    /// The "no sessions" status word on a reachable EMPTY host's card.
-    pub no_sessions: Color,
     /// The scroll-overflow cue (`« n more` / `n more »`) when cards run off the band.
     pub more: Color,
     /// The hint bar's background: a single ANSI slot, so the bar reads as chrome
@@ -111,7 +109,6 @@ const fn auto_dark() -> Palette {
         number: Color::DarkGray,
         separator: Color::DarkGray,
         connector: Color::DarkGray,
-        no_sessions: Color::DarkGray,
         more: Color::DarkGray,
         bar_bg: Color::DarkGray,
         bar_fg: Color::White,
@@ -140,7 +137,6 @@ const fn auto_light() -> Palette {
         number: Color::DarkGray,
         separator: Color::DarkGray,
         connector: Color::DarkGray,
-        no_sessions: Color::DarkGray,
         more: Color::DarkGray,
         bar_bg: Color::DarkGray,
         bar_fg: Color::White,
@@ -280,7 +276,6 @@ mod tests {
                 ("number", p.number),
                 ("separator", p.separator),
                 ("connector", p.connector),
-                ("no_sessions", p.no_sessions),
                 ("more", p.more),
                 ("bar_bg", p.bar_bg),
                 ("bar_fg", p.bar_fg),
@@ -326,7 +321,6 @@ mod tests {
         assert_eq!(name, "auto-light");
         assert_eq!(p.accent, Color::Green);
         assert_eq!(p.overlay, Color::DarkGray);
-        assert_eq!(p.no_sessions, Color::DarkGray);
         assert_eq!(p.border_inactive, Color::White);
         assert_eq!(p.session, Color::Black);
         assert!(resolve_theme("nope").is_none());

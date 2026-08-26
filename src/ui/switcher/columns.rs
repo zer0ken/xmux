@@ -23,6 +23,10 @@ pub(super) struct Card {
     pub(super) ctx_w: u16,
     /// Display width of the detail line (`{session}/{window}`), address column included.
     pub(super) detail_w: u16,
+    /// The card's natural line count: two for a session card, one for a single host
+    /// row (a reachable empty host). The flow measures a card from this, so a
+    /// one-line card occupies one row instead of a row and a blank.
+    pub(super) lines: u16,
 }
 
 impl Card {
@@ -87,14 +91,17 @@ pub(super) fn place(cards: &[Card], col_h: u16) -> Vec<Placed> {
         }
         for k in i..j {
             let mut collapsed = squat || (k > i && used > 0);
-            let mut h = if collapsed { 1 } else { 2 };
+            // A card's natural height is its line count; collapsing it to its detail
+            // line shrinks a two-line card to one (a one-line card is already as short
+            // as it gets).
+            let mut h = if collapsed { 1 } else { cards[k].lines };
             if used > 0 && used + h > col_h {
                 // Only reachable for a run taller than a whole column: it splits, and
                 // the continuation opens a column, so it states its context again.
                 col += 1;
                 used = 0;
                 collapsed = squat;
-                h = if collapsed { 1 } else { 2 };
+                h = if collapsed { 1 } else { cards[k].lines };
             }
             out.push(Placed {
                 col,
@@ -223,6 +230,7 @@ mod tests {
                 starts_run: k == 0,
                 ctx_w,
                 detail_w,
+                lines: 2,
             })
             .collect()
     }
@@ -294,11 +302,13 @@ mod tests {
                 starts_run: true,
                 ctx_w: 8,
                 detail_w: 20,
+                lines: 2,
             },
             Card {
                 starts_run: false,
                 ctx_w: 8,
                 detail_w: 12,
+                lines: 2,
             },
         ];
         let p = place(&cards, 8);
@@ -309,6 +319,7 @@ mod tests {
             starts_run: true,
             ctx_w: 30,
             detail_w: 12,
+            lines: 2,
         }];
         assert_eq!(widths(&cards, &place(&cards, 8), 100), vec![30]);
         assert_eq!(

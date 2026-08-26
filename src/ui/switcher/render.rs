@@ -475,6 +475,7 @@ impl Switcher {
             starts_run: !self.hangs_under_prev(i),
             ctx_w,
             detail_w,
+            lines: if self.is_one_line_host(i) { 1 } else { 2 },
         }
     }
 
@@ -548,11 +549,6 @@ impl Switcher {
         let number = Style::default().fg(color_number());
         let separator = Style::default().fg(color_separator());
         let connector = Style::default().fg(color_connector());
-        // "no sessions" reads as a quiet placeholder - italic sets it apart from the
-        // settled content without shouting, matching how a muted tone already does.
-        let no_sessions = Style::default()
-            .fg(color_no_sessions())
-            .add_modifier(Modifier::ITALIC);
         // `numbered` is the detail line, the only line the address column writes on: a
         // context line spends the same width blank so the two stay in one column.
         let address = move |numbered: bool| -> Vec<Span<'static>> {
@@ -581,6 +577,9 @@ impl Switcher {
             let (host, mux, _) = context_of(row);
             let pending = Style::default().fg(palette::get().pending);
             let mut line1 = address(false);
+            // A reachable empty host is a single host row: no session and no status
+            // word to carry, so the context line alone IS the card.
+            let one_line = !*unreachable && !*scanning;
             // A machine serving several muxes has one host card per mux, so the mux has
             // to be on the line or the two cards read identically. It is spanned exactly
             // as a session card's context line is - host, separator, mux - because a
@@ -604,6 +603,9 @@ impl Switcher {
                 line1.push(Span::styled(spinner_glyph.to_string(), pending));
             }
             line1.push(Span::raw(" "));
+            if one_line {
+                return vec![Line::from(line1)];
+            }
             let mut line2 = address(true);
             if *scanning {
                 // The session level, once the mux above it is settled.
@@ -612,12 +614,12 @@ impl Switcher {
                     line2.push(Span::raw(" "));
                 }
             } else {
-                let style = if *unreachable {
-                    Style::default().fg(palette::get().danger)
-                } else {
-                    no_sessions
-                };
-                line2.push(Span::styled(format!("{} ", row.line2), style));
+                // A reachable empty host returned as a single row above, so a settled
+                // card reaching here is an unreachable one: its status word is danger.
+                line2.push(Span::styled(
+                    format!("{} ", row.line2),
+                    Style::default().fg(palette::get().danger),
+                ));
             }
             return vec![Line::from(line1), Line::from(line2)];
         }
