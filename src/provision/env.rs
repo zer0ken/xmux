@@ -469,6 +469,14 @@ impl Env {
 /// onto a different stop and the rows do not line up. Instead each column is
 /// padded to the widest cell in the group, so the group's rows share one
 /// vertical line regardless of the terminal's tab-stop configuration.
+fn window_word(n: i64) -> String {
+    if n == 1 {
+        "1 window".to_string()
+    } else {
+        format!("{n} windows")
+    }
+}
+
 pub fn ls_lines_one(g: &Group) -> (Vec<String>, Option<String>) {
     if let Some(err) = &g.err {
         return (
@@ -485,7 +493,7 @@ pub fn ls_lines_one(g: &Group) -> (Vec<String>, Option<String>) {
     let nw_w = g
         .sessions
         .iter()
-        .map(|s| format!("{}w", s.windows).len())
+        .map(|s| window_word(s.windows).len())
         .max()
         .unwrap_or(0);
     let lines = g
@@ -493,9 +501,9 @@ pub fn ls_lines_one(g: &Group) -> (Vec<String>, Option<String>) {
         .iter()
         .map(|s| {
             format!(
-                "{:<addr_w$}  {:>nw_w$}  attached={}",
+                "{:<addr_w$}  {:<nw_w$}  attached={}",
                 s.address(),
-                format!("{}w", s.windows),
+                window_word(s.windows),
                 s.attached
             )
         })
@@ -738,8 +746,8 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "local/editor  2w  attached=true",
-                "local/build   1w  attached=false"
+                "local/editor  2 windows  attached=true",
+                "local/build   1 window   attached=false"
             ]
         );
         assert!(unreachable.is_none());
