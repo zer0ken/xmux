@@ -360,6 +360,14 @@ pub fn supported_muxes() -> Vec<&'static str> {
 /// milliseconds when it is there and fails at once when it is not.
 const DETECT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
 
+/// The per-probe budget for a REMOTE machine. A probe there is one ssh round trip per
+/// command, and a mux like screen falls through three probes (`help`, `-V`, `-v`)
+/// before it answers, so its whole detect must fit one budget. Longer than
+/// [`DETECT_TIMEOUT`] because the round trips dominate; remote discovery is async and
+/// off the loop, so nothing waits on it. The detection LOGIC is the same as local - a
+/// slower link just gets more time, never a different question.
+const DETECT_TIMEOUT_REMOTE: std::time::Duration = std::time::Duration::from_secs(6);
+
 /// Which mux is installed on the machine `transport` reaches, out of the ones xmux can
 /// drive ([`supported_muxes`]).
 ///
@@ -380,11 +388,18 @@ const DETECT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(150
 pub async fn installed_muxes(transport: &dyn Transport, runner: &dyn Runner) -> Vec<String> {
     // Probe every candidate mux CONCURRENTLY (each with the same `DETECT_TIMEOUT`
     // budget) rather than one after another, so a machine's mux set resolves in ~one
-    // probe-time instead of the sum of them.
+    // probe-time instead of the sum of them. A remote machine gets the longer remote
+    // budget: its probe is ssh round trips, and a mux that needs several probes would
+    // otherwise time out before its last one answers.
     let names = supported_muxes();
+    let budget = if transport.is_remote() {
+        DETECT_TIMEOUT_REMOTE
+    } else {
+        DETECT_TIMEOUT
+    };
     let futures = names.iter().map(|name| async {
         let probe = detect_backend(transport, name, runner);
-        match tokio::time::timeout(DETECT_TIMEOUT, probe).await {
+        match tokio::time::timeout(budget, probe).await {
             Ok(Some(mux)) => mux.kind() == *name,
             _ => false,
         }
