@@ -11,6 +11,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use tokio::io::AsyncReadExt;
 
 use crate::provision::config::Config;
 use crate::session;
@@ -52,6 +53,8 @@ impl Runner for ExecRunner {
         // wrecking the app's raw mode until ssh exits — the terminal then echoes keys
         // and only flushes input on Enter.
         cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
         cmd.kill_on_drop(true); // a cancelled (timed-out) scan kills the child
         cmd.env_clear();
         for (k, v) in std::env::vars() {
@@ -59,16 +62,45 @@ impl Runner for ExecRunner {
                 cmd.env(k, v);
             }
         }
-        let output = cmd
-            .output()
-            .await
-            .map_err(|e| RunError::Other(e.to_string()))?;
-        if output.status.success() {
-            Ok(output.stdout)
+        let mut child = cmd.spawn().map_err(|e| RunError::Other(e.to_string()))?;
+        let mut stdout = child.stdout.take().expect("spawn with piped stdout");
+        let mut stderr = child.stderr.take().expect("spawn with piped stderr");
+
+        // The command applies its OWN budget here so a timeout can tear the child down
+        // cleanly — kill, reap, then drain both pipes to EOF — instead of the sweep's
+        // cancellation dropping the `output()` future while pipe reads are still in
+        // flight. On Windows that in-flight close crashes as "IO is still pending on
+        // closed socket" (0xC0000005, the enumeration_failed in issue #116); draining
+        // to EOF guarantees no read is pending when the handles drop. The sweep-level
+        // budget (within_poll_budget) is one second longer so this teardown always wins.
+        let deadline = tokio::time::sleep(crate::mux::POLL_CMD_TIMEOUT);
+        tokio::pin!(deadline);
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let status = tokio::select! {
+            _ = &mut deadline => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                // Drain to EOF so the pipes close with no pending read.
+                let _ = stdout.read_to_end(&mut out).await;
+                let _ = stderr.read_to_end(&mut err).await;
+                return Err(RunError::Other(format!(
+                    "{name} did not answer within {}s",
+                    crate::mux::POLL_CMD_TIMEOUT.as_secs()
+                )));
+            }
+            status = child.wait() => status.map_err(|e| RunError::Other(e.to_string()))?,
+        };
+        // The child exited: drain whatever is buffered, then classify. Reading to EOF
+        // here too means the handles close only with no read in flight.
+        let _ = stdout.read_to_end(&mut out).await;
+        let _ = stderr.read_to_end(&mut err).await;
+        if status.success() {
+            Ok(out)
         } else {
             Err(RunError::Exit {
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-                code: output.status.code().unwrap_or(-1),
+                stderr: String::from_utf8_lossy(&err).into_owned(),
+                code: status.code().unwrap_or(-1),
             })
         }
     }
@@ -243,5 +275,72 @@ mod tests {
             sock.clone(),
         );
         assert_eq!(p.kind.local_socket(), sock);
+    }
+
+    /// The echo command for the host platform (test-only): `cmd /C echo` on Windows,
+    /// `sh -c` elsewhere — keeps the runner test portable.
+    fn echo_cmd(text: &str) -> (String, Vec<String>) {
+        #[cfg(windows)]
+        {
+            ("cmd".into(), vec!["/C".into(), "echo".into(), text.into()])
+        }
+        #[cfg(not(windows))]
+        {
+            ("sh".into(), vec!["-c".into(), format!("echo {text}")])
+        }
+    }
+
+    #[tokio::test]
+    async fn exec_runner_captures_stdout() {
+        let (name, args) = echo_cmd("hello-xmux");
+        let out = ExecRunner
+            .run(&name, &args)
+            .await
+            .unwrap_or_else(|e| panic!("echo failed: {e:?}"));
+        assert!(
+            String::from_utf8_lossy(&out).contains("hello-xmux"),
+            "stdout captured, got {:?}",
+            String::from_utf8_lossy(&out)
+        );
+    }
+
+    // LIVE: the timeout path runs a real hung command for the full POLL_CMD_TIMEOUT
+    // (6s), so it is ignored and run on demand:
+    //   cargo test --lib model::source::tests::exec_runner_times_out_and_kills -- --ignored
+    // It asserts the command's own budget returns a timeout error AND that the child is
+    // reaped (the process is gone) rather than left behind — the teardown that on
+    // Windows avoids the "IO is still pending on closed socket" crash (#116).
+    #[ignore = "live: sleeps for the full 6s command budget"]
+    #[tokio::test]
+    async fn exec_runner_times_out_and_kills() {
+        // A command that outlives the budget: `sleep 30` on sh, `timeout 30` on cmd.
+        #[cfg(windows)]
+        let (name, args) = (
+            "cmd",
+            vec![
+                "/C".to_string(),
+                "timeout".to_string(),
+                "/t".to_string(),
+                "30".to_string(),
+            ],
+        );
+        #[cfg(not(windows))]
+        let (name, args) = ("sh", vec!["-c".to_string(), "sleep 30".to_string()]);
+        let t0 = std::time::Instant::now();
+        let err = ExecRunner
+            .run(name, &args)
+            .await
+            .expect_err("must time out");
+        assert!(
+            err.to_string().contains("did not answer"),
+            "timeout names the hung command, got {err:?}"
+        );
+        // The budget is the 6s command budget (plus scheduling slack), NOT the full 30s
+        // hang — proof the child was killed and not left running.
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(20),
+            "child was killed and reaped, took {:?}",
+            t0.elapsed()
+        );
     }
 }

@@ -92,25 +92,32 @@ pub(crate) fn reason_is_no_sessions(text: &str) -> bool {
     })
 }
 
-/// The per-command budget for one poll sweep. The poll loop's ticker only advances
-/// after `poll_once` RETURNS, so a single mux command that never answers freezes that
-/// host's whole inventory: every card stays on its loading spinner and no later sweep
-/// ever runs. A command that outlives this is abandoned (the child is killed on drop)
-/// and retried on the next sweep. Exceeds the ssh connect timeout (5s) so a slow remote
-/// is not mistaken for a hung one.
+/// The per-command budget [`ExecRunner`] applies to itself, so a command that never
+/// answers is torn down cleanly (kill → drain → wait) rather than the sweep's
+/// cancellation dropping pipe reads in flight (which crashes on Windows — see
+/// `source.rs`). Exceeds the ssh connect timeout (5s) so a slow remote is not mistaken
+/// for a hung one.
 pub(crate) const POLL_CMD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
 
-/// Runs `fut` under [`POLL_CMD_TIMEOUT`], mapping a timeout to a [`RunError`] naming
+/// The sweep-level backstop around `runner.run`, one second longer than
+/// [`POLL_CMD_TIMEOUT`] so a real command's own clean teardown always finishes before
+/// this fires. It exists to bound a runner that does NOT self-limit — a fake runner
+/// under test, or a future runner that forgets its own budget — so a hung command can
+/// never freeze the whole poll sweep.
+const POLL_SWEEP_BUDGET: std::time::Duration =
+    std::time::Duration::from_secs(POLL_CMD_TIMEOUT.as_secs() + 1);
+
+/// Runs `fut` under [`POLL_SWEEP_BUDGET`], mapping a timeout to a [`RunError`] naming
 /// the budget it blew.
 async fn within_poll_budget<T>(
     what: &str,
     fut: impl std::future::Future<Output = Result<T, RunError>>,
 ) -> Result<T, RunError> {
-    match tokio::time::timeout(POLL_CMD_TIMEOUT, fut).await {
+    match tokio::time::timeout(POLL_SWEEP_BUDGET, fut).await {
         Ok(r) => r,
         Err(_) => Err(RunError::Other(format!(
             "{what} did not answer within {}s",
-            POLL_CMD_TIMEOUT.as_secs()
+            POLL_SWEEP_BUDGET.as_secs()
         ))),
     }
 }
