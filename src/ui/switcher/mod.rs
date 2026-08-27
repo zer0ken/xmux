@@ -27,13 +27,6 @@ pub use crate::ui::ops::{run_op, OpResult, Ops};
 /// Tree pane width: border + 1-cell inner padding each side + content.
 pub const NAV_WIDTH: u16 = 48;
 
-/// A scanning host card's height: two screen rows, so its spinner can stand in the
-/// second (session-level) row. Every other row - a section title, a session card, a
-/// settled host card - is one row tall; the layout is measured from
-/// [`Switcher::card_height`] alone, and the paint records the rect it gave each card, so
-/// the screen-row-to-card mapping has one answer.
-pub(super) const CARD_H: u16 = 2;
-
 /// How much taller than wide a terminal cell is. A row is about two half-width columns
 /// high in every font a terminal ships with, so an aspect measured in CELLS is not the
 /// aspect the user sees: 60 columns over 30 rows is a square window, not a landscape one.
@@ -469,16 +462,6 @@ impl Switcher {
             .filter(|(_, r)| r.selectable())
             .map(|(i, _)| i)
             .collect()
-    }
-
-    /// The screen rows card `i` occupies: one for a section title, a session card, and
-    /// a settled host-state card; two for a scanning host card, whose spinner needs a
-    /// second row.
-    fn card_height(&self, i: usize) -> u16 {
-        match &self.rows[i].reference {
-            RowRef::Host { scanning: true, .. } => CARD_H,
-            _ => 1,
-        }
     }
 
     /// Whether card `i` opens a new unit in the portrait column flow: a section title

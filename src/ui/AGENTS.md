@@ -91,13 +91,10 @@ flatten renders for the dump verb.
   that offered the host, the config stanza it was reached through) is stated on the
   screen that card selects. A card is only as wide as the nav, so a reason on it is a
   cut-down copy of one the screen already holds whole.
-- A card that is waiting turns ONE spinner, in the first of its levels that has not
-  resolved (the mux, then the session, both on a scanning host's card); every level
-  behind it stays blank. A
-  second spinner on one card would say two separate things are in flight, when the
-  card is waiting on exactly one answer. A level that has settled shows its value, and
-  a settled session card is a plain session card - no spinner, because a session is
-  never waiting once its host has resolved.
+- A card that is waiting turns ONE spinner, trailing the line of a scanning
+  host card in the same place whatever the host has or has not resolved, so all
+  scanning cards read as the same thing loading. A settled card shows its value and
+  no spinner - a session is never waiting once its host has resolved.
 - Every in-flight marker in this layer reads its glyph from the one spinner helper on
   the frame the chrome advances, cards and the hint bar's scan progress alike, so
   nothing on screen turns out of step with anything else.
@@ -111,6 +108,12 @@ flatten renders for the dump verb.
   Which parting applies is decided in the side list's placement, and the boundary itself is
   one question asked once (the first host-state card), so the paint, the hit-test and the
   scrollbar cannot part the list in three places.
+- A list with NOTHING but host-state cards (no session has a session to show) is the host
+  band alone, and it still takes its side of the split: anchored to the BOTTOM in the side
+  list, to the RIGHT edge in the portrait flow, with the blank rows/columns opposite being
+  where the sessions that will be found land. As each source resolves, its section and
+  cards move to the top / left, so a scan reads as the pending hosts draining toward the
+  sessions they become.
 - A card's rect is decided by the PAINT and read back from it, in both layouts. Neither
   layout puts cards on a fixed row pitch (heights vary, the side list parts its bands, the
   portrait flow runs columns), so a hit-test that measured its own pitch would land clicks

@@ -252,10 +252,9 @@ impl Switcher {
     /// the section titles + session cards over the host-state cards, laid out by
     /// [`side::place`] - the one geometry the paint, the mouse hit-test and the
     /// scrollbar all read.
-    ///
-    /// Card heights vary only by kind (one row for a section title, a session card,
-    /// and a settled host card; two for a scanning host card), so a card's rect is
-    /// recorded as it paints rather than derived a second time from a row pitch.
+    /// Card heights are uniform - every navigation row, section title, session card, and
+    /// host-state card alike, is one screen row - so a card's rect is recorded as it
+    /// paints rather than derived a second time from a row pitch.
     /// `list_state` carries the settled scroll position for the next frame to resume
     /// from, and the selected card is painted in the terminal theme's own selected look
     /// by inverting its rect, so the card spans bake in no background of their own.
@@ -266,7 +265,7 @@ impl Switcher {
         num_w: usize,
         spinner_glyph: char,
     ) {
-        let heights: Vec<u16> = (0..self.rows.len()).map(|i| self.card_height(i)).collect();
+        let heights = vec![1u16; self.rows.len()];
         // The placement decides whether the list scrolls, and the strip is a COLUMN, so
         // reserving it after the fact takes nothing away from what was just laid out.
         let flow = side::place(
@@ -562,7 +561,7 @@ impl Switcher {
         columns::Card {
             starts_run: self.starts_run(i),
             width: w(0),
-            lines: self.card_height(i),
+            lines: 1,
         }
     }
 
@@ -599,13 +598,10 @@ impl Switcher {
         let accent = Style::default().fg(palette::get().accent);
         let number = Style::default().fg(color_number());
         let separator = Style::default().fg(color_separator());
-        // `numbered` is the line the address column writes on - the only line, now that
-        // a card has none other. A section title never calls it numbered: it carries no
-        // number and is never the selection.
-        let address = move |numbered: bool| -> Vec<Span<'static>> {
-            if !numbered {
-                return vec![Span::raw(" ".repeat(num_w + 1))];
-            }
+        // The address column every card writes on - the only line, now that a card has
+        // none other. A section title never calls it: it carries no number and is never
+        // the selection.
+        let address = move || -> Vec<Span<'static>> {
             if selected {
                 vec![Span::styled(format!("{SELECTED_MARK:>num_w$} "), accent)]
             } else {
@@ -638,14 +634,14 @@ impl Switcher {
             return vec![Line::from(spans)];
         }
 
-        // Host-state card: a settled host (reachable empty or unreachable) reads as a
-        // single row - the host name over nothing, because the only word a settled host
-        // had (`⚠ unreachable`) now rides on the host row itself as a mark. The mark is
-        // danger and sits flush after the host name, so the card names
-        // WHAT it is (host/mux) while the mark colours its state; the mux - the lowest
-        // level the card displays - takes the accent. A card still SCANNING has no
-        // settled mux to accent: the spinner stands in the level that has not resolved,
-        // in that one level only, and the mux stays text beside it.
+        // Host-state card: a settled host (reachable empty or unreachable) and a
+        // scanning host read the same way, one row: the host name, the state mark that
+        // rides it (`⚠` unreachable), the confirmed mux, and - while the host is still
+        // scanning - ONE spinner trailing the line. The spinner always stands in that
+        // one trailing place whether or not the mux is already known, so every scanning
+        // card reads as the same thing loading. The mux is accent whenever it is shown:
+        // flatten emits it only once confirmed, so a card never shows a mux it is not
+        // sure of, and the mux it shows is a settled fact even while its sessions stream.
         if let RowRef::Host {
             unreachable,
             scanning,
@@ -656,9 +652,8 @@ impl Switcher {
             let pending = Style::default().fg(palette::get().pending);
             // A host-state card's number sits on the host/mux line: the row is a word
             // about the host, not the thing the number names.
-            let one_line = !*scanning;
-            let mut line1 = address(true);
-            line1.push(Span::styled(
+            let mut line = address();
+            line.push(Span::styled(
                 host.to_string(),
                 Style::default().fg(color_text()),
             ));
@@ -666,41 +661,22 @@ impl Switcher {
                 // The mark rides the host row flush after the host name.
                 // Danger keeps its colour: an unreachable host is still a failure, the
                 // card just says so with a mark instead of a second row of text.
-                line1.push(Span::styled(
+                line.push(Span::styled(
                     "⚠",
                     Style::default().fg(palette::get().danger),
                 ));
             }
             if !mux.is_empty() {
-                line1.push(Span::styled("/", separator));
-                // A settled host's mux is the lowest level it displays, so it takes the
-                // accent (there is no session to take it); a scanning host's mux is
-                // context still being pinned down, so it stays text beside the spinner.
-                let mux_style = if *scanning {
-                    Style::default().fg(color_text())
-                } else {
-                    accent
-                };
-                line1.push(Span::styled(mux.to_string(), mux_style));
-            } else if *scanning {
-                // A source id names its mux only when its machine serves several, so on
-                // the rest the mux is genuinely not known yet: the scan stamps it onto
-                // the sessions it finds. The spinner sits where that name will land.
-                line1.push(Span::styled("/", separator));
-                line1.push(Span::styled(spinner_glyph.to_string(), pending));
+                line.push(Span::styled("/", separator));
+                // The mux is confirmed whenever it is shown, so it takes the accent
+                // even while the host still scans for its sessions.
+                line.push(Span::styled(mux.to_string(), accent));
             }
-            line1.push(Span::raw(" "));
-            if one_line {
-                return vec![Line::from(line1)];
+            if *scanning {
+                line.push(Span::styled(format!(" {spinner_glyph}"), pending));
             }
-            // A scanning host's second row holds the session-level spinner once its mux
-            // is known; with the mux unknown the spinner already stands on row one.
-            let mut line2 = address(false);
-            if !mux.is_empty() {
-                line2.push(Span::styled(spinner_glyph.to_string(), pending));
-                line2.push(Span::raw(" "));
-            }
-            return vec![Line::from(line1), Line::from(line2)];
+            line.push(Span::raw(" "));
+            return vec![Line::from(line)];
         }
 
         // Session card: the address column + the session name on a single detail line.
@@ -708,7 +684,7 @@ impl Switcher {
         // and there is no connector - the title draws the group. The session name is
         // the lowest level the card displays, so it takes the accent and stays bold.
         let (_, _, sess) = context_of(row);
-        let mut detail = address(true);
+        let mut detail = address();
         detail.push(Span::styled(
             sess.to_string(),
             accent.add_modifier(Modifier::BOLD),

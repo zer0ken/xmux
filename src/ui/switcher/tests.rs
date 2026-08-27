@@ -491,16 +491,6 @@ async fn panes_are_not_selectable() {
     assert!(saw_session, "navigation reaches session cards");
 }
 
-/// The first card's two lines, trimmed of the padding that keeps the columns aligned,
-/// so an assertion reads the card's CONTENT.
-fn card_rows(h: &Harness) -> Vec<String> {
-    h.nav_cards_text()
-        .lines()
-        .take(2)
-        .map(|l| l.trim().to_string())
-        .collect()
-}
-
 /// Whether `s` holds a spinner frame: the marker of a level that has not resolved.
 fn spins(s: &str) -> bool {
     s.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c))
@@ -553,34 +543,32 @@ async fn from_sources_renders_scanning_skeletons() {
 }
 
 #[tokio::test]
-async fn the_spinner_marks_the_first_unresolved_level_only() {
-    // A card names two levels over two lines - `{host}/{mux}` over `{session}/{window}` -
-    // and while it waits, ONE spinner stands in the first of those levels that has no
-    // answer yet. It says WHICH answer is outstanding, not merely that the card is busy,
-    // which is why a second spinner never joins it further down the card.
+async fn a_scanning_host_card_is_one_line_with_a_trailing_spinner() {
+    // Every navigation row is one line now, a scanning host included: the host name,
+    // the confirmed mux, and ONE spinner trailing the line - in the same trailing
+    // place whether or not the mux is already known, so all scanning cards read alike
+    // and none leaves a blank second row.
     use super::render::SELECTED_MARK;
     let sp = crate::ui::spinner_glyph(0);
+    let non_empty = |h: &Harness| {
+        h.nav_cards_text()
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+    };
 
-    // A bare source id does not name its mux (only a machine serving several qualifies
-    // its ids), so the mux is the level in flight and the session line stays empty.
+    // A bare source id has no confirmed mux yet: the card is host + trailing spinner.
     let h = Harness::from_sources(&["local"]);
-    let card = card_rows(&h);
-    assert_eq!(
-        card[0],
-        format!("{SELECTED_MARK} local/{sp}"),
-        "the host line carries the mark and the mux level spins"
-    );
-    assert_eq!(card[1], "", "and nothing below it does");
+    let rows = non_empty(&h);
+    assert_eq!(rows.len(), 1, "one row, no blank second line:\n{rows:?}");
+    assert_eq!(rows[0], format!("{SELECTED_MARK} local {sp}"));
 
-    // A qualified id already names its mux, so the session level is the one in flight.
+    // A qualified id already confirms its mux: same shape, the mux in the middle.
     let h = Harness::from_sources(&["local:zellij"]);
-    let card = card_rows(&h);
-    assert_eq!(
-        card[0],
-        format!("{SELECTED_MARK} local/zellij"),
-        "the mux is known"
-    );
-    assert_eq!(card[1], sp.to_string(), "so the session level spins");
+    let rows = non_empty(&h);
+    assert_eq!(rows.len(), 1, "one row, no blank second line:\n{rows:?}");
+    assert_eq!(rows[0], format!("{SELECTED_MARK} local/zellij {sp}"));
 }
 
 #[tokio::test]
@@ -931,22 +919,6 @@ async fn a_reachable_empty_host_card_is_a_single_row() {
     let mut h = Harness::from_sources(&["local"]);
     h.sw.apply_source_result("local".into(), vec![], None, &mut h.state);
     h.draw();
-    let idx =
-        h.sw.rows
-            .iter()
-            .position(|r| {
-                matches!(
-                    &r.reference,
-                    RowRef::Host {
-                        source,
-                        unreachable: false,
-                        scanning: false,
-                        ..
-                    } if source == "local"
-                )
-            })
-            .expect("the reachable empty host has a card");
-    assert_eq!(h.sw.card_height(idx), 1, "the card is a single row");
     let cards = h.nav_cards_text();
     assert!(
         cards.contains("local"),
@@ -2157,21 +2129,22 @@ async fn a_scrolling_list_parts_its_bands_with_a_rule() {
 
 #[tokio::test]
 async fn the_bands_never_touch_on_screen() {
-    // 26 session cards plus a still-scanning host card fill this nav's rows exactly (a
-    // scanning card is the one host-state card still two rows tall - a settled host is a
-    // single row now), so the parting has no row left to take: rather than let the bands
-    // meet, the list scrolls a row early and the rule takes the boundary's row.
+    // 27 session cards plus a still-scanning host card fill this nav's rows exactly
+    // (every card is one row now), so the parting has no row left to take: rather than
+    // let the bands meet, the list scrolls a row early and the rule takes the boundary's
+    // row. Scroll to the boundary first - the host sits below the fold at the top.
     let mut h = Harness::from_sources(&["local", "db-2"]);
-    let sessions: Vec<crate::session::Session> = (0..26)
-        .map(|i| sess("local", &format!("s{i}"), 1, false, (26 - i) as i64))
+    let sessions: Vec<crate::session::Session> = (0..27)
+        .map(|i| sess("local", &format!("s{i}"), 1, false, (27 - i) as i64))
         .collect();
     h.sw.apply_source_result("local".into(), sessions, None, &mut h.state);
     h.draw();
-    let cards: u16 = (0..h.sw.rows.len()).map(|i| h.sw.card_height(i)).sum();
+    let cards: u16 = h.sw.rows.len() as u16;
     assert_eq!(
         cards, h.sw.nav_inner.height,
         "the precondition: the cards alone fill the region exactly"
     );
+    h.key(KeyCode::End).await; // scroll down to the boundary
     let boundary = h.sw.band_boundary().expect("the list has a host card");
     let host = card_rect(&h, boundary);
     let last_session = card_rect(&h, boundary - 1);
@@ -2194,6 +2167,57 @@ async fn the_bands_never_touch_on_screen() {
         (h.sw.nav_inner.y..h.sw.nav_inner.y + h.sw.nav_inner.height)
             .any(|y| h.buf()[(strip, y)].symbol().trim() != ""),
         "the scrollbar strip is reserved and drawn"
+    );
+}
+
+#[tokio::test]
+async fn scanning_hosts_anchor_to_the_bottom_until_found() {
+    // Before ANY session is found, every host is a scanning card and the nav is the
+    // host band ALONE: it anchors to the BOTTOM, the blank rows above it being where
+    // the sessions that will be found land.
+    let h = Harness::from_sources(&["local", "jupiter00"]);
+    let txt = h.nav_cards_text();
+    let rows: Vec<&str> = txt.lines().collect();
+    let region_bottom = (h.sw.nav_inner.y + h.sw.nav_inner.height) as usize;
+    let card_rows: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| !l.trim().is_empty())
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        card_rows,
+        vec![region_bottom - 2, region_bottom - 1],
+        "both scanning hosts sit on the bottom edge:\n{card_rows:?}"
+    );
+    assert!(
+        card_rows[0] > 0,
+        "blank rows stand above them, where found sessions will land"
+    );
+    // One source resolves: its section and cards MOVE to the top, the other stays below.
+    let mut h = Harness::from_sources(&["local", "jupiter00"]);
+    h.sw.apply_source_result(
+        "local".into(),
+        vec![sess("local", "editor", 1, false, 100)],
+        None,
+        &mut h.state,
+    );
+    h.draw();
+    let section =
+        h.sw.rows
+            .iter()
+            .position(|r| matches!(&r.reference, RowRef::Section { .. }))
+            .expect("the resolved source gains a section title");
+    assert_eq!(card_rect(&h, section).y, 0, "the section leads the list");
+    assert_eq!(card_rect(&h, section + 1).y, 1, "its card follows");
+    let host =
+        h.sw.rows
+            .iter()
+            .position(|r| matches!(&r.reference, RowRef::Host { .. }))
+            .expect("the still-scanning host keeps a card");
+    assert!(
+        card_rect(&h, host).y > card_rect(&h, section + 1).y,
+        "the undiscovered host stays below the found session"
     );
 }
 
@@ -3787,6 +3811,47 @@ fn the_portrait_band_parts_sessions_left_and_hosts_right() {
         "the host band sits flush against the right edge (gap parting)"
     );
     assert!(host.x > sess.x + sess.width, "blank columns part the bands");
+}
+
+#[test]
+fn portrait_scanning_hosts_anchor_to_the_right_until_found() {
+    // Before ANY session is found, the portrait band is the host band ALONE: it anchors
+    // to the RIGHT edge, the blank columns left of it being where found sessions land.
+    let scan = Scan {
+        groups: vec![
+            Group {
+                source: "local".into(),
+                err: None,
+                sessions: vec![],
+            },
+            Group {
+                source: "jupiter00".into(),
+                err: None,
+                sessions: vec![],
+            },
+            Group {
+                source: "prod".into(),
+                err: None,
+                sessions: vec![],
+            },
+        ],
+    };
+    let (sw, term) = portrait(scan, 60, 12);
+    let cells = cells_of(&sw);
+    let band_w = term.backend().buffer().area.width;
+    let x0 = cells[&0].x;
+    assert!(
+        x0 > 0,
+        "the host band leaves blank columns on the left:\n{cells:?}"
+    );
+    assert_eq!(
+        cells[&0].x + cells[&0].width,
+        band_w,
+        "and sits flush against the right edge"
+    );
+    for i in 1..3 {
+        assert_eq!(cells[&i].x, x0, "every scanning host shares that column");
+    }
 }
 
 #[test]

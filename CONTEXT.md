@@ -179,7 +179,11 @@ UI elements a user perceives as distinct things:
   horizontal: the session columns hold the left edge, the host band is pushed to the
   right while a blank column parts them, and a vertical rule takes the boundary's column
   once they cannot (the run scrolls a column early for the same reason). Neither parting
-  is a card, so a click on one selects nothing.
+  is a card, so a click on one selects nothing. A list with NOTHING but host cards is
+  the host band alone, and it still takes its side of the split: anchored to the
+  bottom (side) / right edge (portrait), the blank rows or columns opposite being where
+  the sessions that will be found land, so a scan reads as the pending hosts draining
+  toward the sessions they become.
 - level color - the per-segment card color, from the palette. Every foreground role
   is ANSI-16, so the terminal theme resolves the hue. There is one TEXT colour, one
   ACCENT, and the section title's quiet header role: a session card reads as one
@@ -197,8 +201,8 @@ UI elements a user perceives as distinct things:
   was resolved from what the machine actually serves; a section title's mux is
   confirmed the same way, because the source's enumeration answered through it. A
   bare-id host that is unreachable
-  or still scanning claims none: the card reads the host alone, or spins in the mux
-  position while it scans.
+  or still scanning claims none: the card reads the host alone. A scanning card's
+  spinner trails its line in one fixed place, whatever the host has or has not resolved.
   The hint bar is two slots as well. Nothing here
   is an RGB value; see "Colour ownership" below for why, and `[ui] selection-style` /
   `[ui] hint-bar-style` for naming one anyway.
@@ -240,11 +244,12 @@ UI elements a user perceives as distinct things:
   portrait band's resting bar paints its text plus a cell of padding and stops, because it
   shares that row with the offscreen counts and a full-width slab of bar colour across a
   wide window is a lot of paint for one word.
-- spinner - the braille activity glyph marking a level that has not resolved. One
+- spinner - the braille activity glyph marking the work still in flight. One
   glyph and one frame counter for the whole UI, so every marker on screen turns
-  together. It stands on a SCANNING host's card (in the level that has not resolved),
-  and on the hint bar's global scan count; a settled session card never spins, because
-  a session is a plain session card the moment its host resolves.
+  together. It stands on a SCANNING host's card, trailing the line in the same place
+  every scanning card uses, and on the hint bar's global scan count; a settled session
+  card never spins, because a session is a plain session card the moment its host
+  resolves.
 - status - a host-state card's state once it has SETTLED: the unreachable host's `⚠`
   mark riding after its host name, or nothing at all on a reachable empty host
   (whose screen states "no sessions"); a card still scanning carries the spinner

@@ -118,20 +118,19 @@ no function, and no test, so renaming code is never a documentation change.
   mux session untouched: it is never killed or altered by exiting.
 - **FR-B6** - Under a filter, `Enter` attaches the **visible (filtered)** session,
   never a filtered-out one, even when a host row is selected.
-- **FR-B7** - A card that is WAITING turns ONE spinner, standing in the first of its
-  levels that has no answer yet: the mux while the source's own id does not name one,
-  the session while the source is still being listed. The levels behind it stay blank,
-  so the card says WHICH answer is outstanding instead of only that it is busy, and no
-  status word repeats what the spinner already says. The nav's scan progress turns the
-  same spinner on the same frame. A session is a plain session card from the moment its
-  host resolves - no card spins for a resolved session. A card that has SETTLED reads a
+- **FR-B7** - A card that is WAITING turns ONE spinner trailing its line, in the
+  same place whatever the host has or has not resolved, so every scanning card reads as
+  the same thing loading and none leaves a blank second row. The nav's scan progress
+  turns the same spinner on the same frame. A session is a plain session card from the
+  moment its host resolves - no card spins for a resolved session. A card that has
+  SETTLED reads a
   word only when it has one to carry: an unreachable host carries its `⚠` mark after
   the host name, while a reachable empty host is a single host row with
   no status word, and its view screen states `no sessions`. A host-state card claims a
   mux only when the mux is CONFIRMED: a settled reachable host's enumeration answered
   through its mux, and a source id that names its own mux was resolved from what the
   machine actually serves. A bare-id host that is unreachable or still scanning claims
-  none - the card reads the host alone, or spins in the mux position while it scans.
+  none - the card reads the host alone.
   The word is all a card
   carries: WHY a host failed is stated on
   its view screen, which has the room to keep a tool's diagnostic whole, while a card
@@ -240,7 +239,11 @@ no function, and no test, so renaming code is never a documentation change.
   alone would fill it. Neither the gap nor the rule is a card: a click on either moves
   nothing. In the portrait band the parting is the same statement on the other axis: the
   session columns hold the left edge, the host band is pushed to the right while a blank
-  column parts them, and a vertical rule takes the boundary's column once they cannot.
+  column parts them, and a vertical rule takes the boundary's column once they cannot. A
+  list with NOTHING but host cards is the host band alone, and it still takes its side of
+  the split: anchored to the bottom (side) / right edge (portrait), the blank rows or
+  columns opposite being where the sessions that will be found land, so a scan reads as
+  the pending hosts draining toward the sessions they become.
 - **FR-B20** - A host and its mux are SHOWN as one label, `{host}/{mux}`, wherever the pair
   is read: a nav section title, the screen a card selects, the doctor's source list.
   Always that separator, never the one a source id parts its two halves with, because an id
@@ -251,7 +254,8 @@ no function, and no test, so renaming code is never a documentation change.
   mux where no session carries one, so a card and its source's title cannot name it two
   ways. The
   one thing that omits it is a mux nothing knows yet: there is no name to write, and the
-  card turns its spinner in that place instead. A session's own ADDRESS is unaffected - it
+  card reads the host alone with its trailing spinner for the work still in flight. A
+  session's own ADDRESS is unaffected - it
   is what the user types and what xmux is sent, so its grammar is the id's.
 
 ## C. Switching (the keystone)
@@ -432,5 +436,5 @@ The seamless cross-host switch is bought with three costs, accepted by design:
   so when it cannot. A value is never guessed, assumed, or shown as a fact
   before it is one: a mux appears on a card only when the enumeration
   answered through it or the machine was resolved to serve it, an unresolved
-  level turns a spinner instead of a value, and a failure keeps its own
+  host card turns a spinner instead of a value, and a failure keeps its own
   state colour while the reason is stated on the screen. *(FR-B7)*

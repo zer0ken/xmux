@@ -84,6 +84,10 @@ pub(super) fn place(
     if n == 0 || region_h == 0 {
         return Flow::default();
     }
+    // A boundary of 0 is the list with NOTHING but host-state cards - the empty
+    // session band - which the filter below would drop as "no parting". The band still
+    // anchors to the bottom edge then, so the change is kept here.
+    let host_only = boundary == Some(0);
     let boundary = boundary.filter(|&b| b > 0 && b < n);
     let total: u16 = heights.iter().sum();
     // The parting's own row is part of what the region has to hold, so the bands never
@@ -91,7 +95,11 @@ pub(super) fn place(
     if total + u16::from(boundary.is_some()) <= region_h {
         let gap = region_h - total;
         let mut slots = Vec::with_capacity(n);
-        let mut y = 0u16;
+        // A boundary of 0 was dropped above, meaning the whole list is host-state cards
+        // (nothing has a session to show yet): their band is the ONLY band, so it
+        // anchors to the BOTTOM edge and the blank rows above it are where the sessions
+        // that will be found land. With real bands, the session band holds the top edge.
+        let mut y = if host_only { gap } else { 0 };
         for (i, &h) in heights.iter().enumerate() {
             if Some(i) == boundary {
                 y += gap;
@@ -189,8 +197,12 @@ mod tests {
 
     #[test]
     fn a_boundary_with_an_empty_band_parts_nothing() {
+        // A list with NOTHING but host cards is the host band alone: it parts nothing
+        // (no rule, no second band) but anchors to the BOTTOM, so the blank rows above
+        // it are where the sessions that will be found land.
         let all_hosts = place(&[2, 2], Some(0), 20, 0, 0);
-        assert_eq!(ys(&all_hosts), vec![(0, 0, 2), (1, 2, 2)]);
+        assert_eq!(ys(&all_hosts), vec![(0, 16, 2), (1, 18, 2)]);
+        // A list of sessions alone fills from the top, the host band being absent.
         let no_hosts = place(&[2, 2], Some(2), 20, 0, 0);
         assert_eq!(ys(&no_hosts), vec![(0, 0, 2), (1, 2, 2)]);
     }

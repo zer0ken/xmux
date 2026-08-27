@@ -167,8 +167,16 @@ pub(super) fn parting(
     band_w: u16,
     gutter: u16,
 ) -> Option<Parting> {
-    if boundary_col == 0 || boundary_col >= widths.len() {
-        return None; // one band only: nothing to part
+    if boundary_col >= widths.len() {
+        return None; // no host band: sessions alone flow from the left
+    }
+    if boundary_col == 0 {
+        // The whole band is host-state cards (nothing has a session to show yet). Their
+        // band is the ONLY band, so it anchors to the RIGHT edge and the blank columns
+        // left of it are where the sessions that will be found land. If the host cards
+        // alone overrun the band, they fall back to a plain flow from the left.
+        let host = widths.iter().sum::<u16>() + (widths.len().saturating_sub(1) as u16) * gutter;
+        return (host < band_w).then_some(Parting::Gap);
     }
     let sess = widths[..boundary_col].iter().sum::<u16>()
         + (boundary_col.saturating_sub(1) as u16) * gutter;
