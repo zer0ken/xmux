@@ -451,7 +451,10 @@ async fn launch_preselects_top_row() {
         &mut h.state,
     );
     h.draw();
-    assert_eq!(h.sw.selected, 0, "the launch cursor is the very top card");
+    assert_eq!(
+        h.sw.selected, 1,
+        "the launch cursor is the top SESSION card"
+    );
     assert!(
         matches!(
             h.sw.current_ref(),
@@ -486,16 +489,6 @@ async fn panes_are_not_selectable() {
         h.key(KeyCode::Down).await;
     }
     assert!(saw_session, "navigation reaches session cards");
-}
-
-/// The first card's two lines, trimmed of the padding that keeps the columns aligned,
-/// so an assertion reads the card's CONTENT.
-fn card_rows(h: &Harness) -> Vec<String> {
-    h.nav_cards_text()
-        .lines()
-        .take(2)
-        .map(|l| l.trim().to_string())
-        .collect()
 }
 
 /// Whether `s` holds a spinner frame: the marker of a level that has not resolved.
@@ -550,34 +543,32 @@ async fn from_sources_renders_scanning_skeletons() {
 }
 
 #[tokio::test]
-async fn the_spinner_marks_the_first_unresolved_level_only() {
-    // A card names two levels over two lines - `{host}/{mux}` over `{session}/{window}` -
-    // and while it waits, ONE spinner stands in the first of those levels that has no
-    // answer yet. It says WHICH answer is outstanding, not merely that the card is busy,
-    // which is why a second spinner never joins it further down the card.
+async fn a_scanning_host_card_is_one_line_with_a_trailing_spinner() {
+    // Every navigation row is one line now, a scanning host included: the host name,
+    // the confirmed mux, and ONE spinner trailing the line - in the same trailing
+    // place whether or not the mux is already known, so all scanning cards read alike
+    // and none leaves a blank second row.
     use super::render::SELECTED_MARK;
     let sp = crate::ui::spinner_glyph(0);
+    let non_empty = |h: &Harness| {
+        h.nav_cards_text()
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+    };
 
-    // A bare source id does not name its mux (only a machine serving several qualifies
-    // its ids), so the mux is the level in flight and the session line stays empty.
+    // A bare source id has no confirmed mux yet: the card is host + trailing spinner.
     let h = Harness::from_sources(&["local"]);
-    let card = card_rows(&h);
-    assert_eq!(
-        card[0],
-        format!("{SELECTED_MARK} local/{sp}"),
-        "the host line carries the mark and the mux level spins"
-    );
-    assert_eq!(card[1], "", "and nothing below it does");
+    let rows = non_empty(&h);
+    assert_eq!(rows.len(), 1, "one row, no blank second line:\n{rows:?}");
+    assert_eq!(rows[0], format!("{SELECTED_MARK} local {sp}"));
 
-    // A qualified id already names its mux, so the session level is the one in flight.
+    // A qualified id already confirms its mux: same shape, the mux in the middle.
     let h = Harness::from_sources(&["local:zellij"]);
-    let card = card_rows(&h);
-    assert_eq!(
-        card[0],
-        format!("{SELECTED_MARK} local/zellij"),
-        "the mux is known"
-    );
-    assert_eq!(card[1], sp.to_string(), "so the session level spins");
+    let rows = non_empty(&h);
+    assert_eq!(rows.len(), 1, "one row, no blank second line:\n{rows:?}");
+    assert_eq!(rows[0], format!("{SELECTED_MARK} local/zellij {sp}"));
 }
 
 #[tokio::test]
@@ -928,22 +919,6 @@ async fn a_reachable_empty_host_card_is_a_single_row() {
     let mut h = Harness::from_sources(&["local"]);
     h.sw.apply_source_result("local".into(), vec![], None, &mut h.state);
     h.draw();
-    let idx =
-        h.sw.rows
-            .iter()
-            .position(|r| {
-                matches!(
-                    &r.reference,
-                    RowRef::Host {
-                        source,
-                        unreachable: false,
-                        scanning: false,
-                        ..
-                    } if source == "local"
-                )
-            })
-            .expect("the reachable empty host has a card");
-    assert_eq!(h.sw.card_height(idx), 1, "the card is a single row");
     let cards = h.nav_cards_text();
     assert!(
         cards.contains("local"),
@@ -1234,9 +1209,10 @@ async fn unreachable_host_screen_shows_ssh_config_stanza() {
 
 #[tokio::test]
 async fn streaming_keeps_local_preselect_when_untouched() {
-    // An untouched selection sits on the top row (the local host, index 0), and a
-    // later more-recent REMOTE session streaming in must NOT steal it: the selection
-    // must not leap to a remote on first launch (#1).
+    // An untouched selection sits on the top SESSION card (the local host's first
+    // session, row 1 - row 0 is its section title), and a later more-recent REMOTE
+    // session streaming in must NOT steal it: the selection must not leap to a remote
+    // on first launch (#1).
     let mut h = Harness::from_sources(&["local", "jupiter00"]);
     h.sw.apply_source_result(
         "local".into(),
@@ -1246,8 +1222,8 @@ async fn streaming_keeps_local_preselect_when_untouched() {
     );
     h.draw();
     assert_eq!(
-        h.sw.selected, 0,
-        "the selection stays on the local host row"
+        h.sw.selected, 1,
+        "the selection stays on the local session card, under its section title"
     );
     h.sw.apply_source_result(
         "jupiter00".into(),
@@ -1257,8 +1233,8 @@ async fn streaming_keeps_local_preselect_when_untouched() {
     );
     h.draw();
     assert_eq!(
-        h.sw.selected, 0,
-        "an untouched selection stays on the top card (index 0); a recent remote must not steal it"
+        h.sw.selected, 1,
+        "an untouched selection stays on the top session card; a recent remote must not steal it"
     );
     assert!(
         matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.source == "local"),
@@ -1803,12 +1779,16 @@ async fn both_host_screens_share_one_grammar() {
 
 #[tokio::test]
 async fn levels_render_in_their_level_colors() {
-    // The selection parks on a remote card so the local cards render UNSELECTED: the
-    // selected card is reverse-video, which flattens every level colour on it by design.
+    // The selection parks on a remote card so the local rows render UNSELECTED: the
+    // section title reads in the quiet header role, the session name in the accent.
     let mut h = Harness::new(sample());
     assert!(h.sw.select_address("jupiter00/inference", &h.state));
     h.draw();
-    assert_eq!(h.nav_fg_of("local"), Some(color_text()));
+    assert_eq!(
+        h.nav_fg_of("local"),
+        Some(crate::ui::palette::get().overlay),
+        "the section title is the quiet header role"
+    );
     assert_eq!(
         h.nav_fg_of("editor"),
         Some(crate::ui::palette::get().accent),
@@ -1875,7 +1855,7 @@ async fn a_sources_cards_are_contiguous_and_the_sources_run_most_recent_first() 
     // would state its context twice, in two places, with a connector under each claiming
     // the cards below it. Instead alpha's cards sit together (it holds the most recent
     // session of all), then beta's, and inside each host the recent session leads.
-    let h = Harness::new(sources_scan(vec![
+    let mut h = Harness::new(sources_scan(vec![
         (
             "alpha",
             vec![
@@ -1891,6 +1871,18 @@ async fn a_sources_cards_are_contiguous_and_the_sources_run_most_recent_first() 
             ],
         ),
     ]));
+    // The app resolves every source's reach before its first frame; set it here so the
+    // section titles name their mux exactly as the live app's do.
+    h.state.chrome.set_source_reach(
+        [
+            ("alpha".to_string(), reach("tmux", "alpha", "", "tmux ls")),
+            ("beta".to_string(), reach("tmux", "beta", "", "tmux ls")),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    h.sw.rebuild(&mut h.state);
+    h.draw();
     let out = h.nav_text();
     let row = |name: &str| {
         h.nav_row_of(name).unwrap_or_else(|| {
@@ -1906,7 +1898,8 @@ async fn a_sources_cards_are_contiguous_and_the_sources_run_most_recent_first() 
         "alpha then beta, each most recent first: a-new {a_new}, a-old {a_old}, b-new {b_new}, b-old {b_old}
 {out}"
     );
-    // One context line per source: the run's cards collapse under the one above them.
+    // One section title per source: the title names the whole group, the cards below
+    // it carry the sessions alone.
     assert_eq!(
         out.matches("alpha/tmux").count(),
         1,
@@ -1958,17 +1951,37 @@ async fn a_session_found_later_lands_inside_its_own_source() {
 }
 
 #[tokio::test]
-async fn session_card_context_shows_host_mux_session() {
-    // The context line is `{host}/{mux}`, both halves in the one text colour; the
-    // detail line under it is the session name alone, the accent target.
-    let h = Harness::new(selection_parked_elsewhere(one_host_scan(
+async fn the_section_title_shows_host_mux_and_the_session_takes_the_accent() {
+    // The `{host}/{mux}` label lives on the SECTION TITLE, both halves in the quiet
+    // header role; the session card under it is the name alone, the accent target.
+    // The mux comes from the resolved reach, exactly as the app resolves every source
+    // before its first frame.
+    let mut h = Harness::new(selection_parked_elsewhere(one_host_scan(
         "srv",
         vec![sess_mux("srv", "alpha", "tmux", 100)],
     )));
+    h.state.chrome.set_source_reach(
+        [("srv".to_string(), reach("tmux", "srv", "", "tmux ls"))]
+            .into_iter()
+            .collect(),
+    );
+    h.sw.rebuild(&mut h.state);
+    h.draw();
     let out = h.nav_text();
-    assert!(out.contains("srv/tmux"), "context line on the card:\n{out}");
-    assert_eq!(h.nav_fg_of("srv"), Some(color_text()));
-    assert_eq!(h.nav_fg_of("tmux"), Some(color_text()));
+    assert!(
+        out.contains("srv/tmux"),
+        "section title names the pair:\n{out}"
+    );
+    assert_eq!(
+        h.nav_fg_of("srv"),
+        Some(crate::ui::palette::get().overlay),
+        "the host half is the quiet header role"
+    );
+    assert_eq!(
+        h.nav_fg_of("tmux"),
+        Some(crate::ui::palette::get().overlay),
+        "the mux half is the quiet header role"
+    );
     assert_eq!(
         h.nav_fg_of("alpha"),
         Some(crate::ui::palette::get().accent),
@@ -2116,21 +2129,22 @@ async fn a_scrolling_list_parts_its_bands_with_a_rule() {
 
 #[tokio::test]
 async fn the_bands_never_touch_on_screen() {
-    // 26 session cards plus a still-scanning host card fill this nav's rows exactly (a
-    // scanning card is the one host-state card still two rows tall - a settled host is a
-    // single row now), so the parting has no row left to take: rather than let the bands
-    // meet, the list scrolls a row early and the rule takes the boundary's row.
+    // 27 session cards plus a still-scanning host card fill this nav's rows exactly
+    // (every card is one row now), so the parting has no row left to take: rather than
+    // let the bands meet, the list scrolls a row early and the rule takes the boundary's
+    // row. Scroll to the boundary first - the host sits below the fold at the top.
     let mut h = Harness::from_sources(&["local", "db-2"]);
-    let sessions: Vec<crate::session::Session> = (0..26)
-        .map(|i| sess("local", &format!("s{i}"), 1, false, (26 - i) as i64))
+    let sessions: Vec<crate::session::Session> = (0..27)
+        .map(|i| sess("local", &format!("s{i}"), 1, false, (27 - i) as i64))
         .collect();
     h.sw.apply_source_result("local".into(), sessions, None, &mut h.state);
     h.draw();
-    let cards: u16 = (0..h.sw.rows.len()).map(|i| h.sw.card_height(i)).sum();
+    let cards: u16 = h.sw.rows.len() as u16;
     assert_eq!(
         cards, h.sw.nav_inner.height,
         "the precondition: the cards alone fill the region exactly"
     );
+    h.key(KeyCode::End).await; // scroll down to the boundary
     let boundary = h.sw.band_boundary().expect("the list has a host card");
     let host = card_rect(&h, boundary);
     let last_session = card_rect(&h, boundary - 1);
@@ -2157,6 +2171,57 @@ async fn the_bands_never_touch_on_screen() {
 }
 
 #[tokio::test]
+async fn scanning_hosts_anchor_to_the_bottom_until_found() {
+    // Before ANY session is found, every host is a scanning card and the nav is the
+    // host band ALONE: it anchors to the BOTTOM, the blank rows above it being where
+    // the sessions that will be found land.
+    let h = Harness::from_sources(&["local", "jupiter00"]);
+    let txt = h.nav_cards_text();
+    let rows: Vec<&str> = txt.lines().collect();
+    let region_bottom = (h.sw.nav_inner.y + h.sw.nav_inner.height) as usize;
+    let card_rows: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| !l.trim().is_empty())
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        card_rows,
+        vec![region_bottom - 2, region_bottom - 1],
+        "both scanning hosts sit on the bottom edge:\n{card_rows:?}"
+    );
+    assert!(
+        card_rows[0] > 0,
+        "blank rows stand above them, where found sessions will land"
+    );
+    // One source resolves: its section and cards MOVE to the top, the other stays below.
+    let mut h = Harness::from_sources(&["local", "jupiter00"]);
+    h.sw.apply_source_result(
+        "local".into(),
+        vec![sess("local", "editor", 1, false, 100)],
+        None,
+        &mut h.state,
+    );
+    h.draw();
+    let section =
+        h.sw.rows
+            .iter()
+            .position(|r| matches!(&r.reference, RowRef::Section { .. }))
+            .expect("the resolved source gains a section title");
+    assert_eq!(card_rect(&h, section).y, 0, "the section leads the list");
+    assert_eq!(card_rect(&h, section + 1).y, 1, "its card follows");
+    let host =
+        h.sw.rows
+            .iter()
+            .position(|r| matches!(&r.reference, RowRef::Host { .. }))
+            .expect("the still-scanning host keeps a card");
+    assert!(
+        card_rect(&h, host).y > card_rect(&h, section + 1).y,
+        "the undiscovered host stays below the found session"
+    );
+}
+
+#[tokio::test]
 async fn a_click_on_the_parting_selects_nothing() {
     let mut h = Harness::new(sample());
     let boundary = h.sw.band_boundary().expect("the list has a host card");
@@ -2178,73 +2243,56 @@ fn nav_line(h: &Harness, y: u16) -> String {
 }
 
 #[tokio::test]
-async fn repeated_host_mux_collapses_the_card_to_one_row() {
-    // A card whose {host}/{mux} repeats the previous card's drops its context
-    // line outright - a one-row card - so runs on one server read grouped, and
-    // the connectors draw the group: ├ while a collapsed sibling follows below,
-    // └ on the run's last line. A different mux on the same host keeps the full
-    // context line (only an exact host+mux repeat collapses).
+async fn a_sources_sessions_are_each_a_single_row_under_one_section_title() {
+    // Every session of one source is a single-row card (the number + the name), stacked
+    // directly under the one section title that names the whole group. There are no
+    // connectors and no per-card context lines - the title draws the group.
     let mut h = Harness::new(one_host_scan(
         "srv",
         vec![
             sess_mux("srv", "alpha", "tmux", 400),
             sess_mux("srv", "beta", "tmux", 300),
             sess_mux("srv", "gamma", "tmux", 200),
-            sess_mux("srv", "zeta", "zellij", 100),
+            sess_mux("srv", "zeta", "tmux", 100),
         ],
     ));
-    h.key(KeyCode::End).await; // park the selection on delta - no connector suppression above
+    h.state.chrome.set_source_reach(
+        [("srv".to_string(), reach("tmux", "srv", "", "tmux ls"))]
+            .into_iter()
+            .collect(),
+    );
+    h.sw.rebuild(&mut h.state);
+    h.draw();
     let out = h.nav_text();
     assert!(
         out.contains("srv/tmux"),
-        "the first card carries the context line:\n{out}"
+        "the section title names the group:\n{out}"
     );
-    // beta and gamma collapse: single rows stacked directly under alpha's detail.
-    let alpha_row = h.nav_row_of("alpha").expect("alpha detail");
-    let beta_row = h.nav_row_of("beta").expect("beta detail");
-    let gamma_row = h.nav_row_of("gamma").expect("gamma detail");
-    assert_eq!(
-        beta_row,
-        alpha_row + 1,
-        "beta has no context line of its own"
-    );
-    assert_eq!(
-        gamma_row,
-        beta_row + 1,
-        "gamma has no context line of its own"
-    );
-    let beta_line = nav_line(&h, beta_row);
+    let title_row = h.nav_row_of("srv").expect("the section title");
+    for (k, name) in ["alpha", "beta", "gamma", "zeta"].iter().enumerate() {
+        let r = h.nav_row_of(name).expect(name);
+        assert_eq!(
+            r,
+            title_row + 1 + k as u16,
+            "{name} is a single row directly under the title"
+        );
+        assert!(
+            !nav_line(&h, r).contains("srv") && !nav_line(&h, r).contains("tmux"),
+            "the session row is the name alone: {:?}",
+            nav_line(&h, r)
+        );
+    }
     assert!(
-        !beta_line.contains("srv") && !beta_line.contains("tmux"),
-        "the collapsed row is the detail alone: {beta_line:?}"
-    );
-    // The connectors: ├ continues into the collapsed sibling below, └ ends the run.
-    assert!(
-        nav_line(&h, alpha_row).contains("├"),
-        "alpha continues into collapsed beta"
-    );
-    assert!(
-        nav_line(&h, beta_row).contains("├"),
-        "beta continues into collapsed gamma"
-    );
-    assert!(
-        nav_line(&h, gamma_row).contains("└"),
-        "gamma ends the collapsed run"
-    );
-    // zeta runs a different mux: a full context line, host included.
-    let zeta_row = h.nav_row_of("zeta").expect("zeta detail");
-    let delta_context = nav_line(&h, zeta_row - 1);
-    assert!(
-        delta_context.contains("srv/zellij"),
-        "a mux change keeps the full context: {delta_context:?}"
+        !out.contains("├") && !out.contains("└"),
+        "no connector draws a group the title already draws:\n{out}"
     );
 }
 
 #[tokio::test]
-async fn focused_collapsed_card_expands_to_two_rows() {
-    // Focus expands: the selection landing on a collapsed card regains its
-    // context line (no elision on the selected card, wherever it scrolled to),
-    // and the card collapses again once the selection moves off.
+async fn focus_changes_only_the_address_column() {
+    // Focus does NOT expand a card: the selection landing on a session card leaves its
+    // row count and its content untouched, and only the address column changes - the
+    // number becomes the selection mark. The section title never takes the mark.
     let mut h = Harness::new(one_host_scan(
         "srv",
         vec![
@@ -2252,44 +2300,38 @@ async fn focused_collapsed_card_expands_to_two_rows() {
             sess_mux("srv", "beta", "tmux", 200),
         ],
     ));
+    let beta_row = h.nav_row_of("beta").expect("beta detail");
     assert_eq!(
-        h.nav_row_of("beta"),
-        Some(2),
-        "unselected, beta is a one-row card under alpha's two"
-    );
-    assert!(
-        nav_line(&h, 2).contains("└"),
-        "an unselected detail line carries the └ connector"
+        beta_row, 2,
+        "beta is a one-row card under the title and alpha"
     );
     h.key(KeyCode::Down).await; // select beta
-    let beta_row = h.nav_row_of("beta").expect("beta detail");
-    assert_eq!(beta_row, 3, "selected, beta regains its context line");
-    let context = nav_line(&h, beta_row - 1);
-    assert!(
-        context.contains("srv/tmux"),
-        "the expanded card shows its full context: {context:?}"
-    );
-    assert!(
-        nav_line(&h, beta_row).contains("└"),
-        "the selected card KEEPS the connector, so its session name stays in the column          every other name is in: {:?}",
-        nav_line(&h, beta_row)
-    );
-    // The mark stands in the address column, on the detail row - the row that carries
-    // the session, the same row every other card puts its number on.
-    assert_eq!(
-        h.buf()[(0, beta_row)].symbol(),
-        super::render::SELECTED_MARK
-    );
-    assert_eq!(
-        h.buf()[(0, beta_row - 1)].symbol(),
-        " ",
-        "the context row spends the column blank"
-    );
-    h.key(KeyCode::Up).await; // move off - beta collapses again
     assert_eq!(
         h.nav_row_of("beta"),
-        Some(2),
-        "unselected again, beta collapses back to one row"
+        Some(beta_row),
+        "selecting beta does not move or expand it"
+    );
+    // The mark stands in the address column, on the same row that carries the session.
+    assert_eq!(
+        h.buf()[(0, beta_row)].symbol(),
+        super::render::SELECTED_MARK,
+        "the selection mark replaces the number in the address column"
+    );
+    // Nothing above beta changed: no context line grew, the title row is untouched.
+    assert_eq!(
+        h.nav_row_of("alpha"),
+        Some(beta_row - 1),
+        "the card above stays where it was"
+    );
+    assert!(
+        nav_line(&h, 0).contains("srv"),
+        "the section title row is untouched by the selection"
+    );
+    h.key(KeyCode::Up).await; // move off
+    assert_eq!(
+        h.nav_row_of("beta"),
+        Some(beta_row),
+        "unselected, beta keeps its one row - no collapse, no expansion"
     );
 }
 
@@ -2298,8 +2340,11 @@ async fn navigation_wraps_around() {
     let mut h = Harness::new(sample());
     h.key(KeyCode::End).await; // last card = db-2 host
     assert!(matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "db-2"));
-    h.key(KeyCode::Down).await; // wrap bottom → top card
-    assert_eq!(h.sw.selected, 0, "↓ from the last card wraps to the first");
+    h.key(KeyCode::Down).await; // wrap bottom → first SESSION card (row 1, under its title)
+    assert_eq!(
+        h.sw.selected, 1,
+        "↓ from the last card wraps to the first session card"
+    );
     h.key(KeyCode::Up).await; // wrap top → bottom
     assert!(matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "db-2"));
 }
@@ -2441,7 +2486,7 @@ fn cur_row_label(h: &Harness) -> String {
         .get(h.sw.selected)
         .map(|r| match &r.reference {
             RowRef::Session { sess } => sess.address(),
-            RowRef::Host { source, .. } => source.clone(),
+            RowRef::Host { source, .. } | RowRef::Section { source, .. } => source.clone(),
         })
         .unwrap_or_default()
 }
@@ -2660,19 +2705,32 @@ async fn wheel_moves_the_selection_like_the_arrow_keys() {
 #[tokio::test]
 async fn a_digit_opens_the_jump_popup_and_lands_on_that_card() {
     // The digit is applied at once (so `prefix 2` IS the jump) and the popup stays open
-    // holding it, ready to grow into a two-digit number.
+    // holding it, ready to grow into a two-digit number. The numbers count the SELECTABLE
+    // cards, section titles excepted.
     let mut h = Harness::new(sample());
     h.key(KeyCode::Char('2')).await;
-    assert_eq!(h.sw.selected, 2, "the seeding digit jumps immediately");
+    assert_eq!(
+        h.sw.card_number(h.sw.selected),
+        2,
+        "the seeding digit jumps immediately"
+    );
     assert!(h.state.is_inputting(), "the popup stays open to extend it");
     // Editing the number re-targets live: 2 → 1 moves without submitting anything.
     h.key(KeyCode::Backspace).await;
     h.key(KeyCode::Char('1')).await;
-    assert_eq!(h.sw.selected, 1, "each edit re-targets the selection");
+    assert_eq!(
+        h.sw.card_number(h.sw.selected),
+        1,
+        "each edit re-targets the selection"
+    );
     // Enter only closes; the selection is already where the live jump put it.
     h.key(KeyCode::Enter).await;
     assert!(!h.state.is_inputting(), "Enter closes the popup");
-    assert_eq!(h.sw.selected, 1, "Enter is a no-op on the selection");
+    assert_eq!(
+        h.sw.card_number(h.sw.selected),
+        1,
+        "Enter is a no-op on the selection"
+    );
 }
 
 #[tokio::test]
@@ -2751,48 +2809,44 @@ fn every_unselected_card_carries_its_0_based_number_beside_its_session() {
         .unwrap();
     let buf = term.backend().buffer();
     // The address column starts at column 0, right-aligned in one width for the whole
-    // frame, and sits on the card's DETAIL line - the row carrying the session it
-    // addresses, not the host/mux context above it. The SELECTED card holds the mark
-    // there instead of a number: it is the address you would type to get where you
-    // already are.
+    // frame, on the card's single row. The SELECTED card holds the mark there instead of
+    // a number: it is the address you would type to get where you already are. A section
+    // title carries no number at all - it is not a card, and it is never the selection.
     let selected = sw.list_state.selected().unwrap();
-    let num_w = sw.rows.len().saturating_sub(1).to_string().len().max(1) as u16;
+    let num_w = sw
+        .selectable_count()
+        .saturating_sub(1)
+        .to_string()
+        .len()
+        .max(1) as u16;
     let read =
         |x: u16, y: u16, w: u16| -> String { (x..x + w).map(|c| buf[(c, y)].symbol()).collect() };
     // Read each card where the PAINT put it: the side list parts its two bands, so a card
     // is not always the sum of the heights above it.
-    assert_eq!(sw.nav_cells.len(), sw.rows.len(), "every card was drawn");
+    assert_eq!(sw.nav_cells.len(), sw.rows.len(), "every row was drawn");
     for (i, rect) in sw.nav_cells.iter().copied() {
+        if matches!(sw.rows[i].reference, RowRef::Section { .. }) {
+            assert_ne!(i, selected, "the selection never lands on a section title");
+            // The section title is flush left - its host name occupies the address
+            // column - so it must simply never carry a number or the mark.
+            let first = read(rect.x, rect.y, num_w).trim().to_string();
+            assert!(
+                first.parse::<usize>().is_err() && first != super::render::SELECTED_MARK,
+                "row {i} (a section title) carries no number or mark, got {first:?}"
+            );
+            continue;
+        }
         let want = if i == selected {
             super::render::SELECTED_MARK.to_string()
         } else {
-            i.to_string()
+            sw.card_number(i).to_string()
         };
-        // The number sits on the row that NAMES the thing: a session card's detail row
-        // (which carries the session), a host-state card's host row (which carries the
-        // host/mux name). The other row of a two-line card leaves the address column
-        // blank.
-        let is_host = matches!(sw.rows[i].reference, RowRef::Host { .. });
-        let (numbered, other) = if is_host {
-            (rect.y, (rect.height > 1).then_some(rect.y + 1))
-        } else {
-            (
-                rect.y + rect.height - 1,
-                (rect.height > 1).then_some(rect.y),
-            )
-        };
+        // Every card is one row, so the number sits on that single row.
         assert_eq!(
-            read(rect.x, numbered, num_w).trim(),
+            read(rect.x, rect.y, num_w).trim(),
             want,
-            "card {i} address on its named row {numbered} (selected={selected})"
+            "card {i} address on its row (selected={selected})"
         );
-        if let Some(blank) = other {
-            assert_eq!(
-                read(rect.x, blank, num_w).trim(),
-                "",
-                "card {i}'s other row leaves the address column blank"
-            );
-        }
     }
 }
 
@@ -2880,8 +2934,9 @@ async fn a_jump_never_holds_a_number_no_session_carries() {
     assert!(h.state.is_inputting(), "an in-range digit opens the popup");
     h.key(KeyCode::Char('0')).await;
     assert_eq!(
-        h.sw.selected, 1,
-        "10 is out of range, so the digit is dropped"
+        h.sw.card_number(h.sw.selected),
+        1,
+        "10 is out of range, so the digit is dropped and 1 keeps its card"
     );
     assert_eq!(h.input_buffer(), "1", "and the buffer never showed it");
 }
@@ -2890,19 +2945,36 @@ async fn a_jump_never_holds_a_number_no_session_carries() {
 async fn a_jump_walks_into_a_two_digit_number() {
     let mut h = Harness::new(scan_with_sessions(24));
     h.key(KeyCode::Char('1')).await;
-    assert_eq!(h.sw.selected, 1, "the seeding digit lands immediately");
+    assert_eq!(
+        h.sw.card_number(h.sw.selected),
+        1,
+        "the seeding digit lands immediately"
+    );
     h.key(KeyCode::Char('7')).await;
     assert_eq!(
-        h.sw.selected, 17,
+        h.sw.card_number(h.sw.selected),
+        17,
         "the second digit extends the number live"
     );
     h.key(KeyCode::Backspace).await;
-    assert_eq!(h.sw.selected, 1, "backspace walks it back");
+    assert_eq!(
+        h.sw.card_number(h.sw.selected),
+        1,
+        "backspace walks it back"
+    );
     h.key(KeyCode::Char('9')).await;
-    assert_eq!(h.sw.selected, 19, "a different second digit re-lands");
+    assert_eq!(
+        h.sw.card_number(h.sw.selected),
+        19,
+        "a different second digit re-lands"
+    );
     h.key(KeyCode::Enter).await;
     assert!(!h.state.is_inputting(), "Enter closes the popup");
-    assert_eq!(h.sw.selected, 19, "and keeps where the jump landed");
+    assert_eq!(
+        h.sw.card_number(h.sw.selected),
+        19,
+        "and keeps where the jump landed"
+    );
 }
 
 #[test]
@@ -3648,50 +3720,138 @@ fn cells_of(sw: &Switcher) -> std::collections::HashMap<usize, Rect> {
 
 #[test]
 fn the_portrait_band_flows_cards_down_then_right() {
-    // A three-row band: each source's run (one expanded card over one collapsed) fills a
+    // A three-row band: each source's section (a title over its two sessions) fills a
     // column exactly, so the next source opens the column to its right. Reading order is
     // the fill order - down a column, then right - which is what the numbers count in.
     let (sw, _t) = portrait(column_flow_scan(&["aa", "bb", "cc"], 2), 60, 12);
     let cells = cells_of(&sw);
-    assert_eq!(cells.len(), 6, "every card is placed: {cells:?}");
-    for pair in [(0usize, 1usize), (2, 3), (4, 5)] {
-        let (top, under) = (cells[&pair.0], cells[&pair.1]);
-        assert_eq!(top.x, under.x, "a source's two cards share a column");
-        assert_eq!(top.y, 0, "the run starts at the top of its column");
-        assert_eq!(top.height, 2, "and states its {{host}}/{{mux}} context");
-        assert_eq!(under.y, 2, "the second card hangs directly under it");
-        assert_eq!(under.height, 1, "collapsed, sharing the context above");
+    assert_eq!(cells.len(), 9, "every row is placed: {cells:?}");
+    for base in [0usize, 3, 6] {
+        let (title, a, b) = (cells[&base], cells[&(base + 1)], cells[&(base + 2)]);
+        assert_eq!(title.x, a.x, "a source's rows share a column");
+        assert_eq!(title.y, 0, "the section title starts its column");
+        assert_eq!(title.height, 1, "a title is one row");
+        assert_eq!(a.y, 1, "the first session hangs directly under it");
+        assert_eq!(a.height, 1, "a session card is one row");
+        assert_eq!(b.y, 2, "the second session under that");
     }
     assert!(
-        cells[&0].x < cells[&2].x && cells[&2].x < cells[&4].x,
+        cells[&0].x < cells[&3].x && cells[&3].x < cells[&6].x,
         "later sources open columns to the right: {cells:?}"
     );
 }
 
 #[test]
-fn a_column_holds_whole_host_mux_runs() {
-    // An eight-row band holds two three-row runs with TWO rows to spare - room for the
-    // third run's first card, but not for the run. It moves right ENTIRE rather than
-    // leaving one card behind at the foot of the column: a source's cards stay together,
-    // and the context line naming them stays at the top of them.
+fn a_column_holds_whole_sections() {
+    // An eight-row band holds two three-row sections with TWO rows to spare - room for
+    // the third section's title, but not for the section. It moves right ENTIRE rather
+    // than leaving a card behind at the foot of the column: a source's rows stay
+    // together, and the title naming them stays at the top of them.
     let (sw, _t) = portrait(column_flow_scan(&["aa", "bb", "cc"], 2), 60, 23);
     let cells = cells_of(&sw);
-    assert_eq!(cells.len(), 6);
+    assert_eq!(cells.len(), 9);
     let x0 = cells[&0].x;
-    for i in [1usize, 2, 3] {
-        assert_eq!(cells[&i].x, x0, "runs one and two share the first column");
+    for i in [1usize, 2, 3, 4, 5] {
+        assert_eq!(
+            cells[&i].x, x0,
+            "sections one and two share the first column"
+        );
     }
     assert_eq!(
-        cells[&2].y, 3,
-        "the second run follows the first down the column"
+        cells[&3].y, 3,
+        "the second section follows the first down the column"
     );
     assert!(
-        cells[&4].x > x0,
-        "the run that does not fit starts a column instead of splitting: {cells:?}"
+        cells[&6].x > x0,
+        "the section that does not fit starts a column instead of splitting: {cells:?}"
     );
-    assert_eq!(cells[&4].y, 0, "at the top of it");
-    assert_eq!(cells[&4].height, 2, "stating its own context");
-    assert_eq!(cells[&5].x, cells[&4].x, "with its sibling under it");
+    assert_eq!(cells[&6].y, 0, "at the top of it");
+    assert_eq!(cells[&7].x, cells[&6].x, "with its sessions under it");
+}
+
+#[test]
+fn the_portrait_band_parts_sessions_left_and_hosts_right() {
+    // The host band never shares a column with session cards, and while the band has
+    // room it is pushed to the RIGHT edge, blank columns parting it from the sessions -
+    // the portrait transpose of the side list's top/bottom parting (point 5).
+    let scan = Scan {
+        groups: vec![
+            Group {
+                source: "aa".into(),
+                err: None,
+                sessions: vec![sess("aa", "a0", 1, false, 5), sess("aa", "a1", 1, false, 4)],
+            },
+            Group {
+                source: "bb".into(),
+                err: None,
+                sessions: vec![sess("bb", "b0", 1, false, 3), sess("bb", "b1", 1, false, 2)],
+            },
+            Group {
+                source: "dead".into(),
+                err: Some("refused".into()),
+                sessions: vec![],
+            },
+        ],
+    };
+    let (sw, term) = portrait(scan, 60, 12);
+    let cells = cells_of(&sw);
+    // Two sections (6 rows) + one host card.
+    assert_eq!(cells.len(), 7, "every row is placed: {cells:?}");
+    let host = cells[&6];
+    let sess = cells[&0];
+    assert!(
+        host.x > sess.x,
+        "the host card is in a column of its own, right of the sessions"
+    );
+    // The gap parting pushes the host against the band's right edge.
+    let band_w = term.backend().buffer().area.width;
+    assert_eq!(
+        host.x + host.width,
+        band_w,
+        "the host band sits flush against the right edge (gap parting)"
+    );
+    assert!(host.x > sess.x + sess.width, "blank columns part the bands");
+}
+
+#[test]
+fn portrait_scanning_hosts_anchor_to_the_right_until_found() {
+    // Before ANY session is found, the portrait band is the host band ALONE: it anchors
+    // to the RIGHT edge, the blank columns left of it being where found sessions land.
+    let scan = Scan {
+        groups: vec![
+            Group {
+                source: "local".into(),
+                err: None,
+                sessions: vec![],
+            },
+            Group {
+                source: "jupiter00".into(),
+                err: None,
+                sessions: vec![],
+            },
+            Group {
+                source: "prod".into(),
+                err: None,
+                sessions: vec![],
+            },
+        ],
+    };
+    let (sw, term) = portrait(scan, 60, 12);
+    let cells = cells_of(&sw);
+    let band_w = term.backend().buffer().area.width;
+    let x0 = cells[&0].x;
+    assert!(
+        x0 > 0,
+        "the host band leaves blank columns on the left:\n{cells:?}"
+    );
+    assert_eq!(
+        cells[&0].x + cells[&0].width,
+        band_w,
+        "and sits flush against the right edge"
+    );
+    for i in 1..3 {
+        assert_eq!(cells[&i].x, x0, "every scanning host shares that column");
+    }
 }
 
 #[test]
@@ -3817,9 +3977,19 @@ fn the_side_lists_scrollbar_column_is_outside_every_card() {
         (0..buf.area.height).all(|y| !buf[(bar_x, y)].modifier.contains(Modifier::REVERSED)),
         "and no selected card reaches into it"
     );
+    // The selected card itself is still inverted; the section title above it is not.
+    let selected = sw.list_state.selected().unwrap();
+    let sel_rect = sw
+        .nav_cells
+        .iter()
+        .find(|(i, _)| *i == selected)
+        .map(|(_, r)| *r)
+        .unwrap();
     assert!(
-        buf[(0, 0)].modifier.contains(Modifier::REVERSED),
-        "while the selected card itself is still inverted"
+        buf[(sel_rect.x, sel_rect.y)]
+            .modifier
+            .contains(Modifier::REVERSED),
+        "the selected card itself is still inverted"
     );
 }
 

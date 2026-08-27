@@ -33,8 +33,8 @@ pub(crate) struct Palette {
     /// Painted on the CARD / TERMINAL background, so it follows the theme.
     pub accent: Color,
     /// Content furniture, one role for the quiet supporting marks on the cards: the
-    /// "no sessions" status word, the `/` separator, the card number, the └/├
-    /// connectors, the popup borders, and the scrollbar thumb. All the marks a card
+    /// "no sessions" status word, the `/` separator, the card number,
+    /// the popup borders, and the scrollbar thumb. All the marks a card
     /// needs to read apart without being part of any level - see `bar_accent` and
     /// `border_inactive` for the surfaces that live on a background of their own.
     pub overlay: Color,
@@ -53,9 +53,6 @@ pub(crate) struct Palette {
     pub number: Color,
     /// The `/` separator between the host/mux/session parts of a card's lines.
     pub separator: Color,
-    /// The box-drawing connector (`├`/`└`) hanging a card's detail line under its
-    /// context line.
-    pub connector: Color,
     /// The scroll-overflow cue (`« n more` / `n more »`) when cards run off the band.
     pub more: Color,
     /// The hint bar's background: a single ANSI slot, so the bar reads as chrome
@@ -69,11 +66,11 @@ pub(crate) struct Palette {
     /// different surface than the cards), so the slot that reads on one may not read
     /// on the other: a light theme's dark `accent` is invisible on a dark bar.
     pub bar_accent: Color,
-    /// The one text colour every card paints, separators and the accent target
-    /// excepted: the host and the mux on a session card's context line read in it, so a
-    /// card reads as one neutral block with a single highlighted element. The accent
-    /// target (the session name, or the mux on a card with no session to name) is the
-    /// only card text that leaves it.
+    /// The one text colour a host-state card paints, separators and the accent target
+    /// excepted: the host half of the card reads in it, so a card reads as one neutral
+    /// block with a single highlighted element. The accent target (the session name, or
+    /// the mux on a host-state card) is the only card text that leaves it; a section
+    /// title reads in the quiet `overlay` header role instead.
     pub text: Color,
     /// In-flight state: the scanning status and the loading spinner.
     pub pending: Color,
@@ -103,7 +100,6 @@ const fn auto_dark() -> Palette {
         border_hover: Color::LightGreen,
         number: Color::DarkGray,
         separator: Color::DarkGray,
-        connector: Color::DarkGray,
         more: Color::DarkGray,
         bar_bg: Color::DarkGray,
         bar_fg: Color::White,
@@ -128,7 +124,6 @@ const fn auto_light() -> Palette {
         border_hover: Color::Green,
         number: Color::DarkGray,
         separator: Color::DarkGray,
-        connector: Color::DarkGray,
         more: Color::DarkGray,
         bar_bg: Color::DarkGray,
         bar_fg: Color::White,
@@ -264,7 +259,6 @@ mod tests {
                 ("border_hover", p.border_hover),
                 ("number", p.number),
                 ("separator", p.separator),
-                ("connector", p.connector),
                 ("more", p.more),
                 ("bar_bg", p.bar_bg),
                 ("bar_fg", p.bar_fg),

@@ -249,15 +249,15 @@ impl Switcher {
     }
 
     /// The `Side` layout's nav: two BANDS of cards in one vertically-scrolling region,
-    /// the session cards over the host-state cards, laid out by [`side::place`] - the one
-    /// geometry the paint, the mouse hit-test and the scrollbar all read.
-    ///
-    /// Card heights vary (two rows expanded, one collapsed - see
-    /// [`Switcher::card_collapsed`]), so a card's rect is recorded as it paints rather
-    /// than derived a second time from a row pitch. `list_state` carries the settled
-    /// scroll position for the next frame to resume from, and the selected card is painted
-    /// in the terminal theme's own selected look by inverting its rect, so the card spans
-    /// bake in no background of their own.
+    /// the section titles + session cards over the host-state cards, laid out by
+    /// [`side::place`] - the one geometry the paint, the mouse hit-test and the
+    /// scrollbar all read.
+    /// Card heights are uniform - every navigation row, section title, session card, and
+    /// host-state card alike, is one screen row - so a card's rect is recorded as it
+    /// paints rather than derived a second time from a row pitch.
+    /// `list_state` carries the settled scroll position for the next frame to resume
+    /// from, and the selected card is painted in the terminal theme's own selected look
+    /// by inverting its rect, so the card spans bake in no background of their own.
     fn render_nav_list(
         &mut self,
         frame: &mut Frame,
@@ -265,7 +265,7 @@ impl Switcher {
         num_w: usize,
         spinner_glyph: char,
     ) {
-        let heights: Vec<u16> = (0..self.rows.len()).map(|i| self.card_height(i)).collect();
+        let heights = vec![1u16; self.rows.len()];
         // The placement decides whether the list scrolls, and the strip is a COLUMN, so
         // reserving it after the fact takes nothing away from what was just laid out.
         let flow = side::place(
@@ -284,13 +284,7 @@ impl Switcher {
                 width: cards.width,
                 height: slot.h,
             };
-            let lines = self.nav_row_lines(
-                slot.idx,
-                num_w,
-                spinner_glyph,
-                self.card_collapsed(slot.idx),
-                self.card_collapsed(slot.idx + 1),
-            );
+            let lines = self.nav_row_lines(slot.idx, num_w, spinner_glyph, rect.width);
             frame.render_widget(Paragraph::new(lines), rect);
             if self.list_state.selected() == Some(slot.idx) {
                 frame
@@ -326,8 +320,9 @@ impl Switcher {
         );
     }
 
-    /// The portrait `Top` band's nav: the same cards flowed into columns that fill
-    /// downward and continue to the right, each column holding whole host/mux runs.
+    /// The portrait `Top` band's nav: the same rows flowed into columns that fill
+    /// downward and continue to the right, each column holding whole sections (a
+    /// `{host}/{mux}` title over its session cards) or a host-state card.
     ///
     /// The band spends none of its rows on the scrollbar: the thumb goes on the hint bar's
     /// row, beside the bar's own label, so every row of the band stays a card row and no
@@ -344,30 +339,58 @@ impl Switcher {
             .map(|i| self.flow_card(i, num_w, spinner_glyph))
             .collect();
         let band = area;
-        let placed = columns::place(&cards, band.height);
+        let boundary = self.band_boundary().unwrap_or(cards.len());
+        let placed = columns::place(&cards, band.height, boundary);
         let widths = columns::widths(&cards, &placed, band.width);
-        // Keep the selected card's column on screen, scrolling the least it takes.
+        let bcol = columns::boundary_col(&placed, boundary);
+        let parting = columns::parting(&widths, bcol, band.width, COL_GUTTER);
+        // Keep the selected card's column on screen, scrolling the least it takes. In the
+        // gap parting there is nothing off screen to scroll to, so the offset resets.
         let sel_col = self
             .list_state
             .selected()
             .and_then(|i| placed.get(i))
             .map_or(0, |p| p.col);
-        self.nav_col_offset = columns::scroll_to(
+        match parting {
+            Some(columns::Parting::Gap) => self.nav_col_offset = 0,
+            Some(columns::Parting::Rule) => {
+                let dw = columns::display_widths(&widths, bcol, columns::Parting::Rule);
+                let sel = columns::display_col(sel_col, bcol, parting);
+                self.nav_col_offset =
+                    columns::scroll_to(&dw, band.width, COL_GUTTER, self.nav_col_offset, sel);
+            }
+            None => {
+                self.nav_col_offset = columns::scroll_to(
+                    &widths,
+                    band.width,
+                    COL_GUTTER,
+                    self.nav_col_offset,
+                    sel_col,
+                );
+            }
+        }
+        let (cells, rule) = columns::cells(
+            &placed,
             &widths,
-            band.width,
-            COL_GUTTER,
+            bcol,
+            parting,
+            band,
             self.nav_col_offset,
-            sel_col,
+            COL_GUTTER,
         );
-        let cells = columns::cells(&placed, &widths, band, self.nav_col_offset, COL_GUTTER);
         for cell in &cells {
-            // The connector hangs a card under the one above it, so it only reads as a
-            // sibling while that card is in the SAME column.
-            let next_hangs = placed
-                .get(cell.idx + 1)
-                .is_some_and(|n| n.col == placed[cell.idx].col && n.collapsed);
-            let lines =
-                self.nav_row_lines(cell.idx, num_w, spinner_glyph, cell.collapsed, next_hangs);
+            // A section that split across a column break re-states its title at the top
+            // of the continuation: that header row is drawn (never clickable) above the
+            // card it continues.
+            if let Some(h) = cell.header {
+                let header_rect = Rect {
+                    y: cell.rect.y - 1,
+                    ..cell.rect
+                };
+                let lines = self.nav_row_lines(h, num_w, spinner_glyph, header_rect.width);
+                frame.render_widget(Paragraph::new(lines), header_rect);
+            }
+            let lines = self.nav_row_lines(cell.idx, num_w, spinner_glyph, cell.rect.width);
             frame.render_widget(Paragraph::new(lines), cell.rect);
             if self.list_state.selected() == Some(cell.idx) {
                 // The card's OWN rect, not the band's width: in a grid the selection marks
@@ -378,13 +401,48 @@ impl Switcher {
             }
             self.nav_cells.push((cell.idx, cell.rect));
         }
+        if let Some(rule_rect) = rule {
+            Self::render_column_rule(frame, rule_rect);
+        }
         // What the caller needs for the offscreen cue: the cards behind the columns the
         // window does not reach, counted on each side.
-        let shown = columns::visible_cols(&widths, band.width, self.nav_col_offset, COL_GUTTER);
-        if shown >= widths.len() {
+        let (shown, n) = match parting {
+            Some(columns::Parting::Gap) => (widths.len(), widths.len()),
+            Some(columns::Parting::Rule) => {
+                let dw = columns::display_widths(&widths, bcol, columns::Parting::Rule);
+                (
+                    columns::visible_cols(&dw, band.width, self.nav_col_offset, COL_GUTTER),
+                    dw.len(),
+                )
+            }
+            None => (
+                columns::visible_cols(&widths, band.width, self.nav_col_offset, COL_GUTTER),
+                widths.len(),
+            ),
+        };
+        if shown >= n {
             return None;
         }
-        Some(columns::hidden_counts(&placed, self.nav_col_offset, shown))
+        Some(columns::hidden_counts(
+            &placed,
+            bcol,
+            parting,
+            self.nav_col_offset,
+            shown,
+        ))
+    }
+
+    /// The vertical rule parting the two bands in the portrait flow once they cannot
+    /// stay apart by a gap. A single light vertical line across the band, the same
+    /// statement the side list's horizontal rule makes.
+    fn render_column_rule(frame: &mut Frame, rect: Rect) {
+        let style = Style::default().fg(palette::get().overlay);
+        let buf = frame.buffer_mut();
+        for y in rect.y..rect.y + rect.height {
+            let cell = &mut buf[(rect.x, y)];
+            cell.set_symbol("│");
+            cell.set_style(style);
+        }
     }
 
     /// Writes the offscreen-card counts in `track` - the hint bar's row minus the cells the
@@ -455,30 +513,6 @@ impl Switcher {
         }
     }
 
-    /// One card measured for the column flow: where a run starts, and how wide each of
-    /// its two lines paints. A host-state card reports one width for both lines - it
-    /// never drops a line, so a column must reserve room for the wider one.
-    fn flow_card(&self, i: usize, num_w: usize, spinner_glyph: char) -> columns::Card {
-        let lines = self.nav_row_lines(i, num_w, spinner_glyph, false, false);
-        let w = |n: usize| lines.get(n).map_or(0, |l: &Line| l.width() as u16);
-        let host_card = matches!(
-            self.rows.get(i).map(|r| &r.reference),
-            Some(RowRef::Host { .. })
-        );
-        let (ctx_w, detail_w) = if host_card {
-            let m = w(0).max(w(1));
-            (m, m)
-        } else {
-            (w(0), w(1))
-        };
-        columns::Card {
-            starts_run: !self.hangs_under_prev(i),
-            ctx_w,
-            detail_w,
-            lines: if self.is_one_line_host(i) { 1 } else { 2 },
-        }
-    }
-
     /// A minimal scrollbar in the strip `reserve_bar` set aside beside the nav list,
     /// drawn only when the cards overflow the region - the offscreen-content cue the flat
     /// list otherwise lacks. Thumb only (no track / arrows) so it reads as a position
@@ -504,78 +538,110 @@ impl Switcher {
         );
     }
 
-    /// How many columns the card numbers need: the digit count of the highest number
-    /// in the list. One width for the whole frame, so the names stay aligned with each
+    /// How many columns the card numbers need: the digit count of the highest card
+    /// number. One width for the whole frame, so the names stay aligned with each
     /// other instead of stepping right as the numbers gain a digit, and the numbers
-    /// themselves line up by units place.
+    /// themselves line up by units place. Section titles carry no number, so the width
+    /// counts the SELECTABLE cards only.
     fn number_width(&self) -> usize {
-        self.rows.len().saturating_sub(1).to_string().len().max(1)
+        self.selectable_count()
+            .saturating_sub(1)
+            .to_string()
+            .len()
+            .max(1)
     }
 
-    /// Builds one navigation card as a [`ListItem`]: a context line over a detail
-    /// line, or the detail line alone when the card is collapsed (see
-    /// [`Switcher::card_collapsed`]). The context line is the address column +
-    /// `{host}/{mux}` in the one text colour (the mux segment only when known - a
-    /// just-created session is stamped by the next enumeration; just `{host}` on a
-    /// host-state card). The detail line is the address column + the session name in
-    /// the accent, the one card element that leaves the text colour; a host-state card
-    /// is the host/mux name alone on its row, with the unreachable mark (`⚠`) riding
-    /// after the host name and the mux taking the accent, or a spinner in the level a
-    /// scanning host has not resolved. A host-state card claims a mux only when the
-    /// mux is CONFIRMED - a bare-id host that is unreachable or still scanning names
-    /// none, so the card reads the host alone or spins in the mux position. The
-    /// focused-window part a session card used to
-    /// carry is gone, so no card has a second level of content below the session name.
-    /// Ahead of both lines runs the ADDRESS column: the card's dim 0-based number, the
-    /// thing `prefix <digit>` types. It sits on the DETAIL line, never the context
-    /// line, so it reads beside the session it names and a collapsed card (detail line
-    /// only) puts it in the same place as an expanded one. A host-state card is the
-    /// exception: its number sits beside the host/mux name, because its row is a word
-    /// about the host, not the thing the number names.
+    /// One row measured for the column flow: whether it opens a unit, how wide its
+    /// content paints, and how many rows it takes. A section title's measured width is
+    /// its `{host}/{mux}` alone - its trailing rule fills whatever column width is
+    /// left, so it never widens a column.
+    fn flow_card(&self, i: usize, num_w: usize, spinner_glyph: char) -> columns::Card {
+        let lines = self.nav_row_lines(i, num_w, spinner_glyph, 0);
+        let w = |n: usize| lines.get(n).map_or(0, |l: &Line| l.width() as u16);
+        columns::Card {
+            starts_run: self.starts_run(i),
+            width: w(0),
+            lines: 1,
+        }
+    }
+
+    /// Builds one navigation row's lines. A session card is the address column + the
+    /// session name on a single detail line; a section title is the `{host}/{mux}`
+    /// header (dim, with a rule filling the row's width) and carries no address column;
+    /// a host-state card is the host/mux name on its row, with the unreachable mark
+    /// (`⚠`) riding after the host name and the mux taking the accent, or a spinner in
+    /// the level a scanning host has not resolved. A host-state card claims a mux only
+    /// when the mux is CONFIRMED - a bare-id host that is unreachable or still scanning
+    /// names none, so the card reads the host alone or spins in the mux position.
     ///
-    /// On the SELECTED card that column holds the mark instead of a number, because
-    /// "you are here" answers the same question the number answers, and one column pays
-    /// for both. Every card's name therefore starts at the same screen column whatever
-    /// the selection is doing - a name that shifts as the cursor passes is what makes a
-    /// list twitch.
+    /// The ADDRESS column carries the card's dim number - the thing `prefix <digit>`
+    /// types - on the same row as the session it names. On the SELECTED card that
+    /// column holds the mark instead of a number, because "you are here" answers the
+    /// same question the number answers, and one column pays for both. Every card's
+    /// name therefore starts at the same screen column whatever the selection is doing.
+    /// A name that shifts as the cursor passes is what makes a list twitch. Focus
+    /// changes nothing else about a card: it does not grow a context line, and the
+    /// session keeps the same style selected or not (the selected look is the inverted
+    /// rect the paint applies, not a per-span style here).
     ///
-    /// The surface background comes from the List's `highlight_style`, so no per-span
+    /// The surface background comes from the paint's `selection_style`, so no per-span
     /// background is baked in here.
     fn nav_row_lines(
         &self,
         i: usize,
         num_w: usize,
         spinner_glyph: char,
-        collapsed: bool,
-        next_hangs: bool,
+        width: u16,
     ) -> Vec<Line<'static>> {
         let row = &self.rows[i];
         let selected = self.list_state.selected() == Some(i);
         let accent = Style::default().fg(palette::get().accent);
         let number = Style::default().fg(color_number());
         let separator = Style::default().fg(color_separator());
-        let connector = Style::default().fg(color_connector());
-        // `numbered` is the detail line, the only line the address column writes on: a
-        // context line spends the same width blank so the two stay in one column.
-        let address = move |numbered: bool| -> Vec<Span<'static>> {
-            if !numbered {
-                return vec![Span::raw(" ".repeat(num_w + 1))];
-            }
+        // The address column every card writes on - the only line, now that a card has
+        // none other. A section title never calls it: it carries no number and is never
+        // the selection.
+        let address = move || -> Vec<Span<'static>> {
             if selected {
                 vec![Span::styled(format!("{SELECTED_MARK:>num_w$} "), accent)]
             } else {
-                vec![Span::styled(format!("{i:>num_w$} "), number)]
+                let n = self.card_number(i);
+                vec![Span::styled(format!("{n:>num_w$} "), number)]
             }
         };
 
-        // Host-state card: a settled host (reachable empty or unreachable) reads as a
-        // single row - the host name over nothing, because the only word a settled host
-        // had (`⚠ unreachable`) now rides on the host row itself as a mark. The mark is
-        // danger and sits flush after the host name, so the card names
-        // WHAT it is (host/mux) while the mark colours its state; the mux - the lowest
-        // level the card displays - takes the accent. A card still SCANNING has no
-        // settled mux to accent: the spinner stands in the level that has not resolved,
-        // in that one level only, and the mux stays text beside it.
+        // Section title: `{host}/{mux}` in the quiet header role, followed by a rule
+        // filling the row. Not a card - no number, not selectable, and the selection
+        // can never land on it.
+        if let RowRef::Section { .. } = &row.reference {
+            let (host, mux, _) = context_of(row);
+            let header = Style::default().fg(palette::get().overlay);
+            let title = if mux.is_empty() {
+                host.to_string()
+            } else {
+                format!("{host}/{mux}")
+            };
+            let title_w = UnicodeWidthStr::width(title.as_str()) as u16;
+            let rule_w = width.saturating_sub(title_w.saturating_add(1));
+            let mut spans = vec![Span::styled(title, header)];
+            if rule_w > 0 {
+                spans.push(Span::styled(
+                    format!(" {}", BAND_RULE.repeat(rule_w as usize)),
+                    header,
+                ));
+            }
+            spans.push(Span::raw(" "));
+            return vec![Line::from(spans)];
+        }
+
+        // Host-state card: a settled host (reachable empty or unreachable) and a
+        // scanning host read the same way, one row: the host name, the state mark that
+        // rides it (`⚠` unreachable), the confirmed mux, and - while the host is still
+        // scanning - ONE spinner trailing the line. The spinner always stands in that
+        // one trailing place whether or not the mux is already known, so every scanning
+        // card reads as the same thing loading. The mux is accent whenever it is shown:
+        // flatten emits it only once confirmed, so a card never shows a mux it is not
+        // sure of, and the mux it shows is a settled fact even while its sessions stream.
         if let RowRef::Host {
             unreachable,
             scanning,
@@ -586,9 +652,8 @@ impl Switcher {
             let pending = Style::default().fg(palette::get().pending);
             // A host-state card's number sits on the host/mux line: the row is a word
             // about the host, not the thing the number names.
-            let one_line = !*scanning;
-            let mut line1 = address(true);
-            line1.push(Span::styled(
+            let mut line = address();
+            line.push(Span::styled(
                 host.to_string(),
                 Style::default().fg(color_text()),
             ));
@@ -596,77 +661,36 @@ impl Switcher {
                 // The mark rides the host row flush after the host name.
                 // Danger keeps its colour: an unreachable host is still a failure, the
                 // card just says so with a mark instead of a second row of text.
-                line1.push(Span::styled(
+                line.push(Span::styled(
                     "⚠",
                     Style::default().fg(palette::get().danger),
                 ));
             }
             if !mux.is_empty() {
-                line1.push(Span::styled("/", separator));
-                // A settled host's mux is the lowest level it displays, so it takes the
-                // accent (there is no session to take it); a scanning host's mux is
-                // context still being pinned down, so it stays text beside the spinner.
-                let mux_style = if *scanning {
-                    Style::default().fg(color_text())
-                } else {
-                    accent
-                };
-                line1.push(Span::styled(mux.to_string(), mux_style));
-            } else if *scanning {
-                // A source id names its mux only when its machine serves several, so on
-                // the rest the mux is genuinely not known yet: the scan stamps it onto
-                // the sessions it finds. The spinner sits where that name will land.
-                line1.push(Span::styled("/", separator));
-                line1.push(Span::styled(spinner_glyph.to_string(), pending));
+                line.push(Span::styled("/", separator));
+                // The mux is confirmed whenever it is shown, so it takes the accent
+                // even while the host still scans for its sessions.
+                line.push(Span::styled(mux.to_string(), accent));
             }
-            line1.push(Span::raw(" "));
-            if one_line {
-                return vec![Line::from(line1)];
+            if *scanning {
+                line.push(Span::styled(format!(" {spinner_glyph}"), pending));
             }
-            // A scanning host's second row holds the session-level spinner once its mux
-            // is known; with the mux unknown the spinner already stands on row one.
-            let mut line2 = address(false);
-            if !mux.is_empty() {
-                line2.push(Span::styled(spinner_glyph.to_string(), pending));
-                line2.push(Span::raw(" "));
-            }
-            return vec![Line::from(line1), Line::from(line2)];
+            line.push(Span::raw(" "));
+            return vec![Line::from(line)];
         }
 
-        // Session / loading card.
-        let (host, mux, sess) = context_of(row);
-        let mut lines: Vec<Line> = Vec::new();
-        if !collapsed {
-            let mut context: Vec<Span> = address(false);
-            context.push(Span::styled(
-                host.to_string(),
-                Style::default().fg(color_text()),
-            ));
-            if !mux.is_empty() {
-                context.push(Span::styled("/", separator));
-                context.push(Span::styled(
-                    mux.to_string(),
-                    Style::default().fg(color_text()),
-                ));
-            }
-            context.push(Span::raw(" "));
-            lines.push(Line::from(context));
-        }
-        // The detail line is the session name alone - the focused-window part is gone,
-        // so there is no `/window` and no spinner to stand in for it. The session name
-        // is the lowest level the card displays, so it takes the accent and stays bold;
-        // the connector hangs it under the context line, or under the shared context of
-        // the collapsed run above.
-        let mut detail = address(true);
-        let connector_glyph = if next_hangs { "├ " } else { "└ " };
-        detail.push(Span::styled(connector_glyph, connector));
+        // Session card: the address column + the session name on a single detail line.
+        // The `{host}/{mux}` it used to restate now lives on the section title above it,
+        // and there is no connector - the title draws the group. The session name is
+        // the lowest level the card displays, so it takes the accent and stays bold.
+        let (_, _, sess) = context_of(row);
+        let mut detail = address();
         detail.push(Span::styled(
             sess.to_string(),
             accent.add_modifier(Modifier::BOLD),
         ));
         detail.push(Span::raw(" "));
-        lines.push(Line::from(detail));
-        lines
+        vec![Line::from(detail)]
     }
 
     fn render_terminal_view(
