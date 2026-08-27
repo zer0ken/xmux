@@ -73,8 +73,9 @@ UI elements a user perceives as distinct things:
   the view screens.
 - hint bar - the nav's own status line: the bottom row(s) of the nav region, ending
   at the view border rather than spanning the screen, so the terminal view keeps
-  every row it owns. At rest it shows only the prefix; while the prefix is ARMED it
-  shows the keys that prefix unlocks. A flash, the scan indicator, and the active
+  every row it owns. At rest it shows only the prefix; while a prefix interaction is
+  live (the prefix ready, or its key still held) it shows the keys that interaction
+  unlocks. A flash, the scan indicator, and the active
   filter outrank both, in that order. A long flash wraps across as many nav rows as
   it needs instead of clipping. A shown flash paints it in the error style.
 - view screen - what fills the terminal-view region in place of a mux, for a selection
@@ -130,7 +131,8 @@ UI elements a user perceives as distinct things:
   the inverted rect (see selection highlight) plus the mark, nothing more. A section
   title never takes either.
 - nav size - the nav's live geometry as one value: the width the user SET, the width ON
-  SCREEN this frame (0 while auto-hide has taken it), and the portrait band's height the
+  SCREEN this frame (0 while auto-hide has taken it and no prefix interaction is live),
+  and the portrait band's height the
   user set (0 = auto). All three are settable while xmux runs, so every consumer takes the
   whole value rather than picking two of the three out of the runtime: the effective width
   has one owner, and a resize cannot reach the renderer and miss the PTY sizing. The set
@@ -240,8 +242,8 @@ UI elements a user perceives as distinct things:
   say what a thumb cannot: which way the cards went, and how many. An ARMED bar takes the
   whole row back, counts included, since a cheatsheet has to be readable over what it
   covers.
-- status row fill - how much of its row the hint bar paints. The side column's bar, an
-  armed bar and a refusal fill the ROW: a solid bar, legible over whatever it covers. The
+- status row fill - how much of its row the hint bar paints. The side column's bar, a
+  ready bar and a refusal fill the ROW: a solid bar, legible over whatever it covers. The
   portrait band's resting bar paints its text plus a cell of padding and stops, because it
   shares that row with the offscreen counts and a full-width slab of bar colour across a
   wide window is a lot of paint for one word.
@@ -332,9 +334,15 @@ UI elements a user perceives as distinct things:
 - scan indicator - the `scanning n/m…` progress shown in the hint bar while host
   probes are in flight, behind the same spinner on the same frame as the cards it
   counts. It counts SOURCES; a scanning host's card spinner trails that host's card.
-- armed - the state between pressing the prefix and its command key. The hint bar
-  reads it to swap from the resting prefix to the cheatsheet, so arming is a
-  visible change and redraws the frame.
+- ready - the state while a prefix interaction is live. A prefix key sets it; it
+  clears when the interaction's FUNCTION ENDS, or on a focus switch / mouse action
+  (a CANCEL). Most functions end with their command key (even a no-op like focusing
+  the already-focused view); an input row's function ends when Enter or Esc closes
+  the row; a resize's function ends when its repeat window lapses. A second prefix
+  is the doubled-prefix command (one literal prefix byte reaches the pane). The
+  hint bar reads ready to swap from the resting prefix to the cheatsheet, so
+  becoming ready is a visible change and redraws the frame; the bar hides the
+  moment ready clears.
 - popup - the rounded-bordered, opaque, centered (draggable) dialog a popup modal
   draws, its accent title in the top border. Only the help is a popup; an input
   renders in the hint bar instead, reading `[feature] guide: <buffer>` with a
@@ -343,6 +351,30 @@ UI elements a user perceives as distinct things:
 A zellij TAB is a `window` and a zellij SESSION is a `session`: xmux's vocabulary is
 one set of words for every mux, so a mux's own naming is translated at its family
 boundary and nowhere above it.
+
+### Prefix interaction
+
+The prefix is a single `ready` state. It is set by the prefix key and cleared when
+the function it started ends:
+
+| Event | ready |
+| --- | --- |
+| prefix key | set |
+| a command key whose function ends with it | clear |
+| a command key that opens an input row | held until Enter / Esc closes the row |
+| a resize command | held until its repeat window lapses |
+| a focus switch or a mouse action | clear (canceled) |
+| a second prefix (terminal view) | clear, one literal prefix byte to the pane |
+
+The hint bar and the auto-hide nav show for the whole time ready is set. Because
+ready spans the function rather than the keystroke, the bar stays up across a
+resize burst and across typing into an input row, and drops once by itself.
+
+A terminal reports no key-up, so a held prefix's autorepeat is byte-identical to
+repeated taps and takes the doubled-prefix path: it streams literals to the pane
+and blinks the hint bar. That is accepted rather than fixed; reading a key-up would
+mean depending on the kitty keyboard protocol, which every terminal and every
+enclosing mux in the chain would have to pass through.
 
 `pane` is reserved for a mux window's terminal split (a tmux / psmux pane); it is
 never a screen region - screen regions are "views", and the line between them is

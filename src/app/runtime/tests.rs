@@ -248,30 +248,36 @@ fn terminal_view_size_keeps_full_height_when_the_tree_is_shown() {
 }
 
 #[test]
-fn reconciled_nav_width_hides_only_when_focused_and_enabled() {
+fn reconciled_nav_width_hides_only_when_focused_and_enabled_and_no_prefix() {
     // Tree focused (terminal_focused = false): always the natural width.
-    assert_eq!(reconciled_nav_width(false, true, 48), 48);
-    assert_eq!(reconciled_nav_width(false, false, 48), 48);
-    // Terminal view focused + setting on: hidden (0).
-    assert_eq!(reconciled_nav_width(true, true, 48), 0);
-    // Terminal view focused + setting off: stays shown at natural width.
-    assert_eq!(reconciled_nav_width(true, false, 48), 48);
+    assert_eq!(reconciled_nav_width(false, true, false, 48), 48);
+    assert_eq!(reconciled_nav_width(false, false, true, 48), 48);
+    // Terminal view focused + setting on + no prefix interaction: hidden (0).
+    assert_eq!(reconciled_nav_width(true, true, false, 48), 0);
+    // Terminal view focused + setting on + prefix active: shown.
+    assert_eq!(reconciled_nav_width(true, true, true, 48), 48);
+    // Terminal view focused + setting off: stays shown regardless.
+    assert_eq!(reconciled_nav_width(true, false, false, 48), 48);
+    assert_eq!(reconciled_nav_width(true, false, true, 48), 48);
 }
 
 #[test]
 fn apply_width_delta_is_write_free_and_reports_change() {
     let mut w = 48u16;
-    assert!(apply_width_delta(1, &mut w), "a real delta reports changed");
+    assert!(
+        apply_width_delta(1, &mut w, "C-g"),
+        "a real delta reports changed"
+    );
     assert_eq!(w, 49);
     assert!(
-        !apply_width_delta(0, &mut w),
+        !apply_width_delta(0, &mut w, "C-g"),
         "a zero delta reports unchanged"
     );
     assert_eq!(w, 49);
     // Clamp at the max: a delta that cannot move the width reports unchanged.
     let mut hi = NAV_WIDTH_MAX;
     assert!(
-        !apply_width_delta(10, &mut hi),
+        !apply_width_delta(10, &mut hi, "C-g"),
         "a clamped no-op reports unchanged"
     );
     assert_eq!(hi, NAV_WIDTH_MAX);
@@ -290,10 +296,25 @@ fn spinner_frame_advances_with_wall_clock() {
 
 #[test]
 fn nav_width_adjust_clamps() {
-    assert_eq!(adjust_nav_width(48, 1), 49);
-    assert_eq!(adjust_nav_width(48, -1), 47);
-    assert_eq!(adjust_nav_width(20, -1), 20, "clamped at min");
-    assert_eq!(adjust_nav_width(100, 1), 100, "clamped at max");
+    // The floor is the resting prefix "C-g" (3 cells) plus a one-cell gap each side.
+    let min = nav_width_min("C-g");
+    assert_eq!(adjust_nav_width(48, 1, "C-g"), 49);
+    assert_eq!(adjust_nav_width(48, -1, "C-g"), 47);
+    assert_eq!(
+        adjust_nav_width(min, -1, "C-g"),
+        min,
+        "clamped at the prefix floor"
+    );
+    assert_eq!(
+        adjust_nav_width(NAV_WIDTH_MAX, 1, "C-g"),
+        NAV_WIDTH_MAX,
+        "clamped at max"
+    );
+    assert_eq!(
+        nav_width_min("C-Space"),
+        9,
+        "a wider prefix raises the floor"
+    );
 }
 
 #[test]
@@ -1636,14 +1657,19 @@ fn arming_the_prefix_marks_the_frame_dirty_so_the_hint_bar_swaps() {
     rt.hosts = crate::model::Hosts::default();
     rt.state = state;
     rt.switcher = switcher;
-    assert!(!rt.armed(), "starts unarmed");
+    assert!(!rt.prefix_active(), "starts unarmed");
     let out = rt.handle_stdin_bytes(b"\x07", &Selection::default());
-    assert!(rt.armed(), "the bare prefix arms");
+    assert!(rt.prefix_active(), "the bare prefix arms");
     assert!(out.dirty, "arming redraws, so the cheatsheet shows at once");
-    // Disarming (the command key lands) is equally visible.
-    let out = rt.handle_stdin_bytes(b"t", &Selection::default());
-    assert!(!rt.armed(), "the command key consumes the arm");
-    assert!(out.dirty, "disarming redraws too");
+    // The release is the key-up side of the press, a no-op: ready stays live, so the
+    // bar stays up. A command key then consumes the chord and hides the bar.
+    let _ = rt.handle_stdin_bytes(b"\x1b[7;5:3u", &Selection::default());
+    assert!(
+        rt.prefix_active(),
+        "the release is a no-op: ready stays live"
+    );
+    let _ = rt.handle_stdin_bytes(b"t", &Selection::default());
+    assert!(!rt.prefix_active(), "the command consumes the chord");
 }
 
 /// Builds a `Runtime` with one reachable session on source `jup`, focused on the
@@ -1708,6 +1734,124 @@ async fn prefix_r_in_terminal_focus_kicks_rescan() {
 }
 
 #[test]
+fn repeated_prefix_bytes_keep_the_nav_steady_in_nav_focus() {
+    use crate::ui::switcher::{Scan, Switcher};
+    // In nav focus there is no pane to send a literal to, so arming is idempotent: a
+    // held prefix's autorepeat neither toggles nor consumes ready, and the hint bar
+    // and the auto-hide nav show stay put until a command key consumes it.
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.state = state;
+    rt.switcher = switcher;
+    assert!(!rt.prefix_active());
+    rt.handle_stdin_bytes(b"\x07", &Selection::default());
+    assert!(rt.prefix_active(), "the prefix arms");
+    rt.handle_stdin_bytes(b"\x07", &Selection::default());
+    assert!(
+        rt.prefix_active(),
+        "a repeat must not toggle the armed state"
+    );
+    rt.handle_stdin_bytes(b"\x07", &Selection::default());
+    assert!(rt.prefix_active(), "more repeats stay steady");
+    rt.handle_stdin_bytes(b"t", &Selection::default());
+    assert!(!rt.prefix_active(), "a command key consumes the prefix");
+}
+
+#[test]
+fn a_resize_keeps_the_prefix_live_for_its_repeat_window() {
+    // A prefix is consumed when its FUNCTION ends. A resize opens the bare-Ctrl-arrow
+    // repeat window, so the function is still running: the bar and the auto-hide nav
+    // show stay up across the whole burst instead of dropping on the first arrow.
+    let mut rt = rt_terminal_focus_with_session();
+    rt.handle_stdin_bytes(b"\x07", &Selection::default()); // prefix: ready
+    assert!(rt.prefix_active(), "the bar shows while ready");
+    rt.handle_stdin_bytes(b"\x1b[1;5C", &Selection::default()); // Ctrl+Right resizes
+    assert!(
+        rt.prefix_active(),
+        "the resize opened the repeat window, so the function has not ended"
+    );
+    rt.handle_stdin_bytes(b"\x1b[1;5C", &Selection::default()); // bare Ctrl+Right
+    assert!(rt.prefix_active(), "each repeat refreshes the window");
+    // A key that is not a repeat key ends the window at once.
+    rt.handle_stdin_bytes(b"z", &Selection::default());
+    assert!(
+        !rt.prefix_active(),
+        "a non-repeat key closes the window, ending the function"
+    );
+}
+
+#[test]
+fn a_non_repeating_command_ends_the_prefix_at_once() {
+    // Nothing opens a window for `t`, so its function ends with the key.
+    let mut rt = rt_terminal_focus_with_session();
+    rt.handle_stdin_bytes(b"\x07", &Selection::default());
+    assert!(rt.prefix_active());
+    rt.handle_stdin_bytes(b"t", &Selection::default());
+    assert!(
+        !rt.prefix_active(),
+        "the bar hides as the command completes"
+    );
+}
+
+#[test]
+fn an_open_input_row_keeps_the_prefix_live_until_it_closes() {
+    // A command that opens an input row owns the prefix until the row closes: the
+    // hint bar hosts the input, so it must stay expanded while the user types.
+    let mut rt = rt_terminal_focus_with_session();
+    rt.handle_stdin_bytes(b"\x07", &Selection::default());
+    rt.handle_stdin_bytes(b"n", &Selection::default()); // new session: opens the input row
+    assert!(rt.state.is_inputting(), "the input row is open");
+    assert!(
+        rt.prefix_active(),
+        "the function has not ended, so the prefix is still live"
+    );
+    // The loop top hands the modal its focus dimension before the next read; without
+    // it the Esc would route to the pane instead of the row.
+    let kind = rt.state.modal_kind();
+    rt.state.focus.sync_modal(kind);
+    rt.handle_stdin_bytes(b"\x1b", &Selection::default()); // Esc cancels
+    assert!(!rt.state.is_inputting(), "Esc closes the row");
+    assert!(!rt.prefix_active(), "the function ended with the row");
+}
+
+#[test]
+fn a_focus_switch_drops_the_left_views_prefix_latches() {
+    // A prefix-driven focus switch leaves the prefix key physically held, and its
+    // release is delivered to the view that GAINED focus, never to the one that lost
+    // it. Without dropping the outgoing side's latches on the switch, a stale hold
+    // would keep the status bar up forever. The switch must clear what the outgoing
+    // view latched, in both directions.
+    let mut rt = rt_terminal_focus_with_session();
+    assert!(
+        !rt.state.focus.is_nav_focused(),
+        "precondition: terminal focus"
+    );
+    // Terminal → nav: a held prefix chord ends when prefix Left hands focus over.
+    rt.handle_stdin_bytes(b"\x07", &Selection::default()); // prefix down: +ready
+    assert!(rt.prefix_active());
+    rt.handle_stdin_bytes(b"\x1b[D", &Selection::default()); // prefix Left → nav
+    assert!(rt.state.focus.is_nav_focused(), "focus moved to the nav");
+    assert!(
+        !rt.prefix_active(),
+        "the switch drops the terminal-side hold so the bar hides"
+    );
+    // Nav → terminal: the nav-side latches a new prefix chord set are cleared the
+    // moment prefix Right hands focus back.
+    rt.handle_stdin_bytes(b"\x07", &Selection::default()); // prefix down on the nav
+    assert!(rt.prefix_active());
+    rt.handle_stdin_bytes(b"\x1b[C", &Selection::default()); // prefix Right → terminal
+    assert!(
+        !rt.state.focus.is_nav_focused(),
+        "focus moved to the terminal"
+    );
+    assert!(
+        !rt.prefix_active(),
+        "the switch drops the nav-side hold so the bar hides"
+    );
+}
+
+#[test]
 fn a_mouse_action_disarms_the_prefix_and_a_hover_does_not() {
     use crate::ui::switcher::{Scan, Switcher};
     // A prefix waits for the NEXT input, and a mouse action is input. Mouse bytes are
@@ -1743,7 +1887,7 @@ fn a_mouse_action_disarms_the_prefix_and_a_hover_does_not() {
             &mut false,
             term_area,
         );
-        assert!(!rt.armed(), "{what} disarms the prefix");
+        assert!(!rt.prefix_active(), "{what} disarms the prefix");
         assert!(dirty, "{what} redraws, so the cheatsheet goes at once");
     }
     // Bare hover is the pointer sitting there, not an action: it must not break a chord
@@ -1761,7 +1905,7 @@ fn a_mouse_action_disarms_the_prefix_and_a_hover_does_not() {
         &mut false,
         term_area,
     );
-    assert!(rt.armed(), "a hover leaves the chord alone");
+    assert!(rt.prefix_active(), "a hover leaves the chord alone");
 }
 
 #[test]

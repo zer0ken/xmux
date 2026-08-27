@@ -1392,6 +1392,23 @@ async fn armed_hint_bar_fits_a_narrow_nav() {
 }
 
 #[test]
+fn the_nav_renders_at_the_minimum_width() {
+    // The side nav may be collapsed to just after the resting `[C-g]` hint bar (the
+    // floor is the prefix label "C-g" plus a one-cell gap each side = 5 cells). At
+    // that width the bar text " C-g" fills the column and the cards clip; it must
+    // render without a panic and keep the terminal view usable.
+    let min = crate::app::runtime::nav_width_min("C-g");
+    let mut state = crate::state::State::from_scan(sample());
+    let mut sw = Switcher::new(&mut state);
+    let mut term = Terminal::new(TestBackend::new(120, 20)).unwrap();
+    term.draw(|f| sw.render(f, None, false, NavSize::visible(min), &state))
+        .unwrap();
+    // The hint bar still shows the resting prefix at this width.
+    let text = state.chrome.hint_bar_text(min, &state);
+    assert!(text.contains("C-g"), "resting bar at min width: {text:?}");
+}
+
+#[test]
 fn hint_bar_has_status_bar_background() {
     // The hint bar is a solid dark status bar fit to what it has to say: resting it is
     // the prefix alone, so in the side layout it reads as a label on the nav's last

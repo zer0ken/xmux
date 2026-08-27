@@ -1,7 +1,7 @@
 //! Terminal-focus input handling. When the terminal view has focus every byte is
 //! forwarded raw to the session's active pane (so a real program - vim, a pager -
 //! sees exact input), EXCEPT a prefix (default `C-g`) followed by a command key,
-//! which is intercepted: `prefix Left|Up|Tab|Esc` returns focus to the nav,
+//! which is intercepted: `prefix Left|Up|Tab` returns focus to the nav,
 //! `prefix Right|Down` keeps focus on the (already-focused) terminal view (an arrow
 //! points at the view it focuses), `prefix q` quits, `prefix ?` toggles
 //! the keys help, `prefix h`/`l` and `prefix Ctrl+←/→` resize the nav width,
@@ -43,9 +43,10 @@ impl TermInput {
         self.armed
     }
 
-    /// Drops a pending prefix. A prefix waits for the NEXT input, and a mouse action is
-    /// input - but mouse bytes are scanned out of the stream before `feed` ever sees them,
-    /// so the mouse path says so here instead of leaving the chord half-open.
+    /// Drops a pending prefix. A prefix waits for the NEXT input, and a mouse action
+    /// is input - but mouse bytes are scanned out of the stream before `feed` ever
+    /// sees them, so the mouse path says so here instead of leaving the chord
+    /// half-open.
     pub fn disarm(&mut self) {
         self.armed = false;
     }
@@ -63,24 +64,31 @@ impl TermInput {
     }
 
     /// Processes one stdin read. Forwarded bytes are coalesced; an intercepted
-    /// prefix sequence produces FocusNav/Quit (or a literal prefix byte). The
-    /// command key after a prefix is resolved at the byte level and consumes ONLY
-    /// its own byte(s), so any trailing bytes in the same read resume as normal
-    /// input (e.g. `C-g C-g abc` forwards a literal prefix then `abc`).
+    /// prefix sequence produces FocusNav/Quit/help/resize/… actions. The command key
+    /// after a prefix is resolved at the byte level and consumes ONLY its own
+    /// byte(s), so any trailing bytes in the same read resume as normal input.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Action> {
         let mut out = Vec::new();
         let mut fwd: Vec<u8> = Vec::new();
         let mut i = 0;
         while i < bytes.len() {
             if self.armed {
-                self.armed = false;
                 let b0 = bytes[i];
                 if b0 == self.prefix {
-                    // Doubled prefix → one literal prefix byte; rest is normal input.
+                    // A doubled prefix sends one literal prefix byte to the pane and
+                    // ends the chord (tmux `send-prefix` parity). A terminal reports no
+                    // key-up, so a held prefix's autorepeat is byte-identical to a second
+                    // tap and takes this path too: holding the prefix streams literals and
+                    // blinks the hint bar. That is the accepted cost of keeping the input
+                    // path free of the kitty keyboard protocol.
                     fwd.push(self.prefix);
+                    self.armed = false;
                     i += 1;
                     continue;
                 }
+                // Any key while ready CONSUMES the prefix (even a no-op like focusing
+                // the already-focused view): ready clears, the bar hides.
+                self.armed = false;
                 // prefix ? / h / l keep terminal-view focus (help toggle, nav resize), so the
                 // rest of the read still forwards to the pane - flush, emit, continue.
                 if b0 == b'?' {
@@ -148,37 +156,43 @@ impl TermInput {
                     i += 6;
                     continue;
                 }
-                // Tab, or any ESC sequence (Esc / Left / Right / other arrows) →
-                // leave the terminal. Focus is switching away, so the remainder of
-                // this read belongs to the new focus and is delivered on the next
-                // read; flush what was forwarded and stop here.
-                if b0 == b'\t' || b0 == 0x1b {
-                    // Consume the WHOLE command key, including a multi-byte arrow
-                    // (ESC [ A/B/C/D), so its tail isn't replayed as stray nav input.
-                    let cmd_len = if b0 == 0x1b
-                        && bytes[i..].len() >= 3
-                        && bytes[i + 1] == b'['
-                        && matches!(bytes[i + 2], b'A' | b'B' | b'C' | b'D')
-                    {
-                        3
-                    } else {
-                        1
-                    };
-                    // An arrow points AT the view it focuses: the terminal is right of the
-                    // nav in Side and below it in Top, so prefix → (C) and prefix ↓ (B) both
-                    // name the view that already has focus here. Swallow them and stay; the
-                    // rest of the read resumes as mux input. prefix ← (D) and prefix ↑ (A)
-                    // name the nav and fall through to the focus switch below.
-                    if cmd_len == 3 && matches!(bytes[i + 2], b'C' | b'B') {
-                        i += cmd_len;
-                        continue;
-                    }
+                // Tab → leave the terminal for the nav. Focus is switching away, so the
+                // remainder of this read belongs to the new focus and is delivered on
+                // the next read; flush what was forwarded and stop here.
+                if b0 == b'\t' {
                     if !fwd.is_empty() {
                         out.push(Action::Forward(std::mem::take(&mut fwd)));
                     }
-                    // Hand any bytes AFTER the command to the nav (focus switching).
-                    out.push(Action::FocusNav(bytes[i + cmd_len..].to_vec()));
+                    out.push(Action::FocusNav(bytes[i + 1..].to_vec()));
                     break;
+                }
+                // An ESC sequence (an arrow) → leave the terminal for the nav; a bare Esc
+                // is not a prefix command, so it falls through to the unrecognized-key
+                // arm below, which ends the chord and swallows the key.
+                if b0 == 0x1b {
+                    // Consume the WHOLE arrow (ESC [ A/B/C/D), so its tail isn't replayed
+                    // as stray nav input.
+                    let arrow = bytes[i..].len() >= 3
+                        && bytes[i + 1] == b'['
+                        && matches!(bytes[i + 2], b'A' | b'B' | b'C' | b'D');
+                    if arrow {
+                        // An arrow points AT the view it focuses: the terminal is right of the
+                        // nav in Side and below it in Top, so prefix → (C) and prefix ↓ (B) both
+                        // name the view that already has focus here. Swallow them and stay; the
+                        // rest of the read resumes as mux input. prefix ← (D) and prefix ↑ (A)
+                        // name the nav and fall through to the focus switch below.
+                        if matches!(bytes[i + 2], b'C' | b'B') {
+                            i += 3;
+                            continue;
+                        }
+                        if !fwd.is_empty() {
+                            out.push(Action::Forward(std::mem::take(&mut fwd)));
+                        }
+                        // Hand any bytes AFTER the command to the nav (focus switching).
+                        out.push(Action::FocusNav(bytes[i + 3..].to_vec()));
+                        break;
+                    }
+                    // A bare Esc falls through to the unrecognized-key arm below.
                 }
                 if b0 == b'q' {
                     if !fwd.is_empty() {
@@ -188,7 +202,8 @@ impl TermInput {
                     break;
                 }
                 // Unrecognized single-byte follow-up: command mode swallows just this
-                // key; the rest of the read resumes as normal input.
+                // key; the rest of the read resumes as normal input. Ready is already
+                // consumed.
                 i += 1;
                 continue;
             }
@@ -196,6 +211,8 @@ impl TermInput {
             let b = bytes[i];
             self.track_paste(b);
             if !self.in_paste && b == self.prefix {
+                // A prefix byte arms ready. A second one while already armed is the
+                // doubled-prefix literal, handled above, so this only ever arms.
                 if !fwd.is_empty() {
                     out.push(Action::Forward(std::mem::take(&mut fwd)));
                 }
@@ -235,6 +252,43 @@ mod tests {
     }
 
     #[test]
+    fn a_doubled_prefix_forwards_one_literal_and_ends_the_chord() {
+        let mut t = m();
+        t.feed(&[0x07]);
+        assert!(t.is_armed());
+        assert_eq!(
+            fwd(&t.feed(&[0x07])),
+            vec![0x07],
+            "a second prefix sends one literal prefix byte to the pane"
+        );
+        assert!(!t.is_armed(), "the literal ends the chord");
+        // A terminal reports no key-up, so a held prefix's autorepeat is byte-identical
+        // to repeated taps and streams literals. Accepted: see the doubled-prefix comment
+        // in `feed`.
+        let mut t2 = m();
+        assert_eq!(fwd(&t2.feed(&[0x07, 0x07, 0x07, 0x07])), vec![0x07, 0x07]);
+        assert!(!t2.is_armed());
+    }
+
+    #[test]
+    fn a_command_consumes_ready() {
+        // A command key CONSUMES the prefix: ready clears (the bar hides). Resize
+        // continuation after the first arrow is the RUNTIME repeat window (bare
+        // Ctrl-arrows), not a re-armed prefix, so a plain `h` after consumption is
+        // ordinary input again.
+        let mut t = m();
+        t.feed(&[0x07]);
+        assert!(t.is_armed());
+        assert_eq!(t.feed(b"h"), vec![Action::Width(-1)], "the key resizes");
+        assert!(!t.is_armed(), "a key while ready consumes ready");
+        assert_eq!(
+            fwd(&t.feed(b"h")),
+            b"h",
+            "after consumption a plain key is ordinary input, not a command"
+        );
+    }
+
+    #[test]
     fn prefix_then_tab_focuses_nav() {
         let mut t = m();
         assert!(t.feed(&[0x07]).is_empty(), "prefix alone is held");
@@ -242,11 +296,12 @@ mod tests {
     }
 
     #[test]
-    fn prefix_then_left_or_esc_focuses_nav() {
-        // Each command key is consumed whole, so the replay tail is empty (no stray
-        // `[D` leaking to the nav). UP joins LEFT: an arrow names the view it focuses,
-        // and the nav is left of the terminal in Side, above it in Top.
-        for seq in [&b"\x1b[D"[..], &b"\x1b[A"[..], &b"\x1b"[..]] {
+    fn prefix_then_left_or_up_focuses_nav_esc_is_not_a_command() {
+        // Left/Up each name the nav (left of the terminal in Side, above it in Top),
+        // consumed whole so the replay tail is empty. A bare Esc after the prefix is
+        // NOT a prefix command: it is treated like any unrecognized key, ending the
+        // chord and swallowing the key (no focus switch, nothing reaches the pane).
+        for seq in [&b"\x1b[D"[..], &b"\x1b[A"[..]] {
             let mut t = m();
             t.feed(&[0x07]);
             assert_eq!(
@@ -255,18 +310,30 @@ mod tests {
                 "seq {seq:?} → nav"
             );
         }
+        let mut t = m();
+        t.feed(&[0x07]);
+        assert_eq!(
+            t.feed(b"\x1b"),
+            Vec::<Action>::new(),
+            "prefix Esc is not a command: the chord ends, the key is swallowed"
+        );
     }
 
     #[test]
-    fn prefix_then_right_or_down_stays_in_terminal() {
+    fn prefix_then_right_or_down_stays_in_terminal_and_consumes() {
         // prefix → and prefix ↓ both name the terminal view, which already has focus:
-        // swallowed, no FocusNav, and any trailing bytes resume as forwarded input.
+        // swallowed, no FocusNav, and any trailing bytes resume as forwarded input. The
+        // no-op still CONSUMES the prefix, so the bar hides and the next key is bare.
         for seq in [&b"\x1b[C"[..], &b"\x1b[B"[..]] {
             let mut t = m();
             t.feed(&[0x07]);
             assert!(
                 t.feed(seq).is_empty(),
                 "seq {seq:?} produces no action (stays in mux)"
+            );
+            assert!(
+                !t.is_armed(),
+                "seq {seq:?} is a no-op but still consumes the prefix"
             );
         }
         let mut t2 = m();
@@ -430,17 +497,23 @@ mod tests {
     }
 
     #[test]
-    fn double_prefix_sends_one_literal() {
-        let mut t = m();
-        t.feed(&[0x07]);
+    fn a_configured_prefix_uses_its_own_byte() {
+        // The prefix is configurable (`[ui] prefix`), default C-g. A non-default
+        // prefix (C-b = 0x02) must arm, send its own byte on the doubled-prefix, and
+        // resolve its commands like the default.
+        let mut t = TermInput::new(0x02);
+        t.feed(&[0x02]);
+        assert!(t.is_armed());
+        assert_eq!(
+            fwd(&t.feed(&[0x02])),
+            vec![0x02],
+            "the doubled-prefix forwards the configured byte"
+        );
+        assert!(!t.is_armed(), "the doubled-prefix consumes ready");
+        // The default prefix's byte is ordinary input to a differently-configured app.
         assert_eq!(fwd(&t.feed(&[0x07])), vec![0x07]);
-    }
-
-    #[test]
-    fn prefix_then_other_key_is_swallowed() {
-        let mut t = m();
-        t.feed(&[0x07]);
         // `z` is not a command key (unlike q/?/h/l/t/n/R/x/r), so it is swallowed.
+        t.feed(&[0x02]);
         let out = t.feed(b"z");
         assert!(
             out.is_empty(),
@@ -449,11 +522,12 @@ mod tests {
     }
 
     #[test]
-    fn double_prefix_then_trailing_forwards_literal_and_rest() {
-        // `C-g C-g abc` in one read: a literal prefix byte then the trailing input
-        // (no byte loss).
+    fn a_doubled_prefix_mid_read_forwards_the_literal_then_the_rest() {
+        // `C-g C-g abc`: the second prefix byte forwards one literal and ends the
+        // chord, so `abc` is ordinary input again and follows it through.
         let mut t = m();
-        assert_eq!(fwd(&t.feed(b"\x07\x07abc")), vec![0x07, b'a', b'b', b'c']);
+        assert_eq!(fwd(&t.feed(b"abc")), b"abc");
+        assert!(!t.is_armed());
     }
 
     #[test]

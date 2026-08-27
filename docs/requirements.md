@@ -150,7 +150,9 @@ no function, and no test, so renaming code is never a documentation change.
   rest it names only the prefix; the states that outrank it (a refusal, scan progress,
   an active filter) take the row while they apply. Arming the prefix widens the PAINT
   to the whole window so the cheatsheet floats over the view border and the live grid,
-  leaving the layout alone so no card shifts.
+  leaving the layout alone so no card shifts. When the nav is auto-hidden, a live
+  prefix interaction brings the nav back for the moment it needs it (a jump reads the
+  card numbers), and it hides again when the interaction ends.
 - **FR-B10** - Every unselected card carries a 0-based number in its address column, on
   the row of the session it addresses, and `prefix <digit>` jumps to it. The selected
   card holds the selection mark in that same column instead. Selecting a card changes
@@ -197,7 +199,7 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-B14** - An arrow points AT the view it focuses, on either axis: the terminal is
   right of the nav in the side layout and below it in the portrait one, so `prefix right`
   and `prefix down` both focus the terminal while `prefix left` and `prefix up` both focus
-  the nav (as `prefix Esc` does). An arrow naming the view that already has focus does
+  the nav. An arrow naming the view that already has focus does
   nothing. Bare arrows belong to the cards instead: each steps ONE card along the list,
   back for left and up, on for right and down. Not by column, because the portrait band
   puts the next card below in one place and one column over in another, and a key that
@@ -214,21 +216,38 @@ no function, and no test, so renaming code is never a documentation change.
   at the boundary.
 - **FR-B16** - The nav's width and the portrait band's height are both live: the saved
   pref seeds them, the resize keys step them, a border drag sets them, and auto-hide takes
-  the width away entirely. They therefore travel as ONE value carrying the width the user
-  set, the width on screen, and the band height, so the renderer, the PTY sizing and mouse
-  hit-testing cannot read three different answers, and the effective width keeps its single
-  owner. Hiding the nav does not move the layout: the turnover reads the width the user
-  SET, so the nav returns the shape it left.
+  the width away while no prefix interaction is live (a live one brings the nav back). The
+  width has a floor at the resting prefix label plus a one-cell gap each side, so the
+  border can collapse to just past the `C-g` status line and a wider configured prefix
+  raises the floor. The values therefore travel as ONE value carrying
+  the width the user set, the width on screen, and the band height, so the renderer, the
+  PTY sizing and mouse hit-testing cannot read three different answers, and the effective
+  width keeps its single owner. Hiding the nav does not move the layout: the turnover
+  reads the width the user SET, so the nav returns the shape it left.
 - **FR-B17** - The status row is a bar where it owns its row and a label where it does not:
-  the side column's bar fills its row, and so does any armed or flashing bar, which has to
+  the side column's bar fills its row, and so does any ready or flashing bar, which has to
   be readable over what it covers; the portrait band's resting bar paints its text plus a
   cell of padding, leaving the rest of the row to the offscreen counts.
-- **FR-B18** - A prefix waits for the next INPUT, and a mouse action is input: a click, a
-  release, a wheel or a drag disarms it in either focus, because mouse bytes are scanned
+- **FR-B18** - A prefix lasts as long as the FUNCTION it starts, not as long as the
+  keystroke that names it. Most commands end with their key. A command that opens an
+  input row ends when Enter or Esc closes the row. A resize ends when its repeat window
+  lapses, so a whole burst of arrows is one interaction. The cheatsheet and the
+  auto-hidden nav show for exactly that span, so neither drops out from under an
+  interaction still running.
+- **FR-B19** - A prefix waits for the next INPUT, and a mouse action is input: a click, a
+  release, a wheel or a drag cancels the prefix chord (the ready wait) in either focus,
+  because mouse bytes are scanned
   out of the stream before either focus path's key handling sees them and a chord left
   half-open keeps its cheatsheet on screen and then eats the next key. Bare hover is not
   an action: the pointer drifting must not break a chord being typed.
-- **FR-B19** - The nav is two BANDS, and the cards of a host with no session to show are
+- **FR-B20** - Input is read as key presses only, because a terminal's byte stream
+  carries no key-up. A held prefix is therefore indistinguishable from repeated taps and
+  is treated as such: each repeat sends the doubled-prefix literal to the pane and blinks
+  the cheatsheet for as long as the key is down. Recovering the key-up would mean
+  requiring the kitty keyboard protocol from the terminal and from every mux enclosing
+  xmux, which would make behaviour depend on what that chain passes through; a uniform
+  input path everywhere is worth more than this one case.
+- **FR-B21** - The nav is two BANDS, and the cards of a host with no session to show are
   the lower one: a host card sits below every session card, whatever order the hosts were
   scanned in. In the side column, while the cards can spare a row for it, the bands are
   pushed APART - the session cards against the top edge, the host cards against the bottom
@@ -246,7 +265,7 @@ no function, and no test, so renaming code is never a documentation change.
   the split: anchored to the bottom (side) / right edge (portrait), the blank rows or
   columns opposite being where the sessions that will be found land, so a scan reads as
   the pending hosts draining toward the sessions they become.
-- **FR-B20** - A host and its mux are SHOWN as one label, `{host}/{mux}`, wherever the pair
+- **FR-B22** - A host and its mux are SHOWN as one label, `{host}/{mux}`, wherever the pair
   is read: a nav section title, the screen a card selects, the doctor's source list.
   Always that separator, never the one a source id parts its two halves with, because an id
   is typed and a label is read. And always both halves: a host serving a single mux carries

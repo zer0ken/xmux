@@ -9,13 +9,14 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
-use crate::app::runtime::{NAV_HEIGHT_MAX, NAV_HEIGHT_MIN, NAV_WIDTH_MAX, NAV_WIDTH_MIN};
+use crate::app::runtime::{NAV_HEIGHT_MAX, NAV_HEIGHT_MIN, NAV_WIDTH_MAX};
 use crate::display::dispatch::Action;
 
 /// The nav width a view border drag to 1-based screen column `col` sets: the dragged
 /// column becomes the view border position (= the nav width), clamped to the allowed range.
-pub(crate) fn view_border_drag_width(col: u16) -> u16 {
-    col.saturating_sub(1).clamp(NAV_WIDTH_MIN, NAV_WIDTH_MAX)
+pub(crate) fn view_border_drag_width(col: u16, ui_prefix: &str) -> u16 {
+    col.saturating_sub(1)
+        .clamp(crate::app::runtime::nav_width_min(ui_prefix), NAV_WIDTH_MAX)
 }
 
 /// The Top-layout nav height a horizontal view border drag to 1-based screen row `row`
@@ -59,7 +60,7 @@ pub(crate) fn to_grid_local(area: ratatui::layout::Rect, col: u16, row: u16) -> 
 }
 
 /// The single key that moves focus from the nav into the terminal view.
-/// (Arrows navigate the nav; the prefix-Esc path returns focus - see TermInput.)
+/// (Arrows navigate the nav; the prefix-Tab path returns focus - see TermInput.)
 fn is_focus_in(code: KeyCode) -> bool {
     matches!(code, KeyCode::Enter)
 }
@@ -136,7 +137,19 @@ pub(crate) fn resolve_nav_key(
     prefix: u8,
     is_inputting: bool,
 ) -> Option<Action> {
+    // The prefix key is the configured control byte. A terminal reports no key-up, so
+    // this is the only form it ever arrives in.
+    let is_prefix_key = key.code == KeyCode::Char(prefix as char);
+    // A prefix arms ready. A second one while already armed is the doubled-prefix
+    // literal, which only the terminal view can act on (it forwards the byte to the
+    // pane); in nav focus there is no pane, so it simply stays armed.
+    if is_prefix_key && !is_inputting {
+        *armed = true;
+        return None;
+    }
     if *armed {
+        // Any key while ready CONSUMES the prefix (even a no-op like focusing the
+        // already-focused view): ready clears, the bar hides.
         *armed = false;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         return match key.code {
@@ -153,7 +166,7 @@ pub(crate) fn resolve_nav_key(
             // An arrow points AT the view it focuses, in either layout: the terminal is
             // right of the nav in Side and below it in Top, so prefix → and prefix ↓ both
             // focus the terminal, and prefix ← / prefix ↑ both name the nav, which already
-            // has focus here, so they resolve to nothing (as prefix Esc does). prefix Tab
+            // has focus here, so they resolve to nothing. prefix Tab
             // cycles, mirroring the terminal side's prefix Tab → nav. The byte decoder
             // yields Char('\t') for Tab, never KeyCode::Tab, so match both.
             KeyCode::Right | KeyCode::Down | KeyCode::Tab | KeyCode::Char('\t') => {
@@ -165,12 +178,10 @@ pub(crate) fn resolve_nav_key(
             // it, so a bare digit stays free for the pane and cannot jump by accident.
             KeyCode::Char('r') | KeyCode::Char('n') => Some(Action::NavKey(key)),
             KeyCode::Char(c) if c.is_ascii_digit() => Some(Action::NavKey(key)),
+            // An unrecognized key simply consumes the prefix like any other: ready is
+            // already cleared above.
             _ => None,
         };
-    }
-    if !is_inputting && key.code == KeyCode::Char(prefix as char) {
-        *armed = true;
-        return None;
     }
     // Enter focuses the terminal view. ←/→ navigate the nav inside `handle_key`.
     if !is_inputting && is_focus_in(key.code) {
@@ -498,6 +509,86 @@ mod tests {
     }
 
     #[test]
+    fn a_noop_nav_arrow_still_consumes_ready() {
+        // prefix Left / prefix Up name the nav, which already has focus here: they are
+        // no-ops (produce no action) but still CONSUME the prefix, so the bar hides.
+        use ratatui::crossterm::event::KeyEvent;
+        for code in [KeyCode::Left, KeyCode::Up] {
+            let mut armed = false;
+            resolve_nav_key(
+                KeyEvent::new(KeyCode::Char('\x07'), KeyModifiers::NONE),
+                &mut armed,
+                0x07,
+                false,
+            );
+            assert!(armed);
+            assert!(
+                resolve_nav_key(
+                    KeyEvent::new(code, KeyModifiers::NONE),
+                    &mut armed,
+                    0x07,
+                    false
+                )
+                .is_none(),
+                "a no-op nav arrow produces no action"
+            );
+            assert!(!armed, "a no-op nav arrow still consumes ready");
+        }
+    }
+
+    #[test]
+    fn resolve_nav_key_uses_the_configured_prefix() {
+        use ratatui::crossterm::event::KeyEvent;
+        // The prefix is configurable (`[ui] prefix`), default C-g. A non-default
+        // prefix (C-b = 0x02) must arm and resolve its commands like the default.
+        let mut armed = false;
+        let press = KeyEvent::new(KeyCode::Char('\x02'), KeyModifiers::NONE);
+        assert!(resolve_nav_key(press, &mut armed, 0x02, false).is_none());
+        assert!(armed, "the configured prefix arms");
+        assert_eq!(
+            resolve_nav_key(
+                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+                &mut armed,
+                0x02,
+                false
+            ),
+            Some(Action::Quit),
+            "the command after the configured prefix resolves"
+        );
+        assert!(!armed);
+    }
+
+    #[test]
+    fn a_command_consumes_ready() {
+        // A command key CONSUMES the prefix: ready clears, so the hint bar hides.
+        // Resize continuation is the RUNTIME repeat window (bare Ctrl-arrows), not a
+        // re-armed prefix, so a plain `h` after consumption is a bare nav key again.
+        use ratatui::crossterm::event::KeyEvent;
+        let mut armed = false;
+        resolve_nav_key(
+            KeyEvent::new(KeyCode::Char(''), KeyModifiers::NONE),
+            &mut armed,
+            0x07,
+            false,
+        );
+        assert!(armed);
+        let cmd = KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE);
+        assert_eq!(
+            resolve_nav_key(cmd, &mut armed, 0x07, false),
+            Some(Action::Width(-1)),
+            "the key resizes"
+        );
+        assert!(!armed, "a key while ready consumes ready");
+        assert!(
+            matches!(
+                resolve_nav_key(cmd, &mut armed, 0x07, false),
+                Some(Action::NavKey(_))
+            ),
+            "after consumption a plain key is bare again, not a prefix command"
+        );
+    }
+
+    #[test]
     fn enter_focuses_terminal_tab_does_not() {
         assert!(is_focus_in(KeyCode::Enter));
         assert!(!is_focus_in(KeyCode::Char('\t')));
@@ -551,16 +642,22 @@ mod tests {
     #[test]
     fn view_border_drag_width_clamps_to_range() {
         // The dragged 1-based column becomes the 0-based nav width, clamped to range.
-        assert_eq!(view_border_drag_width(51), 50);
+        // The floor is the resting prefix "C-g" (3 cells) plus a one-cell gap each side.
+        assert_eq!(view_border_drag_width(51, "C-g"), 50);
         assert_eq!(
-            view_border_drag_width(5),
-            NAV_WIDTH_MIN,
-            "too far left clamps to min"
+            view_border_drag_width(5, "C-g"),
+            crate::app::runtime::nav_width_min("C-g"),
+            "too far left clamps to the prefix floor"
         );
         assert_eq!(
-            view_border_drag_width(500),
+            view_border_drag_width(500, "C-g"),
             NAV_WIDTH_MAX,
             "too far right clamps to max"
+        );
+        assert_eq!(
+            view_border_drag_width(5, "C-Space"),
+            crate::app::runtime::nav_width_min("C-Space"),
+            "a wider prefix raises the floor"
         );
     }
 

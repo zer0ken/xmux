@@ -55,8 +55,14 @@ const FRAME_MS: u64 = 33;
 /// backoff so a genuinely-down host is retried at this cadence, never hot-looped.
 const RECONNECT_MS: u64 = 2000;
 
-pub(crate) const NAV_WIDTH_MIN: u16 = 20;
 pub(crate) const NAV_WIDTH_MAX: u16 = 100;
+
+/// The nav's floor width: the resting prefix label plus a one-cell breathing gap on
+/// each side, so the view border can sit right after the `[C-g]` status text and a
+/// wider configured prefix still fits.
+pub(crate) fn nav_width_min(ui_prefix: &str) -> u16 {
+    ui_prefix.chars().count() as u16 + 2
+}
 
 /// The Top-layout nav height drag range. The min keeps a few nav rows; compute_regions
 /// clamps the max down to the body so the terminal always keeps room.
@@ -77,19 +83,19 @@ const RESIZE_REPEAT_MS: u64 = 400;
 /// at the end, not per tick.
 const WIDTH_FLUSH_MS: u64 = 400;
 
-fn adjust_nav_width(w: u16, delta: i32) -> u16 {
-    (w as i32 + delta).clamp(NAV_WIDTH_MIN as i32, NAV_WIDTH_MAX as i32) as u16
+fn adjust_nav_width(w: u16, delta: i32, ui_prefix: &str) -> u16 {
+    (w as i32 + delta).clamp(nav_width_min(ui_prefix) as i32, NAV_WIDTH_MAX as i32) as u16
 }
 
 /// Adjusts the natural nav width by `wd`, clamped to the allowed range. Returns
 /// true if the width actually changed (so the loop can schedule a debounced
 /// persist). A zero delta or a clamp-noop returns false. Write-free: the loop
 /// owns the single persist.
-fn apply_width_delta(wd: i32, natural: &mut u16) -> bool {
+fn apply_width_delta(wd: i32, natural: &mut u16, ui_prefix: &str) -> bool {
     if wd == 0 {
         return false;
     }
-    let next = adjust_nav_width(*natural, wd);
+    let next = adjust_nav_width(*natural, wd, ui_prefix);
     if next == *natural {
         return false;
     }
@@ -178,7 +184,7 @@ fn dispatch_commands(
                 switcher.request_rescan(state);
             }
             Command::AdjustNavWidth(d) => {
-                if apply_width_delta(d, nav_width_natural) {
+                if apply_width_delta(d, nav_width_natural, &state.chrome.ui_prefix) {
                     width_changed = true;
                 }
             }
@@ -247,12 +253,20 @@ fn self_tty() -> String {
     }
 }
 
-/// The EFFECTIVE nav width to render and size the terminal view against. Hidden (0, terminal view
-/// full width) only while the terminal view is focused AND auto-hide-nav mode is on;
-/// otherwise the nav's natural width. Pure so the focus/mode interaction is
-/// unit-testable; the loop owns the natural width and the PTY resize on change.
-fn reconciled_nav_width(terminal_focused: bool, auto_hide_nav: bool, natural: u16) -> u16 {
-    if terminal_focused && auto_hide_nav {
+/// The EFFECTIVE nav width to render and size the terminal view against. Hidden (0,
+/// terminal view full width) only while the terminal view is focused, auto-hide-nav
+/// mode is on, and no prefix interaction is active; otherwise the nav's natural width.
+/// A prefix press is an interaction with xmux, so the nav comes back for it even under
+/// auto-hide (the user needs the card numbers to jump, resize, or act on a card).
+/// Pure so the focus/mode interaction is unit-testable; the loop owns the natural
+/// width and the PTY resize on change.
+fn reconciled_nav_width(
+    terminal_focused: bool,
+    auto_hide_nav: bool,
+    prefix_active: bool,
+    natural: u16,
+) -> u16 {
+    if terminal_focused && auto_hide_nav && !prefix_active {
         0
     } else {
         natural

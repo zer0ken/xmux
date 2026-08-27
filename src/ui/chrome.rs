@@ -842,15 +842,15 @@ impl Chrome {
         } else if self.armed {
             // The prefix is held: name what it unlocks. Longest-first so a narrow nav
             // drops the rarer chords rather than clipping mid-word.
-            // Order: focus nav, focus terminal, jump, new, hide, rescan, filter, help, quit.
+            // Order: focus nav, focus terminal, jump, new, hide, rescan, help, quit.
             // The focus rows use arrow symbols that point at the view they focus. The
             // resize keys are left out of the cheatsheet (the help modal has them).
             fit(
                 &[
-                    format!(" {p} · ←/↑ focus nav · →/↓ focus terminal · 0-9 jump to a session · n new session · t hide nav · r rescan · / filter · ? help · q quit"),
-                    format!(" {p} · ←/↑ nav · →/↓ terminal · 0-9 jump to · n new · t hide · r rescan · / filter · ? help · q quit"),
-                    format!(" {p} · ←/↑ nav · →/↓ terminal · 0-9 jump · n new · t hide · r · / · ? · q"),
-                    format!(" {p} · ←/↑ · →/↓ · 0-9 · n · t · r · / · ? · q"),
+                    format!(" {p} · ←/↑ focus nav · →/↓ focus terminal · 0-9 jump to a session · n new session · t hide nav · r rescan · ? help · q quit"),
+                    format!(" {p} · ←/↑ nav · →/↓ terminal · 0-9 jump to · n new · t hide · r rescan · ? help · q quit"),
+                    format!(" {p} · ←/↑ nav · →/↓ terminal · 0-9 jump · n new · t hide · r · ? · q"),
+                    format!(" {p} · ←/↑ · →/↓ · 0-9 · n · t · r · ? · q"),
                     format!(" {p}…"),
                 ],
                 width,
@@ -1185,7 +1185,6 @@ mod tests {
             "n new session",
             "t hide nav",
             "r rescan",
-            "/ filter",
             "? help",
             "q quit",
         ];
@@ -1201,7 +1200,9 @@ mod tests {
             last = pos;
         }
         // A narrower bar drops to short descriptions while keeping the focus guidance.
-        let armed = c.hint_bar_text(120, &state);
+        // With the cheatsheet no longer advertising `/`, the full line fits by 120, so
+        // measure at a width that forces the short variant.
+        let armed = c.hint_bar_text(100, &state);
         assert!(
             armed.contains("→/↓ terminal"),
             "short bar keeps focus-terminal: {armed:?}"

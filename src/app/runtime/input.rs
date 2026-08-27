@@ -192,7 +192,7 @@ impl Runtime {
                         dirty = true;
                     }
                 } else {
-                    let target = view_border_drag_width(ev.col);
+                    let target = view_border_drag_width(ev.col, &env.ui_prefix);
                     if target != *nav_width_natural {
                         *nav_width_natural = target;
                         dirty = true;
@@ -301,7 +301,9 @@ impl Runtime {
     pub(super) fn resize_axis(&mut self, horizontal: bool, delta: i32) -> bool {
         let top = self.switcher.layout() == crate::ui::switcher::ViewLayout::Top;
         match (horizontal, top) {
-            (true, false) => apply_width_delta(delta, &mut self.nav_width_natural),
+            (true, false) => {
+                apply_width_delta(delta, &mut self.nav_width_natural, &self.env.ui_prefix)
+            }
             (false, true) => {
                 let base = if self.nav_height == 0 {
                     crate::ui::switcher::default_nav_height(self.body_rows)
@@ -354,7 +356,7 @@ impl Runtime {
         // arm/disarm is a VISIBLE change even when the read moves nothing else. Snapshot
         // it here and mark the frame dirty below if it flipped, or the cheatsheet would
         // only appear on the next unrelated redraw (a poll tick).
-        let armed_before = self.armed();
+        let armed_before = self.prefix_active();
         let mut outcome = StdinOutcome::default();
         let StdinOutcome {
             quit,
@@ -574,6 +576,10 @@ impl Runtime {
             }
         }
         if *focus_terminal {
+            // Leaving the nav for the terminal: a nav-side pending prefix has no key-up
+            // once the terminal owns stdin, so clear it here instead of waiting for a
+            // release that is now delivered elsewhere.
+            self.mouse_state.nav_armed = false;
             self.state.apply(crate::model::Action::Focus(
                 crate::model::FocusTarget::Terminal,
             ));
@@ -581,15 +587,21 @@ impl Runtime {
             // view border colour changes), so clearing would blank the screen and
             // force a full repaint for nothing.
         }
-        if self.armed() != armed_before {
-            *dirty = true;
-        }
         if *focus_nav {
+            // Leaving the terminal for the nav: the prefix key's release is delivered to
+            // the nav path now, never to TermInput, so clear the terminal-side pending
+            // prefix here instead of waiting for a release that will not arrive (a stale
+            // prefix would keep the status bar up forever).
+            self.term_input.disarm();
             self.state
                 .apply(crate::model::Action::Focus(crate::model::FocusTarget::Nav));
             if !nav_replay.is_empty() {
                 let (ft, q, wd, hd, th) = self.handle_nav_bytes(nav_replay, width_changed);
                 if ft {
+                    // The replayed bytes switch focus back to the terminal: clear the
+                    // nav-side latches the replay may have armed, same as the direct
+                    // terminal-focus path above.
+                    self.mouse_state.nav_armed = false;
                     self.state.apply(crate::model::Action::Focus(
                         crate::model::FocusTarget::Terminal,
                     ));
@@ -606,6 +618,11 @@ impl Runtime {
                     *dirty = true;
                 }
             }
+        }
+        // The focus-switch latch drops above change prefix_active, so this read's bar
+        // visibility is compared AFTER both focus blocks, not between them.
+        if self.prefix_active() != armed_before {
+            *dirty = true;
         }
         outcome
     }

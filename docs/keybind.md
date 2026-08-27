@@ -88,7 +88,7 @@ nav or the terminal view holds focus.
 | `prefix q` | quit xmux (the only quit binding) |
 | `prefix ?` | toggle the keybinding help |
 | `prefix t` | toggle auto-hide-nav (focusing the screen then gives it the full width) |
-| `prefix h` / `prefix l` | narrow / widen the nav |
+| `prefix h` / `prefix l` | narrow / widen the nav (down to just past the resting `C-g` status line) |
 | `prefix Ctrl-←` / `prefix Ctrl-→` | narrow / widen the nav (then a bare `Ctrl-←`/`Ctrl-→` keeps resizing for a moment) |
 | `prefix Ctrl-↑` / `prefix Ctrl-↓` | shrink / grow the nav band's height in the portrait layout (then a bare `Ctrl-↑`/`Ctrl-↓` keeps resizing for a moment) |
 | `prefix prefix` | send one literal prefix byte to the focused session's pane |
@@ -100,15 +100,30 @@ stops at the view border so the terminal view keeps every row it has. In the por
 layout it stops at its own text instead, because it shares that row with the
 offscreen-card counts. Press the prefix and the same row widens to the whole window,
 floating over the border and the terminal view to list the keys that prefix unlocks; it
-shrinks back once the command key lands, or once any mouse action does (a click, a wheel,
-a drag: a prefix waits for the next input, whatever that turns out to be). Only the paint
-moves, never the layout, so arming the prefix never shifts a card.
+shrinks back when the function it started ends, or when the prefix is canceled (a
+focus switch or any mouse action: a click, a wheel, a drag - a prefix waits for the
+next input, whatever that turns out to be).
 
-With the nav auto-hidden the mux owns every row, status line included. The bar still
-floats over the bottom of the window for the two things that must be seen the moment
-they happen: the armed prefix, and a refusal. Scan progress and the active filter
-persist, so they stay in the nav and never take a row back from a hidden one. Four states outrank the prefix while they apply, in order: a refusal message
-(in yellow), the scan progress, the active filter, and then the resting prefix. A
+Most keys end their function as they run, so the bar shrinks with the keystroke. Two
+kinds run longer and keep the bar up for as long as they last: a key that opens an
+input row holds it until Enter or Esc closes the row, and a resize holds it until the
+repeat window lapses, so a whole Ctrl+arrow burst reads as one interaction.
+
+A second prefix is `prefix prefix` (above): one literal prefix byte reaches the pane.
+Holding the prefix down takes the same path, because a terminal sends no key-up and
+an autorepeat is byte-identical to repeated taps: the pane collects literals and the
+bar blinks until the key comes up.
+
+Only the paint moves, never the layout, so arming the prefix never shifts a card.
+
+With the nav auto-hidden the mux owns every row, status line included, until a prefix
+interaction starts: then the nav comes back for the moment it is needed, so a jump can
+read the card numbers, and it hides again when the interaction ends. The bar also floats
+over the bottom of the window for the two things that must be seen the moment they
+happen: a live prefix, and a refusal. Scan progress and the active filter
+persist, so they stay in the nav and never take a row back from a hidden one. Four
+states outrank the prefix while they apply, in order: a refusal message (in yellow), the
+scan progress, the active filter, and then the resting prefix. A
 refusal too long for the nav width wraps onto more rows rather than clipping.
 
 ## Focus
@@ -118,7 +133,7 @@ refusal too long for the nav width wraps onto more rows rather than clipping.
 | `Enter` | move focus from the nav into the terminal view |
 | `prefix Tab` | toggle focus between the nav and the terminal view |
 | `prefix →` / `prefix ↓` | focus the terminal view |
-| `prefix ←` / `prefix ↑` / `prefix Esc` | focus the nav |
+| `prefix ←` / `prefix ↑` | focus the nav |
 
 An arrow points at the view it focuses. The terminal view is right of the nav on a
 landscape screen and below it on a portrait one, so `→` and `↓` both name it; `←` and

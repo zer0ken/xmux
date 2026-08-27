@@ -49,6 +49,12 @@ back to the app, which owns the registry.
 - The pump answers the child's terminal QUERIES (device status, device
   attributes) itself, since there is no real terminal behind the PTY; otherwise
   the child stalls on startup and the terminal view stays empty.
+- The input path reads key presses only. A terminal's byte stream carries no
+  key-up, so a held prefix's autorepeat is byte-identical to repeated taps and is
+  handled as such: the doubled-prefix literal fires on each one. Telling them apart
+  would mean requesting key releases through the kitty keyboard protocol, which
+  binds behaviour to what the terminal, and every enclosing mux, chooses to pass
+  through; the input path stays terminal-agnostic instead.
 - Rendering marks each wide (CJK) glyph's trailing cell as always-update so the
   renderer's incremental diff repaints it on a wide-to-narrow transition;
   otherwise that trailing cell is skipped and the terminal keeps the old glyph's

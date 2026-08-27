@@ -17,10 +17,11 @@ type is defined here; the switcher reads and writes it and owns only the
 transient popup geometry.
 
 The chrome is the view border, the hint bar, and the host screens, plus its
-view-local state (flash, spinner, view border colours, prefix, armed). The hint
+view-local state (flash, spinner, view border colours, prefix, ready). The hint
 bar is the NAV's bottom row or rows, not a full-width strip, and shows the prefix
-alone until it is armed. The chrome instance itself lives in the runtime
-state, fed by the app each frame and rendered from it.
+alone until a prefix interaction is live (the prefix ready), when it lists the keys
+that interaction unlocks. The chrome instance
+itself lives in the runtime state, fed by the app each frame and rendered from it.
 
 The operations module holds the off-loop mux-action boundary: the trait over the
 live mux (one mutating method, starting a session; the rest read), the outcome
