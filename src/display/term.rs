@@ -13,6 +13,15 @@ const SGR_MOUSE_ON: &[u8] = b"\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
 #[cfg(windows)]
 const SGR_MOUSE_OFF: &[u8] = b"\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 
+/// Push / pop the kitty keyboard protocol's REPORT_EVENT_TYPES (flag 2) so the
+/// terminal reports key releases as `CSI ... u` sequences (a C0 byte stream never
+/// carries a key-up). Written as raw bytes because crossterm's
+/// `PushKeyboardEnhancementFlags` takes the unsupported WinAPI path on Windows.
+/// A terminal that ignores the push keeps its legacy encodings, so this is
+/// progressive: no kitty means no `CSI ... u` ever arrives and behavior is unchanged.
+const KITTY_EVENT_TYPES_ON: &[u8] = b"\x1b[>2u";
+const KITTY_EVENT_TYPES_OFF: &[u8] = b"\x1b[<1u";
+
 /// RAII guard owning the terminal for the app's lifetime: enables raw mode,
 /// enters the alternate screen, and enables SGR mouse capture on construction, then
 /// on drop disables mouse capture, leaves the alternate screen, and disables raw mode.
@@ -36,6 +45,14 @@ impl TermGuard {
             out.write_all(b"\x1b[?1003h")?;
             out.flush()?;
         }
+        // Ask the terminal to report key releases (kitty flag 2). Progressive: a
+        // terminal without kitty ignores the push and keeps legacy encodings.
+        {
+            use std::io::Write;
+            let mut out = std::io::stdout();
+            out.write_all(KITTY_EVENT_TYPES_ON)?;
+            out.flush()?;
+        }
         Ok(TermGuard)
     }
 }
@@ -57,6 +74,13 @@ impl Drop for TermGuard {
             let _ = out.flush();
         }
         let _ = execute!(std::io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
+        // Pop the kitty release reporting so the terminal returns to legacy encodings.
+        {
+            use std::io::Write;
+            let mut out = std::io::stdout();
+            let _ = out.write_all(KITTY_EVENT_TYPES_OFF);
+            let _ = out.flush();
+        }
         let _ = disable_raw_mode();
     }
 }
