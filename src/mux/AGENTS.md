@@ -5,7 +5,7 @@
 `mux` is the mux family home. It defines mux-specific behavior behind the `Mux`
 trait AND holds the pure shared vocabulary every mux argv is built from. A mux
 knows the mux binary, server model, enumeration behavior, attach command shape,
-control-channel availability, event source, death signal, and window/session
+control-channel availability, event source, death signal, and session
 operation plans.
 
 The module root holds the cross-mux surface: the `Mux` trait, the mux registry
@@ -27,17 +27,17 @@ AND its display driver, and is re-exported from the root:
   the per-host session registry that backs enumeration (one server per session,
   so there is no aggregate session listing). See `psmux/AGENTS.md`.
 - `zellij/` owns the zellij mux, its poll cadence, the per-session action argv
-  every zellij query is addressed with, its driver (which reattaches on every
+  every zellij query is addressed with, and its driver (which reattaches on every
   session change because no client can be named from outside its own session),
-  and its two output shapes: a human session line and a JSON tab listing. See
+  owning the session listing as its one output shape. See
   `zellij/AGENTS.md`.
 - `abduco/` owns the abduco mux, its poll cadence, its listing parser (the bare
   binary IS the listing), its driver (which reattaches on every session change),
-  and the single-window card rule. abduco is the simplest family: no control
+  and the one-card-per-session rule. abduco is the simplest family: no control
   stream, no server-socket flag, and no per-session query — a poll enumerates
   once and resolves each session as the session alone. See `abduco/AGENTS.md`.
-- `screen/` owns the GNU screen mux, its poll cadence, its `-ls` / `-Q windows`
-  parsers, and its driver (which reattaches on every session change because
+- `screen/` owns the GNU screen mux, its poll cadence, its `-ls`
+  parser, and its driver (which reattaches on every session change because
   screen offers no client switch). See `screen/AGENTS.md`.
 
 Sub-modules pull the shared trait, value types, and imports from the parent. A
@@ -56,7 +56,7 @@ zellij, abduco, and screen enumerate differently and supply a per-session attach
 
 The command-plan verbs default to tmux-compatible argv, so a tmux-compatible mux
 is identity plus a few overrides. A mux that shares no argv with tmux overrides
-every verb, and overrides the pane parsing with it: a plan and the shape of what
+every verb, and overrides the listing parsing with it: a plan and the shape of what
 it prints are one decision, so they move together.
 
 ## Module Seams
@@ -72,7 +72,7 @@ it prints are one decision, so they move together.
   is the LOCAL one and gates multiplexing only.
 - Plan methods return mux argv or mux intent; they do not decide local versus ssh
   execution. The plan set covers what xmux itself issues: attach, enumerate, read
-  panes and options, select a window, and start a session. There is no kill,
+  sessions and options, select a window, and start a session. There is no kill,
   rename, or window-edit plan; the mux owns those. Every mux argv is built from a
   mux and lowered by a transport, never off a bare binary name.
 - The generic command builders from the shared vocabulary are called ONLY inside
@@ -94,8 +94,7 @@ it prints are one decision, so they move together.
 - Every command in a poll sweep runs under a fixed per-command budget. The poll
   ticker only advances after the sweep RETURNS, so one command that never answers
   would freeze that source's whole inventory. A timed-out listing surfaces as the
-  source's error; a timed-out pane query still emits an EMPTY panes event, because a
-  card whose panes never arrive keeps its spinner forever.
+  source's error.
 - Transport-specific command wrapping belongs to the host axis.
 - A mux answers for its OWN flags, and a flag question added to the trait carries no
   tmux-compatible default. Whether a mux takes a server-socket flag is asked of the mux

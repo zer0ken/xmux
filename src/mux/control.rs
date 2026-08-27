@@ -41,14 +41,6 @@ pub trait ControlProtocol: Send + Sync {
     /// `list-sessions -F <fmt>` — the correlated query whose block resolves the inventory.
     fn list_sessions_line(&self) -> String;
 
-    /// `list-panes -s -t <session> -F <fmt>` — the correlated query for `session`'s subtree.
-    fn list_panes_line(&self, session: &str) -> String;
-
-    /// `display-message -p -t <target> '#{session_name}\t#{window_index}'` — prints
-    /// `target`'s active window's session name + index (`target` is a session id from a
-    /// `%session-window-changed` payload); the reply resolves to a `HostEvent::Focus`.
-    fn active_window_line(&self, target: &str) -> String;
-
     /// `select-window -t <target>` — makes `target` (`session:window`) the active window.
     fn select_window_line(&self, target: &str) -> String;
 

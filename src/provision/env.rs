@@ -14,7 +14,7 @@ use crate::link::manage;
 use crate::model::source::{self, Source};
 use crate::provision::config::{self, Config};
 use crate::provision::discovery;
-use crate::session::{Session, WindowPanes};
+use crate::session::Session;
 use crate::ui::switcher::Ops;
 use crate::ui::tree::{self, Group};
 
@@ -452,7 +452,7 @@ impl Env {
     }
 
     /// Builds the switcher's side-effecting actions over the live mux. A shared
-    /// semaphore bounds the concurrent probes (`list-sessions`/`list-panes`) the
+    /// semaphore bounds the concurrent probes (`list-sessions`) the
     /// event loop streams through these ops.
     pub fn ops(self: &Arc<Self>) -> Arc<dyn Ops> {
         Arc::new(EnvOps {
@@ -571,17 +571,6 @@ impl Ops for EnvOps {
             windows: 1,
             ..Default::default()
         })
-    }
-
-    async fn panes(&self, s: &Session) -> anyhow::Result<Vec<WindowPanes>> {
-        let src = self.source(&s.source)?;
-        let host = src.host();
-        let _permit = self.sem.acquire().await?;
-        with_timeout(
-            DETAIL_TIMEOUT,
-            manage::panes(&host, src.run_with(), &s.name),
-        )
-        .await
     }
 }
 

@@ -2,7 +2,6 @@
 //! components read from. Carries the app loop's inventory, selection,
 //! display-truth, focus, and the open modal popup.
 use crate::model::Selection;
-use crate::session::WindowPanes;
 use crate::ui::tree::Group;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -10,12 +9,11 @@ use std::time::Instant;
 /// The app's canonical runtime state.
 #[derive(Default)]
 pub struct State {
-    /// Inventory - hosts → sessions → windows → panes (all reachable). The single
+    /// Inventory - hosts → sessions (all reachable). The single
     /// source of truth every component reads, instead of reaching into the tree.
     // ponytail: flat fields, not an Inventory sub-struct - bundle them if a reader
     // ever needs the whole group at once.
     pub groups: Vec<Group>,
-    pub panes: HashMap<String, Vec<WindowPanes>>,
     /// Sources whose `list-sessions` has not yet returned (host shows scanning…).
     pub scanning: HashSet<String>,
     /// How many times in a row each source has failed to enumerate, reset to zero the
@@ -23,8 +21,6 @@ pub struct State {
     /// SHOWN: the unreachable screen states it, because one failed sweep and a host that
     /// has not answered since launch are different problems behind the same message.
     pub failure_runs: HashMap<String, u32>,
-    /// Session addresses whose `list-panes` has resolved (success or failure).
-    pub panes_loaded: HashSet<String>,
     /// Active fuzzy-filter text (drives the visible tree + the hint_bar).
     pub filter: String,
     /// What the tree selection points at - the session/window to show.
@@ -90,18 +86,11 @@ impl State {
     }
 
     /// Builds the inventory from a complete snapshot: every host is resolved
-    /// (reachable or unreachable per its `err`) and every session's panes are
-    /// considered known. Other state fields stay default.
+    /// (reachable or unreachable per its `err`) and every session is present. Other
+    /// state fields stay default.
     pub fn from_scan(scan: crate::ui::switcher::Scan) -> State {
-        let panes_loaded = scan
-            .groups
-            .iter()
-            .flat_map(|g| g.sessions.iter().map(|sess| sess.address()))
-            .collect();
         State {
             groups: scan.groups,
-            panes: scan.panes,
-            panes_loaded,
             ..State::default()
         }
     }
@@ -241,7 +230,7 @@ impl State {
     /// State owns the event-driven mutations just as `apply` owns the intent-driven ones.
     ///
     /// `apply_event` performs only the mutations whose data is SELF-CONTAINED in the
-    /// event (the active-window marker, a pane subtree, a poll enumeration, the
+    /// event (a poll enumeration, the
     /// unreachable mark) - driven through the switcher, which rebuilds the tree against
     /// `&mut State`. The follow-ups that need a mux handle the state layer must not
     /// hold (the single-owner inventory fold into `model::Host`, a control-mode probe,
@@ -272,29 +261,6 @@ impl State {
                 vec![EventEffect::ApplyInventory { host, sessions }]
             }
             HostEvent::Changed { host } => vec![EventEffect::Refetch { host }],
-            HostEvent::ActiveWindowChanged {
-                host,
-                session_id,
-                window_id: _,
-            } => {
-                // Probe the SPECIFIC session the payload names (its tmux id) - never a
-                // guessed displayed session. The reply resolves the session name + new
-                // active window index and drives the marker for THAT session.
-                vec![EventEffect::ProbeActiveWindow {
-                    host,
-                    session_ref: session_id,
-                }]
-            }
-            HostEvent::Focus {
-                host,
-                session,
-                window,
-            } => {
-                // The active-window probe resolved - refresh the session card's
-                // focused-window line. A pure state mutation.
-                switcher.set_active_window(&host, &session, window, self);
-                Vec::new()
-            }
             HostEvent::Exited { host, reason } => {
                 // Mark the host unreachable in the tree (unless a transient drop of a
                 // once-connected host), then reap its dead client.
@@ -354,10 +320,6 @@ impl State {
                     vec![EventEffect::SyncPollSessions { source, sessions }]
                 }
             }
-            HostEvent::Panes { address, panes } => {
-                switcher.apply_panes(address, panes, self);
-                Vec::new()
-            }
         }
     }
 
@@ -372,8 +334,8 @@ impl State {
     }
 
     /// Folds a completed [`MuxOp`](crate::model::MuxOp)'s [`OpResult`] into the
-    /// inventory - the single owner of `groups`/`panes`/`panes_loaded` - and returns
-    /// an [`OpFollow`] telling the switcher how to rebuild its rows (and, for a create,
+    /// inventory - the single owner of `groups` - and returns an
+    /// [`OpFollow`] telling the switcher how to rebuild its rows (and, for a create,
     /// which session to reselect). State owns the domain mutation here just as
     /// [`apply`](State::apply) / [`apply_event`](State::apply_event) own the intent- and
     /// event-driven ones; the row rebuild + cursor restore stay in the switcher. A
@@ -388,10 +350,8 @@ impl State {
         use crate::ui::ops::{OpFollow, OpResult};
         use crate::ui::tree;
         match result {
-            OpResult::Created { session, panes } => {
+            OpResult::Created { session, .. } => {
                 let addr = session.address();
-                self.panes.insert(addr.clone(), panes);
-                self.panes_loaded.insert(addr.clone());
                 self.groups = tree::add_session(&self.groups, session);
                 OpFollow::Reselect(addr)
             }
@@ -882,38 +842,12 @@ mod tests {
     // probe / reap / sync / scan-dispatch) as EventEffects for the run loop to run.
     use crate::link::HostEvent;
     use crate::model::EventEffect;
-    use crate::session::{Pane, Session, WindowPanes};
+    use crate::session::Session;
     use crate::ui::switcher::{Scan, Switcher};
     use crate::ui::tree::Group;
     use std::collections::HashSet;
 
     fn one_session_scan() -> Scan {
-        let mut panes = HashMap::new();
-        panes.insert(
-            "jup/api".to_string(),
-            vec![
-                WindowPanes {
-                    index: 0,
-                    name: "w0".into(),
-                    active: true,
-                    panes: vec![Pane {
-                        index: 0,
-                        active: true,
-                        command: "bash".into(),
-                    }],
-                },
-                WindowPanes {
-                    index: 1,
-                    name: "w1".into(),
-                    active: false,
-                    panes: vec![Pane {
-                        index: 0,
-                        active: true,
-                        command: "bash".into(),
-                    }],
-                },
-            ],
-        );
         Scan {
             groups: vec![Group {
                 source: "jup".into(),
@@ -927,7 +861,6 @@ mod tests {
                     last_attached: 100,
                 }],
             }],
-            panes,
         }
     }
 
@@ -935,59 +868,6 @@ mod tests {
         let mut state = State::from_scan(scan);
         let sw = Switcher::new(&mut state);
         (state, sw)
-    }
-
-    #[test]
-    fn apply_event_focus_moves_marker_and_emits_no_effect() {
-        // Focus is self-contained (host/session/window in the payload): apply_event
-        // flips the active-window marker in State and produces no mux effect.
-        let (mut state, mut sw) = with_switcher(one_session_scan());
-        let mut connected = HashSet::new();
-        // window 0 is active in the scan; move the marker to window 1.
-        let effects = state.apply_event(
-            HostEvent::Focus {
-                host: "jup".into(),
-                session: "api".into(),
-                window: 1,
-            },
-            &mut sw,
-            &mut connected,
-        );
-        assert!(
-            effects.is_empty(),
-            "Focus is a pure state mutation - no mux effect"
-        );
-        let windows = state.panes.get("jup/api").unwrap();
-        assert!(windows.iter().find(|w| w.index == 1).unwrap().active);
-        assert!(!windows.iter().find(|w| w.index == 0).unwrap().active);
-    }
-
-    #[test]
-    fn apply_event_panes_loads_subtree_and_emits_no_effect() {
-        // Panes carries its data; apply_event applies it and marks the address loaded.
-        let (mut state, mut sw) = with_switcher(one_session_scan());
-        let mut connected = HashSet::new();
-        let new_panes = vec![WindowPanes {
-            index: 0,
-            name: "only".into(),
-            active: true,
-            panes: vec![Pane {
-                index: 0,
-                active: true,
-                command: "zsh".into(),
-            }],
-        }];
-        let effects = state.apply_event(
-            HostEvent::Panes {
-                address: "jup/db".into(),
-                panes: new_panes,
-            },
-            &mut sw,
-            &mut connected,
-        );
-        assert!(effects.is_empty(), "Panes is a pure state mutation");
-        assert!(state.panes_loaded.contains("jup/db"));
-        assert_eq!(state.panes.get("jup/db").unwrap().len(), 1);
     }
 
     #[test]
@@ -1041,32 +921,6 @@ mod tests {
         assert!(
             matches!(effects.as_slice(), [EventEffect::Refetch { host }] if host == "jup"),
             "Changed returns one Refetch effect: {effects:?}"
-        );
-    }
-
-    #[test]
-    fn apply_event_active_window_changed_probes_the_payload_session() {
-        // The payload-bearing ActiveWindowChanged must forward the notification's session
-        // id INTO the probe effect - probing that SPECIFIC session, never a guessed
-        // displayed one.
-        let (mut state, mut sw) = with_switcher(one_session_scan());
-        let mut connected = HashSet::new();
-        let effects = state.apply_event(
-            HostEvent::ActiveWindowChanged {
-                host: "jup".into(),
-                session_id: "$7".into(),
-                window_id: "@3".into(),
-            },
-            &mut sw,
-            &mut connected,
-        );
-        assert!(
-            matches!(
-                effects.as_slice(),
-                [EventEffect::ProbeActiveWindow { host, session_ref }]
-                    if host == "jup" && session_ref == "$7"
-            ),
-            "ActiveWindowChanged returns one payload-targeted ProbeActiveWindow: {effects:?}"
         );
     }
 
@@ -1300,45 +1154,9 @@ mod tests {
     }
 
     // --- fold_op_result: State owns the op-result inventory mutation ----------
-    // A completed MuxOp's OpResult folds its inventory change (groups / panes /
-    // panes_loaded) into State; the returned OpFollow tells the switcher only how
-    // to rebuild the rows + move the cursor. State owns the domain mutation.
-
-    fn a_win(name: &str) -> WindowPanes {
-        WindowPanes {
-            index: 0,
-            name: name.into(),
-            active: true,
-            panes: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn fold_op_result_created_adds_session_and_panes_and_asks_reselect() {
-        use crate::ui::ops::{OpFollow, OpResult};
-        let mut s = State::default();
-        let session = a_sess("api");
-        let addr = session.address();
-        let follow = s.fold_op_result(OpResult::Created {
-            session,
-            panes: vec![a_win("w0")],
-        });
-        assert!(
-            s.groups
-                .iter()
-                .any(|g| g.sessions.iter().any(|se| se.address() == addr)),
-            "the created session is in the tree"
-        );
-        assert!(s.panes.contains_key(&addr), "its panes are recorded");
-        assert!(
-            s.panes_loaded.contains(&addr),
-            "its panes are marked loaded"
-        );
-        assert!(
-            matches!(follow, OpFollow::Reselect(a) if a == addr),
-            "a create asks the switcher to reselect the new session"
-        );
-    }
+    // A completed MuxOp's OpResult folds its inventory change (groups) into State;
+    // the returned OpFollow tells the switcher only how to rebuild the rows + move
+    // the cursor. State owns the domain mutation.
 
     #[test]
     fn fold_op_result_failed_flashes_and_leaves_inventory_untouched() {
@@ -1346,15 +1164,12 @@ mod tests {
         let mut s = State::default();
         s.fold_op_result(OpResult::Created {
             session: a_sess("api"),
-            panes: vec![a_win("w0")],
         });
         let before_groups = s.groups.len();
-        let before_panes = s.panes.len();
         let follow = s.fold_op_result(OpResult::Failed {
             message: "create failed: boom".into(),
         });
         assert_eq!(s.groups.len(), before_groups, "a failure mutates no groups");
-        assert_eq!(s.panes.len(), before_panes, "a failure mutates no panes");
         assert!(
             matches!(follow, OpFollow::Flash(m) if m == "create failed: boom"),
             "a failure carries its message to the switcher's flash"

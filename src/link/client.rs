@@ -157,30 +157,6 @@ impl HostClient {
         });
     }
 
-    /// Requests every pane across all windows of `session`, correlating the reply
-    /// to `address` (the switcher's `source/name` session key) so the reader fills
-    /// that session's window/pane subtree. Without this a session's children stay
-    /// on the "loading…" placeholder forever — the control client never volunteers
-    /// pane data, it must be asked.
-    pub fn list_panes(&self, session: &str, address: String) {
-        let _ = self.cmd_tx.send(HostCmd::Query {
-            line: self.proto.list_panes_line(session),
-            reply: PendingReply::ListPanes { address },
-        });
-    }
-
-    /// Probes `target`'s active window over this control client. `target` is the tmux
-    /// SESSION id (`$id`) from the `%session-window-changed` payload — probing that
-    /// SPECIFIC session, never a guessed displayed one. The reply carries the resolved
-    /// session name + window index and resolves to a [`HostEvent::Focus`] so the app
-    /// follows the tree selection to the new active window (#2).
-    pub fn probe_active_window(&self, target: &str) {
-        let _ = self.cmd_tx.send(HostCmd::Query {
-            line: self.proto.active_window_line(target),
-            reply: PendingReply::ActiveWindow,
-        });
-    }
-
     /// Probes this host's display-client tty over the -CC control connection
     /// (`list-clients`). The reply resolves to a [`HostEvent::DisplayTty`] the
     /// supervisor records on `Host.display_tty`. Captured over the control connection,

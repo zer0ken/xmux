@@ -804,7 +804,7 @@ impl Chrome {
             Line::from(""),
             Line::from(Span::styled(
                 format!(" {}", self.headline(source, kind)),
-                Style::default().fg(pal.host).add_modifier(Modifier::BOLD),
+                Style::default().fg(pal.text).add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(format!(" {}", kind.word()), state_style)),
             Line::from(""),

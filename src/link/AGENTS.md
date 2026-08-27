@@ -4,7 +4,7 @@
 
 `link` owns the live host-facing channels: per-source connection management (the
 control-mode reader and writer machinery, poll task lifecycle, per-source session
-and window inventory, and the source events the app folds into the runtime
+and the source events the app folds into the runtime
 state), the mux operations xmux issues against a live host, and the control-socket
 protocol for headless driving. The connection-management part is a METADATA
 channel only: the per-session PTY attachments in `src/display` own the pixels.
@@ -14,16 +14,16 @@ channel only: the per-session PTY attachments in `src/display` own the pixels.
 Each remote source gets ONE control-mode client, owned and reaped by the source
 manager. A reader thread parses control-mode notifications into source events; a
 writer thread turns queued commands into the exact bytes to send. The reader
-holds no inventory of its own: it parses each session or pane listing block and
+holds no inventory of its own: it parses each session listing block and
 carries the result on a source event, using the same carriers the poll path uses. A
 pending-reply correlation ties a control command to its reply so the right event
 is emitted. The app folds those events into the source's own inventory, the single
-owner of per-source session and window inventory, and rebuilds the nav rows from
+owner of per-source session inventory, and rebuilds the nav rows from
 it.
 
 The operations concern composes a mux argv through the transport and runs it via an
 injected runner to perform the mux actions xmux itself issues (create a session,
-read a host's panes or options); nothing is cached and no state is held. The
+read a host's sessions or options); nothing is cached and no state is held. The
 control-socket concern is the headless driving protocol: length-framed messages,
 request and key parsing, and the ctl client that injects keystrokes and dumps the
 rendered screen over a local socket.
@@ -48,7 +48,7 @@ and the composed control argv.
   runs the returned effects back against these clients, the registry, and the
   display worker.
 - Depends on the mux axis for control-protocol parsing and on the domain types
-  for sessions and their panes.
+  for sessions.
 - The operations concern composes each mux argv across the two axes and runs it
   through the injected runner, exactly like enumeration; it hardcodes no mux verb.
 - The control-socket concern speaks semantic verbs and resolves them to domain

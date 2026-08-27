@@ -87,11 +87,12 @@ flatten renders for the dump verb.
   screen that card selects. A card is only as wide as the nav, so a reason on it is a
   cut-down copy of one the screen already holds whole.
 - A card that is waiting turns ONE spinner, in the first of its levels that has not
-  resolved (mux, then session, then window); every level behind it stays blank. A
+  resolved (the mux, then the session, both on a scanning host's card); every level
+  behind it stays blank. A
   second spinner on one card would say two separate things are in flight, when the
   card is waiting on exactly one answer. A level that has settled shows its value, and
-  a card that has settled entirely shows a status word - never both a word and a
-  spinner for the same state.
+  a settled session card is a plain session card - no spinner, because a session is
+  never waiting once its host has resolved.
 - Every in-flight marker in this layer reads its glyph from the one spinner helper on
   the frame the chrome advances, cards and the hint bar's scan progress alike, so
   nothing on screen turns out of step with anything else.

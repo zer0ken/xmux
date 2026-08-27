@@ -17,7 +17,7 @@ use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::model::{Action, Command};
-use crate::session::{Session, WindowPanes};
+use crate::session::Session;
 use crate::ui::chrome::ViewScreen;
 use crate::ui::modal::{self, Input, InputMode, Modal, PopupGeometry};
 use crate::ui::tree::{self, Group, Row, RowRef};
@@ -50,20 +50,12 @@ pub(super) const COL_GUTTER: u16 = 1;
 /// box-drawing line, so it parts the bands without reading as a border around either.
 pub(super) const BAND_RULE: &str = "\u{2500}";
 
-// Per-level node colours (the shared semantic palette), so the tree levels read
-// apart at a glance. Functions, not consts: the active palette (dark / light) is
-// picked at runtime from the terminal background.
-fn color_host() -> Color {
-    crate::ui::palette::get().host
-}
-fn color_session() -> Color {
-    crate::ui::palette::get().session
-}
-fn color_window() -> Color {
-    crate::ui::palette::get().window
-}
-fn color_mux() -> Color {
-    crate::ui::palette::get().mux
+// The one colour every card's text reads in (separators and the accent target excepted),
+// so the levels read as one neutral block with a single highlighted element. A function,
+// not a const: the active palette (dark / light) is picked at runtime from the terminal
+// background.
+fn color_text() -> Color {
+    crate::ui::palette::get().text
 }
 /// The card's number in the address column.
 fn color_number() -> Color {
@@ -273,7 +265,6 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
 #[derive(Clone, Default)]
 pub struct Scan {
     pub groups: Vec<Group>,
-    pub panes: HashMap<String, Vec<WindowPanes>>,
 }
 
 /// Snapshot of the selection taken before a rebuild so `restore_focus` can
@@ -384,7 +375,7 @@ impl Switcher {
 
     /// Seeds the switcher from the resolved source list alone - no probing - so
     /// the first frame paints host-skeleton rows, each in a scanning state, in
-    /// tens of milliseconds. Streamed [`apply_source_result`]/[`apply_panes`]
+    /// tens of milliseconds. Streamed [`apply_source_result`]
     /// calls fill the tree in afterward. The caller seeds `state` via
     /// [`crate::state::State::from_sources`].
     pub fn from_sources(state: &mut crate::state::State) -> Self {
@@ -450,7 +441,7 @@ impl Switcher {
             .rows
             .get(self.selected)
             .and_then(|r| match &r.reference {
-                RowRef::Session { .. } | RowRef::Loading { .. } => Some(r.reference.clone()),
+                RowRef::Session { .. } => Some(r.reference.clone()),
                 RowRef::Host { .. } => None,
             });
 
@@ -463,8 +454,6 @@ impl Switcher {
         let named_mux = |source: &str| state.chrome.source_mux(source).to_string();
         let rows = tree::flatten(
             &state.groups,
-            &state.panes,
-            &state.panes_loaded,
             &state.scanning,
             &state.filter,
             &self.nav_order,
@@ -589,15 +578,16 @@ impl Switcher {
         host == prev_host && mux == prev_mux
     }
 
-    /// Whether card `i` is a host-state card for a REACHABLE empty host: it has no
-    /// session and no status word, so it reads as a single host row rather than a
-    /// two-line card (an unreachable host keeps its status word; a scanning host keeps
-    /// its spinner).
+    /// Whether card `i` is a SETTLED host-state card - a reachable empty host or an
+    /// unreachable one - rendered as a single host row: a settled host has no session
+    /// and no row of its own below the host name (the unreachable mark rides on the
+    /// host row itself), so the card reads one line tall. A scanning host keeps its
+    /// two rows, because its spinner has to stand somewhere the settled card's text
+    /// stood.
     fn is_one_line_host(&self, i: usize) -> bool {
         matches!(
             self.rows.get(i).map(|r| &r.reference),
             Some(RowRef::Host {
-                unreachable: false,
                 scanning: false,
                 ..
             })
@@ -676,7 +666,7 @@ impl Switcher {
     fn current_source(&self) -> Option<String> {
         match self.current_ref()? {
             RowRef::Host { source, .. } => Some(source.clone()),
-            RowRef::Session { sess } | RowRef::Loading { sess } => Some(sess.source.clone()),
+            RowRef::Session { sess } => Some(sess.source.clone()),
         }
     }
 
@@ -802,39 +792,6 @@ impl Switcher {
         }
     }
 
-    /// Marks `window` as the active window of `source`/`session` in the cached
-    /// pane data, refreshing the session card's focused-window line WITHOUT a full
-    /// inventory refetch (the control-client probe resolves an external
-    /// `%session-window-changed` to the new active window; a blanket refetch per
-    /// change would storm the loop). Returns whether the active window actually
-    /// changed.
-    pub fn set_active_window(
-        &mut self,
-        source: &str,
-        session: &str,
-        window: i64,
-        state: &mut crate::state::State,
-    ) -> bool {
-        let addr = crate::session::address_of(source, session);
-        let Some(windows) = state.panes.get_mut(&addr) else {
-            return false;
-        };
-        let mut changed = false;
-        for w in windows.iter_mut() {
-            let want = w.index == window;
-            if w.active != want {
-                changed = true;
-            }
-            w.active = want;
-        }
-        if changed {
-            let prior = self.capture_focus();
-            self.rebuild(state);
-            self.restore_focus(prior, state);
-        }
-        changed
-    }
-
     // --- refresh ------------------------------------------------------------
 
     /// Resets every host to its scanning skeleton and signals the event loop to
@@ -845,9 +802,7 @@ impl Switcher {
     /// instant that host re-streams.
     pub fn request_rescan(&mut self, state: &mut crate::state::State) {
         let (reselect, parent) = match self.current_ref() {
-            Some(RowRef::Session { sess } | RowRef::Loading { sess }) => {
-                (Some(sess.address()), Some(sess.source.clone()))
-            }
+            Some(RowRef::Session { sess }) => (Some(sess.address()), Some(sess.source.clone())),
             Some(RowRef::Host { source, .. }) => (None, Some(source.clone())),
             None => (None, None),
         };
@@ -857,8 +812,6 @@ impl Switcher {
             g.err = None;
             g.sessions.clear();
         }
-        state.panes.clear();
-        state.panes_loaded.clear();
         self.rescan_kick = true;
         self.reattach_kick = true;
         self.rebuild(state);
@@ -961,37 +914,9 @@ impl Switcher {
             return;
         }
         let prior = self.capture_focus();
-        // The per-session entries are keyed by ADDRESS, not by source, so they have to be
-        // dropped by name; leaving them would keep a dead session's panes addressable.
-        let addresses: Vec<String> = state
-            .groups
-            .iter()
-            .filter(|g| g.source == source)
-            .flat_map(|g| g.sessions.iter().map(|s| s.address()))
-            .collect();
-        for address in &addresses {
-            state.panes.remove(address);
-            state.panes_loaded.remove(address);
-        }
         state.groups.retain(|g| g.source != source);
         state.scanning.remove(source);
         state.failure_runs.remove(source);
-        self.rebuild(state);
-        self.restore_focus(prior, state);
-    }
-
-    /// Streams in one session's `list-panes` outcome, clearing its loading
-    /// placeholder. An empty `panes` (a failed/timed-out fetch) still resolves the
-    /// session - it shows no children rather than spinning forever.
-    pub fn apply_panes(
-        &mut self,
-        address: String,
-        panes: Vec<WindowPanes>,
-        state: &mut crate::state::State,
-    ) {
-        let prior = self.capture_focus();
-        state.panes_loaded.insert(address.clone());
-        state.panes.insert(address, panes);
         self.rebuild(state);
         self.restore_focus(prior, state);
     }
@@ -1020,7 +945,7 @@ impl Switcher {
                 Some(RowRef::Host { source, .. }) => {
                     crate::session::source_of(&addr) == source.as_str()
                 }
-                Some(RowRef::Session { sess } | RowRef::Loading { sess }) => sess.address() == addr,
+                Some(RowRef::Session { sess }) => sess.address() == addr,
                 None => false,
             };
             if parked {
@@ -1084,7 +1009,7 @@ pub(crate) fn fit(candidates: &[String], width: u16) -> String {
 }
 
 /// The context parts of a card: `(host, mux, session)`. A host-state card
-/// carries only its host; a session/loading card names its session's host, mux
+/// carries only its host; a session card names its session's host, mux
 /// kind (empty when not yet known), and session name.
 fn context_of(row: &Row) -> (&str, &str, &str) {
     // The MACHINE half, never the whole source id: a source id already carries the mux
@@ -1094,7 +1019,7 @@ fn context_of(row: &Row) -> (&str, &str, &str) {
     // mux the same way whatever each of them had to read it from.
     match &row.reference {
         RowRef::Host { source, .. } => (crate::session::machine_of(source), &row.mux, ""),
-        RowRef::Session { sess } | RowRef::Loading { sess } => (
+        RowRef::Session { sess } => (
             crate::session::machine_of(&sess.source),
             &row.mux,
             &sess.name,
@@ -1102,20 +1027,18 @@ fn context_of(row: &Row) -> (&str, &str, &str) {
     }
 }
 
-/// The session address a card belongs to (session / loading), or `None` for a
+/// The session address a card belongs to (a session card), or `None` for a
 /// host-state card. Lets selection tracking, kill-confirm survival, and
-/// `select_address` treat either of a session's card forms as that session.
+/// `select_address` treat a session card as that session.
 fn session_addr_of(reference: &RowRef) -> Option<String> {
     match reference {
-        RowRef::Session { sess } | RowRef::Loading { sess } => Some(sess.address()),
+        RowRef::Session { sess } => Some(sess.address()),
         RowRef::Host { .. } => None,
     }
 }
 
 /// Whether two card references target the same card across a rebuild (host by
-/// source, session by address), so the selection stays put on a poll / re-scan. A
-/// loading card and a session card of the SAME session count as the same node, so
-/// the selection stays on that session as its panes resolve or clear.
+/// source, session by address), so the selection stays put on a poll / re-scan.
 fn same_node(a: &RowRef, b: &RowRef) -> bool {
     match (a, b) {
         (RowRef::Host { source: x, .. }, RowRef::Host { source: y, .. }) => x == y,

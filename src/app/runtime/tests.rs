@@ -436,168 +436,6 @@ async fn refresh_after_a_dropped_host_resolves_instead_of_loading_forever() {
 }
 
 #[test]
-fn active_window_probe_refreshes_focused_window_line() {
-    // A resolved active-window probe (HostEvent::Focus) flips the cached active
-    // window, which is the session card's line2 (the focused window's name). The
-    // selection and the attach target (the session) never move: the card is the
-    // session, so a window change within it is a text refresh, not a navigation.
-    use crate::session::{Pane, Session, WindowPanes};
-    use crate::ui::run::dump_screen;
-    use crate::ui::switcher::{Scan, Switcher};
-    use crate::ui::tree::Group;
-
-    let mut panes = std::collections::HashMap::new();
-    panes.insert(
-        "jup/api".to_string(),
-        vec![
-            WindowPanes {
-                index: 0,
-                name: "w0".into(),
-                active: true,
-                panes: vec![Pane {
-                    index: 0,
-                    active: true,
-                    command: "bash".into(),
-                }],
-            },
-            WindowPanes {
-                index: 1,
-                name: "w1".into(),
-                active: false,
-                panes: vec![Pane {
-                    index: 0,
-                    active: true,
-                    command: "bash".into(),
-                }],
-            },
-        ],
-    );
-    let scan = Scan {
-        groups: vec![Group {
-            source: "jup".into(),
-            err: None,
-            sessions: vec![Session {
-                mux: String::new(),
-                source: "jup".into(),
-                name: "api".into(),
-                windows: 2,
-                attached: false,
-                last_attached: 100,
-            }],
-        }],
-        panes,
-    };
-    let mut state = crate::state::State::from_scan(scan);
-    let switcher = Switcher::new(&mut state);
-    assert_eq!(
-        switcher.terminal_view_target().target,
-        "api",
-        "a session card targets the session (the mux lands on its active window)"
-    );
-
-    let mut rt = test_rt(fake_env_with_sources(&[]));
-    rt.hosts = crate::model::Hosts::default();
-    rt.state = state;
-    rt.switcher = switcher;
-    assert!(
-        dump_screen(&mut rt.switcher, None, 80, 24, &rt.state).contains("w0"),
-        "line2 shows the focused window w0"
-    );
-    let _ = rt.handle_host_event(HostEvent::Focus {
-        host: "jup".into(),
-        session: "api".into(),
-        window: 1,
-    });
-    let out = dump_screen(&mut rt.switcher, None, 80, 24, &rt.state);
-    assert!(out.contains("w1"), "line2 refreshed to w1:\n{out}");
-    assert!(
-        !out.contains("w0"),
-        "the previous focused window is gone:\n{out}"
-    );
-    assert_eq!(
-        rt.switcher.terminal_view_target().target,
-        "api",
-        "the attach target stays the session"
-    );
-}
-
-#[test]
-fn focus_event_updates_marker_without_moving_cursor() {
-    // handle_host_event(Focus) refreshes the cached active window but never moves
-    // the selection - it may target a session other than the selected one, and
-    // yanking the user's selection to it would be the selection thrash.
-    use crate::session::{Pane, Session, WindowPanes};
-    use crate::ui::switcher::{Scan, Switcher};
-    use crate::ui::tree::Group;
-
-    let mut panes = std::collections::HashMap::new();
-    panes.insert(
-        "jup/api".to_string(),
-        vec![
-            WindowPanes {
-                index: 0,
-                name: "w0".into(),
-                active: true,
-                panes: vec![Pane {
-                    index: 0,
-                    active: true,
-                    command: "bash".into(),
-                }],
-            },
-            WindowPanes {
-                index: 1,
-                name: "w1".into(),
-                active: false,
-                panes: vec![Pane {
-                    index: 0,
-                    active: true,
-                    command: "bash".into(),
-                }],
-            },
-        ],
-    );
-    let scan = Scan {
-        groups: vec![Group {
-            source: "jup".into(),
-            err: None,
-            sessions: vec![Session {
-                mux: String::new(),
-                source: "jup".into(),
-                name: "api".into(),
-                windows: 2,
-                attached: false,
-                last_attached: 100,
-            }],
-        }],
-        panes,
-    };
-    let mut state = crate::state::State::from_scan(scan);
-    let switcher = Switcher::new(&mut state);
-    assert_eq!(switcher.terminal_view_target().target, "api");
-
-    let mut rt = test_rt(fake_env_with_sources(&[]));
-    rt.hosts = crate::model::Hosts::default();
-    rt.state = state;
-    rt.switcher = switcher;
-    let _ = rt.handle_host_event(HostEvent::Focus {
-        host: "jup".into(),
-        session: "api".into(),
-        window: 1,
-    });
-    assert_eq!(
-        rt.switcher.terminal_view_target().target,
-        "api",
-        "handler alone must not move the selection"
-    );
-    assert!(
-        rt.state.panes["jup/api"]
-            .iter()
-            .any(|w| w.index == 1 && w.active),
-        "the cached active window flipped to 1"
-    );
-}
-
-#[test]
 fn prefix_s_toggles_state() {
     use crate::app::focus::Focus;
     let mut focus = Focus::default();
@@ -629,7 +467,6 @@ fn apply_inventory_effect_folds_sessions_into_host_inventory() {
             err: None,
             sessions: vec![],
         }],
-        panes: Default::default(),
     };
     let mut state = crate::state::State::from_scan(scan);
     let switcher = Switcher::new(&mut state);
@@ -639,7 +476,7 @@ fn apply_inventory_effect_folds_sessions_into_host_inventory() {
         crate::mux::for_binary("tmux"),
     ));
     let mut rt = test_rt(fake_env_with_sources(&[]));
-    rt.mgr.insert_fake("jup"); // a control client so request_session_panes has a sink
+    rt.mgr.insert_fake("jup"); // a control client so the display attach has a sink
     rt.hosts = hosts;
     rt.state = state;
     rt.switcher = switcher;
@@ -678,32 +515,15 @@ fn apply_inventory_effect_folds_sessions_into_host_inventory() {
 // A re-scan starts the roster re-resolution off the loop, so the harness needs the
 // runtime the real loop always runs inside.
 #[tokio::test]
-async fn r_rescan_reloads_control_host_panes() {
-    // Regression (S4-M5 follow-up): the client-initiated `r` re-scan must not
-    // strand a control host's window/pane subtrees on "loading…". `request_rescan`
-    // clears every session's panes from `state.panes`, so the loop-local
-    // `panes_requested` dedup must be cleared in lockstep - otherwise the re-list's
-    // `ApplyInventory` skips `list-panes` for every already-requested address and
-    // the panes never reload. `kick_rescan` (the single consumer of the rescan
-    // kick) owns that clear.
-    use crate::session::{Pane, Session, WindowPanes};
+async fn r_rescan_rebuilds_nav_and_kicks_discovery() {
+    // The client-initiated `r` re-scan resets the nav to its scanning skeleton
+    // (clears every group's sessions) and raises the rescan kick; the loop consumes
+    // the kick in kick_rescan, which re-lists each host. No session survives into
+    // the skeleton, so the subtree must stream back exactly as on first launch.
+    use crate::session::Session;
     use crate::ui::switcher::{Scan, Switcher};
     use crate::ui::tree::Group;
 
-    let mut panes = std::collections::HashMap::new();
-    panes.insert(
-        "jup/api".to_string(),
-        vec![WindowPanes {
-            index: 0,
-            name: "w0".into(),
-            active: true,
-            panes: vec![Pane {
-                index: 0,
-                active: true,
-                command: "bash".into(),
-            }],
-        }],
-    );
     let scan = Scan {
         groups: vec![Group {
             source: "jup".into(),
@@ -717,7 +537,6 @@ async fn r_rescan_reloads_control_host_panes() {
                 last_attached: 100,
             }],
         }],
-        panes,
     };
     let mut state = crate::state::State::from_scan(scan);
     let switcher = Switcher::new(&mut state);
@@ -737,18 +556,15 @@ async fn r_rescan_reloads_control_host_panes() {
     rt.state = state;
     rt.switcher = switcher;
 
-    // Panes were already loaded + requested during the initial scan.
-    rt.panes_requested.insert("jup/api".into());
-    assert!(
-        rt.state.panes.contains_key("jup/api"),
-        "precondition: panes are loaded before the re-scan"
-    );
-
-    // The `r` re-scan resets the nav to its scanning skeleton and clears panes.
+    // The `r` re-scan resets the nav to its scanning skeleton and clears sessions.
     rt.switcher.request_rescan(&mut rt.state);
     assert!(
-        !rt.state.panes.contains_key("jup/api"),
-        "request_rescan cleared the loaded panes"
+        rt.state.groups.iter().all(|g| g.sessions.is_empty()),
+        "request_rescan cleared the loaded sessions"
+    );
+    assert!(
+        rt.switcher.take_rescan_kick(),
+        "request_rescan raised the rescan kick"
     );
 
     // The loop consumes the kick and re-lists each host.
@@ -758,33 +574,11 @@ async fn r_rescan_reloads_control_host_panes() {
         &rt.hosts,
         &mut rt.detecting,
         &mut rt.mgr,
-        &mut rt.panes_requested,
         (80, 24),
     );
-    // The dedup must no longer block re-requesting this session's panes; otherwise
-    // the re-list below silently skips `list-panes` and the subtree stays "loading…".
     assert!(
-        !rt.panes_requested.contains("jup/api"),
-        "kick_rescan must clear the pane-request dedup so control-host panes reload"
-    );
-
-    // The re-list reply folds in via ApplyInventory, which re-requests each
-    // session's panes - re-inserting the (now-cleared) address, i.e. issuing list-panes.
-    let sessions = vec![Session {
-        mux: String::new(),
-        source: "jup".into(),
-        name: "api".into(),
-        windows: 1,
-        attached: false,
-        last_attached: 100,
-    }];
-    rt.run_event_effect(crate::model::EventEffect::ApplyInventory {
-        host: "jup".into(),
-        sessions,
-    });
-    assert!(
-        rt.panes_requested.contains("jup/api"),
-        "ApplyInventory re-requested the session's panes after the re-scan"
+        !rt.switcher.take_rescan_kick(),
+        "kick_rescan consumed the rescan kick"
     );
 }
 
@@ -1329,7 +1123,6 @@ fn test_rt(env: Env) -> Runtime {
         nav_decoder: crate::display::decode::KeyDecoder::new(),
         prefix,
         connected: HashSet::new(),
-        panes_requested: HashSet::new(),
         detecting: HashSet::new(),
         draw_observer: DrawObserver::default(),
         spinner_start: std::time::Instant::now(),
@@ -1462,10 +1255,10 @@ async fn client_session_changed_matching_our_tty_syncs_display_belief() {
     );
 }
 
-/// A host `jup` with two loaded sessions: `api` (one window) and `db` (window 1 active).
-/// Lets a follow test assert the selection lands on the mux-moved session's ACTIVE window.
+/// A host `jup` with two loaded sessions: `api` and `db`.
+/// Lets a follow test assert the selection lands on the mux-moved session's card.
 fn two_session_scan() -> crate::ui::switcher::Scan {
-    use crate::session::{Pane, Session, WindowPanes};
+    use crate::session::Session;
     use crate::ui::switcher::Scan;
     use crate::ui::tree::Group;
     let sess = |name: &str, windows: i64| Session {
@@ -1476,47 +1269,12 @@ fn two_session_scan() -> crate::ui::switcher::Scan {
         attached: false,
         last_attached: 100,
     };
-    let pane = || {
-        vec![Pane {
-            index: 0,
-            active: true,
-            command: "bash".into(),
-        }]
-    };
-    let mut panes = std::collections::HashMap::new();
-    panes.insert(
-        "jup/api".to_string(),
-        vec![WindowPanes {
-            index: 0,
-            name: "w0".into(),
-            active: true,
-            panes: pane(),
-        }],
-    );
-    panes.insert(
-        "jup/db".to_string(),
-        vec![
-            WindowPanes {
-                index: 0,
-                name: "w0".into(),
-                active: false,
-                panes: pane(),
-            },
-            WindowPanes {
-                index: 1,
-                name: "w1".into(),
-                active: true,
-                panes: pane(),
-            },
-        ],
-    );
     Scan {
         groups: vec![Group {
             source: "jup".into(),
             err: None,
             sessions: vec![sess("api", 1), sess("db", 2)],
         }],
-        panes,
     }
 }
 
@@ -1608,7 +1366,7 @@ async fn client_session_changed_in_nav_focus_syncs_belief_without_moving_selecti
 // =========================================================================
 // HUMAN VISUAL-GATE CHECKLIST (run in a REAL terminal - never headless):
 // 1. Launch `xmux`. Confirm it enters the alternate screen cleanly and starts in
-//    Focus::Nav: the Host·Session·Window·Pane tree on the left, the live REAL
+//    Focus::Nav: the Host·Session tree on the left, the live REAL
 //    terminal of the selection's session on the right (a true attached mux client).
 // 2. Move the selection between sessions. Confirm the terminal view shows each session's
 //    real attached terminal instantly (it is pre-attached + kept alive), with a
@@ -1663,7 +1421,6 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
                 },
             ],
         }],
-        panes: Default::default(),
     };
     let mut state = crate::state::State::from_scan(scan);
     let mut sw = Switcher::new(&mut state);
@@ -1761,7 +1518,6 @@ fn status_line_reports_focus_and_address() {
                 last_attached: 1,
             }],
         }],
-        panes: Default::default(),
     };
     let mut state = crate::state::State::from_scan(scan);
     let sw = Switcher::new(&mut state);
@@ -1810,7 +1566,6 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
                 },
             ],
         }],
-        panes: Default::default(),
     };
     let mut state = crate::state::State::from_scan(scan);
     let mut sw = Switcher::new(&mut state);
@@ -1852,10 +1607,7 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
 fn handle_stdin_bytes_quit_on_prefix_q_in_tree_focus() {
     use crate::ui::switcher::{Scan, Switcher};
     // prefix is Ctrl-G (0x07) in the default config; prefix then 'q' = quit.
-    let scan = Scan {
-        groups: vec![],
-        panes: Default::default(),
-    };
+    let scan = Scan { groups: vec![] };
     let mut state = crate::state::State::from_scan(scan); // nav focus
     let switcher = Switcher::new(&mut state);
     // The default fake env's prefix is "C-g" (0x07), matching this test's `\x07q`.
@@ -1874,10 +1626,7 @@ fn arming_the_prefix_marks_the_frame_dirty_so_the_hint_bar_swaps() {
     // read is a VISIBLE change even though it moves no selection and runs no action. If
     // it did not mark the frame dirty the cheatsheet would only appear on the next
     // unrelated redraw (a poll tick), which reads as the prefix doing nothing.
-    let scan = Scan {
-        groups: vec![],
-        panes: Default::default(),
-    };
+    let scan = Scan { groups: vec![] };
     let mut state = crate::state::State::from_scan(scan); // nav focus
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
@@ -1913,7 +1662,6 @@ fn rt_terminal_focus_with_session() -> Runtime {
                 last_attached: 1,
             }],
         }],
-        panes: Default::default(),
     };
     let mut state = crate::state::State::from_scan(scan); // launches in nav focus
     let switcher = Switcher::new(&mut state);
@@ -1979,10 +1727,7 @@ fn a_mouse_action_disarms_the_prefix_and_a_hover_does_not() {
         (64, true, "a wheel"),
         (32, true, "a drag"), // motion WITH a button held
     ] {
-        let mut state = crate::state::State::from_scan(Scan {
-            groups: vec![],
-            panes: Default::default(),
-        });
+        let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
         let switcher = Switcher::new(&mut state);
         let mut rt = test_rt(fake_env_with_sources(&["local"]));
         rt.state = state;
@@ -2000,10 +1745,7 @@ fn a_mouse_action_disarms_the_prefix_and_a_hover_does_not() {
     }
     // Bare hover is the pointer sitting there, not an action: it must not break a chord
     // the user is still typing. cb 35 = motion bit with no button held.
-    let mut state = crate::state::State::from_scan(Scan {
-        groups: vec![],
-        panes: Default::default(),
-    });
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
     rt.state = state;
@@ -2024,10 +1766,7 @@ fn handle_mouse_event_view_border_grab_sets_dragging() {
     use crate::ui::switcher::{Scan, Switcher};
     // A left-press exactly on the view border column sets dragging_view_border, as the
     // inline gate did (is_left_press && nav_width > 0 && col0 == nav_width).
-    let scan = Scan {
-        groups: vec![],
-        panes: Default::default(),
-    };
+    let scan = Scan { groups: vec![] };
     let mut state = crate::state::State::from_scan(scan);
     let switcher = Switcher::new(&mut state);
     let sel = Selection::default();
@@ -2067,10 +1806,7 @@ fn handle_mouse_event_top_layout_border_drag_resizes_height() {
     // row grabs it and a drag sets the nav HEIGHT (not width). 40x60 → Top; the nav band
     // carries its own hint bar, so its auto height is ~40% of the whole 60-row area = 24,
     // putting the border at row 24 (0-based) = SGR row 25.
-    let mut state = crate::state::State::from_scan(Scan {
-        groups: vec![],
-        panes: Default::default(),
-    });
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let sel = Selection::default();
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
@@ -2115,10 +1851,7 @@ fn resize_keys_adjust_height_in_top_layout() {
     use ratatui::Terminal;
     // In the portrait Top layout the nav-resize keys (prefix h/l · Ctrl+←/→) adjust the
     // HEIGHT, not the width - seeded from the auto height the first time.
-    let mut state = crate::state::State::from_scan(Scan {
-        groups: vec![],
-        panes: Default::default(),
-    });
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
     rt.state = state;

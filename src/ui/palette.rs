@@ -51,7 +51,7 @@ pub(crate) struct Palette {
     /// The card's NUMBER in the left column (the digit gutter) - the address a user
     /// jumps to. Split from `overlay` so it can be tuned apart from the other marks.
     pub number: Color,
-    /// The `/` separator between the host/mux/session/window parts of a card's lines.
+    /// The `/` separator between the host/mux/session parts of a card's lines.
     pub separator: Color,
     /// The box-drawing connector (`├`/`└`) hanging a card's detail line under its
     /// context line.
@@ -69,17 +69,12 @@ pub(crate) struct Palette {
     /// different surface than the cards), so the slot that reads on one may not read
     /// on the other: a light theme's dark `accent` is invisible on a dark bar.
     pub bar_accent: Color,
-    /// Level colour: host. Cyan, the same slot the focused view border is lit with, so
-    /// the machine reads as the outermost level and as the thing focus moves between.
-    pub host: Color,
-    /// Level colour: mux.
-    pub mux: Color,
-    /// Level colour: window (the detail line's window part) - the
-    /// quietest level, so the session name reads as the detail line's anchor.
-    pub window: Color,
-    /// Level colour: session. The level a user actually picks, so it stands out from
-    /// the machine and mux above it.
-    pub session: Color,
+    /// The one text colour every card paints, separators and the accent target
+    /// excepted: the host and the mux on a session card's context line read in it, so a
+    /// card reads as one neutral block with a single highlighted element. The accent
+    /// target (the session name, or the mux on a card with no session to name) is the
+    /// only card text that leaves it.
+    pub text: Color,
     /// In-flight state: the scanning status and the loading spinner.
     pub pending: Color,
     /// Failure state: the unreachable status and error text.
@@ -101,11 +96,11 @@ pub(crate) const AUTO_LIGHT: &str = "auto-light";
 /// ANSI set - the level colours read on black, the accent pops on it.
 const fn auto_dark() -> Palette {
     Palette {
-        accent: Color::LightGreen,
+        accent: Color::LightYellow,
         overlay: Color::DarkGray,
         border_active: Color::White,
         border_inactive: Color::DarkGray,
-        border_hover: Color::LightGreen,
+        border_hover: Color::LightYellow,
         number: Color::DarkGray,
         separator: Color::DarkGray,
         connector: Color::DarkGray,
@@ -113,10 +108,7 @@ const fn auto_dark() -> Palette {
         bar_bg: Color::DarkGray,
         bar_fg: Color::White,
         bar_accent: Color::White,
-        host: Color::White,
-        mux: Color::LightGreen,
-        window: Color::DarkGray,
-        session: Color::White,
+        text: Color::White,
         pending: Color::Yellow,
         danger: Color::Red,
         selection_bg: None,
@@ -129,11 +121,11 @@ const fn auto_dark() -> Palette {
 /// bar of its own.
 const fn auto_light() -> Palette {
     Palette {
-        accent: Color::Green,
+        accent: Color::Yellow,
         overlay: Color::DarkGray,
         border_active: Color::Black,
         border_inactive: Color::White,
-        border_hover: Color::Green,
+        border_hover: Color::Yellow,
         number: Color::DarkGray,
         separator: Color::DarkGray,
         connector: Color::DarkGray,
@@ -141,10 +133,7 @@ const fn auto_light() -> Palette {
         bar_bg: Color::DarkGray,
         bar_fg: Color::White,
         bar_accent: Color::White,
-        host: Color::Black,
-        mux: Color::Green,
-        window: Color::DarkGray,
-        session: Color::Black,
+        text: Color::Black,
         pending: Color::LightYellow,
         danger: Color::LightRed,
         selection_bg: None,
@@ -280,10 +269,7 @@ mod tests {
                 ("bar_bg", p.bar_bg),
                 ("bar_fg", p.bar_fg),
                 ("bar_accent", p.bar_accent),
-                ("host", p.host),
-                ("mux", p.mux),
-                ("window", p.window),
-                ("session", p.session),
+                ("text", p.text),
                 ("pending", p.pending),
                 ("danger", p.danger),
             ] {
@@ -312,17 +298,16 @@ mod tests {
     fn resolve_theme_resolves_both_and_rejects_unknown() {
         let (name, p) = resolve_theme("auto-dark").unwrap();
         assert_eq!(name, "auto-dark");
-        assert_eq!(p.accent, Color::LightGreen);
-        assert_eq!(p.host, Color::White);
-        assert_eq!(p.mux, Color::LightGreen);
-        assert_eq!(p.border_hover, Color::LightGreen);
-        assert_eq!(p.window, Color::DarkGray);
+        assert_eq!(p.accent, Color::LightYellow);
+        assert_eq!(p.text, Color::White);
+        assert_eq!(p.border_hover, Color::LightYellow);
+        assert_eq!(p.overlay, Color::DarkGray);
         let (name, p) = resolve_theme("auto-light").unwrap();
         assert_eq!(name, "auto-light");
-        assert_eq!(p.accent, Color::Green);
+        assert_eq!(p.accent, Color::Yellow);
         assert_eq!(p.overlay, Color::DarkGray);
         assert_eq!(p.border_inactive, Color::White);
-        assert_eq!(p.session, Color::Black);
+        assert_eq!(p.text, Color::Black);
         assert!(resolve_theme("nope").is_none());
         assert!(resolve_theme("").is_none());
     }

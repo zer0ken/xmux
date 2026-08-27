@@ -1,25 +1,23 @@
 //! The shared per-host vocabulary: the inventory data plus the command/event/reply
 //! types the reader thread, writer thread, and app exchange over their channels.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
-use crate::session::{Session, WindowPanes};
+use crate::session::Session;
 
-/// One host's session/window inventory, seeded from list-sessions/list-panes and
+/// One host's session inventory, seeded from list-sessions and
 /// kept live by notifications. The app reads it to (re)build the tree. This is
 /// a METADATA channel only — the per-session PTY attachments own the pixels.
 pub struct HostInventory {
     pub sessions: Vec<Session>,
-    pub panes: HashMap<String, Vec<WindowPanes>>,
 }
 
 impl HostInventory {
     pub fn new() -> Self {
         Self {
             sessions: Vec::new(),
-            panes: HashMap::new(),
         }
     }
 }
@@ -58,36 +56,16 @@ pub enum HostEvent {
         sessions: Vec<Session>,
     },
     /// A list-sessions reply resolved — carries the parsed sessions for the loop to
-    /// fold into `model::Host.inventory` and re-apply to the tree. (Pane subtrees
-    /// arrive separately as [`HostEvent::Panes`], the same carrier the poll path uses.)
+    /// fold into `model::Host.inventory` and re-apply to the tree.
     Inventory {
         host: String,
         sessions: Vec<Session>,
     },
     /// A `%`-notification reports the server's session/window STRUCTURE CHANGED
     /// (added, closed, renamed, or the set of sessions) — the app must REFETCH
-    /// (re-run list-sessions + re-list panes), since the notification carries only an
-    /// id, not the new structure. Resyncs the tree view + active-window markers (#5).
+    /// (re-run list-sessions), since the notification carries only an
+    /// id, not the new structure. Resyncs the tree view (#5).
     Changed { host: String },
-    /// `%session-window-changed $id @win`: a session's ACTIVE WINDOW switched (e.g.
-    /// another client did prefix-n). Carries the notification's tmux SESSION id
-    /// (`$id`) and WINDOW id (`@win`) so the app probes THAT SPECIFIC session's new
-    /// active window and follows the tree selection to it (#2) — it must NOT guess the
-    /// displayed session, which mismatches when a non-displayed session's window changes.
-    ActiveWindowChanged {
-        host: String,
-        session_id: String,
-        window_id: String,
-    },
-    /// An active-window probe resolved (`display-message -p
-    /// '#{session_name}\t#{window_index}'`): the app moves the tree selection to
-    /// window `window` of the RESOLVED `session` (a no-op unless the selection is on a
-    /// window row of that session — see [`crate::ui::switcher::Switcher::select_window`]).
-    Focus {
-        host: String,
-        session: String,
-        window: i64,
-    },
     /// `%exit` / EOF — reap.
     Exited {
         host: String,
@@ -147,16 +125,7 @@ pub enum HostEvent {
         sessions: Vec<Session>,
         err: Option<String>,
     },
-    /// A per-session window/pane subtree resolved (keyed by the session's
-    /// `source/name` address). Emitted by the poll task after `Sessions`, and by the
-    /// control reader when a `list-panes` block resolves — both paths carry pane data
-    /// the same way, applied purely by `apply_event`.
-    Panes {
-        address: String,
-        panes: Vec<WindowPanes>,
-    },
 }
-
 /// The reader's shared liveness flag the app also reads. The parsed inventory is no
 /// longer held here — the reader carries sessions/panes on `HostEvent`s and the loop
 /// folds them into `model::Host.inventory` (the single owner).
@@ -170,13 +139,6 @@ pub type InFlight = Arc<Mutex<VecDeque<PendingReply>>>;
 /// What a resolved `%begin…%end` block means to the reader.
 pub enum PendingReply {
     ListSessions,
-    ListPanes {
-        address: String,
-    },
-    /// An active-window probe: its block body is `<session_name>\t<window_index>`
-    /// (the probe targeted a session id, so the name is resolved by the reply, not the
-    /// correlator), resolved into a [`HostEvent::Focus`].
-    ActiveWindow,
     /// A `list-clients` probe: the mux protocol parses the block body for xmux's own
     /// display-client tty (`ControlProtocol::parse_display_client_tty`), resolved into a
     /// [`HostEvent::DisplayTty`]. The reader names no wire format.
@@ -192,7 +154,6 @@ mod tests {
     fn inventory_starts_empty() {
         let inv = HostInventory::new();
         assert!(inv.sessions.is_empty());
-        assert!(inv.panes.is_empty());
     }
 
     #[test]

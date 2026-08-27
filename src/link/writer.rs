@@ -74,14 +74,12 @@ mod tests {
     }
 
     #[test]
-    fn writer_query_list_panes_correlates() {
+    fn writer_query_list_clients_correlates() {
         let (tx, rx) = std::sync::mpsc::channel::<HostCmd>();
         let in_flight: InFlight = Default::default();
         tx.send(HostCmd::Query {
-            line: format!("list-panes -s -t if -F '{}'\n", crate::mux::PANE_FORMAT),
-            reply: PendingReply::ListPanes {
-                address: "jupiter00/if".into(),
-            },
+            line: "list-clients -F '#{client_name}\t#{session_name}'".into(),
+            reply: PendingReply::DisplayClientTty,
         })
         .unwrap();
         tx.send(HostCmd::Shutdown).unwrap();
@@ -90,12 +88,15 @@ mod tests {
         run_writer(rx, test_control_proto(), &mut out, &in_flight);
         let s = String::from_utf8(out).unwrap();
         assert!(
-            s.contains("list-panes -s -t if -F"),
-            "writes the list-panes command: {s}"
+            s.contains("list-clients"),
+            "writes the list-clients command: {s}"
         );
         assert!(
-            matches!(in_flight.lock().unwrap().front(), Some(PendingReply::ListPanes { address }) if address == "jupiter00/if"),
-            "pushes the ListPanes correlator keyed by the session address"
+            matches!(
+                in_flight.lock().unwrap().front(),
+                Some(PendingReply::DisplayClientTty)
+            ),
+            "pushes the DisplayClientTty correlator"
         );
     }
 }

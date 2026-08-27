@@ -515,19 +515,20 @@ impl Switcher {
     /// Builds one navigation card as a [`ListItem`]: a context line over a detail
     /// line, or the detail line alone when the card is collapsed (see
     /// [`Switcher::card_collapsed`]). The context line is the address column +
-    /// `{host}/{mux}` in the host / mux colours (the mux segment only when known -
-    /// a just-created session is stamped by the next enumeration; just `{host}` on
-    /// a host-state card). The detail line is the address column + detail: a session
-    /// card's `{session}/{window}` - the focused (active) window, written as its own
-    /// mux writes it - in the session / window colours, a loading
-    /// card's `{session}/` + spinner, a host-state card's settled state coloured by kind
-    /// (danger / muted) or a spinner while it scans. Ahead of both lines runs the
-    /// ADDRESS column: the card's dim 0-based number, the thing `prefix <digit>` types.
-    /// It sits on the DETAIL line, never the context line, so it reads beside the
-    /// session it names and a collapsed card (detail line only) puts it in the same
-    /// place as an expanded one. A host-state card is the exception: its number sits
-    /// beside the host/mux name, because its status line is a word about the host, not
-    /// the thing the number names.
+    /// `{host}/{mux}` in the one text colour (the mux segment only when known - a
+    /// just-created session is stamped by the next enumeration; just `{host}` on a
+    /// host-state card). The detail line is the address column + the session name in
+    /// the accent, the one card element that leaves the text colour; a host-state card
+    /// is the host/mux name alone on its row, with the unreachable mark (`⚠`) riding
+    /// ahead of the host and the mux taking the accent, or a spinner in the level a
+    /// scanning host has not resolved. The focused-window part a session card used to
+    /// carry is gone, so no card has a second level of content below the session name.
+    /// Ahead of both lines runs the ADDRESS column: the card's dim 0-based number, the
+    /// thing `prefix <digit>` types. It sits on the DETAIL line, never the context
+    /// line, so it reads beside the session it names and a collapsed card (detail line
+    /// only) puts it in the same place as an expanded one. A host-state card is the
+    /// exception: its number sits beside the host/mux name, because its row is a word
+    /// about the host, not the thing the number names.
     ///
     /// On the SELECTED card that column holds the mark instead of a number, because
     /// "you are here" answers the same question the number answers, and one column pays
@@ -564,12 +565,14 @@ impl Switcher {
             }
         };
 
-        // Host-state card: the host name over its status. A card still SCANNING has no
-        // status WORD - the spinner stands in the level that has not resolved, and in
-        // that one level only: while the mux is still unknown the detail line stays
-        // blank, because a second spinner would say two separate things are in flight.
-        // A SETTLED card reads its status coloured by kind: a dead host is danger (soft
-        // red), a reachable empty one muted.
+        // Host-state card: a settled host (reachable empty or unreachable) reads as a
+        // single row - the host name over nothing, because the only word a settled host
+        // had (`⚠ unreachable`) now rides on the host row itself as a mark. The mark is
+        // danger and sits in front of the host with one space between, so the card names
+        // WHAT it is (host/mux) while the mark colours its state; the mux - the lowest
+        // level the card displays - takes the accent. A card still SCANNING has no
+        // settled mux to accent: the spinner stands in the level that has not resolved,
+        // in that one level only, and the mux stays text beside it.
         if let RowRef::Host {
             unreachable,
             scanning,
@@ -578,27 +581,34 @@ impl Switcher {
         {
             let (host, mux, _) = context_of(row);
             let pending = Style::default().fg(palette::get().pending);
-            // A host-state card's number sits on the host/mux line: the status line
-            // below is a word about the host, not the thing the number names. A
-            // reachable empty host is that host line alone - a single row with no
-            // status word to carry.
-            let one_line = !*unreachable && !*scanning;
+            // A host-state card's number sits on the host/mux line: the row is a word
+            // about the host, not the thing the number names.
+            let one_line = !*scanning;
             let mut line1 = address(true);
-            // A machine serving several muxes has one host card per mux, so the mux has
-            // to be on the line or the two cards read identically. It is spanned exactly
-            // as a session card's context line is - host, separator, mux - because a
-            // level's colour is the level's, not the card kind's: a single-colour run reading
-            // `local/psmux` would say the mux is part of the host's name.
+            if *unreachable {
+                // The mark rides the host row ahead of the host name, one space after.
+                // Danger keeps its colour: an unreachable host is still a failure, the
+                // card just says so with a mark instead of a second row of text.
+                line1.push(Span::styled(
+                    "⚠ ",
+                    Style::default().fg(palette::get().danger),
+                ));
+            }
             line1.push(Span::styled(
                 host.to_string(),
-                Style::default().fg(color_host()),
+                Style::default().fg(color_text()),
             ));
             if !mux.is_empty() {
                 line1.push(Span::styled("/", separator));
-                line1.push(Span::styled(
-                    mux.to_string(),
-                    Style::default().fg(color_mux()),
-                ));
+                // A settled host's mux is the lowest level it displays, so it takes the
+                // accent (there is no session to take it); a scanning host's mux is
+                // context still being pinned down, so it stays text beside the spinner.
+                let mux_style = if *scanning {
+                    Style::default().fg(color_text())
+                } else {
+                    accent
+                };
+                line1.push(Span::styled(mux.to_string(), mux_style));
             } else if *scanning {
                 // A source id names its mux only when its machine serves several, so on
                 // the rest the mux is genuinely not known yet: the scan stamps it onto
@@ -610,20 +620,12 @@ impl Switcher {
             if one_line {
                 return vec![Line::from(line1)];
             }
+            // A scanning host's second row holds the session-level spinner once its mux
+            // is known; with the mux unknown the spinner already stands on row one.
             let mut line2 = address(false);
-            if *scanning {
-                // The session level, once the mux above it is settled.
-                if !mux.is_empty() {
-                    line2.push(Span::styled(spinner_glyph.to_string(), pending));
-                    line2.push(Span::raw(" "));
-                }
-            } else {
-                // A reachable empty host returned as a single row above, so a settled
-                // card reaching here is an unreachable one: its status word is danger.
-                line2.push(Span::styled(
-                    format!("{} ", row.line2),
-                    Style::default().fg(palette::get().danger),
-                ));
+            if !mux.is_empty() {
+                line2.push(Span::styled(spinner_glyph.to_string(), pending));
+                line2.push(Span::raw(" "));
             }
             return vec![Line::from(line1), Line::from(line2)];
         }
@@ -635,47 +637,30 @@ impl Switcher {
             let mut context: Vec<Span> = address(false);
             context.push(Span::styled(
                 host.to_string(),
-                Style::default().fg(color_host()),
+                Style::default().fg(color_text()),
             ));
             if !mux.is_empty() {
                 context.push(Span::styled("/", separator));
                 context.push(Span::styled(
                     mux.to_string(),
-                    Style::default().fg(color_mux()),
+                    Style::default().fg(color_text()),
                 ));
             }
             context.push(Span::raw(" "));
             lines.push(Line::from(context));
         }
-        let window_part = match &row.reference {
-            RowRef::Loading { .. } => Span::styled(
-                spinner_glyph.to_string(),
-                Style::default().fg(palette::get().pending),
-            ),
-            _ => Span::styled(row.line2.clone(), Style::default().fg(color_window())),
-        };
-        // The connector hangs the detail line under its context line; on a
-        // collapsed card it hangs under the SHARED context above, so a run of
-        // collapsed cards reads as siblings of one context: ├ while a collapsed
-        // sibling follows below, └ on the run's last line. The SELECTED card keeps it:
-        // the inverted rows already say which card is selected, and dropping
-        // two columns of connector would slide the session name left of every name
-        // above and below it.
+        // The detail line is the session name alone - the focused-window part is gone,
+        // so there is no `/window` and no spinner to stand in for it. The session name
+        // is the lowest level the card displays, so it takes the accent and stays bold;
+        // the connector hangs it under the context line, or under the shared context of
+        // the collapsed run above.
         let mut detail = address(true);
         let connector_glyph = if next_hangs { "├ " } else { "└ " };
         detail.push(Span::styled(connector_glyph, connector));
         detail.push(Span::styled(
             sess.to_string(),
-            Style::default()
-                .fg(color_session())
-                .add_modifier(Modifier::BOLD),
+            accent.add_modifier(Modifier::BOLD),
         ));
-        // No window row to show (the mux named none): the card is the session alone,
-        // without a trailing separator standing in for something absent.
-        if !matches!(&row.reference, RowRef::Session { .. }) || !row.line2.is_empty() {
-            detail.push(Span::styled("/", separator));
-            detail.push(window_part);
-        }
         detail.push(Span::raw(" "));
         lines.push(Line::from(detail));
         lines

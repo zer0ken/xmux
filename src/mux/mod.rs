@@ -14,7 +14,7 @@ use crate::model::plan::{DeathSignal, EventSource};
 use crate::model::server_model::ServerModel;
 use crate::model::source::{RunError, Runner};
 use crate::mux::vocab as mux;
-use crate::session::{Session, WindowPanes};
+use crate::session::Session;
 use crate::transport::Transport;
 
 mod abduco;
@@ -233,14 +233,13 @@ pub trait Mux: Send + Sync {
     /// The change/event channel for this mux.
     fn event_source(&self) -> EventSource;
 
-    /// One poll sweep for a POLL host: enumerate sessions, then enumerate each
-    /// session's panes, emitting a [`HostEvent::Sessions`] followed by one
-    /// [`HostEvent::Panes`] per session — the same payloads and order a control
-    /// client's metadata path produces. Built from the existing trait methods
-    /// (`enumerate`, `list_panes_plan`) plus `parse_panes`, so it is mux-blind and
-    /// needs no per-impl override: tmux is control-driven and never calls it; psmux
-    /// uses this default. The host manager owns the ticker/cancel lifecycle and calls
-    /// this once per tick; `emit` is its sink onto the shared event bus.
+    /// One poll sweep for a POLL host: enumerate sessions, emitting a
+    /// [`HostEvent::Sessions`] — the same payload a control client's metadata path
+    /// produces. Built from the existing trait method (`enumerate`), so it is
+    /// mux-blind and needs no per-impl override: tmux is control-driven and never
+    /// calls it; psmux uses this default. The host manager owns the ticker/cancel
+    /// lifecycle and calls this once per tick; `emit` is its sink onto the shared
+    /// event bus.
     async fn poll_once(
         &self,
         source: &str,
@@ -253,49 +252,16 @@ pub trait Mux: Send + Sync {
                 Ok(s) => (s, None),
                 Err(e) => (Vec::new(), Some(e.to_string())),
             };
-        let names: Vec<(String, String)> = sessions
-            .iter()
-            .map(|s| (s.name.clone(), s.address()))
-            .collect();
         emit(HostEvent::Sessions {
             source: source.to_string(),
             sessions,
             err,
         });
-        for (name, address) in names {
-            let argv = self.list_panes_plan(&name);
-            let (cmd, args) = transport.exec_argv(false, &argv);
-            // A session whose window list cannot be read still gets a `Panes` event, with
-            // no windows in it. Emitting nothing would leave the card on its loading
-            // spinner forever; an empty answer is the truth (xmux could not read them)
-            // and the nav shows the session without a window row.
-            let panes = match within_poll_budget("list-panes", runner.run(&cmd, &args)).await {
-                Ok(out) => self.parse_panes(&String::from_utf8_lossy(&out)),
-                Err(e) => {
-                    tracing::warn!(host = %source, session = %name, error = %e, "panes_unreadable");
-                    Vec::new()
-                }
-            };
-            emit(HostEvent::Panes { address, panes });
-        }
     }
 
     // The command-plan verbs are tmux-compatible argv builders over `self.bin()`, so
     // every tmux-compatible mux inherits them for free (the north-star additivity). A mux
     // whose argv diverges overrides only the verb it differs on.
-    fn list_panes_plan(&self, session: &str) -> Vec<String> {
-        mux::list_panes(self.bin(), session)
-    }
-
-    /// Reads the output of [`Self::list_panes_plan`] as windows-and-panes. A plan and
-    /// the shape of what it prints are one decision, so they are overridden together: a
-    /// mux whose argv diverges from tmux's usually prints something else too (zellij
-    /// answers in JSON). The default is the tmux tab-delimited [`mux::PANE_FORMAT`]
-    /// parser, which every tmux-compatible mux inherits.
-    fn parse_panes(&self, out: &str) -> Vec<WindowPanes> {
-        mux::parse_panes(out)
-    }
-
     fn select_window_plan(&self, target: &str) -> Vec<String> {
         mux::select_window(self.bin(), target)
     }
@@ -305,14 +271,6 @@ pub trait Mux: Send + Sync {
     /// the host's `Transport` and reads back the assigned name.
     fn new_session_plan(&self, name: &str) -> Vec<String> {
         mux::new_session(self.bin(), name)
-    }
-
-    /// How this mux writes one of its own windows, for a reader who knows the mux and
-    /// not xmux. The default is tmux's `{index}:{name}`, which is what tmux's own status
-    /// line and `list-windows` print, so every tmux-compatible mux inherits it; a mux
-    /// that names its windows differently overrides this and nothing else.
-    fn window_label(&self, index: i64, name: &str) -> String {
-        format!("{index}:{name}")
     }
 }
 
@@ -460,15 +418,6 @@ pub fn for_kind(kind: &str, bin: &str) -> Box<dyn Mux> {
     tmux_fallback(bin)
 }
 
-/// How the mux named `kind` writes the window `(index, name)` on screen. The nav holds
-/// a session's mux as a kind string, not a [`Mux`], so this is the one call it needs;
-/// the convention itself stays with the mux, in [`Mux::window_label`]. An unstamped
-/// session (its mux not yet known) reads as tmux, the same fallback every other
-/// kind-keyed lookup takes.
-pub fn window_label(kind: &str, index: i64, name: &str) -> String {
-    for_kind(kind, kind).window_label(index, name)
-}
-
 /// True when `name` names a mux xmux actually recognizes — tmux (the implicit
 /// fallback) or any of the [`known_muxes`]. A narrower advisory predicate than
 /// [`for_binary`]/[`for_kind`], which always fall back to tmux; this lets config
@@ -557,21 +506,6 @@ mod tests {
     }
 
     #[test]
-    fn window_label_follows_each_mux_own_convention() {
-        // tmux prints `index:name` itself, in its status line and `list-windows`, and
-        // every tmux-compatible mux inherits that.
-        assert_eq!(window_label("tmux", 0, "bash"), "0:bash");
-        assert_eq!(window_label("psmux", 2, "editor"), "2:editor");
-        // zellij's tab bar shows names alone; the number a reader expects is already in
-        // the name zellij gives a fresh tab.
-        assert_eq!(window_label("zellij", 0, "Tab #1"), "Tab #1");
-        assert_eq!(window_label("zellij", 2, "deploy"), "deploy");
-        // A session whose mux is not stamped yet reads as tmux, like every other
-        // kind-keyed lookup.
-        assert_eq!(window_label("", 1, "bash"), "1:bash");
-    }
-
-    #[test]
     fn tmux_is_shared_and_named() {
         let m = tmux();
         assert_eq!(m.kind(), "tmux");
@@ -603,7 +537,6 @@ mod tests {
     #[test]
     fn tmux_read_plans_match_mux_builders() {
         let m = tmux();
-        assert_eq!(m.list_panes_plan("work"), mux::list_panes("tmux", "work"));
         assert_eq!(
             m.select_window_plan("api:2"),
             mux::select_window("tmux", "api:2")
@@ -675,7 +608,6 @@ mod tests {
         // The command-plan verbs are trait defaults over `self.bin()`, so a bare
         // tmux-compatible mux inherits byte-identical plans without overriding them.
         let m = BareMux { bin: "tmux".into() };
-        assert_eq!(m.list_panes_plan("work"), mux::list_panes("tmux", "work"));
         assert_eq!(m.new_session_plan("dev"), mux::new_session("tmux", "dev"));
     }
 
@@ -752,7 +684,6 @@ mod tests {
     #[test]
     fn psmux_read_plans_use_the_psmux_binary() {
         let m = psmux();
-        assert_eq!(m.list_panes_plan("work"), mux::list_panes("psmux", "work"));
         assert_eq!(
             m.select_window_plan("work:1"),
             mux::select_window("psmux", "work:1")
@@ -925,23 +856,6 @@ mod tests {
         assert!(installed_muxes(&t, &runner).await.is_empty());
     }
 
-    /// Answers `list-sessions` and then NEVER answers the pane query - the shape a
-    /// hung mux command takes (a zellij session whose server is gone, an ssh that
-    /// stalls after the handshake).
-    struct HangingPanesRunner;
-
-    #[async_trait]
-    impl Runner for HangingPanesRunner {
-        async fn run(&self, _name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
-            if args.iter().any(|a| a.contains("list-panes")) {
-                std::future::pending::<()>().await;
-            }
-            Ok(b"1	0	0	api
-"
-            .to_vec())
-        }
-    }
-
     /// Never answers anything.
     struct HangingRunner;
 
@@ -950,37 +864,6 @@ mod tests {
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             std::future::pending::<()>().await;
             unreachable!()
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_hung_pane_query_ends_the_sweep_with_an_empty_answer() {
-        // The poll loop's ticker only advances after a sweep RETURNS, so a command that
-        // never answers would freeze the host's whole inventory. The sweep must end, and
-        // the session must still get a `Panes` event - an empty one - because emitting
-        // nothing leaves the card on a loading spinner no later sweep resolves.
-        // Reaching the assertions at all is the proof that the sweep returned.
-        let m = tmux();
-        let transport = crate::transport::local(None);
-        let mut events = Vec::new();
-        m.poll_once("local", &transport, &HangingPanesRunner, &mut |ev| {
-            events.push(ev)
-        })
-        .await;
-        assert_eq!(events.len(), 2, "one Sessions, one Panes");
-        match &events[0] {
-            HostEvent::Sessions { sessions, err, .. } => {
-                assert_eq!(sessions.len(), 1);
-                assert!(err.is_none(), "the listing answered");
-            }
-            _ => panic!("want Sessions first"),
-        }
-        match &events[1] {
-            HostEvent::Panes { address, panes } => {
-                assert_eq!(address, "local/api");
-                assert!(panes.is_empty(), "no windows could be read");
-            }
-            _ => panic!("want Panes second"),
         }
     }
 
@@ -1288,29 +1171,21 @@ Usage: zellij [OPTIONS]",
             err.is_some(),
             "the error must surface on the Sessions event"
         );
-        // No session names ⇒ no per-session Panes follow-up.
-        assert!(!events.iter().any(|e| matches!(e, HostEvent::Panes { .. })));
     }
 
-    /// A SUCCESSFUL poll sweep emits `Sessions { err: None }` then one `Panes` per
-    /// session — the order and payloads a control client's metadata path produces.
+    /// A SUCCESSFUL poll sweep emits `Sessions { err: None }` — the same payload a
+    /// control client's metadata path produces.
     #[tokio::test]
-    async fn poll_once_emits_sessions_then_panes_on_success() {
+    async fn poll_once_emits_sessions_on_success() {
         use crate::link::HostEvent;
 
-        /// Answers list-sessions with one session, then list-panes with one pane.
+        /// Answers list-sessions with one session.
         struct OkRunner;
         #[async_trait]
         impl Runner for OkRunner {
-            async fn run(&self, _name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
-                let joined = args.join(" ");
-                if joined.contains("list-panes") {
-                    // win_idx, win_active, pane_idx, pane_active, command, win_name.
-                    Ok(b"0\t1\t0\t1\tbash\twork\n".to_vec())
-                } else {
-                    // session row parsed by mux::parse_sessions.
-                    Ok(b"1\t1\t1700000000\twork\n".to_vec())
-                }
+            async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
+                // session row parsed by mux::parse_sessions.
+                Ok(b"1\t1\t1700000000\twork\n".to_vec())
             }
         }
 
@@ -1319,7 +1194,6 @@ Usage: zellij [OPTIONS]",
         psmux()
             .poll_once("host", &transport, &OkRunner, &mut |e| events.push(e))
             .await;
-        // Sessions first, then Panes — same order as today.
         match &events[0] {
             HostEvent::Sessions {
                 source,
@@ -1332,7 +1206,7 @@ Usage: zellij [OPTIONS]",
             }
             _ => panic!("first event must be Sessions"),
         }
-        assert!(matches!(events.get(1), Some(HostEvent::Panes { .. })));
+        assert_eq!(events.len(), 1, "a sweep is Sessions alone");
     }
     #[test]
     fn a_socket_reaches_only_a_mux_that_takes_one() {

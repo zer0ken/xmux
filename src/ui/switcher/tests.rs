@@ -1,5 +1,4 @@
 use super::*;
-use crate::session::Pane;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -34,9 +33,6 @@ impl Ops for RecordOps {
             windows: 1,
             ..Default::default()
         })
-    }
-    async fn panes(&self, _s: &Session) -> anyhow::Result<Vec<WindowPanes>> {
-        Ok(Vec::new())
     }
 }
 
@@ -277,28 +273,7 @@ fn selection_parked_elsewhere(mut scan: Scan) -> Scan {
         err: None,
         sessions: vec![sess_mux("zz", "parked", "psmux", 9_999)],
     });
-    scan.panes.insert(
-        "zz/parked".to_string(),
-        vec![win(0, "w-parked", true, vec![pane(0, true, "sh")])],
-    );
     scan
-}
-
-fn win(index: i64, name: &str, active: bool, panes: Vec<Pane>) -> WindowPanes {
-    WindowPanes {
-        index,
-        name: name.into(),
-        active,
-        panes,
-    }
-}
-
-fn pane(index: i64, active: bool, command: &str) -> Pane {
-    Pane {
-        index,
-        active,
-        command: command.into(),
-    }
 }
 
 fn sample() -> Scan {
@@ -322,23 +297,7 @@ fn sample() -> Scan {
             sessions: vec![],
         },
     ];
-    let mut panes = HashMap::new();
-    panes.insert(
-        "local/editor".to_string(),
-        vec![
-            win(1, "shell", true, vec![pane(1, true, "bash")]),
-            win(2, "logs", false, vec![pane(1, false, "tail")]),
-        ],
-    );
-    panes.insert(
-        "local/build".to_string(),
-        vec![win(1, "make", true, vec![pane(1, true, "make")])],
-    );
-    panes.insert(
-        "jupiter00/inference".to_string(),
-        vec![win(1, "train", true, vec![pane(1, true, "python")])],
-    );
-    Scan { groups, panes }
+    Scan { groups }
 }
 
 /// One reachable source carrying `n` sessions, so the nav holds exactly `n` cards
@@ -354,13 +313,12 @@ fn scan_with_sessions(n: usize) -> Scan {
             err: None,
             sessions,
         }],
-        panes: HashMap::new(),
     }
 }
 
 fn cur_session_name(h: &Harness) -> Option<String> {
     match h.sw.current_ref()? {
-        RowRef::Session { sess } | RowRef::Loading { sess } => Some(sess.name.clone()),
+        RowRef::Session { sess } => Some(sess.name.clone()),
         _ => None,
     }
 }
@@ -391,66 +349,13 @@ fn only_run_op(cmds: Vec<Command>) -> Option<crate::model::MuxOp> {
 }
 
 fn two_window_scan() -> Scan {
-    let mut panes = HashMap::new();
-    panes.insert(
-        "jup/api".to_string(),
-        vec![
-            win(0, "w0", true, vec![pane(0, true, "bash")]),
-            win(1, "w1", false, vec![pane(0, true, "bash")]),
-        ],
-    );
     Scan {
         groups: vec![Group {
             source: "jup".into(),
             err: None,
             sessions: vec![sess("jup", "api", 2, false, 100)],
         }],
-        panes,
     }
-}
-
-#[test]
-fn session_card_shows_the_focused_window_name() {
-    // ONE card per session; its detail line is `{session}/{index}:{name}` of the
-    // focused (active) window. The inactive window has no card of its own.
-    let h = Harness::new(selection_parked_elsewhere(two_window_scan()));
-    let out = h.nav_text();
-    assert!(
-        out.contains("api/0:w0"),
-        "the detail line shows the focused window:\n{out}"
-    );
-    assert!(
-        !out.contains("w1"),
-        "no card for the inactive window:\n{out}"
-    );
-    assert_eq!(
-        h.nav_fg_of("0:w0"),
-        Some(color_window()),
-        "the window part reads in the window colour"
-    );
-}
-
-#[test]
-fn set_active_window_refreshes_the_focused_window_line() {
-    // An external active-window change (resolved via the control-client probe)
-    // swaps the card's focused-window line, without a full inventory refetch.
-    let mut h = Harness::new(two_window_scan());
-    assert!(
-        h.sw.set_active_window("jup", "api", 1, &mut h.state),
-        "active window moved 0 -> 1"
-    );
-    h.draw();
-    let out = h.nav_text();
-    assert!(
-        out.contains("1:w1"),
-        "the detail line refreshed to w1:\n{out}"
-    );
-    assert!(!out.contains("w0"), "the previous name is gone:\n{out}");
-    // Idempotent: re-applying the same active window reports no change.
-    assert!(
-        !h.sw.set_active_window("jup", "api", 1, &mut h.state),
-        "no-op when already active"
-    );
 }
 
 #[test]
@@ -503,28 +408,25 @@ fn up_down_and_hjkl_move_linearly() {
 
 #[tokio::test]
 async fn renders_a_session_card_per_session() {
-    // One card per session: a `{host}/{mux}` context line over a
-    // `{session}/{index}:{window-name}` detail line. No per-window rows
-    // (editor's inactive "logs" window has no card).
+    // One card per session: a `{host}/{mux}` context line over the session name on
+    // the detail line. No per-window rows (the focused window a card used to name is
+    // gone from the card).
     let h = Harness::new(sample());
     let out = h.text();
     for want in [
         "local",
         "editor",
-        "shell", // editor's focused window
         "build",
-        "make", // build's focused window
         "jupiter00",
         "inference",
-        "train", // inference's focused window
         "db-2",
         "⚠", // unreachable host marker (the reason now lives on the host screen)
     ] {
         assert!(out.contains(want), "nav missing {want:?}\n{out}");
     }
     assert!(
-        !out.contains("logs"),
-        "an inactive window has no card of its own:\n{out}"
+        !out.contains("shell") && !out.contains("logs"),
+        "no window name on any card:\n{out}"
     );
 }
 
@@ -550,7 +452,10 @@ async fn launch_preselects_top_row() {
     h.draw();
     assert_eq!(h.sw.selected, 0, "the launch cursor is the very top card");
     assert!(
-        matches!(h.sw.current_ref(), Some(RowRef::Loading { sess }) if sess.source == "local" && sess.name == "editor"),
+        matches!(
+            h.sw.current_ref(),
+            Some(RowRef::Session { sess }) if sess.source == "local" && sess.name == "editor"
+        ),
         "the top card is the local session, not the more-recent remote"
     );
 }
@@ -672,20 +577,6 @@ async fn the_spinner_marks_the_first_unresolved_level_only() {
         "the mux is known"
     );
     assert_eq!(card[1], sp.to_string(), "so the session level spins");
-
-    // The session landed and stamped its mux; its focused window has not, so the spinner
-    // moves one level down, into the window slot.
-    let mut h = Harness::from_sources(&["local"]);
-    h.sw.apply_source_result(
-        "local".into(),
-        vec![sess_mux("local", "editor", "psmux", 100)],
-        None,
-        &mut h.state,
-    );
-    h.draw();
-    let card = card_rows(&h);
-    assert_eq!(card[0], "local/psmux");
-    assert_eq!(card[1], format!("{SELECTED_MARK} \u{2514} editor/{sp}"));
 }
 
 #[tokio::test]
@@ -697,8 +588,6 @@ async fn remove_source_drops_the_card_and_everything_keyed_to_it() {
         None,
         &mut h.state,
     );
-    h.sw.apply_panes("jupiter00/api".into(), Vec::new(), &mut h.state);
-    assert!(h.state.panes_loaded.contains("jupiter00/api"));
 
     h.sw.remove_source("jupiter00", &mut h.state);
     h.draw();
@@ -713,11 +602,6 @@ async fn remove_source_drops_the_card_and_everything_keyed_to_it() {
         "its sessions went with it:
 {out}"
     );
-    assert!(
-        !h.state.panes_loaded.contains("jupiter00/api"),
-        "the per-session entries are keyed by address, so they are dropped by name"
-    );
-    assert!(!h.state.panes.contains_key("jupiter00/api"));
     assert!(!h.state.scanning.contains("jupiter00"));
 }
 
@@ -753,8 +637,8 @@ async fn apply_source_result_turns_scanning_into_sessions() {
         "the scan indicator clears once the only host resolves"
     );
     assert!(
-        spins(&out),
-        "the session shows a progress spinner until its panes arrive:\n{out}"
+        !spins(&out),
+        "a resolved session card is settled, no loading spinner:\n{out}"
     );
 }
 
@@ -1100,6 +984,31 @@ async fn apply_source_result_marks_the_card_and_states_the_reason_on_the_screen(
 }
 
 #[tokio::test]
+async fn an_unselected_unreachable_card_keeps_the_danger_mark() {
+    // The ⚠ mark keeps the failure colour (danger). The SELECTED card is painted in
+    // reverse video, which flattens every level colour on it by design, so the colour
+    // assertion reads an UNSELECTED unreachable card.
+    let scan = selection_parked_elsewhere(Scan {
+        groups: vec![Group {
+            source: "dead".into(),
+            err: Some("connection refused".into()),
+            sessions: vec![],
+        }],
+    });
+    let h = Harness::new(scan);
+    assert_ne!(
+        h.sw.selected,
+        h.sw.band_boundary().expect("the unreachable card"),
+        "the decoy holds the selection, so the mark's colour reads"
+    );
+    assert_eq!(
+        h.nav_fg_of("⚠"),
+        Some(crate::ui::palette::get().danger),
+        "the mark keeps the failure colour on an unselected card"
+    );
+}
+
+#[tokio::test]
 async fn unreachable_host_screen_keeps_a_long_reason_whole() {
     // ssh wraps the failure in its own context and names it LAST, past the width of the
     // screen: a reason cut off at the edge drops the only words that say what went wrong.
@@ -1278,37 +1187,6 @@ async fn unreachable_host_screen_shows_ssh_config_stanza() {
 }
 
 #[tokio::test]
-async fn apply_panes_attaches_and_clears_loading() {
-    let mut h = Harness::from_sources(&["local"]);
-    h.sw.apply_source_result(
-        "local".into(),
-        vec![sess("local", "editor", 1, false, 100)],
-        None,
-        &mut h.state,
-    );
-    h.draw();
-    assert!(
-        spins(&h.nav_text()),
-        "a progress spinner stands in before panes land"
-    );
-    h.sw.apply_panes(
-        "local/editor".into(),
-        vec![win(1, "shell", true, vec![pane(1, true, "bash")])],
-        &mut h.state,
-    );
-    h.draw();
-    let out = h.nav_text();
-    assert!(
-        out.contains("shell"),
-        "the focused window's name lands on the card:\n{out}"
-    );
-    assert!(
-        !spins(&out),
-        "the progress spinner clears once panes arrive:\n{out}"
-    );
-}
-
-#[tokio::test]
 async fn streaming_keeps_local_preselect_when_untouched() {
     // An untouched selection sits on the top row (the local host, index 0), and a
     // later more-recent REMOTE session streaming in must NOT steal it: the selection
@@ -1337,7 +1215,7 @@ async fn streaming_keeps_local_preselect_when_untouched() {
         "an untouched selection stays on the top card (index 0); a recent remote must not steal it"
     );
     assert!(
-        matches!(h.sw.current_ref(), Some(RowRef::Loading { sess }) if sess.source == "local"),
+        matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.source == "local"),
         "the untouched selection is the local session card"
     );
 }
@@ -1377,7 +1255,7 @@ async fn rebuild_holds_a_user_moved_session_against_the_preselect() {
         .rows
         .iter()
         .filter_map(|r| match &r.reference {
-            RowRef::Loading { sess } => Some(sess.name.clone()),
+            RowRef::Session { sess } => Some(sess.name.clone()),
             _ => None,
         })
         .collect();
@@ -1387,13 +1265,13 @@ async fn rebuild_holds_a_user_moved_session_against_the_preselect() {
     let idx = sw
         .rows
         .iter()
-        .position(|r| matches!(&r.reference, RowRef::Loading { sess } if sess.name == other))
+        .position(|r| matches!(&r.reference, RowRef::Session { sess } if sess.name == other))
         .expect("other session card");
     sw.set_selected(idx, &state);
     sw.user_moved = true;
     sw.rebuild(&mut state);
     let got = match sw.current_ref() {
-        Some(RowRef::Loading { sess }) => sess.name.clone(),
+        Some(RowRef::Session { sess }) => sess.name.clone(),
         _ => "<not a session>".to_string(),
     };
     assert_eq!(
@@ -1617,7 +1495,6 @@ async fn create_adds_and_selects() {
             err: None,
             sessions: vec![],
         }],
-        panes: HashMap::new(),
     };
     let mut h = Harness::new(scan);
     assert!(
@@ -1641,7 +1518,6 @@ async fn slow_op_is_deferred_off_the_key_path() {
             err: None,
             sessions: vec![],
         }],
-        panes: HashMap::new(),
     };
     let mut h = Harness::new(scan); // the lone empty host card is auto-selected
     h.ch('n').await; // open New (create a session) on local
@@ -1786,7 +1662,6 @@ async fn empty_reachable_host_shows_its_host_screen() {
             err: None,
             sessions: vec![],
         }],
-        panes: HashMap::new(),
     };
     let h = Harness::new(scan);
     // The lone selectable row is that empty host, so it is auto-selected.
@@ -1846,7 +1721,6 @@ async fn both_host_screens_share_one_grammar() {
             err: None,
             sessions: vec![],
         }],
-        panes: HashMap::new(),
     });
     for (label, view, name, word) in [
         ("unreachable", dead.view_text(), "prod", "⚠ unreachable"),
@@ -1884,16 +1758,19 @@ async fn both_host_screens_share_one_grammar() {
 #[tokio::test]
 async fn levels_render_in_their_level_colors() {
     let h = Harness::new(sample());
-    assert_eq!(h.nav_fg_of("local"), Some(color_host()));
-    assert_eq!(h.nav_fg_of("editor"), Some(color_session()));
-    assert_eq!(h.nav_fg_of("shell"), Some(color_window()));
+    assert_eq!(h.nav_fg_of("local"), Some(color_text()));
+    assert_eq!(
+        h.nav_fg_of("editor"),
+        Some(crate::ui::palette::get().accent),
+        "the session name is the accent target"
+    );
 }
 
 #[tokio::test]
 async fn the_session_reads_bold_on_its_card() {
-    // The session - the level a user actually picks - is BOLD, so it stands off the mux
-    // and window parts of the same line; the host and window parts stay plain so the
-    // session remains the detail line's anchor.
+    // The session - the level a user actually picks - is the one element that leaves
+    // the text colour, and it is BOLD; the host and mux on the context line stay plain
+    // text so the session remains the detail line's anchor.
     let h = Harness::new(sample());
     assert!(
         h.nav_mod_of("editor").unwrap().contains(Modifier::BOLD),
@@ -1902,10 +1779,6 @@ async fn the_session_reads_bold_on_its_card() {
     assert!(
         !h.nav_mod_of("local").unwrap().contains(Modifier::BOLD),
         "the host stays plain"
-    );
-    assert!(
-        !h.nav_mod_of("shell").unwrap().contains(Modifier::BOLD),
-        "the window part stays plain so the session anchors the detail line"
     );
 }
 
@@ -1921,54 +1794,28 @@ fn sess_mux(source: &str, name: &str, mux: &str, last: i64) -> Session {
     }
 }
 
-/// One host carrying `sessions`, each with a single loaded window named `w-<session>`.
+/// One host carrying `sessions`.
 fn one_host_scan(source: &str, sessions: Vec<Session>) -> Scan {
-    let mut panes = HashMap::new();
-    for sess in &sessions {
-        panes.insert(
-            sess.address(),
-            vec![win(
-                0,
-                &format!("w-{}", sess.name),
-                true,
-                vec![pane(0, true, "sh")],
-            )],
-        );
-    }
     Scan {
         groups: vec![Group {
             source: source.into(),
             err: None,
             sessions,
         }],
-        panes,
     }
 }
 
-/// Several sources, each carrying `sessions`, every session with one loaded window
-/// named `w-<session>`.
+/// Several sources, each carrying `sessions`.
 fn sources_scan(sources: Vec<(&str, Vec<Session>)>) -> Scan {
-    let mut panes = HashMap::new();
-    let mut groups = Vec::new();
-    for (source, sessions) in sources {
-        for sess in &sessions {
-            panes.insert(
-                sess.address(),
-                vec![win(
-                    0,
-                    &format!("w-{}", sess.name),
-                    true,
-                    vec![pane(0, true, "sh")],
-                )],
-            );
-        }
-        groups.push(Group {
+    let groups = sources
+        .into_iter()
+        .map(|(source, sessions)| Group {
             source: source.into(),
             err: None,
             sessions,
-        });
-    }
-    Scan { groups, panes }
+        })
+        .collect();
+    Scan { groups }
 }
 
 #[tokio::test]
@@ -2062,30 +1909,28 @@ async fn a_session_found_later_lands_inside_its_own_source() {
 
 #[tokio::test]
 async fn session_card_context_shows_host_mux_session() {
-    // The context line is {host}/{mux}, each segment in its own colour (the mux
-    // segment distinguishes sessions when one host runs several muxes); the
-    // detail line under it is {session}/{index}:{window-name}.
+    // The context line is `{host}/{mux}`, both halves in the one text colour; the
+    // detail line under it is the session name alone, the accent target.
     let h = Harness::new(selection_parked_elsewhere(one_host_scan(
         "srv",
         vec![sess_mux("srv", "alpha", "tmux", 100)],
     )));
     let out = h.nav_text();
     assert!(out.contains("srv/tmux"), "context line on the card:\n{out}");
-    assert!(
-        out.contains("alpha/0:w-alpha"),
-        "detail line on the card:\n{out}"
+    assert_eq!(h.nav_fg_of("srv"), Some(color_text()));
+    assert_eq!(h.nav_fg_of("tmux"), Some(color_text()));
+    assert_eq!(
+        h.nav_fg_of("alpha"),
+        Some(crate::ui::palette::get().accent),
+        "the session name is the accent target"
     );
-    assert_eq!(h.nav_fg_of("srv"), Some(color_host()));
-    assert_eq!(h.nav_fg_of("tmux"), Some(color_mux()));
-    assert_eq!(h.nav_fg_of("alpha"), Some(color_session()));
-    assert_eq!(h.nav_fg_of("0:w-alpha"), Some(color_window()));
 }
 
 #[tokio::test]
-async fn a_host_card_colours_its_levels_like_a_session_card_does() {
-    // A level's colour belongs to the LEVEL, not to the kind of card it lands on, so the
-    // host card is spanned host / separator / mux exactly as a session card's context
-    // line is. A single-colour run would read as if the mux were part of the host's name.
+async fn a_host_card_gives_its_mux_the_accent() {
+    // A host-state card has no session to take the accent, so its mux - the lowest
+    // level it displays - takes it; the host half stays text. The separator keeps its
+    // own furniture role.
     let scan = Scan {
         groups: vec![
             Group {
@@ -2100,7 +1945,6 @@ async fn a_host_card_colours_its_levels_like_a_session_card_does() {
                 sessions: vec![],
             },
         ],
-        panes: HashMap::new(),
     };
     let h = Harness::new(scan);
     let out = h.nav_text();
@@ -2111,12 +1955,12 @@ async fn a_host_card_colours_its_levels_like_a_session_card_does() {
     );
     assert_eq!(
         h.nav_fg_of("psmux"),
-        Some(color_mux()),
-        "the mux segment is the mux colour, not the host's"
+        Some(crate::ui::palette::get().accent),
+        "the mux is the host card's lowest level, so it takes the accent"
     );
-    // The separator is furniture on both card kinds, and the host half is the host's.
+    // The separator is furniture on both card kinds, and the host half is text.
     let (x, y) = locate(h.buf(), "srv/psmux", NAV_WIDTH).expect("the host card");
-    assert_eq!(h.buf()[(x, y)].fg, color_host(), "the host half");
+    assert_eq!(h.buf()[(x, y)].fg, color_text(), "the host half");
     assert_eq!(
         h.buf()[(x + 3, y)].fg,
         color_separator(),
@@ -2155,10 +1999,7 @@ async fn every_host_state_card_sits_below_every_session_card() {
         sessions: vec![],
     }];
     groups.extend(sample().groups.into_iter().filter(|g| g.err.is_none()));
-    let h = Harness::new(Scan {
-        groups,
-        panes: sample().panes,
-    });
+    let h = Harness::new(Scan { groups });
     let boundary = h.sw.band_boundary().expect("the list has a host card");
     assert!(boundary > 0, "the session cards come first");
     for (i, row) in h.sw.rows.iter().enumerate() {
@@ -2225,10 +2066,16 @@ async fn a_scrolling_list_parts_its_bands_with_a_rule() {
 
 #[tokio::test]
 async fn the_bands_never_touch_on_screen() {
-    // 26 session cards plus a host card fill this nav's rows exactly, so the parting has
-    // no row left to take: rather than let the bands meet, the list scrolls a row early
-    // and the rule takes the boundary's row.
-    let h = Harness::new(scan_with_bands(26));
+    // 26 session cards plus a still-scanning host card fill this nav's rows exactly (a
+    // scanning card is the one host-state card still two rows tall - a settled host is a
+    // single row now), so the parting has no row left to take: rather than let the bands
+    // meet, the list scrolls a row early and the rule takes the boundary's row.
+    let mut h = Harness::from_sources(&["local", "db-2"]);
+    let sessions: Vec<crate::session::Session> = (0..26)
+        .map(|i| sess("local", &format!("s{i}"), 1, false, (26 - i) as i64))
+        .collect();
+    h.sw.apply_source_result("local".into(), sessions, None, &mut h.state);
+    h.draw();
     let cards: u16 = (0..h.sw.rows.len()).map(|i| h.sw.card_height(i)).sum();
     assert_eq!(
         cards, h.sw.nav_inner.height,
@@ -2303,9 +2150,9 @@ async fn repeated_host_mux_collapses_the_card_to_one_row() {
         "the first card carries the context line:\n{out}"
     );
     // beta and gamma collapse: single rows stacked directly under alpha's detail.
-    let alpha_row = h.nav_row_of("alpha/0:w-alpha").expect("alpha detail");
-    let beta_row = h.nav_row_of("beta/0:w-beta").expect("beta detail");
-    let gamma_row = h.nav_row_of("gamma/0:w-gamma").expect("gamma detail");
+    let alpha_row = h.nav_row_of("alpha").expect("alpha detail");
+    let beta_row = h.nav_row_of("beta").expect("beta detail");
+    let gamma_row = h.nav_row_of("gamma").expect("gamma detail");
     assert_eq!(
         beta_row,
         alpha_row + 1,
@@ -2334,9 +2181,8 @@ async fn repeated_host_mux_collapses_the_card_to_one_row() {
         nav_line(&h, gamma_row).contains("└"),
         "gamma ends the collapsed run"
     );
-    // delta runs a different mux: a full context line, host included. Its window part
-    // is written zellij's way - the tab name alone, no index prefix.
-    let delta_row = h.nav_row_of("delta/w-delta").expect("delta detail");
+    // delta runs a different mux: a full context line, host included.
+    let delta_row = h.nav_row_of("delta").expect("delta detail");
     let delta_context = nav_line(&h, delta_row - 1);
     assert!(
         delta_context.contains("srv/zellij"),
@@ -2357,7 +2203,7 @@ async fn focused_collapsed_card_expands_to_two_rows() {
         ],
     ));
     assert_eq!(
-        h.nav_row_of("beta/0:w-beta"),
+        h.nav_row_of("beta"),
         Some(2),
         "unselected, beta is a one-row card under alpha's two"
     );
@@ -2366,7 +2212,7 @@ async fn focused_collapsed_card_expands_to_two_rows() {
         "an unselected detail line carries the └ connector"
     );
     h.key(KeyCode::Down).await; // select beta
-    let beta_row = h.nav_row_of("beta/0:w-beta").expect("beta detail");
+    let beta_row = h.nav_row_of("beta").expect("beta detail");
     assert_eq!(beta_row, 3, "selected, beta regains its context line");
     let context = nav_line(&h, beta_row - 1);
     assert!(
@@ -2391,7 +2237,7 @@ async fn focused_collapsed_card_expands_to_two_rows() {
     );
     h.key(KeyCode::Up).await; // move off - beta collapses again
     assert_eq!(
-        h.nav_row_of("beta/0:w-beta"),
+        h.nav_row_of("beta"),
         Some(2),
         "unselected again, beta collapses back to one row"
     );
@@ -2540,12 +2386,9 @@ fn render_terminal_view_none_grid_is_blank_not_attaching() {
 fn cur_row_label(h: &Harness) -> String {
     h.sw.rows
         .get(h.sw.selected)
-        .map(|r| {
-            let id = match &r.reference {
-                RowRef::Session { sess } | RowRef::Loading { sess } => sess.address(),
-                RowRef::Host { source, .. } => source.clone(),
-            };
-            format!("{}|{}", id, r.line2)
+        .map(|r| match &r.reference {
+            RowRef::Session { sess } => sess.address(),
+            RowRef::Host { source, .. } => source.clone(),
         })
         .unwrap_or_default()
 }
@@ -2832,7 +2675,7 @@ async fn selecting_a_card_never_moves_its_session_name() {
     // The COLUMN, not the byte offset: the address column and the `└` connector hold
     // multi-byte glyphs, so a byte index would report a shift that is not on screen.
     let col_of = |h: &Harness, name: &str| -> Option<usize> {
-        let row = h.nav_row_of(&format!("{name}/0:w-{name}"))?;
+        let row = h.nav_row_of(name)?;
         let line = nav_line(h, row);
         let at = line.find(name)?;
         Some(line[..at].chars().count())
@@ -3537,7 +3380,6 @@ async fn input_esc_cancels_without_acting() {
             err: None,
             sessions: vec![],
         }],
-        panes: HashMap::new(),
     });
     h.ch('n').await;
     assert!(h.state.is_inputting(), "input open");
@@ -3550,38 +3392,18 @@ async fn input_esc_cancels_without_acting() {
 }
 
 #[test]
-fn window_removal_keeps_the_selection_on_the_session_card() {
-    // Selection on jup/api's card. Removing windows never removes the card: the
-    // focused-window line falls back to the surviving window, and with no windows
-    // at all the card keeps the session with no window row (the same node, so the
+fn selection_survives_a_rebuild() {
+    // Selection on jup/api's card survives a bare rebuild (the same node, so the
     // selection stays put).
     let mut state = crate::state::State::from_scan(two_window_scan());
     let mut sw = Switcher::new(&mut state); // launch preselects the api card
     sw.user_moved = true;
     assert!(matches!(sw.current_ref(), Some(RowRef::Session { .. })));
-    // The active window 0 vanishes; only w1 remains.
-    sw.apply_panes(
-        "jup/api".into(),
-        vec![win(1, "w1", true, vec![pane(0, true, "bash")])],
-        &mut state,
-    );
+    sw.rebuild(&mut state);
     assert!(
         matches!(sw.current_ref(), Some(RowRef::Session { sess }) if sess.name == "api"),
-        "the card survives a window removal"
+        "the card survives a rebuild"
     );
-    assert_eq!(
-        sw.rows[sw.selected].line2, "1:w1",
-        "line2 follows the survivor"
-    );
-    // Every window gone: the card keeps the session and drops the window row. It must
-    // NOT fall back to the loading stand-in - the windows were READ and there were
-    // none, and a spinner would promise an answer that no later sweep brings.
-    sw.apply_panes("jup/api".into(), vec![], &mut state);
-    assert!(
-        matches!(sw.current_ref(), Some(RowRef::Session { sess }) if sess.name == "api"),
-        "no windows is an answer, not a wait: still a session card, selection kept"
-    );
-    assert_eq!(sw.rows[sw.selected].line2, "", "no window row to name");
 }
 
 #[test]
@@ -3696,7 +3518,6 @@ fn select_address_moves_cursor_to_named_session() {
                 },
             ],
         }],
-        panes: Default::default(),
     };
     let mut state = crate::state::State::from_scan(scan);
     let mut sw = Switcher::new(&mut state);
@@ -3832,7 +3653,7 @@ fn the_hidden_columns_are_counted_on_the_status_row() {
     // The row is the band's own last row, never a card's: a selected card inverts its
     // whole rect, and anything sharing that rect inverts with it.
     let (_sw, mut term) = portrait(
-        column_flow_scan_sized(&[("aa", 2), ("bb", 3), ("cc", 2)], 18),
+        column_flow_scan_sized(&[("aa", 2), ("bb", 3), ("cc", 2)], 26),
         60,
         20,
     );
@@ -3870,7 +3691,7 @@ fn the_hidden_columns_are_counted_on_the_status_row() {
     // Walk to the last card: now the hidden columns are behind us, so the count swaps ends.
     let mut state = crate::state::State::from_scan(column_flow_scan_sized(
         &[("aa", 2), ("bb", 3), ("cc", 2)],
-        18,
+        26,
     ));
     let mut sw = Switcher::new(&mut state);
     sw.move_to(-1, &state);
