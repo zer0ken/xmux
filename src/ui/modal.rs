@@ -327,10 +327,10 @@ pub(crate) fn wrap_text(text: &str, width: u16) -> Vec<String> {
 /// shared modal-popup path. `prefix` is the configured `[ui] prefix` binding.
 pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
     // tmux mode-tree style: a right-aligned, bold key column, a `│` rule, then
-    // the description. `Head` breaks the flat list into navigation/focus/mux sections;
+    // the description. `Head` breaks the flat list into navigation/focus/terminal sections;
     // `Note` is a description-only row (the mux state has no keys of its own).
     //
-    // The navigation and mux sections have no configurable keys so they are static.
+    // The navigation and terminal sections have no configurable keys so they are static.
     // The focus section uses `prefix` so the help modal matches the
     // active binding from config.
     enum HelpRow {
@@ -362,10 +362,10 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
         HelpRow::Gap,
         // Focus section - prefix rows built from `prefix`.
         HelpRow::Head(format!("focus ({p} = prefix)")),
-        HelpRow::Key(format!("Enter · {p} →/↓"), "focus the mux".into()),
+        HelpRow::Key(format!("Enter · {p} →/↓"), "focus the terminal".into()),
         HelpRow::Key(
             format!("{p} Tab"),
-            "toggle focus between nav and mux".into(),
+            "toggle focus between nav and terminal".into(),
         ),
         HelpRow::Key(format!("{p} ←/↑ · {p} Esc"), "focus the nav".into()),
         HelpRow::Key(
@@ -386,8 +386,8 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
         HelpRow::Key(format!("{p} q"), "quit".into()),
         HelpRow::Key(format!("{p} {p}"), format!("send a literal {p} to the mux")),
         HelpRow::Gap,
-        // Mux section - no configurable keys; keep as literals.
-        HelpRow::Head("mux (focused)".into()),
+        // Terminal section - no configurable keys; keep as literals.
+        HelpRow::Head("terminal (focused)".into()),
         HelpRow::Note("keys, scroll & clicks go to the pane"),
         HelpRow::Note("(the mux needs its own mouse mode on)"),
     ];

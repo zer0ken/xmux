@@ -275,7 +275,7 @@ mod tests {
     #[tokio::test]
     async fn dump_screen_renders_the_live_grid() {
         // A dump with a live grid must include both the tree AND the grid content
-        // (the terminal view), so a headless `dump` reflects the live screen.
+        // (the terminal view), so a headless `dump` reflects the live grid.
         let mut state = crate::state::State::from_scan(sample());
         let mut sw = Switcher::new(&mut state);
         let mut grid = crate::display::grid::Grid::new(30, 100);
