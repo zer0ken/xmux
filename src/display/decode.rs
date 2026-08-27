@@ -170,6 +170,75 @@ fn csi_first_param(params: &[u8]) -> Option<u16> {
         .ok()
 }
 
+/// A parsed kitty-protocol key event: the Unicode key-code, the kitty modifier
+/// bitfield (1=shift, 2=alt, 4=ctrl, ...), the event type (1=press, 2=repeat,
+/// 3=release; 0 when the sequence omits it), and the CSI final byte (`u` for the
+/// codepoint form, a letter or `~` for Windows Terminal's hybrid form).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct KittyEvent {
+    pub(crate) code: u32,
+    pub(crate) modifiers: u8,
+    pub(crate) kind: u8,
+    pub(crate) final_byte: u8,
+}
+
+/// Parses a kitty `CSI ... u` (or WT hybrid `CSI ...<letter>`) key event at
+/// `bytes[i..]`. Returns `(end_index, event)`, `end_index` one past the final byte.
+/// `None` when the sequence is incomplete or not a key event (a mouse report etc.).
+pub(crate) fn parse_kitty_seq(bytes: &[u8], i: usize) -> Option<(usize, KittyEvent)> {
+    if i + 1 >= bytes.len() || bytes[i] != 0x1b || bytes[i + 1] != b'[' {
+        return None;
+    }
+    let start = i + 2;
+    let mut j = start;
+    while j < bytes.len() && !(0x40..=0x7e).contains(&bytes[j]) {
+        j += 1;
+    }
+    if j >= bytes.len() {
+        return None; // incomplete
+    }
+    let final_byte = bytes[j];
+    if final_byte != b'u'
+        && !matches!(
+            final_byte,
+            b'A' | b'B' | b'C' | b'D' | b'H' | b'F' | b'P' | b'Q' | b'R' | b'S' | b'~'
+        )
+    {
+        return None; // not a key event
+    }
+    let params = std::str::from_utf8(&bytes[start..j]).ok()?;
+    let mut fields = params.split(';');
+    let code = fields.next()?.split(':').next()?.parse::<u32>().ok()?;
+    let mut modifiers = 0u8;
+    let mut kind = 0u8;
+    if let Some(m) = fields.next() {
+        let mut sub = m.split(':');
+        if let Some(v) = sub.next() {
+            // kitty modifier field is 1-based.
+            modifiers = v.parse::<u32>().ok().unwrap_or(1).saturating_sub(1) as u8;
+        }
+        if let Some(v) = sub.next() {
+            kind = v.parse::<u32>().ok().unwrap_or(0) as u8;
+        }
+    }
+    // A kitty event is the `u`-final codepoint form, or a letter-final form that
+    // carries an explicit event type (Windows Terminal's repeat/release hybrid). A
+    // plain legacy sequence (`CSI A`, `CSI 1;5A`) is not one, so it is left to the
+    // normal CSI handling and never sets the kitty-seen gate.
+    if final_byte != b'u' && kind == 0 {
+        return None;
+    }
+    Some((
+        j + 1,
+        KittyEvent {
+            code,
+            modifiers,
+            kind,
+            final_byte,
+        },
+    ))
+}
+
 /// Decodes the modifier from a CSI arrow's params (`1;<m>` → bitfield in `m-1`:
 /// Shift=1, Alt=2, Ctrl=4). Empty/absent params (a bare arrow) → no modifiers.
 fn csi_modifiers(params: &[u8]) -> KeyModifiers {
@@ -304,6 +373,29 @@ mod tests {
             Vec::<KeyCode>::new(),
             "a tilde sequence with no parameter names no key"
         );
+    }
+
+    #[test]
+    fn kitty_parses_press_repeat_release_and_hybrid() {
+        // C-g press / repeat / release (ctrl modifier field 5 = 1 + ctrl(4)).
+        let (end, ev) = parse_kitty_seq(b"\x1b[7;5u", 0).unwrap();
+        assert_eq!(end, 6);
+        assert_eq!((ev.code, ev.modifiers, ev.kind, ev.final_byte), (7, 4, 0, b'u'));
+        let (_, ev) = parse_kitty_seq(b"\x1b[7;5:2u", 0).unwrap();
+        assert_eq!((ev.code, ev.kind), (7, 2));
+        let (_, ev) = parse_kitty_seq(b"\x1b[7;5:3u", 0).unwrap();
+        assert_eq!((ev.code, ev.kind), (7, 3));
+        // A plain text key release.
+        let (_, ev) = parse_kitty_seq(b"\x1b[97;1:3u", 0).unwrap();
+        assert_eq!((ev.code, ev.modifiers, ev.kind), (97, 0, 3));
+        // Windows Terminal hybrid: Up repeat/release, letter final.
+        let (_, ev) = parse_kitty_seq(b"\x1b[1;1:2A", 0).unwrap();
+        assert_eq!((ev.code, ev.modifiers, ev.kind, ev.final_byte), (1, 0, 2, b'A'));
+        // A normal arrow (no event type) is NOT a kitty event: it stays legacy.
+        assert!(parse_kitty_seq(b"\x1b[A", 0).is_none());
+        assert!(parse_kitty_seq(b"\x1b[1;5A", 0).is_none());
+        // An SGR mouse report is not a key event.
+        assert!(parse_kitty_seq(b"\x1b[<0;10;5M", 0).is_none());
     }
 
     #[test]
