@@ -105,7 +105,7 @@ With the nav auto-hidden the mux owns every row, status line included. The bar s
 floats over the bottom of the window for the two things that must be seen the moment
 they happen: the armed prefix, and a refusal. Scan progress and the active filter
 persist, so they stay in the nav and never take a row back from a hidden one. Four states outrank the prefix while they apply, in order: a refusal message
-(in red), the scan progress, the active filter, and then the resting prefix. A
+(in yellow), the scan progress, the active filter, and then the resting prefix. A
 refusal too long for the nav width wraps onto more rows rather than clipping.
 
 ## Focus

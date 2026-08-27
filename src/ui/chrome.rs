@@ -171,7 +171,7 @@ pub(crate) fn parse_selection_bg(spec: &str) -> Option<Color> {
     None
 }
 
-/// The hint bar's refusal style: a solid danger-red bar (the active palette's
+/// The hint bar's refusal style: a solid danger bar (the active palette's
 /// `danger` as the background, the bar's own text slot on top) that breaks hard
 /// from the calm default so a refused action reads as an
 /// error at a glance, not as more of the key cheatsheet. Every flash today is a
@@ -804,7 +804,7 @@ impl Chrome {
             Line::from(""),
             Line::from(Span::styled(
                 format!(" {}", self.headline(source, kind)),
-                Style::default().fg(pal.host).add_modifier(Modifier::BOLD),
+                Style::default().fg(pal.text).add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(format!(" {}", kind.word()), state_style)),
             Line::from(""),

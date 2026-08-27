@@ -208,7 +208,6 @@ mod tests {
                     last_attached: 100,
                 }],
             }],
-            panes: Default::default(),
         }
     }
 

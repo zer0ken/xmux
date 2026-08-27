@@ -756,13 +756,12 @@ fn kick_rescan(
     hosts: &crate::model::Hosts,
     detecting: &mut HashSet<String>,
     mgr: &mut HostManager,
-    panes_requested: &mut HashSet<String>,
     size: (u16, u16),
 ) {
     if !switcher.take_rescan_kick() {
         return;
     }
-    run_discovery(env, hosts, detecting, mgr, panes_requested, size, true);
+    run_discovery(env, hosts, detecting, mgr, size, true);
 }
 
 /// The shared discovery pass a fresh launch and a re-scan both run, so the two are
@@ -779,7 +778,6 @@ fn run_discovery(
     hosts: &crate::model::Hosts,
     detecting: &mut HashSet<String>,
     mgr: &mut HostManager,
-    panes_requested: &mut HashSet<String>,
     size: (u16, u16),
     rescan: bool,
 ) {
@@ -789,13 +787,6 @@ fn run_discovery(
         // are re-enumerated below regardless, so a slow provider delays no card already
         // on screen.
         spawn_roster_resolve(env.xmux_dir.clone(), env.local_socket.clone(), mgr.events());
-        // `request_rescan` cleared every session's panes from `state.panes`; clear the
-        // loop-local pane-request dedup in lockstep so each control host's re-`list_sessions`
-        // reply actually re-issues `list-panes` (`request_session_panes` only asks for
-        // addresses not already in this set - otherwise the subtree stays "loading…" until
-        // a `%`-change or relaunch). A global clear is safe: this set gates only control
-        // hosts; poll hosts re-emit their panes regardless.
-        panes_requested.clear();
     }
     for id in hosts.ids() {
         if let Some(host) = hosts.get(id) {
@@ -813,31 +804,11 @@ fn run_discovery(
     discover_machine_muxes(&env.roster().cfg, hosts, mgr.events());
 }
 
-/// Requests `list-panes` for each of a host's sessions whose panes have not been
-/// requested yet, so every session's window/pane subtree loads instead of sitting
-/// on the "loading…" placeholder. The control client never volunteers pane data -
-/// it must be asked, once per session (`requested` dedupes repeat Inventory events).
-fn request_session_panes(
-    client: &crate::link::HostClient,
-    sessions: &[crate::session::Session],
-    requested: &mut HashSet<String>,
-) {
-    for s in sessions {
-        let addr = s.address();
-        if requested.insert(addr.clone()) {
-            client.list_panes(&s.name, addr);
-        }
-    }
-}
-
-/// Refetches a host's inventory after a `%`-change notification: clears its
-/// pane-request dedup so every session re-lists, then re-runs list-sessions - its
-/// reply (Connected/Inventory) re-applies the nav, re-requests panes, and re-syncs
+/// Refetches a host's inventory after a `%`-change notification: re-runs
+/// list-sessions - its reply (Connected/Inventory) re-applies the nav and re-syncs
 /// the PTY set (a new session attaches, a closed one is reaped). #5 nav view sync.
-fn refetch_host(mgr: &HostManager, panes_requested: &mut HashSet<String>, host: &str) {
+fn refetch_host(mgr: &HostManager, host: &str) {
     if let Some(client) = mgr.get(host) {
-        let prefix = format!("{host}/");
-        panes_requested.retain(|a| !a.starts_with(&prefix));
         client.list_sessions();
     }
 }
@@ -1033,7 +1004,6 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
         &rt.hosts,
         &mut rt.detecting,
         &mut rt.mgr,
-        &mut rt.panes_requested,
         init_size,
         false,
     );
@@ -1209,7 +1179,6 @@ struct Runtime {
     nav_decoder: crate::display::decode::KeyDecoder,
     prefix: u8,
     connected: HashSet<String>,
-    panes_requested: HashSet<String>,
     detecting: HashSet<String>,
     draw_observer: DrawObserver,
     spinner_start: std::time::Instant,

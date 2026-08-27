@@ -58,8 +58,7 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-A8** - A polled source cannot wedge on one unanswered command. Every command in
   a poll sweep runs under a fixed per-command budget, because the poll ticker only
   advances once the sweep returns: a timed-out listing surfaces as that source's error
-  (the nav shows it unreachable), and a timed-out pane query still emits an EMPTY panes
-  answer, since a card whose panes never arrive would keep its spinner forever.
+  (the nav shows it unreachable).
 - **FR-A9** - No mux list needs configuring, on any host. A host that named no
   mux is asked which of the ones xmux SUPPORTS it has, and each one that answers becomes a
   source. The candidate set is what xmux can drive, and each candidate is asked with the
@@ -79,7 +78,7 @@ no function, and no test, so renaming code is never a documentation change.
   frozen order, the persisted selection, and anything the user typed are keyed to, so
   nothing is renamed and nothing is removed. New cards APPEND, so a card the user is
   looking at does not move because another host answered. An added source is
-  OPERABLE, not merely visible: creating a session on it and reading its panes work
+  OPERABLE, not merely visible: creating a session on it works
   exactly as on a configured source.
 - **FR-A11** - A mux running inside a WSL distribution is a source like any other. A
   distribution is a HOST of its own, named `wsl.<distribution>` so which family it
@@ -99,13 +98,11 @@ no function, and no test, so renaming code is never a documentation change.
 
 - **FR-B1** - The nav renders ONE CARD PER SESSION across every reachable source,
   most recently used first: a context line `{host}/{mux}` over a detail line
-  `{session}/{window}` naming the session's focused window. The list is flat, with
+  naming the session alone. The list is flat, with
   no window or pane rows: xmux aggregates and switches, and the mux itself already shows
-  its own windows. The window is written in its own mux's convention, `{index}:{name}`
-  for tmux and psmux and the bare tab name for zellij, so a card reads the way that
-  mux's own status line reads.
+  its own windows, so a card has nothing to add below the session name.
 - **FR-B2** - Render-first: the source skeleton paints instantly; each source's
-  sessions and each session's panes stream in independently.
+  sessions stream in independently.
 - **FR-B3** - The terminal view shows the confirmed session's live grid and follows
   the cursor. A switch keeps the prior grid on screen until the new one is ready
   (stale-while-revalidate); only the first launch, before any grid exists, shows a
@@ -119,13 +116,19 @@ no function, and no test, so renaming code is never a documentation change.
   never a filtered-out one, even when a host row is selected.
 - **FR-B7** - A card that is WAITING turns ONE spinner, standing in the first of its
   levels that has no answer yet: the mux while the source's own id does not name one,
-  the session while the source is still being listed, the window while the session's
-  panes are in flight. The levels behind it stay blank, so the card says WHICH answer
-  is outstanding instead of only that it is busy, and no status word repeats what the
-  spinner already says. The nav's scan progress turns the same spinner on the same
-  frame. A card that has SETTLED reads a word only when it has one to carry: an unreachable
-  host reads `⚠ unreachable`, while a reachable empty host is a single host row with
-  no status word, and its view screen states `no sessions`. The word is all a card
+  the session while the source is still being listed. The levels behind it stay blank,
+  so the card says WHICH answer is outstanding instead of only that it is busy, and no
+  status word repeats what the spinner already says. The nav's scan progress turns the
+  same spinner on the same frame. A session is a plain session card from the moment its
+  host resolves - no card spins for a resolved session. A card that has SETTLED reads a
+  word only when it has one to carry: an unreachable host carries its `⚠` mark after
+  the host name, while a reachable empty host is a single host row with
+  no status word, and its view screen states `no sessions`. A host-state card claims a
+  mux only when the mux is CONFIRMED: a settled reachable host's enumeration answered
+  through its mux, and a source id that names its own mux was resolved from what the
+  machine actually serves. A bare-id host that is unreachable or still scanning claims
+  none - the card reads the host alone, or spins in the mux position while it scans.
+  The word is all a card
   carries: WHY a host failed is stated on
   its view screen, which has the room to keep a tool's diagnostic whole, while a card
   is only as wide as the nav and could carry no more than a cut-down copy of it.
@@ -157,7 +160,7 @@ no function, and no test, so renaming code is never a documentation change.
   `auto-dark` (the default) and `auto-light`, one for a dark and one for a light
   terminal background, and `[ui] theme` selects one (an unknown name falls back to
   `auto-dark`, reported by `xmux doctor`). The session level reads BOLD so the level a
-  user actually picks stands off the host, mux, and window parts of the same line; the
+  user actually picks stands off the text parts of the same line; the
   hint bar keys read its own `bar_accent` slot, because a slot that reads on the cards
   may not read on the bar's own background. What the
   sixteen slots cannot say is said with an attribute: the selected card is REVERSE VIDEO,
@@ -391,7 +394,7 @@ nothing to switch to until one exists.
 - **UC-7, spin up a throwaway on a remote and switch to it.** Create on the
   host's card, then switch to it. *(FR-E1, FR-C2)*
 - **UC-8, survey what's running everywhere before deciding.** The nav shows every
-  session on every host with its focused window; the terminal view previews the selection.
+  session on every host; the terminal view previews the selection.
   *(FR-B1, FR-B3, FR-B8)*
 - **UC-9, drive xmux from a script.** Control channel: dump, inject keys, signal a
   switch. *(FR-F1, FR-F2)*
@@ -414,3 +417,12 @@ The seamless cross-host switch is bought with three costs, accepted by design:
   distribution's side, because a control stream reads its terminal attributes and exits
   without one. A distribution that cannot allocate one reports that mux unreachable; a
   polled mux there is unaffected.
+
+## Design principles
+
+- **Honesty** - The nav shows only what it can back with an answer, and says
+  so when it cannot. A value is never guessed, assumed, or shown as a fact
+  before it is one: a mux appears on a card only when the enumeration
+  answered through it or the machine was resolved to serve it, an unresolved
+  level turns a spinner instead of a value, and a failure keeps its own
+  state colour while the reason is stated on the screen. *(FR-B7)*

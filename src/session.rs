@@ -119,24 +119,6 @@ pub fn source_of(addr: &str) -> &str {
     addr.split('/').next().unwrap_or(addr)
 }
 
-/// One pane within a window.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Pane {
-    pub index: i64,
-    pub active: bool,
-    /// `pane_current_command`.
-    pub command: String,
-}
-
-/// The panes of a single window, in window order.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WindowPanes {
-    pub index: i64,
-    pub name: String,
-    pub active: bool,
-    pub panes: Vec<Pane>,
-}
-
 /// Splits a `"<source>/<name>"` address on the FIRST `/` so a session name
 /// containing `/` is preserved. Both halves must be non-empty.
 pub fn parse_target(addr: &str) -> Result<Session, String> {

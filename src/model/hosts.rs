@@ -185,9 +185,9 @@ impl Hosts {
                     h.liveness = Liveness::Unreachable;
                 }
             }
-            // Change/window/focus events drive refetch + selection follow in the render
-            // projection; they touch no Host-owned field here.
-            Changed { .. } | ActiveWindowChanged { .. } | Focus { .. } => {}
+            // Change events drive refetch in the render projection; they touch no
+            // Host-owned field here.
+            Changed { .. } => {}
             // The tty-matched reap of xmux's own display attach is the supervisor's job (it
             // owns the registry + the recover-from-detach rearm); the Hosts map holds no
             // per-attach state to fold here. `ClientSessionChanged` is the same: the tty match
@@ -206,11 +206,7 @@ impl Hosts {
             // the caller (apply_source_result / apply_scan_result / the discovery-add
             // effect); they fold no Host-owned liveness here. A discovery answer names a
             // MACHINE, not a host in this map, so it could not route here anyway.
-            Scanned { .. }
-            | Sessions { .. }
-            | Panes { .. }
-            | MuxesFound { .. }
-            | RosterResolved { .. } => {}
+            Scanned { .. } | Sessions { .. } | MuxesFound { .. } | RosterResolved { .. } => {}
         }
     }
 }

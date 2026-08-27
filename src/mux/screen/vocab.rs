@@ -1,9 +1,8 @@
 //! GNU screen argv builders and parsers. Screen shares no argv with tmux, so these
-//! are screen-native: `-ls` lists sessions, `-S <name> -Q windows` lists a session's
-//! windows (the `-Q` reply comes back on stdout), `-x` attaches in multi-display mode,
+//! are screen-native: `-ls` lists sessions, `-x` attaches in multi-display mode,
 //! and `-dmS` starts a detached session. Parsers are pure over the raw output.
 
-use crate::session::{Pane, Session, WindowPanes};
+use crate::session::Session;
 
 fn argv(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| s.to_string()).collect()
@@ -13,13 +12,6 @@ fn argv(parts: &[&str]) -> Vec<String> {
 /// 1 (stdout `No Sockets found`) when empty.
 pub fn list_sessions(bin: &str) -> Vec<String> {
     argv(&[bin, "-ls"])
-}
-
-/// `screen -S <name> -Q windows` — prints the session's windows to stdout as a
-/// space-joined `num name` list. The `-Q` flag makes screen write the reply to the
-/// querying process's stdout, which is what makes headless window detail possible.
-pub fn windows(bin: &str, name: &str) -> Vec<String> {
-    argv(&[bin, "-S", name, "-Q", "windows"])
 }
 
 /// `screen -x <name>` — attach in multi-display mode. Unlike `-r` (detached-only) it
@@ -79,44 +71,6 @@ pub fn parse_sessions(source: &str, mux: &str, out: &str) -> Vec<Session> {
     sessions
 }
 
-/// Parses `screen -S <name> -Q windows` output (`0 bash  1 bash  2 vim`) into
-/// windows. Screen prints a space-joined `num name` list with no active marker, so
-/// each window is one [`WindowPanes`] with a single placeholder pane, `active` false
-/// (the nav falls back to the first window). Integer tokens delimit windows; any
-/// other token appends to the current window's name, so a name with spaces survives.
-pub fn parse_windows(out: &str) -> Vec<WindowPanes> {
-    let mut windows: Vec<WindowPanes> = Vec::new();
-    let mut cur: Option<(i64, Vec<String>)> = None;
-    for tok in out.split_whitespace() {
-        if let Ok(idx) = tok.parse::<i64>() {
-            if let Some((index, name_tokens)) = cur.take() {
-                windows.push(finish_window(index, name_tokens));
-            }
-            cur = Some((idx, Vec::new()));
-        } else if let Some((_, name_tokens)) = cur.as_mut() {
-            name_tokens.push(tok.to_string());
-        }
-    }
-    if let Some((index, name_tokens)) = cur {
-        windows.push(finish_window(index, name_tokens));
-    }
-    windows
-}
-
-fn finish_window(index: i64, name_tokens: Vec<String>) -> WindowPanes {
-    let name = name_tokens.join(" ");
-    WindowPanes {
-        index,
-        name: name.clone(),
-        active: false,
-        panes: vec![Pane {
-            index: 0,
-            active: false,
-            command: name,
-        }],
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,14 +82,6 @@ mod tests {
     #[test]
     fn list_sessions_is_dash_ls() {
         assert_eq!(list_sessions("screen"), argv(&["screen", "-ls"]));
-    }
-
-    #[test]
-    fn windows_query_is_s_q_windows() {
-        assert_eq!(
-            windows("screen", "my sess"),
-            argv(&["screen", "-S", "my sess", "-Q", "windows"])
-        );
     }
 
     #[test]
@@ -204,38 +150,5 @@ mod tests {
     #[test]
     fn parse_sessions_empty() {
         assert!(parse_sessions("local", "screen", "").is_empty());
-    }
-
-    #[test]
-    fn parse_windows_reads_the_space_joined_list() {
-        let out = "0 bash  1 bash  2 vim";
-        let got = parse_windows(out);
-        assert_eq!(got.len(), 3);
-        assert_eq!(got[0].index, 0);
-        assert_eq!(got[0].name, "bash");
-        assert_eq!(got[2].index, 2);
-        assert_eq!(got[2].name, "vim");
-    }
-
-    #[test]
-    fn parse_windows_keeps_spaces_in_a_name() {
-        let out = "0 my title 1 bash";
-        let got = parse_windows(out);
-        assert_eq!(got.len(), 2);
-        assert_eq!(got[0].name, "my title");
-        assert_eq!(got[1].name, "bash");
-    }
-
-    #[test]
-    fn parse_windows_each_window_has_one_pane() {
-        let got = parse_windows("0 bash 1 vim");
-        assert_eq!(got[0].panes.len(), 1);
-        assert_eq!(got[0].panes[0].command, "bash");
-        assert_eq!(got[1].panes[0].command, "vim");
-    }
-
-    #[test]
-    fn parse_windows_empty() {
-        assert!(parse_windows("").is_empty());
     }
 }

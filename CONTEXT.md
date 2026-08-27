@@ -48,7 +48,7 @@ UI elements a user perceives as distinct things:
   column in side layout, a top band in portrait layout, where the same cards run in a
   column flow). Never the
   "sidebar", and never the "tree": the on-screen VIEW is the nav view; "tree" names
-  only the internal row-model module, which is still a Source to Session to Window
+  only the internal row-model module, which is still a Source to Session
   structure.
 - terminal view - the right region (the selected session's live grid).
 - view border - the vertical line between the two views. Modelled on tmux's pane
@@ -109,20 +109,21 @@ UI elements a user perceives as distinct things:
   while the terminal view is focused. "cursor" always means this text cursor,
   never the nav selection.
 - card - one nav entry: a context line (`{host}/{mux}`, or `{host}` on a
-  host-state card) over a detail line (`{session}/{window}` of the focused (active)
-  window behind a connector; the settled host state, the state word alone; or a spinner
-  in the card's unresolved level). A card states WHAT something is; WHY it is that way
-  is the screen's, never a card's.
-  The window part is written the way its own mux writes it - see `window label`. The muted connector hangs the detail
+  host-state card) over a detail line (the session name alone behind a connector;
+  or, on a host-state card, the host row carries the state). A card states WHAT
+  something is; WHY it is that way is the screen's, never a card's.
+  The muted connector hangs the detail
   under its context line - on a collapsed card, under the shared context
   above: `├` while a collapsed sibling follows below, `└` on the run's last
-  line; the selected card drops the connector (the selection mark and the inverted
-  rows already bind its lines).
+  line; the selected card keeps the connector (the selection mark and the inverted
+  rows already bind its lines, and dropping it would slide the session name out of
+  the column every other card puts its name in).
   One card per SESSION; the mux segment names the mux kind serving it, stamped at
   enumeration, so several muxes on one host stay distinguishable. The kinds are the
-  session card, the host-state card (scanning / unreachable / empty host), and the
-  loading card.
-- card collapse - a session/loading card whose `{host}/{mux}` repeats the
+  session card and the host-state card (scanning / unreachable / empty host); the
+  loading card is gone: a session is a plain session card from the moment its host
+  resolves.
+- card collapse - a session card whose `{host}/{mux}` repeats the
   previous card's drops its context line and renders one row tall, so runs on
   one server read grouped. In the SIDE list the selected card never collapses (focus
   expands it to the full two-row card, so its context is always readable in place), and one
@@ -178,21 +179,23 @@ UI elements a user perceives as distinct things:
   before the rule and the bands never meet, at the price of scrolling a row early. Neither
   parting is a card, so a click on one selects nothing.
 - level color - the per-segment card color, from the palette. Every foreground role
-  is ANSI-16, so the terminal theme resolves the hue: host cyan,
-  mux green, session red, the window part bright-black - the quietest
-  level, so the session name anchors the detail line. The four read as one code-theme
-  palette, and the level a user actually picks (the session) is the one that stands out.
-  A spinner is pending yellow wherever it stands. A settled host-state card's detail
-  line is colored by state: an unreachable host's is red, and a reachable empty host's
-  card is a single host row with no status word (its screen states "no sessions"). The hint bar is two slots as well (black under white, cyan keys). Nothing here
+  is ANSI-16, so the terminal theme resolves the hue. There is one TEXT colour and one
+  ACCENT: every card reads as a neutral block of text with a single highlighted element.
+  The text colour carries both the host and the mux on a session card's context line;
+  the accent belongs to the LOWEST level the card displays - the session name on a
+  session card, the mux on a host-state card that has a mux to name. The one mark
+  that keeps its own colour is the unreachable host's `⚠`, which stays danger yellow as a
+  failure, and the scanning spinner stays pending yellow. A settled host-state card is a
+  single host row: the unreachable one carries the `⚠` mark after its host name, and
+  a reachable empty host's card carries no word at all (its screen states "no sessions").
+  A host-state card claims a mux only when the mux is CONFIRMED - a settled reachable
+  host's enumeration answered through its mux, and a source id that names its own mux
+  was resolved from what the machine actually serves. A bare-id host that is unreachable
+  or still scanning claims none: the card reads the host alone, or spins in the mux
+  position while it scans.
+  The hint bar is two slots as well. Nothing here
   is an RGB value; see "Colour ownership" below for why, and `[ui] selection-style` /
   `[ui] hint-bar-style` for naming one anyway.
-- window label - how a card writes its focused window, in the CONVENTION OF ITS OWN MUX
-  rather than one xmux imposes: tmux, psmux, and screen get `{index}:{name}`, which is
-  what their own status line and window listing print; zellij gets the tab name alone,
-  because zellij's tab bar shows names and nothing else and a tab it names itself is
-  already called `Tab #1`. The mux owns the rule, so a reader who knows one mux reads
-  its cards without learning a second notation.
 - card order - the one order the flat card list follows, held as addresses. Recency is
   measured per SOURCE, not per session: a source's cards are
   contiguous, sources run most-recently-used first, and inside a source its own sessions
@@ -236,18 +239,14 @@ UI elements a user perceives as distinct things:
   wide window is a lot of paint for one word.
 - spinner - the braille activity glyph marking a level that has not resolved. One
   glyph and one frame counter for the whole UI, so every marker on screen turns
-  together.
-- unresolved level - the first of a card's levels (mux, then session, then window)
-  with no answer yet. The spinner stands in exactly that one, and every level of the
-  card behind it stays blank: one spinner per card names WHICH answer is outstanding,
-  where a second would only say the card is busy.
-- loading card - a card standing in for a session whose panes are not yet loaded;
-  the window is its unresolved level, so its detail line is `{session}/` + a spinner
-  rather than a window part.
-- status - a host-state card's detail-line state text once it has SETTLED (`no
-  sessions` / `⚠ unreachable`); a card still scanning carries no status word, because
-  its spinner already says so. Not to be confused with the hint bar (below) or the
-  `chrome`.
+  together. It stands on a SCANNING host's card (in the level that has not resolved),
+  and on the hint bar's global scan count; a settled session card never spins, because
+  a session is a plain session card the moment its host resolves.
+- status - a host-state card's state once it has SETTLED: the unreachable host's `⚠`
+  mark riding after its host name, or nothing at all on a reachable empty host
+  (whose screen states "no sessions"); a card still scanning carries the spinner
+  instead, because its spinner already says so. Not to be confused with the hint bar
+  (below) or the `chrome`.
 - address column - the leftmost column set of every card, holding the one thing that
   answers "where is this": the dim 0-based number `prefix <digit>` jumps to, or, on the
   SELECTED card, the selection mark - the number there would be the address of where you
@@ -321,7 +320,8 @@ UI elements a user perceives as distinct things:
   action's reason). Never a "toast" or "notice".
 - scan indicator - the `scanning n/m…` progress shown in the hint bar while host
   probes are in flight, behind the same spinner on the same frame as the cards it
-  counts. It counts SOURCES; a card's own spinner names one card's unresolved level.
+  counts. It counts SOURCES; a scanning host's card spinner names that host's
+  unresolved level.
 - armed - the state between pressing the prefix and its command key. The hint bar
   reads it to swap from the resting prefix to the cheatsheet, so arming is a
   visible change and redraws the frame.
@@ -370,6 +370,29 @@ document may name is what the design itself prescribes and what the outside
 world already depends on: the two axes and their vocabulary, the directory
 layout a new module must fit, config keys, CLI and ctl verbs, socket names, and
 the argv of the muxes xmux drives.
+
+## Honesty
+
+xmux is honest by design: it shows only what it can back with an answer,
+and it says so when it cannot. Honesty is the core rule every presentation
+decision is checked against, before colour, before layout, before any
+value on a card.
+
+- A mux is named only when it is CONFIRMED. A settled host's enumeration
+  answered through its mux, and a source id that names its own mux was
+  resolved from what the machine actually serves. An unreachable host's
+  assumed mux stays off its card: the card reads the host alone rather
+  than claim a mux the failed probe never confirmed.
+- An answer that has not arrived is shown as in flight, never as a value.
+  A scanning host's unresolved level turns the spinner, and no card spins
+  for a session once its host has resolved.
+- A failure is shown as a failure, never dressed as a value. The
+  unreachable mark and the refusal keep their own state colour, and the
+  reason is stated on the screen, where it fits whole, never cut down to
+  fit a card.
+- A card states WHAT something is; WHY it is that way is the screen's. A
+  card that cannot back a word omits it, and a value that was never
+  confirmed is never presented as one.
 
 ## Architecture - the orthogonal design
 
@@ -485,9 +508,9 @@ as invariants, seams, and pitfalls - never as change history or phase narrative.
 
 ## Improvement Notes
 
-- Per-source session/window inventory has a single owner: the source's own
+- Per-source session inventory has a single owner: the source's own
   inventory. Both metadata paths feed it through source events - the control reader
-  carries its parsed sessions and pane subtrees, and the poll task carries the same
+  carries its parsed sessions, and the poll task carries the same
   - the run loop folds them in and rebuilds the nav rows from it. The source
   manager owns the live mechanisms (control clients and poll tasks). Keep live
   process/task ownership out of the source domain type, and do not add a third

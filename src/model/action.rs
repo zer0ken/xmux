@@ -141,20 +141,16 @@ pub enum MuxOp {
 /// structurally.
 pub enum EventEffect {
     /// `Connected`/`Inventory`: fold the carried `sessions` into `host`'s
-    /// `model::Host.inventory` (the single owner), apply them to the nav, request
-    /// each session's panes, and sync the host's display terminal(s). The reader
+    /// `model::Host.inventory` (the single owner), apply them to the nav,
+    /// and sync the host's display terminal(s). The reader
     /// carries the parsed sessions on the event, so the loop folds + applies here.
     ApplyInventory {
         host: String,
         sessions: Vec<Session>,
     },
     /// `Changed`: the server's session/window STRUCTURE changed - refetch `host`'s
-    /// inventory (re-run list-sessions + re-list panes).
+    /// inventory (re-run list-sessions).
     Refetch { host: String },
-    /// `ActiveWindowChanged`: a session's active window switched - probe `session_ref`
-    /// (the tmux SESSION id from the notification payload) over `host`'s control
-    /// connection (no refetch). Targets THAT SPECIFIC session, not a displayed guess.
-    ProbeActiveWindow { host: String, session_ref: String },
     /// `MuxesFound`: add a source for every mux in `muxes` that `machine` does not
     /// already serve. The loop owns it because it needs the host registry (to know what
     /// the machine already serves, and to insert the new hosts) and the manager (to kick
@@ -221,11 +217,6 @@ impl std::fmt::Debug for EventEffect {
                 .field("muxes", muxes)
                 .finish(),
             EventEffect::Refetch { host } => f.debug_struct("Refetch").field("host", host).finish(),
-            EventEffect::ProbeActiveWindow { host, session_ref } => f
-                .debug_struct("ProbeActiveWindow")
-                .field("host", host)
-                .field("session_ref", session_ref)
-                .finish(),
             EventEffect::ApplyRoster { roster } => f
                 .debug_struct("ApplyRoster")
                 .field("sources", &roster.sources.len())
