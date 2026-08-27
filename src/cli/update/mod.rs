@@ -1,9 +1,11 @@
 //! The `xmux update` command. It detects how xmux was installed from the running
-//! executable's path and either delegates to the owning package manager (cargo,
-//! winget, Homebrew) on Unix, or downloads a checksum-verified build from the latest
-//! GitHub release and replaces the running binary in place. Windows routes every
-//! path through the release download because no package manager can overwrite a
-//! running executable there; the swap is handed to a detached updater.
+//! executable's path and delegates to the owning package manager (cargo, winget,
+//! Homebrew); an install no package manager owns is replaced in place with a
+//! checksum-verified build from the latest GitHub release. On Windows a running
+//! process locks its own image file against deletion and overwrite but not against
+//! rename, so the cargo delegation renames the live binary aside first, while the
+//! winget delegation and the release swap are handed to a detached updater that
+//! waits for every xmux process to exit.
 
 pub mod release;
 
@@ -137,40 +139,111 @@ fn run_delegated(program: &str, args: &[&str]) -> Result<(), String> {
 fn run_blocking(args: &Args) -> Result<(), String> {
     let method = resolve_method(args.method.as_deref())?;
     let p = platform();
-    // The package-manager delegations only make sense where the package manager can
-    // replace the running binary. On Windows no package manager can overwrite a
-    // running executable, so every path uses the release download + detached
-    // updater; on Unix the package managers work in place and are preferred when an
-    // install method is known.
-    let use_release = match method {
-        InstallMethod::Self_ => true,
-        InstallMethod::Cargo | InstallMethod::Winget | InstallMethod::Brew => {
-            p == Platform::Windows
-        }
-    };
-    if use_release {
-        return release::update(args, p);
-    }
     match method {
-        InstallMethod::Cargo => run_cargo(args),
-        InstallMethod::Winget => run_winget(args),
+        InstallMethod::Self_ => release::update(args, p),
+        InstallMethod::Cargo => run_cargo(args, p),
+        InstallMethod::Winget => run_winget(args, p),
         InstallMethod::Brew => run_brew(args),
-        InstallMethod::Self_ => unreachable!(),
     }
 }
 
-fn run_cargo(args: &Args) -> Result<(), String> {
+fn run_cargo(args: &Args, platform: Platform) -> Result<(), String> {
     if args.check {
-        println!("xmux is installed via cargo; update with `cargo install --force xmux`");
+        println!("xmux is installed via cargo; update with `cargo install xmux`");
         return Ok(());
     }
     if !tool_on_path("cargo") {
         return Err("cargo is not on PATH; install a release build for your platform".to_string());
     }
-    run_delegated("cargo", &["install", "--force", "xmux"])
+    // No `--force`: cargo reinstalls on its own when the registry has a newer
+    // version and does nothing when the install is current.
+    let delegate = || run_delegated("cargo", &["install", "xmux"]);
+    match platform {
+        Platform::Unix => delegate(),
+        // On Windows cargo's final copy into the bin directory would fail on the
+        // running binary's image lock, so the binary is renamed aside first. A
+        // missing binary makes cargo rebuild even when the install is current,
+        // so whether an update exists at all is decided before the rename.
+        Platform::Windows => {
+            let target =
+                std::env::current_exe().map_err(|e| format!("cannot locate own binary: {e}"))?;
+            clean_stale_sidecars(&target);
+            let current = env!("CARGO_PKG_VERSION");
+            let agent = ureq::AgentBuilder::new().build();
+            let latest = release::latest_version(&agent)?;
+            if !release::is_newer(&latest, current) {
+                println!("xmux is already up to date ({current})");
+                return Ok(());
+            }
+            delegate_with_binary_aside(&target, std::process::id(), delegate)
+        }
+    }
 }
 
-fn run_winget(args: &Args) -> Result<(), String> {
+/// Runs a package-manager delegation with the live binary renamed to a sidecar
+/// name, so the package manager can write the binary's path without hitting the
+/// image lock. The sidecar is renamed back when the delegation writes nothing
+/// (already up to date, or failed); when a new binary lands, the sidecar (this
+/// process's own image, undeletable while it runs) is left for the next update's
+/// `clean_stale_sidecars`.
+fn delegate_with_binary_aside(
+    target: &Path,
+    pid: u32,
+    delegate: impl Fn() -> Result<(), String>,
+) -> Result<(), String> {
+    let sidecar = sidecar_path(target, pid);
+    std::fs::rename(target, &sidecar)
+        .map_err(|e| format!("cannot move {} aside: {e}", target.display()))?;
+    let outcome = delegate();
+    if target.exists() {
+        return outcome;
+    }
+    let restored = std::fs::rename(&sidecar, target)
+        .map_err(|e| format!("cannot restore {}: {e}", target.display()));
+    match (outcome, restored) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(r)) | (Err(r), Ok(())) => Err(r),
+        (Err(e), Err(r)) => Err(format!("{e}; {r}")),
+    }
+}
+
+/// The sidecar a live binary is renamed to while a delegation runs:
+/// `<name>.old-<pid>` next to the binary.
+fn sidecar_path(target: &Path, pid: u32) -> PathBuf {
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    target.with_file_name(format!("{name}.old-{pid}"))
+}
+
+/// True when `candidate` is a sidecar an earlier update left next to a binary
+/// named `target_name`.
+fn is_stale_sidecar(target_name: &str, candidate: &str) -> bool {
+    candidate
+        .strip_prefix(target_name)
+        .and_then(|rest| rest.strip_prefix(".old-"))
+        .is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Best-effort removal of sidecars left by earlier updates. A sidecar whose old
+/// binary still runs somewhere stays locked and is retried on the next update.
+fn clean_stale_sidecars(target: &Path) {
+    let (Some(dir), Some(name)) = (target.parent(), target.file_name()) else {
+        return;
+    };
+    let name = name.to_string_lossy();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if is_stale_sidecar(&name, &entry.file_name().to_string_lossy()) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+fn run_winget(args: &Args, platform: Platform) -> Result<(), String> {
     if args.check {
         println!("xmux is installed via winget; update with `winget upgrade --id zer0ken.xmux`");
         return Ok(());
@@ -178,7 +251,77 @@ fn run_winget(args: &Args) -> Result<(), String> {
     if !tool_on_path("winget") {
         return Err("winget is not on PATH; install a release build for your platform".to_string());
     }
-    run_delegated("winget", &["upgrade", "--id", "zer0ken.xmux"])
+    match platform {
+        Platform::Unix => run_delegated("winget", &["upgrade", "--id", "zer0ken.xmux"]),
+        // winget removes the old build's files during an upgrade and that removal
+        // fails on a running executable's image lock, so the upgrade is handed to
+        // a detached updater that waits for every xmux process to exit.
+        Platform::Windows => run_winget_detached(),
+    }
+}
+
+/// Hands `winget upgrade` to a detached updater and exits; winget's output lands
+/// in a log file next to the updater script.
+#[cfg(windows)]
+fn run_winget_detached() -> Result<(), String> {
+    let dir = std::env::temp_dir().join(format!("xmux-update-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("cannot create staging dir {}: {e}", dir.display()))?;
+    let log = dir.join("winget-upgrade.log");
+    spawn_detached_cmd(&dir, winget_updater_script(&log))?;
+    println!(
+        "update handed to winget; it runs once every xmux instance exits (log: {})",
+        log.display()
+    );
+    Ok(())
+}
+
+/// Unix stub: never called because `run_winget` only routes here on Windows.
+#[cfg(not(windows))]
+fn run_winget_detached() -> Result<(), String> {
+    unreachable!("Windows-only updater ran on a non-Windows host")
+}
+
+/// The detached updater script for a winget delegation: wait until no xmux
+/// process runs, then upgrade with output appended to `log`.
+fn winget_updater_script(log: &Path) -> String {
+    format!(
+        "{UPDATER_WAIT_PREAMBLE}\
+         winget upgrade --id zer0ken.xmux >> \"{log}\" 2>&1\r\n",
+        log = log.display(),
+    )
+}
+
+/// cmd-script preamble that polls until no xmux process holds an image file.
+pub(crate) const UPDATER_WAIT_PREAMBLE: &str = "@echo off\r\n\
+    :wait\r\n\
+    %SystemRoot%\\System32\\tasklist.exe /FI \"IMAGENAME eq xmux.exe\" | %SystemRoot%\\System32\\find.exe /I \"xmux.exe\" >nul\r\n\
+    if errorlevel 1 goto done\r\n\
+    %SystemRoot%\\System32\\ping.exe -n 2 127.0.0.1 >nul\r\n\
+    goto wait\r\n\
+    :done\r\n";
+
+/// Writes `content` as a cmd script in `dir` and launches it hidden and detached,
+/// so it outlives the update command.
+#[cfg(windows)]
+pub(crate) fn spawn_detached_cmd(dir: &Path, content: String) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    let script = dir.join("update.cmd");
+    std::fs::write(&script, content).map_err(|e| format!("cannot write updater: {e}"))?;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    std::process::Command::new("cmd")
+        .arg("/c")
+        .arg(&script)
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|e| format!("cannot start updater: {e}"))?;
+    Ok(())
+}
+
+/// Unix stub: never called because every caller routes here only on Windows.
+#[cfg(not(windows))]
+pub(crate) fn spawn_detached_cmd(_dir: &Path, _content: String) -> Result<(), String> {
+    unreachable!("Windows-only updater ran on a non-Windows host")
 }
 
 fn run_brew(args: &Args) -> Result<(), String> {
@@ -268,5 +411,83 @@ mod tests {
         assert_eq!(super::parse_method("cargo").unwrap(), InstallMethod::Cargo);
         assert_eq!(super::parse_method("self").unwrap(), InstallMethod::Self_);
         assert!(super::parse_method("bogus").is_err());
+    }
+
+    #[test]
+    fn sidecar_name_is_target_name_old_pid() {
+        let p = super::sidecar_path(Path::new("/bin/dir/xmux.exe"), 42);
+        assert_eq!(p, PathBuf::from("/bin/dir/xmux.exe.old-42"));
+    }
+
+    #[test]
+    fn stale_sidecar_detection_requires_exact_shape() {
+        assert!(super::is_stale_sidecar("xmux.exe", "xmux.exe.old-123"));
+        assert!(!super::is_stale_sidecar("xmux.exe", "xmux.exe"));
+        assert!(!super::is_stale_sidecar("xmux.exe", "xmux.exe.old-"));
+        assert!(!super::is_stale_sidecar("xmux.exe", "xmux.exe.old-12a"));
+        assert!(!super::is_stale_sidecar("xmux.exe", "other.exe.old-1"));
+    }
+
+    #[test]
+    fn winget_script_waits_then_upgrades_into_log() {
+        let s = super::winget_updater_script(Path::new("C:\\t\\up.log"));
+        assert!(s.starts_with(super::UPDATER_WAIT_PREAMBLE));
+        assert!(s.contains("winget upgrade --id zer0ken.xmux >> \"C:\\t\\up.log\" 2>&1"));
+    }
+
+    fn temp_target(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("xmux-sidecar-test-{tag}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("xmux.exe");
+        std::fs::write(&target, b"old").unwrap();
+        target
+    }
+
+    #[test]
+    fn aside_delegation_keeps_new_binary_and_leaves_sidecar() {
+        let target = temp_target("writes");
+        let written = target.clone();
+        let out = super::delegate_with_binary_aside(&target, 1, move || {
+            std::fs::write(&written, b"new").unwrap();
+            Ok(())
+        });
+        assert_eq!(out, Ok(()));
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+        assert!(super::sidecar_path(&target, 1).exists());
+        let _ = std::fs::remove_dir_all(target.parent().unwrap());
+    }
+
+    #[test]
+    fn aside_delegation_restores_when_nothing_is_written() {
+        let target = temp_target("noop");
+        let out = super::delegate_with_binary_aside(&target, 1, || Ok(()));
+        assert_eq!(out, Ok(()));
+        assert_eq!(std::fs::read(&target).unwrap(), b"old");
+        assert!(!super::sidecar_path(&target, 1).exists());
+        let _ = std::fs::remove_dir_all(target.parent().unwrap());
+    }
+
+    #[test]
+    fn aside_delegation_restores_on_failure() {
+        let target = temp_target("fails");
+        let out = super::delegate_with_binary_aside(&target, 1, || Err("boom".to_string()));
+        assert_eq!(out, Err("boom".to_string()));
+        assert_eq!(std::fs::read(&target).unwrap(), b"old");
+        let _ = std::fs::remove_dir_all(target.parent().unwrap());
+    }
+
+    #[test]
+    fn entry_cleanup_removes_only_stale_sidecars() {
+        let target = temp_target("cleanup");
+        let dir = target.parent().unwrap();
+        let stale = dir.join("xmux.exe.old-99");
+        let unrelated = dir.join("xmux.exe.bak");
+        std::fs::write(&stale, b"x").unwrap();
+        std::fs::write(&unrelated, b"x").unwrap();
+        super::clean_stale_sidecars(&target);
+        assert!(!stale.exists());
+        assert!(unrelated.exists());
+        assert!(target.exists());
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -3,10 +3,10 @@
 xmux ships as one self-contained binary. There are two ways to get it, and
 either gives you the same `xmux` command-line program:
 
-- **Prebuilt binary** — download the package for your OS from the
+- **Prebuilt binary** - download the package for your OS from the
   [releases](https://github.com/zer0ken/xmux/releases) page and put the binary
   on your `PATH`. This is the recommended path: nothing needs to be compiled.
-- **From source** — build the Rust project with Cargo. Use this when no
+- **From source** - build the Rust project with Cargo. Use this when no
   prebuilt binary matches your platform, or when you want to build a specific
   commit.
 
@@ -216,6 +216,10 @@ zer0ken/xmux/xmux`. Any other placement (a prebuilt binary copied onto your
 `PATH`) is updated in place from the latest GitHub release, after verifying the
 downloaded binary's SHA256 against the release's published checksum.
 
+On Windows, a running executable cannot be overwritten, so a winget upgrade or
+a release swap finishes in the background once every xmux instance has exited;
+a cargo install completes in the foreground right away.
+
 Preview what an update would do without installing it:
 
 ```sh
@@ -224,7 +228,7 @@ xmux update --check
 
 Force a specific update path with `--method cargo|winget|brew|self`, or the
 `XMUX_UPDATE_METHOD` environment variable. A source/dev build (not a released
-version) is not overwritten — update it the same way it was built.
+version) is not overwritten - update it the same way it was built.
 
 To upgrade from a prebuilt binary manually, download the newer package and
 replace the binary. To upgrade a Cargo install by hand, re-run
