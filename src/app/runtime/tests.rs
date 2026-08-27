@@ -1338,10 +1338,6 @@ fn test_rt(env: Env) -> Runtime {
         config_last_mtime: None,
         width_dirty: false,
         width_flush_at: None,
-        renudge_at: None,
-        renudge_cooldown_until: std::time::Instant::now(),
-        renudge_chunks: 0,
-        renudge_last_output: None,
     }
 }
 
