@@ -19,19 +19,13 @@ impl Grid {
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
-        // The `vt100` dependency is the psmux fork (renamed), which fixes the
-        // wide-char-at-last-column panics (clear_wide OOB, drawing_cell unwrap) that
-        // upstream 0.16.2 hit after a grid shrink. The catch remains as a defensive
-        // backstop: no residual parser edge case may ever kill the PTY pump thread.
-        // On a catch the parser is reset so the next mux repaint refills the grid.
+        // vt100 0.16.2 panics (screen.rs `Screen::text` unwrap on None) when a wide
+        // (CJK) glyph lands on the last column in some cursor states — common after a
+        // grid shrink. Catch it so the PTY pump thread survives; reset the parser so
+        // the next mux repaint refills the grid cleanly instead of re-panicking on the
+        // same stale cursor.
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            // ONLCR: expand a bare LF into CRLF before the emulator sees it. ConPTY
-            // hands the grid LF-only newlines, and vt100 treats LF as
-            // down-without-column-reset, so a line closed with `\n` alone would leave
-            // the cursor mid-row and stagger every line below it by the width of the
-            // line above. The real terminal driver does this same translation in
-            // cooked mode.
-            self.parser.process(&onlcr(bytes));
+            self.parser.process(bytes);
         }));
         if res.is_err() {
             let (rows, cols) = self.parser.screen().size();
@@ -137,24 +131,6 @@ pub fn vt_color_to_ratatui(c: vt100::Color) -> RColor {
     }
 }
 
-/// ONLCR: returns `bytes` with every bare LF (0x0A) expanded to CRLF. An LF already
-/// preceded by a CR is left alone (the CR already resets the cursor), so an incoming
-/// CRLF passes through unchanged and only LF-only newlines gain the reset they need.
-/// The check is per-read: a trailing CR split onto the next read (CR in one chunk,
-/// LF in the next) still lands correctly, because that LF then gains its own CR.
-fn onlcr(bytes: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut prev_is_cr = false;
-    for &b in bytes {
-        if b == b'\n' && !prev_is_cr {
-            out.push(b'\r');
-        }
-        out.push(b);
-        prev_is_cr = b == b'\r';
-    }
-    out
-}
-
 /// Maps a vt100 cell's colours and attributes to a ratatui `Style`.
 fn vt_cell_style(cell: &vt100::Cell) -> Style {
     let mut style = Style::default()
@@ -208,16 +184,21 @@ mod tests {
         assert!(g.is_blank(), "clear wipes all visible content");
     }
 
-    // Regression: a wide CJK glyph printed at the last column, then the grid shrinks
-    // so its right half is truncated, then the now-edge glyph is overwritten. Upstream
-    // vt100 0.16.2 panicked here; the psmux fork must keep the grid intact.
+    // NOTE: this test deliberately triggers the vt100 panic that Grid::feed catches, so
+    // `cargo test` prints one "thread panicked at vt100 ... screen.rs" line to stderr —
+    // expected, not a failure. (The hook is not silenced here because it is process-
+    // global and tests run in parallel.)
     #[test]
     fn feed_survives_wide_char_at_last_column() {
+        // Regression: vt100 0.16.2 panics (drawing_cell_mut(col+1).unwrap() on None) when
+        // a wide CJK glyph prints on the last column — observed crashing the PTY pump
+        // thread. Grid::feed must catch+recover so the pump survives and the grid stays
+        // usable (a subsequent repaint lands).
         let mut g = Grid::new(1, 4);
         g.feed(b"\x1b[1;3H"); // cursor to 0-based col 2
         g.feed("한".as_bytes()); // wide glyph occupies cols 2-3 (the right edge)
         g.resize(1, 3); // shrink → the wide glyph's second half (col 3) is truncated
-        g.feed(b"\x1b[1;3HX"); // overwrite the now-edge wide glyph
+        g.feed(b"\x1b[1;3HX"); // overwrite the now-edge wide glyph → vt100 panics here
         g.feed(b"\x1b[H\x1b[2JOK"); // recovered grid still repaints
         let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));
         g.render_into(&mut buf, Rect::new(0, 0, 3, 1));
@@ -236,35 +217,6 @@ mod tests {
         g.render_into(&mut buf, Rect::new(0, 0, 80, 24));
         assert_eq!(buf[(0, 0)].symbol(), "A");
         assert_eq!(buf[(1, 0)].symbol(), "B");
-    }
-
-    #[test]
-    fn onlcr_starts_a_line_after_a_long_one_at_the_left_edge() {
-        // A line closed with a bare LF (no CR) must reset the cursor to column 0, or
-        // every line below a wide one would start indented by that line's width. The
-        // pty hands the grid LF-only newlines (ConPTY does not add the CR); the grid
-        // applies ONLCR so the emulator renders them like a real terminal driver.
-        let mut g = Grid::new(24, 120);
-        g.feed(
-            b"wsl.docker-desktop  (unreachable: command failed (exit 127): sh: tmux: not found)\n\njupiter00/if  7w  attached=true\n",
-        );
-        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 24));
-        g.render_into(&mut buf, Rect::new(0, 0, 120, 24));
-        assert_eq!(
-            buf[(0, 2)].symbol(),
-            "j",
-            "the line after a long LF-only line starts at column 0"
-        );
-        assert_eq!(
-            buf[(81, 2)].symbol(),
-            " ",
-            "nothing is left stranded at the previous line's width"
-        );
-        assert_eq!(
-            buf[(0, 1)].symbol(),
-            " ",
-            "the blank line between them stays blank"
-        );
     }
 
     #[test]
@@ -391,17 +343,24 @@ mod tests {
         );
     }
 
-    // Regression: an erase-in-line lands on the boundary of a wide (CJK) glyph after
-    // the grid shrinks, when the glyph's right half is truncated or its continuation
-    // wraps to column 0. Upstream vt100 0.16.2's `Row::clear_wide` panicked (row.rs:89/91)
-    // here; the psmux fork must keep the grid intact.
+    // NOTE: this test deliberately triggers the vt100 panic that Grid::feed catches, so
+    // `cargo test` prints one "thread panicked at vt100 ..." line to stderr — expected,
+    // not a failure. (The hook is not silenced here because it is process-global and
+    // tests run in parallel.)
     #[test]
     fn feed_survives_clear_wide_panic_at_last_column() {
+        // Regression: vt100 0.16.2's `Row::clear_wide` (row.rs:89/91) panics when an
+        // erase/remove lands on the boundary of a wide (CJK) glyph — most often a
+        // double-width char whose first half sits at the last column (col+1 OOB, the
+        // row.rs:89 the panic.log shows as "len is 130 but the index is 130") or whose
+        // continuation wraps to column 0 (col-1 underflow). Both are the same code path
+        // and are caught by Grid::feed's catch_unwind; this pins the survival so a
+        // change to the catch does not silently re-expose the PTY pump to it.
         let mut g = Grid::new(1, 4);
         g.feed(b"\x1b[1;4H"); // cursor to 0-based col 3 (the right edge)
         g.feed("한".as_bytes()); // wide glyph straddles/overflows the last column
-        g.feed(b"\x1b[K"); // erase-in-line on the dangling wide boundary
-                           // The grid must still repaint: a later clear+redraw lands cleanly.
+        g.feed(b"\x1b[K"); // erase-in-line on the dangling wide boundary → vt100 panics
+                           // Recovered grid must still repaint: a later clear+redraw lands cleanly.
         g.clear();
         g.feed(b"OK");
         let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));
@@ -424,64 +383,5 @@ mod tests {
         g.feed(b"session-b output");
         let fp_b = g.fingerprint();
         assert_ne!(fp_a, fp_b, "different content yields different fingerprint");
-    }
-
-    #[test]
-    fn diag_scroll() {
-        // claude TUI와 유사: 한글 라인이 그리드 폭을 채우며 래핑 + 스크롤
-        let w = 20u16;
-        let h = 6u16;
-        let mut g = Grid::new(h, w);
-        // 긴 한글 라인(래핑됨) 몇 줄
-        let lines = [
-            "지조작변수가 정확히 하나다 이줄은 길어서 래핑된다",
-            "라결함: 실행 전에 아무도 묻지 않은 질문",
-            "초추가로 관측한 두 가지",
-        ];
-        for l in lines {
-            g.feed(format!("{l}\n").as_bytes());
-        }
-        println!("== feed 후 raw ==");
-        let scr = g.parser.screen();
-        for r in 0..scr.size().0 {
-            let mut row = String::new();
-            for c in 0..scr.size().1 {
-                if let Some(cell) = scr.cell(r, c) {
-                    if cell.is_wide() {
-                        row.push_str(&format!("[W{}", cell.contents()));
-                    } else if cell.is_wide_continuation() {
-                        row.push_str("[C]");
-                    } else if cell.has_contents() {
-                        row.push_str(cell.contents());
-                    } else {
-                        row.push('·');
-                    }
-                }
-            }
-            println!("row{r}: {row}");
-        }
-        // 스크롤 유발
-        for _ in 0..8 {
-            g.feed("새로운줄내용\n".as_bytes());
-        }
-        println!("== 스크롤 후 raw ==");
-        let scr = g.parser.screen();
-        for r in 0..scr.size().0 {
-            let mut row = String::new();
-            for c in 0..scr.size().1 {
-                if let Some(cell) = scr.cell(r, c) {
-                    if cell.is_wide() {
-                        row.push_str(&format!("[W{}", cell.contents()));
-                    } else if cell.is_wide_continuation() {
-                        row.push_str("[C]");
-                    } else if cell.has_contents() {
-                        row.push_str(cell.contents());
-                    } else {
-                        row.push('·');
-                    }
-                }
-            }
-            println!("row{r}: {row}");
-        }
     }
 }
