@@ -383,10 +383,28 @@ fn sync_selection_from_switcher(
 /// The single owner of this move: every way a mux announces a client switch converges
 /// here, so a mux that reports it over a control channel and one whose client has to be
 /// read for it produce the same nav behavior.
+///
+/// THE GUARANTEE: a follow lands as soon as the nav can hold it. The two halves of a
+/// follow settle on different schedules and are therefore recorded separately. The
+/// display belief moves AT ONCE and unconditionally, because it is a fact about where the
+/// client is and it is what keeps a driver from reattaching the client the user just
+/// moved. The nav move needs a CARD, and a session enumerated after its switch was
+/// learned has none yet, so a move that finds no card is remembered in `pending` and
+/// retried on the sweeps that grow the nav (`Runtime::retry_pending_follows`). Without
+/// that record the latched belief would answer every later probe with "already there" and
+/// the nav would stay wrong for as long as xmux ran.
+///
+/// One record per source, holding the LATEST session the client reported: a client sits
+/// on one session at a time, so a newer report supersedes an older one rather than
+/// queueing behind it. A record is dropped the moment its session has a card (the move
+/// landed, or the selection was already there), and dropped as well when a follow on that
+/// source carries the belief elsewhere or arrives in nav focus, where no move is wanted at
+/// all.
 fn follow_display_session(
     hosts: &mut crate::model::Hosts,
     switcher: &mut crate::ui::switcher::Switcher,
     state: &mut crate::state::State,
+    pending: &mut HashMap<String, String>,
     host: &str,
     session: &str,
 ) -> bool {
@@ -396,11 +414,17 @@ fn follow_display_session(
     let key = host_selection_key(h);
     h.display.set_shows(&key, session);
     if !state.focus.is_terminal_focused() {
+        pending.remove(host);
         return false;
     }
     let addr = crate::session::address_of(host, session);
-    switcher.select_address(&addr, state);
-    true
+    let moved = switcher.select_address(&addr, state);
+    if switcher.holds_session_card(&addr) {
+        pending.remove(host);
+    } else {
+        pending.insert(host.to_string(), session.to_string());
+    }
+    moved
 }
 
 /// The size to give a PTY attachment: the terminal view (right of the nav +
@@ -1233,6 +1257,11 @@ struct Runtime {
     worker: DisplayWorker,
     switcher: crate::ui::switcher::Switcher,
     state: crate::state::State,
+    /// The follows whose nav move could not land: source id -> the session that source's
+    /// display client moved to while the nav held no card for it. Emptied by the retry on
+    /// the sweeps that grow the nav; see [`follow_display_session`] for what a record
+    /// means and when it is dropped.
+    pending_follows: HashMap<String, String>,
     attach_seq: u64,
     /// A clone of the loop's `PtyEvent` sender handed to drivers for off-loop probes.
     driver_pty_tx: tokio::sync::mpsc::UnboundedSender<PtyEvent>,

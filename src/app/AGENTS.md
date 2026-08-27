@@ -84,6 +84,16 @@ the card numbers it needs.
   stale client is deliberately kept on screen and still sits on the session the
   selection just left, so reading it then would report the old session as a fresh
   switch and drag the nav backwards.
+- A follow lands as soon as the nav can hold it. Its two halves settle on
+  different schedules: where the client is, is recorded at once and
+  unconditionally, because it is a fact and because it is what stops a driver from
+  reattaching the client the user just moved; the nav move needs a card, and a
+  session enumerated after its switch was learned has none yet. A move with no
+  card to land on is remembered and retried on the sweeps that grow the nav, so a
+  latched belief can never answer later probes with "already there" while the nav
+  names another session. One record per source, holding the latest session the
+  client reported, dropped once the move lands and dropped as well when the belief
+  moves elsewhere or the follow arrives in nav focus, where no move is wanted.
 - Focus is the single source of truth for which view owns keys and which modal,
   if any, is open. Focus and modal transitions stay in the focus module; the app
   and the state call into it rather than open-coding view or modal bookkeeping.

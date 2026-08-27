@@ -1132,6 +1132,7 @@ fn test_rt(env: Env) -> Runtime {
         worker,
         switcher,
         state,
+        pending_follows: HashMap::new(),
         attach_seq: 0,
         driver_pty_tx: pty_tx,
         op_tx,
@@ -1344,6 +1345,200 @@ async fn client_session_changed_in_terminal_focus_follows_selection_to_the_new_s
         rt.hosts.get("jup").unwrap().display.shows("jup"),
         Some("db"),
         "the display belief syncs to the mux-moved session"
+    );
+}
+
+/// The sessions `jup` answers with, in nav order, for the enumeration that carries a
+/// session created after its switch was already announced.
+fn jup_sessions(names: &[&str]) -> Vec<crate::session::Session> {
+    names
+        .iter()
+        .map(|name| crate::session::Session {
+            mux: String::new(),
+            source: "jup".into(),
+            name: (*name).into(),
+            windows: 1,
+            attached: false,
+            last_attached: 100,
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_follow_onto_a_session_the_nav_has_not_enumerated_lands_when_its_card_appears() {
+    // A session created moments ago has no card yet, so the move a follow asks for has
+    // nowhere to go. The display belief still moves at once, and it is what every later
+    // probe compares against, so a follow dropped here would leave the nav naming the old
+    // session for as long as xmux ran. It is owed instead, and the enumeration that first
+    // carries the new session is where it is paid.
+    let mut state = crate::state::State::from_scan(two_session_scan());
+    let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
+    switcher.select_address("jup/api", &state);
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    rt.hosts.get_mut("jup").unwrap().display_tty =
+        crate::model::DisplayTty(Some("/dev/pts/3".into()));
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .display
+        .set_shows("jup", "api");
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    // A follow only ever arrives for a host whose display client is live: that client is
+    // what the mux moved and what reported the move.
+    rt.registry.insert_fake("jup", 7);
+
+    rt.handle_host_event(HostEvent::ClientSessionChanged {
+        host: "jup".into(),
+        client: "/dev/pts/3".into(),
+        session: "ops".into(),
+    });
+    assert_eq!(
+        rt.switcher.terminal_view_target().target,
+        "api",
+        "there is no ops card to move to yet"
+    );
+    assert_eq!(
+        rt.hosts.get("jup").unwrap().display.shows("jup"),
+        Some("ops"),
+        "the display belief moves at once: it is where the client actually is"
+    );
+
+    rt.handle_host_event(HostEvent::Sessions {
+        source: "jup".into(),
+        sessions: jup_sessions(&["api", "db", "ops"]),
+        err: None,
+    });
+    assert_eq!(
+        rt.switcher.terminal_view_target().target,
+        "ops",
+        "the owed move lands on the card the enumeration brought in"
+    );
+    assert!(
+        rt.pending_follows.is_empty(),
+        "a landed follow leaves nothing owing"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_later_follow_elsewhere_drops_the_move_still_owed() {
+    // A client sits on one session at a time, so an owed move is only ever the LATEST
+    // report. Once the client moves on to a session the nav can hold, the earlier one is
+    // no longer where the client is, and paying it when its card finally appeared would
+    // drag the nav to a session the user left.
+    let mut state = crate::state::State::from_scan(two_session_scan());
+    let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
+    switcher.select_address("jup/api", &state);
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    rt.hosts.get_mut("jup").unwrap().display_tty =
+        crate::model::DisplayTty(Some("/dev/pts/3".into()));
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .display
+        .set_shows("jup", "api");
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    // A follow only ever arrives for a host whose display client is live: that client is
+    // what the mux moved and what reported the move.
+    rt.registry.insert_fake("jup", 7);
+
+    rt.handle_host_event(HostEvent::ClientSessionChanged {
+        host: "jup".into(),
+        client: "/dev/pts/3".into(),
+        session: "ops".into(),
+    });
+    rt.handle_host_event(HostEvent::ClientSessionChanged {
+        host: "jup".into(),
+        client: "/dev/pts/3".into(),
+        session: "db".into(),
+    });
+    assert_eq!(
+        rt.switcher.terminal_view_target().target,
+        "db",
+        "the second follow has a card and lands"
+    );
+    assert!(
+        rt.pending_follows.is_empty(),
+        "the belief moved elsewhere, so nothing is owed for ops any more"
+    );
+
+    rt.handle_host_event(HostEvent::Sessions {
+        source: "jup".into(),
+        sessions: jup_sessions(&["api", "db", "ops"]),
+        err: None,
+    });
+    assert_eq!(
+        rt.switcher.terminal_view_target().target,
+        "db",
+        "the ops card appearing moves nothing"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_display_moved_by_another_route_cancels_the_move_still_owed() {
+    // The owed move answers for the belief it was made with. A show that reattached the
+    // display somewhere else since then settled where the client is, so the card finally
+    // appearing must move nothing: the nav would otherwise jump to a session the client
+    // has left.
+    let mut state = crate::state::State::from_scan(two_session_scan());
+    let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
+    switcher.select_address("jup/api", &state);
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    rt.hosts.get_mut("jup").unwrap().display_tty =
+        crate::model::DisplayTty(Some("/dev/pts/3".into()));
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .display
+        .set_shows("jup", "api");
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    // A follow only ever arrives for a host whose display client is live: that client is
+    // what the mux moved and what reported the move.
+    rt.registry.insert_fake("jup", 7);
+
+    rt.handle_host_event(HostEvent::ClientSessionChanged {
+        host: "jup".into(),
+        client: "/dev/pts/3".into(),
+        session: "ops".into(),
+    });
+    assert!(
+        !rt.pending_follows.is_empty(),
+        "a move with no card to land on is owed"
+    );
+    // What a show does when the display is reattached for another session.
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .display
+        .set_shows("jup", "api");
+
+    rt.handle_host_event(HostEvent::Sessions {
+        source: "jup".into(),
+        sessions: jup_sessions(&["api", "db", "ops"]),
+        err: None,
+    });
+    assert_eq!(
+        rt.switcher.terminal_view_target().target,
+        "api",
+        "the display sits on api, so the ops card appearing moves nothing"
+    );
+    assert!(
+        rt.pending_follows.is_empty(),
+        "the record is dropped with the belief it answered for"
     );
 }
 

@@ -166,8 +166,9 @@ pub fn live_client_session(host: &Host, registry: &AttachRegistry) -> Option<Str
 /// the host has to be THIS MACHINE, because a process's environment is readable only on
 /// the machine it runs on: a psmux over ssh or inside a WSL distribution runs its client
 /// on the far side, where nothing here can look, and the local registry scope is what says
-/// whether a host's processes are this box's processes. A host that fails either one keeps
-/// exactly the behavior it had before there was any witness to read.
+/// whether a host's processes are this box's processes. A host that fails either one has NO
+/// witness: nothing is read for it, and where its client sits is claimed from nothing
+/// else.
 pub(crate) fn session_witness(host: &Host) -> Option<(String, &str)> {
     if !host.transport.local_registry_scope() {
         return None;
@@ -262,8 +263,8 @@ pub(crate) mod tests {
     }
 
     /// A mux whose client does not carry its session in its environment has nothing to
-    /// read even on this box, so it keeps exactly the behavior it had before there was
-    /// anything to read.
+    /// read even on this box: the mux half of the gate refuses it whatever the transport
+    /// answers, so the two conditions are independent and both are load-bearing.
     #[test]
     fn a_mux_that_names_no_variable_has_no_client_to_read() {
         for bin in ["tmux", "zellij", "abduco", "screen"] {
@@ -330,11 +331,11 @@ pub(crate) mod tests {
         assert_eq!(driver_for(&psmux_host).kind(), "psmux");
     }
 
-    /// Through the driver boundary, a psmux selection still REPLACES the single
-    /// host-keyed display attachment (the per-session reattach). This pins the seam's
-    /// faithfulness independently of `select_attach` keeping its current name/shape, so
-    /// a future driver that owns the decision must preserve the same observable effect
-    /// (the 4a5f053 per-session attach behavior). Headless: a fake spawner, no live psmux.
+    /// Through the driver boundary, a psmux selection REPLACES the single host-keyed
+    /// display attachment (the per-session reattach). This pins the seam by its observable
+    /// effect rather than by which helper carries it out, because a per-session mux reaches
+    /// another session only by reattaching, whatever owns the decision. Headless: a fake
+    /// spawner, no live psmux.
     #[tokio::test(flavor = "current_thread")]
     async fn seam_show_replaces_the_psmux_display_attachment() {
         let mut hosts = crate::model::Hosts::default();

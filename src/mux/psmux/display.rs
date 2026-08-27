@@ -178,6 +178,153 @@ mod tests {
         }
     }
 
+    /// The live client xmux spawned, so a test can say whether `show` kept it or replaced
+    /// it. A hold keeps this id in the registry; a reattach requests a new one.
+    const LIVE_CLIENT_ID: u64 = 42;
+
+    /// The world the hold tests drive: a local psmux host whose display bookkeeping still
+    /// names `believed`, and one live attachment whose client answers `reported` for the
+    /// variable psmux carries its session in. Bookkeeping and client disagree exactly as
+    /// they do after psmux moves the client inside its own process.
+    fn a_client_reporting(believed: &str, reported: &str) -> (crate::model::Hosts, AttachRegistry) {
+        let mut hosts = crate::model::Hosts::default();
+        hosts.insert(crate::model::Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("psmux"),
+        ));
+        hosts
+            .get_mut("local")
+            .unwrap()
+            .display
+            .set_shows("local", believed);
+        let mut registry = AttachRegistry::new();
+        registry.insert(
+            "local",
+            crate::display::attachment::fake_attachment_answering_env(
+                LIVE_CLIENT_ID,
+                "PSMUX_SESSION_NAME",
+                reported,
+            ),
+        );
+        (hosts, registry)
+    }
+
+    /// The spawner a reattach would reach, and the rest of the context `show` needs.
+    fn a_display_worker() -> crate::display::DisplayWorker {
+        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
+        crate::display::DisplayWorker::with_spawner(
+            ptx,
+            Box::new(|_argv, _cols, _rows, id, _events, _env_clear| {
+                Ok(crate::display::attachment::fake_attachment(id))
+            }),
+        )
+    }
+
+    /// THE REATTACH HAZARD, through `show` itself. psmux moved xmux's own client to
+    /// another session, the nav followed it there, and the selection now names the session
+    /// the client is already on. Reattaching here would kill that client and spawn another
+    /// in its place, throwing away the move the user just made. So the client is HELD: no
+    /// spawn is requested and the same attachment stays on screen.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_mux_side_switch_holds_the_client_instead_of_respawning_it() {
+        let (mut hosts, mut registry) = a_client_reporting("vfy-ps-a", "vfy-ps-b");
+        let worker = a_display_worker();
+        let mut attach_seq = 0u64;
+        let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
+        let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
+        let sel = Selection {
+            source: "local".into(),
+            session: "vfy-ps-b".into(),
+            window: None,
+        };
+
+        let mut driver = PsmuxDriver;
+        let shown = {
+            let mut ctx = DriverCtx {
+                registry: &mut registry,
+                hosts: &mut hosts,
+                worker: &worker,
+                mgr: &mgr,
+                pty_tx: &cap_tx,
+                attach_seq: &mut attach_seq,
+                cols: 80,
+                body_rows: 24,
+                nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+            };
+            driver.show(&sel, &mut ctx)
+        };
+
+        assert!(shown, "a hold is still a show, so the attach gate settles");
+        assert!(
+            hosts.get("local").unwrap().display.in_flight_is_empty(),
+            "the client already sits on the selected session, so nothing is spawned"
+        );
+        assert_eq!(
+            registry.get("local").map(|a| a.id()),
+            Some(LIVE_CLIENT_ID),
+            "the client the user moved stays on screen rather than being replaced"
+        );
+        assert_eq!(
+            hosts.get("local").unwrap().display.shows("local"),
+            Some("vfy-ps-b"),
+            "the bookkeeping takes the client's own report as the truth"
+        );
+    }
+
+    /// The other half of the same decision: the user picked a DIFFERENT card, so the
+    /// client's report and the selection disagree and psmux reaches that session the only
+    /// way it can, by reattaching. The hold must not turn a nav-driven switch into a
+    /// no-op, which would freeze the terminal view on the session the client happens to
+    /// hold.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_nav_driven_switch_still_respawns_the_client() {
+        let (mut hosts, mut registry) = a_client_reporting("vfy-ps-b", "vfy-ps-b");
+        let worker = a_display_worker();
+        let mut attach_seq = 0u64;
+        let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
+        let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
+        let sel = Selection {
+            source: "local".into(),
+            session: "vfy-ps-a".into(),
+            window: None,
+        };
+
+        let mut driver = PsmuxDriver;
+        let shown = {
+            let mut ctx = DriverCtx {
+                registry: &mut registry,
+                hosts: &mut hosts,
+                worker: &worker,
+                mgr: &mgr,
+                pty_tx: &cap_tx,
+                attach_seq: &mut attach_seq,
+                cols: 80,
+                body_rows: 24,
+                nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+            };
+            driver.show(&sel, &mut ctx)
+        };
+
+        assert!(shown);
+        assert!(
+            hosts
+                .get("local")
+                .unwrap()
+                .display
+                .in_flight_contains("local"),
+            "a session the client is not on is reached by a fresh attach"
+        );
+        assert!(
+            registry.contains("local"),
+            "the stale attachment is held on screen until the fresh one is ready"
+        );
+        assert_eq!(
+            hosts.get("local").unwrap().display.shows("local"),
+            Some("vfy-ps-a"),
+            "the bookkeeping names the session being attached"
+        );
+    }
+
     /// A session name differing only in case is a DIFFERENT session: psmux addresses
     /// sessions by exact name, so the reported name is compared exactly even though the
     /// environment VARIABLE it arrived in was found without case.

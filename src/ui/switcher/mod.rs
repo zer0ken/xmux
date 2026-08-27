@@ -675,6 +675,16 @@ impl Switcher {
         }
     }
 
+    /// Whether the nav holds a card for `address`. Sessions reach the nav as each
+    /// source is enumerated, so a session created moments ago has no card yet and no
+    /// move can land on it; this is how a caller tells that case from a move that has
+    /// nothing left to do because the selection already sits there.
+    pub fn holds_session_card(&self, address: &str) -> bool {
+        self.rows
+            .iter()
+            .any(|r| session_addr_of(&r.reference).as_deref() == Some(address))
+    }
+
     // --- refresh ------------------------------------------------------------
 
     /// Resets every host to its scanning skeleton and signals the event loop to
