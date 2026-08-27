@@ -550,7 +550,13 @@ impl Runtime {
         self.state
             .chrome
             .set_view_border_hovered(self.mouse_state.hovered_view_border);
-        self.state.chrome.set_armed(self.prefix_active());
+        // The repeat window lapses on the clock, not on an event, so compare before
+        // storing: a bar that just went idle must repaint even though nothing arrived.
+        let prefix_active = self.prefix_active();
+        if self.state.chrome.armed != prefix_active {
+            self.dirty = true;
+        }
+        self.state.chrome.set_armed(prefix_active);
         // Derive the modal dimension of focus from the open-modal kind (single owner of
         // the modal/view reconciliation).
         let modal_kind = self.state.modal_kind();
@@ -561,7 +567,7 @@ impl Runtime {
         let want_nav_width = reconciled_nav_width(
             self.state.focus.is_terminal_focused(),
             self.auto_hide_nav,
-            self.prefix_active(),
+            prefix_active,
             self.nav_width_natural,
         );
         // Resize when EITHER dimension of the split moved: the width (focus / hide / prefix
@@ -1105,14 +1111,27 @@ impl Runtime {
         false
     }
 
-    /// Whether a prefix interaction is live, in EITHER focus: the prefix is READY,
-    /// awaiting its command key. The hint bar and the auto-hide nav show ask the same
-    /// question, so the two focus paths' armed latches are OR'd here rather than making
-    /// the chrome know about focus. Ready clears on any key (consumed) or on a focus
-    /// switch / mouse action (canceled); a key release is a no-op, so this is the
-    /// whole bar/nav show signal.
+    /// Whether a prefix interaction is live, in EITHER focus. The hint bar and the
+    /// auto-hide nav show ask the same question, so every form of "live" is OR'd here
+    /// rather than making the chrome know about focus or about which command ran.
+    ///
+    /// A prefix is consumed when its FUNCTION ENDS, not when its command key arrives,
+    /// so "live" spans three shapes:
+    /// - READY, awaiting the command key (the two focus paths' armed latches).
+    /// - INPUTTING: a command that opened an input row owns the prefix until Enter or
+    ///   Esc closes the row.
+    /// - REPEATING: a resize command opened the bare-Ctrl-arrow repeat window; the
+    ///   function is still running until the window lapses.
+    ///
+    /// Ready also clears on a focus switch or a mouse action (canceled).
     pub(super) fn prefix_active(&self) -> bool {
-        self.mouse_state.nav_armed || self.term_input.is_armed()
+        self.mouse_state.nav_armed
+            || self.term_input.is_armed()
+            || self.state.is_inputting()
+            || self
+                .mouse_state
+                .repeat_until
+                .is_some_and(|d| std::time::Instant::now() < d)
     }
 
     /// The op-result arm: fold a finished create back into the nav/state.

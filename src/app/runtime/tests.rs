@@ -2011,23 +2011,60 @@ fn repeated_prefix_bytes_keep_the_nav_steady_in_nav_focus() {
 }
 
 #[test]
-fn a_command_consumes_the_prefix_and_the_repeat_window_keeps_resizing() {
-    // The first command key CONSUMES the prefix: ready clears, so the bar/nav show
-    // drops immediately. Continuation (mashing more arrows) is the RUNTIME repeat
-    // window (bare Ctrl-arrows), not a re-armed prefix, so the bar stays hidden.
+fn a_resize_keeps_the_prefix_live_for_its_repeat_window() {
+    // A prefix is consumed when its FUNCTION ends. A resize opens the bare-Ctrl-arrow
+    // repeat window, so the function is still running: the bar and the auto-hide nav
+    // show stay up across the whole burst instead of dropping on the first arrow.
     let mut rt = rt_terminal_focus_with_session();
-    rt.handle_stdin_bytes(b"\x07", &Selection::default()); // prefix: +ready
+    rt.handle_stdin_bytes(b"\x07", &Selection::default()); // prefix: ready
     assert!(rt.prefix_active(), "the bar shows while ready");
     rt.handle_stdin_bytes(b"\x1b[1;5C", &Selection::default()); // Ctrl+Right resizes
     assert!(
-        !rt.prefix_active(),
-        "the command consumes the prefix so the bar hides at once"
+        rt.prefix_active(),
+        "the resize opened the repeat window, so the function has not ended"
     );
     rt.handle_stdin_bytes(b"\x1b[1;5C", &Selection::default()); // bare Ctrl+Right
+    assert!(rt.prefix_active(), "each repeat refreshes the window");
+    // A key that is not a repeat key ends the window at once.
+    rt.handle_stdin_bytes(b"z", &Selection::default());
     assert!(
         !rt.prefix_active(),
-        "the repeat window resizes without re-arming the bar"
+        "a non-repeat key closes the window, ending the function"
     );
+}
+
+#[test]
+fn a_non_repeating_command_ends_the_prefix_at_once() {
+    // Nothing opens a window for `t`, so its function ends with the key.
+    let mut rt = rt_terminal_focus_with_session();
+    rt.handle_stdin_bytes(b"\x07", &Selection::default());
+    assert!(rt.prefix_active());
+    rt.handle_stdin_bytes(b"t", &Selection::default());
+    assert!(
+        !rt.prefix_active(),
+        "the bar hides as the command completes"
+    );
+}
+
+#[test]
+fn an_open_input_row_keeps_the_prefix_live_until_it_closes() {
+    // A command that opens an input row owns the prefix until the row closes: the
+    // hint bar hosts the input, so it must stay expanded while the user types.
+    let mut rt = rt_terminal_focus_with_session();
+    rt.handle_stdin_bytes(b"\x07", &Selection::default());
+    rt.handle_stdin_bytes(b"n", &Selection::default()); // new session: opens the input row
+    assert!(rt.state.is_inputting(), "the input row is open");
+    assert!(
+        rt.prefix_active(),
+        "the function has not ended, so the prefix is still live"
+    );
+    // The loop top hands the modal its focus dimension before the next read; without
+    // it the Esc would route to the pane instead of the row.
+    let kind = rt.state.modal_kind();
+    rt.state.focus.sync_modal(kind);
+    rt.handle_stdin_bytes(b"\x1b", &Selection::default()); // Esc cancels
+    assert!(!rt.state.is_inputting(), "Esc closes the row");
+    assert!(!rt.prefix_active(), "the function ended with the row");
 }
 
 #[test]
