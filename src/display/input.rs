@@ -20,6 +20,10 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 pub struct TermInput {
     prefix: u8,
     armed: bool,
+    /// True while the prefix key is physically held down (set on the kitty press,
+    /// cleared on the kitty release). Stable under OS autorepeat, so the hint bar and
+    /// the auto-hide nav show stay put while the key is held.
+    holding: bool,
     in_paste: bool,
     paste_scan: Vec<u8>,
 }
@@ -32,6 +36,7 @@ impl TermInput {
         Self {
             prefix,
             armed: false,
+            holding: false,
             in_paste: false,
             paste_scan: Vec::new(),
         }
@@ -42,6 +47,13 @@ impl TermInput {
     /// (which would leave the prefix armed and mis-read the following key as a command).
     pub fn is_armed(&self) -> bool {
         self.armed
+    }
+
+    /// Whether the prefix key is still physically held down. Together with `is_armed`
+    /// this is the `ready || holding` prefix-active signal the hint bar and the
+    /// auto-hide nav show read, so a held key keeps them steady.
+    pub fn is_holding(&self) -> bool {
+        self.holding
     }
 
     /// Drops a pending prefix. A prefix waits for the NEXT input, and a mouse action is

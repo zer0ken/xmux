@@ -247,12 +247,15 @@ fn self_tty() -> String {
     }
 }
 
-/// The EFFECTIVE nav width to render and size the terminal view against. Hidden (0, terminal view
-/// full width) only while the terminal view is focused AND auto-hide-nav mode is on;
-/// otherwise the nav's natural width. Pure so the focus/mode interaction is
-/// unit-testable; the loop owns the natural width and the PTY resize on change.
-fn reconciled_nav_width(terminal_focused: bool, auto_hide_nav: bool, natural: u16) -> u16 {
-    if terminal_focused && auto_hide_nav {
+/// The EFFECTIVE nav width to render and size the terminal view against. Hidden (0,
+/// terminal view full width) only while the terminal view is focused, auto-hide-nav
+/// mode is on, and no prefix interaction is active; otherwise the nav's natural width.
+/// A prefix press is an interaction with xmux, so the nav comes back for it even under
+/// auto-hide (the user needs the card numbers to jump, resize, or act on a card).
+/// Pure so the focus/mode interaction is unit-testable; the loop owns the natural
+/// width and the PTY resize on change.
+fn reconciled_nav_width(terminal_focused: bool, auto_hide_nav: bool, prefix_active: bool, natural: u16) -> u16 {
+    if terminal_focused && auto_hide_nav && !prefix_active {
         0
     } else {
         natural

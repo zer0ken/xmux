@@ -201,6 +201,10 @@ pub(crate) struct MouseState {
     pub(crate) repeat_until: Option<std::time::Instant>,
     /// True while a prefix has been pressed in nav focus, awaiting the command key.
     pub(crate) nav_armed: bool,
+    /// True while the prefix key is physically held down in nav focus (set on the
+    /// kitty press, cleared on the kitty release). Stable under OS autorepeat, so the
+    /// hint bar and the auto-hide nav show stay put while the key is held.
+    pub(crate) nav_holding: bool,
 }
 
 /// The outcome of one stdin read: what the loop must act on after the handler runs.

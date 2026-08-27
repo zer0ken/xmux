@@ -248,14 +248,17 @@ fn terminal_view_size_keeps_full_height_when_the_tree_is_shown() {
 }
 
 #[test]
-fn reconciled_nav_width_hides_only_when_focused_and_enabled() {
+fn reconciled_nav_width_hides_only_when_focused_and_enabled_and_no_prefix() {
     // Tree focused (terminal_focused = false): always the natural width.
-    assert_eq!(reconciled_nav_width(false, true, 48), 48);
-    assert_eq!(reconciled_nav_width(false, false, 48), 48);
-    // Terminal view focused + setting on: hidden (0).
-    assert_eq!(reconciled_nav_width(true, true, 48), 0);
-    // Terminal view focused + setting off: stays shown at natural width.
-    assert_eq!(reconciled_nav_width(true, false, 48), 48);
+    assert_eq!(reconciled_nav_width(false, true, false, 48), 48);
+    assert_eq!(reconciled_nav_width(false, false, true, 48), 48);
+    // Terminal view focused + setting on + no prefix interaction: hidden (0).
+    assert_eq!(reconciled_nav_width(true, true, false, 48), 0);
+    // Terminal view focused + setting on + prefix active (armed or holding): shown.
+    assert_eq!(reconciled_nav_width(true, true, true, 48), 48);
+    // Terminal view focused + setting off: stays shown regardless.
+    assert_eq!(reconciled_nav_width(true, false, false, 48), 48);
+    assert_eq!(reconciled_nav_width(true, false, true, 48), 48);
 }
 
 #[test]
@@ -292,8 +295,8 @@ fn spinner_frame_advances_with_wall_clock() {
 fn nav_width_adjust_clamps() {
     assert_eq!(adjust_nav_width(48, 1), 49);
     assert_eq!(adjust_nav_width(48, -1), 47);
-    assert_eq!(adjust_nav_width(20, -1), 20, "clamped at min");
-    assert_eq!(adjust_nav_width(100, 1), 100, "clamped at max");
+    assert_eq!(adjust_nav_width(NAV_WIDTH_MIN, -1), NAV_WIDTH_MIN, "clamped at min");
+    assert_eq!(adjust_nav_width(NAV_WIDTH_MAX, 1), NAV_WIDTH_MAX, "clamped at max");
 }
 
 #[test]
@@ -1884,13 +1887,13 @@ fn arming_the_prefix_marks_the_frame_dirty_so_the_hint_bar_swaps() {
     rt.hosts = crate::model::Hosts::default();
     rt.state = state;
     rt.switcher = switcher;
-    assert!(!rt.armed(), "starts unarmed");
+    assert!(!rt.prefix_active(), "starts unarmed");
     let out = rt.handle_stdin_bytes(b"\x07", &Selection::default());
-    assert!(rt.armed(), "the bare prefix arms");
+    assert!(rt.prefix_active(), "the bare prefix arms");
     assert!(out.dirty, "arming redraws, so the cheatsheet shows at once");
     // Disarming (the command key lands) is equally visible.
     let out = rt.handle_stdin_bytes(b"t", &Selection::default());
-    assert!(!rt.armed(), "the command key consumes the arm");
+    assert!(!rt.prefix_active(), "the command key consumes the arm");
     assert!(out.dirty, "disarming redraws too");
 }
 
@@ -1995,7 +1998,7 @@ fn a_mouse_action_disarms_the_prefix_and_a_hover_does_not() {
             &mut false,
             term_area,
         );
-        assert!(!rt.armed(), "{what} disarms the prefix");
+        assert!(!rt.prefix_active(), "{what} disarms the prefix");
         assert!(dirty, "{what} redraws, so the cheatsheet goes at once");
     }
     // Bare hover is the pointer sitting there, not an action: it must not break a chord
@@ -2016,7 +2019,7 @@ fn a_mouse_action_disarms_the_prefix_and_a_hover_does_not() {
         &mut false,
         term_area,
     );
-    assert!(rt.armed(), "a hover leaves the chord alone");
+    assert!(rt.prefix_active(), "a hover leaves the chord alone");
 }
 
 #[test]
