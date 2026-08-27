@@ -87,6 +87,16 @@ state; raw key and text injection is an unstable low-level surface.
 - Check `CONTEXT.md` for the vocabulary and open architecture notes before moving
   responsibilities.
 
+## Before PR
+
+- Re-review design consistency before creating or merging a PR: confirm the change
+  matches what `CONTEXT.md`, the ADRs, and the module `AGENTS.md` files already
+  specify, rather than only that it compiles and passes. A change that re-implements
+  or contradicts a documented invariant is wrong even when the tests pass.
+- When the design doc and the code disagree, treat the doc as the intent and fix the
+  code (or, only with the user's sign-off, correct the doc) instead of shipping code
+  that silently deviates.
+
 ## Verification
 
 - Exercise the behavior the touched module is responsible for.
