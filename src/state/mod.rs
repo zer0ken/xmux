@@ -61,8 +61,8 @@ pub struct State {
 }
 
 impl State {
-    /// True while a centered modal popup (help / inline input / kill confirm) is
-    /// open. These three are draggable and drive [`ModalKind::Popup`]; the context
+    /// True while a modal owns the screen (the help popup or the inline input) is
+    /// open. These drive [`ModalKind::Popup`]; the context
     /// menu is separate (pointer-anchored).
     ///
     /// [`ModalKind::Popup`]: crate::app::focus::ModalKind::Popup

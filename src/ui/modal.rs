@@ -426,32 +426,80 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
     ("keys".to_string(), lines)
 }
 
-/// The active input rendered as popup `(title, lines)`: the instructional label,
-/// the `❯ buffer` entry line, and a dim Esc hint.
-pub(crate) fn input_lines(input: &Input) -> (String, Vec<Line<'static>>) {
-    let dim = Style::default().add_modifier(Modifier::DIM);
-    let caret = Style::default().add_modifier(Modifier::REVERSED);
-    // Split the buffer at the caret so the char under it (or a trailing space at
-    // end of line) renders as a reversed block, making the edit position visible.
+/// The hint-bar input line split into its parts: the feature head (the bracketed
+/// name and the guide text, `[filter] filter sessions: `), the buffer before the
+/// caret, the char under it (or a trailing space at end of line), and the buffer
+/// after it. The buffer is WINDOWED to `width`: only as many cells as the bar can
+/// spare after the head show, and the window always keeps the caret (and the char
+/// under it) on screen, so the edit position never scrolls off as the buffer
+/// outgrows the bar.
+fn input_segments(input: &Input, width: u16) -> (String, String, String, String, String) {
+    let title = format!("[{}]", input_title(input.mode));
+    let guide = format!(" {}: ", input.label.trim());
+    let head_w = title.chars().count() + guide.chars().count();
+    // Cells the buffer area can use; never 0, so the caret stays on screen however
+    // narrow the bar gets. A block caret at END of buffer needs its own cell past the
+    // last char, so the window holds one fewer buffer char then.
+    let avail = (width as i32 - head_w as i32).max(1) as usize;
     let chars: Vec<char> = input.buffer.chars().collect();
-    let cur = input.cursor.min(chars.len());
-    let before: String = chars[..cur].iter().collect();
-    let (at, after): (String, String) = if cur < chars.len() {
-        (chars[cur].to_string(), chars[cur + 1..].iter().collect())
+    let len = chars.len();
+    let cur = input.cursor.min(len);
+    let cell_budget = if cur == len {
+        avail.saturating_sub(1)
+    } else {
+        avail
+    };
+    let overflow = len > cell_budget;
+    // The window start. No overflow: the head. Overflow: slide so the caret rides the
+    // window - at end of buffer the window ends at the caret (the tail shows, the caret
+    // owns the last cell); mid-buffer it includes the char under the caret.
+    let start = if !overflow {
+        0
+    } else if cur == len {
+        cur - cell_budget
+    } else {
+        (cur + 1).saturating_sub(avail)
+    };
+    let end = (start + cell_budget).min(len);
+    let visible = &chars[start..end];
+    let caret_at = if cur < len { cur - start } else { end - start };
+    let before: String = visible[..caret_at].iter().collect();
+    let (at, after): (String, String) = if caret_at < visible.len() {
+        (
+            visible[caret_at].to_string(),
+            visible[caret_at + 1..].iter().collect(),
+        )
     } else {
         (" ".to_string(), String::new())
     };
-    let lines = vec![
-        Line::from(Span::styled(format!(" {}", input.label.trim()), dim)),
-        Line::from(vec![
-            Span::styled(" ❯ ", Style::default().fg(palette::get().accent)),
-            Span::raw(before),
-            Span::styled(at, caret),
-            Span::raw(after),
-        ]),
-        Line::from(Span::styled(" Esc to cancel", dim)),
-    ];
-    (input_title(input.mode).to_string(), lines)
+    (title, guide, before, at, after)
+}
+
+/// The active input as the plain hint-bar text (no caret styling): the feature head
+/// followed by the windowed buffer. Lets the hint bar size itself and tests read the
+/// exact line without a backend.
+pub(crate) fn input_hint_text(input: &Input, width: u16) -> String {
+    let (title, guide, before, at, after) = input_segments(input, width);
+    format!("{title}{guide}{before}{at}{after}")
+}
+
+/// The active input rendered as one hint-bar line: the feature name in the bar's
+/// key accent, the guide text plain, and the buffer with a reversed-block caret at
+/// the edit position. The buffer is windowed (see [`input_segments`]) so the caret
+/// stays visible however long it grows.
+pub(crate) fn input_hint_line(input: &Input, width: u16) -> Line<'static> {
+    let (title, guide, before, at, after) = input_segments(input, width);
+    let accent = Style::default()
+        .fg(palette::get().bar_accent)
+        .add_modifier(Modifier::BOLD);
+    let caret = Style::default().add_modifier(Modifier::REVERSED);
+    Line::from(vec![
+        Span::styled(title, accent),
+        Span::raw(guide),
+        Span::raw(before),
+        Span::styled(at, caret),
+        Span::raw(after),
+    ])
 }
 
 /// Renders an opaque bordered popup at `rect` (titled, content `lines`), in tmux's
@@ -568,6 +616,73 @@ mod tests {
         i.end();
         i.right(); // no-op at end
         assert_eq!(i.cursor, 2);
+    }
+
+    #[test]
+    fn input_hint_windows_the_buffer_so_the_caret_stays_visible() {
+        // The head `[filter] filter sessions: ` is 26 cells; at width 60 the buffer
+        // area is 34 cells. A short buffer fits whole; a long one shows its tail with
+        // the caret at the right edge; a mid-buffer caret keeps the char under it in
+        // view. The line never exceeds `width`.
+        let mk = |buffer: &str, cursor: usize| {
+            let mut i = Input::new(
+                InputMode::Filter,
+                " filter sessions".into(),
+                buffer.into(),
+                None,
+            );
+            i.cursor = cursor;
+            i
+        };
+        // A short buffer fits whole, caret as the trailing cell.
+        assert_eq!(
+            input_hint_text(&mk("ab", 2), 60),
+            "[filter] filter sessions: ab "
+        );
+        // A buffer exactly the window shows its head, caret over the last shown char.
+        assert_eq!(
+            input_hint_text(&mk("0123456789", 5), 60),
+            "[filter] filter sessions: 0123456789"
+        );
+        // A long buffer at the end: the head stays for context, the buffer's own head
+        // scrolls off, its tail shows, and the caret (a trailing cell) rides the right
+        // edge; the line is exactly `width`.
+        let long = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"; // 52 chars
+        let t = input_hint_text(&mk(long, 52), 60);
+        assert_eq!(
+            t.chars().count(),
+            60,
+            "line fills but never exceeds the bar: {t:?}"
+        );
+        assert!(
+            t.starts_with("[filter] filter sessions: "),
+            "the feature head stays for context: {t:?}"
+        );
+        assert!(t.ends_with("XYZ "), "the tail survives: {t:?}");
+        // The BUFFER's own head scrolls off, not the guide.
+        let window: String = t
+            .chars()
+            .skip("[filter] filter sessions: ".chars().count())
+            .collect();
+        assert!(
+            window.starts_with("tuvwxyz"),
+            "the buffer window starts at its tail: {window:?}"
+        );
+        // A mid-buffer caret keeps the char it points at visible.
+        let alpha: String = ('a'..='z').chain('A'..='Z').collect(); // 52 chars, like `long`
+        let t2 = input_hint_text(&mk(&alpha, 45), 60);
+        let buf: Vec<char> = alpha.chars().collect();
+        assert!(
+            t2.ends_with(&format!("{}{}", buf[44], buf[45])),
+            "the char under a mid-buffer caret stays in view: {t2:?}"
+        );
+        assert_eq!(t2.chars().count(), 60, "still fits: {t2:?}");
+        // A width narrower than the head still shows the caret (never zero cells).
+        let narrow = input_hint_text(&mk("abc", 1), 8);
+        assert!(
+            !narrow.is_empty() && narrow.ends_with('b'),
+            "caret survives: {narrow:?}"
+        );
     }
 
     #[test]

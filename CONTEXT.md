@@ -38,8 +38,9 @@ One concept, one word. The two axes and the runtime:
 - the app - the runtime that owns the terminal: its loop, its focus state, and
   its input routing.
 - `ViewFocus` - which screen region holds focus (nav or terminal).
-- `Modal` - the mutually-exclusive focus-grabbing UI (the help and an input
-  dialog). A popup is its one focus sub-kind: a draggable centered dialog.
+- `Modal` - the mutually-exclusive focus-grabbing UI (the help and the inline
+  input). A popup is its one focus sub-kind: a draggable centered dialog, and only
+  the help is one.
 
 UI elements a user perceives as distinct things:
 
@@ -263,7 +264,8 @@ UI elements a user perceives as distinct things:
   addresses; a section title is not a card and spends no number there at all (its
   `{host}/{mux}` label is flush left). The column is one width per frame, so the names
   stay aligned and the numbers line up by units place as the count crosses 10.
-- jump - the digits-only popup `prefix <digit>` opens. It acts WHILE open: each edit
+- jump - the digits-only input `prefix <digit>` opens in the hint bar. It acts
+  WHILE open: each edit
   moves the selection, so Enter only closes it and Esc restores where it started. It
   accepts only a digit that keeps the number addressing a real card, so one-, two-,
   and three-digit numbers behave identically and the buffer never shows a number you
@@ -334,8 +336,9 @@ UI elements a user perceives as distinct things:
   reads it to swap from the resting prefix to the cheatsheet, so arming is a
   visible change and redraws the frame.
 - popup - the rounded-bordered, opaque, centered (draggable) dialog a popup modal
-  draws, its accent title in the top border. The help and the input dialog are popups.
-- prompt - the `❯` entry marker on an input dialog's edit line.
+  draws, its accent title in the top border. Only the help is a popup; an input
+  renders in the hint bar instead, reading `[feature] guide: <buffer>` with a
+  reversed-block caret at the edit position.
 
 A zellij TAB is a `window` and a zellij SESSION is a `session`: xmux's vocabulary is
 one set of words for every mux, so a mux's own naming is translated at its family
