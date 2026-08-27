@@ -136,41 +136,19 @@ fn replace_binary(staged: &Path, target: &Path, platform: Platform) -> Result<()
 /// launched: a `cmd` script (not `xmux`) that polls until no xmux process holds the
 /// image file, copies the staged build over the live binary, then cleans up. The
 /// updater outlives the update command, which exits immediately after spawning it.
-#[cfg(windows)]
 fn spawn_detached_updater(staged: &Path, target: &Path) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
     let dir = staged.parent().unwrap_or_else(|| Path::new("."));
-    let script = dir.join("update.cmd");
     let content = format!(
-        "@echo off\r\n\
-         :wait\r\n\
-         %SystemRoot%\\System32\\tasklist.exe /FI \"IMAGENAME eq xmux.exe\" | %SystemRoot%\\System32\\find.exe /I \"xmux.exe\" >nul\r\n\
-         if errorlevel 1 goto done\r\n\
-         %SystemRoot%\\System32\\ping.exe -n 2 127.0.0.1 >nul\r\n\
-         goto wait\r\n\
-         :done\r\n\
+        "{preamble}\
          copy /Y \"{staged}\" \"{target}\" >nul\r\n\
          del /Q \"{staged}\" >nul 2>&1\r\n\
          rmdir /S /Q \"{dir}\" >nul 2>&1\r\n",
+        preamble = super::UPDATER_WAIT_PREAMBLE,
         staged = staged.display(),
         target = target.display(),
         dir = dir.display(),
     );
-    std::fs::write(&script, content).map_err(|e| format!("cannot write updater: {e}"))?;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    std::process::Command::new("cmd")
-        .arg("/c")
-        .arg(&script)
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .map_err(|e| format!("cannot start updater: {e}"))?;
-    Ok(())
-}
-
-/// Unix stub: never called because `replace_binary` only routes here on Windows.
-#[cfg(not(windows))]
-fn spawn_detached_updater(_staged: &Path, _target: &Path) -> Result<(), String> {
-    unreachable!("Windows-only updater ran on a non-Windows host")
+    super::spawn_detached_cmd(dir, content)
 }
 
 fn extract_tar(archive: &Path, dest_dir: &Path) -> Result<(), String> {
@@ -202,7 +180,7 @@ pub fn update(args: &super::Args, platform: Platform) -> Result<(), String> {
     if args.check {
         if is_newer(&latest, current) {
             println!(
-                "xmux {current} is installed; latest is {latest} — run `xmux update` to upgrade"
+                "xmux {current} is installed; latest is {latest} - run `xmux update` to upgrade"
             );
         } else {
             println!("xmux is up to date ({current})");
