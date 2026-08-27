@@ -139,7 +139,9 @@ pub fn conin_mode() -> u32 {
 
 /// Whether a CONIN mode has drifted off the desired mouse-capture state and must be
 /// re-asserted: mouse input cleared, quick-edit (drag-to-select) re-enabled, or VT input
-/// cleared. Pure over the mode bits so it is unit-testable on any target.
+/// cleared. Pure over the mode bits; the bit names come from `windows-sys`, a
+/// Windows-only dependency, so the function exists only there (as does its one caller).
+#[cfg(windows)]
 fn should_reassert(mode: u32) -> bool {
     use windows_sys::Win32::System::Console::{
         ENABLE_MOUSE_INPUT, ENABLE_QUICK_EDIT_MODE, ENABLE_VIRTUAL_TERMINAL_INPUT,
@@ -232,11 +234,13 @@ pub fn parse_prefix(spec: Option<&str>) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
     use windows_sys::Win32::System::Console::{
         ENABLE_EXTENDED_FLAGS, ENABLE_MOUSE_INPUT, ENABLE_QUICK_EDIT_MODE,
         ENABLE_VIRTUAL_TERMINAL_INPUT,
     };
 
+    #[cfg(windows)]
     #[test]
     fn should_reassert_healthy_mode_is_false() {
         // All desired bits set, quick-edit cleared: no re-assert.
@@ -244,12 +248,14 @@ mod tests {
         assert!(!should_reassert(mode));
     }
 
+    #[cfg(windows)]
     #[test]
     fn should_reassert_when_mouse_input_cleared() {
         let mode = ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_EXTENDED_FLAGS; // no MOUSE_INPUT
         assert!(should_reassert(mode));
     }
 
+    #[cfg(windows)]
     #[test]
     fn should_reassert_when_quick_edit_re_enabled() {
         // A ConPTY child spawn re-enables drag-to-select (the selection symptom).
@@ -257,6 +263,7 @@ mod tests {
         assert!(should_reassert(mode));
     }
 
+    #[cfg(windows)]
     #[test]
     fn should_reassert_when_vt_input_cleared() {
         // A child stripping VT input kills SGR mouse delivery but leaves MOUSE_INPUT set
