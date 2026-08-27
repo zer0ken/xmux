@@ -35,8 +35,8 @@ back to the app, which owns the registry.
 - Input decoding, dispatch, and mouse parsing turn terminal input into routing
   decisions or input actions. It recognizes the kitty protocol's press / repeat /
   release events, so a release is never mis-read as a keypress and a held key's
-  repeats keep its prefix interaction live. Terminal setup holds the prefix parsing,
-  mouse capture, and the terminal guard.
+  repeats re-arm its ready state instead of toggling it. Terminal setup holds the
+  prefix parsing, mouse capture, and the terminal guard.
 
 ## Invariants
 
@@ -54,8 +54,9 @@ back to the app, which owns the registry.
 - The terminal guard asks the terminal to report key releases (kitty
   report-event-types), because a C0 control byte stream never carries a key-up.
   A terminal that declines the request keeps its legacy encodings, and the input
-  layer then has no release to end a held prefix's hold, so a second press reads
-  as a hold-repeat rather than as the doubled-prefix literal.
+  layer then has no release to end a held prefix's hold, so the hold stays latched
+  until a mouse action ends it, and a second press re-arms ready rather than
+  sending the doubled-prefix literal.
 - Rendering marks each wide (CJK) glyph's trailing cell as always-update so the
   renderer's incremental diff repaints it on a wide-to-narrow transition;
   otherwise that trailing cell is skipped and the terminal keeps the old glyph's

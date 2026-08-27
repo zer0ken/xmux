@@ -27,7 +27,10 @@ or a grid is rendered.
 
 The input path keeps ONE prefix-interaction signal that both the hint bar and the
 auto-hide nav width read: a prefix press is ready (awaiting its command key), and
-a held prefix key is holding. Under auto-hide the nav comes back for a live
+a held prefix key is holding. The state machine is `ready` and `holding` together:
+a command key clears ready only, the prefix's release clears holding, and a held
+key's autorepeat re-arms ready, so a command key can be pressed again and again
+while the prefix is held. Under auto-hide the nav comes back for a live
 prefix interaction and hides again when it ends, so a jump can read the card
 numbers it needs.
 
@@ -45,8 +48,10 @@ numbers it needs.
   new source goes) and the manager that kicks the new source's first scan.
 - Input routing has a pure, stateless core (key resolution, mouse chains, the
   predicates, the input outcome types); the stateful handlers are runtime methods
-  that call into it. The prefix is tracked as ready (command expected) or holding
-  (the key is still down), and a mouse action ends either.
+  that call into it. The prefix is tracked as ready (awaiting its command) and
+  holding (the key still down): a command key clears ready only, the release
+  clears holding, a held key's autorepeat re-arms ready, and a mouse action ends
+  both.
 - Focus holds the focus and modal state plus the transition helpers. The runtime
   state embeds it; the app reads and mutates it through those helpers.
 - The display mechanics (PTY, grid, input) live in `src/display`; per-source connection

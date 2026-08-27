@@ -72,7 +72,7 @@ UI elements a user perceives as distinct things:
 - hint bar - the nav's own status line: the bottom row(s) of the nav region, ending
   at the view border rather than spanning the screen, so the terminal view keeps
   every row it owns. At rest it shows only the prefix; while a prefix interaction is
-  live (the prefix armed, or its key still held) it shows the keys that interaction
+  live (the prefix ready, or its key still held) it shows the keys that interaction
   unlocks. A flash, the scan indicator, and the active
   filter outrank both, in that order. A long flash wraps across as many nav rows as
   it needs instead of clipping. A shown flash paints it in the error style.
@@ -231,8 +231,8 @@ UI elements a user perceives as distinct things:
   say what a thumb cannot: which way the cards went, and how many. An ARMED bar takes the
   whole row back, counts included, since a cheatsheet has to be readable over what it
   covers.
-- status row fill - how much of its row the hint bar paints. The side column's bar, an
-  armed bar and a refusal fill the ROW: a solid bar, legible over whatever it covers. The
+- status row fill - how much of its row the hint bar paints. The side column's bar, a
+  ready bar and a refusal fill the ROW: a solid bar, legible over whatever it covers. The
   portrait band's resting bar paints its text plus a cell of padding and stops, because it
   shares that row with the offscreen counts and a full-width slab of bar colour across a
   wide window is a lot of paint for one word.
@@ -324,17 +324,20 @@ UI elements a user perceives as distinct things:
 - scan indicator - the `scanning n/m…` progress shown in the hint bar while host
   probes are in flight, behind the same spinner on the same frame as the cards it
   counts. It counts SOURCES; a card's own spinner names one card's unresolved level.
-- armed - the state between pressing the prefix and its command key: the prefix is
-  ready for its command, and the hint bar reads it (together with HOLDING) to swap
-  from the resting prefix to the cheatsheet, so arming is a visible change and
-  redraws the frame.
-- holding - the state while the prefix key is physically held down. A held key's
-  autorepeat is read as still-holding rather than as a second press, so the status
-  bar and the nav stay steady under a hold instead of toggling. A terminal that
-  reports key releases (the kitty protocol) is what makes the release observable;
-  a terminal that does not leaves the hold latched until a command key or a mouse
-  action resolves it, and its second press is read as a hold-repeat rather than as
-  the doubled-prefix literal.
+- ready - the state between pressing the prefix and its command key: the prefix is
+  ready for its command. A prefix key down sets it, any other key while it holds
+  clears it, and the prefix's release leaves it set, so the cheatsheet stays up
+  after a tap until the command key lands. The hint bar reads it (together with
+  HOLDING) to swap from the resting prefix to the cheatsheet, so becoming ready is
+  a visible change and redraws the frame.
+- holding - the state while the prefix key is physically held down. A prefix key
+  down sets it and the prefix's release clears it; a command key while ready does
+  not. While it is set, a repeated prefix down (the OS autorepeat of the held key)
+  re-arms ready, so a command key can be pressed again and again while the prefix
+  is held, and the status bar and the nav stay steady instead of toggling. A
+  terminal that reports key releases (the kitty protocol) is what makes the release
+  observable; one that does not leaves the hold latched until a mouse action ends
+  the interaction.
 - popup - the rounded-bordered, opaque, centered (draggable) dialog a popup modal
   draws, its accent title in the top border. The help and the input dialog are popups.
 - prompt - the `❯` entry marker on an input dialog's edit line.
@@ -342,6 +345,23 @@ UI elements a user perceives as distinct things:
 A zellij TAB is a `window` and a zellij SESSION is a `session`: xmux's vocabulary is
 one set of words for every mux, so a mux's own naming is translated at its family
 boundary and nowhere above it.
+
+### Prefix interaction
+
+The prefix interaction is a two-state machine over `ready` and `holding`:
+
+| Event | ready | holding |
+| --- | --- | --- |
+| prefix key down | set | set |
+| prefix key up | unchanged | clear |
+| any other key while ready | clear | unchanged |
+
+The hint bar and the auto-hide nav show for the whole time either state is set, and
+hide only when both are clear. Ready keeps the cheatsheet up after the prefix's
+release until a command key lands; holding keeps it up through a held key's
+autorepeat, so a held prefix neither flickers nor needs re-arming between repeated
+command keys (a resize arrow can be pressed again and again while the prefix is
+held).
 
 `pane` is reserved for a mux window's terminal split (a tmux / psmux pane); it is
 never a screen region - screen regions are "views", and the line between them is

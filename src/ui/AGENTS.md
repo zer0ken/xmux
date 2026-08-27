@@ -17,9 +17,9 @@ type is defined here; the switcher reads and writes it and owns only the
 transient popup geometry.
 
 The chrome is the view border, the hint bar, and the host screens, plus its
-view-local state (flash, spinner, view border colours, prefix, armed). The hint
+view-local state (flash, spinner, view border colours, prefix, ready). The hint
 bar is the NAV's bottom row or rows, not a full-width strip, and shows the prefix
-alone until a prefix interaction is live (the prefix pressed, or its key still
+alone until a prefix interaction is live (the prefix ready, or its key still
 held), when it lists the keys that interaction unlocks. The chrome instance
 itself lives in the runtime state, fed by the app each frame and rendered from it.
 
@@ -120,7 +120,7 @@ flatten renders for the dump verb.
   columns as the selection passed over them. The side list keeps its
   selection-expands-the-card rule, where a height change only shifts rows.
 - A pending prefix is dropped by the next INPUT, mouse included. That means the
-  whole gesture ends: the armed wait and any physical hold of the key. The mouse path
+  whole gesture ends: the ready wait and any physical hold of the key. The mouse path
   has to say so itself, because mouse bytes never reach either focus path's key
   handling. Bare hover is exempt: it is the pointer sitting there, not an action.
 - An arrow key points AT the view it focuses, in both focus paths (one for nav focus, one

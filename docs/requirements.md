@@ -191,7 +191,7 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-B14** - An arrow points AT the view it focuses, on either axis: the terminal is
   right of the nav in the side layout and below it in the portrait one, so `prefix right`
   and `prefix down` both focus the terminal while `prefix left` and `prefix up` both focus
-  the nav (as `prefix Esc` does). An arrow naming the view that already has focus does
+  the nav. An arrow naming the view that already has focus does
   nothing. Bare arrows belong to the cards instead: each steps ONE card along the list,
   back for left and up, on for right and down. Not by column, because the portrait band
   puts the next card below in one place and one column over in another, and a key that
@@ -216,11 +216,11 @@ no function, and no test, so renaming code is never a documentation change.
   width keeps its single owner. Hiding the nav does not move the layout: the turnover
   reads the width the user SET, so the nav returns the shape it left.
 - **FR-B17** - The status row is a bar where it owns its row and a label where it does not:
-  the side column's bar fills its row, and so does any armed or flashing bar, which has to
+  the side column's bar fills its row, and so does any ready or flashing bar, which has to
   be readable over what it covers; the portrait band's resting bar paints its text plus a
   cell of padding, leaving the rest of the row to the offscreen counts.
 - **FR-B18** - A prefix waits for the next INPUT, and a mouse action is input: a click, a
-  release, a wheel or a drag ends the whole prefix gesture (the armed wait and any
+  release, a wheel or a drag ends the whole prefix gesture (the ready wait and any
   physically held key) in either focus, because mouse bytes are scanned
   out of the stream before either focus path's key handling sees them and a chord left
   half-open keeps its cheatsheet on screen and then eats the next key. Bare hover is not
