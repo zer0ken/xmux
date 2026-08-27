@@ -568,7 +568,7 @@ impl Switcher {
         // Host-state card: a settled host (reachable empty or unreachable) reads as a
         // single row - the host name over nothing, because the only word a settled host
         // had (`⚠ unreachable`) now rides on the host row itself as a mark. The mark is
-        // danger and sits in front of the host with one space between, so the card names
+        // danger and sits flush ahead of the host name, so the card names
         // WHAT it is (host/mux) while the mark colours its state; the mux - the lowest
         // level the card displays - takes the accent. A card still SCANNING has no
         // settled mux to accent: the spinner stands in the level that has not resolved,
@@ -586,11 +586,11 @@ impl Switcher {
             let one_line = !*scanning;
             let mut line1 = address(true);
             if *unreachable {
-                // The mark rides the host row ahead of the host name, one space after.
+                // The mark rides the host row flush ahead of the host name.
                 // Danger keeps its colour: an unreachable host is still a failure, the
                 // card just says so with a mark instead of a second row of text.
                 line1.push(Span::styled(
-                    "⚠ ",
+                    "⚠",
                     Style::default().fg(palette::get().danger),
                 ));
             }
