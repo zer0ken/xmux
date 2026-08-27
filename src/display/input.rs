@@ -1,14 +1,15 @@
 //! Terminal-focus input handling. When the terminal view has focus every byte is
 //! forwarded raw to the session's active pane (so a real program - vim, a pager -
 //! sees exact input), EXCEPT a prefix (default `C-g`) followed by a command key,
-//! which is intercepted: `prefix Left|Up|Tab|Esc` returns focus to the nav,
+//! which is intercepted: `prefix Left|Up|Tab` returns focus to the nav,
 //! `prefix Right|Down` keeps focus on the (already-focused) terminal view (an arrow
 //! points at the view it focuses), `prefix q` quits, `prefix ?` toggles
 //! the keys help, `prefix h`/`l` and `prefix Ctrl+←/→` resize the nav, `prefix t`
 //! toggles auto-hide-nav mode, `prefix n`/`R`/`r` run the nav actions
 //! (new / rename / re-scan) on the displayed session, `prefix x` kills the ACTIVE pane
 //! of the displayed session (tmux `prefix x` parity - distinct from nav focus, where
-//! `prefix x` kills the selected node), and a doubled
+//! `prefix x` kills the selected node), a bare `prefix Esc` cancels the prefix and
+//! stays in the terminal view, and a doubled
 //! prefix sends one literal prefix byte. Apart from `prefix x`, the command set matches
 //! nav focus, so those commands behave identically regardless of which view holds
 //! focus. The prefix is a C0
@@ -122,8 +123,9 @@ impl TermInput {
                     i += 1;
                     continue;
                 }
+                // Any key while ready clears ready only; holding persists until the
+                // release (the state machine: a key while ready → -ready).
                 self.armed = false;
-                self.holding = false;
                 // prefix ? / h / l keep terminal-view focus (help toggle, nav resize), so the
                 // rest of the read still forwards to the pane - flush, emit, continue.
                 if b0 == b'?' {
@@ -207,6 +209,13 @@ impl TermInput {
                     } else {
                         1
                     };
+                    // A bare Esc after a prefix cancels the prefix and stays in the
+                    // terminal view: it is swallowed (no focus switch), and the rest
+                    // of the read resumes as normal input.
+                    if b0 == 0x1b && cmd_len == 1 {
+                        i += 1;
+                        continue;
+                    }
                     // An arrow points AT the view it focuses: the terminal is right of the
                     // nav in Side and below it in Top, so prefix → (C) and prefix ↓ (B) both
                     // name the view that already has focus here. Swallow them and stay; the
@@ -270,10 +279,12 @@ impl TermInput {
                 }
             }
             2 => {
-                // repeat: the same key is still down. A held prefix keeps ready; a
-                // non-prefix repeat forwards its legacy bytes unless a command is
-                // mid-flight (a repeat is not a command).
+                // repeat: the same key is still down. A held prefix stays armed (the
+                // state machine: a prefix down keeps ready and holding); a non-prefix
+                // repeat forwards its legacy bytes unless a command is mid-flight (a
+                // repeat is not a command).
                 if is_prefix {
+                    self.armed = true;
                     self.holding = true;
                 } else if !self.armed {
                     self.forward_legacy(ev, fwd);
@@ -296,9 +307,8 @@ impl TermInput {
                     }
                 } else if self.armed {
                     // a non-prefix key mid-command in CSI-u form is not one of the
-                    // command keys; swallow it and end the command.
+                    // command keys; swallow it and end the command (ready only).
                     self.armed = false;
-                    self.holding = false;
                 } else {
                     self.forward_legacy(ev, fwd);
                 }
@@ -439,6 +449,30 @@ mod tests {
     }
 
     #[test]
+    fn a_command_clears_ready_only_and_an_autorepeat_rearms_it() {
+        // The state machine: a key while ready clears ready only (holding survives
+        // until the release), and a prefix autorepeat re-arms ready. So a command key
+        // (a resize arrow) can be pressed again and again while the prefix is held.
+        let mut t = m();
+        t.feed(&[0x07]); // prefix down: +ready +holding
+        assert!(t.is_armed() && t.is_holding());
+        assert_eq!(t.feed(b"h"), vec![Action::Width(-1)], "the arrow resizes");
+        assert!(
+            !t.is_armed() && t.is_holding(),
+            "a key while ready clears ready only"
+        );
+        t.feed(&[0x07]); // the held key's autorepeat re-arms ready
+        assert!(t.is_armed() && t.is_holding());
+        assert_eq!(
+            t.feed(b"h"),
+            vec![Action::Width(-1)],
+            "the next arrow resizes again"
+        );
+        t.feed(b"\x1b[7;5:3u"); // the release ends the hold
+        assert!(!t.is_holding(), "the release clears holding");
+    }
+
+    #[test]
     fn prefix_then_tab_focuses_nav() {
         let mut t = m();
         assert!(t.feed(&[0x07]).is_empty(), "prefix alone is held");
@@ -446,11 +480,11 @@ mod tests {
     }
 
     #[test]
-    fn prefix_then_left_or_esc_focuses_nav() {
-        // Each command key is consumed whole, so the replay tail is empty (no stray
-        // `[D` leaking to the nav). UP joins LEFT: an arrow names the view it focuses,
-        // and the nav is left of the terminal in Side, above it in Top.
-        for seq in [&b"\x1b[D"[..], &b"\x1b[A"[..], &b"\x1b"[..]] {
+    fn prefix_then_left_or_up_focuses_nav_esc_cancels() {
+        // Left/Up each name the nav (left of the terminal in Side, above it in Top),
+        // consumed whole so the replay tail is empty. A bare Esc after the prefix
+        // cancels the prefix and stays in the terminal view (no focus switch).
+        for seq in [&b"\x1b[D"[..], &b"\x1b[A"[..]] {
             let mut t = m();
             t.feed(&[0x07]);
             assert_eq!(
@@ -459,6 +493,13 @@ mod tests {
                 "seq {seq:?} → nav"
             );
         }
+        let mut t = m();
+        t.feed(&[0x07]);
+        assert_eq!(
+            t.feed(b"\x1b"),
+            Vec::<Action>::new(),
+            "prefix Esc cancels the prefix and stays in the terminal"
+        );
     }
 
     #[test]

@@ -1899,7 +1899,10 @@ fn arming_the_prefix_marks_the_frame_dirty_so_the_hint_bar_swaps() {
     let out = rt.handle_stdin_bytes(b"\x07", &Selection::default());
     assert!(rt.prefix_active(), "the bare prefix arms");
     assert!(out.dirty, "arming redraws, so the cheatsheet shows at once");
-    // Disarming (the command key lands) is equally visible.
+    // The release ends the hold; ready survives, so the bar stays until the
+    // command key lands. Disarming (the command key lands) is equally visible.
+    let _ = rt.handle_stdin_bytes(b"\x1b[7;5:3u", &Selection::default());
+    assert!(rt.prefix_active(), "ready survives the release");
     let out = rt.handle_stdin_bytes(b"t", &Selection::default());
     assert!(!rt.prefix_active(), "the command key consumes the arm");
     assert!(out.dirty, "disarming redraws too");
@@ -2022,6 +2025,30 @@ fn held_prefix_repeats_keep_nav_steady() {
     assert!(!rt.mouse_state.nav_holding);
     rt.handle_stdin_bytes(b"t", &Selection::default());
     assert!(!rt.prefix_active(), "the command key resolves it");
+}
+
+#[test]
+fn holding_the_prefix_keeps_resize_commands_armed() {
+    // While the prefix key is held, each resize arrow keeps working: the arrow clears
+    // ready, the held key's autorepeat re-arms it, so the next arrow is a command
+    // again, and the prefix-active signal (the hint bar / auto-hide nav show) stays
+    // live for the whole hold instead of dropping on the first arrow.
+    let mut rt = rt_terminal_focus_with_session();
+    rt.handle_stdin_bytes(b"\x07", &Selection::default()); // prefix down: +ready +holding
+    assert!(rt.prefix_active());
+    rt.handle_stdin_bytes(b"\x1b[1;5C", &Selection::default()); // Ctrl+Right resizes
+    assert!(
+        rt.prefix_active(),
+        "holding keeps the signal live after the arrow"
+    );
+    rt.handle_stdin_bytes(b"\x07", &Selection::default()); // autorepeat re-arms ready
+    rt.handle_stdin_bytes(b"\x1b[1;5C", &Selection::default()); // Ctrl+Right resizes again
+    assert!(
+        rt.prefix_active(),
+        "a second arrow still works and stays live"
+    );
+    rt.handle_stdin_bytes(b"\x1b[7;5:3u", &Selection::default()); // release
+    assert!(!rt.prefix_active(), "both states clear → the signal drops");
 }
 
 #[test]

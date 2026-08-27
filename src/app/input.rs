@@ -59,7 +59,7 @@ pub(crate) fn to_grid_local(area: ratatui::layout::Rect, col: u16, row: u16) -> 
 }
 
 /// The single key that moves focus from the nav into the terminal view.
-/// (Arrows navigate the nav; the prefix-Esc path returns focus - see TermInput.)
+/// (Arrows navigate the nav; the prefix-Tab path returns focus - see TermInput.)
 fn is_focus_in(code: KeyCode) -> bool {
     matches!(code, KeyCode::Enter)
 }
@@ -147,15 +147,20 @@ pub(crate) fn resolve_nav_key(
         }
         return None;
     }
-    // A prefix key while the same key is still held (no release since its press) is a
-    // hold-repeat: the terminal re-sends the down while the key is held, and it must
-    // neither re-arm nor consume the ready state. Only the release ends the hold.
-    if is_prefix_key && *holding {
+    // A prefix down always sets ready and holding (the state machine: prefix key
+    // down → +ready +holding). It is never a command key. A held key's autorepeat
+    // is one of these: it re-arms ready, which is already set, so the status bar
+    // stays steady instead of toggling, and a command key can be pressed again and
+    // again while the key is held.
+    if is_prefix_key && !is_inputting {
+        *armed = true;
+        *holding = true;
         return None;
     }
     if *armed {
+        // Any key while ready clears ready only; holding persists until the release
+        // (the state machine: a key while ready → -ready).
         *armed = false;
-        *holding = false;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         return match key.code {
             KeyCode::Char('q') => Some(Action::Quit),
@@ -185,11 +190,6 @@ pub(crate) fn resolve_nav_key(
             KeyCode::Char(c) if c.is_ascii_digit() => Some(Action::NavKey(key)),
             _ => None,
         };
-    }
-    if !is_inputting && key.code == KeyCode::Char(prefix as char) {
-        *armed = true;
-        *holding = true;
-        return None;
     }
     // Enter focuses the terminal view. ←/→ navigate the nav inside `handle_key`.
     if !is_inputting && is_focus_in(key.code) {
@@ -565,6 +565,51 @@ mod tests {
             KeyEventKind::Release,
         );
         assert!(resolve_nav_key(rel2, &mut armed, &mut holding, 0x07, false).is_none());
+    }
+
+    #[test]
+    fn a_command_clears_ready_only_and_an_autorepeat_rearms_it() {
+        // The state machine: a key while ready clears ready only (holding survives
+        // until the release), and a prefix autorepeat re-arms ready. So a command key
+        // (a resize arrow) can be pressed again and again while the prefix is held.
+        use ratatui::crossterm::event::{KeyEvent, KeyEventKind};
+        let mut armed = false;
+        let mut holding = false;
+        resolve_nav_key(
+            KeyEvent::new(KeyCode::Char('\x07'), KeyModifiers::NONE),
+            &mut armed,
+            &mut holding,
+            0x07,
+            false,
+        );
+        assert!(armed && holding);
+        let cmd = KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE);
+        assert_eq!(
+            resolve_nav_key(cmd, &mut armed, &mut holding, 0x07, false),
+            Some(Action::Width(-1)),
+            "the arrow resizes"
+        );
+        assert!(!armed && holding, "a key while ready clears ready only");
+        resolve_nav_key(
+            KeyEvent::new(KeyCode::Char('\x07'), KeyModifiers::NONE),
+            &mut armed,
+            &mut holding,
+            0x07,
+            false,
+        );
+        assert!(armed && holding, "an autorepeat re-arms ready");
+        assert_eq!(
+            resolve_nav_key(cmd, &mut armed, &mut holding, 0x07, false),
+            Some(Action::Width(-1)),
+            "the next arrow resizes again"
+        );
+        let rel = KeyEvent::new_with_kind(
+            KeyCode::Char('\x07'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
+        resolve_nav_key(rel, &mut armed, &mut holding, 0x07, false);
+        assert!(!holding, "the release clears holding");
     }
 
     #[test]
