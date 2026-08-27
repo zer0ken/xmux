@@ -10,8 +10,7 @@ no zellij code sits at the `src` root. It owns BOTH sides of the mux:
   none of which are tmux-compatible;
 - the display driver: the per-source display orchestration for a per-session mux
   with no in-place switch;
-- the output shapes: the session listing (a human line) and the tab listing
-  (JSON), as pure functions.
+- the output shapes: the session listing (a human line), as pure functions.
 
 The mux constructs its own driver, so zellij selection lives in this family and
 never in a central match on server model. zellij has no control stream; it is
@@ -20,8 +19,8 @@ polled.
 ## Mental Model
 
 zellij is a PER-SESSION mux, and it is the one mux family that shares NO argv with
-tmux: every command plan is overridden rather than inherited, and both of its
-outputs are parsed here rather than by the shared vocabulary.
+tmux: every command plan is overridden rather than inherited, and its listing is
+parsed here rather than by the shared vocabulary.
 
 Its CLI is one process per query, and every query is addressed with
 `--session <name>`, because zellij's actions otherwise target the session the
@@ -39,9 +38,9 @@ tmux and psmux.
 - The family root holds the mux itself, the poll cadence, the
   `--session <name> action <verb>` argv builder, and the clock the reported
   session age is subtracted from.
-- The parsing module holds the session-line grammar, the human-readable duration
-  zellij prints an age in, and the tab records. Pure and total: anything that does
-  not fit is skipped.
+- The parsing module holds the session-line grammar and the human-readable duration
+  zellij prints an age in. Pure and total: anything that does not
+  fit is skipped.
 - The driver sits beside them.
 - The driver pulls the mux-agnostic display seam from `src/driver.rs` and the
   supervisor capabilities from the app runtime. The seam does NOT import the
@@ -53,18 +52,13 @@ tmux and psmux.
   caller's own session, and xmux is outside every session.
 - `go-to-tab` counts tabs from ONE while xmux and zellij's own position count from
   zero. The shift happens in the window-selection plan and nowhere else.
-- A tab is written on a card by NAME ALONE. zellij's tab bar shows names and
-  nothing else, and a tab zellij names itself is already called `Tab #1`, so
-  tmux's `{index}:` prefix would invent a second number: zero-based, while
-  zellij's own tab key counts from one. The index stays internal, for the
-  go-to-tab argv.
 - The attach is plain `attach <name>`, never `attach -c`: showing a session must
   not create or resurrect one. A session that died between the scan and the attach
   fails the attach, which is the end-of-stream the death signal is waiting for.
 - A session listed as exited is a resurrectable record, not a session, and is
   dropped during enumeration.
 - The session's last-attached value carries its CREATION instant. zellij reports
-  no attach time, and the nav's recency sort needs a value on the same epoch scale
+  no attach time, and the shared session model carries a value on the same epoch scale
   tmux reports.
 - On a reattach the stale attachment is HELD, not removed, so its grid stays on
   screen until the fresh one is ready (stale-while-revalidate).
@@ -82,9 +76,9 @@ tmux and psmux.
 - Do not parse the session listing by splitting on whitespace. zellij forbids only
   `/` in a session name, so a name may hold spaces; the split is on the
   ` [Created ` marker.
-- Do not read the window list from `list-panes`. It marks a focused pane per tab
-  AND per layer, so it cannot name the one active tab; `list-tabs` is the query
-  that reports tab activeness.
+- Do not parse a window or tab list at all: a session's cards name the session
+  alone, so no `list-tabs` / `list-panes` query exists here, and the display
+  mirrors whatever tab the attached client lands on.
 - Do not treat a non-zero session-listing exit as an unreachable source. An idle
   zellij writes `No active zellij sessions found.` to stderr and exits 1.
 - Do not assume an action always answers. On WINDOWS an action addressed at a

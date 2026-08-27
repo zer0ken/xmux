@@ -7,7 +7,7 @@ no abduco code sits at the `src` root. It owns BOTH sides of the mux:
 
 - the metadata mux: binary name, a per-session server model, listing
   enumeration (the bare binary IS the listing), attach argv, create argv, poll
-  cadence, death signal, and the single-window card rule;
+  cadence, death signal, and the one-card-per-session rule;
 - the display driver: the per-source display orchestration for a per-session mux.
 
 The mux constructs its own driver, so abduco selection lives in this family and
@@ -23,11 +23,10 @@ with `abduco -a <name>` on every session change, which attaches to that session'
 own server.
 
 Because there is no per-session query, a poll sweep enumerates ONCE and resolves
-every session's card directly with an empty pane list, so each card reads as the
-session alone (no window row). `last_attached` is 0: abduco prints human local
+every session as a plain session card (the session alone). `last_attached` is 0:
+abduco prints human local
 wall-clock time, which cannot be converted to the shared epoch scale across hosts
-without the host's timezone, so the mux "does not report" it and sessions within a
-source sort by name.
+without the host's timezone, so the mux "does not report" it.
 
 The mux supplies mux vocabulary (argv, model, enumeration); the driver consumes it
 and owns the concrete display decision. The transport lowers the host execution.
@@ -52,13 +51,13 @@ and owns the concrete display decision. The transport lowers the host execution.
   (stale-while-revalidate).
 - Sync never pre-warms; it only reaps the source PTY when the source has no
   sessions left.
-- A session resolves with an empty pane list (the session alone), never a
-  per-session command that cannot exist.
+- A session resolves as the session alone, never with a per-session command
+  that cannot exist.
 - `last_attached` is always 0: the mux reports no comparable value.
 
 ## Common Pitfalls
 
-- Do not invent a per-session pane query: abduco has none, and a bogus command
+- Do not invent a per-session query: abduco has none, and a bogus command
   would run every poll and fail.
 - Do not use `-V` (uppercase) anywhere: abduco rejects it; its version flag is
   `-v` (lowercase).

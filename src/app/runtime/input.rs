@@ -24,7 +24,6 @@ impl Runtime {
             env,
             hosts,
             detecting,
-            panes_requested,
             ops,
             op_tx,
             nav_width_natural,
@@ -84,15 +83,7 @@ impl Runtime {
             *width_changed = true;
         }
         ensure_current_host(mgr, hosts, switcher, cols, rows, nav_width);
-        kick_rescan(
-            env,
-            switcher,
-            hosts,
-            detecting,
-            mgr,
-            panes_requested,
-            (cols, rows),
-        );
+        kick_rescan(env, switcher, hosts, detecting, mgr, (cols, rows));
         (
             focus_terminal,
             quit,
@@ -575,7 +566,6 @@ impl Runtime {
                             &self.hosts,
                             &mut self.detecting,
                             &mut self.mgr,
-                            &mut self.panes_requested,
                             (self.cols, self.body_rows),
                         );
                         *dirty = true;

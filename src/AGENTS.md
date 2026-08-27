@@ -92,8 +92,8 @@ the debounced attach, and renders the live split view.
   file each under the xmux dir. Every value is best-effort: a stale, missing, or
   unparsable file falls back to the built-in default, so xmux stays stateless
   about sessions themselves.
-- `session.rs` is the foundational cross-environment data types (a `Session`, its
-  windows-and-panes detail, and the `<source>/<name>` address) that the axes and
+- `session.rs` is the foundational cross-environment data types (a `Session` and
+  the `<source>/<name>` address) that the axes and
   the model build on.
 - Logging sets up the process-wide structured log: a daily rolling file appender
   writing to `<xmux_dir>/xmux.log` behind a non-blocking worker, with ANSI
@@ -114,7 +114,7 @@ the debounced attach, and renders the live split view.
 - Every batch of commands a switcher key produces routes through the single
   command dispatcher, never a filter that keeps only one command kind, so no
   future command from a key is silently dropped.
-- The selection is the canonical selected source / session / window value
+- The selection is the canonical selected source / session value
   consumed by display selection and rendering.
 - The per-mux display decision lives in the driver implementation. The runtime
   does not branch on mux kind for display; it resolves the source's driver, asks

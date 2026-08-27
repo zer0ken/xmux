@@ -7,12 +7,12 @@ English · [한국어](README.ko.md)
 xmux is a persistent, terminal-owning supervisor written in Rust. It owns the
 terminal you launch it in, keeps its live mux attachments running, and renders
 a split view: a **nav list** of every reachable session on the left, the
-selected session's **live screen** on the right. Move the cursor and the
-right pane switches to that session in place.
+selected session's **terminal view** on the right. Move the cursor and the
+terminal view switches to that session in place.
 
 ![The xmux split view: a nav list of psmux sessions on this machine and tmux
-sessions inside a WSL distribution, with the selected session's live screen
-filling the right pane.](docs/assets/xmux.png)
+sessions inside a WSL distribution, with the selected session's terminal view
+filling the right side.](docs/assets/xmux.png)
 
 ## Install
 
@@ -70,8 +70,8 @@ xmux update                  # update the installed binary
 xmux version
 ```
 
-The left pane is the nav list; the right pane shows the selected session's live
-screen. Keyboard focus is on one region at a time.
+The nav list fills the left side; the terminal view on the right shows the
+selected session's live grid. Keyboard focus is on one region at a time.
 
 ## Keys
 
@@ -82,7 +82,7 @@ In the nav list:
 | `↑` / `↓` (or `k` / `j`) | move one card (wraps at both ends)                                       |
 | `Home` / `End`           | jump to the first / last card                                            |
 | `PageUp` / `PageDown`    | jump ten cards                                                           |
-| `Enter`                  | move focus into the selected session's live screen                       |
+| `Enter`                  | move focus into the selected session's terminal view                    |
 | `prefix 0`-`prefix 9`    | jump to a session by the number in its left column (keep typing for 10+) |
 | `prefix n`               | start a new session on the selected host                                 |
 | `/`                      | fuzzy-filter the list                                                    |
@@ -91,8 +91,8 @@ In the nav list:
 xmux has its own prefix, like tmux's `set -g prefix`. The default is `Ctrl-g`,
 configurable via `[ui] prefix`. Press the prefix, then a chord: `prefix q`
 quits, `prefix ?` toggles the keybinding help, `prefix Tab` moves focus between
-the nav and the screen. The mouse works too: click a row to select it, click
-the right pane to focus it. See [`docs/keybind.md`](docs/keybind.md) for the
+the nav and the terminal view. The mouse works too: click a row to select it, click
+the terminal view to focus it. See [`docs/keybind.md`](docs/keybind.md) for the
 rest.
 
 ## Roster

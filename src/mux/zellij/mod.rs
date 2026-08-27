@@ -126,26 +126,6 @@ impl Mux for Zellij {
         }
     }
 
-    fn list_panes_plan(&self, session: &str) -> Vec<String> {
-        // A zellij TAB is what xmux calls a window, and the TAB listing is the query
-        // that answers the window row: it reports each tab's position, name, whether a
-        // client focuses it, and how many panes it holds. zellij's pane listing marks a
-        // focused pane per tab and per layer, so it cannot name the one active tab.
-        self.action(session, &["list-tabs", "-a", "-j"])
-    }
-
-    fn parse_panes(&self, out: &str) -> Vec<WindowPanes> {
-        parse::parse_tabs(out)
-    }
-
-    fn window_label(&self, _index: i64, name: &str) -> String {
-        // zellij's tab bar shows tab NAMES and nothing else - no index, no prefix - and
-        // a tab it names itself is already called `Tab #1`, so the number a reader looks
-        // for is inside the name. Prefixing tmux's `{index}:` would invent a second
-        // number, and a zero-based one at that, while `Ctrl t` + a digit counts from one.
-        name.to_string()
-    }
-
     fn select_window_plan(&self, target: &str) -> Vec<String> {
         // `go-to-tab` counts tabs from ONE while xmux (and zellij's own `position`)
         // count from zero, so the index is shifted here, at the one place that speaks
@@ -176,9 +156,8 @@ impl Mux for Zellij {
 }
 
 /// Wall-clock seconds since the epoch: the reference the reported session AGE is
-/// subtracted from to reach a recency key on the same scale tmux reports. A clock
-/// before the epoch reads as zero, which sorts the host's sessions last rather than
-/// panicking.
+/// subtracted from to reach a `last_attached` on the same scale tmux reports. A
+/// clock before the epoch reads as zero rather than panicking.
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -261,34 +240,6 @@ mod tests {
         assert_eq!(
             zellij().attach_plan("api"),
             argv(&["zellij", "attach", "api"])
-        );
-    }
-
-    #[test]
-    fn the_window_query_is_the_tab_listing_and_it_reads_json() {
-        let m = zellij();
-        assert_eq!(
-            m.list_panes_plan("api"),
-            argv(&[
-                "zellij",
-                "--session",
-                "api",
-                "action",
-                "list-tabs",
-                "-a",
-                "-j"
-            ])
-        );
-        let out = r#"[{"position":0,"name":"shell","active":true,
-            "selectable_tiled_panes_count":2,"selectable_floating_panes_count":0}]"#;
-        let got = m.parse_panes(out);
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].name, "shell");
-        assert!(got[0].active);
-        assert_eq!(got[0].panes.len(), 2);
-        assert!(
-            crate::mux::parse_panes(out).is_empty(),
-            "the tmux parser cannot read it, which is why the shape is a Mux decision"
         );
     }
 

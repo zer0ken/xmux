@@ -33,8 +33,8 @@ pub(crate) struct Palette {
     /// Painted on the CARD / TERMINAL background, so it follows the theme.
     pub accent: Color,
     /// Content furniture, one role for the quiet supporting marks on the cards: the
-    /// "no sessions" status word, the `/` separator, the card number, the └/├
-    /// connectors, the popup borders, and the scrollbar thumb. All the marks a card
+    /// "no sessions" status word, the `/` separator, the card number,
+    /// the popup borders, and the scrollbar thumb. All the marks a card
     /// needs to read apart without being part of any level - see `bar_accent` and
     /// `border_inactive` for the surfaces that live on a background of their own.
     pub overlay: Color,
@@ -51,11 +51,8 @@ pub(crate) struct Palette {
     /// The card's NUMBER in the left column (the digit gutter) - the address a user
     /// jumps to. Split from `overlay` so it can be tuned apart from the other marks.
     pub number: Color,
-    /// The `/` separator between the host/mux/session/window parts of a card's lines.
+    /// The `/` separator between the host/mux/session parts of a card's lines.
     pub separator: Color,
-    /// The box-drawing connector (`├`/`└`) hanging a card's detail line under its
-    /// context line.
-    pub connector: Color,
     /// The scroll-overflow cue (`« n more` / `n more »`) when cards run off the band.
     pub more: Color,
     /// The hint bar's background: a single ANSI slot, so the bar reads as chrome
@@ -69,17 +66,12 @@ pub(crate) struct Palette {
     /// different surface than the cards), so the slot that reads on one may not read
     /// on the other: a light theme's dark `accent` is invisible on a dark bar.
     pub bar_accent: Color,
-    /// Level colour: host. Cyan, the same slot the focused view border is lit with, so
-    /// the machine reads as the outermost level and as the thing focus moves between.
-    pub host: Color,
-    /// Level colour: mux.
-    pub mux: Color,
-    /// Level colour: window (the detail line's window part) - the
-    /// quietest level, so the session name reads as the detail line's anchor.
-    pub window: Color,
-    /// Level colour: session. The level a user actually picks, so it stands out from
-    /// the machine and mux above it.
-    pub session: Color,
+    /// The one text colour a host-state card paints, separators and the accent target
+    /// excepted: the host half of the card reads in it, so a card reads as one neutral
+    /// block with a single highlighted element. The accent target (the session name, or
+    /// the mux on a host-state card) is the only card text that leaves it; a section
+    /// title reads in the quiet `overlay` header role instead.
+    pub text: Color,
     /// In-flight state: the scanning status and the loading spinner.
     pub pending: Color,
     /// Failure state: the unreachable status and error text.
@@ -108,17 +100,13 @@ const fn auto_dark() -> Palette {
         border_hover: Color::LightGreen,
         number: Color::DarkGray,
         separator: Color::DarkGray,
-        connector: Color::DarkGray,
         more: Color::DarkGray,
         bar_bg: Color::DarkGray,
         bar_fg: Color::White,
         bar_accent: Color::White,
-        host: Color::White,
-        mux: Color::LightGreen,
-        window: Color::DarkGray,
-        session: Color::White,
+        text: Color::White,
         pending: Color::Yellow,
-        danger: Color::Red,
+        danger: Color::LightYellow,
         selection_bg: None,
     }
 }
@@ -136,17 +124,13 @@ const fn auto_light() -> Palette {
         border_hover: Color::Green,
         number: Color::DarkGray,
         separator: Color::DarkGray,
-        connector: Color::DarkGray,
         more: Color::DarkGray,
         bar_bg: Color::DarkGray,
         bar_fg: Color::White,
         bar_accent: Color::White,
-        host: Color::Black,
-        mux: Color::Green,
-        window: Color::DarkGray,
-        session: Color::Black,
+        text: Color::Black,
         pending: Color::LightYellow,
-        danger: Color::LightRed,
+        danger: Color::Yellow,
         selection_bg: None,
     }
 }
@@ -275,15 +259,11 @@ mod tests {
                 ("border_hover", p.border_hover),
                 ("number", p.number),
                 ("separator", p.separator),
-                ("connector", p.connector),
                 ("more", p.more),
                 ("bar_bg", p.bar_bg),
                 ("bar_fg", p.bar_fg),
                 ("bar_accent", p.bar_accent),
-                ("host", p.host),
-                ("mux", p.mux),
-                ("window", p.window),
-                ("session", p.session),
+                ("text", p.text),
                 ("pending", p.pending),
                 ("danger", p.danger),
             ] {
@@ -313,16 +293,19 @@ mod tests {
         let (name, p) = resolve_theme("auto-dark").unwrap();
         assert_eq!(name, "auto-dark");
         assert_eq!(p.accent, Color::LightGreen);
-        assert_eq!(p.host, Color::White);
-        assert_eq!(p.mux, Color::LightGreen);
+        assert_eq!(p.text, Color::White);
         assert_eq!(p.border_hover, Color::LightGreen);
-        assert_eq!(p.window, Color::DarkGray);
+        assert_eq!(p.overlay, Color::DarkGray);
+        assert_eq!(p.danger, Color::LightYellow);
+        assert_eq!(p.pending, Color::Yellow);
         let (name, p) = resolve_theme("auto-light").unwrap();
         assert_eq!(name, "auto-light");
         assert_eq!(p.accent, Color::Green);
         assert_eq!(p.overlay, Color::DarkGray);
         assert_eq!(p.border_inactive, Color::White);
-        assert_eq!(p.session, Color::Black);
+        assert_eq!(p.text, Color::Black);
+        assert_eq!(p.danger, Color::Yellow);
+        assert_eq!(p.pending, Color::LightYellow);
         assert!(resolve_theme("nope").is_none());
         assert!(resolve_theme("").is_none());
     }

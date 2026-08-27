@@ -1,5 +1,5 @@
 //! Performs the mux operations xmux itself issues - create a session, and read a
-//! host's panes / options - directly against the live mux on a host. Each function composes the two orthogonal axes: the
+//! host's options - directly against the live mux on a host. Each function composes the two orthogonal axes: the
 //! MUX axis (`Host::mux`'s `*_plan`) supplies the mux argv and the MACHINE axis
 //! (`Host::transport`'s `exec_argv`) lowers it for local-vs-ssh execution, then it
 //! runs via an injected runner — exactly like `mux::enumerate_via_list_sessions`.
@@ -8,7 +8,6 @@
 
 use crate::model::source::{RunError, Runner};
 use crate::model::Host;
-use crate::session::WindowPanes;
 
 /// Composes a mux argv (from the host's `Mux`) through the machine `Transport` and
 /// runs it via the injected runner, returning stdout.
@@ -35,22 +34,10 @@ pub async fn create(host: &Host, runner: &dyn Runner, name: &str) -> Result<Stri
     })
 }
 
-/// Returns the host session's windows-with-panes (for the tree's child loading
-/// and active-pane resolution).
-pub async fn panes(
-    host: &Host,
-    runner: &dyn Runner,
-    name: &str,
-) -> Result<Vec<WindowPanes>, RunError> {
-    let out = run_plan(host, runner, &host.mux.list_panes_plan(name)).await?;
-    Ok(host.mux.parse_panes(&String::from_utf8_lossy(&out)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::source::Runner;
-    use crate::mux;
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
 
@@ -146,31 +133,6 @@ mod tests {
         assert!(create(&local_host(), fr.as_ref(), "x").await.is_err());
     }
 
-    #[tokio::test]
-    async fn panes_parses_and_targets() {
-        let fr = RecordingRunner::new("1\t1\t1\t1\tbash\tshell\n2\t0\t1\t1\ttail\tlogs\n", false);
-        let got = panes(&local_host(), fr.as_ref(), "x").await.unwrap();
-        assert_eq!(got.len(), 2);
-        assert_eq!(got[0].index, 1);
-        assert_eq!(got[0].name, "shell");
-        assert!(got[0].active);
-        assert_eq!(got[0].panes[0].command, "bash");
-        assert_eq!(got[1].index, 2);
-        assert_eq!(got[1].name, "logs");
-        assert!(!got[1].active);
-        assert_eq!(got[1].panes[0].command, "tail");
-        assert_eq!(
-            fr.args(),
-            vec!["list-panes", "-s", "-t", "x", "-F", mux::PANE_FORMAT]
-        );
-    }
-
-    #[tokio::test]
-    async fn panes_error_returns_err() {
-        let fr = RecordingRunner::new("", true);
-        assert!(panes(&local_host(), fr.as_ref(), "x").await.is_err());
-    }
-
     // Each op composes the Mux plan through the Transport and runs it via the
     // injected runner: for a REMOTE host the recorded command is `ssh …` and the
     // trailing arg is the mux argv joined per-arg-quoted.
@@ -183,17 +145,6 @@ mod tests {
         assert_eq!(
             fr.args().last().unwrap(),
             "tmux new-session -A -d -P -F '#{session_name}' -s api"
-        );
-    }
-
-    #[tokio::test]
-    async fn panes_remote_wraps_list_panes_in_ssh() {
-        let fr = RecordingRunner::new("0\t1\t0\t1\tbash\twork\n", false);
-        panes(&remote_host(), fr.as_ref(), "work").await.unwrap();
-        assert_eq!(fr.name(), "ssh");
-        assert_eq!(
-            fr.args().last().unwrap(),
-            &format!("tmux list-panes -s -t work -F '{}'", mux::PANE_FORMAT)
         );
     }
 }

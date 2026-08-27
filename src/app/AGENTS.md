@@ -12,7 +12,7 @@ reads and mutates.
 The runtime is a persistent supervisor. It keeps ONE real attached mux client
 per session alive in a PTY across selections and renders the SELECTED session's
 live grid on the right. A separate control-mode client per remote source supplies
-the nav view inventory, mux-side change events, and programmatic window
+the nav view inventory, mux-side change events, and display-driver
 selection; a local mux is enumerated or polled with plain commands. One async
 loop interleaves stdin, source events, PTY events, the control socket, terminal
 resize, and an animation tick. It folds domain actions and inbound source events
@@ -69,7 +69,7 @@ the card numbers it needs.
   deadline elapsed, a click landed) and folds the result through apply, so domain
   mutation stays at one site.
 - The selection, defined in `src/model`, is the canonical selected source /
-  session / window value consumed by display selection and rendering.
+  session value consumed by display selection and rendering.
 - The per-mux display decision lives in the driver implementation, never here.
 - Focus is the single source of truth for which view owns keys and which modal,
   if any, is open. Focus and modal transitions stay in the focus module; the app

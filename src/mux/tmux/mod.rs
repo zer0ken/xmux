@@ -5,7 +5,7 @@ use super::*;
 
 use crate::link::HostEvent;
 use crate::mux::ControlProtocol;
-use crate::mux::{quote_target, PANE_FORMAT, SESSION_FORMAT};
+use crate::mux::{quote_target, SESSION_FORMAT};
 
 pub mod control_proto;
 pub mod display;
@@ -184,25 +184,18 @@ impl ControlProtocol for TmuxControl {
             | Notif::WindowClose { .. }
             | Notif::WindowRenamed { .. } => {
                 // The server's session/window STRUCTURE changed; the app refetches
-                // (list-sessions + re-list every session's panes), so the tree view's
-                // session list AND per-session active-window markers resync (#5). The
+                // (list-sessions), so the tree view's session list resyncs. The
                 // notification carries only an id, so a blanket refetch is simplest.
                 Some(HostEvent::Changed {
                     host: host.to_string(),
                 })
             }
-            Notif::SessionWindowChanged { session, window } => {
+            Notif::SessionWindowChanged { .. } => {
                 // A session's ACTIVE WINDOW switched (e.g. another client did prefix-n).
-                // Carry the notification's SESSION id ($session) + WINDOW id (@window)
-                // through so the app probes THAT SPECIFIC session's new active window
-                // and follows the tree selection to it (#2). Dropping the payload here
-                // would force the app to GUESS the displayed session, which mismatches
-                // when a non-displayed session's active window changes.
-                Some(HostEvent::ActiveWindowChanged {
-                    host: host.to_string(),
-                    session_id: session.to_string(),
-                    window_id: window.to_string(),
-                })
+                // The card names no window any more, and the display PTY follows the
+                // mux's own state as a live mirror, so a window change needs no xmux
+                // reaction - it is a display detail inside the session.
+                None
             }
             Notif::ClientSessionChanged { client, name, .. } => {
                 // ANOTHER client's attached session changed. When that client is xmux's OWN
@@ -254,27 +247,6 @@ impl ControlProtocol for TmuxControl {
         // SESSION_FORMAT contains TABs; single-quote it so tmux's line parser keeps it
         // as one arg (an unquoted tab would split the format).
         format!("list-sessions -F '{SESSION_FORMAT}'\n")
-    }
-
-    fn list_panes_line(&self, session: &str) -> String {
-        // Quote the target so a session name with spaces/quotes survives the
-        // control-mode command parser (it splits on whitespace).
-        format!(
-            "list-panes -s -t {} -F '{}'\n",
-            quote_target(session),
-            PANE_FORMAT
-        )
-    }
-
-    fn active_window_line(&self, target: &str) -> String {
-        // The format braces are escaped (so `#{session_name}`/`#{window_index}` reach
-        // tmux literally) and a target with spaces is quoted for the control-mode parser.
-        // Both fields come back so the reply resolves the SESSION NAME (the probe targets
-        // a session id) alongside the active window index.
-        format!(
-            "display-message -p -t {} '#{{session_name}}\t#{{window_index}}'\n",
-            quote_target(target)
-        )
     }
 
     fn select_window_line(&self, target: &str) -> String {

@@ -3,8 +3,7 @@
 
 use std::sync::atomic::Ordering;
 
-use crate::mux::{parse_panes, parse_sessions};
-use crate::mux::{ControlProtocol, Line, Notif};
+use crate::mux::{parse_sessions, ControlProtocol, Line, Notif};
 
 use super::{HostEvent, InFlight, PendingReply, ReaderState};
 
@@ -125,30 +124,6 @@ fn resolve_block<E: FnMut(HostEvent)>(
                 sessions,
             });
         }
-        PendingReply::ListPanes { address } => {
-            let out = body.join("\n");
-            let panes = parse_panes(&out);
-            // Carry the subtree on the same `Panes` event the poll path uses — the loop
-            // applies it purely, no shared inventory to write.
-            emit(HostEvent::Panes { address, panes });
-        }
-        PendingReply::ActiveWindow => {
-            // `display-message -p '#{session_name}\t#{window_index}'` prints one line:
-            // `<name>\t<index>`. The probe targeted a session id, so the RESOLVED name
-            // comes back in the reply. Emit Focus for that session so the app follows
-            // the selection (#2). A missing/garbled body (no `name\tindex`) yields no event.
-            if let Some((session, window)) = body.iter().find_map(|l| {
-                let (name, idx) = l.split_once('\t')?;
-                let idx = idx.trim().parse::<i64>().ok()?;
-                Some((name.to_string(), idx))
-            }) {
-                emit(HostEvent::Focus {
-                    host: host.to_string(),
-                    session,
-                    window,
-                });
-            }
-        }
         PendingReply::DisplayClientTty => {
             // A `list-clients` body: the mux protocol parses out the display attach's tty
             // — the reader names no wire detail.
@@ -265,8 +240,8 @@ mod tests {
     fn reader_structure_notifications_emit_changed() {
         // A `%`-notification that the server's session/window STRUCTURE changed
         // (added, closed, renamed, or the set of sessions) must emit Changed: it
-        // carries only an id, so the app refetches (re-list-sessions +
-        // re-list-panes) to resync the tree + active-window markers (#5).
+        // carries only an id, so the app refetches (re-list-sessions) to resync
+        // the tree.
         for line in [
             "%window-add @4",
             "%window-close @4",
@@ -327,13 +302,11 @@ mod tests {
     }
 
     #[test]
-    fn session_window_changed_emits_active_window_changed_with_payload() {
-        // A session's ACTIVE WINDOW switched (`%session-window-changed $id @win`):
-        // emit ActiveWindowChanged CARRYING the notification's session id + window id,
-        // so the app probes THAT SPECIFIC session (not a guessed displayed one)
-        // and follows the tree selection to it (#2). It must NOT collapse to a blanket
-        // Changed (which only refetches and would leave the selection behind), and it must
-        // NOT drop the payload to a host-only event (which forces the guess).
+    fn session_window_changed_is_inert() {
+        // A session's ACTIVE WINDOW switched (`%session-window-changed $id @win`). The
+        // card names no window any more, so the notification must NOT trigger a blanket
+        // Changed refetch and must emit no window event at all — the display PTY follows
+        // the mux's own state as a live mirror.
         let state = test_state(80, 24);
         let in_flight: InFlight = Default::default();
         let mut events = Vec::new();
@@ -346,18 +319,10 @@ mod tests {
             |e| events.push(e),
         );
         assert!(
-            events.iter().any(|e| matches!(
-                e,
-                HostEvent::ActiveWindowChanged { host, session_id, window_id }
-                    if host == "jupiter06" && session_id == "$0" && window_id == "@1"
-            )),
-            "%session-window-changed must emit ActiveWindowChanged with the $id/@win payload"
-        );
-        assert!(
             !events
                 .iter()
                 .any(|e| matches!(e, HostEvent::Changed { .. })),
-            "%session-window-changed must not collapse to a blanket Changed"
+            "%session-window-changed must not trigger a refetch"
         );
     }
 
@@ -392,64 +357,6 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, HostEvent::Changed { .. })),
             "%client-session-changed must not collapse to a blanket Changed"
-        );
-    }
-
-    #[test]
-    fn reader_resolves_active_window_block_into_focus() {
-        // The active-window probe (`display-message -p '#{session_name}\t#{window_index}'`)
-        // returns a single line: `<name>\t<index>`. Resolving its block emits Focus
-        // carrying the RESOLVED session name + parsed window index (the probe targeted a
-        // session id, so the name comes back in the reply — not the correlator), so the
-        // app moves the tree selection to that window row of the correct session.
-        let state = test_state(80, 24);
-        let in_flight: InFlight = Default::default();
-        in_flight
-            .lock()
-            .unwrap()
-            .push_back(PendingReply::ActiveWindow);
-        let mut events = Vec::new();
-        let lines = vec![
-            "%begin 1 5 1".to_string(),
-            "api\t2".to_string(),
-            "%end 1 5 1".to_string(),
-        ]
-        .into_iter();
-        run_reader(
-            "jupiter06",
-            test_control_proto(),
-            lines,
-            &state,
-            &in_flight,
-            |e| events.push(e),
-        );
-        assert!(
-            events.iter().any(|e| matches!(
-                e,
-                HostEvent::Focus { host, session, window }
-                    if host == "jupiter06" && session == "api" && *window == 2
-            )),
-            "an active-window block resolves to Focus"
-        );
-    }
-
-    #[test]
-    fn active_window_query_line_quotes_and_escapes() {
-        // The probe targets a session (by name or `$id`) and prints its active window's
-        // session name + index so the reply resolves BOTH. The format braces are escaped
-        // (so `#{session_name}`/`#{window_index}` reach tmux literally) and a target with
-        // spaces is quoted for the control-mode parser.
-        let proto = test_control_proto();
-        // A session id target (`$0`) is quoted by the control-mode target quoter (the `$`
-        // is outside the bare-safe set); tmux strips the single-quotes and resolves `$0`
-        // as the session id.
-        assert_eq!(
-            proto.active_window_line("$0"),
-            "display-message -p -t '$0' '#{session_name}\t#{window_index}'\n"
-        );
-        assert_eq!(
-            proto.active_window_line("my proj"),
-            "display-message -p -t 'my proj' '#{session_name}\t#{window_index}'\n"
         );
     }
 
@@ -699,50 +606,6 @@ mod tests {
             )),
             "the exit reason carries the no-sessions error"
         );
-    }
-
-    #[test]
-    fn reader_resolves_list_panes_block_into_inventory() {
-        // A session's window/pane subtree must arrive via an explicit list-panes
-        // query (correlated to the session's `source/name` address); otherwise the
-        // session stays on "loading…" forever.
-        let state = test_state(80, 24);
-        let in_flight: InFlight = Default::default();
-        in_flight
-            .lock()
-            .unwrap()
-            .push_back(PendingReply::ListPanes {
-                address: "jupiter00/if".into(),
-            });
-        let mut events = Vec::new();
-        // PANE_FORMAT: window_index, window_active, pane_index, pane_active,
-        // pane_current_command, window_name.
-        let lines = vec![
-            "%begin 1 5 1".to_string(),
-            "0\t1\t0\t1\tbash\tmain".to_string(),
-            "%end 1 5 1".to_string(),
-        ]
-        .into_iter();
-        run_reader(
-            "jupiter00",
-            test_control_proto(),
-            lines,
-            &state,
-            &in_flight,
-            |e| events.push(e),
-        );
-        // The subtree rides on a `Panes` event keyed by the session address — the same
-        // carrier the poll path uses; the loop applies it purely (no shared inventory).
-        let panes = events
-            .iter()
-            .find_map(|e| match e {
-                HostEvent::Panes { address, panes } if address == "jupiter00/if" => {
-                    Some(panes.clone())
-                }
-                _ => None,
-            })
-            .expect("a Panes event under the session address");
-        assert_eq!(panes.len(), 1, "one window parsed");
     }
 
     #[test]

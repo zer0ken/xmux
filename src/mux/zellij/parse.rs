@@ -1,11 +1,11 @@
 //! zellij's CLI output shapes, as pure functions over raw stdout.
 //!
 //! zellij shares no output format with tmux: its session listing is a human line
-//! (`<name> [Created <age> ago] <suffix>`) and its tab listing is JSON. Both parsers
-//! live here so the `Mux` impl stays argv-and-policy only, and both are total: a line
-//! or record that does not fit is skipped rather than poisoning the list.
+//! (`<name> [Created <age> ago] <suffix>`). The parser
+//! lives here so the `Mux` impl stays argv-and-policy only, and is total: a line
+//! that does not fit is skipped rather than poisoning the list.
 
-use crate::session::{Pane, Session, WindowPanes};
+use crate::session::Session;
 
 /// The literal `zellij list-sessions -n` puts between a session's name and its age.
 /// Splitting on it is what lets a name containing spaces survive: zellij forbids only
@@ -27,8 +27,8 @@ const CURRENT_MARKER: &str = "(current)";
 ///
 /// Each line is `<name> [Created <age> ago] <suffix>`. `last_attached` is
 /// `now - age`, because zellij reports a session's CREATION age and no attach time
-/// at all: creation is the only instant available to order the list by, and the
-/// nav's recency sort needs the same epoch scale tmux reports.
+/// at all: creation is the only instant available, on the same epoch scale tmux
+/// reports, so a zellij session carries the same model field as any other.
 ///
 /// A session marked `EXITED` is SKIPPED. zellij keeps a resurrectable record of a
 /// session after its server is gone and lists it alongside the live ones, so
@@ -93,7 +93,7 @@ pub fn parse_age_secs(text: &str) -> i64 {
 /// The month and year lengths are `humantime`'s own calendar constants (a year is
 /// 365.25 days, a month a twelfth of one), so an age reported in months or years is
 /// approximate at the source. Sub-second units carry no information at the second
-/// resolution the recency key uses, so they count as zero rather than being refused.
+/// resolution the model field uses, so they count as zero rather than being refused.
 fn unit_secs(unit: &str) -> Option<i64> {
     Some(match unit {
         "year" | "years" => 31_557_600,
@@ -105,61 +105,6 @@ fn unit_secs(unit: &str) -> Option<i64> {
         "ms" | "us" | "ns" => 0,
         _ => return None,
     })
-}
-
-/// Parses `zellij action list-tabs -a -j` into xmux windows-and-panes.
-///
-/// A zellij TAB is what xmux calls a window, and `position` is its index - what
-/// `go-to-tab` addresses (one-based there). It is internal: a card names a tab the way
-/// zellij's own tab bar does, by name alone. The records are sorted by position so the
-/// rows read in the order the tab bar does, independent of the order zellij emitted
-/// them.
-///
-/// Pane rows carry only their ordinal. This query reports how many selectable panes a
-/// tab holds, not which one is focused or what each runs, and it is the query that
-/// reports tab activeness at all - zellij's pane listing marks a focused pane per tab
-/// and per layer, so it cannot name the one active tab. The nav renders the window
-/// row, so the tab query answers everything displayed and the pane count stays
-/// truthful without a second round trip per session.
-pub fn parse_tabs(out: &str) -> Vec<WindowPanes> {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(out) else {
-        return Vec::new();
-    };
-    let Some(records) = v.as_array() else {
-        return Vec::new();
-    };
-    let mut windows: Vec<WindowPanes> = Vec::new();
-    for tab in records {
-        let Some(index) = tab.get("position").and_then(|p| p.as_i64()) else {
-            continue;
-        };
-        let count = field_i64(tab, "selectable_tiled_panes_count")
-            .saturating_add(field_i64(tab, "selectable_floating_panes_count"))
-            .max(0);
-        windows.push(WindowPanes {
-            index,
-            name: tab
-                .get("name")
-                .and_then(|n| n.as_str())
-                .unwrap_or_default()
-                .to_string(),
-            active: tab.get("active").and_then(|a| a.as_bool()) == Some(true),
-            panes: (0..count)
-                .map(|index| Pane {
-                    index,
-                    active: false,
-                    command: String::new(),
-                })
-                .collect(),
-        });
-    }
-    windows.sort_by_key(|w| w.index);
-    windows
-}
-
-/// One integer field of a tab record, or `0` when it is absent or not a number.
-fn field_i64(tab: &serde_json::Value, key: &str) -> i64 {
-    tab.get(key).and_then(|v| v.as_i64()).unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -256,68 +201,5 @@ mod tests {
         // An unrecognised unit costs its own term only.
         assert_eq!(parse_age_secs("7fortnights 30s"), 30);
         assert_eq!(parse_age_secs(""), 0);
-    }
-
-    /// Verbatim `zellij action list-tabs -a -j` output (0.45.0), trimmed to the fields
-    /// this reads, with the tabs OUT of position order to pin the sort.
-    const TABS: &str = r#"[
-      { "position": 2, "name": "deploy", "active": false,
-        "selectable_tiled_panes_count": 1, "selectable_floating_panes_count": 0,
-        "tab_id": 2 },
-      { "position": 0, "name": "Tab #1", "active": false,
-        "selectable_tiled_panes_count": 1, "selectable_floating_panes_count": 1,
-        "tab_id": 0 },
-      { "position": 1, "name": "build", "active": true,
-        "selectable_tiled_panes_count": 2, "selectable_floating_panes_count": 0,
-        "tab_id": 1 }
-    ]"#;
-
-    #[test]
-    fn tabs_are_windows_in_tab_bar_order() {
-        let got = parse_tabs(TABS);
-        assert_eq!(
-            got.iter().map(|w| w.index).collect::<Vec<_>>(),
-            vec![0, 1, 2],
-            "sorted by position, not by the order zellij emitted"
-        );
-        assert_eq!(
-            got.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(),
-            vec!["Tab #1", "build", "deploy"]
-        );
-        assert!(got[1].active, "the focused tab is the active window");
-        assert!(!got[0].active && !got[2].active);
-    }
-
-    #[test]
-    fn a_pane_row_carries_only_its_ordinal() {
-        // The tab query reports how many selectable panes a tab holds (tiled plus
-        // floating), not which is focused or what it runs.
-        let got = parse_tabs(TABS);
-        assert_eq!(got[0].panes.len(), 2, "one tiled plus one floating");
-        assert_eq!(got[1].panes.len(), 2);
-        assert_eq!(got[2].panes.len(), 1);
-        assert_eq!(
-            got[1].panes.iter().map(|p| p.index).collect::<Vec<_>>(),
-            vec![0, 1]
-        );
-        assert!(got[1]
-            .panes
-            .iter()
-            .all(|p| !p.active && p.command.is_empty()));
-    }
-
-    #[test]
-    fn output_that_is_not_a_tab_array_yields_nothing() {
-        // A zellij that cannot answer (session gone mid-poll, a version whose flag
-        // names differ) must leave the window list empty rather than half-built.
-        for junk in [
-            "",
-            "Session 'x' not found. The following sessions are active:",
-            "{}",
-            "[]",
-            r#"[{"name":"no position"}]"#,
-        ] {
-            assert!(parse_tabs(junk).is_empty(), "yields nothing: {junk:?}");
-        }
     }
 }

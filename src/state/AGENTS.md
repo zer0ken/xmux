@@ -35,8 +35,8 @@ result. There is no rename, kill, or window intent; the mux owns editing a
 session.
 
 Applying an EVENT is the inbound mirror: the single event-driven mutation site.
-It folds the arms whose data is SELF-CONTAINED in the event (an active-window
-marker, a pane subtree, a poll enumeration, an exit marking a source unreachable)
+It folds the arms whose data is SELF-CONTAINED in the event (a poll enumeration,
+an exit marking a source unreachable)
 into the state through the switcher, and returns the mux follow-ups it cannot
 perform itself as effects for the run loop. The once-connected set enters as
 DATA, like the clock on a tick: an exit from a once-connected source is a transient

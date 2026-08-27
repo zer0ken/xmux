@@ -4,12 +4,11 @@
 //! which is intercepted: `prefix Left|Up|Tab` returns focus to the nav,
 //! `prefix Right|Down` keeps focus on the (already-focused) terminal view (an arrow
 //! points at the view it focuses), `prefix q` quits, `prefix ?` toggles
-//! the keys help, `prefix h`/`l` and `prefix Ctrl+←/→` resize the nav, `prefix t`
-//! toggles auto-hide-nav mode, `prefix n`/`R`/`r` run the nav actions
-//! (new / rename / re-scan) on the displayed session, `prefix x` kills the ACTIVE pane
-//! of the displayed session (tmux `prefix x` parity - distinct from nav focus, where
-//! `prefix x` kills the selected node), and a doubled
-//! prefix sends one literal prefix byte to the pane. Apart from `prefix x`, the command set matches
+//! the keys help, `prefix h`/`l` and `prefix Ctrl+←/→` resize the nav width,
+//! `prefix Ctrl+↑/↓` the nav height, `prefix t`
+//! toggles auto-hide-nav mode, and `prefix n`/`r` and `prefix <digit>` run the nav
+//! actions (new session / re-scan / card jump) on the displayed session. A doubled
+//! prefix sends one literal prefix byte. The command set matches
 //! nav focus, so those commands behave identically regardless of which view holds
 //! focus. The prefix is a C0
 //! control byte, so it cannot collide with a UTF-8 continuation byte or appear mid-CSI;
@@ -404,9 +403,8 @@ mod tests {
 
     #[test]
     fn prefix_then_nav_action_emits_nav_key() {
-        // prefix n/R/r each emit a NavKey the caller routes to Switcher::handle_key,
-        // so the nav actions work from terminal focus too. (prefix x is separate - it
-        // kills the active pane; see prefix_then_x_kills_active_pane.)
+        // prefix n/r each emit a NavKey the caller routes to Switcher::handle_key,
+        // so the nav actions work from terminal focus too.
         for (b, c) in [(b'n', 'n'), (b'r', 'r')] {
             let mut t = m();
             t.feed(&[0x07]);

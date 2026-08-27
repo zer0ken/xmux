@@ -635,13 +635,18 @@ fn spawn_host_detection(
 ///
 /// Fire and forget, and deliberately AFTER launch: a remote probe is an ssh round trip
 /// per mux, and the app must be on screen before any of that. Nothing waits for it, so a
-/// machine that never answers costs a task and no more.
+/// machine that never answers costs a task and no more. A permit is held on `gate` for
+/// the whole probe, so at most [`MUX_DISCOVERY_CONCURRENCY`] machines answer at once.
 fn spawn_mux_discovery(
     machine: String,
     transport: Box<dyn crate::transport::Transport>,
     tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
+    gate: std::sync::Arc<tokio::sync::Semaphore>,
 ) {
     tokio::spawn(async move {
+        let Ok(_permit) = gate.acquire().await else {
+            return;
+        };
         let muxes =
             crate::mux::installed_muxes(&*transport, &crate::model::source::ExecRunner).await;
         if !muxes.is_empty() {
@@ -677,14 +682,26 @@ fn spawn_roster_resolve(
     });
 }
 
+/// How many machines may probe their muxes at once. Discovery is off the loop and
+/// streamed, so nothing on screen waits on any one answer; bounding the probes keeps a
+/// re-scan from flooding the machine with a subprocess per candidate per host at once.
+const MUX_DISCOVERY_CONCURRENCY: usize = 3;
+
 /// Starts mux discovery for every machine that left its mux list to xmux, once, right
 /// after the first paint. One task per MACHINE (not per source): the answer is about the
 /// machine, and each mux it reports beyond the one already served becomes a source.
+///
+/// The per-machine probes are bounded by a [`tokio::sync::Semaphore`]: at most
+/// [`MUX_DISCOVERY_CONCURRENCY`] machines answer at once, so a re-scan does not flood
+/// the machine with a subprocess per candidate per host all at the same instant. A
+/// strict one-at-a-time probe would serialize on a slow host and delay every machine
+/// behind it.
 fn discover_machine_muxes(
     cfg: &crate::provision::config::Config,
     hosts: &crate::model::Hosts,
     tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
 ) {
+    let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(MUX_DISCOVERY_CONCURRENCY));
     let mut seen: HashSet<&str> = HashSet::new();
     for id in hosts.ids() {
         let machine = crate::session::machine_of(id);
@@ -697,7 +714,12 @@ fn discover_machine_muxes(
             continue;
         }
         if let Some(host) = hosts.get(id) {
-            spawn_mux_discovery(machine.to_string(), host.transport.clone(), tx.clone());
+            spawn_mux_discovery(
+                machine.to_string(),
+                host.transport.clone(),
+                tx.clone(),
+                gate.clone(),
+            );
         }
     }
 }
@@ -770,13 +792,12 @@ fn kick_rescan(
     hosts: &crate::model::Hosts,
     detecting: &mut HashSet<String>,
     mgr: &mut HostManager,
-    panes_requested: &mut HashSet<String>,
     size: (u16, u16),
 ) {
     if !switcher.take_rescan_kick() {
         return;
     }
-    run_discovery(env, hosts, detecting, mgr, panes_requested, size, true);
+    run_discovery(env, hosts, detecting, mgr, size, true);
 }
 
 /// The shared discovery pass a fresh launch and a re-scan both run, so the two are
@@ -788,12 +809,18 @@ fn kick_rescan(
 /// no card already on screen, since the standing sources are re-enumerated regardless)
 /// and detected hosts are re-listed; at launch they are first dispatched onto their
 /// metadata channel instead.
+///
+/// Mux discovery asks each auto machine which muxes it serves, and the answer must not
+/// outlive the roster it was asked against - so it is asked only once per roster. At
+/// launch the roster was resolved before this pass, so discovery fires here; on a
+/// re-scan the freshly resolved roster answers as `RosterResolved` and fires it there.
+/// Firing it in both places would probe every auto machine against the old roster and
+/// again against the new one, doubling the re-scan's subprocess burst.
 fn run_discovery(
     env: &Env,
     hosts: &crate::model::Hosts,
     detecting: &mut HashSet<String>,
     mgr: &mut HostManager,
-    panes_requested: &mut HashSet<String>,
     size: (u16, u16),
     rescan: bool,
 ) {
@@ -803,13 +830,6 @@ fn run_discovery(
         // are re-enumerated below regardless, so a slow provider delays no card already
         // on screen.
         spawn_roster_resolve(env.xmux_dir.clone(), env.local_socket.clone(), mgr.events());
-        // `request_rescan` cleared every session's panes from `state.panes`; clear the
-        // loop-local pane-request dedup in lockstep so each control host's re-`list_sessions`
-        // reply actually re-issues `list-panes` (`request_session_panes` only asks for
-        // addresses not already in this set - otherwise the subtree stays "loading…" until
-        // a `%`-change or relaunch). A global clear is safe: this set gates only control
-        // hosts; poll hosts re-emit their panes regardless.
-        panes_requested.clear();
     }
     for id in hosts.ids() {
         if let Some(host) = hosts.get(id) {
@@ -824,34 +844,16 @@ fn run_discovery(
         }
         scan_or_dispatch_host(mgr, hosts, detecting, id, cols, rows);
     }
-    discover_machine_muxes(&env.roster().cfg, hosts, mgr.events());
-}
-
-/// Requests `list-panes` for each of a host's sessions whose panes have not been
-/// requested yet, so every session's window/pane subtree loads instead of sitting
-/// on the "loading…" placeholder. The control client never volunteers pane data -
-/// it must be asked, once per session (`requested` dedupes repeat Inventory events).
-fn request_session_panes(
-    client: &crate::link::HostClient,
-    sessions: &[crate::session::Session],
-    requested: &mut HashSet<String>,
-) {
-    for s in sessions {
-        let addr = s.address();
-        if requested.insert(addr.clone()) {
-            client.list_panes(&s.name, addr);
-        }
+    if !rescan {
+        discover_machine_muxes(&env.roster().cfg, hosts, mgr.events());
     }
 }
 
-/// Refetches a host's inventory after a `%`-change notification: clears its
-/// pane-request dedup so every session re-lists, then re-runs list-sessions - its
-/// reply (Connected/Inventory) re-applies the nav, re-requests panes, and re-syncs
+/// Refetches a host's inventory after a `%`-change notification: re-runs
+/// list-sessions - its reply (Connected/Inventory) re-applies the nav and re-syncs
 /// the PTY set (a new session attaches, a closed one is reaped). #5 nav view sync.
-fn refetch_host(mgr: &HostManager, panes_requested: &mut HashSet<String>, host: &str) {
+fn refetch_host(mgr: &HostManager, host: &str) {
     if let Some(client) = mgr.get(host) {
-        let prefix = format!("{host}/");
-        panes_requested.retain(|a| !a.starts_with(&prefix));
         client.list_sessions();
     }
 }
@@ -1047,7 +1049,6 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
         &rt.hosts,
         &mut rt.detecting,
         &mut rt.mgr,
-        &mut rt.panes_requested,
         init_size,
         false,
     );
@@ -1223,7 +1224,6 @@ struct Runtime {
     nav_decoder: crate::display::decode::KeyDecoder,
     prefix: u8,
     connected: HashSet<String>,
-    panes_requested: HashSet<String>,
     detecting: HashSet<String>,
     draw_observer: DrawObserver,
     spinner_start: std::time::Instant,

@@ -37,7 +37,6 @@ impl Runtime {
             registry,
             switcher,
             state,
-            panes_requested,
             detecting,
             connected,
             worker,
@@ -62,9 +61,8 @@ impl Runtime {
         match effect {
             EventEffect::ApplyInventory { host, sessions } => {
                 // The reader carried the parsed sessions on the event. Fold them into the
-                // single owner (`model::Host.inventory`), apply them to the nav, request
-                // each session's panes, and sync the display PTY(s). Pane subtrees arrive
-                // separately as `HostEvent::Panes` (applied purely by `apply_event`).
+                // single owner (`model::Host.inventory`), apply them to the nav, and sync
+                // the display PTY(s).
                 if let Some(h) = hosts.get_mut(&host) {
                     h.inventory.sessions = sessions.clone();
                 }
@@ -76,9 +74,6 @@ impl Runtime {
                 // is emitted only for control-mode hosts, so a poll host is never gated out.)
                 if mgr.get(&host).is_some() {
                     switcher.apply_source_result(host.clone(), sessions.clone(), None, state);
-                    if let Some(client) = mgr.get(&host) {
-                        request_session_panes(client, &sessions, panes_requested);
-                    }
                     let n = sessions.len();
                     let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
                     tracing::info!(host, n, ?names, "sessions_applied");
@@ -99,21 +94,8 @@ impl Runtime {
             }
             EventEffect::Refetch { host } => {
                 // The server's session/window structure changed (a `%`-notification).
-                // Refetch so the nav, panes, and PTY set resync (#5 nav view sync).
-                refetch_host(mgr, panes_requested, &host);
-            }
-            EventEffect::ProbeActiveWindow { host, session_ref } => {
-                // A session's ACTIVE WINDOW switched - the structure did NOT change, so do
-                // NOT refetch the whole inventory: a full list-sessions + per-session
-                // list-panes per change storms the single-threaded loop and freezes the UI
-                // during rapid window navigation (each nav step issues select-window,
-                // which echoes back as this notification). Probe ONLY the session the
-                // notification names (its tmux id, `session_ref`) - never a guessed displayed
-                // session; the reply (Focus) resolves the session name + new active window
-                // and updates THAT session's marker without any refetch.
-                if let Some(client) = mgr.get(&host) {
-                    client.probe_active_window(&session_ref);
-                }
+                // Refetch so the nav and PTY set resync (#5 nav view sync).
+                refetch_host(mgr, &host);
             }
             EventEffect::ReapHost { host } => {
                 mgr.reap(&host);
@@ -261,7 +243,6 @@ impl Runtime {
                     mgr.reap(id);
                     connected.remove(id);
                     detecting.remove(id);
-                    panes_requested.retain(|addr| crate::session::source_of(addr) != id);
                     for address in registry.addresses() {
                         if crate::session::source_of(&address) == id {
                             registry.remove(&address);
@@ -500,7 +481,6 @@ impl Runtime {
             nav_decoder,
             prefix,
             connected: HashSet::new(),
-            panes_requested: HashSet::new(),
             detecting: HashSet::new(),
             // The draw hot path's observability (per-key grid fingerprints + slow-step
             // probe), owned off the draw block so it does nothing but lock → render.
@@ -1001,7 +981,6 @@ impl Runtime {
                     &self.hosts,
                     &mut self.detecting,
                     &mut self.mgr,
-                    &mut self.panes_requested,
                     (self.cols, self.body_rows),
                 );
                 if sync_selection_from_switcher(&mut self.state, &self.switcher) {

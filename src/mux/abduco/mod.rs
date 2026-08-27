@@ -4,7 +4,6 @@
 //! alone (one window, its own name).
 
 use super::*;
-use crate::link::HostEvent;
 use crate::model::source::RunError;
 use crate::session::Session;
 use crate::transport::Transport;
@@ -97,46 +96,11 @@ impl Mux for Abduco {
         }
     }
 
-    /// abduco has no per-session query and no windows: each session is the whole
-    /// session. Polling therefore enumerates once and resolves every session's card
-    /// directly with an empty pane list (the session alone, no window row) instead of
-    /// running a per-session command that cannot exist.
-    async fn poll_once(
-        &self,
-        source: &str,
-        transport: &dyn Transport,
-        runner: &dyn Runner,
-        emit: &mut (dyn FnMut(HostEvent) + Send),
-    ) {
-        let (sessions, err) =
-            match within_poll_budget("list-sessions", self.enumerate(transport, runner)).await {
-                Ok(s) => (s, None),
-                Err(e) => (Vec::new(), Some(e.to_string())),
-            };
-        let addresses: Vec<String> = sessions.iter().map(|s| s.address()).collect();
-        emit(HostEvent::Sessions {
-            source: source.to_string(),
-            sessions,
-            err,
-        });
-        for address in addresses {
-            emit(HostEvent::Panes {
-                address,
-                panes: Vec::new(),
-            });
-        }
-    }
-
     fn new_session_plan(&self, name: &str) -> Vec<String> {
         // `-n` creates a session without attaching, running abduco's default command
         // (typically dvtm, the user's tool inside the session — out of xmux's scope).
         // abduco cannot auto-name, so an empty name fails like zellij's detached create.
         vec![self.bin.clone(), "-n".to_string(), name.to_string()]
-    }
-
-    fn window_label(&self, _index: i64, name: &str) -> String {
-        // abduco has no windows: the session is its own single window, named itself.
-        name.to_string()
     }
 }
 
@@ -265,17 +229,6 @@ mod tests {
         assert_eq!(abduco().list_sessions_plan(), vec!["abduco"]);
     }
 
-    #[test]
-    fn the_window_label_is_the_session_name() {
-        // abduco has no windows: a window row would be the session itself.
-        assert_eq!(abduco().window_label(0, "work"), "work");
-        assert_eq!(
-            crate::mux::window_label("abduco", 0, "work"),
-            "work",
-            "the kind-keyed lookup follows the family rule"
-        );
-    }
-
     #[tokio::test]
     async fn enumerate_reads_the_listing() {
         let m = abduco();
@@ -361,24 +314,13 @@ mod tests {
         let mut events: Vec<HostEvent> = Vec::new();
         m.poll_once("local", &transport, &runner, &mut |ev| events.push(ev))
             .await;
-        assert_eq!(events.len(), 3, "one Sessions, then one Panes per session");
+        assert_eq!(events.len(), 1, "one Sessions event");
         match &events[0] {
             HostEvent::Sessions { sessions, err, .. } => {
                 assert_eq!(sessions.len(), 2);
                 assert!(err.is_none());
             }
             _ => panic!("want Sessions first"),
-        }
-        for ev in &events[1..] {
-            match ev {
-                HostEvent::Panes { panes, .. } => {
-                    assert!(
-                        panes.is_empty(),
-                        "abduco resolves a session with no window row"
-                    );
-                }
-                _ => panic!("want Panes after Sessions"),
-            }
         }
     }
 }

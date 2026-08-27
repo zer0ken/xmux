@@ -13,7 +13,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 
-use crate::ui::modal::wrap_text;
+use crate::ui::modal::{wrap_text, Modal};
 use crate::ui::switcher::fit;
 
 /// Parses a tmux-style colour token into a ratatui [`Color`], matching tmux/psmux's
@@ -171,7 +171,7 @@ pub(crate) fn parse_selection_bg(spec: &str) -> Option<Color> {
     None
 }
 
-/// The hint bar's refusal style: a solid danger-red bar (the active palette's
+/// The hint bar's refusal style: a solid danger bar (the active palette's
 /// `danger` as the background, the bar's own text slot on top) that breaks hard
 /// from the calm default so a refused action reads as an
 /// error at a glance, not as more of the key cheatsheet. Every flash today is a
@@ -804,7 +804,7 @@ impl Chrome {
             Line::from(""),
             Line::from(Span::styled(
                 format!(" {}", self.headline(source, kind)),
-                Style::default().fg(pal.host).add_modifier(Modifier::BOLD),
+                Style::default().fg(pal.text).add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(format!(" {}", kind.word()), state_style)),
             Line::from(""),
@@ -826,26 +826,30 @@ impl Chrome {
     /// The hint bar's logical text, fit to `width`. Modeled on zellij's status bar:
     /// at rest it shows only the prefix, so the nav's bottom row is a quiet reminder
     /// of the one key that opens everything; once the prefix is ARMED it becomes the
-    /// list of keys that prefix unlocks, which is the moment the user needs it. The
-    /// transient states outrank both, in order: a flash (a refusal), the scan
-    /// progress, then the active filter. A flash is returned raw - it may exceed
-    /// `width`; [`Self::hint_bar_lines`] wraps it so it never clips.
+    /// list of keys that prefix unlocks, which is the moment the user needs it. An
+    /// open input outranks everything: the bar BECOMES the input line (feature name,
+    /// guide text, and the windowed buffer), so what is being typed is what the bar
+    /// says. The transient states outrank the rest, in order: a flash (a refusal),
+    /// the scan progress, then the active filter. A flash is returned raw - it may
+    /// exceed `width`; [`Self::hint_bar_lines`] wraps it so it never clips.
     pub(crate) fn hint_bar_text(&self, width: u16, state: &crate::state::State) -> String {
         // Use the active prefix so the hint_bar matches the user's configured binding.
         let p = &self.ui_prefix;
-        if !self.flash.is_empty() {
+        if let Some(Modal::Input(input)) = &state.modal {
+            crate::ui::modal::input_hint_text(input, width)
+        } else if !self.flash.is_empty() {
             format!(" ⚠ {}", self.flash)
         } else if self.armed {
             // The prefix is held: name what it unlocks. Longest-first so a narrow nav
             // drops the rarer chords rather than clipping mid-word.
-            // Order: focus nav, focus mux, jump, new, hide, rescan, help, quit.
+            // Order: focus nav, focus terminal, jump, new, hide, rescan, help, quit.
             // The focus rows use arrow symbols that point at the view they focus. The
             // resize keys are left out of the cheatsheet (the help modal has them).
             fit(
                 &[
-                    format!(" {p} · ←/↑ focus nav · →/↓ focus mux · 0-9 jump to a session · n new session · t hide nav · r rescan · ? help · q quit"),
-                    format!(" {p} · ←/↑ nav · →/↓ mux · 0-9 jump to · n new · t hide · r rescan · ? help · q quit"),
-                    format!(" {p} · ←/↑ nav · →/↓ mux · 0-9 jump · n new · t hide · r · ? · q"),
+                    format!(" {p} · ←/↑ focus nav · →/↓ focus terminal · 0-9 jump to a session · n new session · t hide nav · r rescan · ? help · q quit"),
+                    format!(" {p} · ←/↑ nav · →/↓ terminal · 0-9 jump to · n new · t hide · r rescan · ? help · q quit"),
+                    format!(" {p} · ←/↑ nav · →/↓ terminal · 0-9 jump · n new · t hide · r · ? · q"),
                     format!(" {p} · ←/↑ · →/↓ · 0-9 · n · t · r · ? · q"),
                     format!(" {p}…"),
                 ],
@@ -969,6 +973,19 @@ impl Chrome {
         state: &crate::state::State,
         fill: BarFill,
     ) {
+        // An open input owns the bar outright: the bar BECOMES the input line (see
+        // [`Self::hint_bar_text`]), painted as the status bar with a reversed-block
+        // caret. This branch is the bar's whole render - the cheatsheet, the version
+        // label, and the key-token styling all yield to what is being typed.
+        if let Some(Modal::Input(input)) = &state.modal {
+            let line = crate::ui::modal::input_hint_line(input, area.width);
+            frame.render_widget(Clear, area);
+            frame.render_widget(
+                Paragraph::new(line).style(self.hint_bar_render_style()),
+                area,
+            );
+            return;
+        }
         // While the prefix is HELD the bar is expanded, and it pins its name and version to
         // the far right: a cheap build pointer that never crowds the cheatsheet. A flash is
         // a refusal and must own the whole row, so it displaces the version. The version
@@ -1120,13 +1137,42 @@ mod tests {
     }
 
     #[test]
+    fn hint_bar_becomes_the_input_line_while_one_is_open() {
+        // An open input outranks every other bar state (resting prefix, armed, flash,
+        // scan, filter): the bar BECOMES `[feature] guide: buffer`.
+        use crate::ui::modal::{Input, InputMode, Modal};
+        let mut c = Chrome::default();
+        let state = crate::state::State {
+            modal: Some(Modal::Input(Input::new(
+                InputMode::Filter,
+                " filter sessions".into(),
+                "xm".into(),
+                None,
+            ))),
+            ..Default::default()
+        };
+        let t = c.hint_bar_text(60, &state);
+        assert!(
+            t.contains("[filter] filter sessions: xm"),
+            "the bar reads the input line: {t:?}"
+        );
+        // A flash does not displace the input.
+        c.flash("host unreachable");
+        let t2 = c.hint_bar_text(60, &state);
+        assert!(
+            t2.contains("[filter] filter sessions"),
+            "the input outranks a flash too: {t2:?}"
+        );
+    }
+
+    #[test]
     fn hint_bar_shows_the_prefix_at_rest_and_its_keys_when_armed() {
         let mut c = Chrome::default();
         let state = crate::state::State::default();
         // At rest: the prefix alone. That is the whole resting cheatsheet.
         assert_eq!(c.hint_bar_text(80, &state).trim(), "C-g");
         // Armed: the keys the prefix unlocks. Wide enough for the full descriptions,
-        // the rows run in the bar's fixed order (focus nav, focus mux, jump, new,
+        // the rows run in the bar's fixed order (focus nav, focus terminal, jump, new,
         // hide, rescan, filter, help, quit) and the focus rows use arrow symbols that
         // point at the view they focus.
         c.set_armed(true);
@@ -1134,7 +1180,7 @@ mod tests {
         assert!(full.starts_with(" C-g "), "{full:?}");
         let order = [
             "←/↑ focus nav",
-            "→/↓ focus mux",
+            "→/↓ focus terminal",
             "0-9 jump to a session",
             "n new session",
             "t hide nav",
@@ -1158,8 +1204,8 @@ mod tests {
         // measure at a width that forces the short variant.
         let armed = c.hint_bar_text(100, &state);
         assert!(
-            armed.contains("→/↓ mux"),
-            "short bar keeps focus-mux: {armed:?}"
+            armed.contains("→/↓ terminal"),
+            "short bar keeps focus-terminal: {armed:?}"
         );
         for key in ["n new", "r rescan", "? help", "q quit"] {
             assert!(armed.contains(key), "armed bar lists {key:?}: {armed:?}");

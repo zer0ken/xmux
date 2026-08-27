@@ -395,9 +395,6 @@ mod tests {
         fn event_source(&self) -> EventSource {
             EventSource::Poll { interval_ms: 1500 }
         }
-        fn list_panes_plan(&self, _s: &str) -> Vec<String> {
-            vec![]
-        }
         fn select_window_plan(&self, _t: &str) -> Vec<String> {
             vec![]
         }
@@ -732,9 +729,6 @@ mod tests {
         }
         fn event_source(&self) -> EventSource {
             EventSource::Poll { interval_ms: 1500 }
-        }
-        fn list_panes_plan(&self, _s: &str) -> Vec<String> {
-            vec![]
         }
         fn select_window_plan(&self, _t: &str) -> Vec<String> {
             vec![]

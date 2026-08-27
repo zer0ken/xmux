@@ -155,13 +155,19 @@ impl Switcher {
         )));
     }
 
-    /// The row `number` addresses, or `None` when no card carries it. The numbers run
-    /// `0..rows.len()`, so a number that names nothing today can never be extended into
-    /// one either (any extra digit only makes it larger). That is what lets the jump
-    /// VET a keystroke instead of holding a dead number: see [`Switcher::jump_accepts`].
+    /// The row `number` addresses, or `None` when no card carries it: the nth
+    /// SELECTABLE card, section titles excepted. The numbers run `0..selectable_count`,
+    /// so a number that names nothing today can never be extended into one either (any
+    /// extra digit only makes it larger). That is what lets the jump VET a keystroke
+    /// instead of holding a dead number: see [`Switcher::jump_accepts`].
     fn jump_row(&self, number: &str) -> Option<usize> {
         let n = number.trim().parse::<usize>().ok()?;
-        (n < self.rows.len()).then_some(n)
+        self.rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.selectable())
+            .nth(n)
+            .map(|(i, _)| i)
     }
 
     /// Whether the jump would accept `number`, i.e. some card carries it. An empty
@@ -179,21 +185,16 @@ impl Switcher {
     pub(super) fn open_jump(&mut self, digit: char, state: &mut crate::state::State) {
         state.chrome.flash.clear();
         let seed = digit.to_string();
+        let last = self.selectable_count().saturating_sub(1);
         if !self.jump_accepts(&seed) {
-            state.flash(format!(
-                "no session {seed} (0 - {})",
-                self.rows.len().saturating_sub(1)
-            ));
+            state.flash(format!("no session {seed} (0 - {last})"));
             return;
         }
         let restore = self.current_ref().cloned();
         self.dismiss_modals(state);
         let mut input = Input::new(
             InputMode::Jump,
-            format!(
-                " jump to a session (0 - {})",
-                self.rows.len().saturating_sub(1)
-            ),
+            format!(" jump to a session (0 - {last})"),
             seed,
             None,
         );
@@ -278,11 +279,13 @@ impl Switcher {
             // match the raw NAK / ETB bytes, not Char('u')/Char('w') + a modifier.
             code => {
                 let mut jumping = false;
-                // Vetting a digit needs the row count while `state.modal` is mutably
-                // borrowed, so capture the predicate's input up front.
-                let rows = self.rows.len();
+                // Vetting a digit needs the selectable count while `state.modal` is
+                // mutably borrowed, so capture the predicate's input up front. Section
+                // titles take no number, so the bound is the card count, not the row
+                // count.
+                let cards = self.selectable_count();
                 let accepts =
-                    |buf: String| matches!(buf.trim().parse::<usize>(), Ok(n) if n < rows);
+                    |buf: String| matches!(buf.trim().parse::<usize>(), Ok(n) if n < cards);
                 if let Some(Modal::Input(input)) = state.modal.as_mut() {
                     jumping = input.mode == InputMode::Jump;
                     match code {

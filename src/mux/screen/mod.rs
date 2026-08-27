@@ -94,14 +94,6 @@ impl Mux for Screen {
         }
     }
 
-    fn list_panes_plan(&self, session: &str) -> Vec<String> {
-        vocab::windows(&self.bin, session)
-    }
-
-    fn parse_panes(&self, out: &str) -> Vec<WindowPanes> {
-        vocab::parse_windows(out)
-    }
-
     fn select_window_plan(&self, target: &str) -> Vec<String> {
         // `select_window_plan` receives a `session:window` target; screen addresses a
         // session with `-S` and a window by `select <index>`.
@@ -195,14 +187,6 @@ mod tests {
         assert_eq!(
             screen().select_window_plan(&crate::mux::window_target("dev", 2)),
             argv(&["screen", "-S", "dev", "-X", "select", "2"])
-        );
-    }
-
-    #[test]
-    fn the_window_query_is_s_q_windows() {
-        assert_eq!(
-            screen().list_panes_plan("api"),
-            argv(&["screen", "-S", "api", "-Q", "windows"])
         );
     }
 

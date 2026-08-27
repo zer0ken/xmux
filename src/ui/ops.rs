@@ -5,12 +5,12 @@
 //! Pure over `Ops` - no switcher state - so it never touches the event loop.
 
 use crate::model::MuxOp;
-use crate::session::{Session, WindowPanes};
+use crate::session::Session;
 
 /// The side-effecting actions the switcher delegates to the host program. The
 /// event loop also drives the streaming probes through it: [`Ops::sources`] seeds
-/// the host skeletons, then [`Ops::list_sessions`] (one per source) and
-/// [`Ops::panes`] (one per session) feed the tree incrementally.
+/// the host skeletons, then [`Ops::list_sessions`] (one per source) feeds the tree
+/// incrementally.
 ///
 /// Only ONE method mutates the mux ([`Ops::new_session`]); the rest read. xmux
 /// aggregates and switches, so renaming, killing, and window/pane editing stay
@@ -29,23 +29,17 @@ pub trait Ops: Send + Sync {
     /// unreachable (the message is shown as the host's failure reason).
     async fn list_sessions(&self, source: &str) -> anyhow::Result<Vec<Session>>;
     async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session>;
-    async fn panes(&self, s: &Session) -> anyhow::Result<Vec<WindowPanes>>;
 }
 
 /// The outcome of a [`MuxOp`]. [`State::fold_op_result`] folds it into the
-/// inventory (the single owner of `groups`/`panes`/`panes_loaded`) and returns
+/// inventory (the single owner of `groups`) and returns
 /// an [`OpFollow`] telling the switcher how to rebuild its rows.
 ///
 /// [`State::fold_op_result`]: crate::state::State::fold_op_result
 #[derive(Debug, Clone)]
 pub enum OpResult {
-    Created {
-        session: Session,
-        panes: Vec<WindowPanes>,
-    },
-    Failed {
-        message: String,
-    },
+    Created { session: Session },
+    Failed { message: String },
 }
 
 /// What the switcher must do after [`State::fold_op_result`] applies an op's
@@ -68,10 +62,7 @@ pub enum OpFollow {
 pub async fn run_op(op: &MuxOp, ops: &dyn Ops) -> OpResult {
     match op {
         MuxOp::Create { source, name } => match ops.new_session(source, name).await {
-            Ok(session) => {
-                let panes = ops.panes(&session).await.unwrap_or_default();
-                OpResult::Created { session, panes }
-            }
+            Ok(session) => OpResult::Created { session },
             Err(e) => OpResult::Failed {
                 message: format!("create failed: {e}"),
             },
