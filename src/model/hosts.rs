@@ -110,11 +110,16 @@ impl Hosts {
     /// A surviving host keeps the display position it had and an added one appends, so a
     /// card the user is looking at does not move because another machine answered.
     pub fn reconcile(&mut self, mut fresh: Hosts) -> RosterDelta {
-        let machines: HashSet<&str> = fresh
+        let mut machines: HashSet<&str> = fresh
             .order
             .iter()
             .map(|id| crate::session::machine_of(id))
             .collect();
+        // This box always exists. The local machine's presence in `fresh` depends on a
+        // probe (the resolved local mux list), and a probe result is a verdict on which
+        // muxes are here, never on whether the machine exists - so it must not be able
+        // to reap every local source on a re-scan where the probe failed to answer.
+        machines.insert(LOCAL_SOURCE);
         let removed: Vec<String> = self
             .order
             .iter()
@@ -132,6 +137,13 @@ impl Hosts {
                 continue;
             }
             if let Some(host) = fresh.map.remove(&id) {
+                // A (machine, mux) pair is served by at most one id. Local ids are
+                // qualified from how many muxes the probe reported, so a bare `local`
+                // and a `local:psmux` can name the same pair across resolutions;
+                // adding the second spelling would paint a duplicate card.
+                if self.machine_serves(crate::session::machine_of(&id), host.mux.bin()) {
+                    continue;
+                }
                 self.insert(host);
                 added.push(id);
             }
@@ -362,6 +374,76 @@ mod tests {
             "the machine is gone, so every source it served goes with it"
         );
         assert_eq!(hosts.ids(), &["local".to_string()]);
+    }
+
+    #[test]
+    fn reconcile_keeps_local_when_the_fresh_roster_fails_to_name_it() {
+        // A roster resolution whose local mux probe answered nothing names no `local`
+        // machine at all. That probe result is a verdict on which muxes are installed,
+        // never on whether this box exists, so the standing local sources must survive
+        // it instead of being reaped on the re-scan.
+        let mut hosts = Hosts::build(
+            &Config::default(),
+            &[],
+            &[],
+            "linux",
+            &["psmux".to_string(), "zellij".to_string()],
+            std::path::Path::new("/x"),
+            None,
+        );
+        let no_local = Hosts::build(
+            &Config::default(),
+            &[],
+            &[],
+            "linux",
+            &[],
+            std::path::Path::new("/x"),
+            None,
+        );
+        let delta = hosts.reconcile(no_local);
+        assert!(
+            delta.removed.is_empty(),
+            "local must not be reaped: {delta:?}"
+        );
+        assert!(hosts.get("local:psmux").is_some(), "local:psmux survives");
+        assert!(hosts.get("local:zellij").is_some(), "local:zellij survives");
+    }
+
+    #[test]
+    fn reconcile_does_not_add_a_second_spelling_of_a_served_local_pair() {
+        // The local id is qualified from how many muxes the probe reported, so a partial
+        // probe can name `local` (bare) for psmux while `local:psmux` already serves it.
+        // The second spelling must not be added as a duplicate card.
+        let mut hosts = Hosts::build(
+            &Config::default(),
+            &[],
+            &[],
+            "linux",
+            &["psmux".to_string(), "zellij".to_string()],
+            std::path::Path::new("/x"),
+            None,
+        );
+        let fresh = Hosts::build(
+            &Config::default(),
+            &[],
+            &[],
+            "linux",
+            &["psmux".to_string()],
+            std::path::Path::new("/x"),
+            None,
+        );
+        let delta = hosts.reconcile(fresh);
+        assert!(delta.removed.is_empty(), "no source dropped: {delta:?}");
+        assert!(
+            delta.added.is_empty(),
+            "no duplicate spelling added: {delta:?}"
+        );
+        assert!(
+            hosts.get("local").is_none(),
+            "the bare `local` id is not added"
+        );
+        assert!(hosts.get("local:psmux").is_some());
+        assert!(hosts.get("local:zellij").is_some());
     }
 
     #[test]

@@ -621,13 +621,18 @@ fn spawn_host_detection(
 ///
 /// Fire and forget, and deliberately AFTER launch: a remote probe is an ssh round trip
 /// per mux, and the app must be on screen before any of that. Nothing waits for it, so a
-/// machine that never answers costs a task and no more.
+/// machine that never answers costs a task and no more. A permit is held on `gate` for
+/// the whole probe, so at most [`MUX_DISCOVERY_CONCURRENCY`] machines answer at once.
 fn spawn_mux_discovery(
     machine: String,
     transport: Box<dyn crate::transport::Transport>,
     tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
+    gate: std::sync::Arc<tokio::sync::Semaphore>,
 ) {
     tokio::spawn(async move {
+        let Ok(_permit) = gate.acquire().await else {
+            return;
+        };
         let muxes =
             crate::mux::installed_muxes(&*transport, &crate::model::source::ExecRunner).await;
         if !muxes.is_empty() {
@@ -663,14 +668,26 @@ fn spawn_roster_resolve(
     });
 }
 
+/// How many machines may probe their muxes at once. Discovery is off the loop and
+/// streamed, so nothing on screen waits on any one answer; bounding the probes keeps a
+/// re-scan from flooding the machine with a subprocess per candidate per host at once.
+const MUX_DISCOVERY_CONCURRENCY: usize = 3;
+
 /// Starts mux discovery for every machine that left its mux list to xmux, once, right
 /// after the first paint. One task per MACHINE (not per source): the answer is about the
 /// machine, and each mux it reports beyond the one already served becomes a source.
+///
+/// The per-machine probes are bounded by a [`tokio::sync::Semaphore`]: at most
+/// [`MUX_DISCOVERY_CONCURRENCY`] machines answer at once, so a re-scan does not flood
+/// the machine with a subprocess per candidate per host all at the same instant. A
+/// strict one-at-a-time probe would serialize on a slow host and delay every machine
+/// behind it.
 fn discover_machine_muxes(
     cfg: &crate::provision::config::Config,
     hosts: &crate::model::Hosts,
     tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
 ) {
+    let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(MUX_DISCOVERY_CONCURRENCY));
     let mut seen: HashSet<&str> = HashSet::new();
     for id in hosts.ids() {
         let machine = crate::session::machine_of(id);
@@ -683,7 +700,12 @@ fn discover_machine_muxes(
             continue;
         }
         if let Some(host) = hosts.get(id) {
-            spawn_mux_discovery(machine.to_string(), host.transport.clone(), tx.clone());
+            spawn_mux_discovery(
+                machine.to_string(),
+                host.transport.clone(),
+                tx.clone(),
+                gate.clone(),
+            );
         }
     }
 }
@@ -773,6 +795,13 @@ fn kick_rescan(
 /// no card already on screen, since the standing sources are re-enumerated regardless)
 /// and detected hosts are re-listed; at launch they are first dispatched onto their
 /// metadata channel instead.
+///
+/// Mux discovery asks each auto machine which muxes it serves, and the answer must not
+/// outlive the roster it was asked against - so it is asked only once per roster. At
+/// launch the roster was resolved before this pass, so discovery fires here; on a
+/// re-scan the freshly resolved roster answers as `RosterResolved` and fires it there.
+/// Firing it in both places would probe every auto machine against the old roster and
+/// again against the new one, doubling the re-scan's subprocess burst.
 fn run_discovery(
     env: &Env,
     hosts: &crate::model::Hosts,
@@ -801,7 +830,9 @@ fn run_discovery(
         }
         scan_or_dispatch_host(mgr, hosts, detecting, id, cols, rows);
     }
-    discover_machine_muxes(&env.roster().cfg, hosts, mgr.events());
+    if !rescan {
+        discover_machine_muxes(&env.roster().cfg, hosts, mgr.events());
+    }
 }
 
 /// Refetches a host's inventory after a `%`-change notification: re-runs
