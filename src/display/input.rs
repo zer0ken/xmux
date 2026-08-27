@@ -24,6 +24,10 @@ pub struct TermInput {
     /// cleared on the kitty release). Stable under OS autorepeat, so the hint bar and
     /// the auto-hide nav show stay put while the key is held.
     holding: bool,
+    /// True once a kitty release sequence has been observed, proving the terminal
+    /// reports key events. Until then (a legacy terminal), a repeated prefix is a
+    /// deliberate second press (doubled-prefix), exactly as before.
+    kitty_seen: bool,
     in_paste: bool,
     paste_scan: Vec<u8>,
 }
@@ -37,6 +41,7 @@ impl TermInput {
             prefix,
             armed: false,
             holding: false,
+            kitty_seen: false,
             in_paste: false,
             paste_scan: Vec::new(),
         }
@@ -56,10 +61,18 @@ impl TermInput {
         self.holding
     }
 
-    /// Drops a pending prefix. A prefix waits for the NEXT input, and a mouse action is
-    /// input - but mouse bytes are scanned out of the stream before `feed` ever sees them,
-    /// so the mouse path says so here instead of leaving the chord half-open.
+    /// Drops a pending prefix and any hold. A prefix waits for the NEXT input, and a
+    /// mouse action is input - but mouse bytes are scanned out of the stream before
+    /// `feed` ever sees them, so the mouse path says so here instead of leaving the
+    /// chord half-open.
     pub fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    /// Drops the physical hold (the key-up side of a prefix gesture). The mouse path
+    /// calls this alongside `disarm` so a mouse action ends a held chord completely.
+    pub fn drop_hold(&mut self) {
+        self.holding = false;
         self.armed = false;
     }
 
@@ -85,15 +98,34 @@ impl TermInput {
         let mut fwd: Vec<u8> = Vec::new();
         let mut i = 0;
         while i < bytes.len() {
+            // A kitty key event (a release, or Windows Terminal's repeat/release
+            // hybrid) is resolved BEFORE the command-key logic: a release or a repeat
+            // must never be read as a command key, and a held prefix must not disarm.
+            if let Some((end, ev)) = crate::display::decode::parse_kitty_seq(bytes, i) {
+                i = end;
+                self.kitty_seen = true;
+                self.handle_kitty(&ev, &mut fwd);
+                continue;
+            }
             if self.armed {
-                self.armed = false;
                 let b0 = bytes[i];
                 if b0 == self.prefix {
+                    // A held prefix's repeat (a legacy byte while the key is still
+                    // down and the terminal reports releases) is swallowed, keeping
+                    // `ready`; a deliberate second press sends one literal prefix byte.
+                    if self.holding && self.kitty_seen {
+                        i += 1;
+                        continue;
+                    }
                     // Doubled prefix → one literal prefix byte; rest is normal input.
+                    self.armed = false;
+                    self.holding = false;
                     fwd.push(self.prefix);
                     i += 1;
                     continue;
                 }
+                self.armed = false;
+                self.holding = false;
                 // prefix ? / h / l keep terminal-view focus (help toggle, nav resize), so the
                 // rest of the read still forwards to the pane - flush, emit, continue.
                 if b0 == b'?' {
@@ -213,6 +245,7 @@ impl TermInput {
                     out.push(Action::Forward(std::mem::take(&mut fwd)));
                 }
                 self.armed = true;
+                self.holding = true;
             } else {
                 fwd.push(b);
             }
@@ -223,6 +256,108 @@ impl TermInput {
         }
         out
     }
+
+    /// Applies one parsed kitty key event to the prefix state and the forward buffer.
+    /// A release clears `holding` (only a kitty terminal reports releases); a held
+    /// prefix's repeat keeps `ready`; a deliberate second press sends a literal
+    /// prefix. Non-prefix events forward their legacy bytes (a release forwards
+    /// nothing, because a legacy program has no key-up event).
+    fn handle_kitty(&mut self, ev: &crate::display::decode::KittyEvent, fwd: &mut Vec<u8>) {
+        let is_prefix = ev.code == self.prefix as u32;
+        match ev.kind {
+            3 => {
+                // release: the key is up. The prefix's release ends the hold.
+                if is_prefix {
+                    self.holding = false;
+                }
+            }
+            2 => {
+                // repeat: the same key is still down. A held prefix keeps ready; a
+                // non-prefix repeat forwards its legacy bytes unless a command is
+                // mid-flight (a repeat is not a command).
+                if is_prefix {
+                    self.holding = true;
+                } else if !self.armed {
+                    self.forward_legacy(ev, fwd);
+                }
+            }
+            _ => {
+                // press.
+                if is_prefix {
+                    if self.armed {
+                        if !self.holding {
+                            // a fresh press while ready: deliberate doubled prefix
+                            fwd.push(self.prefix);
+                            self.armed = false;
+                            self.holding = false;
+                        }
+                        // else: the key was already held, this is the repeat
+                    } else {
+                        self.armed = true;
+                        self.holding = true;
+                    }
+                } else if self.armed {
+                    // a non-prefix key mid-command in CSI-u form is not one of the
+                    // command keys; swallow it and end the command.
+                    self.armed = false;
+                    self.holding = false;
+                } else {
+                    self.forward_legacy(ev, fwd);
+                }
+            }
+        }
+    }
+
+    fn forward_legacy(&mut self, ev: &crate::display::decode::KittyEvent, fwd: &mut Vec<u8>) {
+        let legacy = kitty_to_legacy(ev);
+        fwd.extend_from_slice(&legacy);
+    }
+}
+
+/// The legacy bytes to forward for a parsed kitty/hybrid key event. A release
+/// forwards nothing (a legacy program has no key-up). A hybrid functional key
+/// (letter final) becomes its legacy CSI/SS3 form; a codepoint becomes its text
+/// bytes (an alt modifier prefixes ESC).
+fn kitty_to_legacy(ev: &crate::display::decode::KittyEvent) -> Vec<u8> {
+    if ev.kind == 3 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    match ev.final_byte {
+        b'A' | b'B' | b'C' | b'D' | b'H' | b'F' => {
+            out.extend_from_slice(b"\x1b[");
+            if ev.modifiers != 0 {
+                out.extend_from_slice(format!("1;{}", ev.modifiers + 1).as_bytes());
+            }
+            out.push(ev.final_byte);
+        }
+        b'P' => return b"\x1bOP".to_vec(),
+        b'Q' => return b"\x1bOQ".to_vec(),
+        b'R' => return b"\x1bOR".to_vec(),
+        b'S' => return b"\x1bOS".to_vec(),
+        _ => {}
+    }
+    if !out.is_empty() {
+        return out;
+    }
+    match ev.code {
+        0..=31 | 127 => {
+            if ev.modifiers & 2 != 0 {
+                out.push(0x1b);
+            }
+            out.push(ev.code as u8);
+        }
+        c => {
+            if ev.modifiers & 2 != 0 {
+                out.push(0x1b);
+            }
+            if let Some(ch) = char::from_u32(c) {
+                let mut b = [0u8; 4];
+                out.extend_from_slice(ch.encode_utf8(&mut b).as_bytes());
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -245,6 +380,48 @@ mod tests {
     fn plain_bytes_forward() {
         let mut t = m();
         assert_eq!(fwd(&t.feed(b"ab")), b"ab");
+    }
+
+    #[test]
+    fn held_prefix_does_not_toggle_or_forward_literal() {
+        let mut t = m();
+        // Learn the terminal reports releases: press, release, then a command.
+        t.feed(&[0x07]); // press
+        assert!(t.is_armed() && t.is_holding());
+        t.feed(b"\x1b[7;5:3u"); // release clears the hold; ready survives
+        assert!(!t.is_holding() && t.is_armed());
+        t.feed(b"h"); // a command consumes ready
+        assert!(!t.is_armed());
+        // Now hold the prefix: a press arms, legacy autorepeat bytes are swallowed
+        // (never forwarded as a literal), and the release clears the hold.
+        t.feed(&[0x07]);
+        assert!(t.is_armed() && t.is_holding());
+        assert_eq!(fwd(&t.feed(&[0x07])), Vec::<u8>::new(), "a repeat forwards nothing");
+        assert!(t.is_armed(), "a hold-repeat must not disarm");
+        assert_eq!(fwd(&t.feed(&[0x07])), Vec::<u8>::new(), "more repeats stay swallowed");
+        assert!(t.is_armed());
+        assert_eq!(t.feed(b"\x1b[7;5:3u"), Vec::<Action>::new(), "release is swallowed");
+        assert!(!t.is_holding());
+        assert!(t.is_armed(), "ready survives the release");
+        // A deliberate doubled prefix (a fresh press after the release) sends a literal.
+        assert_eq!(fwd(&t.feed(&[0x07])), vec![0x07], "a fresh second press sends a literal");
+        assert!(!t.is_armed());
+    }
+
+    #[test]
+    fn kitty_releases_are_never_forwarded() {
+        let mut t = m();
+        // 'a' press (legacy), then its release as CSI u: only the press forwards.
+        assert_eq!(fwd(&t.feed(b"a\x1b[97;1:3u")), b"a");
+        // A WT hybrid release of Up is swallowed too.
+        assert_eq!(t.feed(b"\x1b[1;1:3A"), Vec::<Action>::new());
+    }
+
+    #[test]
+    fn kitty_hybrid_repeat_forwarded_as_legacy() {
+        let mut t = m();
+        // Up repeat (hybrid) forwards as the legacy CSI A.
+        assert_eq!(fwd(&t.feed(b"\x1b[1;1:2A")), b"\x1b[A");
     }
 
     #[test]
