@@ -72,6 +72,19 @@ type Term = ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout
 /// tmux's `bind -r` repeat applied to the nav width. Each repeat resets the window.
 const RESIZE_REPEAT_MS: u64 = 400;
 
+/// ConPTY renudge (issue #139): how long the displayed attachment must stay quiet
+/// after an output burst before the size bounce fires. Long enough that a streaming
+/// pane (a TUI redrawing continuously) is not bounced mid-stream, short enough that
+/// the wide-glyph residue ConPTY leaves behind is cleaned as soon as the pane rests.
+const RENUDGE_QUIET_MS: u64 = 600;
+/// ConPTY renudge: how long re-arming is suppressed after a bounce, so the bounce's
+/// own repaint output does not arm the next bounce in an endless loop.
+const RENUDGE_COOLDOWN_MS: u64 = 3000;
+/// ConPTY renudge: output chunks a burst must reach before the bounce arms. One or
+/// two chunks is an idle pane's heartbeat (a status-clock tick); real scrolling is
+/// dozens. Keeps an idle shared session from being bounced every clock tick.
+const RENUDGE_BURST_CHUNKS: u32 = 3;
+
 /// How long after the last resize tick before the debounced nav-width persist fires.
 /// Longer than `RESIZE_REPEAT_MS` so a held Ctrl-arrow autorepeat burst persists once
 /// at the end, not per tick.
@@ -1221,6 +1234,24 @@ struct Runtime {
     config_last_mtime: Option<std::time::SystemTime>,
     width_dirty: bool,
     width_flush_at: Option<std::time::Instant>,
+    /// The ConPTY renudge debounce (issue #139). Windows ConPTY's re-encoding can drop
+    /// a wide (CJK) glyph that wraps at a row boundary while a pane scrolls, replacing
+    /// it with spaces; the loss happens BEFORE the bytes reach the grid, so no receiver
+    /// can repair it. A size bounce on the display PTY makes the mux repaint the whole
+    /// client with explicitly addressed rows, which crosses ConPTY intact (measured on
+    /// a live tmux-over-ssh stream). Armed to `now + RENUDGE_QUIET` on every output
+    /// chunk for the DISPLAYED attachment, so it fires once per burst, at rest.
+    renudge_at: Option<std::time::Instant>,
+    /// Suppresses re-arming while the renudge's own repaint output streams in;
+    /// without this the repaint would arm the next renudge, forever.
+    renudge_cooldown_until: std::time::Instant,
+    /// Output chunks seen in the current burst (chunks closer than the quiet gap).
+    /// The renudge arms only past [`RENUDGE_BURST_CHUNKS`], so an isolated chunk (a
+    /// mux status-clock tick) never bounces an idle pane.
+    renudge_chunks: u32,
+    /// When the last output chunk for the displayed attachment arrived; a gap wider
+    /// than the quiet window starts a new burst (resets the chunk count).
+    renudge_last_output: Option<std::time::Instant>,
 }
 
 /// The loop's receiver halves, whose send halves `Runtime::new` wired into the world

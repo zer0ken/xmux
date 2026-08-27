@@ -512,6 +512,10 @@ impl Runtime {
             config_last_mtime: None,
             width_dirty: false,
             width_flush_at: None,
+            renudge_at: None,
+            renudge_cooldown_until: std::time::Instant::now(),
+            renudge_chunks: 0,
+            renudge_last_output: None,
         };
         (
             rt,
@@ -807,6 +811,16 @@ impl Runtime {
                 .map(|a| a.id())
         })
         .flatten();
+        // The attach id of the SHOWN grid regardless of focus (the terminal view is
+        // visible in both focuses); output on it arms the ConPTY renudge below.
+        let shown_attach_id = (!self.state.selection.is_empty())
+            .then(|| {
+                self.registry
+                    .get(&display_key(&self.hosts, &self.state.selection))
+                    .map(|a| a.id())
+            })
+            .flatten();
+        let mut shown_output = false;
         let mut detached = false;
         match ev {
             PtyEvent::Exited { id } => {
@@ -825,7 +839,7 @@ impl Runtime {
             PtyEvent::DisplayTty { id, tty } => {
                 record_display_tty(&mut self.hosts, &self.registry, id, tty)
             }
-            PtyEvent::Output { .. } => {}
+            PtyEvent::Output { id } => shown_output |= Some(id) == shown_attach_id,
         }
         let mut budget = EVENT_DRAIN_BUDGET;
         while budget > 0 {
@@ -842,7 +856,8 @@ impl Runtime {
                     }
                     budget -= 1;
                 }
-                Ok(PtyEvent::Output { .. }) => {
+                Ok(PtyEvent::Output { id }) => {
+                    shown_output |= Some(id) == shown_attach_id;
                     budget -= 1;
                 }
                 Ok(PtyEvent::DisplayTty { id, tty }) => {
@@ -850,6 +865,26 @@ impl Runtime {
                     budget -= 1;
                 }
                 Err(_) => break,
+            }
+        }
+        // Arm (or push back) the ConPTY renudge: only once the displayed attachment
+        // shows a real BURST (an isolated chunk is an idle heartbeat, e.g. the mux
+        // status clock), and it fires only after the burst has stayed quiet for
+        // RENUDGE_QUIET_MS. The cooldown keeps the bounce's own repaint from arming
+        // the next bounce.
+        if shown_output {
+            let now = std::time::Instant::now();
+            let quiet = std::time::Duration::from_millis(RENUDGE_QUIET_MS);
+            if self
+                .renudge_last_output
+                .is_none_or(|t| now.duration_since(t) > quiet)
+            {
+                self.renudge_chunks = 0; // a gap ended the previous burst
+            }
+            self.renudge_last_output = Some(now);
+            self.renudge_chunks = self.renudge_chunks.saturating_add(1);
+            if now >= self.renudge_cooldown_until && self.renudge_chunks >= RENUDGE_BURST_CHUNKS {
+                self.renudge_at = Some(now + quiet);
             }
         }
         if detached {
@@ -1134,6 +1169,29 @@ impl Runtime {
                     tracing::warn!(error = %e, "term_clear_failed");
                 }
                 self.dirty = true;
+            }
+        }
+        // ConPTY renudge (issue #139): once the displayed attachment has rested past
+        // its armed deadline, ask the mux to repaint xmux's display client
+        // (`refresh-client -t <tty>` over the host's control connection). The refresh
+        // redraw is CUP-addressed row rewrites, which cross ConPTY intact and
+        // overwrite the residue; a PTY size bounce was measured NOT to heal (the
+        // post-resize redraw streams through the same autowrap path and drops the
+        // same glyphs again).
+        if let Some(at) = self.renudge_at {
+            let now = std::time::Instant::now();
+            if now >= at {
+                self.renudge_at = None;
+                self.renudge_cooldown_until =
+                    now + std::time::Duration::from_millis(RENUDGE_COOLDOWN_MS);
+                if let Some(h) = self.hosts.get(&self.state.selection.source) {
+                    if let (Some(client), Some(tty)) =
+                        (self.mgr.get(h.id()), h.display_tty.0.as_deref())
+                    {
+                        client.refresh_client_on(tty);
+                        tracing::debug!(host = %h.id(), tty, "conpty_renudge_refresh");
+                    }
+                }
             }
         }
         // Spinner set = the selected session if its PTY is still connecting.
