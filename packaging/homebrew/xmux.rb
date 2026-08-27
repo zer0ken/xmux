@@ -2,16 +2,16 @@ class Xmux < Formula
   desc "Cross-environment tmux/psmux session switcher"
   homepage "https://github.com/zer0ken/xmux"
   license "MIT"
-  version "0.6.5"
+  version "0.6.6"
 
   on_arm do
-    url "https://github.com/zer0ken/xmux/releases/download/v0.6.5/xmux-v0.6.5-aarch64-apple-darwin.tar.gz"
-    sha256 "29999295e3776629c3a62d1451412b98d01bf3c0a8c547bd2dcc338b6b84ec8c"
+    url "https://github.com/zer0ken/xmux/releases/download/v0.6.6/xmux-v0.6.6-aarch64-apple-darwin.tar.gz"
+    sha256 "4fe579ffc356f1ae47eace9db422d4514a850ddc79cc4e0cd4a17ff65c4349e3"
   end
 
   on_intel do
-    url "https://github.com/zer0ken/xmux/releases/download/v0.6.5/xmux-v0.6.5-x86_64-apple-darwin.tar.gz"
-    sha256 "3c8fd4a139052b1e388c3e37e4731c4531e1c585ed60918827b7d9a1c54766ec"
+    url "https://github.com/zer0ken/xmux/releases/download/v0.6.6/xmux-v0.6.6-x86_64-apple-darwin.tar.gz"
+    sha256 "a8777bd2aa4fd58380cfecca6db3e98d84a27c9d7790513e998508d30cb42a97"
   end
 
   def install
