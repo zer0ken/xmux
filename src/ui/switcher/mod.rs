@@ -274,6 +274,11 @@ pub struct Switcher {
     /// Set once the user explicitly moves the selection; while false, streaming
     /// results advance the preselect toward the most-recent session.
     user_moved: bool,
+    /// Whether the USER has picked a card since the app last read this. The latch above
+    /// cannot say it: it stays set for the rest of the run, and a follow's own move sets
+    /// it too. This is the EDGE, raised by the movers the user drives and by none of the
+    /// movers xmux drives, and taken by the app where it settles the selection.
+    user_pick: bool,
     /// Signals the event loop to (re)kick the streaming probes - set on the
     /// initial seed and on an `r` re-scan; the loop reads + clears it.
     rescan_kick: bool,
@@ -328,6 +333,7 @@ impl Switcher {
     fn blank() -> Self {
         Switcher {
             user_moved: false,
+            user_pick: false,
             rescan_kick: false,
             reattach_kick: false,
             rows: Vec::new(),
@@ -498,6 +504,23 @@ impl Switcher {
             .position(|r| matches!(r.reference, RowRef::Host { .. }))
     }
 
+    /// Records that the USER moved the selection: the latch that stops a rebuild from
+    /// handing the selection back to the launch preselect, and the edge a pick raises for
+    /// the app to read. Every mover the user drives goes through here - the nav keys, the
+    /// wheel, a click, the jump, a ctl `switch`, the card a create lands on - and the
+    /// follow's own mover does not, which is what tells xmux's move from the user's.
+    fn note_user_pick(&mut self) {
+        self.user_moved = true;
+        self.user_pick = true;
+    }
+
+    /// Takes the pending user pick, clearing it. The app reads it where it settles the
+    /// selection, which is the first thing to run after the key, the click, or the ctl
+    /// command that made the pick, so nothing can act on the older selection in between.
+    pub(crate) fn take_user_pick(&mut self) -> bool {
+        std::mem::take(&mut self.user_pick)
+    }
+
     fn set_selected(&mut self, idx: usize, state: &crate::state::State) {
         if self.rows.is_empty() {
             return;
@@ -513,7 +536,7 @@ impl Switcher {
         if sel.is_empty() {
             return;
         }
-        self.user_moved = true;
+        self.note_user_pick();
         let cur = sel.iter().position(|&i| i == self.selected).unwrap_or(0) as isize;
         let n = sel.len() as isize;
         let next = ((cur + delta) % n + n) % n;
@@ -533,7 +556,7 @@ impl Switcher {
         if sel.is_empty() {
             return;
         }
-        self.user_moved = true;
+        self.note_user_pick();
         let idx = if pos < 0 || pos as usize >= sel.len() {
             sel.len() - 1
         } else {
@@ -660,19 +683,40 @@ impl Switcher {
     /// identity, not a screen position or a relative step, so an agent driving ctl
     /// lands on the right session regardless of how the tree is currently ordered.
     /// A no-op (returns false) when no such row exists or the selection is already there.
+    ///
+    /// The USER's mover. Naming a card is picking it, so the pick is raised even when the
+    /// selection already sits on that card and nothing on screen moves: the user has still
+    /// said where they want to be.
     pub fn select_address(&mut self, address: &str, state: &crate::state::State) -> bool {
-        let target = self
-            .rows
-            .iter()
-            .position(|r| session_addr_of(&r.reference).as_deref() == Some(address));
-        match target {
-            Some(i) if i != self.selected => {
-                self.user_moved = true;
-                self.set_selected(i, state);
-                true
-            }
-            _ => false,
+        let Some(i) = self.row_of_session(address) else {
+            return false;
+        };
+        self.note_user_pick();
+        if i == self.selected {
+            return false;
         }
+        self.set_selected(i, state);
+        true
+    }
+
+    /// Moves the selection to the session row `address` names for a FOLLOW: xmux carrying
+    /// the nav to the session the mux moved its own display client onto. The same move on
+    /// screen as [`Switcher::select_address`] and deliberately a different one underneath,
+    /// because it raises NO pick: xmux moving the nav on the mux's behalf must never read
+    /// as the user saying where they want to be. The two are told apart by ENTRY POINT and
+    /// not by a flag they share - the selection latch is set by either, so it cannot
+    /// discriminate - which is why the follow has a mover of its own rather than an
+    /// argument on the user's.
+    pub(crate) fn follow_address(&mut self, address: &str, state: &crate::state::State) -> bool {
+        let Some(i) = self.row_of_session(address) else {
+            return false;
+        };
+        if i == self.selected {
+            return false;
+        }
+        self.user_moved = true;
+        self.set_selected(i, state);
+        true
     }
 
     /// Whether the nav holds a card for `address`. Sessions reach the nav as each

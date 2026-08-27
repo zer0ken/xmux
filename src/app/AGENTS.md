@@ -100,9 +100,18 @@ the card numbers it needs.
   settle on different sessions because the user looked at the list on the way.
 - One owed move per source, holding the latest session the client reported. It is
   dropped when it lands, when the host's display belief no longer names its
-  session (a later switch, or the user settling the display on a session of their
-  own, both of which write that belief), and when the client that reported it
-  dies, because its session may never get a card and nothing is on it any more.
+  session (a later switch, or the display being settled on another session, both
+  of which write that belief), and when the client that reported it dies, because
+  its session may never get a card and nothing is on it any more.
+- A selection the USER makes cancels every move still owed, at the moment they
+  make it. Picking a card is the freshest statement of where the user wants to be,
+  so it outranks a move owed from before it, and cancelling it at the pick is what
+  keeps a retry from paying a debt the user has already overruled while the pick's
+  own consequences are still on their way. Every record goes, not only the one on
+  the picked card's host, because a move owed elsewhere drags the nav off that card
+  just as surely. Only the user's pick does this: xmux moves the nav itself when it
+  follows the mux, through the same selection machinery, and the two are told apart
+  by which mover made the move rather than by a flag both of them set.
 - Focus is the single source of truth for which view owns keys and which modal,
   if any, is open. Focus and modal transitions stay in the focus module; the app
   and the state call into it rather than open-coding view or modal bookkeeping.

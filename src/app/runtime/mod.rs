@@ -347,22 +347,43 @@ fn selection_from_target(t: &TerminalViewTarget) -> Selection {
     }
 }
 
-/// Derives the selection from the switcher selection and, if it moved, routes it through
-/// the single mutation site as [`Action::Select`] - which records the new selection
-/// and marks the attach pending. It arms NO deadline; the trailing [`Action::Tick`]
-/// arms the debounce (re-armed on every move, so rapid navigation coalesces into one
-/// trailing attach). Returns true when the selection changed (the nav needs a redraw).
+/// Settles the switcher selection: derives the selection from it and, if it moved, routes
+/// it through the single mutation site as [`Action::Select`] - which records the new
+/// selection and marks the attach pending. It arms NO deadline; the trailing
+/// [`Action::Tick`] arms the debounce (re-armed on every move, so rapid navigation
+/// coalesces into one trailing attach). Returns true when the selection changed (the nav
+/// needs a redraw).
 ///
 /// The switcher selection is the selection authority; this routes the derived value
 /// through `apply` as an intent rather than mutating `state` directly, so a selection
-/// change still funnels through the single mutation site.
+/// change still funnels through the single mutation site. This is where a selection
+/// becomes an attach, so it is also where the pick behind it is answered.
+///
+/// A PICK THE USER MAKES CANCELS EVERY FOLLOW STILL OWED. Picking a card is the freshest
+/// statement of where the user wants to be, so it outranks any move owed from before it.
+/// The cancellation belongs at the pick and not at some later fact catching up with it:
+/// a retry running in between pays a debt the user has already overruled, and carries them
+/// off the card they just chose. EVERY owed record goes, not only the one on the picked
+/// card's host, because a move owed on another host drags the nav off that card just as
+/// surely.
+///
+/// Only the USER's pick does this. xmux moves the nav itself when it follows the mux, and
+/// that move runs through the same selection machinery, so the two are told apart by which
+/// mover made the move: the follow has its own, which raises no pick. A flag the movers
+/// share cannot draw that line - the selection latch is set by either - and a pick is
+/// raised even when the card picked is the one already selected, so a user settling on
+/// where they already are still cancels what is owed.
 ///
 /// [`Action::Select`]: crate::model::Action::Select
 /// [`Action::Tick`]: crate::model::Action::Tick
-fn sync_selection_from_switcher(
+fn settle_selection(
     state: &mut crate::state::State,
-    switcher: &crate::ui::switcher::Switcher,
+    switcher: &mut crate::ui::switcher::Switcher,
+    pending: &mut HashMap<String, String>,
 ) -> bool {
+    if switcher.take_user_pick() {
+        pending.clear();
+    }
     let new_sel = selection_from_target(&switcher.terminal_view_target());
     if new_sel == state.selection {
         return false;
@@ -405,11 +426,17 @@ fn sync_selection_from_switcher(
 /// One record per source, holding the LATEST session the client reported: a client sits
 /// on one session at a time, so a newer report supersedes an older one rather than
 /// queueing behind it. A record is dropped when the move LANDS (its session has a card
-/// and the selection sits there) and when the move goes OBSOLETE, which is one condition
+/// and the selection sits there), and when the move goes OBSOLETE, which is one condition
 /// and not two: the host's display belief no longer names the recorded session. Both ways
 /// a move can be overtaken write that belief - a later switch carries the client
 /// elsewhere, and settling the display on another session reattaches it there - so the
 /// belief is what the retry compares against.
+///
+/// A record is also CANCELLED, every one of them at once, by a pick the user makes: that
+/// is the user's own statement of where they want to be, and it outranks a move owed from
+/// before it. The cancellation happens at the pick (see [`settle_selection`]), not here,
+/// so nothing owed can be paid in the window between the pick and the facts that follow
+/// it.
 fn follow_display_session(
     hosts: &mut crate::model::Hosts,
     switcher: &mut crate::ui::switcher::Switcher,
@@ -428,7 +455,7 @@ fn follow_display_session(
         return false;
     }
     let addr = crate::session::address_of(host, session);
-    let moved = switcher.select_address(&addr, state);
+    let moved = switcher.follow_address(&addr, state);
     if switcher.holds_session_card(&addr) {
         pending.remove(host);
     } else {

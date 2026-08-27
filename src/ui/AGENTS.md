@@ -143,6 +143,12 @@ flatten renders for the dump verb.
 - This layer branches on nothing mux-specific: the switcher renders rows and emits
   domain intents, never a match on mux kind. Per-mux behavior lives behind the mux
   and driver seam, reached through the operations trait, not decided here.
+- A selection the USER made and one xmux made to follow the mux are told apart by
+  which mover moved it: the movers the user drives raise a pick, the follow's mover
+  does not. A pick is raised even when the card named is the one already selected,
+  since naming it is still the user saying where they want to be. The latch that
+  stops a rebuild from handing the selection back to the launch preselect is set by
+  either mover and draws no such line.
 - The selection and drag mutators return a boolean, "did it actually move or
   grab", by accepted convention: the app gates its follow-up (attach, event
   consumption) on that signal. This mutate-and-return-bool shape is deliberate; it

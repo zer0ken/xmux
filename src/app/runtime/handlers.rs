@@ -38,12 +38,12 @@ impl Runtime {
     /// the original follow did, and re-records itself while either is still missing.
     ///
     /// A record is owed only for as long as the belief it was made with still stands, and
-    /// the display belief is the whole test. Anything that carried the display elsewhere
-    /// in the meantime settled where the client is, and paying the older move then would
-    /// name a session the client has left: a later switch does that, and so does the user
-    /// settling the display on a session of their own, which in this app means picking a
-    /// card in the nav and letting the attach reattach the display there. The nav's own
-    /// user_moved flag cannot stand in for that, because a follow's move sets it as well.
+    /// the display belief is the whole test made here. Anything that carried the display
+    /// elsewhere in the meantime settled where the client is, and paying the older move
+    /// then would name a session the client has left. What the user PICKED is not tested
+    /// here at all: a pick cancels every owed record where it is made, so a record that
+    /// reaches a retry is one no pick has overruled, and the retry never has to wait for
+    /// the pick's own consequences to arrive.
     pub(super) fn retry_pending_follows(&mut self) -> bool {
         if self.pending_follows.is_empty() {
             return false;
@@ -636,7 +636,11 @@ impl Runtime {
                 now: std::time::Instant::now(),
             });
         }
-        if sync_selection_from_switcher(&mut self.state, &self.switcher) {
+        if settle_selection(
+            &mut self.state,
+            &mut self.switcher,
+            &mut self.pending_follows,
+        ) {
             // The selection moved → the nav needs a redraw. The attach is NOT issued
             // here; the Tick below arms the debounce, re-armed on every move.
             self.dirty = true;
@@ -1043,7 +1047,11 @@ impl Runtime {
                     &mut self.mgr,
                     (self.cols, self.body_rows),
                 );
-                if sync_selection_from_switcher(&mut self.state, &self.switcher) {
+                if settle_selection(
+                    &mut self.state,
+                    &mut self.switcher,
+                    &mut self.pending_follows,
+                ) {
                     self.dirty = true;
                 }
             }
@@ -1120,7 +1128,11 @@ impl Runtime {
                     self.body_rows,
                     self.nav_width,
                 );
-                if sync_selection_from_switcher(&mut self.state, &self.switcher) {
+                if settle_selection(
+                    &mut self.state,
+                    &mut self.switcher,
+                    &mut self.pending_follows,
+                ) {
                     self.dirty = true;
                 }
             }
