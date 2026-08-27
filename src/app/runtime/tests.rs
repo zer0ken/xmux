@@ -2062,6 +2062,42 @@ fn holding_the_prefix_keeps_resize_commands_armed() {
 }
 
 #[test]
+fn a_focus_switch_drops_the_left_views_prefix_latches() {
+    // A prefix-driven focus switch leaves the prefix key physically held, and its
+    // release is delivered to the view that GAINED focus, never to the one that lost
+    // it. Without dropping the outgoing side's latches on the switch, a stale hold
+    // would keep the status bar up forever. The switch must clear what the outgoing
+    // view latched, in both directions.
+    let mut rt = rt_terminal_focus_with_session();
+    assert!(
+        !rt.state.focus.is_nav_focused(),
+        "precondition: terminal focus"
+    );
+    // Terminal → nav: a held prefix chord ends when prefix Left hands focus over.
+    rt.handle_stdin_bytes(b"\x07", &Selection::default()); // prefix down: +ready +holding
+    assert!(rt.prefix_active());
+    rt.handle_stdin_bytes(b"\x1b[D", &Selection::default()); // prefix Left → nav
+    assert!(rt.state.focus.is_nav_focused(), "focus moved to the nav");
+    assert!(
+        !rt.prefix_active(),
+        "the switch drops the terminal-side hold so the bar hides"
+    );
+    // Nav → terminal: the nav-side latches a new prefix chord set are cleared the
+    // moment prefix Right hands focus back.
+    rt.handle_stdin_bytes(b"\x07", &Selection::default()); // prefix down on the nav
+    assert!(rt.prefix_active());
+    rt.handle_stdin_bytes(b"\x1b[C", &Selection::default()); // prefix Right → terminal
+    assert!(
+        !rt.state.focus.is_nav_focused(),
+        "focus moved to the terminal"
+    );
+    assert!(
+        !rt.prefix_active(),
+        "the switch drops the nav-side hold so the bar hides"
+    );
+}
+
+#[test]
 fn a_mouse_action_disarms_the_prefix_and_a_hover_does_not() {
     use crate::ui::switcher::{Scan, Switcher};
     // A prefix waits for the NEXT input, and a mouse action is input. Mouse bytes are

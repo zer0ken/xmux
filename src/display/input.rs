@@ -240,7 +240,10 @@ impl TermInput {
                     break;
                 }
                 // Unrecognized single-byte follow-up: command mode swallows just this
-                // key; the rest of the read resumes as normal input.
+                // key; the rest of the read resumes as normal input. A non-action key
+                // also ends a held chord: on a terminal that reports no release the
+                // hold would otherwise stay latched and keep the status bar up forever.
+                self.holding = false;
                 i += 1;
                 continue;
             }

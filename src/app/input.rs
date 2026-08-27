@@ -195,7 +195,14 @@ pub(crate) fn resolve_nav_key(
             // it, so a bare digit stays free for the pane and cannot jump by accident.
             KeyCode::Char('r') | KeyCode::Char('n') => Some(Action::NavKey(key)),
             KeyCode::Char(c) if c.is_ascii_digit() => Some(Action::NavKey(key)),
-            _ => None,
+            // An unrecognized key ends the whole chord, not just ready: the action keys
+            // above keep holding so a held prefix's repeats keep them armed, but a stray
+            // key is the user abandoning the prefix, so the hold goes too (the bar hides
+            // even on a terminal that reports no prefix release).
+            _ => {
+                *holding = false;
+                None
+            }
         };
     }
     // Enter focuses the terminal view. ←/→ navigate the nav inside `handle_key`.

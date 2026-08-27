@@ -591,6 +591,11 @@ impl Runtime {
             }
         }
         if *focus_terminal {
+            // Leaving the nav for the terminal: nav-side prefix latches (a held chord
+            // started on the nav) have no key-up once the terminal owns stdin, so clear
+            // them here instead of waiting for a release that is now delivered elsewhere.
+            self.mouse_state.nav_armed = false;
+            self.mouse_state.nav_holding = false;
             self.state.apply(crate::model::Action::Focus(
                 crate::model::FocusTarget::Terminal,
             ));
@@ -598,15 +603,22 @@ impl Runtime {
             // view border colour changes), so clearing would blank the screen and
             // force a full repaint for nothing.
         }
-        if self.prefix_active() != armed_before {
-            *dirty = true;
-        }
         if *focus_nav {
+            // Leaving the terminal for the nav: the prefix key's release is delivered to
+            // the nav path now, never to TermInput, so drop the terminal-side hold here
+            // instead of waiting for a release that will not arrive (a stale hold would
+            // keep the status bar up forever).
+            self.term_input.drop_hold();
             self.state
                 .apply(crate::model::Action::Focus(crate::model::FocusTarget::Nav));
             if !nav_replay.is_empty() {
                 let (ft, q, wd, hd, th) = self.handle_nav_bytes(nav_replay, width_changed);
                 if ft {
+                    // The replayed bytes switch focus back to the terminal: clear the
+                    // nav-side latches the replay may have armed, same as the direct
+                    // terminal-focus path above.
+                    self.mouse_state.nav_armed = false;
+                    self.mouse_state.nav_holding = false;
                     self.state.apply(crate::model::Action::Focus(
                         crate::model::FocusTarget::Terminal,
                     ));
@@ -623,6 +635,11 @@ impl Runtime {
                     *dirty = true;
                 }
             }
+        }
+        // The focus-switch latch drops above change prefix_active, so this read's bar
+        // visibility is compared AFTER both focus blocks, not between them.
+        if self.prefix_active() != armed_before {
+            *dirty = true;
         }
         outcome
     }
