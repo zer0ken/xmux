@@ -145,7 +145,7 @@ pub struct UiConfig {
     /// runs). When the mode is on, focusing the terminal view hides the tree and gives it
     /// the full terminal width; the tree returns when focus returns to it. While
     /// hidden the tree has no column to click, so focus returns via the prefix keys
-    /// (`prefix Tab`/`←`/`Esc`). Default false keeps the tree shown in both focus states.
+    /// (`prefix Tab`/`←`). Default false keeps the tree shown in both focus states.
     #[serde(rename = "auto-hide-nav", default)]
     pub auto_hide_nav: bool,
     /// The tree|terminal view border colour OVERRIDES, named after tmux's pane-border

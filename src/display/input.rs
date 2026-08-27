@@ -8,8 +8,7 @@
 //! toggles auto-hide-nav mode, `prefix n`/`R`/`r` run the nav actions
 //! (new / rename / re-scan) on the displayed session, `prefix x` kills the ACTIVE pane
 //! of the displayed session (tmux `prefix x` parity - distinct from nav focus, where
-//! `prefix x` kills the selected node), a bare `prefix Esc` cancels the prefix and
-//! stays in the terminal view, and a doubled
+//! `prefix x` kills the selected node), and a doubled
 //! prefix sends one literal prefix byte. Apart from `prefix x`, the command set matches
 //! nav focus, so those commands behave identically regardless of which view holds
 //! focus. The prefix is a C0
@@ -193,44 +192,39 @@ impl TermInput {
                     i += 6;
                     continue;
                 }
-                // Tab, or any ESC sequence (Esc / Left / Right / other arrows) →
-                // leave the terminal. Focus is switching away, so the remainder of
-                // this read belongs to the new focus and is delivered on the next
-                // read; flush what was forwarded and stop here.
+                // Tab, or an ESC sequence (an arrow or another CSI/SS3 run) → leave the
+                // terminal. Focus is switching away, so the remainder of this read belongs
+                // to the new focus and is delivered on the next read; flush what was
+                // forwarded and stop here.
                 if b0 == b'\t' || b0 == 0x1b {
                     // Consume the WHOLE command key, including a multi-byte arrow
                     // (ESC [ A/B/C/D), so its tail isn't replayed as stray nav input.
-                    let cmd_len = if b0 == 0x1b
+                    let arrow = b0 == 0x1b
                         && bytes[i..].len() >= 3
                         && bytes[i + 1] == b'['
-                        && matches!(bytes[i + 2], b'A' | b'B' | b'C' | b'D')
-                    {
-                        3
-                    } else {
-                        1
-                    };
-                    // A bare Esc after a prefix cancels the prefix and stays in the
-                    // terminal view: it is swallowed (no focus switch), and the rest
-                    // of the read resumes as normal input.
-                    if b0 == 0x1b && cmd_len == 1 {
-                        i += 1;
-                        continue;
+                        && matches!(bytes[i + 2], b'A' | b'B' | b'C' | b'D');
+                    let cmd_len = if arrow { 3 } else { 1 };
+                    // A bare Esc is NOT a prefix command: it has no branch of its own, so
+                    // it falls through to the unrecognized-key arm below, which ends the
+                    // chord (the prefix releases) and swallows the key.
+                    let bare_esc = b0 == 0x1b && !arrow;
+                    if !bare_esc {
+                        // An arrow points AT the view it focuses: the terminal is right of the
+                        // nav in Side and below it in Top, so prefix → (C) and prefix ↓ (B) both
+                        // name the view that already has focus here. Swallow them and stay; the
+                        // rest of the read resumes as mux input. prefix ← (D) and prefix ↑ (A)
+                        // name the nav and fall through to the focus switch below.
+                        if arrow && matches!(bytes[i + 2], b'C' | b'B') {
+                            i += cmd_len;
+                            continue;
+                        }
+                        if !fwd.is_empty() {
+                            out.push(Action::Forward(std::mem::take(&mut fwd)));
+                        }
+                        // Hand any bytes AFTER the command to the nav (focus switching).
+                        out.push(Action::FocusNav(bytes[i + cmd_len..].to_vec()));
+                        break;
                     }
-                    // An arrow points AT the view it focuses: the terminal is right of the
-                    // nav in Side and below it in Top, so prefix → (C) and prefix ↓ (B) both
-                    // name the view that already has focus here. Swallow them and stay; the
-                    // rest of the read resumes as mux input. prefix ← (D) and prefix ↑ (A)
-                    // name the nav and fall through to the focus switch below.
-                    if cmd_len == 3 && matches!(bytes[i + 2], b'C' | b'B') {
-                        i += cmd_len;
-                        continue;
-                    }
-                    if !fwd.is_empty() {
-                        out.push(Action::Forward(std::mem::take(&mut fwd)));
-                    }
-                    // Hand any bytes AFTER the command to the nav (focus switching).
-                    out.push(Action::FocusNav(bytes[i + cmd_len..].to_vec()));
-                    break;
                 }
                 if b0 == b'q' {
                     if !fwd.is_empty() {
@@ -505,10 +499,11 @@ mod tests {
     }
 
     #[test]
-    fn prefix_then_left_or_up_focuses_nav_esc_cancels() {
+    fn prefix_then_left_or_up_focuses_nav_esc_is_not_a_command() {
         // Left/Up each name the nav (left of the terminal in Side, above it in Top),
-        // consumed whole so the replay tail is empty. A bare Esc after the prefix
-        // cancels the prefix and stays in the terminal view (no focus switch).
+        // consumed whole so the replay tail is empty. A bare Esc after the prefix is
+        // NOT a prefix command: it is treated like any unrecognized key, ending the
+        // chord and swallowing the key (no focus switch, nothing reaches the pane).
         for seq in [&b"\x1b[D"[..], &b"\x1b[A"[..]] {
             let mut t = m();
             t.feed(&[0x07]);
@@ -523,7 +518,7 @@ mod tests {
         assert_eq!(
             t.feed(b"\x1b"),
             Vec::<Action>::new(),
-            "prefix Esc cancels the prefix and stays in the terminal"
+            "prefix Esc is not a command: the chord ends, the key is swallowed"
         );
     }
 

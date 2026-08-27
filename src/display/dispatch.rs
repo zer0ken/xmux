@@ -16,7 +16,7 @@ use ratatui::crossterm::event::KeyEvent;
 pub enum Action {
     /// Raw bytes to forward to the focused session's active pane.
     Forward(Vec<u8>),
-    /// `prefix` then Left/Tab/Esc — move focus back to the nav. Carries any bytes
+    /// `prefix` then Left/Tab — move focus back to the nav. Carries any bytes
     /// that followed the switch command in the same read: focus has changed, so the
     /// caller must hand them to the nav, not the pane.
     FocusNav(Vec<u8>),
