@@ -161,10 +161,20 @@ fn run_cargo(args: &Args, platform: Platform) -> Result<(), String> {
     match platform {
         Platform::Unix => delegate(),
         // On Windows cargo's final copy into the bin directory would fail on the
-        // running binary's image lock, so the binary is renamed aside first.
+        // running binary's image lock, so the binary is renamed aside first. A
+        // missing binary makes cargo rebuild even when the install is current,
+        // so whether an update exists at all is decided before the rename.
         Platform::Windows => {
             let target =
                 std::env::current_exe().map_err(|e| format!("cannot locate own binary: {e}"))?;
+            clean_stale_sidecars(&target);
+            let current = env!("CARGO_PKG_VERSION");
+            let agent = ureq::AgentBuilder::new().build();
+            let latest = release::latest_version(&agent)?;
+            if !release::is_newer(&latest, current) {
+                println!("xmux is already up to date ({current})");
+                return Ok(());
+            }
             delegate_with_binary_aside(&target, std::process::id(), delegate)
         }
     }
@@ -175,13 +185,12 @@ fn run_cargo(args: &Args, platform: Platform) -> Result<(), String> {
 /// image lock. The sidecar is renamed back when the delegation writes nothing
 /// (already up to date, or failed); when a new binary lands, the sidecar (this
 /// process's own image, undeletable while it runs) is left for the next update's
-/// entry cleanup.
+/// `clean_stale_sidecars`.
 fn delegate_with_binary_aside(
     target: &Path,
     pid: u32,
     delegate: impl Fn() -> Result<(), String>,
 ) -> Result<(), String> {
-    clean_stale_sidecars(target);
     let sidecar = sidecar_path(target, pid);
     std::fs::rename(target, &sidecar)
         .map_err(|e| format!("cannot move {} aside: {e}", target.display()))?;

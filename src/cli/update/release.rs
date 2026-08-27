@@ -82,7 +82,7 @@ fn hex(bytes: &[u8]) -> String {
     s
 }
 
-fn latest_version(agent: &ureq::Agent) -> Result<String, String> {
+pub(crate) fn latest_version(agent: &ureq::Agent) -> Result<String, String> {
     let resp = agent
         .get(LATEST_API)
         .call()
