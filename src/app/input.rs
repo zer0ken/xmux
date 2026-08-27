@@ -191,7 +191,7 @@ pub(crate) fn resolve_nav_key(
             // An arrow points AT the view it focuses, in either layout: the terminal is
             // right of the nav in Side and below it in Top, so prefix → and prefix ↓ both
             // focus the terminal, and prefix ← / prefix ↑ both name the nav, which already
-            // has focus here, so they resolve to nothing (as prefix Esc does). prefix Tab
+            // has focus here, so they resolve to nothing. prefix Tab
             // cycles, mirroring the terminal side's prefix Tab → nav. The byte decoder
             // yields Char('\t') for Tab, never KeyCode::Tab, so match both.
             KeyCode::Right | KeyCode::Down | KeyCode::Tab | KeyCode::Char('\t') => {

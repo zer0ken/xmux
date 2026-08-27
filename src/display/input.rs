@@ -88,10 +88,9 @@ impl TermInput {
     }
 
     /// Processes one stdin read. Forwarded bytes are coalesced; an intercepted
-    /// prefix sequence produces FocusNav/Quit (or a literal prefix byte). The
-    /// command key after a prefix is resolved at the byte level and consumes ONLY
-    /// its own byte(s), so any trailing bytes in the same read resume as normal
-    /// input (e.g. `C-g C-g abc` forwards a literal prefix then `abc`).
+    /// prefix sequence produces FocusNav/Quit/help/resize/… actions. The command key
+    /// after a prefix is resolved at the byte level and consumes ONLY its own
+    /// byte(s), so any trailing bytes in the same read resume as normal input.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Action> {
         let mut out = Vec::new();
         let mut fwd: Vec<u8> = Vec::new();
@@ -262,7 +261,7 @@ impl TermInput {
     /// Applies one parsed kitty key event to the prefix state and the forward buffer.
     /// The prefix's release CANCELS the chord (ready and hold both clear, so the bar
     /// hides); a held prefix's repeat is swallowed and never re-arms a consumed ready;
-    /// a deliberate fresh press sends a literal prefix. Non-prefix events forward
+    /// a fresh prefix press when unarmed arms a new chord. Non-prefix events forward
     /// their legacy bytes (a release forwards nothing, because a legacy program has no
     /// key-up event).
     fn handle_kitty(&mut self, ev: &crate::display::decode::KittyEvent, fwd: &mut Vec<u8>) {
