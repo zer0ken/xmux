@@ -6,8 +6,9 @@
 no zellij code sits at the `src` root. It owns BOTH sides of the mux:
 
 - the metadata mux: binary name, a per-session server model, session-listing
-  enumeration, attach argv, poll cadence, death signal, and the command plans,
-  none of which are tmux-compatible;
+  enumeration, attach argv, poll cadence, death signal, the environment variable
+  its own client carries its session in, and the command plans, none of which are
+  tmux-compatible;
 - the display driver: the per-source display orchestration for a per-session mux
   with no in-place switch;
 - the output shapes: the session listing (a human line), as pure functions.
@@ -32,6 +33,19 @@ change. There is no in-place switch to make: `switch-session` moves whichever
 client runs it, and a client cannot be named from outside its own session, so
 xmux has no way to aim a switch at its own display client the way it does for
 tmux and psmux.
+
+The same `switch-session` is how the USER moves xmux's own display client, and it
+moves it INSIDE the client process: the client detaches from one session's server
+and the same process attaches to another, keeping its pid and the argv it started
+with. No server sees that move, so the poll cannot ask for it, and the session
+listing cannot answer it either, since its current-session marker names the session
+the listing itself ran inside and xmux polls from outside every session. What the
+client rewrites each time it lands is `ZELLIJ_SESSION_NAME` in its own environment,
+which it also sets on the first attach, so that value always names the session the
+client is on right now. It belongs to the process, so it names xmux's own client
+and never another zellij client of the user's. Reading it needs the client to be a
+process on THIS machine, so a remote or WSL zellij source has no such witness and
+behaves as though there were none to read.
 
 ## Module Seams
 
@@ -60,6 +74,12 @@ tmux and psmux.
 - The session's last-attached value carries its CREATION instant. zellij reports
   no attach time, and the shared session model carries a value on the same epoch scale
   tmux reports.
+- A session change reaches another session by a fresh attach, and the display
+  belief is what suspends it: an attachment already recorded as showing the
+  selected session is left alone. Following a client switch records the client's
+  own report as that belief BEFORE moving the nav, so the selection arriving at
+  the display decision finds a belief the client backs, and the client the user
+  just moved is never torn down to reach the session it is already in.
 - On a reattach the stale attachment is HELD, not removed, so its grid stays on
   screen until the fresh one is ready (stale-while-revalidate).
 - Sync never pre-warms, since attaches are selected on demand when a session is
@@ -81,6 +101,9 @@ tmux and psmux.
   mirrors whatever tab the attached client lands on.
 - Do not treat a non-zero session-listing exit as an unreachable source. An idle
   zellij writes `No active zellij sessions found.` to stderr and exits 1.
+- Do not read the listing's current-session marker as where xmux's display client
+  is. It marks the session the LISTING COMMAND ITSELF ran inside, so xmux, which
+  polls from outside every session, never sees it on any line.
 - Do not assume an action always answers. On WINDOWS an action addressed at a
   stale session never returns, which would freeze that source's whole poll loop; the
   mux layer's per-command poll budget is what bounds it. Verify zellij behavior on
@@ -103,6 +126,10 @@ tmux and psmux.
   signal, or display decision changes.
 - Set `XMUX_LOG=xmux::mux::zellij=debug` to trace the driver's show and inventory
   decisions.
+- A live check of the client-switch follow needs a real LOCAL zellij on Windows:
+  attach xmux's terminal view to one session, run
+  `zellij action switch-session <other>` inside it, and confirm the nav selection
+  lands on the other session's card while the same client stays on screen.
 - A live check needs a real zellij host: create a detached session with
   `zellij attach -b <name>` and let xmux attach to it. Do NOT create tabs from
   outside a clientless session first: zellij 0.45.0 then panics its server on the

@@ -110,6 +110,22 @@ impl Mux for Zellij {
         vec![self.bin.clone(), "attach".to_string(), session.to_string()]
     }
 
+    /// zellij moves its client between sessions INSIDE the client process:
+    /// `switch-session` detaches the client that runs it from one session's server and
+    /// the same process attaches to another, rewriting this variable each time it lands.
+    /// The client sets it on its first attach too, so the value always names the session
+    /// the client is on right now while its argv keeps naming the session it was started
+    /// on. Because the variable belongs to the PROCESS, it names xmux's own display
+    /// client and no other zellij client of the user's.
+    ///
+    /// It is the only witness there is. No server sees the move, so the poll cannot ask
+    /// for it, and the session listing cannot answer it either: the listing's
+    /// current-session marker names the session the LISTING COMMAND ITSELF ran inside,
+    /// and xmux polls from outside every session, so that marker is never present.
+    fn display_session_env(&self) -> Option<&str> {
+        Some("ZELLIJ_SESSION_NAME")
+    }
+
     fn control_argv(&self) -> Option<Vec<String>> {
         // zellij has no control-mode channel: its CLI is one process per query.
         None
@@ -261,6 +277,15 @@ mod tests {
             m.select_window_plan(&crate::mux::window_target("a:b", 1)),
             argv(&["zellij", "--session", "a:b", "action", "go-to-tab", "2"])
         );
+    }
+
+    /// The live client's own environment is where a `switch-session` can be seen, and
+    /// the only place: zellij pushes no notification, and its session listing marks only
+    /// the session the listing itself ran inside, which xmux is never in. The variable
+    /// belongs to the client PROCESS, so what it answers is xmux's own client.
+    #[test]
+    fn the_client_carries_the_session_it_is_on_in_its_own_environment() {
+        assert_eq!(zellij().display_session_env(), Some("ZELLIJ_SESSION_NAME"));
     }
 
     #[test]

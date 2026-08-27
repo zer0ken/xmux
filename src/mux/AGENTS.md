@@ -29,10 +29,10 @@ AND its display driver, and is re-exported from the root:
   session registry that backs enumeration (one server per session, so there is no
   aggregate session listing). See `psmux/AGENTS.md`.
 - `zellij/` owns the zellij mux, its poll cadence, the per-session action argv
-  every zellij query is addressed with, and its driver (which reattaches on every
-  session change because no client can be named from outside its own session),
-  owning the session listing as its one output shape. See
-  `zellij/AGENTS.md`.
+  every zellij query is addressed with, the environment variable its own client
+  carries its session in, and its driver (which reattaches on every session change
+  because no client can be named from outside its own session), owning the session
+  listing as its one output shape. See `zellij/AGENTS.md`.
 - `abduco/` owns the abduco mux, its poll cadence, its listing parser (the bare
   binary IS the listing), its driver (which reattaches on every session change),
   and the one-card-per-session rule. abduco is the simplest family: no control
