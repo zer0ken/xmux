@@ -41,7 +41,7 @@ flatten renders for the dump verb.
   own `border_inactive` half), so the theme changes in one place. A theme is a named
   role→ANSI-slot assignment; the palette holds the registry (`auto-dark`,
   `auto-light`) and `[ui] theme` selects one. `overlay` is the CONTENT furniture
-  (no-sessions, `/`, card number, connectors) - the view border's dim half is a
+  (no-sessions, `/`, card number, section titles) - the view border's dim half is a
   separate `border_inactive` role because it states focus, not a card mark. The hint
   bar reads its OWN accent (`bar_accent`) because it sits on a different surface than
   the cards - a slot that reads on one may not read on the other. What lives in the
@@ -120,10 +120,11 @@ flatten renders for the dump verb.
   it and reads as a hole in the bar. The portrait flow scrolls sideways and puts its cue on
   the status row instead, which is the band's own last row and never a card's, so the flow
   keeps every row of the band.
-- In the portrait column flow, what a card collapses under is decided by POSITION alone,
-  never by the selection: a card height that moved with the cursor would reflow whole
-  columns as the selection passed over them. The side list keeps its
-  selection-expands-the-card rule, where a height change only shifts rows.
+- No card's height or shape moves with the selection: focus changes only the address
+  column (the number becomes the mark), so a row that gained a line under the cursor
+  would reflow the list and the columns as the cursor passed. A section title is a
+  fixed non-selectable row, and in the portrait flow the host band never shares a
+  column with session cards.
 - A pending prefix is dropped by the next INPUT, mouse included. The mouse path has to say
   so itself, because mouse bytes never reach either focus path's key handling. Bare hover
   is exempt: it is the pointer sitting there, not an action.

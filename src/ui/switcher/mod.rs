@@ -27,9 +27,9 @@ pub use crate::ui::ops::{run_op, OpResult, Ops};
 /// Tree pane width: border + 1-cell inner padding each side + content.
 pub const NAV_WIDTH: u16 = 48;
 
-/// A navigation card's EXPANDED height: two screen rows (a context line over a
-/// detail line). A collapsed card (see [`Switcher::card_collapsed`]) drops the
-/// context line and is one row tall; the layout is measured from
+/// A scanning host card's height: two screen rows, so its spinner can stand in the
+/// second (session-level) row. Every other row - a section title, a session card, a
+/// settled host card - is one row tall; the layout is measured from
 /// [`Switcher::card_height`] alone, and the paint records the rect it gave each card, so
 /// the screen-row-to-card mapping has one answer.
 pub(super) const CARD_H: u16 = 2;
@@ -63,10 +63,6 @@ fn color_number() -> Color {
 /// The `/` separator between a card line's parts.
 fn color_separator() -> Color {
     crate::ui::palette::get().separator
-}
-/// The box-drawing connector (`├`/`└`) hanging a detail line under its context.
-fn color_connector() -> Color {
-    crate::ui::palette::get().connector
 }
 pub use crate::ui::chrome::ViewBorderColors;
 
@@ -434,7 +430,7 @@ impl Switcher {
             .get(self.selected)
             .and_then(|r| match &r.reference {
                 RowRef::Session { .. } => Some(r.reference.clone()),
-                RowRef::Host { .. } => None,
+                RowRef::Host { .. } | RowRef::Section { .. } => None,
             });
 
         // The deterministic display order (groups local→WSL→remote then by source name,
@@ -475,66 +471,38 @@ impl Switcher {
             .collect()
     }
 
-    /// Whether card `i` renders collapsed to its detail line alone: a session /
-    /// loading card whose `{host}/{mux}` context repeats the previous card's, so a
-    /// run of sessions on one server reads grouped without restating the context.
-    /// The SELECTED card never collapses - focus expands it to the full two-row
-    /// card, so its context is always readable in place - and a host-state card
-    /// never collapses (its host name IS the content).
-    fn card_collapsed(&self, i: usize) -> bool {
-        if self.list_state.selected() == Some(i) {
-            return false;
+    /// The screen rows card `i` occupies: one for a section title, a session card, and
+    /// a settled host-state card; two for a scanning host card, whose spinner needs a
+    /// second row.
+    fn card_height(&self, i: usize) -> u16 {
+        match &self.rows[i].reference {
+            RowRef::Host { scanning: true, .. } => CARD_H,
+            _ => 1,
         }
-        self.hangs_under_prev(i)
     }
 
-    /// Whether card `i` shares the previous card's `{host}/{mux}` context, so it CAN
-    /// hang under it instead of restating it. The context test alone: whether it
-    /// actually collapses also depends on the layout (the selected card expands in the
-    /// `Side` list; a column's first card always states its context in the `Top` flow),
-    /// so each layout applies its own rule over this one.
-    fn hangs_under_prev(&self, i: usize) -> bool {
-        let (Some(row), Some(prev)) = (
-            self.rows.get(i),
-            i.checked_sub(1).and_then(|p| self.rows.get(p)),
-        ) else {
-            return false;
-        };
-        if matches!(row.reference, RowRef::Host { .. })
-            || matches!(prev.reference, RowRef::Host { .. })
-        {
-            return false;
-        }
-        let (host, mux, _) = context_of(row);
-        let (prev_host, prev_mux, _) = context_of(prev);
-        host == prev_host && mux == prev_mux
-    }
-
-    /// Whether card `i` is a SETTLED host-state card - a reachable empty host or an
-    /// unreachable one - rendered as a single host row: a settled host has no session
-    /// and no row of its own below the host name (the unreachable mark rides on the
-    /// host row itself), so the card reads one line tall. A scanning host keeps its
-    /// two rows, because its spinner has to stand somewhere the settled card's text
-    /// stood.
-    fn is_one_line_host(&self, i: usize) -> bool {
+    /// Whether card `i` opens a new unit in the portrait column flow: a section title
+    /// (its session cards hang under it) or a host-state card. A session card hangs
+    /// under its section and starts nothing.
+    fn starts_run(&self, i: usize) -> bool {
         matches!(
             self.rows.get(i).map(|r| &r.reference),
-            Some(RowRef::Host {
-                scanning: false,
-                ..
-            })
+            Some(RowRef::Section { .. }) | Some(RowRef::Host { .. })
         )
     }
 
-    /// The screen rows card `i` occupies: [`CARD_H`] expanded, one when collapsed or
-    /// when the card is a single host row (a reachable empty host, see
-    /// [`Switcher::is_one_line_host`]).
-    fn card_height(&self, i: usize) -> u16 {
-        if self.card_collapsed(i) || self.is_one_line_host(i) {
-            1
-        } else {
-            CARD_H
-        }
+    /// The selectable count: the number of cards the numbering and the jump address,
+    /// section titles excepted. The cards are numbered by their rank among the
+    /// selectable rows, so a section title never takes a number from the cards under
+    /// it.
+    fn selectable_count(&self) -> usize {
+        self.rows.iter().filter(|r| r.selectable()).count()
+    }
+
+    /// The number card `i` addresses: its rank among the selectable cards. A section
+    /// title has no number; it is never the selection and never a jump target.
+    fn card_number(&self, i: usize) -> usize {
+        self.rows[..i].iter().filter(|r| r.selectable()).count()
     }
 
     /// Where the nav's two bands meet: the first host-state card, the flatten having sunk
@@ -597,7 +565,7 @@ impl Switcher {
 
     fn current_source(&self) -> Option<String> {
         match self.current_ref()? {
-            RowRef::Host { source, .. } => Some(source.clone()),
+            RowRef::Host { source, .. } | RowRef::Section { source, .. } => Some(source.clone()),
             RowRef::Session { sess } => Some(sess.source.clone()),
         }
     }
@@ -735,7 +703,9 @@ impl Switcher {
     pub fn request_rescan(&mut self, state: &mut crate::state::State) {
         let (reselect, parent) = match self.current_ref() {
             Some(RowRef::Session { sess }) => (Some(sess.address()), Some(sess.source.clone())),
-            Some(RowRef::Host { source, .. }) => (None, Some(source.clone())),
+            Some(RowRef::Host { source, .. }) | Some(RowRef::Section { source, .. }) => {
+                (None, Some(source.clone()))
+            }
             None => (None, None),
         };
         self.rescan_reselect = reselect;
@@ -862,6 +832,9 @@ impl Switcher {
                     crate::session::source_of(&addr) == source.as_str()
                 }
                 Some(RowRef::Session { sess }) => sess.address() == addr,
+                // A section title is never the selection, so it is never where a
+                // re-scan parked; the arm exists to keep the match total.
+                Some(RowRef::Section { .. }) => false,
                 None => false,
             };
             if parked {
@@ -895,12 +868,17 @@ impl Switcher {
     }
 
     /// The card to land on after the selected card vanished (killed/removed): the
-    /// previous card, clamped into range. Operates on the freshly rebuilt `self.rows`.
+    /// previous selectable card, or the first selectable when none precedes it.
+    /// Section titles are never landed on - they are not cards, so the fallback walks
+    /// past them to the nearest card. Operates on the freshly rebuilt `self.rows`.
     fn fallback_after_removal(&self, prior_selected: usize) -> Option<usize> {
-        if self.rows.is_empty() {
-            return None;
-        }
-        Some(prior_selected.saturating_sub(1).min(self.rows.len() - 1))
+        self.rows[..prior_selected]
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, r)| r.selectable())
+            .map(|(i, _)| i)
+            .or_else(|| self.rows.iter().position(Row::selectable))
     }
 
     /// The row index targeting the same node as `focus`, if it survives a
@@ -924,17 +902,19 @@ pub(crate) fn fit(candidates: &[String], width: u16) -> String {
         .unwrap_or_else(|| candidates.last().cloned().unwrap_or_default())
 }
 
-/// The context parts of a card: `(host, mux, session)`. A host-state card
-/// carries only its host; a session card names its session's host, mux
+/// The context parts of a row: `(host, mux, session)`. A host-state card and a
+/// section title carry only their host; a session card names its session's host, mux
 /// kind (empty when not yet known), and session name.
 fn context_of(row: &Row) -> (&str, &str, &str) {
     // The MACHINE half, never the whole source id: a source id already carries the mux
     // when its machine serves several, and the card renders the mux as its own span, so
-    // returning the id whole would read `local:zellij/zellij`. The mux comes off the card
-    // itself, resolved once when the card was built, so every card on one source names its
+    // returning the id whole would read `local:zellij/zellij`. The mux comes off the row
+    // itself, resolved once when the row was built, so every row on one source names its
     // mux the same way whatever each of them had to read it from.
     match &row.reference {
-        RowRef::Host { source, .. } => (crate::session::machine_of(source), &row.mux, ""),
+        RowRef::Host { source, .. } | RowRef::Section { source, .. } => {
+            (crate::session::machine_of(source), &row.mux, "")
+        }
         RowRef::Session { sess } => (
             crate::session::machine_of(&sess.source),
             &row.mux,
@@ -944,21 +924,25 @@ fn context_of(row: &Row) -> (&str, &str, &str) {
 }
 
 /// The session address a card belongs to (a session card), or `None` for a
-/// host-state card. Lets selection tracking, kill-confirm survival, and
-/// `select_address` treat a session card as that session.
+/// host-state card and a section title. Lets selection tracking, kill-confirm
+/// survival, and `select_address` treat a session card as that session.
 fn session_addr_of(reference: &RowRef) -> Option<String> {
     match reference {
         RowRef::Session { sess } => Some(sess.address()),
-        RowRef::Host { .. } => None,
+        RowRef::Host { .. } | RowRef::Section { .. } => None,
     }
 }
 
-/// Whether two card references target the same card across a rebuild (host by
-/// source, session by address), so the selection stays put on a poll / re-scan.
+/// Whether two row references target the same row across a rebuild (host by source,
+/// section by source, session by address), so the selection stays put on a poll /
+/// re-scan. A section title is a source's header; it matches only itself, and it is
+/// never the selection.
 fn same_node(a: &RowRef, b: &RowRef) -> bool {
     match (a, b) {
         (RowRef::Host { source: x, .. }, RowRef::Host { source: y, .. }) => x == y,
+        (RowRef::Section { source: x, .. }, RowRef::Section { source: y, .. }) => x == y,
         (RowRef::Host { .. }, _) | (_, RowRef::Host { .. }) => false,
+        (RowRef::Section { .. }, _) | (_, RowRef::Section { .. }) => false,
         _ => session_addr_of(a) == session_addr_of(b),
     }
 }

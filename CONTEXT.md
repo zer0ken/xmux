@@ -109,29 +109,25 @@ UI elements a user perceives as distinct things:
 - cursor - the real terminal cursor placed over the grid at the mux's cursor cell
   while the terminal view is focused. "cursor" always means this text cursor,
   never the nav selection.
-- card - one nav entry: a context line (`{host}/{mux}`, or `{host}` on a
-  host-state card) over a detail line (the session name alone behind a connector;
-  or, on a host-state card, the host row carries the state). A card states WHAT
-  something is; WHY it is that way is the screen's, never a card's.
-  The muted connector hangs the detail
-  under its context line - on a collapsed card, under the shared context
-  above: `├` while a collapsed sibling follows below, `└` on the run's last
-  line; the selected card keeps the connector (the selection mark and the inverted
-  rows already bind its lines, and dropping it would slide the session name out of
-  the column every other card puts its name in).
-  One card per SESSION; the mux segment names the mux kind serving it, stamped at
-  enumeration, so several muxes on one host stay distinguishable. The kinds are the
-  session card and the host-state card (scanning / unreachable / empty host); the
-  loading card is gone: a session is a plain session card from the moment its host
-  resolves.
-- card collapse - a session card whose `{host}/{mux}` repeats the
-  previous card's drops its context line and renders one row tall, so runs on
-  one server read grouped. In the SIDE list the selected card never collapses (focus
-  expands it to the full two-row card, so its context is always readable in place), and one
-  card-height rule feeds the placement the paint and the hit-test both read, so the
-  screen-row mapping never diverges. The column flow collapses by POSITION alone, never by selection: a
-  column's first card always states its context, and heights that moved with the selection
-  would reflow whole columns as the cursor passed.
+- card - one nav entry: a session card is a single row carrying the session name,
+  with the `{host}/{mux}` label living on the SECTION TITLE above its group, never on
+  the card itself. A host-state card (scanning / unreachable / empty host) is its own
+  row naming the host. A card states WHAT something is; WHY it is that way is the
+  screen's, never a card's. One card per SESSION; the mux a source's cards share is
+  named once, on the section title, resolved at enumeration so several muxes on one
+  host stay distinguishable. The loading card is gone: a session is a plain session
+  card from the moment its host resolves.
+- section title - the non-selectable `{host}/{mux}` header row a source's session
+  cards hang under, shown in the quiet header role with a rule filling the rest of the
+  row. It is not a card: it carries no number, the selection can never land on it, and
+  a click on it selects nothing. `n` on one of its session cards creates a sibling in
+  the same section.
+- card focus - the one thing a card's rendering changes when it gains the selection:
+  the number in its address column becomes the `❯` mark. It does not grow a context
+  line, it does not change height, and its session name keeps the same column - a name
+  that shifts as the cursor passes is what makes a list twitch. The selected look is
+  the inverted rect (see selection highlight) plus the mark, nothing more. A section
+  title never takes either.
 - nav size - the nav's live geometry as one value: the width the user SET, the width ON
   SCREEN this frame (0 while auto-hide has taken it), and the portrait band's height the
   user set (0 = auto). All three are settable while xmux runs, so every consumer takes the
@@ -152,46 +148,55 @@ UI elements a user perceives as distinct things:
   input and the layout would oscillate on one cell of resize. Hiding the nav is not a
   resize either, since the turnover reads the width the user set, so the nav comes back the
   shape it left and the resize keys keep driving the same axis while it is gone.
-- column flow - how the portrait band lays its cards out: down a column, then right. A
-  column takes whole host/mux RUNS, so a source's cards stay together under the one
-  context line naming them, and the run that does not fit opens the next column instead of
-  splitting across the break. A run taller than the whole column is the one exception,
-  having nowhere else to go: it splits, and the continuation states its context again. A
-  column is as wide as its widest card, columns are parted by one blank, and the flow is
+- column flow - how the portrait band lays its rows out: down a column, then right. A
+  column takes whole SECTIONS (a `{host}/{mux}` title over its session cards), so a
+  source's rows stay together under the one title naming them, and the section that
+  does not fit opens the next column instead of splitting across the break. A section
+  taller than the whole column is the one exception, having nowhere else to go: it
+  splits, and the continuation re-states its title at the top of the next column. A
+  column is as wide as its widest row, columns are parted by one blank, and the flow is
   pure geometry, so the paint, the hit-test and the tests read one answer. A list would
   show three cards in a band twenty rows wide and leave the rest of every row blank; the
   flow is what makes the band worth its rows.
 - source label - how a host and its mux are SHOWN: `{host}/{mux}`, one grammar wherever
-  the pair is read (a card's context line, the screen it selects, the doctor's source
+  the pair is read (a section title, the screen it selects, the doctor's source
   list). Not the id's own separator, because an id is typed and a label is read, and a
   label parts its levels the way the rest of an address on screen does. Both halves
   always: a host serving one mux carries no mux in its id and still shows one, since a
-  host seen with its mux on one card and without it on the next reads as two hosts. The
+  host seen with its mux on one title and without it on the next reads as two hosts. The
   name comes from the mux's KIND, not the binary that reached it, so an alias or a path
   cannot put a second spelling on screen. Empty only where nothing knows the mux yet,
   which a card marks with its spinner rather than by dropping the separator.
-- nav bands - the two bands the nav's cards fall into: the session cards, then the cards
-  of the hosts with no session to show, which sit below every session card whatever order
-  the hosts were scanned in. In the side column the parting is the ROOM between them while
-  the cards can spare a row for it (the sessions hold the top edge, the host cards the
-  bottom), and a rule across the cards once they cannot and the column scrolls as one list,
-  because a gap parts only what a reader sees at once. The parting always has a row: the
-  column is measured with the rule's row counted in, so a gap of one is the last thing
-  before the rule and the bands never meet, at the price of scrolling a row early. Neither
-  parting is a card, so a click on one selects nothing.
+- nav bands - the two bands the nav's rows fall into: the session cards (each under
+  its section title), then the cards of the hosts with no session to show, which sit
+  below every session card whatever order the hosts were scanned in. In the SIDE column
+  the parting is the ROOM between them while the cards can spare a row for it (the
+  sessions hold the top edge, the host cards the bottom), and a rule across the cards
+  once they cannot and the column scrolls as one list, because a gap parts only what a
+  reader sees at once. The parting always has a row: the column is measured with the
+  rule's row counted in, so a gap of one is the last thing before the rule and the bands
+  never meet, at the price of scrolling a row early. In the PORTRAIT band the parting is
+  horizontal: the session columns hold the left edge, the host band is pushed to the
+  right while a blank column parts them, and a vertical rule takes the boundary's column
+  once they cannot (the run scrolls a column early for the same reason). Neither parting
+  is a card, so a click on one selects nothing.
 - level color - the per-segment card color, from the palette. Every foreground role
-  is ANSI-16, so the terminal theme resolves the hue. There is one TEXT colour and one
-  ACCENT: every card reads as a neutral block of text with a single highlighted element.
-  The text colour carries both the host and the mux on a session card's context line;
-  the accent belongs to the LOWEST level the card displays - the session name on a
-  session card, the mux on a host-state card that has a mux to name. The one mark
-  that keeps its own colour is the unreachable host's `⚠`, which stays danger yellow as a
-  failure, and the scanning spinner stays pending yellow. A settled host-state card is a
+  is ANSI-16, so the terminal theme resolves the hue. There is one TEXT colour, one
+  ACCENT, and the section title's quiet header role: a session card reads as one
+  neutral line with a single highlighted element - the session name, which takes the
+  accent and stays bold. The accent belongs to the LOWEST level the card displays:
+  the session name on a session card, the mux on a host-state card that has a mux to
+  name. A section title reads in the quiet header role (its `{host}/{mux}` and its
+  trailing rule), one step below the cards. The one mark that keeps its own colour is
+  the unreachable host's `⚠`, which stays danger yellow as a failure, and the scanning
+  spinner stays pending yellow. A settled host-state card is a
   single host row: the unreachable one carries the `⚠` mark after its host name, and
   a reachable empty host's card carries no word at all (its screen states "no sessions").
   A host-state card claims a mux only when the mux is CONFIRMED - a settled reachable
   host's enumeration answered through its mux, and a source id that names its own mux
-  was resolved from what the machine actually serves. A bare-id host that is unreachable
+  was resolved from what the machine actually serves; a section title's mux is
+  confirmed the same way, because the source's enumeration answered through it. A
+  bare-id host that is unreachable
   or still scanning claims none: the card reads the host alone, or spins in the mux
   position while it scans.
   The hint bar is two slots as well. Nothing here
@@ -209,7 +214,7 @@ UI elements a user perceives as distinct things:
   reselect are the launch and post-rescan selections.
 - selection highlight - the selected card's rendering: reverse video filling the whole
   card, the terminal theme's own selected look,
-  plus a `❯` mark standing in the address column of the card's detail line, where
+  plus a `❯` mark standing in the address column of the card's row, where
   every other card carries its number. The inversion is uniform because the highlight
   pins both foreground and background to the terminal's defaults: inverting per span
   would turn each level color into a background and stripe the card. That same pinning
@@ -249,10 +254,10 @@ UI elements a user perceives as distinct things:
   answers "where is this": the dim 0-based number `prefix <digit>` jumps to, or, on the
   SELECTED card, the selection mark - the number there would be the address of where you
   already are. One column carries both, so a card's name never moves as the selection
-  passes over it. It is written on the DETAIL line, beside the session it addresses, so a
-  collapsed card puts it in the same place as an expanded one; a context line spends the
-  same width blank. The column is one width per frame, so the names stay aligned and the
-  numbers line up by units place as the count crosses 10.
+  passes over it. It is written on the card's single row, beside the session it
+  addresses; a section title is not a card and spends no number there at all (its
+  `{host}/{mux}` label is flush left). The column is one width per frame, so the names
+  stay aligned and the numbers line up by units place as the count crosses 10.
 - jump - the digits-only popup `prefix <digit>` opens. It acts WHILE open: each edit
   moves the selection, so Enter only closes it and Esc restores where it started. It
   accepts only a digit that keeps the number addressing a real card, so one-, two-,

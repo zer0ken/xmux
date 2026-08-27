@@ -37,7 +37,7 @@ reaches a host; it is not one, and several transports may reach the same host.
 
 ## Consequences
 
-A card's context line `{host}/{mux}` is the two halves of a source id, which is
+A source's section title `{host}/{mux}` is the two halves of a source id, which is
 what it always printed.
 
 Every sentence that said host and meant the pairing says source instead: the

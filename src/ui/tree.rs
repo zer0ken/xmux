@@ -178,12 +178,19 @@ pub fn rename_session(groups: &[Group], address: &str, new_name: &str) -> Vec<Gr
 
 /// What a navigation card references. Every card is a selectable target: a session
 /// card attaches to that session (the mux lands on its active window),
-/// a host-state card selects the host (so its host screen shows).
+/// a host-state card selects the host (so its host screen shows). A section title is
+/// not a card: it names the group under it and cannot take the selection.
 #[derive(Clone)]
 pub(crate) enum RowRef {
-    /// A session card: a `{host}/{mux}` context line over the session name on the
-    /// detail line. Every session card carries its session name; the focused window
-    /// it used to name is gone from the card.
+    /// A host/mux SECTION TITLE: the non-selectable header row a group of sibling
+    /// session cards hangs under. It carries `{host}/{mux}` and is never numbered or
+    /// selectable - the numbers below it are the sessions'. `n` on one of those
+    /// sessions creates a sibling in the same section.
+    Section { source: String },
+    /// A session card: the session name on a single detail line. Every session card
+    /// carries its session name; the focused window it used to name is gone from the
+    /// card, and the `{host}/{mux}` it used to carry now lives on the section title
+    /// above it.
     Session { sess: Session },
     /// A host with no session to show (scanning / unreachable / empty) - the only
     /// host-level entry, sunk to the bottom of the list. `scanning` is the in-flight
@@ -195,26 +202,27 @@ pub(crate) enum RowRef {
     },
 }
 
-/// One navigation card: a context line over a detail line (or the detail line
-/// alone when collapsed under the previous card's identical context). The context
-/// line is derived at render time from the card's [`RowRef`] - `{host}/{mux}` for
-/// a session card, `{host}` for a host-state card - as is colour, so this
-/// model stays terminal-free (no `ratatui` dependency) and unit-testable without
-/// a backend.
+/// One navigation row: a session card is a single line carrying the session name,
+/// a section title is the `{host}/{mux}` header above a group of them, and a
+/// host-state card is the host's own row. The context is derived at render time from
+/// the row's [`RowRef`] - `{host}/{mux}` for a section title, the session name for a
+/// session card, `{host}` for a host-state card - as is colour, so this model stays
+/// terminal-free (no `ratatui` dependency) and unit-testable without a backend.
 pub(crate) struct Row {
-    /// The mux the context line NAMES, resolved once here so every card on one source
+    /// The mux the row NAMES, resolved once here so every row on one source
     /// names its mux the same way: the kind the enumeration stamped on the session, or the
     /// source's own mux where no session carries one (a host-state card, a session created
     /// since the last enumeration). Empty only while nothing knows it yet, which is the
-    /// state the card turns a spinner for.
+    /// state a card turns a spinner for.
     pub(crate) mux: String,
     pub(crate) reference: RowRef,
 }
 
 impl Row {
-    /// Every card is a selectable target.
+    /// A section title is not a card: it names the group under it, and the selection
+    /// cannot land on it. Every card (session, host state) is a selectable target.
     pub(crate) fn selectable(&self) -> bool {
-        true
+        !matches!(self.reference, RowRef::Section { .. })
     }
 }
 
@@ -266,9 +274,11 @@ pub(crate) fn first_visible_session(group: &Group, filter: &str) -> Option<Sessi
 
 /// The (source, target) an active-pane attach on `reference` would land on. `target`
 /// empty ⇒ no terminal view (a host with no visible session). Pure over the inventory.
+/// A section title is never the selection, so it targets nothing; the arm exists to
+/// keep the match total.
 pub(crate) fn target_for(reference: &RowRef, groups: &[Group], filter: &str) -> (String, String) {
     match reference {
-        RowRef::Host { source, .. } => match groups
+        RowRef::Host { source, .. } | RowRef::Section { source, .. } => match groups
             .iter()
             .find(|g| &g.source == source)
             .and_then(|g| first_visible_session(g, filter))
@@ -308,15 +318,15 @@ pub(crate) fn host_state_word(unreachable: bool) -> &'static str {
     }
 }
 
-/// Flattens the inventory into a flat list of navigation cards: one session card per
-/// session, emitted in group order (the deterministic local→WSL→remote, name-sorted
-/// order `rebuild` establishes, so a routine poll reproduces the same list). Hosts
-/// with no session to show (scanning / unreachable / empty) get one host-state card
-/// each, sunk to the bottom. Colour and the context line are derived at render time
-/// from each card's [`RowRef`], so this stays terminal-free; the mux each card NAMES
-/// is resolved here instead, through `mux_of_source`, so a card cannot exist without
-/// it and two cards on one source cannot name their mux two ways. Inputs are not
-/// mutated.
+/// Flattens the inventory into a flat list of navigation rows: a section title per
+/// source that has a session to show, then one session card per session, emitted in
+/// group order (the deterministic local→WSL→remote, name-sorted order `rebuild`
+/// establishes, so a routine poll reproduces the same list). Hosts with no session to
+/// show (scanning / unreachable / empty) get one host-state card each, sunk to the
+/// bottom band. The mux each row NAMES is resolved here through `mux_of_source`, so a
+/// row cannot exist without it and two rows on one source cannot name their mux two
+/// ways; colour is derived at render time from each row's [`RowRef`], so this stays
+/// terminal-free. Inputs are not mutated.
 pub(crate) fn flatten(
     groups: &[Group],
     scanning: &HashSet<String>,
@@ -326,16 +336,24 @@ pub(crate) fn flatten(
     let groups = visible_groups(groups, filter);
 
     let mut rows = Vec::new();
-    // 1. Session cards, one per session, in group order.
+    // 1. A section per source that has a session to show: the non-selectable
+    //    `{host}/{mux}` title, then one session card per session. A session created
+    //    from one of these cards is its sibling - it joins this same section.
     for g in &groups {
-        if g.err.is_some() {
+        if g.err.is_some() || g.sessions.is_empty() {
             continue;
         }
+        rows.push(Row {
+            mux: mux_of_source(&g.source),
+            reference: RowRef::Section {
+                source: g.source.clone(),
+            },
+        });
         for sess in &g.sessions {
             push_session_card(&mut rows, sess, mux_of_source);
         }
     }
-    // 2. Host-state cards for hosts with no session to show - sunk to the bottom.
+    // 2. Host-state cards for hosts with no session to show - sunk to the bottom band.
     for g in &groups {
         let is_scanning = scanning.contains(&g.source);
         let unreachable = g.err.is_some();
@@ -752,22 +770,25 @@ mod tests {
 
     fn kind(r: &RowRef) -> &'static str {
         match r {
+            RowRef::Section { .. } => "section",
             RowRef::Host { .. } => "host",
             RowRef::Session { .. } => "session",
         }
     }
 
-    /// The session address a session card references ("" for a host card).
+    /// The session address a session card references ("" for a host card or a section).
     fn addr_of(r: &RowRef) -> String {
         match r {
+            RowRef::Section { source, .. } => source.clone(),
             RowRef::Session { sess } => sess.address(),
             RowRef::Host { source, .. } => source.clone(),
         }
     }
 
     #[test]
-    fn flatten_emits_a_card_per_session() {
-        // A flat list: ONE card per session. No host rows (the host has sessions to show).
+    fn flatten_emits_a_section_then_a_card_per_session() {
+        // A source with one session: a SECTION title, then one session card. No host
+        // row (the host has sessions to show).
         let groups = vec![Group {
             source: "jup".into(),
             err: None,
@@ -775,23 +796,28 @@ mod tests {
         }];
         let rows = flatten(&groups, &HashSet::new(), "", &mux_of_source);
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
-        assert_eq!(kinds, vec!["session"]);
-        assert_eq!(addr_of(&rows[0].reference), "jup/api");
+        assert_eq!(kinds, vec!["section", "session"]);
+        assert_eq!(addr_of(&rows[1].reference), "jup/api");
+        assert!(matches!(
+            rows[0].reference,
+            RowRef::Section { ref source } if source == "jup"
+        ));
     }
 
     #[test]
-    fn flatten_emits_sessions_in_group_order() {
-        // Two sessions; the session cards come out in the group's order (the
-        // deterministic order `rebuild` establishes), with no separate address list to
-        // follow.
+    fn flatten_emits_sessions_in_group_order_under_one_section() {
+        // Two sessions: the section title, then the session cards in the group's order
+        // (the deterministic order `rebuild` establishes).
         let groups = vec![Group {
             source: "h".into(),
             err: None,
             sessions: vec![sess("h", "a", 0), sess("h", "b", 0)],
         }];
         let rows = flatten(&groups, &HashSet::new(), "", &mux_of_source);
+        let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
+        assert_eq!(kinds, vec!["section", "session", "session"]);
         let addrs: Vec<String> = rows.iter().map(|r| addr_of(&r.reference)).collect();
-        assert_eq!(addrs, vec!["h/a", "h/b"]);
+        assert_eq!(addrs, vec!["h", "h/a", "h/b"]);
     }
 
     #[test]
