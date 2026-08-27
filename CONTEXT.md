@@ -183,11 +183,16 @@ UI elements a user perceives as distinct things:
   ACCENT: every card reads as a neutral block of text with a single highlighted element.
   The text colour carries both the host and the mux on a session card's context line;
   the accent belongs to the LOWEST level the card displays - the session name on a
-  session card, the mux on a host-state card that has no session to name. The one mark
+  session card, the mux on a host-state card that has a mux to name. The one mark
   that keeps its own colour is the unreachable host's `⚠`, which stays danger yellow as a
   failure, and the scanning spinner stays pending yellow. A settled host-state card is a
-  single host row: the unreachable one carries the `⚠` mark ahead of its host name, and
+  single host row: the unreachable one carries the `⚠` mark after its host name, and
   a reachable empty host's card carries no word at all (its screen states "no sessions").
+  A host-state card claims a mux only when the mux is CONFIRMED - a settled reachable
+  host's enumeration answered through its mux, and a source id that names its own mux
+  was resolved from what the machine actually serves. A bare-id host that is unreachable
+  or still scanning claims none: the card reads the host alone, or spins in the mux
+  position while it scans.
   The hint bar is two slots as well. Nothing here
   is an RGB value; see "Colour ownership" below for why, and `[ui] selection-style` /
   `[ui] hint-bar-style` for naming one anyway.
@@ -238,7 +243,7 @@ UI elements a user perceives as distinct things:
   and on the hint bar's global scan count; a settled session card never spins, because
   a session is a plain session card the moment its host resolves.
 - status - a host-state card's state once it has SETTLED: the unreachable host's `⚠`
-  mark riding ahead of its host name, or nothing at all on a reachable empty host
+  mark riding after its host name, or nothing at all on a reachable empty host
   (whose screen states "no sessions"); a card still scanning carries the spinner
   instead, because its spinner already says so. Not to be confused with the hint bar
   (below) or the `chrome`.

@@ -520,8 +520,11 @@ impl Switcher {
     /// host-state card). The detail line is the address column + the session name in
     /// the accent, the one card element that leaves the text colour; a host-state card
     /// is the host/mux name alone on its row, with the unreachable mark (`⚠`) riding
-    /// ahead of the host and the mux taking the accent, or a spinner in the level a
-    /// scanning host has not resolved. The focused-window part a session card used to
+    /// after the host name and the mux taking the accent, or a spinner in the level a
+    /// scanning host has not resolved. A host-state card claims a mux only when the
+    /// mux is CONFIRMED - a bare-id host that is unreachable or still scanning names
+    /// none, so the card reads the host alone or spins in the mux position. The
+    /// focused-window part a session card used to
     /// carry is gone, so no card has a second level of content below the session name.
     /// Ahead of both lines runs the ADDRESS column: the card's dim 0-based number, the
     /// thing `prefix <digit>` types. It sits on the DETAIL line, never the context

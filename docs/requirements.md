@@ -121,9 +121,14 @@ no function, and no test, so renaming code is never a documentation change.
   status word repeats what the spinner already says. The nav's scan progress turns the
   same spinner on the same frame. A session is a plain session card from the moment its
   host resolves - no card spins for a resolved session. A card that has SETTLED reads a
-  word only when it has one to carry: an unreachable host carries its `⚠` mark ahead of
+  word only when it has one to carry: an unreachable host carries its `⚠` mark after
   the host name, while a reachable empty host is a single host row with
-  no status word, and its view screen states `no sessions`. The word is all a card
+  no status word, and its view screen states `no sessions`. A host-state card claims a
+  mux only when the mux is CONFIRMED: a settled reachable host's enumeration answered
+  through its mux, and a source id that names its own mux was resolved from what the
+  machine actually serves. A bare-id host that is unreachable or still scanning claims
+  none - the card reads the host alone, or spins in the mux position while it scans.
+  The word is all a card
   carries: WHY a host failed is stated on
   its view screen, which has the room to keep a tool's diagnostic whole, while a card
   is only as wide as the nav and could carry no more than a cut-down copy of it.

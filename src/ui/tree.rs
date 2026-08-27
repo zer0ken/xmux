@@ -383,8 +383,21 @@ pub(crate) fn flatten(
         if !unreachable && !g.sessions.is_empty() {
             continue;
         }
+        // The mux a host-state card may CLAIM. A settled reachable host's enumeration
+        // answered through its mux, so that mux is a confirmed fact; a source id that
+        // names its own mux was resolved from what the machine actually serves, so it
+        // is confirmed too. A bare id's mux is only a config assumption, which no
+        // answer has confirmed: while the host scans or is unreachable the card claims
+        // no mux - it reads the host alone (unreachable) or spins in the mux position
+        // (scanning).
+        let mux_confirmed =
+            (!is_scanning && !unreachable) || !crate::session::mux_of(&g.source).is_empty();
         rows.push(Row {
-            mux: mux_of_source(&g.source),
+            mux: if mux_confirmed {
+                mux_of_source(&g.source)
+            } else {
+                String::new()
+            },
             reference: RowRef::Host {
                 source: g.source.clone(),
                 unreachable,

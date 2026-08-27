@@ -1009,6 +1009,51 @@ async fn an_unselected_unreachable_card_keeps_the_danger_mark() {
 }
 
 #[tokio::test]
+async fn a_card_claims_a_mux_only_when_it_is_confirmed() {
+    // A host-state card claims no mux it cannot back with an answer. A bare-id host
+    // (its mux is a config assumption, never probed until the enumeration answers)
+    // reads the host alone when unreachable or scanning; a QUALIFIED id names a mux
+    // the machine was resolved to serve, which is a confirmed fact even while the host
+    // is unreachable; a settled reachable host shows the mux its enumeration answered
+    // through.
+    let h = Harness::new(Scan {
+        groups: vec![
+            // bare id: mux only assumed, unreachable - no claim.
+            Group {
+                source: "dead".into(),
+                err: Some("connection refused".into()),
+                sessions: vec![],
+            },
+            // qualified id: the mux was resolved on the machine, so it is a fact.
+            Group {
+                source: "srv:zellij".into(),
+                err: Some("connection refused".into()),
+                sessions: vec![],
+            },
+            // settled reachable empty host: the enumeration answered through its mux.
+            Group {
+                source: "fresh:psmux".into(),
+                err: None,
+                sessions: vec![],
+            },
+        ],
+    });
+    let out = h.nav_text();
+    assert!(
+        !out.contains("dead/") && !out.contains("/tmux"),
+        "a bare unreachable card claims no mux:\n{out}"
+    );
+    assert!(
+        out.contains("srv⚠/zellij"),
+        "a qualified unreachable card keeps its resolved mux:\n{out}"
+    );
+    assert!(
+        out.contains("fresh/psmux"),
+        "a settled reachable host shows the mux its enumeration answered through:\n{out}"
+    );
+}
+
+#[tokio::test]
 async fn unreachable_host_screen_keeps_a_long_reason_whole() {
     // ssh wraps the failure in its own context and names it LAST, past the width of the
     // screen: a reason cut off at the edge drops the only words that say what went wrong.
