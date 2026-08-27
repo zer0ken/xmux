@@ -26,13 +26,13 @@ not display mechanics: it decides where input is routed, not how a PTY is pumped
 or a grid is rendered.
 
 The input path keeps ONE prefix-interaction signal that both the hint bar and the
-auto-hide nav width read: a prefix press is ready (awaiting its command key), and
-a held prefix key is holding. The state machine is `ready` and `holding` together:
-a command key clears ready only, the prefix's release clears holding, and a held
-key's autorepeat re-arms ready, so a command key can be pressed again and again
-while the prefix is held. Under auto-hide the nav comes back for a live
-prefix interaction and hides again when it ends, so a jump can read the card
-numbers it needs.
+auto-hide nav width read: a prefix press is ready (awaiting its command key). The
+prefix's release (a cancel) or ANY key while ready (a consume, even a no-op) clears
+ready, so the bar and the nav hide the moment the interaction ends. A held key's
+autorepeat is swallowed internally and never re-arms a consumed ready; resize
+continuation is the resize-repeat window, not the prefix. Under auto-hide the nav
+comes back for a live prefix interaction and hides again when it ends, so a jump can
+read the card numbers it needs.
 
 ## Module Seams
 
