@@ -68,10 +68,13 @@ state; raw key and text injection is an unstable low-level surface.
   pipe, a PTY close, each of which waits on something that may never answer.
   Reading a local process's own memory waits on nobody and carries its own bound,
   and one such read runs on the loop: the session xmux's own display client is on,
-  read once per 120 ms animation beat, measured on a release build over 500
-  repeats at a mean of 35 microseconds and a worst case under 90 microseconds, so
-  under a tenth of a percent of that beat. A read whose cost is not measured and
-  not bounded that far below the beat belongs off the loop like everything else.
+  read once per 120 ms animation beat. Timed on a release build over 500 repeats,
+  it costs a mean in the low tens of microseconds and a worst repeat a few times
+  that. Those figures move with the machine and the run, so the standing claim is
+  the order and not the number: microseconds against a beat of milliseconds, well
+  under a percent of it even at its worst. A read whose cost is not measured and
+  not bounded that far below the beat belongs off the loop like everything else,
+  and a measurement is re-taken on the machine at hand rather than quoted.
 
 ## Common Pitfalls
 

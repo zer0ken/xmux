@@ -76,24 +76,33 @@ the card numbers it needs.
 - The selection, defined in `src/model`, is the canonical selected source /
   session value consumed by display selection and rendering.
 - The per-mux display decision lives in the driver implementation, never here.
-- The nav follows a mux-side client switch only in terminal focus. In nav focus
+- The nav moves for a mux-side client switch only in terminal focus. In nav focus
   the selection is the user's and the mux does not move it, though where the
   client actually is is still recorded, because that is a fact rather than a
   claim about what the user picked.
-- A follow is refused while a reattach is in flight for the display key. The
-  stale client is deliberately kept on screen and still sits on the session the
-  selection just left, so reading it then would report the old session as a fresh
-  switch and drag the nav backwards.
-- A follow lands as soon as the nav can hold it. Its two halves settle on
-  different schedules: where the client is, is recorded at once and
-  unconditionally, because it is a fact and because it is what stops a driver from
-  reattaching the client the user just moved; the nav move needs a card, and a
-  session enumerated after its switch was learned has none yet. A move with no
-  card to land on is remembered and retried on the sweeps that grow the nav, so a
-  latched belief can never answer later probes with "already there" while the nav
-  names another session. One record per source, holding the latest session the
-  client reported, dropped once the move lands and dropped as well when the belief
-  moves elsewhere or the follow arrives in nav focus, where no move is wanted.
+- Reading the live client for a switch is skipped while a reattach is in flight
+  for the display key. The stale client is deliberately kept on screen and still
+  sits on the session the selection just left, so reading it then would report the
+  old session as a fresh switch and drag the nav backwards. A switch the mux
+  pushed is a fresh fact rather than a re-reading of a stale one, so it is not
+  skipped, and neither is a move already owed, which carries a fact learned before
+  the reattach began.
+- A follow lands as soon as the nav can hold it and the user is not driving the
+  nav. Its two halves settle on different schedules: where the client is, is
+  recorded at once and unconditionally, because it is a fact and because it is
+  what stops a driver from reattaching the client the user just moved; the nav
+  move waits on a card, which a session enumerated after its switch was learned
+  has not got yet, and on the terminal focus, which a detour into the nav takes
+  away. A move that cannot land is remembered and retried on the animation beat
+  and on the sweeps that grow the nav, so a latched belief can never answer later
+  probes with "already there" while the nav names another session. Passing through
+  the nav defers the move rather than cancelling it: the two regions must not
+  settle on different sessions because the user looked at the list on the way.
+- One owed move per source, holding the latest session the client reported. It is
+  dropped when it lands, when the host's display belief no longer names its
+  session (a later switch, or the user settling the display on a session of their
+  own, both of which write that belief), and when the client that reported it
+  dies, because its session may never get a card and nothing is on it any more.
 - Focus is the single source of truth for which view owns keys and which modal,
   if any, is open. Focus and modal transitions stay in the focus module; the app
   and the state call into it rather than open-coding view or modal bookkeeping.

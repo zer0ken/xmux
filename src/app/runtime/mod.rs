@@ -375,7 +375,7 @@ fn sync_selection_from_switcher(
 /// as what the host's display now shows, and moves the nav selection to that session's
 /// card. Returns whether the selection was moved.
 ///
-/// The nav follows only in TERMINAL focus, where the user is driving the mux and the two
+/// The nav MOVES only in TERMINAL focus, where the user is driving the mux and the two
 /// regions must keep naming one session. In nav focus the selection is the user's own and
 /// the mux does not get to move it; the display belief is still recorded, because that is
 /// a fact about where the client is, not a claim about what the user picked.
@@ -384,22 +384,32 @@ fn sync_selection_from_switcher(
 /// here, so a mux that reports it over a control channel and one whose client has to be
 /// read for it produce the same nav behavior.
 ///
-/// THE GUARANTEE: a follow lands as soon as the nav can hold it. The two halves of a
-/// follow settle on different schedules and are therefore recorded separately. The
-/// display belief moves AT ONCE and unconditionally, because it is a fact about where the
-/// client is and it is what keeps a driver from reattaching the client the user just
-/// moved. The nav move needs a CARD, and a session enumerated after its switch was
-/// learned has none yet, so a move that finds no card is remembered in `pending` and
-/// retried on the sweeps that grow the nav (`Runtime::retry_pending_follows`). Without
-/// that record the latched belief would answer every later probe with "already there" and
-/// the nav would stay wrong for as long as xmux ran.
+/// THE GUARANTEE: a follow lands as soon as the nav can hold it and the user is not
+/// driving the nav. The two halves of a follow settle on different schedules and are
+/// therefore recorded separately. The display belief moves AT ONCE and unconditionally,
+/// because it is a fact about where the client is and it is what keeps a driver from
+/// reattaching the client the user just moved. The nav move waits on two things the
+/// follow does not control - a CARD for the session, which a session enumerated after
+/// its switch was learned has not got yet, and TERMINAL focus, which a detour into the
+/// nav takes away - so a move that finds either missing is remembered in `pending` and
+/// retried (`Runtime::retry_pending_follows`). Without that record the latched belief
+/// would answer every later probe with "already there" and the nav would stay wrong for
+/// as long as xmux ran.
+///
+/// A NAV DETOUR DEFERS THE MOVE, IT DOES NOT CANCEL IT. In nav focus the selection is the
+/// user's and the mux does not move it, so the move is not made there; the debt is still
+/// owed, because passing through the nav is not a reason for the two regions to settle on
+/// different sessions. It is paid on the first retry that finds the terminal focused
+/// again.
 ///
 /// One record per source, holding the LATEST session the client reported: a client sits
 /// on one session at a time, so a newer report supersedes an older one rather than
-/// queueing behind it. A record is dropped the moment its session has a card (the move
-/// landed, or the selection was already there), and dropped as well when a follow on that
-/// source carries the belief elsewhere or arrives in nav focus, where no move is wanted at
-/// all.
+/// queueing behind it. A record is dropped when the move LANDS (its session has a card
+/// and the selection sits there) and when the move goes OBSOLETE, which is one condition
+/// and not two: the host's display belief no longer names the recorded session. Both ways
+/// a move can be overtaken write that belief - a later switch carries the client
+/// elsewhere, and settling the display on another session reattaches it there - so the
+/// belief is what the retry compares against.
 fn follow_display_session(
     hosts: &mut crate::model::Hosts,
     switcher: &mut crate::ui::switcher::Switcher,
@@ -414,7 +424,7 @@ fn follow_display_session(
     let key = host_selection_key(h);
     h.display.set_shows(&key, session);
     if !state.focus.is_terminal_focused() {
-        pending.remove(host);
+        pending.insert(host.to_string(), session.to_string());
         return false;
     }
     let addr = crate::session::address_of(host, session);
@@ -936,11 +946,19 @@ fn record_display_tty(
     }
 }
 
-/// Clears the display tty of the host owning the EOF'd attach `id`, so a dropped
-/// display client cannot leave a stale tty that a later %client-detached matches.
+/// Forgets what the EOF'd attach `id` was the witness for, on the host that owned it.
 /// Must run BEFORE the reap removes the registry entry (address_of_id needs it).
-fn clear_display_tty_for_attach(
+///
+/// Two things rest on that client alone and end with it. Its tty, so a dropped display
+/// client cannot leave a stale tty that a later %client-detached matches. And any nav
+/// move still owed on what it reported: the client that named the session is gone, xmux
+/// re-attaches the SELECTION rather than that session, and a move made later would carry
+/// the nav to a session nothing is on. It is also the record's only other end - a session
+/// killed before the nav ever enumerated it never gets a card, so the move would be owed
+/// and re-recorded on every host event for the rest of the run.
+fn forget_dead_display_client(
     hosts: &mut crate::model::Hosts,
+    pending: &mut HashMap<String, String>,
     registry: &AttachRegistry,
     id: u64,
 ) {
@@ -949,6 +967,7 @@ fn clear_display_tty_for_attach(
         if let Some(h) = hosts.get_mut(&host_id) {
             h.display_tty = crate::model::DisplayTty(None);
         }
+        pending.remove(&host_id);
     }
 }
 
@@ -1258,9 +1277,10 @@ struct Runtime {
     switcher: crate::ui::switcher::Switcher,
     state: crate::state::State,
     /// The follows whose nav move could not land: source id -> the session that source's
-    /// display client moved to while the nav held no card for it. Emptied by the retry on
-    /// the sweeps that grow the nav; see [`follow_display_session`] for what a record
-    /// means and when it is dropped.
+    /// display client moved to while the nav held no card for it or while the user held
+    /// the nav focus. Emptied by the retry on the animation beat and on the sweeps that
+    /// grow the nav; see [`follow_display_session`] for what a record means and when it
+    /// is dropped.
     pending_follows: HashMap<String, String>,
     attach_seq: u64,
     /// A clone of the loop's `PtyEvent` sender handed to drivers for off-loop probes.

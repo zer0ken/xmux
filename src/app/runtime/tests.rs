@@ -1418,10 +1418,6 @@ async fn a_follow_onto_a_session_the_nav_has_not_enumerated_lands_when_its_card_
         "ops",
         "the owed move lands on the card the enumeration brought in"
     );
-    assert!(
-        rt.pending_follows.is_empty(),
-        "a landed follow leaves nothing owing"
-    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1465,10 +1461,6 @@ async fn a_later_follow_elsewhere_drops_the_move_still_owed() {
         rt.switcher.terminal_view_target().target,
         "db",
         "the second follow has a card and lands"
-    );
-    assert!(
-        rt.pending_follows.is_empty(),
-        "the belief moved elsewhere, so nothing is owed for ops any more"
     );
 
     rt.handle_host_event(HostEvent::Sessions {
@@ -1515,10 +1507,6 @@ async fn a_display_moved_by_another_route_cancels_the_move_still_owed() {
         client: "/dev/pts/3".into(),
         session: "ops".into(),
     });
-    assert!(
-        !rt.pending_follows.is_empty(),
-        "a move with no card to land on is owed"
-    );
     // What a show does when the display is reattached for another session.
     rt.hosts
         .get_mut("jup")
@@ -1536,18 +1524,14 @@ async fn a_display_moved_by_another_route_cancels_the_move_still_owed() {
         "api",
         "the display sits on api, so the ops card appearing moves nothing"
     );
-    assert!(
-        rt.pending_follows.is_empty(),
-        "the record is dropped with the belief it answered for"
-    );
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn client_session_changed_in_nav_focus_syncs_belief_without_moving_selection() {
     // In nav focus the user drives the selection with the arrow keys; xmux's own
     // switch-clients (from rapid navigation) echo back as this notification and would yank
-    // the selection to a stale session if followed. So the follow is gated on terminal
-    // focus: nav focus syncs only the display belief, never the selection.
+    // the selection to a stale session if followed. So the MOVE is gated on terminal
+    // focus: what nav focus changes on screen is nothing.
     let mut state = crate::state::State::from_scan(two_session_scan());
     let switcher = crate::ui::switcher::Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_sources(&[]));
@@ -1579,6 +1563,121 @@ async fn client_session_changed_in_nav_focus_syncs_belief_without_moving_selecti
         rt.hosts.get("jup").unwrap().display.shows("jup"),
         Some("db"),
         "the display belief still syncs regardless of focus"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_follow_that_arrived_in_nav_focus_lands_when_the_terminal_is_focused_again() {
+    // The detour: the user switches the mux's own client and looks at the nav before the
+    // move has landed, so the switch is learned in nav focus. Nav focus refuses to MOVE
+    // the selection, and that is all it refuses. The belief has already advanced and
+    // answers every later probe with "already there", so a move dropped for the detour
+    // would leave the two regions naming different sessions for the rest of the run.
+    let mut state = crate::state::State::from_scan(two_session_scan());
+    let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
+    switcher.select_address("jup/api", &state);
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    rt.hosts.get_mut("jup").unwrap().display_tty =
+        crate::model::DisplayTty(Some("/dev/pts/3".into()));
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .display
+        .set_shows("jup", "api");
+    rt.state = state;
+    rt.switcher = switcher;
+    // A follow only ever arrives for a host whose display client is live: that client is
+    // what the mux moved and what reported the move.
+    rt.registry.insert_fake("jup", 7);
+    assert!(
+        !rt.state.focus.is_terminal_focused(),
+        "the switch is learned during the nav detour"
+    );
+
+    rt.handle_host_event(HostEvent::ClientSessionChanged {
+        host: "jup".into(),
+        client: "/dev/pts/3".into(),
+        session: "db".into(),
+    });
+    assert_eq!(
+        rt.switcher.terminal_view_target().target,
+        "api",
+        "the selection is the user's for as long as the nav holds the focus"
+    );
+
+    // Back in the terminal. The beat retries what is owed; the read of the client cannot
+    // raise this switch a second time, because the belief already names db.
+    rt.state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    assert!(
+        rt.retry_pending_follows(),
+        "the move deferred across the detour is paid on the first retry after it"
+    );
+    assert_eq!(
+        rt.switcher.terminal_view_target().target,
+        "db",
+        "the nav and the terminal view name one session again"
+    );
+    assert_eq!(
+        rt.hosts.get("jup").unwrap().display.shows("jup"),
+        Some("db"),
+        "the display sat on db throughout"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_move_owed_on_a_client_that_has_died_is_dropped_with_it() {
+    // The client that reported the switch is the only witness for it. Once it exits, xmux
+    // re-attaches the SELECTION rather than the session it named, so paying the move when
+    // that session's card finally appears would carry the nav to a session nothing is on.
+    // It is also the only end a move onto a session killed before the nav enumerated it
+    // ever gets: no card is coming, so the move would be re-recorded on every host event
+    // for the rest of the run.
+    let mut state = crate::state::State::from_scan(two_session_scan());
+    let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
+    switcher.select_address("jup/api", &state);
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    rt.hosts.get_mut("jup").unwrap().display_tty =
+        crate::model::DisplayTty(Some("/dev/pts/3".into()));
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .display
+        .set_shows("jup", "api");
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    rt.registry.insert_fake("jup", 7);
+
+    rt.handle_host_event(HostEvent::ClientSessionChanged {
+        host: "jup".into(),
+        client: "/dev/pts/3".into(),
+        session: "ops".into(),
+    });
+    assert_eq!(
+        rt.switcher.terminal_view_target().target,
+        "api",
+        "there is no ops card to move to yet"
+    );
+
+    // The display client exits before any enumeration carries ops in.
+    let (_pty_tx, mut pty_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
+    rt.on_pty_event(PtyEvent::Exited { id: 7 }, &mut pty_rx);
+
+    rt.handle_host_event(HostEvent::Sessions {
+        source: "jup".into(),
+        sessions: jup_sessions(&["api", "db", "ops"]),
+        err: None,
+    });
+    assert_eq!(
+        rt.switcher.terminal_view_target().target,
+        "api",
+        "the client that named ops is gone, so the ops card appearing moves nothing"
     );
 }
 

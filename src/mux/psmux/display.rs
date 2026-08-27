@@ -28,10 +28,10 @@ pub struct PsmuxDriver;
 /// Three consequences follow from grounding it on the live report and nothing else:
 ///
 /// - NO SIGNAL ALWAYS REATTACHES. A remote host, a mux that carries no session in its
-///   client's environment, a dead or unreadable child: each answers `None`, so the guard
-///   never holds and the display path behaves exactly as it did without any of this. That
-///   is what keeps a dead client from wedging the terminal view blank - a hold on a client
-///   that is not there would leave nothing to confirm and nothing to respawn.
+///   client's environment, a dead or unreadable child: each answers `None`, the guard
+///   never holds, and every session change spawns a fresh client. That is what keeps a
+///   dead client from wedging the terminal view blank - a hold on a client that is not
+///   there would leave nothing to confirm and nothing to respawn.
 /// - IT HOLDS EXACTLY WHERE A REATTACH WOULD DESTROY THE USER'S MOVE. The client reports
 ///   the selected session only after the nav has followed it there, which is the one
 ///   moment reattaching would kill the client the user just switched.
@@ -156,10 +156,14 @@ mod tests {
     /// and reattaching now would kill the client the user just moved.
     ///
     /// The `None` rows are one case each of "no signal", and they all reattach. That is
-    /// what makes the guard safe to add: a remote psmux, a client that died, a client too
-    /// young to have set the variable, and a platform with no live environment to read all
-    /// keep the behavior psmux had before there was anything to read, so the display path
-    /// can never wedge on a client that is not there.
+    /// what makes the guard safe: a remote psmux, a client that died, a client too young
+    /// to have set the variable, and a platform with no live environment to read all
+    /// leave every session change reattaching, so the display path can never wedge on a
+    /// client that is not there.
+    ///
+    /// The row differing only in case reattaches because psmux addresses sessions by
+    /// exact name, so a name that differs in case is a different session even though the
+    /// environment VARIABLE the name arrived in is found without case.
     #[test]
     fn the_reattach_guard_holds_only_on_the_live_client_s_own_report() {
         let table = [
@@ -323,15 +327,6 @@ mod tests {
             Some("vfy-ps-a"),
             "the bookkeeping names the session being attached"
         );
-    }
-
-    /// A session name differing only in case is a DIFFERENT session: psmux addresses
-    /// sessions by exact name, so the reported name is compared exactly even though the
-    /// environment VARIABLE it arrived in was found without case.
-    #[test]
-    fn the_reattach_guard_compares_the_session_name_exactly() {
-        assert!(!holds_the_live_client(Some("Work"), "work"));
-        assert!(holds_the_live_client(Some("work"), "work"));
     }
 
     /// The psmux driver owns the per-session reattach decision: `show()` REPLACES the

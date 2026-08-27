@@ -26,19 +26,24 @@ impl Runtime {
         rearm
     }
 
-    /// Retries the follows whose nav move found no card, and returns true when one moved
-    /// the selection. An applied enumeration is the moment a session created after its
-    /// switch was announced first has a card, so the retry runs on every host event: the
-    /// follow costs a map lookup when there is nothing owing.
+    /// Retries the follows whose nav move could not land, and returns true when one moved
+    /// the selection. An owed move waits on two things: a card for its session, and the
+    /// terminal focus. An applied enumeration is the moment a session created after its
+    /// switch was announced first has a card, so the retry runs on every host event; the
+    /// focus can come back with no event behind it, so it runs on the animation beat too.
+    /// Either costs a map lookup when there is nothing owing.
     ///
     /// Each record goes back through the one follow helper rather than moving the
     /// selection here, so a retry answers the focus, the belief, and the card exactly as
-    /// the original follow did, and re-records itself while the card is still missing.
+    /// the original follow did, and re-records itself while either is still missing.
     ///
-    /// A record is owed only for as long as the belief it was made with still stands.
-    /// Anything that carried the display elsewhere in the meantime - a nav-driven show, a
-    /// later switch - settled where the client is, and paying the older move then would
-    /// name a session the client has left.
+    /// A record is owed only for as long as the belief it was made with still stands, and
+    /// the display belief is the whole test. Anything that carried the display elsewhere
+    /// in the meantime settled where the client is, and paying the older move then would
+    /// name a session the client has left: a later switch does that, and so does the user
+    /// settling the display on a session of their own, which in this app means picking a
+    /// card in the nav and letting the attach reattach the display there. The nav's own
+    /// user_moved flag cannot stand in for that, because a follow's move sets it as well.
     pub(super) fn retry_pending_follows(&mut self) -> bool {
         if self.pending_follows.is_empty() {
             return false;
@@ -846,7 +851,12 @@ impl Runtime {
                 if Some(id) == displayed_attach_id {
                     detached = true;
                 }
-                clear_display_tty_for_attach(&mut self.hosts, &self.registry, id);
+                forget_dead_display_client(
+                    &mut self.hosts,
+                    &mut self.pending_follows,
+                    &self.registry,
+                    id,
+                );
                 if !self.registry.reap(id) {
                     // pre-Ready Exited: registry has no id yet. Attribute to the owning host
                     // via pending so its Ready tears down instead of inserting a dead pane.
@@ -867,7 +877,12 @@ impl Runtime {
                     if Some(id) == displayed_attach_id {
                         detached = true;
                     }
-                    clear_display_tty_for_attach(&mut self.hosts, &self.registry, id);
+                    forget_dead_display_client(
+                        &mut self.hosts,
+                        &mut self.pending_follows,
+                        &self.registry,
+                        id,
+                    );
                     if !self.registry.reap(id) {
                         self.hosts
                             .iter_mut()
@@ -1190,12 +1205,18 @@ impl Runtime {
     /// close, each of which waits on something that may never answer. This read waits on
     /// nobody. It asks the OS about a process and copies that process's memory, so its
     /// cost is set by the size of an environment block, which the read itself caps at
-    /// 64 KiB. Measured on this machine over 500 repeats against a real ConPTY child in a
-    /// release build: mean 35 us, worst under 90 us per read (the cost test lives beside
-    /// the read). It runs once per 120 ms animation beat, so under a tenth of a percent of
-    /// the beat and under a third of a percent of the 33 ms frame budget - far below any
-    /// cadence the loop can perceive, and cheaper than moving it off the loop, which would
-    /// cost a thread hop and a channel round trip per beat to save nothing.
+    /// 64 KiB. It is timed over 500 repeats against a real ConPTY child in a release build
+    /// (the cost test lives beside the read): the mean lands in the low TENS OF
+    /// MICROSECONDS and the worst repeat a few times that. Those two figures are what the
+    /// machine, the size of the child's environment block, and scheduler noise decide, so
+    /// no single run's number is a constant to hold anything to - re-run the test to get
+    /// this machine's. What holds across runs and machines is the ORDER: microseconds
+    /// against a 120 ms animation beat, three to four orders of magnitude apart, so even
+    /// the worst repeat costs well under a percent of the beat it runs on and of the
+    /// 33 ms frame budget. That is far below any cadence the loop can perceive, and
+    /// cheaper than moving it off the loop, which would cost a thread hop and a channel
+    /// round trip per beat to save nothing. The test guards the conclusion rather than the
+    /// figure: it fails only when a read costs a visible share of a beat.
     pub(super) fn follow_live_display_session(&mut self) -> bool {
         if self.state.selection.is_empty() {
             return false;
@@ -1232,8 +1253,9 @@ impl Runtime {
     }
 
     /// The animation-tick arm: detect a console resize (push the new size to PTYs +
-    /// control clients, force a full repaint), follow a mux-side switch of xmux's own
-    /// display client, and refresh the connecting-spinner set.
+    /// control clients, force a full repaint), pay any nav move a follow still owes,
+    /// follow a mux-side switch of xmux's own display client, and refresh the
+    /// connecting-spinner set.
     pub(super) fn on_tick(&mut self, term: &mut Term) {
         // Resize detection: poll the console size (an ioctl, not a stdin read).
         if let Ok((c, r)) = ratatui::crossterm::terminal::size() {
@@ -1251,6 +1273,12 @@ impl Runtime {
                 }
                 self.dirty = true;
             }
+        }
+        // An owed move waits on a card and on the terminal focus. A card arrives with an
+        // event, which retries the move where it is applied; the focus can come back with
+        // no event behind it, so the beat is the retry that sees it.
+        if self.retry_pending_follows() {
+            self.dirty = true;
         }
         if self.follow_live_display_session() {
             self.dirty = true;
