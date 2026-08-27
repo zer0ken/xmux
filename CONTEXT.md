@@ -371,6 +371,29 @@ world already depends on: the two axes and their vocabulary, the directory
 layout a new module must fit, config keys, CLI and ctl verbs, socket names, and
 the argv of the muxes xmux drives.
 
+## Honesty
+
+xmux is honest by design: it shows only what it can back with an answer,
+and it says so when it cannot. Honesty is the core rule every presentation
+decision is checked against, before colour, before layout, before any
+value on a card.
+
+- A mux is named only when it is CONFIRMED. A settled host's enumeration
+  answered through its mux, and a source id that names its own mux was
+  resolved from what the machine actually serves. An unreachable host's
+  assumed mux stays off its card: the card reads the host alone rather
+  than claim a mux the failed probe never confirmed.
+- An answer that has not arrived is shown as in flight, never as a value.
+  A scanning host's unresolved level turns the spinner, and no card spins
+  for a session once its host has resolved.
+- A failure is shown as a failure, never dressed as a value. The
+  unreachable mark and the refusal keep their own state colour, and the
+  reason is stated on the screen, where it fits whole, never cut down to
+  fit a card.
+- A card states WHAT something is; WHY it is that way is the screen's. A
+  card that cannot back a word omits it, and a value that was never
+  confirmed is never presented as one.
+
 ## Architecture - the orthogonal design
 
 Two orthogonal axes describe every connection, and no module conflates them:

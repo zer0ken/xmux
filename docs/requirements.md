@@ -417,3 +417,12 @@ The seamless cross-host switch is bought with three costs, accepted by design:
   distribution's side, because a control stream reads its terminal attributes and exits
   without one. A distribution that cannot allocate one reports that mux unreachable; a
   polled mux there is unaffected.
+
+## Design principles
+
+- **Honesty** - The nav shows only what it can back with an answer, and says
+  so when it cannot. A value is never guessed, assumed, or shown as a fact
+  before it is one: a mux appears on a card only when the enumeration
+  answered through it or the machine was resolved to serve it, an unresolved
+  level turns a spinner instead of a value, and a failure keeps its own
+  state colour while the reason is stated on the screen. *(FR-B7)*

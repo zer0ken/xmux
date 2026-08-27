@@ -81,6 +81,11 @@ flatten renders for the dump verb.
   so a session card, its host's card and the screen behind either cannot spell one mux
   three ways. A source id's own separator never reaches a surface: an id is typed, a label
   is read, and the two grammars are not interchangeable.
+- Honesty is the rule the whole layer serves: a card shows only what it can back
+  with an answer, and says so when it cannot. A mux is named on a host-state card
+  only when it is confirmed (the enumeration answered through it, or the source id
+  resolves it), never when the host is unreachable or still scanning with only a
+  bare id to go on.
 - A card states a STATE, never a REASON: the status word is all a settled host card
   carries, and the message behind it (the diagnostic its transport gave, the provider
   that offered the host, the config stanza it was reached through) is stated on the
