@@ -58,7 +58,7 @@ tmux and psmux.
 - A session listed as exited is a resurrectable record, not a session, and is
   dropped during enumeration.
 - The session's last-attached value carries its CREATION instant. zellij reports
-  no attach time, and the nav's recency sort needs a value on the same epoch scale
+  no attach time, and the shared session model carries a value on the same epoch scale
   tmux reports.
 - On a reattach the stale attachment is HELD, not removed, so its grid stays on
   screen until the fresh one is ready (stale-while-revalidate).

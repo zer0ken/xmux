@@ -156,9 +156,8 @@ impl Mux for Zellij {
 }
 
 /// Wall-clock seconds since the epoch: the reference the reported session AGE is
-/// subtracted from to reach a recency key on the same scale tmux reports. A clock
-/// before the epoch reads as zero, which sorts the host's sessions last rather than
-/// panicking.
+/// subtracted from to reach a `last_attached` on the same scale tmux reports. A
+/// clock before the epoch reads as zero rather than panicking.
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

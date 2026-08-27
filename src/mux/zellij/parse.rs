@@ -27,8 +27,8 @@ const CURRENT_MARKER: &str = "(current)";
 ///
 /// Each line is `<name> [Created <age> ago] <suffix>`. `last_attached` is
 /// `now - age`, because zellij reports a session's CREATION age and no attach time
-/// at all: creation is the only instant available to order the list by, and the
-/// nav's recency sort needs the same epoch scale tmux reports.
+/// at all: creation is the only instant available, on the same epoch scale tmux
+/// reports, so a zellij session carries the same model field as any other.
 ///
 /// A session marked `EXITED` is SKIPPED. zellij keeps a resurrectable record of a
 /// session after its server is gone and lists it alongside the live ones, so
@@ -93,7 +93,7 @@ pub fn parse_age_secs(text: &str) -> i64 {
 /// The month and year lengths are `humantime`'s own calendar constants (a year is
 /// 365.25 days, a month a twelfth of one), so an age reported in months or years is
 /// approximate at the source. Sub-second units carry no information at the second
-/// resolution the recency key uses, so they count as zero rather than being refused.
+/// resolution the model field uses, so they count as zero rather than being refused.
 fn unit_secs(unit: &str) -> Option<i64> {
     Some(match unit {
         "year" | "years" => 31_557_600,
