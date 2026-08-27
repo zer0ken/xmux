@@ -312,11 +312,14 @@ pub fn supported_muxes() -> Vec<&'static str> {
     v
 }
 
-/// The per-probe budget for discovery. Discovery runs BEFORE the first paint, so a
-/// binary that never answers must not hold the screen. Far shorter than
-/// [`POLL_CMD_TIMEOUT`]: this asks a local binary to print its help, which takes
-/// milliseconds when it is there and fails at once when it is not.
-const DETECT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
+/// The per-probe budget for LOCAL discovery. A probe asks a local binary to print its
+/// help, which takes milliseconds when it is there and fails at once when it is not -
+/// but discovery also shares the machine with the rescan burst (remote probes, poll
+/// respawns), so a probe that would answer in milliseconds when idle can take a couple
+/// of seconds to be serviced under load. The budget is wide enough that a healthy probe
+/// always lands inside it, and a binary genuinely absent still fails at once. Off the
+/// loop and async, so nothing on screen waits on it.
+const DETECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The per-probe budget for a REMOTE machine. A probe there is one ssh round trip per
 /// command, and a mux like screen falls through three probes (`help`, `-V`, `-v`)
