@@ -325,19 +325,14 @@ UI elements a user perceives as distinct things:
   probes are in flight, behind the same spinner on the same frame as the cards it
   counts. It counts SOURCES; a card's own spinner names one card's unresolved level.
 - ready - the state while the prefix is armed, awaiting its command key. A prefix
-  key down sets it; the prefix's release (a CANCEL) or ANY key while it holds (a
-  CONSUME, even a no-op like focusing the already-focused view) clears it. The hint
-  bar reads it to swap from the resting prefix to the cheatsheet, so becoming ready
-  is a visible change and redraws the frame; the bar hides the moment the prefix is
-  canceled or consumed.
-- holding - an INTERNAL latch while the prefix key is physically held down (set on
-  the press, cleared on the release). Its only job is to tell a held key's
-  autorepeat (a repeated prefix down) from a fresh second press, so the autorepeat
-  is swallowed and never re-arms a consumed ready. It is NOT part of the hint-bar /
-  nav show signal: that follows `ready` alone. A terminal that reports key releases
-  (the kitty protocol) is what makes the release observable; one that does not
-  leaves the hold latched until a focus switch or a mouse action ends the
-  interaction.
+  key down sets it (idempotently); ANY key while it holds (a CONSUME, even a no-op
+  like focusing the already-focused view) or a focus switch / mouse action (a
+  CANCEL) clears it. A key release is the key-up side of the press and does not
+  clear it, so a tap leaves the bar up until the next key. A second prefix press
+  while ready is the doubled-prefix command (one literal prefix byte reaches the
+  pane). The hint bar reads ready to swap from the resting prefix to the
+  cheatsheet, so becoming ready is a visible change and redraws the frame; the bar
+  hides the moment ready clears.
 - popup - the rounded-bordered, opaque, centered (draggable) dialog a popup modal
   draws, its accent title in the top border. The help and the input dialog are popups.
 - prompt - the `❯` entry marker on an input dialog's edit line.

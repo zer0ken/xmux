@@ -37,7 +37,6 @@ impl Runtime {
             ..
         } = self;
         let nav_armed = &mut mouse_state.nav_armed;
-        let nav_holding = &mut mouse_state.nav_holding;
         let (prefix, cols, rows, nav_width) = (*prefix, *cols, *rows, *nav_width);
         let mut focus_terminal = false;
         let mut quit = false;
@@ -52,7 +51,7 @@ impl Runtime {
             // help modal and the inline input both swallow prefix/Enter, so `prefix q`
             // can't quit and Enter can't focus the terminal while one is on screen.
             let is_inputting = state.is_modal_popup_open();
-            match resolve_nav_key(key, nav_armed, nav_holding, prefix, is_inputting) {
+            match resolve_nav_key(key, nav_armed, prefix, is_inputting) {
                 // A committed input/kill confirm folds through State::apply, which returns
                 // its Commands; collect them and dispatch the whole batch below.
                 Some(Action::NavKey(k)) => key_cmds.extend(switcher.handle_key(k, state)),
@@ -147,13 +146,9 @@ impl Runtime {
         // user meant for the pane. Bare hover is not an action: the pointer drifting across
         // the screen must not break a chord that is still being typed.
         let idle_motion = ev.pressed && (ev.cb & 0x23) == 0x23;
-        if !idle_motion
-            && (st.nav_armed || st.nav_holding || term_input.is_armed() || term_input.is_holding())
-        {
+        if !idle_motion && (st.nav_armed || term_input.is_armed()) {
             st.nav_armed = false;
-            st.nav_holding = false;
             term_input.disarm();
-            term_input.drop_hold();
             dirty = true;
         }
         let in_mux = to_grid_local(term_area, ev.col, ev.row);
@@ -591,11 +586,10 @@ impl Runtime {
             }
         }
         if *focus_terminal {
-            // Leaving the nav for the terminal: nav-side prefix latches (a held chord
-            // started on the nav) have no key-up once the terminal owns stdin, so clear
-            // them here instead of waiting for a release that is now delivered elsewhere.
+            // Leaving the nav for the terminal: a nav-side pending prefix has no key-up
+            // once the terminal owns stdin, so clear it here instead of waiting for a
+            // release that is now delivered elsewhere.
             self.mouse_state.nav_armed = false;
-            self.mouse_state.nav_holding = false;
             self.state.apply(crate::model::Action::Focus(
                 crate::model::FocusTarget::Terminal,
             ));
@@ -605,10 +599,10 @@ impl Runtime {
         }
         if *focus_nav {
             // Leaving the terminal for the nav: the prefix key's release is delivered to
-            // the nav path now, never to TermInput, so drop the terminal-side hold here
-            // instead of waiting for a release that will not arrive (a stale hold would
-            // keep the status bar up forever).
-            self.term_input.drop_hold();
+            // the nav path now, never to TermInput, so clear the terminal-side pending
+            // prefix here instead of waiting for a release that will not arrive (a stale
+            // prefix would keep the status bar up forever).
+            self.term_input.disarm();
             self.state
                 .apply(crate::model::Action::Focus(crate::model::FocusTarget::Nav));
             if !nav_replay.is_empty() {
@@ -618,7 +612,6 @@ impl Runtime {
                     // nav-side latches the replay may have armed, same as the direct
                     // terminal-focus path above.
                     self.mouse_state.nav_armed = false;
-                    self.mouse_state.nav_holding = false;
                     self.state.apply(crate::model::Action::Focus(
                         crate::model::FocusTarget::Terminal,
                     ));

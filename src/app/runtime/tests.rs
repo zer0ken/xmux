@@ -254,7 +254,7 @@ fn reconciled_nav_width_hides_only_when_focused_and_enabled_and_no_prefix() {
     assert_eq!(reconciled_nav_width(false, false, true, 48), 48);
     // Terminal view focused + setting on + no prefix interaction: hidden (0).
     assert_eq!(reconciled_nav_width(true, true, false, 48), 0);
-    // Terminal view focused + setting on + prefix active (armed or holding): shown.
+    // Terminal view focused + setting on + prefix active: shown.
     assert_eq!(reconciled_nav_width(true, true, true, 48), 48);
     // Terminal view focused + setting off: stays shown regardless.
     assert_eq!(reconciled_nav_width(true, false, false, 48), 48);
@@ -1909,13 +1909,15 @@ fn arming_the_prefix_marks_the_frame_dirty_so_the_hint_bar_swaps() {
     let out = rt.handle_stdin_bytes(b"\x07", &Selection::default());
     assert!(rt.prefix_active(), "the bare prefix arms");
     assert!(out.dirty, "arming redraws, so the cheatsheet shows at once");
-    // The release CANCELS the chord, so the bar hides on release; a command key
-    // consumes it identically. Disarming is equally visible.
-    let out = rt.handle_stdin_bytes(b"\x1b[7;5:3u", &Selection::default());
-    assert!(!rt.prefix_active(), "the release cancels the arm");
-    assert!(out.dirty, "the release redraws the bar away");
+    // The release is the key-up side of the press, a no-op: ready stays live, so the
+    // bar stays up. A command key then consumes the chord and hides the bar.
+    let _ = rt.handle_stdin_bytes(b"\x1b[7;5:3u", &Selection::default());
+    assert!(
+        rt.prefix_active(),
+        "the release is a no-op: ready stays live"
+    );
     let _ = rt.handle_stdin_bytes(b"t", &Selection::default());
-    assert!(!rt.prefix_active());
+    assert!(!rt.prefix_active(), "the command consumes the chord");
 }
 
 /// Builds a `Runtime` with one reachable session on source `jup`, focused on the
@@ -1986,7 +1988,8 @@ fn held_prefix_repeats_keep_nav_steady() {
     // Windows Terminal re-sends a held text key as a legacy press (no event type on
     // the repeat), so a repeated `C-g` down must be a hold-repeat: it neither re-arms
     // nor consumes, keeping the hint bar and the auto-hide nav show put while the key
-    // is held. The release (kitty) then CANCELS the whole chord, hiding the bar.
+    // is held. The release (kitty) is the key-up side of the press, a no-op, so the
+    // bar stays up until the next key consumes the prefix.
     let mut state = crate::state::State::from_scan(Scan {
         groups: vec![],
         panes: Default::default(),
@@ -2006,8 +2009,10 @@ fn held_prefix_repeats_keep_nav_steady() {
     rt.handle_stdin_bytes(b"\x07", &Selection::default());
     assert!(rt.prefix_active(), "more hold-repeats stay steady");
     rt.handle_stdin_bytes(b"\x1b[7;5:3u", &Selection::default());
-    assert!(!rt.prefix_active(), "the release cancels the chord");
-    assert!(!rt.mouse_state.nav_holding);
+    assert!(
+        rt.prefix_active(),
+        "the release is a no-op: ready stays live"
+    );
     rt.handle_stdin_bytes(b"t", &Selection::default());
     assert!(!rt.prefix_active());
 }
@@ -2026,10 +2031,10 @@ fn a_command_consumes_the_prefix_and_the_repeat_window_keeps_resizing() {
         !rt.prefix_active(),
         "the command consumes the prefix so the bar hides at once"
     );
-    rt.handle_stdin_bytes(b"\x07", &Selection::default()); // held prefix's autorepeat
+    rt.handle_stdin_bytes(b"\x1b[7;5:2u", &Selection::default()); // held prefix's kitty Repeat
     assert!(
         !rt.prefix_active(),
-        "an autorepeat never re-arms a consumed ready"
+        "a held prefix's repeat never re-arms a consumed ready"
     );
     rt.handle_stdin_bytes(b"\x1b[1;5C", &Selection::default()); // bare Ctrl+Right
     assert!(
@@ -2053,7 +2058,7 @@ fn a_focus_switch_drops_the_left_views_prefix_latches() {
         "precondition: terminal focus"
     );
     // Terminal → nav: a held prefix chord ends when prefix Left hands focus over.
-    rt.handle_stdin_bytes(b"\x07", &Selection::default()); // prefix down: +ready +holding
+    rt.handle_stdin_bytes(b"\x07", &Selection::default()); // prefix down: +ready
     assert!(rt.prefix_active());
     rt.handle_stdin_bytes(b"\x1b[D", &Selection::default()); // prefix Left → nav
     assert!(rt.state.focus.is_nav_focused(), "focus moved to the nav");

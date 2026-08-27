@@ -1108,8 +1108,9 @@ impl Runtime {
     /// Whether a prefix interaction is live, in EITHER focus: the prefix is READY,
     /// awaiting its command key. The hint bar and the auto-hide nav show ask the same
     /// question, so the two focus paths' armed latches are OR'd here rather than making
-    /// the chrome know about focus. Ready clears on the prefix's release (canceled) or
-    /// on any key (consumed), so this is the whole bar/nav show signal.
+    /// the chrome know about focus. Ready clears on any key (consumed) or on a focus
+    /// switch / mouse action (canceled); a key release is a no-op, so this is the
+    /// whole bar/nav show signal.
     pub(super) fn prefix_active(&self) -> bool {
         self.mouse_state.nav_armed || self.term_input.is_armed()
     }

@@ -513,7 +513,8 @@ mod tests {
     #[test]
     fn kitty_sequences_decode_with_kinds() {
         use ratatui::crossterm::event::KeyEventKind;
-        // C-g release arrives as CSI 7;5:3u: a Release event (the nav must clear holding).
+        // C-g release arrives as CSI 7;5:3u: a Release event, which the prefix logic
+        // treats as a no-op (the key-up side of the press).
         let evs = KeyDecoder::new().feed(b"\x1b[7;5:3u");
         assert_eq!(evs.len(), 1);
         assert_eq!(evs[0].code, KeyCode::Char('\x07'));
