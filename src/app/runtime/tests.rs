@@ -883,22 +883,28 @@ fn should_attach_fires_on_change_and_recovery_never_storms_in_flight() {
         session: "db".into(),
         ..a.clone()
     };
-    let gate = |selection: &Selection, displayed: &Selection, key_live, in_flight| {
+    let gate = |selection: &Selection, displayed: &Selection, key_live, in_flight, astray| {
         let s = crate::state::State {
             selection: selection.clone(),
             displayed: displayed.clone(),
             ..crate::state::State::default()
         };
-        s.should_attach(key_live, in_flight)
+        s.should_attach(key_live, in_flight, astray)
     };
     // Settled: displayed == selection, PTY live, nothing in flight → no attach.
-    assert!(!gate(&a, &a, true, false));
+    assert!(!gate(&a, &a, true, false, false));
     // Selection moved off the displayed session → attach.
-    assert!(gate(&b, &a, true, false));
+    assert!(gate(&b, &a, true, false, false));
     // An attach for the key is already in flight → never re-fire (no storm).
-    assert!(!gate(&b, &a, false, true));
+    assert!(!gate(&b, &a, false, true, false));
     // PTY gone (exited / reaped) while displayed == selection → re-attach to recover.
-    assert!(gate(&a, &a, false, false));
+    assert!(gate(&a, &a, false, false, false));
+    // Everything xmux itself recorded agrees - the selection is what it last put on
+    // screen and that PTY is alive - and the client is on another session anyway. Only
+    // the astray leg can see it, and this is the split it closes.
+    assert!(gate(&a, &a, true, false, true));
+    // Even then, not on top of an attach already carrying the display there.
+    assert!(!gate(&a, &a, true, true, true));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1132,7 +1138,6 @@ fn test_rt(env: Env) -> Runtime {
         worker,
         switcher,
         state,
-        pending_follows: HashMap::new(),
         attach_seq: 0,
         driver_pty_tx: pty_tx,
         op_tx,
@@ -1303,11 +1308,32 @@ fn two_session_scan() -> crate::ui::switcher::Scan {
     }
 }
 
+/// Settles the world the way a launch settles it: the selection derived from the nav,
+/// the display truth agreeing with it, and no attach owed for it. A pass over this world
+/// does nothing at all, which is what lets a test say that what happens next is the
+/// scenario and not the launch catching up.
+fn settled(rt: &mut Runtime) {
+    sync_selection_from_switcher(&mut rt.state, &rt.switcher);
+    rt.state.displayed = rt.state.selection.clone();
+    rt.state.attach_pending = false;
+    rt.state.attach_deadline = None;
+}
+
+/// One pass of the loop top, minus the drawing a headless test has no terminal for:
+/// the two regions are reconciled against each other, the selection settles, and the
+/// attach beat runs at `now`. Passing the SAME `now` to several passes holds the clock
+/// still, so the debounce cannot elapse between them.
+fn one_pass(rt: &mut Runtime, now: std::time::Instant) {
+    rt.follow_selection_to_display();
+    sync_selection_from_switcher(&mut rt.state, &rt.switcher);
+    rt.drive_attach_beat(now);
+}
+
 #[tokio::test(flavor = "current_thread")]
-async fn client_session_changed_in_terminal_focus_follows_selection_to_the_new_session() {
-    // The real fix: with the terminal focused (the user drove prefix+s), a matched
-    // %client-session-changed moves the nav selection to the mux-moved session's ACTIVE
-    // window - not just the display belief.
+async fn a_mux_side_switch_in_terminal_focus_moves_the_nav_to_that_session() {
+    // With the terminal focused the user is driving the mux (prefix+s), so the session
+    // they moved to is where they want to be: the NAV goes to its card, and the client
+    // stays where it is.
     let mut state = crate::state::State::from_scan(two_session_scan());
     let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
     switcher.select_address("jup/api", &state); // deterministic start (ignore any last_session)
@@ -1320,11 +1346,14 @@ async fn client_session_changed_in_terminal_focus_follows_selection_to_the_new_s
         .unwrap()
         .display
         .set_shows("jup", "api");
+    rt.registry.insert_fake("jup", 7);
     rt.state = state;
     rt.switcher = switcher;
     rt.state
         .focus
         .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    settled(&mut rt);
+    let t0 = std::time::Instant::now();
     assert_eq!(
         rt.switcher.terminal_view_target().target,
         "api",
@@ -1336,20 +1365,21 @@ async fn client_session_changed_in_terminal_focus_follows_selection_to_the_new_s
         client: "/dev/pts/3".into(),
         session: "db".into(),
     });
+    one_pass(&mut rt, t0);
     assert_eq!(
         rt.switcher.terminal_view_target().target,
         "db",
-        "terminal-focused nav follows the mux switch to db's card"
+        "the terminal-focused nav follows the mux switch to db's card"
     );
     assert_eq!(
         rt.hosts.get("jup").unwrap().display.shows("jup"),
         Some("db"),
-        "the display belief syncs to the mux-moved session"
+        "the two regions name one session: the client is where the nav now is"
     );
 }
 
 /// The sessions `jup` answers with, in nav order, for the enumeration that carries a
-/// session created after its switch was already announced.
+/// session created after its switch was already seen.
 fn jup_sessions(names: &[&str]) -> Vec<crate::session::Session> {
     names
         .iter()
@@ -1365,12 +1395,11 @@ fn jup_sessions(names: &[&str]) -> Vec<crate::session::Session> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn a_follow_onto_a_session_the_nav_has_not_enumerated_lands_when_its_card_appears() {
-    // A session created moments ago has no card yet, so the move a follow asks for has
-    // nowhere to go. The display belief still moves at once, and it is what every later
-    // probe compares against, so a follow dropped here would leave the nav naming the old
-    // session for as long as xmux ran. It is owed instead, and the enumeration that first
-    // carries the new session is where it is paid.
+async fn a_switch_onto_a_session_with_no_card_yet_moves_the_nav_when_its_card_appears() {
+    // A session created moments ago has no card, so the move has nowhere to go on the
+    // pass that first sees it. Nothing is remembered about that: the client is still on
+    // the session, every later pass compares against where it is, and the first pass
+    // after the enumeration that brings the card in moves the nav there.
     let mut state = crate::state::State::from_scan(two_session_scan());
     let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
     switcher.select_address("jup/api", &state);
@@ -1383,29 +1412,25 @@ async fn a_follow_onto_a_session_the_nav_has_not_enumerated_lands_when_its_card_
         .unwrap()
         .display
         .set_shows("jup", "api");
+    rt.registry.insert_fake("jup", 7);
     rt.state = state;
     rt.switcher = switcher;
     rt.state
         .focus
         .set_view_focus(crate::app::focus::ViewFocus::Terminal);
-    // A follow only ever arrives for a host whose display client is live: that client is
-    // what the mux moved and what reported the move.
-    rt.registry.insert_fake("jup", 7);
+    settled(&mut rt);
+    let t0 = std::time::Instant::now();
 
     rt.handle_host_event(HostEvent::ClientSessionChanged {
         host: "jup".into(),
         client: "/dev/pts/3".into(),
         session: "ops".into(),
     });
+    one_pass(&mut rt, t0);
     assert_eq!(
         rt.switcher.terminal_view_target().target,
         "api",
         "there is no ops card to move to yet"
-    );
-    assert_eq!(
-        rt.hosts.get("jup").unwrap().display.shows("jup"),
-        Some("ops"),
-        "the display belief moves at once: it is where the client actually is"
     );
 
     rt.handle_host_event(HostEvent::Sessions {
@@ -1413,19 +1438,19 @@ async fn a_follow_onto_a_session_the_nav_has_not_enumerated_lands_when_its_card_
         sessions: jup_sessions(&["api", "db", "ops"]),
         err: None,
     });
+    one_pass(&mut rt, t0);
     assert_eq!(
         rt.switcher.terminal_view_target().target,
         "ops",
-        "the owed move lands on the card the enumeration brought in"
+        "the card the enumeration brought in is where the nav goes"
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn a_later_follow_elsewhere_drops_the_move_still_owed() {
-    // A client sits on one session at a time, so an owed move is only ever the LATEST
-    // report. Once the client moves on to a session the nav can hold, the earlier one is
-    // no longer where the client is, and paying it when its card finally appeared would
-    // drag the nav to a session the user left.
+async fn a_card_appearing_for_a_session_the_client_has_left_moves_nothing() {
+    // The client sits on one session at a time and the comparison is against where it is
+    // NOW, so a card arriving for a session it passed through moves nothing. There is no
+    // older move to arrive late, because no move was ever written down.
     let mut state = crate::state::State::from_scan(two_session_scan());
     let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
     switcher.select_address("jup/api", &state);
@@ -1438,29 +1463,27 @@ async fn a_later_follow_elsewhere_drops_the_move_still_owed() {
         .unwrap()
         .display
         .set_shows("jup", "api");
+    rt.registry.insert_fake("jup", 7);
     rt.state = state;
     rt.switcher = switcher;
     rt.state
         .focus
         .set_view_focus(crate::app::focus::ViewFocus::Terminal);
-    // A follow only ever arrives for a host whose display client is live: that client is
-    // what the mux moved and what reported the move.
-    rt.registry.insert_fake("jup", 7);
+    settled(&mut rt);
+    let t0 = std::time::Instant::now();
 
-    rt.handle_host_event(HostEvent::ClientSessionChanged {
-        host: "jup".into(),
-        client: "/dev/pts/3".into(),
-        session: "ops".into(),
-    });
-    rt.handle_host_event(HostEvent::ClientSessionChanged {
-        host: "jup".into(),
-        client: "/dev/pts/3".into(),
-        session: "db".into(),
-    });
+    for session in ["ops", "db"] {
+        rt.handle_host_event(HostEvent::ClientSessionChanged {
+            host: "jup".into(),
+            client: "/dev/pts/3".into(),
+            session: session.into(),
+        });
+        one_pass(&mut rt, t0);
+    }
     assert_eq!(
         rt.switcher.terminal_view_target().target,
         "db",
-        "the second follow has a card and lands"
+        "the nav is on the session the client ended up on"
     );
 
     rt.handle_host_event(HostEvent::Sessions {
@@ -1468,434 +1491,292 @@ async fn a_later_follow_elsewhere_drops_the_move_still_owed() {
         sessions: jup_sessions(&["api", "db", "ops"]),
         err: None,
     });
+    one_pass(&mut rt, t0);
     assert_eq!(
         rt.switcher.terminal_view_target().target,
         "db",
-        "the ops card appearing moves nothing"
+        "the ops card appearing moves nothing: the client left ops"
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn a_display_moved_by_another_route_cancels_the_move_still_owed() {
-    // The owed move answers for the belief it was made with. A show that reattached the
-    // display somewhere else since then settled where the client is, so the card finally
-    // appearing must move nothing: the nav would otherwise jump to a session the client
-    // has left.
-    let mut state = crate::state::State::from_scan(two_session_scan());
-    let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
-    switcher.select_address("jup/api", &state);
-    let mut rt = test_rt(fake_env_with_sources(&[]));
-    rt.hosts = detach_test_hosts("jup");
-    rt.hosts.get_mut("jup").unwrap().display_tty =
-        crate::model::DisplayTty(Some("/dev/pts/3".into()));
-    rt.hosts
-        .get_mut("jup")
-        .unwrap()
-        .display
-        .set_shows("jup", "api");
-    rt.state = state;
-    rt.switcher = switcher;
-    rt.state
-        .focus
-        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
-    // A follow only ever arrives for a host whose display client is live: that client is
-    // what the mux moved and what reported the move.
-    rt.registry.insert_fake("jup", 7);
+/// The id of the psmux client xmux itself spawned, so a test can say whether a pass kept
+/// it or replaced it.
+const OWN_CLIENT: u64 = 42;
 
-    rt.handle_host_event(HostEvent::ClientSessionChanged {
-        host: "jup".into(),
-        client: "/dev/pts/3".into(),
-        session: "ops".into(),
-    });
-    // What a show does when the display is reattached for another session.
-    rt.hosts
-        .get_mut("jup")
-        .unwrap()
-        .display
-        .set_shows("jup", "api");
-
-    rt.handle_host_event(HostEvent::Sessions {
-        source: "jup".into(),
-        sessions: jup_sessions(&["api", "db", "ops"]),
-        err: None,
-    });
-    assert_eq!(
-        rt.switcher.terminal_view_target().target,
-        "api",
-        "the display sits on api, so the ops card appearing moves nothing"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn client_session_changed_in_nav_focus_syncs_belief_without_moving_selection() {
-    // In nav focus the user drives the selection with the arrow keys; xmux's own
-    // switch-clients (from rapid navigation) echo back as this notification and would yank
-    // the selection to a stale session if followed. So the MOVE is gated on terminal
-    // focus: what nav focus changes on screen is nothing.
-    let mut state = crate::state::State::from_scan(two_session_scan());
-    let switcher = crate::ui::switcher::Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_sources(&[]));
-    rt.hosts = detach_test_hosts("jup");
-    rt.hosts.get_mut("jup").unwrap().display_tty =
-        crate::model::DisplayTty(Some("/dev/pts/3".into()));
-    rt.hosts
-        .get_mut("jup")
-        .unwrap()
-        .display
-        .set_shows("jup", "api");
-    rt.state = state;
-    rt.switcher = switcher;
-    // Default focus is Nav (the user is navigating the list).
-    assert!(!rt.state.focus.is_terminal_focused(), "starts in nav focus");
-    let before = rt.switcher.terminal_view_target().target.clone();
-
-    rt.handle_host_event(HostEvent::ClientSessionChanged {
-        host: "jup".into(),
-        client: "/dev/pts/3".into(),
-        session: "db".into(),
-    });
-    assert_eq!(
-        rt.switcher.terminal_view_target().target,
-        before,
-        "nav focus: a mux switch must not yank the user's selection"
-    );
-    assert_eq!(
-        rt.hosts.get("jup").unwrap().display.shows("jup"),
-        Some("db"),
-        "the display belief still syncs regardless of focus"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn a_follow_that_arrived_in_nav_focus_lands_when_the_terminal_is_focused_again() {
-    // The detour: the user switches the mux's own client and looks at the nav before the
-    // move has landed, so the switch is learned in nav focus. Nav focus refuses to MOVE
-    // the selection, and that is all it refuses. The belief has already advanced and
-    // answers every later probe with "already there", so a move dropped for the detour
-    // would leave the two regions naming different sessions for the rest of the run.
-    let mut state = crate::state::State::from_scan(two_session_scan());
-    let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
-    switcher.select_address("jup/api", &state);
-    let mut rt = test_rt(fake_env_with_sources(&[]));
-    rt.hosts = detach_test_hosts("jup");
-    rt.hosts.get_mut("jup").unwrap().display_tty =
-        crate::model::DisplayTty(Some("/dev/pts/3".into()));
-    rt.hosts
-        .get_mut("jup")
-        .unwrap()
-        .display
-        .set_shows("jup", "api");
-    rt.state = state;
-    rt.switcher = switcher;
-    // A follow only ever arrives for a host whose display client is live: that client is
-    // what the mux moved and what reported the move.
-    rt.registry.insert_fake("jup", 7);
-    assert!(
-        !rt.state.focus.is_terminal_focused(),
-        "the switch is learned during the nav detour"
-    );
-
-    rt.handle_host_event(HostEvent::ClientSessionChanged {
-        host: "jup".into(),
-        client: "/dev/pts/3".into(),
-        session: "db".into(),
-    });
-    assert_eq!(
-        rt.switcher.terminal_view_target().target,
-        "api",
-        "the selection is the user's for as long as the nav holds the focus"
-    );
-
-    // Back in the terminal. The beat retries what is owed; the read of the client cannot
-    // raise this switch a second time, because the belief already names db.
-    rt.state
-        .focus
-        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
-    assert!(
-        rt.retry_pending_follows(),
-        "the move deferred across the detour is paid on the first retry after it"
-    );
-    assert_eq!(
-        rt.switcher.terminal_view_target().target,
-        "db",
-        "the nav and the terminal view name one session again"
-    );
-    assert_eq!(
-        rt.hosts.get("jup").unwrap().display.shows("jup"),
-        Some("db"),
-        "the display sat on db throughout"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn a_move_owed_on_a_client_that_has_died_is_dropped_with_it() {
-    // The client that reported the switch is the only witness for it. Once it exits, xmux
-    // re-attaches the SELECTION rather than the session it named, so paying the move when
-    // that session's card finally appears would carry the nav to a session nothing is on.
-    // It is also the only end a move onto a session killed before the nav enumerated it
-    // ever gets: no card is coming, so the move would be re-recorded on every host event
-    // for the rest of the run.
-    let mut state = crate::state::State::from_scan(two_session_scan());
-    let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
-    switcher.select_address("jup/api", &state);
-    let mut rt = test_rt(fake_env_with_sources(&[]));
-    rt.hosts = detach_test_hosts("jup");
-    rt.hosts.get_mut("jup").unwrap().display_tty =
-        crate::model::DisplayTty(Some("/dev/pts/3".into()));
-    rt.hosts
-        .get_mut("jup")
-        .unwrap()
-        .display
-        .set_shows("jup", "api");
-    rt.state = state;
-    rt.switcher = switcher;
-    rt.state
-        .focus
-        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
-    rt.registry.insert_fake("jup", 7);
-
-    rt.handle_host_event(HostEvent::ClientSessionChanged {
-        host: "jup".into(),
-        client: "/dev/pts/3".into(),
-        session: "ops".into(),
-    });
-    assert_eq!(
-        rt.switcher.terminal_view_target().target,
-        "api",
-        "there is no ops card to move to yet"
-    );
-
-    // The display client exits before any enumeration carries ops in.
-    let (_pty_tx, mut pty_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
-    rt.on_pty_event(PtyEvent::Exited { id: 7 }, &mut pty_rx);
-
-    rt.handle_host_event(HostEvent::Sessions {
-        source: "jup".into(),
-        sessions: jup_sessions(&["api", "db", "ops"]),
-        err: None,
-    });
-    assert_eq!(
-        rt.switcher.terminal_view_target().target,
-        "api",
-        "the client that named ops is gone, so the ops card appearing moves nothing"
-    );
-}
-
-/// Two hosts with a session each side of the boundary: `jup` holding `api` and `db`,
-/// `other` holding `web`. Lets a follow test put the debt and the user's card on
-/// DIFFERENT hosts.
-fn two_source_scan() -> crate::ui::switcher::Scan {
+/// A local psmux source holding sessions `a` and `b`.
+fn psmux_scan() -> crate::ui::switcher::Scan {
     use crate::session::Session;
-    use crate::ui::switcher::Scan;
     use crate::ui::tree::Group;
-    let sess = |source: &str, name: &str| Session {
+    let sess = |name: &str| Session {
         mux: String::new(),
-        source: source.into(),
+        source: "local".into(),
         name: name.into(),
         windows: 1,
         attached: false,
         last_attached: 100,
     };
-    Scan {
-        groups: vec![
-            Group {
-                source: "jup".into(),
-                err: None,
-                sessions: vec![sess("jup", "api"), sess("jup", "db")],
-            },
-            Group {
-                source: "other".into(),
-                err: None,
-                sessions: vec![sess("other", "web")],
-            },
-        ],
+    crate::ui::switcher::Scan {
+        groups: vec![Group {
+            source: "local".into(),
+            err: None,
+            sessions: vec![sess("a"), sess("b")],
+        }],
     }
 }
 
-/// The two hosts of [`two_source_scan`], each with a display client of its own.
-fn two_hosts() -> crate::model::Hosts {
-    let mut hosts = detach_test_hosts("jup");
+/// Puts a live client on the display key that answers `session` for the variable psmux
+/// carries its session in. Replacing the entry with one answering another session is what
+/// a psmux client does to itself when it moves: the same client, a rewritten environment,
+/// and no server anywhere the wiser.
+fn the_client_reports(rt: &mut Runtime, id: u64, session: &str) {
+    rt.registry.insert(
+        "local",
+        crate::display::attachment::fake_attachment_answering_env(
+            id,
+            "PSMUX_SESSION_NAME",
+            session,
+        ),
+    );
+}
+
+/// The settled world before anything happens: a local psmux host, the nav on `a`, and
+/// xmux's own display client live on `a` and answering for the session it is on the way a
+/// real psmux client does. Everything agrees, so no pass has anything to do.
+fn a_settled_psmux_runtime() -> Runtime {
+    let mut state = crate::state::State::from_scan(psmux_scan());
+    let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
+    switcher.select_address("local/a", &state);
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
-        crate::transport::ssh("other".to_string(), String::new(), "linux".into()),
-        crate::mux::for_binary("tmux"),
+        crate::transport::local(None),
+        crate::mux::for_binary("psmux"),
     ));
-    hosts
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn a_pick_the_user_makes_overrules_the_move_still_owed() {
-    // The user looks at the nav, the mux carries xmux's own client elsewhere while they
-    // are there, and they then pick a card themselves. The pick is the freshest statement
-    // of where they want to be, so it outranks the move owed from before it: coming back
-    // to the terminal must leave them on the card they chose, not carry them to the
-    // session the mux moved to while they were choosing.
-    let mut state = crate::state::State::from_scan(two_session_scan());
-    let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
-    switcher.select_address("jup/api", &state);
-    let mut rt = test_rt(fake_env_with_sources(&[]));
-    rt.hosts = detach_test_hosts("jup");
-    rt.hosts.get_mut("jup").unwrap().display_tty =
-        crate::model::DisplayTty(Some("/dev/pts/3".into()));
-    rt.hosts
-        .get_mut("jup")
-        .unwrap()
-        .display
-        .set_shows("jup", "api");
+    rt.hosts = hosts;
     rt.state = state;
     rt.switcher = switcher;
-    rt.registry.insert_fake("jup", 7);
-    // The loop settles the selection the nav opens on before any of this begins.
-    settle_selection(&mut rt.state, &mut rt.switcher, &mut rt.pending_follows);
-    assert!(
-        !rt.state.focus.is_terminal_focused(),
-        "the switch is learned while the user holds the nav"
-    );
-
-    rt.handle_host_event(HostEvent::ClientSessionChanged {
-        host: "jup".into(),
-        client: "/dev/pts/3".into(),
-        session: "db".into(),
-    });
-    assert_eq!(
-        rt.switcher.terminal_view_target().target,
-        "api",
-        "nav focus defers the move: the selection is still the user's"
-    );
-
-    // The user walks the nav and settles on api's card themselves - down to db, back up to
-    // api - through the same keys the loop reads from stdin.
-    rt.on_stdin(b"\x1b[B");
-    rt.on_stdin(b"\x1b[A");
-    settle_selection(&mut rt.state, &mut rt.switcher, &mut rt.pending_follows);
-
-    // Back in the terminal, where an owed move would be paid.
-    rt.state
-        .focus
-        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
-    // The retry that pays a move still owed, had the pick not overruled it.
-    rt.retry_pending_follows();
-    assert_eq!(
-        rt.switcher.terminal_view_target().target,
-        "api",
-        "the card the user picked keeps the selection"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn a_pick_on_one_host_cancels_the_move_owed_on_another() {
-    // A move owed on one host would drag the nav off a card the user picked on another
-    // just as surely as off one on its own host, so a pick cancels every record and not
-    // only the picked host's.
-    let mut state = crate::state::State::from_scan(two_source_scan());
-    let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
-    switcher.select_address("jup/api", &state);
-    let mut rt = test_rt(fake_env_with_sources(&[]));
-    rt.hosts = two_hosts();
-    rt.hosts.get_mut("jup").unwrap().display_tty =
-        crate::model::DisplayTty(Some("/dev/pts/3".into()));
     rt.hosts
-        .get_mut("jup")
+        .get_mut("local")
         .unwrap()
         .display
-        .set_shows("jup", "api");
-    rt.state = state;
-    rt.switcher = switcher;
-    rt.registry.insert_fake("jup", 7);
-    // The loop settles the selection the nav opens on before any of this begins.
-    settle_selection(&mut rt.state, &mut rt.switcher, &mut rt.pending_follows);
+        .set_shows("local", "a");
+    the_client_reports(&mut rt, OWN_CLIENT, "a");
+    settled(&mut rt);
+    rt
+}
 
-    rt.handle_host_event(HostEvent::ClientSessionChanged {
-        host: "jup".into(),
-        client: "/dev/pts/3".into(),
-        session: "db".into(),
-    });
-
-    // The user picks the other host's session: down past jup's db card onto other/web.
-    rt.on_stdin(b"\x1b[B");
-    rt.on_stdin(b"\x1b[B");
-    settle_selection(&mut rt.state, &mut rt.switcher, &mut rt.pending_follows);
-    assert_eq!(
-        rt.switcher.terminal_view_target().target,
-        "web",
-        "the user is on the other host's card"
-    );
-
-    rt.state
-        .focus
-        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
-    // The retry that pays a move still owed, had the pick not overruled it.
-    rt.retry_pending_follows();
-    assert_eq!(
-        (
-            rt.switcher.terminal_view_target().source.as_str(),
-            rt.switcher.terminal_view_target().target.as_str()
+/// Completes the reattach a pass requested: the worker's Ready reply installs the fresh
+/// client, which answers for the session it was attached to.
+fn the_reattach_lands(rt: &mut Runtime, session: &str) {
+    let seq = rt
+        .hosts
+        .get("local")
+        .unwrap()
+        .display
+        .in_flight_seq("local")
+        .expect("a reattach is in flight");
+    rt.on_display_event(DisplayEvent::Ready {
+        seq,
+        key: "local".into(),
+        attachment: crate::display::attachment::fake_attachment_answering_env(
+            OWN_CLIENT + 1,
+            "PSMUX_SESSION_NAME",
+            session,
         ),
-        ("other", "web"),
-        "the card the user picked keeps the selection, on its own host"
-    );
+    });
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn a_follow_landing_leaves_the_move_owed_on_another_host_alone() {
-    // xmux moving the nav to follow the mux runs through the same selection machinery a
-    // pick does, and it is not a pick: a follow landing on one host settles like any other
-    // selection and must leave what another host owes standing, or the mux would cancel
-    // the very debts it is in the middle of paying.
-    let mut state = crate::state::State::from_scan(two_source_scan());
-    let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
-    switcher.select_address("jup/api", &state);
-    let mut rt = test_rt(fake_env_with_sources(&[]));
-    rt.hosts = two_hosts();
-    for (host, tty, id) in [("jup", "/dev/pts/3", 7), ("other", "/dev/pts/4", 8)] {
-        rt.hosts.get_mut(host).unwrap().display_tty = crate::model::DisplayTty(Some(tty.into()));
-        rt.registry.insert_fake(host, id);
+async fn a_settled_display_attaches_nothing_however_long_it_runs() {
+    // The floor under the two tests below: with the nav and the client on one session,
+    // passes at any spacing issue nothing at all. A reconcile acting on a difference it
+    // imagined would show up here as a spawn.
+    let mut rt = a_settled_psmux_runtime();
+    let t0 = std::time::Instant::now();
+    for ms in [0, 200, 3_000, 11_000] {
+        one_pass(&mut rt, t0 + std::time::Duration::from_millis(ms));
     }
-    rt.hosts
-        .get_mut("jup")
-        .unwrap()
-        .display
-        .set_shows("jup", "api");
-    rt.state = state;
-    rt.switcher = switcher;
+    assert!(
+        rt.hosts.get("local").unwrap().display.in_flight_is_empty(),
+        "nothing is attached while the two already name one session"
+    );
+    assert_eq!(
+        rt.registry.get("local").map(|a| a.id()),
+        Some(OWN_CLIENT),
+        "the client on screen is the one that was there"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_mux_side_switch_in_terminal_focus_keeps_the_client_the_user_moved() {
+    // The other half of the same rule, on the mux that has to be READ for a switch. The
+    // nav follows the client to `b`, which makes the selection differ from what is
+    // confirmed on screen, so an attach fires for `b` - and a per-session mux reaches a
+    // session by reattaching, which would kill the very client the user just moved. It is
+    // held instead, on the client's own report that it is already there.
+    let mut rt = a_settled_psmux_runtime();
     rt.state
         .focus
         .set_view_focus(crate::app::focus::ViewFocus::Terminal);
-    // The loop settles the selection the nav opens on before any of this begins.
-    settle_selection(&mut rt.state, &mut rt.switcher, &mut rt.pending_follows);
+    let t0 = std::time::Instant::now();
 
-    // jup's client moves to a session the nav has not enumerated: the move is owed.
-    rt.handle_host_event(HostEvent::ClientSessionChanged {
-        host: "jup".into(),
-        client: "/dev/pts/3".into(),
-        session: "ops".into(),
-    });
-    // The other host's client moves to a card the nav does hold: that follow lands, and
-    // the loop settles the selection it moved.
-    rt.handle_host_event(HostEvent::ClientSessionChanged {
-        host: "other".into(),
-        client: "/dev/pts/4".into(),
-        session: "web".into(),
-    });
-    settle_selection(&mut rt.state, &mut rt.switcher, &mut rt.pending_follows);
+    the_client_reports(&mut rt, OWN_CLIENT, "b");
+    rt.observe_display_session();
+    one_pass(&mut rt, t0);
+    one_pass(&mut rt, t0 + std::time::Duration::from_millis(200));
+
     assert_eq!(
         rt.switcher.terminal_view_target().target,
-        "web",
-        "the follow that had a card landed"
+        "b",
+        "the nav follows the client the user moved"
+    );
+    assert!(
+        rt.hosts.get("local").unwrap().display.in_flight_is_empty(),
+        "nothing is spawned: the client is already on the selected session"
+    );
+    assert_eq!(
+        rt.registry.get("local").map(|a| a.id()),
+        Some(OWN_CLIENT),
+        "the client the user moved stays on screen"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_mux_side_switch_in_nav_focus_ends_with_the_client_back_on_the_selection() {
+    // In nav focus the selection is the user's own, so it is the CLIENT that yields: psmux
+    // moved xmux's own client inside the client process, nothing was pushed anywhere, and
+    // the beat that reads the client is what makes the difference visible. The nav stays
+    // where the user left it and the client is carried back to it.
+    let mut rt = a_settled_psmux_runtime();
+    assert!(!rt.state.focus.is_terminal_focused(), "starts in nav focus");
+
+    the_client_reports(&mut rt, OWN_CLIENT, "b");
+    assert!(
+        rt.observe_display_session(),
+        "the beat reads the client's own report of where it went"
     );
 
-    // The enumeration that first carries ops in pays what jup still owes.
-    rt.handle_host_event(HostEvent::Sessions {
-        source: "jup".into(),
-        sessions: jup_sessions(&["api", "db", "ops"]),
-        err: None,
-    });
+    let t0 = std::time::Instant::now();
+    one_pass(&mut rt, t0);
+    one_pass(&mut rt, t0 + std::time::Duration::from_millis(200));
+
+    assert_eq!(
+        rt.switcher.terminal_view_target().target,
+        "a",
+        "the mux does not move a selection the user is driving"
+    );
+    assert!(
+        rt.hosts
+            .get("local")
+            .unwrap()
+            .display
+            .in_flight_contains("local"),
+        "the client is carried back by a fresh attach for the selected session"
+    );
+    assert_eq!(
+        rt.hosts.get("local").unwrap().display.shows("local"),
+        Some("a"),
+        "which is where the display then is"
+    );
+
+    the_reattach_lands(&mut rt, "a");
+    one_pass(&mut rt, t0 + std::time::Duration::from_millis(400));
     assert_eq!(
         (
-            rt.switcher.terminal_view_target().source.as_str(),
-            rt.switcher.terminal_view_target().target.as_str()
+            rt.switcher.terminal_view_target().target.as_str(),
+            rt.hosts.get("local").unwrap().display.shows("local")
         ),
-        ("jup", "ops"),
-        "the move owed on jup survived the other host's follow and lands"
+        ("a", Some("a")),
+        "the nav and the display name one session, and the reconcile is over"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_switch_asked_for_in_terminal_focus_is_not_dragged_back() {
+    // The other way the nav and the client can differ: the SELECTION moved and the
+    // display has not been carried to it yet. It looks exactly like a mux-side switch and
+    // must not be answered like one - the nav would go back to the session the client is
+    // still on and undo the switch that was just asked for. A ctl `switch` while the
+    // terminal holds the focus is that case, and the attach owed for it is what tells the
+    // two apart.
+    let mut rt = a_settled_psmux_runtime();
+    rt.state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    let t0 = std::time::Instant::now();
+
+    // What a ctl `switch local/b` lowers to.
+    rt.switcher.select_address("local/b", &rt.state);
+    one_pass(&mut rt, t0);
+    one_pass(&mut rt, t0 + std::time::Duration::from_millis(50));
+    assert_eq!(
+        rt.switcher.terminal_view_target().target,
+        "b",
+        "the selection stays where the switch put it while its attach is owed"
+    );
+
+    one_pass(&mut rt, t0 + std::time::Duration::from_millis(200));
+    assert_eq!(
+        rt.switcher.terminal_view_target().target,
+        "b",
+        "and after the attach runs"
+    );
+    assert_eq!(
+        rt.hosts.get("local").unwrap().display.shows("local"),
+        Some("b"),
+        "which is what carried the display there"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_pick_on_the_selected_card_leaves_the_nav_and_the_display_naming_one_session() {
+    // The measured split, walked end to end: the user is in the terminal on `a`, goes to
+    // the nav, something outside xmux moves xmux's own display client to `b`, and the user
+    // then picks the card that was already selected and returns to the terminal. Picking a
+    // card cancels nothing, because nothing is owed to cancel: the passes in between
+    // compare where the client is against where the nav is, so the client is already back
+    // on `a` before the pick.
+    let mut rt = a_settled_psmux_runtime();
+    rt.state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    let t0 = std::time::Instant::now();
+    one_pass(&mut rt, t0);
+
+    // `focus nav`
+    rt.state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Nav);
+    one_pass(&mut rt, t0);
+
+    // From OUTSIDE xmux: the display client is moved to b.
+    the_client_reports(&mut rt, OWN_CLIENT, "b");
+    rt.observe_display_session();
+    one_pass(&mut rt, t0);
+    one_pass(&mut rt, t0 + std::time::Duration::from_millis(200));
+    the_reattach_lands(&mut rt, "a");
+
+    // The user picks local/a, the card already selected.
+    rt.switcher.select_address("local/a", &rt.state);
+
+    // `focus terminal`
+    rt.state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    for ms in [400, 3_000, 11_000] {
+        rt.observe_display_session();
+        one_pass(&mut rt, t0 + std::time::Duration::from_millis(ms));
+    }
+
+    assert_eq!(
+        rt.switcher.terminal_view_target().target,
+        "a",
+        "the nav is on the card the user picked"
+    );
+    assert_eq!(
+        rt.hosts.get("local").unwrap().display.shows("local"),
+        Some("a"),
+        "and the display is on that same session, seconds later"
     );
 }
 
@@ -2111,8 +1992,7 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
     let (op_tx, _op_rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = std::env::temp_dir().join(format!("xmux-ctl-switch-sync-{}", std::process::id()));
 
-    let mut owed = HashMap::new();
-    settle_selection(&mut state, &mut sw, &mut owed);
+    sync_selection_from_switcher(&mut state, &sw);
     // api (name order) is the preselected top card, so switch to db to exercise a real
     // selection move.
     dispatch_action(
@@ -2130,7 +2010,7 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
     // The switch moved the selection to db; the loop-top derive routes it through
     // apply(Select) - selection becomes jup/db and the attach is marked pending
     // (the deadline is armed by the next Tick, not here).
-    assert!(settle_selection(&mut state, &mut sw, &mut owed));
+    assert!(sync_selection_from_switcher(&mut state, &sw));
     assert_eq!(state.selection.source, "jup");
     assert_eq!(state.selection.session, "db");
     assert!(state.attach_pending, "Select marks the attach pending");

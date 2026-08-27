@@ -6,8 +6,7 @@ impl Runtime {
     /// `State` and returns the mux follow-ups it cannot perform; this executes them (it
     /// holds the host clients, the registry, and the display worker the state layer must
     /// not reach). Drained in a burst by `on_host_event`. Returns `true` when the caller
-    /// should rearm `attach_deadline` + mark dirty (the matched-client detach-reap path,
-    /// and a follow that landed on a card this event brought in).
+    /// should rearm `attach_deadline` + mark dirty (the matched-client detach-reap path).
     pub(super) fn handle_host_event(&mut self, ev: HostEvent) -> bool {
         let mut rearm = false;
         for effect in self
@@ -18,58 +17,7 @@ impl Runtime {
                 rearm = true;
             }
         }
-        // An event is what grows the nav, so this is where a follow that had no card to
-        // move to gets its card.
-        if self.retry_pending_follows() {
-            rearm = true;
-        }
         rearm
-    }
-
-    /// Retries the follows whose nav move could not land, and returns true when one moved
-    /// the selection. An owed move waits on two things: a card for its session, and the
-    /// terminal focus. An applied enumeration is the moment a session created after its
-    /// switch was announced first has a card, so the retry runs on every host event; the
-    /// focus can come back with no event behind it, so it runs on the animation beat too.
-    /// Either costs a map lookup when there is nothing owing.
-    ///
-    /// Each record goes back through the one follow helper rather than moving the
-    /// selection here, so a retry answers the focus, the belief, and the card exactly as
-    /// the original follow did, and re-records itself while either is still missing.
-    ///
-    /// A record is owed only for as long as the belief it was made with still stands, and
-    /// the display belief is the whole test made here. Anything that carried the display
-    /// elsewhere in the meantime settled where the client is, and paying the older move
-    /// then would name a session the client has left. What the user PICKED is not tested
-    /// here at all: a pick cancels every owed record where it is made, so a record that
-    /// reaches a retry is one no pick has overruled, and the retry never has to wait for
-    /// the pick's own consequences to arrive.
-    pub(super) fn retry_pending_follows(&mut self) -> bool {
-        if self.pending_follows.is_empty() {
-            return false;
-        }
-        let mut moved = false;
-        for (host, session) in std::mem::take(&mut self.pending_follows) {
-            let still_owed = self
-                .hosts
-                .get(&host)
-                .is_some_and(|h| h.display.shows(&host_selection_key(h)) == Some(session.as_str()));
-            if !still_owed {
-                continue;
-            }
-            if follow_display_session(
-                &mut self.hosts,
-                &mut self.switcher,
-                &mut self.state,
-                &mut self.pending_follows,
-                &host,
-                &session,
-            ) {
-                tracing::info!(host = %host, session = %session, "display_follow_retried");
-                moved = true;
-            }
-        }
-        moved
     }
 
     /// Carries out one [`EventEffect`](crate::model::EventEffect) `State::apply_event`
@@ -89,7 +37,6 @@ impl Runtime {
             registry,
             switcher,
             state,
-            pending_follows,
             detecting,
             connected,
             worker,
@@ -189,23 +136,22 @@ impl Runtime {
                 if !h.matches_display_tty(&client) {
                     return false;
                 }
-                // xmux's own display PTY was moved to `session` by the mux itself (e.g. the
-                // user's prefix+s). Sync the display belief so the next reconcile's show()
-                // guard sees the PTY is already on `session` and lowers NO switch-client,
-                // and move the nav selection to that session's card.
-                let moved = follow_display_session(
-                    hosts,
-                    switcher,
-                    state,
-                    pending_follows,
-                    &host,
-                    &session,
-                );
+                // xmux's own display PTY was moved to `session` by the mux itself (e.g.
+                // the user's prefix+s). RECORD IT AND NOTHING ELSE: this is where a mux
+                // with a control channel makes known where its client actually is, and
+                // what follows from the client and the selection naming different
+                // sessions is one comparison the loop makes continuously, in one place
+                // for every mux (`display_astray` / `follow_selection_to_display`). The
+                // record also keeps the next show() from lowering a switch-client to a
+                // session the client is already on.
+                let key = host_selection_key(h); // Shared ⇒ key == host id
+                if let Some(h) = hosts.get_mut(&host) {
+                    h.display.set_shows(&key, &session);
+                }
                 tracing::info!(
                     host = %host,
                     session = %session,
                     client = %client,
-                    moved,
                     "display_client_session_changed"
                 );
             }
@@ -513,7 +459,6 @@ impl Runtime {
             worker,
             switcher,
             state,
-            pending_follows: HashMap::new(),
             // Off-loop attach sequence. The in-flight set / reaped-ids / which session
             // each display shows live on each `host.display` (HostDisplay).
             attach_seq: 0,
@@ -555,9 +500,10 @@ impl Runtime {
     }
 
     /// The loop top: advance the spinner, reconcile the modal/nav-width, run the `r`
-    /// reattach-kick, follow the active window in terminal focus, sync the selection,
-    /// drive one debounce beat (the settled attach), flush the debounced width persist,
-    /// then draw the gated frame. `term` is the loop-local ratatui terminal.
+    /// reattach-kick, hold the nav selection and the display client to one session, sync
+    /// the selection, drive one debounce beat (the settled attach), flush the debounced
+    /// width persist, then draw the gated frame. `term` is the loop-local ratatui
+    /// terminal.
     /// The nav's live size, in one place: the width the user set, the width on screen
     /// (0 while auto-hide has taken it), and the `Top` band height the user set. Every
     /// geometry the loop computes reads this instead of picking two of the three fields
@@ -636,80 +582,18 @@ impl Runtime {
                 now: std::time::Instant::now(),
             });
         }
-        if settle_selection(
-            &mut self.state,
-            &mut self.switcher,
-            &mut self.pending_follows,
-        ) {
-            // The selection moved → the nav needs a redraw. The attach is NOT issued
-            // here; the Tick below arms the debounce, re-armed on every move.
+        // The two regions must name ONE session. In terminal focus the user is driving
+        // the mux, so the selection goes to the client; in nav focus the selection stands
+        // and the beat below carries the client back to it.
+        if self.follow_selection_to_display() {
             self.dirty = true;
         }
-        // Drive one debounce beat. The clock + the registry/host attach facts enter as
-        // DATA on the Tick; State::apply owns the arm/fire decision.
-        {
-            let (key_live, in_flight) =
-                selection_attach_facts(&self.registry, &self.hosts, &self.state.selection);
-            let cmds = self.state.apply(crate::model::Action::Tick {
-                now: std::time::Instant::now(),
-                key_live,
-                in_flight,
-            });
-            for cmd in cmds {
-                match cmd {
-                    crate::model::Command::PersistLastSession(addr) => {
-                        crate::ui::prefs::save_last_session(&self.env.xmux_dir, &addr);
-                    }
-                    crate::model::Command::Attach(sel) => {
-                        let t = std::time::Instant::now();
-                        // select_attach picks the host's driver and hands it the intent.
-                        let shown = select_attach(
-                            &sel,
-                            &mut crate::driver::DriverCtx {
-                                registry: &mut self.registry,
-                                hosts: &mut self.hosts,
-                                worker: &self.worker,
-                                mgr: &self.mgr,
-                                pty_tx: &self.driver_pty_tx,
-                                attach_seq: &mut self.attach_seq,
-                                cols: self.cols,
-                                body_rows: self.body_rows,
-                                nav: crate::ui::switcher::NavSize::visible(self.nav_width)
-                                    .with_height(self.nav_height),
-                            },
-                        );
-                        if shown {
-                            // Advance the display truth synchronously ONLY for a confirmed
-                            // in-place path: a live grid for the key exists AND no reattach
-                            // is in flight. A pending reattach KEEPS the prior session's grid
-                            // (stale-while-revalidate) until DisplayReady swaps it in.
-                            let k = display_key(&self.hosts, &sel);
-                            let reattach_pending = self
-                                .hosts
-                                .get(&sel.source)
-                                .is_some_and(|h| h.display.in_flight_contains(&k));
-                            if self.registry.contains(&k) && !reattach_pending {
-                                self.state
-                                    .apply(crate::model::Action::ConfirmDisplay(sel.clone()));
-                            }
-                        }
-                        DrawObserver::slow_step("select_attach", t);
-                        self.dirty = true;
-                        let key = display_key(&self.hosts, &sel);
-                        let session = &sel.session;
-                        tracing::debug!(key, session, "selection");
-                    }
-                    // The settled-selection Tick never returns the synchronous key/ctl-only
-                    // commands or a session-lifecycle RunOp.
-                    crate::model::Command::SelectAddress(_)
-                    | crate::model::Command::Rescan
-                    | crate::model::Command::AdjustNavWidth(_)
-                    | crate::model::Command::ToggleAutoHide
-                    | crate::model::Command::RunOp(_)
-                    | crate::model::Command::Quit => {}
-                }
-            }
+        if sync_selection_from_switcher(&mut self.state, &self.switcher) {
+            // The selection moved → the nav needs a redraw. The attach is NOT issued
+            // here; the beat below arms the debounce, re-armed on every move.
+            self.dirty = true;
         }
+        self.drive_attach_beat(std::time::Instant::now());
 
         // Flush the debounced nav-width persist once the resize burst settles.
         if self.width_dirty
@@ -855,12 +739,7 @@ impl Runtime {
                 if Some(id) == displayed_attach_id {
                     detached = true;
                 }
-                forget_dead_display_client(
-                    &mut self.hosts,
-                    &mut self.pending_follows,
-                    &self.registry,
-                    id,
-                );
+                clear_display_tty_for_attach(&mut self.hosts, &self.registry, id);
                 if !self.registry.reap(id) {
                     // pre-Ready Exited: registry has no id yet. Attribute to the owning host
                     // via pending so its Ready tears down instead of inserting a dead pane.
@@ -881,12 +760,7 @@ impl Runtime {
                     if Some(id) == displayed_attach_id {
                         detached = true;
                     }
-                    forget_dead_display_client(
-                        &mut self.hosts,
-                        &mut self.pending_follows,
-                        &self.registry,
-                        id,
-                    );
+                    clear_display_tty_for_attach(&mut self.hosts, &self.registry, id);
                     if !self.registry.reap(id) {
                         self.hosts
                             .iter_mut()
@@ -1047,11 +921,7 @@ impl Runtime {
                     &mut self.mgr,
                     (self.cols, self.body_rows),
                 );
-                if settle_selection(
-                    &mut self.state,
-                    &mut self.switcher,
-                    &mut self.pending_follows,
-                ) {
+                if sync_selection_from_switcher(&mut self.state, &self.switcher) {
                     self.dirty = true;
                 }
             }
@@ -1128,11 +998,7 @@ impl Runtime {
                     self.body_rows,
                     self.nav_width,
                 );
-                if settle_selection(
-                    &mut self.state,
-                    &mut self.switcher,
-                    &mut self.pending_follows,
-                ) {
+                if sync_selection_from_switcher(&mut self.state, &self.switcher) {
                     self.dirty = true;
                 }
             }
@@ -1190,27 +1056,144 @@ impl Runtime {
         self.switcher.apply_op_result(result, &mut self.state);
     }
 
-    /// Reads xmux's own display client for the session it is on and follows a change,
-    /// for a mux that reports its client switches nowhere else. Returns true when the nav
-    /// selection moved.
+    /// Drives one debounce beat: folds the clock and the runtime attach facts into
+    /// [`Action::Tick`](crate::model::Action::Tick) and carries out the effects it
+    /// returns. `State::apply` owns the arm/fire decision; the facts it needs (the
+    /// registry, the host bookkeeping, where the display client actually is) live out
+    /// here, so the loop reads them just before the beat and passes them as DATA.
     ///
-    /// A mux with a control channel pushes a client-switch notification and the follow
-    /// runs off that event. A mux without one moves its client INSIDE the client process,
-    /// so nothing is pushed and nothing can be asked: the client's own live state is the
-    /// only witness, and it has to be looked at. This is that look, on the animation beat,
-    /// which is fast enough that the nav moves with the screen and bounded so a busy PTY
-    /// cannot turn it into a per-output-chunk probe.
+    /// `now` is injected rather than read here, the same way `apply` takes it, so a
+    /// caller can drive the debounce across its whole span.
+    pub(super) fn drive_attach_beat(&mut self, now: std::time::Instant) {
+        let (key_live, in_flight) =
+            selection_attach_facts(&self.registry, &self.hosts, &self.state.selection);
+        let cmds = self.state.apply(crate::model::Action::Tick {
+            now,
+            key_live,
+            in_flight,
+            display_astray: display_astray(&self.state, &self.hosts),
+        });
+        for cmd in cmds {
+            match cmd {
+                crate::model::Command::PersistLastSession(addr) => {
+                    crate::ui::prefs::save_last_session(&self.env.xmux_dir, &addr);
+                }
+                crate::model::Command::Attach(sel) => {
+                    let t = std::time::Instant::now();
+                    // select_attach picks the host's driver and hands it the intent.
+                    let shown = select_attach(
+                        &sel,
+                        &mut crate::driver::DriverCtx {
+                            registry: &mut self.registry,
+                            hosts: &mut self.hosts,
+                            worker: &self.worker,
+                            mgr: &self.mgr,
+                            pty_tx: &self.driver_pty_tx,
+                            attach_seq: &mut self.attach_seq,
+                            cols: self.cols,
+                            body_rows: self.body_rows,
+                            nav: crate::ui::switcher::NavSize::visible(self.nav_width)
+                                .with_height(self.nav_height),
+                        },
+                    );
+                    if shown {
+                        // Advance the display truth synchronously ONLY for a confirmed
+                        // in-place path: a live grid for the key exists AND no reattach
+                        // is in flight. A pending reattach KEEPS the prior session's grid
+                        // (stale-while-revalidate) until DisplayReady swaps it in.
+                        let k = display_key(&self.hosts, &sel);
+                        let reattach_pending = self
+                            .hosts
+                            .get(&sel.source)
+                            .is_some_and(|h| h.display.in_flight_contains(&k));
+                        if self.registry.contains(&k) && !reattach_pending {
+                            self.state
+                                .apply(crate::model::Action::ConfirmDisplay(sel.clone()));
+                        }
+                    }
+                    DrawObserver::slow_step("select_attach", t);
+                    self.dirty = true;
+                    let key = display_key(&self.hosts, &sel);
+                    let session = &sel.session;
+                    tracing::debug!(key, session, "selection");
+                }
+                // The settled-selection Tick never returns the synchronous key/ctl-only
+                // commands or a session-lifecycle RunOp.
+                crate::model::Command::SelectAddress(_)
+                | crate::model::Command::Rescan
+                | crate::model::Command::AdjustNavWidth(_)
+                | crate::model::Command::ToggleAutoHide
+                | crate::model::Command::RunOp(_)
+                | crate::model::Command::Quit => {}
+            }
+        }
+    }
+
+    /// Moves the NAV SELECTION to the session the display client is on, while the
+    /// terminal holds the focus. Returns true when the selection moved.
+    ///
+    /// The user is driving the mux, so a session change the mux made is theirs and the
+    /// nav is what yields: the selection goes to the client, and the ordinary reconcile
+    /// then has nothing to do, because the client is already where the selection names.
+    /// The other direction ([`display_astray`]) belongs to nav focus, where the selection
+    /// is the user's own and the client is what comes back. One of the two regions moves,
+    /// never both, so the pair cannot chase each other.
+    ///
+    /// NOTHING IS REMEMBERED WHEN THE MOVE CANNOT LAND. A session created moments ago has
+    /// no card yet and the selection has nowhere to go; the client is still on it, and
+    /// this runs again on the next pass, so the move lands on the first pass after the
+    /// enumeration that brings the card in. The client itself is the record, which is why
+    /// there is none here to go stale, to be retried, or to be cancelled.
+    ///
+    /// WHICH OF THE TWO MOVED FIRST is the one thing the difference alone cannot say, and
+    /// an attach still owed for the selection is what says it. While one is owed, the
+    /// difference is a selection that moved and a display that has not been carried to it
+    /// yet - a ctl `switch` while the terminal holds the focus is exactly that - and
+    /// answering it here would drag the selection back to where the display still is and
+    /// undo the switch that was just asked for. Every driver records the session it is
+    /// showing as it acts, so the debt is settled in the same breath as the display, and
+    /// a difference outliving the debt is the mux's own doing.
+    pub(super) fn follow_selection_to_display(&mut self) -> bool {
+        if !self.state.focus.is_terminal_focused() || self.state.selection.is_empty() {
+            return false;
+        }
+        let (_, in_flight) =
+            selection_attach_facts(&self.registry, &self.hosts, &self.state.selection);
+        if self.state.attach_pending || self.state.attach_deadline.is_some() || in_flight {
+            return false;
+        }
+        let Some(shown) = display_session(&self.hosts, &self.state.selection.source) else {
+            return false;
+        };
+        if shown == self.state.selection.session {
+            return false;
+        }
+        let addr = crate::session::address_of(&self.state.selection.source, shown);
+        self.switcher.select_address(&addr, &self.state)
+    }
+
+    /// Reads xmux's own display client for the session it is on and records it, for a mux
+    /// that reports its client switches nowhere else. Returns true when the record moved.
+    ///
+    /// A mux with a control channel pushes a client-switch notification and the record is
+    /// written off that event. A mux without one moves its client INSIDE the client
+    /// process, so nothing is pushed and nothing can be asked: the client's own live state
+    /// is the only witness, and it has to be looked at. This is that look, on the
+    /// animation beat, which is fast enough that the nav moves with the screen and bounded
+    /// so a busy PTY cannot turn it into a per-output-chunk probe. What FOLLOWS from the
+    /// record and the selection naming different sessions is one comparison the loop makes
+    /// continuously, the same for every mux, and none of it is decided here.
     ///
     /// Mux-blind, in both directions. Which muxes have a witness to read is answered by
     /// each mux (a mux with none reports nothing to read, and this returns immediately),
-    /// and what to do with the answer is the one follow every mux shares. So a mux added
-    /// later joins by answering, not by being named here.
+    /// and what to do with the answer is shared by all of them. So a mux added later joins
+    /// by answering, not by being named here.
     ///
-    /// A follow is REFUSED while a reattach is in flight for the display key. The stale
+    /// The read is REFUSED while a reattach is in flight for the display key. The stale
     /// client is deliberately kept on screen until the fresh one is ready, and it is still
     /// sitting on the session the selection just left - reading it then would report the
-    /// old session as a fresh switch and drag the nav backwards, undoing the move the user
-    /// just made.
+    /// old session as where the display is and send the reconcile chasing a client that is
+    /// already on its way somewhere else.
     ///
     /// THE READ RUNS ON THE LOOP, and it is the one process read that may. The rule it
     /// stands against bans work whose duration ANOTHER PARTY sets: a spawn, a pipe, a PTY
@@ -1229,7 +1212,7 @@ impl Runtime {
     /// cheaper than moving it off the loop, which would cost a thread hop and a channel
     /// round trip per beat to save nothing. The test guards the conclusion rather than the
     /// figure: it fails only when a read costs a visible share of a beat.
-    pub(super) fn follow_live_display_session(&mut self) -> bool {
+    pub(super) fn observe_display_session(&mut self) -> bool {
         if self.state.selection.is_empty() {
             return false;
         }
@@ -1247,27 +1230,20 @@ impl Runtime {
         if host.display.shows(&key) == Some(session.as_str()) {
             return false;
         }
-        let moved = follow_display_session(
-            &mut self.hosts,
-            &mut self.switcher,
-            &mut self.state,
-            &mut self.pending_follows,
-            &source,
-            &session,
-        );
+        if let Some(h) = self.hosts.get_mut(&source) {
+            h.display.set_shows(&key, &session);
+        }
         tracing::info!(
             host = %source,
             session = %session,
-            moved,
             "display_client_session_changed"
         );
-        moved
+        true
     }
 
     /// The animation-tick arm: detect a console resize (push the new size to PTYs +
-    /// control clients, force a full repaint), pay any nav move a follow still owes,
-    /// follow a mux-side switch of xmux's own display client, and refresh the
-    /// connecting-spinner set.
+    /// control clients, force a full repaint), read xmux's own display client for a
+    /// mux-side session change, and refresh the connecting-spinner set.
     pub(super) fn on_tick(&mut self, term: &mut Term) {
         // Resize detection: poll the console size (an ioctl, not a stdin read).
         if let Ok((c, r)) = ratatui::crossterm::terminal::size() {
@@ -1286,13 +1262,7 @@ impl Runtime {
                 self.dirty = true;
             }
         }
-        // An owed move waits on a card and on the terminal focus. A card arrives with an
-        // event, which retries the move where it is applied; the focus can come back with
-        // no event behind it, so the beat is the retry that sees it.
-        if self.retry_pending_follows() {
-            self.dirty = true;
-        }
-        if self.follow_live_display_session() {
+        if self.observe_display_session() {
             self.dirty = true;
         }
         // Spinner set = the selected session if its PTY is still connecting.

@@ -32,7 +32,7 @@ impl Switcher {
             return;
         };
         if self.rows.get(idx).is_some_and(Row::selectable) {
-            self.note_user_pick();
+            self.user_moved = true;
             self.set_selected(idx, state);
         }
     }

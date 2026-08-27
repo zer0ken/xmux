@@ -214,7 +214,7 @@ impl Switcher {
         let Some(n) = self.jump_row(&input.buffer.clone()) else {
             return;
         };
-        self.note_user_pick();
+        self.user_moved = true;
         self.set_selected(n, state);
     }
 
@@ -362,7 +362,7 @@ impl Switcher {
             OpFollow::Reselect(addr) => {
                 self.rebuild(state);
                 if let Some(i) = self.row_of_session(&addr) {
-                    self.note_user_pick();
+                    self.user_moved = true;
                     self.set_selected(i, state);
                 }
             }

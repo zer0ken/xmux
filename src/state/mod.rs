@@ -176,6 +176,7 @@ impl State {
                 now,
                 key_live,
                 in_flight,
+                display_astray,
             } => {
                 // RE-ARM on every pending selection: a fresh Select between ticks
                 // pushes the deadline out, so only the trailing selection attaches
@@ -184,6 +185,17 @@ impl State {
                 // always in the future, so the elapsed check below cannot fire it.
                 if self.attach_pending {
                     self.attach_pending = false;
+                    self.attach_deadline = Some(now + Duration::from_millis(ATTACH_DEBOUNCE_MS));
+                    return Vec::new();
+                }
+                // ARM ON THE CONDITION, not on a change. A display sitting away from the
+                // selection is a state, so it is answered for as long as it lasts and
+                // nothing has to be remembered from the moment it began: a selection that
+                // never moved again would arm nothing if only its MOVE could. Armed only
+                // with the debounce idle, so a navigation burst still coalesces into one
+                // trailing attach, and only with nothing in flight, so the attach already
+                // carrying the display there is not restarted under itself.
+                if display_astray && self.attach_deadline.is_none() && !in_flight {
                     self.attach_deadline = Some(now + Duration::from_millis(ATTACH_DEBOUNCE_MS));
                     return Vec::new();
                 }
@@ -209,7 +221,7 @@ impl State {
                 // Fire the attach only when the gate holds (selection differs from the
                 // confirmed display, or its PTY is gone) and nothing is in flight - the
                 // freeze invariant depends on this gate, so it stays exactly as is.
-                if self.should_attach(key_live, in_flight) {
+                if self.should_attach(key_live, in_flight, display_astray) {
                     cmds.push(Command::Attach(self.selection.clone()));
                 }
                 cmds
@@ -324,13 +336,25 @@ impl State {
     }
 
     /// Whether to (re)issue an attach for the settled selection. Fire when the
-    /// selection differs from what is confirmed on screen, or when its display PTY is
-    /// gone (`!key_live` - exited / reaped while the selection was elsewhere) - but never
+    /// selection differs from what is confirmed on screen, when its display PTY is
+    /// gone (`!key_live` - exited / reaped while the selection was elsewhere), or when
+    /// the display client sits on another session (`display_astray`) - but never
     /// while an attach for the key is already in flight, so the async-attach window
     /// cannot spawn a storm of duplicates. The clock and these runtime facts enter as
     /// data on the Tick, never read here directly.
-    pub(crate) fn should_attach(&self, key_live: bool, in_flight: bool) -> bool {
-        (self.selection != self.displayed || !key_live) && !in_flight
+    ///
+    /// The astray leg is why the two regions cannot settle on different sessions. The
+    /// other two legs compare the selection against xmux's OWN record of what it put on
+    /// screen, which a session change the mux made never touches: the selection and the
+    /// confirmed display agree, the PTY is alive, and the client is somewhere else
+    /// entirely. Only a fact about where the client actually is can say so.
+    pub(crate) fn should_attach(
+        &self,
+        key_live: bool,
+        in_flight: bool,
+        display_astray: bool,
+    ) -> bool {
+        (self.selection != self.displayed || !key_live || display_astray) && !in_flight
     }
 
     /// Folds a completed [`MuxOp`](crate::model::MuxOp)'s [`OpResult`] into the
@@ -430,6 +454,7 @@ mod tests {
             now: t0,
             key_live: true,
             in_flight: false,
+            display_astray: false,
         });
         assert_eq!(s.attach_deadline, Some(t0 + Duration::from_millis(90)));
         assert!(armed.is_empty(), "arming does not fire on the same tick");
@@ -438,6 +463,7 @@ mod tests {
             now: t0 + Duration::from_millis(90),
             key_live: true,
             in_flight: false,
+            display_astray: false,
         });
         assert_eq!(
             fired,
@@ -462,6 +488,7 @@ mod tests {
             now: t0,
             key_live: true,
             in_flight: false,
+            display_astray: false,
         });
         assert_eq!(s.attach_deadline, Some(t0 + Duration::from_millis(90)));
         // A Select 30ms later (rapid nav) re-marks pending; the next Tick re-arms the
@@ -471,6 +498,7 @@ mod tests {
             now: t0 + Duration::from_millis(30),
             key_live: true,
             in_flight: false,
+            display_astray: false,
         });
         assert!(
             rearm.is_empty(),
@@ -487,6 +515,7 @@ mod tests {
             now: t0 + Duration::from_millis(90),
             key_live: true,
             in_flight: false,
+            display_astray: false,
         });
         assert!(early.is_empty(), "no fire before the re-armed deadline");
         // Only at t0+120 does the trailing selection (db) attach, once.
@@ -494,6 +523,7 @@ mod tests {
             now: t0 + Duration::from_millis(120),
             key_live: true,
             in_flight: false,
+            display_astray: false,
         });
         assert_eq!(
             fired,
@@ -521,6 +551,7 @@ mod tests {
             now: t0,
             key_live: true,
             in_flight: false,
+            display_astray: false,
         });
         assert!(
             cmds.is_empty(),
@@ -547,6 +578,7 @@ mod tests {
             now: t0,
             key_live: false,
             in_flight: false,
+            display_astray: false,
         });
         assert_eq!(
             cmds,
@@ -571,6 +603,7 @@ mod tests {
             now: t0,
             key_live: false,
             in_flight: true,
+            display_astray: false,
         });
         assert!(
             !cmds.iter().any(|c| matches!(c, Command::Attach(_))),
@@ -598,11 +631,13 @@ mod tests {
             now: t0,
             key_live: false,
             in_flight: false,
+            display_astray: false,
         }); // arms
         let b_cmds = s.apply(Action::Tick {
             now: t0 + Duration::from_millis(90),
             key_live: false,
             in_flight: false,
+            display_astray: false,
         });
         assert_eq!(
             b_cmds,
@@ -617,11 +652,13 @@ mod tests {
             now: t0 + Duration::from_millis(100),
             key_live: false,
             in_flight: true,
+            display_astray: false,
         }); // arms
         let c_cmds = s.apply(Action::Tick {
             now: t0 + Duration::from_millis(190),
             key_live: false,
             in_flight: true, // first attach (B) still in flight on the shared host key
+            display_astray: false,
         });
         assert!(
             c_cmds.contains(&Command::PersistLastSession("jup/c".into())),
@@ -645,6 +682,7 @@ mod tests {
             now: t0,
             key_live: false,
             in_flight: false,
+            display_astray: false,
         });
         assert!(cmds.is_empty(), "empty selection never attaches");
         assert!(s.attach_deadline.is_none());

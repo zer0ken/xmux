@@ -347,43 +347,22 @@ fn selection_from_target(t: &TerminalViewTarget) -> Selection {
     }
 }
 
-/// Settles the switcher selection: derives the selection from it and, if it moved, routes
-/// it through the single mutation site as [`Action::Select`] - which records the new
-/// selection and marks the attach pending. It arms NO deadline; the trailing
-/// [`Action::Tick`] arms the debounce (re-armed on every move, so rapid navigation
-/// coalesces into one trailing attach). Returns true when the selection changed (the nav
-/// needs a redraw).
+/// Derives the selection from the switcher selection and, if it moved, routes it through
+/// the single mutation site as [`Action::Select`] - which records the new selection
+/// and marks the attach pending. It arms NO deadline; the trailing [`Action::Tick`]
+/// arms the debounce (re-armed on every move, so rapid navigation coalesces into one
+/// trailing attach). Returns true when the selection changed (the nav needs a redraw).
 ///
 /// The switcher selection is the selection authority; this routes the derived value
 /// through `apply` as an intent rather than mutating `state` directly, so a selection
-/// change still funnels through the single mutation site. This is where a selection
-/// becomes an attach, so it is also where the pick behind it is answered.
-///
-/// A PICK THE USER MAKES CANCELS EVERY FOLLOW STILL OWED. Picking a card is the freshest
-/// statement of where the user wants to be, so it outranks any move owed from before it.
-/// The cancellation belongs at the pick and not at some later fact catching up with it:
-/// a retry running in between pays a debt the user has already overruled, and carries them
-/// off the card they just chose. EVERY owed record goes, not only the one on the picked
-/// card's host, because a move owed on another host drags the nav off that card just as
-/// surely.
-///
-/// Only the USER's pick does this. xmux moves the nav itself when it follows the mux, and
-/// that move runs through the same selection machinery, so the two are told apart by which
-/// mover made the move: the follow has its own, which raises no pick. A flag the movers
-/// share cannot draw that line - the selection latch is set by either - and a pick is
-/// raised even when the card picked is the one already selected, so a user settling on
-/// where they already are still cancels what is owed.
+/// change still funnels through the single mutation site.
 ///
 /// [`Action::Select`]: crate::model::Action::Select
 /// [`Action::Tick`]: crate::model::Action::Tick
-fn settle_selection(
+fn sync_selection_from_switcher(
     state: &mut crate::state::State,
-    switcher: &mut crate::ui::switcher::Switcher,
-    pending: &mut HashMap<String, String>,
+    switcher: &crate::ui::switcher::Switcher,
 ) -> bool {
-    if switcher.take_user_pick() {
-        pending.clear();
-    }
     let new_sel = selection_from_target(&switcher.terminal_view_target());
     if new_sel == state.selection {
         return false;
@@ -392,76 +371,52 @@ fn settle_selection(
     true
 }
 
-/// Follows a session change the MUX made to xmux's own display client: records `session`
-/// as what the host's display now shows, and moves the nav selection to that session's
-/// card. Returns whether the selection was moved.
+/// The session a source's display client is ON: the one fact the nav selection is held
+/// against. It is the host's display record, which each mux keeps true its own way - the
+/// control notice a mux pushes when it moves a client, and, for a mux that moves its
+/// client inside the client process and pushes nothing, the live client read on the
+/// animation beat. `None` while no display has been established for the source, which is
+/// the first attach's own case and not a disagreement.
 ///
-/// The nav MOVES only in TERMINAL focus, where the user is driving the mux and the two
-/// regions must keep naming one session. In nav focus the selection is the user's own and
-/// the mux does not get to move it; the display belief is still recorded, because that is
-/// a fact about where the client is, not a claim about what the user picked.
+/// It is not what xmux last decided to show: that is `state.displayed`, and a session
+/// change the mux made moves the client without touching it, which is precisely how the
+/// nav and the terminal view came to name different sessions.
+fn display_session<'a>(hosts: &'a crate::model::Hosts, source: &str) -> Option<&'a str> {
+    let host = hosts.get(source)?;
+    host.display.shows(&host_selection_key(host))
+}
+
+/// Whether the display client sits on a session the selection does not name AND the
+/// selection is the one to keep, so the attach beat must carry the client back to it.
 ///
-/// The single owner of this move: every way a mux announces a client switch converges
-/// here, so a mux that reports it over a control channel and one whose client has to be
-/// read for it produce the same nav behavior.
+/// A CONDITION, evaluated here every beat and stored nowhere. Nothing records that a
+/// switch happened, when it happened, or that a move is owed for it, so there is no
+/// policy for when to pay such a record and none for when to cancel it: while the client
+/// is away from the selection the answer is yes, and the moment either side moves to the
+/// other it is no.
 ///
-/// THE GUARANTEE: a follow lands as soon as the nav can hold it and the user is not
-/// driving the nav. The two halves of a follow settle on different schedules and are
-/// therefore recorded separately. The display belief moves AT ONCE and unconditionally,
-/// because it is a fact about where the client is and it is what keeps a driver from
-/// reattaching the client the user just moved. The nav move waits on two things the
-/// follow does not control - a CARD for the session, which a session enumerated after
-/// its switch was learned has not got yet, and TERMINAL focus, which a detour into the
-/// nav takes away - so a move that finds either missing is remembered in `pending` and
-/// retried (`Runtime::retry_pending_follows`). Without that record the latched belief
-/// would answer every later probe with "already there" and the nav would stay wrong for
-/// as long as xmux ran.
+/// FOCUS decides which of the two moves, and it is the only thing that does. In nav focus
+/// the selection is the user's own, so the client comes back to it - this. In terminal
+/// focus the user is driving the mux, so the SELECTION goes to the client instead
+/// ([`Runtime::follow_selection_to_display`]) and this stays false, since carrying the
+/// client back would undo the switch the user just made with the mux's own keys.
 ///
-/// A NAV DETOUR DEFERS THE MOVE, IT DOES NOT CANCEL IT. In nav focus the selection is the
-/// user's and the mux does not move it, so the move is not made there; the debt is still
-/// owed, because passing through the nav is not a reason for the two regions to settle on
-/// different sessions. It is paid on the first retry that finds the terminal focused
-/// again.
-///
-/// One record per source, holding the LATEST session the client reported: a client sits
-/// on one session at a time, so a newer report supersedes an older one rather than
-/// queueing behind it. A record is dropped when the move LANDS (its session has a card
-/// and the selection sits there), and when the move goes OBSOLETE, which is one condition
-/// and not two: the host's display belief no longer names the recorded session. Both ways
-/// a move can be overtaken write that belief - a later switch carries the client
-/// elsewhere, and settling the display on another session reattaches it there - so the
-/// belief is what the retry compares against.
-///
-/// A record is also CANCELLED, every one of them at once, by a pick the user makes: that
-/// is the user's own statement of where they want to be, and it outranks a move owed from
-/// before it. The cancellation happens at the pick (see [`settle_selection`]), not here,
-/// so nothing owed can be paid in the window between the pick and the facts that follow
-/// it.
-fn follow_display_session(
-    hosts: &mut crate::model::Hosts,
-    switcher: &mut crate::ui::switcher::Switcher,
-    state: &mut crate::state::State,
-    pending: &mut HashMap<String, String>,
-    host: &str,
-    session: &str,
-) -> bool {
-    let Some(h) = hosts.get_mut(host) else {
-        return false;
-    };
-    let key = host_selection_key(h);
-    h.display.set_shows(&key, session);
-    if !state.focus.is_terminal_focused() {
-        pending.insert(host.to_string(), session.to_string());
+/// WHY IT SETTLES, being a condition rather than an event. Each answer makes the two
+/// names EQUAL and nothing here makes them differ: this attaches the client to the
+/// session the selection already names, the follow moves the selection to the session the
+/// client is already on, and neither one moves the side it is comparing against. So the
+/// condition is false as soon as one of them has acted, and stays false until something
+/// outside - the user, or the mux - moves one of the two again, which is the difference
+/// that ought to be answered. The two can never take turns undoing each other either,
+/// because the focus admits exactly one of them at a time. The debounce and the in-flight
+/// gate bound the rate rather than the outcome: while an attach is under way this is not
+/// re-armed, so the client is carried once and not once per beat until it arrives.
+fn display_astray(state: &crate::state::State, hosts: &crate::model::Hosts) -> bool {
+    if state.selection.is_empty() || state.focus.is_terminal_focused() {
         return false;
     }
-    let addr = crate::session::address_of(host, session);
-    let moved = switcher.follow_address(&addr, state);
-    if switcher.holds_session_card(&addr) {
-        pending.remove(host);
-    } else {
-        pending.insert(host.to_string(), session.to_string());
-    }
-    moved
+    display_session(hosts, &state.selection.source)
+        .is_some_and(|shown| shown != state.selection.session)
 }
 
 /// The size to give a PTY attachment: the terminal view (right of the nav +
@@ -973,19 +928,11 @@ fn record_display_tty(
     }
 }
 
-/// Forgets what the EOF'd attach `id` was the witness for, on the host that owned it.
+/// Clears the display tty of the host owning the EOF'd attach `id`, so a dropped
+/// display client cannot leave a stale tty that a later %client-detached matches.
 /// Must run BEFORE the reap removes the registry entry (address_of_id needs it).
-///
-/// Two things rest on that client alone and end with it. Its tty, so a dropped display
-/// client cannot leave a stale tty that a later %client-detached matches. And any nav
-/// move still owed on what it reported: the client that named the session is gone, xmux
-/// re-attaches the SELECTION rather than that session, and a move made later would carry
-/// the nav to a session nothing is on. It is also the record's only other end - a session
-/// killed before the nav ever enumerated it never gets a card, so the move would be owed
-/// and re-recorded on every host event for the rest of the run.
-fn forget_dead_display_client(
+fn clear_display_tty_for_attach(
     hosts: &mut crate::model::Hosts,
-    pending: &mut HashMap<String, String>,
     registry: &AttachRegistry,
     id: u64,
 ) {
@@ -994,7 +941,6 @@ fn forget_dead_display_client(
         if let Some(h) = hosts.get_mut(&host_id) {
             h.display_tty = crate::model::DisplayTty(None);
         }
-        pending.remove(&host_id);
     }
 }
 
@@ -1303,12 +1249,6 @@ struct Runtime {
     worker: DisplayWorker,
     switcher: crate::ui::switcher::Switcher,
     state: crate::state::State,
-    /// The follows whose nav move could not land: source id -> the session that source's
-    /// display client moved to while the nav held no card for it or while the user held
-    /// the nav focus. Emptied by the retry on the animation beat and on the sweeps that
-    /// grow the nav; see [`follow_display_session`] for what a record means and when it
-    /// is dropped.
-    pending_follows: HashMap<String, String>,
     attach_seq: u64,
     /// A clone of the loop's `PtyEvent` sender handed to drivers for off-loop probes.
     driver_pty_tx: tokio::sync::mpsc::UnboundedSender<PtyEvent>,
