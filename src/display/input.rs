@@ -73,22 +73,17 @@ impl TermInput {
         let mut fwd: Vec<u8> = Vec::new();
         let mut i = 0;
         while i < bytes.len() {
-            // A kitty key event (a release, or Windows Terminal's repeat/release
-            // hybrid) is resolved BEFORE the command-key logic: a release or a repeat
-            // must never be read as a command key, and a held prefix must not disarm.
-            if let Some((end, ev)) = crate::display::decode::parse_kitty_seq(bytes, i) {
-                i = end;
-                self.handle_kitty(&ev, &mut fwd);
-                continue;
-            }
             if self.armed {
                 let b0 = bytes[i];
                 if b0 == self.prefix {
-                    // A repeated prefix byte on a terminal without kitty event kinds
-                    // is indistinguishable from a held key's autorepeat, so it is
-                    // swallowed: ready stays put (no flicker) and no literal reaches
-                    // the pane. The doubled-prefix literal fires on the kitty path,
-                    // where a held key is a Repeat and a second tap is a fresh Press.
+                    // A doubled prefix sends one literal prefix byte to the pane and
+                    // ends the chord (tmux `send-prefix` parity). A terminal reports no
+                    // key-up, so a held prefix's autorepeat is byte-identical to a second
+                    // tap and takes this path too: holding the prefix streams literals and
+                    // blinks the hint bar. That is the accepted cost of keeping the input
+                    // path free of the kitty keyboard protocol.
+                    fwd.push(self.prefix);
+                    self.armed = false;
                     i += 1;
                     continue;
                 }
@@ -217,10 +212,8 @@ impl TermInput {
             let b = bytes[i];
             self.track_paste(b);
             if !self.in_paste && b == self.prefix {
-                // A prefix byte arms ready (idempotent: a held key's legacy autorepeat
-                // is another prefix byte, so it stays armed instead of toggling; a kitty
-                // Repeat is already handled in handle_kitty and never re-arms a consumed
-                // ready).
+                // A prefix byte arms ready. A second one while already armed is the
+                // doubled-prefix literal, handled above, so this only ever arms.
                 if !fwd.is_empty() {
                     out.push(Action::Forward(std::mem::take(&mut fwd)));
                 }
@@ -235,114 +228,6 @@ impl TermInput {
         }
         out
     }
-
-    /// Applies one parsed kitty key event to the prefix state and the forward buffer.
-    /// A prefix press arms ready; a second prefix press while ready is the
-    /// doubled-prefix literal (one prefix byte forwarded, ready cleared); a held
-    /// prefix's Repeat never re-arms a consumed ready, so a held key never spams a
-    /// literal or flickers; a release is the key-up side of a press and is swallowed,
-    /// so it cannot end the chord (a release between two taps would otherwise make
-    /// the doubled-prefix literal unreachable). Non-prefix events forward their
-    /// legacy bytes (a release forwards nothing, because a legacy program has no
-    /// key-up event).
-    fn handle_kitty(&mut self, ev: &crate::display::decode::KittyEvent, fwd: &mut Vec<u8>) {
-        // A key is the prefix when its code is the configured control byte (kitty
-        // presses and repeats, legacy bytes), or when a Ctrl chord reports the base
-        // key instead (Windows Terminal sends the letter, e.g. C-g → 'g', on releases
-        // and some repeats). The Ctrl check keeps a plain 'g' repeat from being
-        // misread as the prefix.
-        let is_prefix = ev.code == self.prefix as u32
-            || (ev.modifiers & 4 != 0
-                && ev.code == crate::display::decode::kitty_prefix_base(self.prefix));
-        match ev.kind {
-            3 => {
-                // release: the key is up. It is the key-up side of the press that
-                // armed ready and has no command of its own: swallowing it (rather
-                // than cancelling) keeps ready live until the next key, a focus
-                // switch, or a mouse action, which is what lets the doubled-prefix
-                // literal fire on a following press.
-            }
-            2 => {
-                // repeat: the same key is still down. A held prefix's repeat is
-                // swallowed and never re-arms a consumed ready, so the bar stays
-                // hidden once consumed and a held key never sends a literal prefix.
-                // A non-prefix repeat forwards its legacy bytes unless a command is
-                // mid-flight (a repeat is not a command).
-                if !is_prefix && !self.armed {
-                    self.forward_legacy(ev, fwd);
-                }
-            }
-            _ => {
-                // press: a prefix press arms ready; a second prefix press while
-                // ready is the doubled-prefix command (one literal prefix byte
-                // reaches the pane) and clears ready. A non-prefix press mid-command
-                // consumes the prefix; otherwise it forwards its legacy bytes.
-                if is_prefix {
-                    if self.armed {
-                        fwd.push(self.prefix);
-                        self.armed = false;
-                    } else {
-                        self.armed = true;
-                    }
-                } else if self.armed {
-                    self.armed = false;
-                } else {
-                    self.forward_legacy(ev, fwd);
-                }
-            }
-        }
-    }
-
-    fn forward_legacy(&mut self, ev: &crate::display::decode::KittyEvent, fwd: &mut Vec<u8>) {
-        let legacy = kitty_to_legacy(ev);
-        fwd.extend_from_slice(&legacy);
-    }
-}
-
-/// The legacy bytes to forward for a parsed kitty/hybrid key event. A release
-/// forwards nothing (a legacy program has no key-up). A hybrid functional key
-/// (letter final) becomes its legacy CSI/SS3 form; a codepoint becomes its text
-/// bytes (an alt modifier prefixes ESC).
-fn kitty_to_legacy(ev: &crate::display::decode::KittyEvent) -> Vec<u8> {
-    if ev.kind == 3 {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    match ev.final_byte {
-        b'A' | b'B' | b'C' | b'D' | b'H' | b'F' => {
-            out.extend_from_slice(b"\x1b[");
-            if ev.modifiers != 0 {
-                out.extend_from_slice(format!("1;{}", ev.modifiers + 1).as_bytes());
-            }
-            out.push(ev.final_byte);
-        }
-        b'P' => return b"\x1bOP".to_vec(),
-        b'Q' => return b"\x1bOQ".to_vec(),
-        b'R' => return b"\x1bOR".to_vec(),
-        b'S' => return b"\x1bOS".to_vec(),
-        _ => {}
-    }
-    if !out.is_empty() {
-        return out;
-    }
-    match ev.code {
-        0..=31 | 127 => {
-            if ev.modifiers & 2 != 0 {
-                out.push(0x1b);
-            }
-            out.push(ev.code as u8);
-        }
-        c => {
-            if ev.modifiers & 2 != 0 {
-                out.push(0x1b);
-            }
-            if let Some(ch) = char::from_u32(c) {
-                let mut b = [0u8; 4];
-                out.extend_from_slice(ch.encode_utf8(&mut b).as_bytes());
-            }
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -368,98 +253,40 @@ mod tests {
     }
 
     #[test]
-    fn held_prefix_does_not_toggle_or_forward_literal() {
+    fn a_doubled_prefix_forwards_one_literal_and_ends_the_chord() {
         let mut t = m();
-        // A tap: the press arms, and the release is the key-up side of that press,
-        // not a cancel, so ready stays live until the next key.
-        t.feed(&[0x07]); // press
+        t.feed(&[0x07]);
         assert!(t.is_armed());
-        t.feed(b"\x1b[7;5:3u"); // release is swallowed
-        assert!(t.is_armed(), "the release must not cancel ready");
-        // Now hold the prefix on a legacy terminal: a press arms, repeated prefix
-        // bytes are swallowed (no literal reaches the pane, no flicker), and the
-        // release changes nothing.
+        assert_eq!(
+            fwd(&t.feed(&[0x07])),
+            vec![0x07],
+            "a second prefix sends one literal prefix byte to the pane"
+        );
+        assert!(!t.is_armed(), "the literal ends the chord");
+        // A terminal reports no key-up, so a held prefix's autorepeat is byte-identical
+        // to repeated taps and streams literals. Accepted: see the doubled-prefix comment
+        // in `feed`.
         let mut t2 = m();
-        t2.feed(&[0x07]);
-        assert!(t2.is_armed());
-        assert_eq!(
-            fwd(&t2.feed(&[0x07])),
-            Vec::<u8>::new(),
-            "a legacy repeat forwards nothing"
-        );
-        assert!(t2.is_armed(), "a hold-repeat must not disarm");
-        assert_eq!(
-            fwd(&t2.feed(&[0x07])),
-            Vec::<u8>::new(),
-            "more repeats stay swallowed"
-        );
-        assert!(t2.is_armed());
-        assert_eq!(
-            t2.feed(b"\x1b[7;5:3u"),
-            Vec::<Action>::new(),
-            "release is swallowed"
-        );
-        assert!(t2.is_armed(), "the release does not cancel ready");
+        assert_eq!(fwd(&t2.feed(&[0x07, 0x07, 0x07, 0x07])), vec![0x07, 0x07]);
+        assert!(!t2.is_armed());
     }
 
     #[test]
-    fn kitty_releases_are_never_forwarded() {
+    fn a_command_consumes_ready() {
+        // A command key CONSUMES the prefix: ready clears (the bar hides). Resize
+        // continuation after the first arrow is the RUNTIME repeat window (bare
+        // Ctrl-arrows), not a re-armed prefix, so a plain `h` after consumption is
+        // ordinary input again.
         let mut t = m();
-        // 'a' press (legacy), then its release as CSI u: only the press forwards.
-        assert_eq!(fwd(&t.feed(b"a\x1b[97;1:3u")), b"a");
-        // A WT hybrid release of Up is swallowed too.
-        assert_eq!(t.feed(b"\x1b[1;1:3A"), Vec::<Action>::new());
-    }
-
-    #[test]
-    fn a_windows_terminal_release_is_swallowed() {
-        // WT's getKittyBaseKey strips Ctrl and reports the letter for the release
-        // (C-g → CSI 103;5:3u, code 103 = 'g'), not the control byte. It is the
-        // key-up side of the press and must not end the chord: ready stays live so
-        // the bar stays up and the doubled-prefix literal stays reachable.
-        let mut t = m();
-        t.feed(&[0x07]); // press
+        t.feed(&[0x07]);
         assert!(t.is_armed());
-        assert_eq!(
-            t.feed(b"\x1b[103;5:3u"),
-            Vec::<Action>::new(),
-            "the release is swallowed"
-        );
-        assert!(
-            t.is_armed(),
-            "the WT base-key release does not cancel ready"
-        );
-    }
-
-    #[test]
-    fn kitty_hybrid_repeat_forwarded_as_legacy() {
-        let mut t = m();
-        // Up repeat (hybrid) forwards as the legacy CSI A.
-        assert_eq!(fwd(&t.feed(b"\x1b[1;1:2A")), b"\x1b[A");
-    }
-
-    #[test]
-    fn a_command_consumes_ready_and_a_repeat_never_rearms_it() {
-        // A command key CONSUMES the prefix: ready clears (the bar hides). A held
-        // prefix's kitty Repeat (event kind 2) never re-arms the consumed ready, so
-        // the bar stays hidden while the key is held. Resize continuation after the
-        // first arrow is the RUNTIME repeat window (bare Ctrl-arrows), not a re-armed
-        // prefix, so a plain `h` after consumption is ordinary input again.
-        let mut t = m();
-        t.feed(&[0x07]); // prefix press
-        assert!(t.is_armed());
-        assert_eq!(t.feed(b"h"), vec![Action::Width(-1)], "the arrow resizes");
+        assert_eq!(t.feed(b"h"), vec![Action::Width(-1)], "the key resizes");
         assert!(!t.is_armed(), "a key while ready consumes ready");
-        // The held prefix's repeat (kitty kind 2) must NOT re-arm ready.
-        assert_eq!(t.feed(b"\x1b[7;5:2u"), Vec::<Action>::new());
-        assert!(!t.is_armed(), "a repeat never re-arms a consumed ready");
         assert_eq!(
             fwd(&t.feed(b"h")),
             b"h",
             "after consumption a plain key is ordinary input, not a command"
         );
-        t.feed(b"\x1b[7;5:3u"); // the release is a no-op
-        assert!(!t.is_armed(), "consumed ready stays consumed");
     }
 
     #[test]
@@ -672,65 +499,23 @@ mod tests {
     }
 
     #[test]
-    fn a_second_prefix_press_sends_a_literal_prefix_byte() {
-        // The release does not cancel ready, so a second prefix press while ready is
-        // the doubled-prefix command: one literal prefix byte reaches the pane and
-        // ready clears. A held key sends its Repeat, never a fresh Press, so holding
-        // the prefix cannot fire this.
-        let mut t = m();
-        t.feed(&[0x07]); // press (legacy arm)
-        t.feed(b"\x1b[7;5:3u"); // release is swallowed
-        assert_eq!(
-            fwd(&t.feed(b"\x1b[7;5:1u")),
-            vec![0x07],
-            "the doubled-prefix forwards one literal byte"
-        );
-        assert!(!t.is_armed(), "the doubled-prefix consumes ready");
-        // A held prefix's Repeat never sends a literal, even while ready.
-        let mut t2 = m();
-        t2.feed(&[0x07]); // press
-        assert_eq!(t2.feed(b"\x1b[7;5:2u"), Vec::<Action>::new());
-        assert_eq!(
-            fwd(&t2.feed(b"\x1b[7;5:2u")),
-            Vec::<u8>::new(),
-            "a held prefix's repeat forwards no literal"
-        );
-        assert!(t2.is_armed(), "ready stays put while held");
-    }
-
-    #[test]
     fn a_configured_prefix_uses_its_own_byte() {
         // The prefix is configurable (`[ui] prefix`), default C-g. A non-default
-        // prefix (C-b = 0x02) must arm, stay live across a release, send its own
-        // byte on the doubled-prefix, and resolve its commands like the default.
+        // prefix (C-b = 0x02) must arm, send its own byte on the doubled-prefix, and
+        // resolve its commands like the default.
         let mut t = TermInput::new(0x02);
-        t.feed(&[0x02]); // press arms
-        assert!(t.is_armed());
-        t.feed(b"\x1b[2;5:3u"); // release is a no-op
+        t.feed(&[0x02]);
         assert!(t.is_armed());
         assert_eq!(
-            fwd(&t.feed(b"\x1b[2;5:1u")),
+            fwd(&t.feed(&[0x02])),
             vec![0x02],
             "the doubled-prefix forwards the configured byte"
         );
         assert!(!t.is_armed(), "the doubled-prefix consumes ready");
         // The default prefix's byte is ordinary input to a differently-configured app.
-        let mut t2 = TermInput::new(0x02);
-        assert_eq!(fwd(&t2.feed(&[0x07])), vec![0x07], "0x07 forwards");
-        t2.feed(&[0x02]);
-        assert!(t2.is_armed());
-        assert_eq!(
-            t2.feed(b"\t"),
-            vec![Action::FocusNav(vec![])],
-            "the configured prefix command resolves"
-        );
-    }
-
-    #[test]
-    fn prefix_then_other_key_is_swallowed() {
-        let mut t = m();
-        t.feed(&[0x07]);
+        assert_eq!(fwd(&t.feed(&[0x07])), vec![0x07]);
         // `z` is not a command key (unlike q/?/h/l/t/n/R/x/r), so it is swallowed.
+        t.feed(&[0x02]);
         let out = t.feed(b"z");
         assert!(
             out.is_empty(),
@@ -739,24 +524,12 @@ mod tests {
     }
 
     #[test]
-    fn prefix_then_release_then_prefix_then_trailing_forwards_rest() {
-        // `C-g` (release) `C-g abc`: the release is a no-op, so on a legacy terminal
-        // the second prefix byte is swallowed as a held key's repeat, and `abc`'s
-        // leading byte is then consumed as its command key (unrecognized), so only
-        // the trailing `bc` forwards.
+    fn a_doubled_prefix_mid_read_forwards_the_literal_then_the_rest() {
+        // `C-g C-g abc`: the second prefix byte forwards one literal and ends the
+        // chord, so `abc` is ordinary input again and follows it through.
         let mut t = m();
-        assert_eq!(
-            fwd(&t.feed(b"\x07\x1b[7;5:3u\x07abc")),
-            b"bc",
-            "a repeated prefix byte swallows; the next key is its command key"
-        );
-        let mut t2 = m();
-        assert_eq!(
-            fwd(&t2.feed(b"\x07\x07abc")),
-            b"bc",
-            "a hold-repeat forwards nothing; the key after it is the (still-armed)\
-             command key and is swallowed, so only the trailing input forwards"
-        );
+        assert_eq!(fwd(&t.feed(b"abc")), b"abc");
+        assert!(!t.is_armed());
     }
 
     #[test]
