@@ -324,15 +324,15 @@ UI elements a user perceives as distinct things:
 - scan indicator - the `scanning n/m…` progress shown in the hint bar while host
   probes are in flight, behind the same spinner on the same frame as the cards it
   counts. It counts SOURCES; a card's own spinner names one card's unresolved level.
-- ready - the state while the prefix is armed, awaiting its command key. A prefix
-  key down sets it (idempotently); ANY key while it holds (a CONSUME, even a no-op
-  like focusing the already-focused view) or a focus switch / mouse action (a
-  CANCEL) clears it. A key release is the key-up side of the press and does not
-  clear it, so a tap leaves the bar up until the next key. A second prefix press
-  while ready is the doubled-prefix command (one literal prefix byte reaches the
-  pane). The hint bar reads ready to swap from the resting prefix to the
-  cheatsheet, so becoming ready is a visible change and redraws the frame; the bar
-  hides the moment ready clears.
+- ready - the state while a prefix interaction is live. A prefix key sets it; it
+  clears when the interaction's FUNCTION ENDS, or on a focus switch / mouse action
+  (a CANCEL). Most functions end with their command key (even a no-op like focusing
+  the already-focused view); an input row's function ends when Enter or Esc closes
+  the row; a resize's function ends when its repeat window lapses. A second prefix
+  is the doubled-prefix command (one literal prefix byte reaches the pane). The
+  hint bar reads ready to swap from the resting prefix to the cheatsheet, so
+  becoming ready is a visible change and redraws the frame; the bar hides the
+  moment ready clears.
 - popup - the rounded-bordered, opaque, centered (draggable) dialog a popup modal
   draws, its accent title in the top border. The help and the input dialog are popups.
 - prompt - the `❯` entry marker on an input dialog's edit line.
@@ -343,20 +343,27 @@ boundary and nowhere above it.
 
 ### Prefix interaction
 
-The prefix is a single `ready` state with two ways out:
+The prefix is a single `ready` state. It is set by the prefix key and cleared when
+the function it started ends:
 
 | Event | ready |
 | --- | --- |
-| prefix key down | set |
-| prefix key up (canceled) | clear |
-| any key while ready (consumed, even a no-op) | clear |
-| held key's autorepeat | unchanged (swallowed) |
+| prefix key | set |
+| a command key whose function ends with it | clear |
+| a command key that opens an input row | held until Enter / Esc closes the row |
+| a resize command | held until its repeat window lapses |
+| a focus switch or a mouse action | clear (canceled) |
+| a second prefix (terminal view) | clear, one literal prefix byte to the pane |
 
-The hint bar and the auto-hide nav show for the whole time ready is set, and hide
-when it is canceled or consumed. A held key's autorepeat never re-arms a consumed
-ready, so a resize command's continuation is the RESIZE-REPEAT WINDOW (bare
-Ctrl+arrows within the repeat window), not the prefix; the bar drops on the first
-command key and stays down.
+The hint bar and the auto-hide nav show for the whole time ready is set. Because
+ready spans the function rather than the keystroke, the bar stays up across a
+resize burst and across typing into an input row, and drops once by itself.
+
+A terminal reports no key-up, so a held prefix's autorepeat is byte-identical to
+repeated taps and takes the doubled-prefix path: it streams literals to the pane
+and blinks the hint bar. That is accepted rather than fixed; reading a key-up would
+mean depending on the kitty keyboard protocol, which every terminal and every
+enclosing mux in the chain would have to pass through.
 
 `pane` is reserved for a mux window's terminal split (a tmux / psmux pane); it is
 never a screen region - screen regions are "views", and the line between them is

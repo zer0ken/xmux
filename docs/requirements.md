@@ -220,13 +220,26 @@ no function, and no test, so renaming code is never a documentation change.
   the side column's bar fills its row, and so does any ready or flashing bar, which has to
   be readable over what it covers; the portrait band's resting bar paints its text plus a
   cell of padding, leaving the rest of the row to the offscreen counts.
-- **FR-B18** - A prefix waits for the next INPUT, and a mouse action is input: a click, a
+- **FR-B18** - A prefix lasts as long as the FUNCTION it starts, not as long as the
+  keystroke that names it. Most commands end with their key. A command that opens an
+  input row ends when Enter or Esc closes the row. A resize ends when its repeat window
+  lapses, so a whole burst of arrows is one interaction. The cheatsheet and the
+  auto-hidden nav show for exactly that span, so neither drops out from under an
+  interaction still running.
+- **FR-B19** - A prefix waits for the next INPUT, and a mouse action is input: a click, a
   release, a wheel or a drag cancels the prefix chord (the ready wait) in either focus,
   because mouse bytes are scanned
   out of the stream before either focus path's key handling sees them and a chord left
   half-open keeps its cheatsheet on screen and then eats the next key. Bare hover is not
   an action: the pointer drifting must not break a chord being typed.
-- **FR-B19** - The nav is two BANDS, and the cards of a host with no session to show are
+- **FR-B20** - Input is read as key presses only, because a terminal's byte stream
+  carries no key-up. A held prefix is therefore indistinguishable from repeated taps and
+  is treated as such: each repeat sends the doubled-prefix literal to the pane and blinks
+  the cheatsheet for as long as the key is down. Recovering the key-up would mean
+  requiring the kitty keyboard protocol from the terminal and from every mux enclosing
+  xmux, which would make behaviour depend on what that chain passes through; a uniform
+  input path everywhere is worth more than this one case.
+- **FR-B21** - The nav is two BANDS, and the cards of a host with no session to show are
   the lower one: a host card sits below every session card, whatever order the hosts were
   scanned in. In the side column, while the cards can spare a row for it, the bands are
   pushed APART - the session cards against the top edge, the host cards against the bottom
@@ -238,7 +251,7 @@ no function, and no test, so renaming code is never a documentation change.
   straight to a rule and never meet, and the list starts scrolling a row before the cards
   alone would fill it. Neither the gap nor the rule is a card: a click on either moves
   nothing.
-- **FR-B20** - A host and its mux are SHOWN as one label, `{host}/{mux}`, wherever the pair
+- **FR-B22** - A host and its mux are SHOWN as one label, `{host}/{mux}`, wherever the pair
   is read: a nav card's context line, the screen a card selects, the doctor's source list.
   Always that separator, never the one a source id parts its two halves with, because an id
   is typed and a label is read. And always both halves: a host serving a single mux carries

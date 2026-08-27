@@ -26,14 +26,15 @@ not display mechanics: it decides where input is routed, not how a PTY is pumped
 or a grid is rendered.
 
 The input path keeps ONE prefix-interaction signal that both the hint bar and the
-auto-hide nav width read: a prefix press is ready (awaiting its command key). ANY
-key while ready (a consume, even a no-op) or a focus switch / mouse action (a
-cancel) clears ready, so the bar and the nav hide the moment the interaction ends.
-A key release is the key-up side of the press and does not clear it. A held key's
-autorepeat is swallowed internally and never re-arms a consumed ready; resize
-continuation is the resize-repeat window, not the prefix. Under auto-hide the nav
-comes back for a live prefix interaction and hides again when it ends, so a jump can
-read the card numbers it needs.
+auto-hide nav width read: ready, meaning a prefix interaction is live. A prefix key
+sets it; it clears when the FUNCTION the prefix started ends, or on a focus switch /
+mouse action (a cancel). Most functions end with their command key, so ready usually
+clears there; an input row's function ends when the row closes, and a resize's ends
+when its repeat window lapses, so ready spans those. The window lapses on the clock
+rather than on an event, so the loop top compares ready against the stored value and
+marks the frame dirty when it goes idle on its own. Under auto-hide the nav comes
+back for a live prefix interaction and hides again when it ends, so a jump can read
+the card numbers it needs.
 
 ## Module Seams
 
@@ -49,9 +50,8 @@ read the card numbers it needs.
   new source goes) and the manager that kicks the new source's first scan.
 - Input routing has a pure, stateless core (key resolution, mouse chains, the
   predicates, the input outcome types); the stateful handlers are runtime methods
-  that call into it. The prefix is tracked as ready (awaiting its command): any key
-  while ready (a consume) or a focus switch / mouse action (a cancel) clears it, a
-  key release does not, and a held key's autorepeat never re-arms it.
+  that call into it. The prefix is tracked as ready (an interaction is live): the end
+  of the function it started, or a focus switch / mouse action (a cancel), clears it.
 - Focus holds the focus and modal state plus the transition helpers. The runtime
   state embeds it; the app reads and mutates it through those helpers.
 - The display mechanics (PTY, grid, input) live in `src/display`; per-source connection

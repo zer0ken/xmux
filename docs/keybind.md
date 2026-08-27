@@ -97,18 +97,21 @@ stops at the view border so the live screen keeps every row it has. In the portr
 layout it stops at its own text instead, because it shares that row with the
 offscreen-card counts. Press the prefix and the same row widens to the whole window,
 floating over the border and the live screen to list the keys that prefix unlocks; it
-shrinks back the moment the prefix is consumed (ANY key while ready, even a no-op) or
-canceled (a focus switch or any mouse action: a click, a wheel, a drag - a prefix
-waits for the next input, whatever that turns out to be). The key's release is the
-key-up side of the press and does not end the interaction, so a tap leaves the bar up
-until the next key. A held key's autorepeat is read as a held key (the kitty
-protocol's Repeat), not as new presses, so the bar neither flickers nor spams a
-literal prefix to the pane, and it never re-arms a consumed ready: resize
-continuation is the resize-repeat window (a bare Ctrl+arrow within the repeat
-window), so the bar drops on the first command key and stays down. A second prefix
-press while ready is `prefix prefix` (above): one literal prefix byte reaches the
-pane. Only the paint moves, never the layout, so arming the prefix never shifts a
-card.
+shrinks back when the function it started ends, or when the prefix is canceled (a
+focus switch or any mouse action: a click, a wheel, a drag - a prefix waits for the
+next input, whatever that turns out to be).
+
+Most keys end their function as they run, so the bar shrinks with the keystroke. Two
+kinds run longer and keep the bar up for as long as they last: a key that opens an
+input row holds it until Enter or Esc closes the row, and a resize holds it until the
+repeat window lapses, so a whole Ctrl+arrow burst reads as one interaction.
+
+A second prefix is `prefix prefix` (above): one literal prefix byte reaches the pane.
+Holding the prefix down takes the same path, because a terminal sends no key-up and
+an autorepeat is byte-identical to repeated taps: the pane collects literals and the
+bar blinks until the key comes up.
+
+Only the paint moves, never the layout, so arming the prefix never shifts a card.
 
 With the nav auto-hidden the mux owns every row, status line included, until a prefix
 interaction starts: then the nav comes back for the moment it is needed, so a jump can
