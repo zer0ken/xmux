@@ -37,6 +37,7 @@ impl Runtime {
             ..
         } = self;
         let nav_armed = &mut mouse_state.nav_armed;
+        let nav_holding = &mut mouse_state.nav_holding;
         let (prefix, cols, rows, nav_width) = (*prefix, *cols, *rows, *nav_width);
         let mut focus_terminal = false;
         let mut quit = false;
@@ -51,7 +52,7 @@ impl Runtime {
             // help modal and the inline input both swallow prefix/Enter, so `prefix q`
             // can't quit and Enter can't focus the terminal while one is on screen.
             let is_inputting = state.is_modal_popup_open();
-            match resolve_nav_key(key, nav_armed, prefix, is_inputting) {
+            match resolve_nav_key(key, nav_armed, nav_holding, prefix, is_inputting) {
                 // A committed input/kill confirm folds through State::apply, which returns
                 // its Commands; collect them and dispatch the whole batch below.
                 Some(Action::NavKey(k)) => key_cmds.extend(switcher.handle_key(k, state)),

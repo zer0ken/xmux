@@ -133,11 +133,27 @@ pub(crate) fn resolve_mouse_chain(
 pub(crate) fn resolve_nav_key(
     key: ratatui::crossterm::event::KeyEvent,
     armed: &mut bool,
+    holding: &mut bool,
     prefix: u8,
     is_inputting: bool,
 ) -> Option<Action> {
+    use ratatui::crossterm::event::KeyEventKind;
+    let is_prefix_key = key.code == KeyCode::Char(prefix as char);
+    match key.kind {
+        KeyEventKind::Release => {
+            // A key release never acts; the prefix's release clears the hold (the
+            // terminal reports it only with the kitty protocol).
+            if is_prefix_key {
+                *holding = false;
+            }
+            return None;
+        }
+        KeyEventKind::Repeat if *holding && is_prefix_key => return None, // a hold-repeat
+        _ => {}
+    }
     if *armed {
         *armed = false;
+        *holding = false;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         return match key.code {
             KeyCode::Char('q') => Some(Action::Quit),
@@ -170,6 +186,7 @@ pub(crate) fn resolve_nav_key(
     }
     if !is_inputting && key.code == KeyCode::Char(prefix as char) {
         *armed = true;
+        *holding = true;
         return None;
     }
     // Enter focuses the terminal view. ←/→ navigate the nav inside `handle_key`.
@@ -236,7 +253,7 @@ mod tests {
         let mut armed = false;
         dec.feed(bytes)
             .into_iter()
-            .filter_map(|k| resolve_nav_key(k, &mut armed, 0x07, is_inputting))
+            .filter_map(|k| resolve_nav_key(k, &mut armed, &mut false, 0x07, is_inputting))
             .collect()
     }
 
@@ -485,7 +502,7 @@ mod tests {
         let r1: Vec<Action> = dec
             .feed(b"\x07")
             .into_iter()
-            .filter_map(|k| resolve_nav_key(k, &mut armed, 0x07, false))
+            .filter_map(|k| resolve_nav_key(k, &mut armed, &mut false, 0x07, false))
             .collect();
         assert_eq!(r1, Vec::<Action>::new());
         assert!(
@@ -495,10 +512,33 @@ mod tests {
         let r2: Vec<Action> = dec
             .feed(b"q")
             .into_iter()
-            .filter_map(|k| resolve_nav_key(k, &mut armed, 0x07, false))
+            .filter_map(|k| resolve_nav_key(k, &mut armed, &mut false, 0x07, false))
             .collect();
         assert_eq!(r2, vec![Action::Quit]);
         assert!(!armed, "the command consumes the armed state");
+    }
+
+    #[test]
+    fn a_prefix_release_clears_holding_without_acting() {
+        use ratatui::crossterm::event::{KeyEvent, KeyEventKind};
+        let mut armed = false;
+        let mut holding = false;
+        // press
+        let press = KeyEvent::new(KeyCode::Char('\x07'), KeyModifiers::NONE);
+        assert!(resolve_nav_key(press, &mut armed, &mut holding, 0x07, false).is_none());
+        assert!(armed && holding);
+        // a repeat while holding stays armed (a held key, not a fresh press)
+        let rep = KeyEvent::new_with_kind(KeyCode::Char('\x07'), KeyModifiers::NONE, KeyEventKind::Repeat);
+        assert!(resolve_nav_key(rep, &mut armed, &mut holding, 0x07, false).is_none());
+        assert!(armed && holding);
+        // release (kitty) clears holding, produces no action, ready survives
+        let rel = KeyEvent::new_with_kind(KeyCode::Char('\x07'), KeyModifiers::NONE, KeyEventKind::Release);
+        assert!(resolve_nav_key(rel, &mut armed, &mut holding, 0x07, false).is_none());
+        assert!(!holding);
+        assert!(armed);
+        // a non-prefix release never acts either
+        let rel2 = KeyEvent::new_with_kind(KeyCode::Char('x'), KeyModifiers::NONE, KeyEventKind::Release);
+        assert!(resolve_nav_key(rel2, &mut armed, &mut holding, 0x07, false).is_none());
     }
 
     #[test]
