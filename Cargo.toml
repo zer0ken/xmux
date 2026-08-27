@@ -44,11 +44,7 @@ toml = "1.1.2"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-# The psmux fork of the upstream vt100 crate, renamed so the code keeps importing
-# it as `vt100`. It fixes the wide-char-at-last-column panics (clear_wide OOB,
-# drawing_cell unwrap-on-None) that upstream 0.16.2 still hits after a grid shrink;
-# Grid::feed keeps catch_unwind only as a defensive backstop.
-vt100 = { package = "vt100-psmux", version = "0.16" }
+vt100 = "0.16"
 portable-pty = "0.9"
 unicode-width = "0.2"
 ureq = "2"
