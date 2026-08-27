@@ -88,6 +88,7 @@ nav or the live screen holds focus.
 | `prefix t` | toggle auto-hide-nav (focusing the screen then gives it the full width) |
 | `prefix h` / `prefix l` | narrow / widen the nav |
 | `prefix Ctrl-←` / `prefix Ctrl-→` | narrow / widen the nav (then a bare `Ctrl-←`/`Ctrl-→` keeps resizing for a moment) |
+| `prefix Ctrl-↑` / `prefix Ctrl-↓` | shrink / grow the nav band's height in the portrait layout (then a bare `Ctrl-↑`/`Ctrl-↓` keeps resizing for a moment) |
 | `prefix prefix` | send one literal prefix byte to the focused session's pane |
 
 ## The status line
