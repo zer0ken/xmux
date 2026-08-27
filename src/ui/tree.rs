@@ -1,9 +1,9 @@
 //! The pure tree-model logic for the session switcher: a slice of [`Group`]s (one
-//! per source) each carrying its sessions ordered by recency. The functions here
-//! are side-effect-free transforms over that model; the interactive ratatui
+//! per source) each carrying its sessions in name order. The functions here are
+//! side-effect-free transforms over that model; the interactive ratatui
 //! rendering is layered on top separately.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::session::Session;
 
@@ -16,15 +16,10 @@ pub struct Group {
     pub sessions: Vec<Session>,
 }
 
-/// Orders sessions in place with the most recently attached first
-/// (`last_attached` descending), breaking ties by name ascending. The sort is
-/// stable so sessions equal on both keys keep their original relative order.
-pub fn sort_by_recency(sessions: &mut [Session]) {
-    sessions.sort_by(|a, b| {
-        b.last_attached
-            .cmp(&a.last_attached)
-            .then_with(|| a.name.cmp(&b.name))
-    });
+/// Orders sessions in place by name ascending. The sort is stable so sessions
+/// with equal names keep their original relative order.
+pub fn sort_by_name(sessions: &mut [Session]) {
+    sessions.sort_by(|a, b| a.name.cmp(&b.name));
 }
 
 /// Reports whether `pattern` is a case-insensitive subsequence of `s`: every
@@ -93,10 +88,10 @@ pub fn filter_groups(groups: &[Group], pattern: &str) -> Vec<Group> {
 
 /// Returns groups with `s` placed in the group whose source matches `s.source`,
 /// replacing any existing session of the same name in place (dedup by name) or, when
-/// new, appending it at the group's end. It does NOT re-sort: a session created
-/// mid-session must not reshuffle the frozen tree order - ordering is applied only at
-/// scan time (see [`sort_by_recency`] / [`reorder_preserving`]). If no group has the
-/// source, a new group is appended. Inputs are not mutated.
+/// new, appending it at the group's end. It does NOT sort here: a session created
+/// mid-session is placed by the next rebuild's deterministic order, not by this
+/// mutation. If no group has the source, a new group is appended. Inputs are not
+/// mutated.
 pub fn add_session(groups: &[Group], s: Session) -> Vec<Group> {
     let mut out = groups.to_vec();
     for g in out.iter_mut() {
@@ -141,51 +136,35 @@ pub fn remove_session(groups: &[Group], address: &str) -> Vec<Group> {
     out
 }
 
-/// Reorders `incoming` to preserve the display order established in `existing`:
-/// sessions present in both keep `existing`'s relative order (carrying the fresh
-/// `incoming` data), sessions new since then are appended in `incoming` order, and
-/// sessions absent from `incoming` are dropped. Used on a routine poll so the tree
-/// stays put under the user - recency ordering ([`sort_by_recency`]) is applied only
-/// at scan time (launch / re-scan), never on a live poll whose `last_attached` values
-/// xmux's own pre-attaching would otherwise churn.
-pub fn reorder_preserving(mut incoming: Vec<Session>, existing: &[Session]) -> Vec<Session> {
-    let rank: std::collections::HashMap<String, usize> = existing
-        .iter()
-        .enumerate()
-        .map(|(i, s)| (s.address(), i))
-        .collect();
-    // Stable sort: existing sessions land at their prior rank; new ones (rank
-    // usize::MAX) keep their incoming relative order after them.
-    incoming.sort_by_cached_key(|s| rank.get(&s.address()).copied().unwrap_or(usize::MAX));
-    incoming
+/// Orders host groups for display: local sources first, then WSL distros, then
+/// remote hosts, each tier by source name ascending. Inputs are not mutated.
+pub fn order_groups(groups: &[Group]) -> Vec<Group> {
+    let mut out = groups.to_vec();
+    out.sort_by(|a, b| {
+        source_tier(&a.source)
+            .cmp(&source_tier(&b.source))
+            .then_with(|| a.source.cmp(&b.source))
+    });
+    out
 }
 
-/// Orders host groups for display: the local source(s) pinned first (original
-/// relative order), then remote groups by their most-recent session's
-/// `last_attached` descending (a group with no sessions sorts last; ties by
-/// source name ascending). Inputs are not mutated.
-pub fn order_groups(groups: &[Group]) -> Vec<Group> {
-    let mut local: Vec<Group> = Vec::new();
-    let mut remote: Vec<Group> = Vec::new();
-    for g in groups {
-        if crate::session::is_local_source(&g.source) {
-            local.push(g.clone());
-        } else {
-            remote.push(g.clone());
-        }
+/// The display tier of a source: local (0) before WSL (1) before remote (2).
+/// A WSL machine is a distro on this box, neither this box's own mux scope nor an
+/// ssh host, so it gets its own tier between them.
+fn source_tier(source: &str) -> u8 {
+    let machine = crate::session::machine_of(source);
+    if machine == crate::session::LOCAL_SOURCE {
+        0
+    } else if crate::session::wsl_distro_of(machine).is_some() {
+        1
+    } else {
+        2
     }
-    remote.sort_by(|a, b| {
-        let am = a.sessions.iter().map(|s| s.last_attached).max();
-        let bm = b.sessions.iter().map(|s| s.last_attached).max();
-        // Some(max) before None; higher max first; ties by source name asc.
-        bm.cmp(&am).then_with(|| a.source.cmp(&b.source))
-    });
-    local.into_iter().chain(remote).collect()
 }
 
 /// Returns groups with the session at `address` renamed to `new_name`, kept at its
-/// current position (a rename is not a recency event, so it never reorders the tree
-/// under the user). It is a no-op if no session matches. Inputs are not mutated.
+/// current position; the next rebuild's deterministic order places it. It is a no-op
+/// if no session matches. Inputs are not mutated.
 pub fn rename_session(groups: &[Group], address: &str, new_name: &str) -> Vec<Group> {
     let mut out = groups.to_vec();
     for g in out.iter_mut() {
@@ -240,10 +219,11 @@ impl Row {
 }
 
 /// The groups to render, in `groups` order - that order is authoritative (established
-/// by source recency at scan time via [`order_groups`], then frozen so a routine poll
-/// never reshuffles the tree). An empty filter returns the input unchanged. A non-matching
-/// filter must not be a dead end (XM-01): it falls back to header-only groups (every
-/// source, no sessions) so the hosts stay visible. Inputs are not mutated.
+/// by the deterministic source order at rebuild via [`order_groups`], which a routine
+/// poll reproduces exactly, so a poll never reshuffles the tree). An empty filter
+/// returns the input unchanged. A non-matching filter must not be a dead end (XM-01):
+/// it falls back to header-only groups (every source, no sessions) so the hosts stay
+/// visible. Inputs are not mutated.
 pub(crate) fn visible_groups(groups: &[Group], filter: &str) -> Vec<Group> {
     if filter.is_empty() {
         groups.to_vec()
@@ -329,54 +309,33 @@ pub(crate) fn host_state_word(unreachable: bool) -> &'static str {
 }
 
 /// Flattens the inventory into a flat list of navigation cards: one session card per
-/// session, emitted in the frozen MRU `order` (session addresses) so a routine poll
-/// never reshuffles the list under the user; sessions absent from `order` (just
-/// appeared) follow in group order. Hosts with no session to show (scanning /
-/// unreachable / empty) get one host-state card each, sunk to the bottom. Colour and
-/// the context line are derived at render time from each card's [`RowRef`], so this
-/// stays terminal-free; the mux each card NAMES is resolved here instead, through
-/// `mux_of_source`, so a card cannot exist without it and two cards on one source
-/// cannot name their mux two ways. Inputs are not mutated.
+/// session, emitted in group order (the deterministic local→WSL→remote, name-sorted
+/// order `rebuild` establishes, so a routine poll reproduces the same list). Hosts
+/// with no session to show (scanning / unreachable / empty) get one host-state card
+/// each, sunk to the bottom. Colour and the context line are derived at render time
+/// from each card's [`RowRef`], so this stays terminal-free; the mux each card NAMES
+/// is resolved here instead, through `mux_of_source`, so a card cannot exist without
+/// it and two cards on one source cannot name their mux two ways. Inputs are not
+/// mutated.
 pub(crate) fn flatten(
     groups: &[Group],
     scanning: &HashSet<String>,
     filter: &str,
-    order: &[String],
     mux_of_source: &dyn Fn(&str) -> String,
 ) -> Vec<Row> {
     let groups = visible_groups(groups, filter);
-    // Reachable sessions indexed by address, so the frozen order can emit them directly.
-    let mut by_addr: HashMap<String, &Session> = HashMap::new();
-    for g in &groups {
-        if g.err.is_some() {
-            continue;
-        }
-        for sess in &g.sessions {
-            by_addr.insert(sess.address(), sess);
-        }
-    }
 
     let mut rows = Vec::new();
-    let mut emitted: HashSet<String> = HashSet::new();
-    // 1. Session cards in the frozen MRU order.
-    for addr in order {
-        if let Some(sess) = by_addr.get(addr) {
-            push_session_card(&mut rows, sess, mux_of_source);
-            emitted.insert(addr.clone());
-        }
-    }
-    // 2. Sessions that appeared since the order was frozen, in group order.
+    // 1. Session cards, one per session, in group order.
     for g in &groups {
         if g.err.is_some() {
             continue;
         }
         for sess in &g.sessions {
-            if emitted.insert(sess.address()) {
-                push_session_card(&mut rows, sess, mux_of_source);
-            }
+            push_session_card(&mut rows, sess, mux_of_source);
         }
     }
-    // 3. Host-state cards for hosts with no session to show - sunk to the bottom.
+    // 2. Host-state cards for hosts with no session to show - sunk to the bottom.
     for g in &groups {
         let is_scanning = scanning.contains(&g.source);
         let unreachable = g.err.is_some();
@@ -451,26 +410,26 @@ mod tests {
     }
 
     #[test]
-    fn sort_by_recency_orders() {
+    fn sort_by_name_orders() {
         let mut in_ = vec![
             sess("local", "beta", 100),
             sess("local", "alpha", 200),
             sess("local", "gamma", 100),
             sess("local", "delta", 0),
         ];
-        sort_by_recency(&mut in_);
+        sort_by_name(&mut in_);
         let names: Vec<&str> = in_.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["alpha", "beta", "gamma", "delta"]);
+        assert_eq!(names, vec!["alpha", "beta", "delta", "gamma"]);
     }
 
     #[test]
-    fn sort_by_recency_stable_for_equal_keys() {
+    fn sort_by_name_stable_for_equal_names() {
         let mut in_ = vec![
             sess("h1", "x", 50),
             sess("h2", "x", 50),
             sess("h3", "x", 50),
         ];
-        sort_by_recency(&mut in_);
+        sort_by_name(&mut in_);
         let srcs: Vec<&str> = in_.iter().map(|s| s.source.as_str()).collect();
         assert_eq!(srcs, vec!["h1", "h2", "h3"]);
     }
@@ -578,8 +537,8 @@ mod tests {
             err: None,
             sessions: vec![sess("local", "web", 50)],
         }];
-        // db is more recent (100 > 50) but a mid-session create must NOT reshuffle:
-        // the new session appends after the existing web.
+        // A mid-session create does not sort here - it appends, and the next rebuild's
+        // deterministic order places it. The new session's recency value has no bearing.
         let got = add_session(&groups, sess("local", "db", 100));
         assert_eq!(got.len(), 1);
         let s = &got[0].sessions;
@@ -682,56 +641,10 @@ mod tests {
         let got = rename_session(&groups, "local/alpha", "zzz");
         let s = &got[0].sessions;
         assert_eq!(s.len(), 2);
-        // Renamed in place: alpha's slot (index 0) now holds zzz; no re-sort, even
-        // though by-name order would otherwise put zzz after zeta.
+        // Renamed in place: alpha's slot (index 0) now holds zzz; this mutation does not
+        // sort, and the next rebuild's deterministic order places the renamed session.
         assert_eq!(s[0].name, "zzz");
         assert_eq!(s[1].name, "zeta");
-    }
-
-    #[test]
-    fn reorder_preserving_keeps_existing_order() {
-        // Established display order is b, a. A poll arrives recency-sorted (a, b) with
-        // a bumped - the poll must NOT re-sort; the b, a order holds.
-        let existing = vec![sess("h", "b", 0), sess("h", "a", 0)];
-        let incoming = vec![sess("h", "a", 999), sess("h", "b", 500)];
-        let out = reorder_preserving(incoming, &existing);
-        let names: Vec<&str> = out.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["b", "a"]);
-    }
-
-    #[test]
-    fn reorder_preserving_appends_new_sessions() {
-        let existing = vec![sess("h", "b", 0), sess("h", "a", 0)];
-        let incoming = vec![sess("h", "a", 0), sess("h", "b", 0), sess("h", "c", 0)];
-        let out = reorder_preserving(incoming, &existing);
-        let names: Vec<&str> = out.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(
-            names,
-            vec!["b", "a", "c"],
-            "a session new since the scan appends last"
-        );
-    }
-
-    #[test]
-    fn reorder_preserving_multiple_new_keep_incoming_order() {
-        let existing = vec![sess("h", "a", 0)];
-        let incoming = vec![sess("h", "a", 0), sess("h", "z", 0), sess("h", "m", 0)];
-        let out = reorder_preserving(incoming, &existing);
-        let names: Vec<&str> = out.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(
-            names,
-            vec!["a", "z", "m"],
-            "several new sessions keep their incoming order after the existing ones"
-        );
-    }
-
-    #[test]
-    fn reorder_preserving_drops_missing_sessions() {
-        let existing = vec![sess("h", "b", 0), sess("h", "a", 0)];
-        let incoming = vec![sess("h", "b", 0)];
-        let out = reorder_preserving(incoming, &existing);
-        let names: Vec<&str> = out.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["b"], "a session gone from the poll is dropped");
     }
 
     #[test]
@@ -759,7 +672,7 @@ mod tests {
     }
 
     #[test]
-    fn order_groups_pins_local_then_remote_by_recency() {
+    fn order_groups_local_then_wsl_then_remote_by_name() {
         let groups = vec![
             Group {
                 source: "jupiter00".into(),
@@ -770,6 +683,11 @@ mod tests {
                 source: "local".into(),
                 err: None,
                 sessions: vec![sess("local", "w", 50)],
+            },
+            Group {
+                source: "wsl.Debian".into(),
+                err: None,
+                sessions: vec![sess("wsl.Debian", "d", 999)],
             },
             Group {
                 source: "jupiter06".into(),
@@ -784,9 +702,13 @@ mod tests {
         ];
         let out = order_groups(&groups);
         let order: Vec<&str> = out.iter().map(|g| g.source.as_str()).collect();
-        // local first; then remotes by max last_attached desc (jupiter06=300,
-        // jupiter00=100); the empty/unreachable deadhost (no sessions) sorts last.
-        assert_eq!(order, vec!["local", "jupiter06", "jupiter00", "deadhost"]);
+        // local first, then WSL (whatever its sessions' recency), then remotes by
+        // name; each tier by source name ascending. deadhost's unreachable state does
+        // not sink it.
+        assert_eq!(
+            order,
+            vec!["local", "wsl.Debian", "deadhost", "jupiter00", "jupiter06"]
+        );
     }
 
     #[test]
@@ -815,8 +737,8 @@ mod tests {
         let order: Vec<&str> = out.iter().map(|g| g.source.as_str()).collect();
         assert_eq!(
             order,
-            vec!["local:zellij", "local:psmux", "jupiter06"],
-            "both local sources first, in their original relative order"
+            vec!["local:psmux", "local:zellij", "jupiter06"],
+            "both local sources first, by source name"
         );
     }
 
@@ -851,10 +773,25 @@ mod tests {
             err: None,
             sessions: vec![sess("jup", "api", 0)],
         }];
-        let rows = flatten(&groups, &HashSet::new(), "", &[], &mux_of_source);
+        let rows = flatten(&groups, &HashSet::new(), "", &mux_of_source);
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["session"]);
         assert_eq!(addr_of(&rows[0].reference), "jup/api");
+    }
+
+    #[test]
+    fn flatten_emits_sessions_in_group_order() {
+        // Two sessions; the session cards come out in the group's order (the
+        // deterministic order `rebuild` establishes), with no separate address list to
+        // follow.
+        let groups = vec![Group {
+            source: "h".into(),
+            err: None,
+            sessions: vec![sess("h", "a", 0), sess("h", "b", 0)],
+        }];
+        let rows = flatten(&groups, &HashSet::new(), "", &mux_of_source);
+        let addrs: Vec<String> = rows.iter().map(|r| addr_of(&r.reference)).collect();
+        assert_eq!(addrs, vec!["h/a", "h/b"]);
     }
 
     #[test]
@@ -866,7 +803,7 @@ mod tests {
         }];
         let mut scanning = HashSet::new();
         scanning.insert("jup".to_string());
-        let rows = flatten(&groups, &scanning, "", &[], &mux_of_source);
+        let rows = flatten(&groups, &scanning, "", &mux_of_source);
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["host"]);
         assert_eq!(addr_of(&rows[0].reference), "jup");
@@ -896,7 +833,7 @@ mod tests {
                 sessions: vec![],
             },
         ];
-        let rows = flatten(&groups, &HashSet::new(), "", &[], &mux_of_source);
+        let rows = flatten(&groups, &HashSet::new(), "", &mux_of_source);
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["host", "host"]);
         assert_eq!(addr_of(&rows[0].reference), "empty");
@@ -930,26 +867,11 @@ mod tests {
         }];
         let mut scanning = HashSet::new();
         scanning.insert("kyla".to_string());
-        let rows = flatten(&groups, &scanning, "", &[], &mux_of_source);
+        let rows = flatten(&groups, &scanning, "", &mux_of_source);
         assert!(matches!(
             rows[0].reference,
             RowRef::Host { scanning: true, .. }
         ));
-    }
-
-    #[test]
-    fn flatten_follows_the_frozen_order() {
-        // Two sessions; the frozen order lists the second before the first, and the
-        // session cards come out in that order (no re-sort).
-        let groups = vec![Group {
-            source: "h".into(),
-            err: None,
-            sessions: vec![sess("h", "a", 0), sess("h", "b", 0)],
-        }];
-        let order = vec!["h/b".to_string(), "h/a".to_string()];
-        let rows = flatten(&groups, &HashSet::new(), "", &order, &mux_of_source);
-        let addrs: Vec<String> = rows.iter().map(|r| addr_of(&r.reference)).collect();
-        assert_eq!(addrs, vec!["h/b", "h/a"]);
     }
 
     #[test]

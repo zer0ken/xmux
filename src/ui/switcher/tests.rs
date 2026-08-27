@@ -263,15 +263,16 @@ fn sess(source: &str, name: &str, windows: i64, attached: bool, last: i64) -> Se
     }
 }
 
-/// Adds a more-recent session on a host of its own, so the card under test is NOT the
-/// selected one. The selected card is painted in reverse video, which flattens every
-/// level colour on it by design, so a colour assertion has to read an unselected card.
-/// The decoy's own words (`zz`, `parked`, `psmux`) collide with no needle in these tests.
+/// Adds a decoy session on a host whose name sorts first, so the card under test is
+/// NOT the selected one. The selected card is painted in reverse video, which flattens
+/// every level colour on it by design, so a colour assertion has to read an unselected
+/// card. The decoy's own words (`aaa`, `parked`, `psmux`) collide with no needle in
+/// these tests.
 fn selection_parked_elsewhere(mut scan: Scan) -> Scan {
     scan.groups.push(Group {
-        source: "zz".into(),
+        source: "aaa".into(),
         err: None,
-        sessions: vec![sess_mux("zz", "parked", "psmux", 9_999)],
+        sessions: vec![sess_mux("aaa", "parked", "psmux", 9_999)],
     });
     scan
 }
@@ -644,9 +645,9 @@ async fn apply_source_result_turns_scanning_into_sessions() {
 
 #[tokio::test]
 async fn poll_preserves_session_order_after_scan() {
-    // Scan establishes recency order db(200), web(100). A later poll reports web
-    // freshly attach-bumped (999) - live recency would float it to the top, but a
-    // routine poll must hold the established order.
+    // Scan establishes name order db, web. A later poll reports web freshly
+    // attach-bumped (999) - recency would float it to the top, but the deterministic
+    // name order holds regardless of recency.
     let mut h = Harness::from_sources(&["local"]);
     h.sw.apply_source_result(
         "local".into(),
@@ -660,7 +661,7 @@ async fn poll_preserves_session_order_after_scan() {
     assert_eq!(
         group_session_names(&h, "local"),
         vec!["db", "web"],
-        "the scan applies recency order"
+        "the scan applies name order"
     );
     h.sw.apply_source_result(
         "local".into(),
@@ -674,12 +675,12 @@ async fn poll_preserves_session_order_after_scan() {
     assert_eq!(
         group_session_names(&h, "local"),
         vec!["db", "web"],
-        "a routine poll must not re-sort the tree under the user"
+        "a routine poll reproduces the same name order"
     );
 }
 
 #[tokio::test]
-async fn poll_appends_new_session_at_group_end() {
+async fn poll_sorts_a_new_session_into_place() {
     let mut h = Harness::from_sources(&["local"]);
     h.sw.apply_source_result(
         "local".into(),
@@ -690,8 +691,8 @@ async fn poll_appends_new_session_at_group_end() {
         None,
         &mut h.state,
     ); // → db, web
-       // A poll surfaces a brand-new session `api` (most recent). It appends last,
-       // never displacing the frozen db, web order.
+       // A poll surfaces a brand-new session `api`. It sorts into its name position,
+       // never appending at the end.
     h.sw.apply_source_result(
         "local".into(),
         vec![
@@ -704,15 +705,15 @@ async fn poll_appends_new_session_at_group_end() {
     );
     assert_eq!(
         group_session_names(&h, "local"),
-        vec!["db", "web", "api"],
-        "a session new since the scan appends at the group's end"
+        vec!["api", "db", "web"],
+        "a session new since the scan sorts into name position"
     );
 }
 
 #[tokio::test]
 async fn poll_preserves_host_group_order_after_scan() {
-    // Scan settles the host order: local pinned first, then jupiter00 (recency 300)
-    // above jupiter06 (recency 100).
+    // Scan settles the host order: local first, then remotes by name (jupiter00 below
+    // jupiter06).
     let mut h = Harness::from_sources(&["local", "jupiter00", "jupiter06"]);
     h.sw.apply_source_result(
         "local".into(),
@@ -735,10 +736,10 @@ async fn poll_preserves_host_group_order_after_scan() {
     assert_eq!(
         group_order(&h),
         vec!["local", "jupiter00", "jupiter06"],
-        "the scan orders hosts local-first then by recency"
+        "the scan orders hosts local-first then by name"
     );
-    // A poll reports jupiter06's session freshly bumped (999) - live recency would
-    // lift jupiter06 above jupiter00, but the group order is frozen after the scan.
+    // A poll reports jupiter06's session freshly bumped (999) - recency would lift
+    // jupiter06 above jupiter00, but the deterministic name order holds.
     h.sw.apply_source_result(
         "jupiter06".into(),
         vec![sess("jupiter06", "b", 1, false, 999)],
@@ -748,12 +749,12 @@ async fn poll_preserves_host_group_order_after_scan() {
     assert_eq!(
         group_order(&h),
         vec!["local", "jupiter00", "jupiter06"],
-        "a routine poll must not reorder host groups"
+        "a routine poll reproduces the same host order"
     );
 }
 
 #[tokio::test]
-async fn rescan_reapplies_recency_order() {
+async fn rescan_reapplies_name_order() {
     let mut h = Harness::from_sources(&["local"]);
     h.sw.apply_source_result(
         "local".into(),
@@ -778,8 +779,8 @@ async fn rescan_reapplies_recency_order() {
         vec!["db", "web"],
         "the poll held the order"
     );
-    // The `r` re-scan clears sessions + re-seeds scanning; the next result is a
-    // scan-driven one, so recency (web=999 now leads) is re-applied.
+    // The `r` re-scan clears sessions + re-seeds scanning; the next result re-applies
+    // the deterministic name order, identical to the poll's.
     h.sw.request_rescan(&mut h.state);
     h.sw.apply_source_result(
         "local".into(),
@@ -792,8 +793,8 @@ async fn rescan_reapplies_recency_order() {
     );
     assert_eq!(
         group_session_names(&h, "local"),
-        vec!["web", "db"],
-        "a re-scan re-applies recency order"
+        vec!["db", "web"],
+        "a re-scan re-applies name order"
     );
 }
 
@@ -1338,9 +1339,9 @@ async fn streaming_preserves_cursor_once_user_moves() {
         &mut h.state,
     );
     h.draw();
-    // editor's card preselected (index 0); step down to build's card.
+    // build's card preselected (index 0, name order); step down to editor's card.
     h.key(KeyCode::Down).await;
-    assert_eq!(cur_session_name(&h).as_deref(), Some("build"));
+    assert_eq!(cur_session_name(&h).as_deref(), Some("editor"));
     // A more-recent remote session streams in; the selection must NOT jump.
     h.sw.apply_source_result(
         "jupiter00".into(),
@@ -1351,7 +1352,7 @@ async fn streaming_preserves_cursor_once_user_moves() {
     h.draw();
     assert_eq!(
         cur_session_name(&h).as_deref(),
-        Some("build"),
+        Some("editor"),
         "once the user has moved, streaming updates keep the selection put"
     );
 }
@@ -1734,7 +1735,7 @@ async fn host_with_sessions_has_no_host_screen() {
     let mut h = Harness::new(sample());
     h.key(KeyCode::Home).await; // the top card - a session of a host that HAS sessions
     assert!(
-        matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.source == "jupiter00"),
+        matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.source == "local"),
         "the top card is a session of a reachable host with sessions"
     );
     assert!(
@@ -1802,7 +1803,11 @@ async fn both_host_screens_share_one_grammar() {
 
 #[tokio::test]
 async fn levels_render_in_their_level_colors() {
-    let h = Harness::new(sample());
+    // The selection parks on a remote card so the local cards render UNSELECTED: the
+    // selected card is reverse-video, which flattens every level colour on it by design.
+    let mut h = Harness::new(sample());
+    assert!(h.sw.select_address("jupiter00/inference", &h.state));
+    h.draw();
     assert_eq!(h.nav_fg_of("local"), Some(color_text()));
     assert_eq!(
         h.nav_fg_of("editor"),
@@ -2185,7 +2190,7 @@ async fn repeated_host_mux_collapses_the_card_to_one_row() {
             sess_mux("srv", "alpha", "tmux", 400),
             sess_mux("srv", "beta", "tmux", 300),
             sess_mux("srv", "gamma", "tmux", 200),
-            sess_mux("srv", "delta", "zellij", 100),
+            sess_mux("srv", "zeta", "zellij", 100),
         ],
     ));
     h.key(KeyCode::End).await; // park the selection on delta - no connector suppression above
@@ -2226,9 +2231,9 @@ async fn repeated_host_mux_collapses_the_card_to_one_row() {
         nav_line(&h, gamma_row).contains("└"),
         "gamma ends the collapsed run"
     );
-    // delta runs a different mux: a full context line, host included.
-    let delta_row = h.nav_row_of("delta").expect("delta detail");
-    let delta_context = nav_line(&h, delta_row - 1);
+    // zeta runs a different mux: a full context line, host included.
+    let zeta_row = h.nav_row_of("zeta").expect("zeta detail");
+    let delta_context = nav_line(&h, zeta_row - 1);
     assert!(
         delta_context.contains("srv/zellij"),
         "a mux change keeps the full context: {delta_context:?}"
@@ -2385,7 +2390,10 @@ async fn terminal_view_target_follows_cursor() {
     // Step to the next card (the next session) - the target follows the cursor.
     h.key(KeyCode::Down).await;
     let t = h.sw.terminal_view_target();
-    assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "build"));
+    assert_eq!(
+        (t.source.as_str(), t.target.as_str()),
+        ("jupiter00", "inference")
+    );
 }
 
 #[tokio::test]
@@ -2464,15 +2472,12 @@ async fn enter_and_bare_q_are_noops() {
 
 #[tokio::test]
 async fn cursor_move_yields_attach_target() {
-    let mut h = Harness::new(sample()); // launch on the most-recent session's card
+    let mut h = Harness::new(sample()); // launch on the first local session's card
     let t =
         h.sw.current_attach_target(&h.state)
             .expect("a session card yields a target");
-    assert_eq!(
-        (t.source.as_str(), t.target.as_str()),
-        ("jupiter00", "inference")
-    );
-    h.key(KeyCode::Down).await; // ↓ to a local session's card
+    assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "build"));
+    h.key(KeyCode::Down).await; // ↓ to the next local session's card
     let t =
         h.sw.current_attach_target(&h.state)
             .expect("still a target");
@@ -2483,8 +2488,8 @@ async fn cursor_move_yields_attach_target() {
 async fn current_host_tracks_cursor_source() {
     // The app ensures this host on every move; every card yields its source, so the
     // host's tree can be fetched.
-    let mut h = Harness::new(sample()); // launch on jupiter00/inference's card
-    assert_eq!(h.sw.current_host().as_deref(), Some("jupiter00"));
+    let mut h = Harness::new(sample()); // launch on the first local session's card
+    assert_eq!(h.sw.current_host().as_deref(), Some("local"));
     h.key(KeyCode::End).await; // jump to the last card (the db-2 host card)
     assert_eq!(h.sw.current_host().as_deref(), Some("db-2"));
 }

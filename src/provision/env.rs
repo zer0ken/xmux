@@ -317,13 +317,13 @@ fn roster_providers(
     out
 }
 
-/// Converts scan results to display groups, sorting sessions by recency.
+/// Converts scan results to display groups, sessions ordered by name.
 fn to_groups(results: Vec<discovery::ScanResult>) -> Vec<Group> {
     results
         .into_iter()
         .map(|r| {
             let mut sessions = r.sessions;
-            tree::sort_by_recency(&mut sessions);
+            tree::sort_by_name(&mut sessions);
             Group {
                 source: r.source,
                 err: r.err,
@@ -419,7 +419,7 @@ impl Env {
         *cur = fresh;
     }
 
-    /// Probes every source and returns the merged, recency-sorted host/session
+    /// Probes every source and returns the merged, name-ordered host/session
     /// groups (used by `ls`, which needs no window/pane detail).
     pub async fn scan(&self) -> Vec<Group> {
         let srcs = self.source_list();
@@ -438,7 +438,7 @@ impl Env {
         tokio::spawn(async move {
             while let Some(r) = rx.recv().await {
                 let mut sessions = r.sessions;
-                tree::sort_by_recency(&mut sessions);
+                tree::sort_by_name(&mut sessions);
                 let _ = tx
                     .send(Group {
                         source: r.source,
@@ -845,7 +845,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn to_groups_sorts_sessions_by_recency() {
+    async fn to_groups_sorts_sessions_by_name() {
         let results = vec![discovery::ScanResult {
             source: "local".into(),
             sessions: vec![

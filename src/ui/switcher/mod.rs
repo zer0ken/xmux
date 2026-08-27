@@ -1,12 +1,11 @@
-//! The interactive session switcher: a two-region navigator (a flat, MRU-ordered
-//! nav list of session cards on one side, the selected session's live terminal view
-//! on the other), the nav carrying its own status line along its bottom. ratatui is
+//! The interactive session switcher: a two-region navigator (a flat nav list of
+//! session cards in deterministic local→WSL→remote, name-sorted order on one side,
+//! the selected session's live terminal view on the other), the nav carrying its own
+//! status line along its bottom. ratatui is
 //! immediate-mode, so this owns
 //! its state machine, the flattened card model, key/mouse handling, and a render pass
 //! that draws to either the live terminal or a headless `TestBackend` (the control
 //! channel's `dump`).
-
-use std::collections::HashMap;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
@@ -296,12 +295,6 @@ pub struct Switcher {
 
     rows: Vec<Row>,
     selected: usize,
-    /// The frozen MRU order of session addresses the flat card list follows. Rebuilt
-    /// from global recency while any host is still scanning, then held so a routine
-    /// poll never reshuffles cards under the user (xmux pre-attaches sessions, which
-    /// churns `last_attached`); newly-appeared sessions append by recency. See
-    /// [`Switcher::reorder`].
-    nav_order: Vec<String>,
 
     terminal_view_target: TerminalViewTarget,
     /// The address of the session xmux is ITSELF running in, when it is inside one. The
@@ -350,7 +343,6 @@ impl Switcher {
             reattach_kick: false,
             rows: Vec::new(),
             selected: 0,
-            nav_order: Vec::new(),
             terminal_view_target: TerminalViewTarget::default(),
             own_session: None,
             list_state: ListState::default(),
@@ -445,20 +437,19 @@ impl Switcher {
                 RowRef::Host { .. } => None,
             });
 
-        // Refresh the frozen MRU order, then flatten follows it. Pure row generation
-        // lives in `tree::flatten`; rebuild orchestrates capture → order → flatten →
-        // preselect → restore around it.
-        self.reorder(state);
+        // The deterministic display order (groups local→WSL→remote then by source name,
+        // sessions by name) is applied here, once, so every mutation path lands on it and
+        // a routine poll reproduces the same order exactly - there is nothing to freeze.
+        // Pure row generation lives in `tree::flatten`; rebuild orchestrates order →
+        // flatten → preselect → restore around it.
+        for g in state.groups.iter_mut() {
+            tree::sort_by_name(&mut g.sessions);
+        }
+        state.groups = tree::order_groups(&state.groups);
         // The mux each card NAMES comes from one resolver, so a session card, its host's
         // card and the screen behind either cannot spell one mux three ways.
         let named_mux = |source: &str| state.chrome.source_mux(source).to_string();
-        let rows = tree::flatten(
-            &state.groups,
-            &state.scanning,
-            &state.filter,
-            &self.nav_order,
-            &named_mux,
-        );
+        let rows = tree::flatten(&state.groups, &state.scanning, &state.filter, &named_mux);
 
         self.rows = rows;
         let target = self
@@ -471,65 +462,6 @@ impl Switcher {
             .or_else(|| self.rows.iter().position(Row::selectable))
             .unwrap_or(0);
         self.set_selected(target, state);
-    }
-
-    /// Refreshes the frozen order (`nav_order`) the flat card list follows.
-    ///
-    /// Recency applies to the SOURCE, not to the session alone: a source's cards are
-    /// contiguous, the sources run most-recently-used first, and a source's own sessions
-    /// run most-recently-used first inside it. Global session recency would split a
-    /// source, restating its `{host}/{mux}` context in two places, and the connector
-    /// under a context line claims the cards below belong to it.
-    ///
-    /// One insertion rule produces all of that: a session lands after the last card of
-    /// its own source, or at the end when its source has none yet. Fed addresses in
-    /// recency order that yields the grouping directly, and it is also what keeps a
-    /// session discovered later inside its group instead of stranded at the bottom.
-    ///
-    /// While any host is still scanning the order is rebuilt each time; once every host
-    /// has settled it is held - entries still present keep their positions, so a routine
-    /// poll never reshuffles cards under the user (xmux pre-attaches sessions, churning
-    /// `last_attached`).
-    fn reorder(&mut self, state: &crate::state::State) {
-        if !state.scanning.is_empty() {
-            self.nav_order.clear();
-        }
-        let mut recency: HashMap<String, i64> = HashMap::new();
-        let mut source_of: HashMap<String, String> = HashMap::new();
-        for g in &state.groups {
-            if g.err.is_some() {
-                continue;
-            }
-            for s in &g.sessions {
-                let addr = s.address();
-                recency.insert(addr.clone(), s.last_attached);
-                source_of.insert(addr, s.source.clone());
-            }
-        }
-        // Entries still present keep their positions (no churn on poll).
-        let mut next: Vec<String> = self
-            .nav_order
-            .iter()
-            .filter(|a| recency.contains_key(*a))
-            .cloned()
-            .collect();
-        // Sessions new since the freeze, most recent first (ties by address).
-        let mut newcomers: Vec<String> = recency
-            .keys()
-            .filter(|a| !next.contains(*a))
-            .cloned()
-            .collect();
-        newcomers.sort_by(|a, b| recency[b].cmp(&recency[a]).then_with(|| a.cmp(b)));
-        for addr in newcomers {
-            let source = source_of.get(&addr);
-            let after = next
-                .iter()
-                .rposition(|a| source_of.get(a) == source)
-                .map(|i| i + 1)
-                .unwrap_or(next.len());
-            next.insert(after, addr);
-        }
-        self.nav_order = next;
     }
 
     // --- selection / navigation --------------------------------------------
@@ -830,22 +762,18 @@ impl Switcher {
 
     /// Streams in one source's `list-sessions` outcome: clears its scanning
     /// state and replaces that host's sessions (reachable) or records its failure
-    /// (unreachable). The host authoritatively owns its session list.
+    /// (unreachable). The host authoritatively owns its session list. Ordering is
+    /// not this function's concern: `rebuild` applies the deterministic display
+    /// order, which a scan result and a routine poll reproduce exactly.
     pub fn apply_source_result(
         &mut self,
         source: String,
-        mut sessions: Vec<Session>,
+        sessions: Vec<Session>,
         err: Option<String>,
         state: &mut crate::state::State,
     ) {
         let prior = self.capture_focus();
-        // Recency ordering is applied ONLY to a scan-driven result (launch or the `r`
-        // re-scan - the source is still in `state.scanning`). A routine poll / %-event
-        // refetch preserves the established order instead, so the tree does not
-        // re-sort under the user: xmux pre-attaches every session, which churns the
-        // mux-reported `last_attached`, and re-sorting on it would reshuffle the tree
-        // on every ~1.5s poll.
-        let was_scanning = state.scanning.remove(&source);
+        state.scanning.remove(&source);
         // The failure run, counted where every result lands so no path can skip it: a
         // result that failed lengthens it, one that answered clears it. It is shown, not
         // acted on - see `State::failure_runs`.
@@ -856,11 +784,6 @@ impl Switcher {
             }
         }
         let existing = state.groups.iter().position(|g| g.source == source);
-        if was_scanning {
-            tree::sort_by_recency(&mut sessions);
-        } else if let Some(i) = existing {
-            sessions = tree::reorder_preserving(sessions, &state.groups[i].sessions);
-        }
         match existing {
             Some(i) => {
                 state.groups[i].err = err;
@@ -872,12 +795,6 @@ impl Switcher {
                 sessions,
             }),
         }
-        // A scan-driven result also re-establishes the host-group order (local pinned
-        // first, then remotes by recency), materialised into `state.groups`; a routine
-        // poll leaves the group order frozen.
-        if was_scanning {
-            state.groups = tree::order_groups(&state.groups);
-        }
         self.rebuild(state);
         self.restore_focus(prior, state);
     }
@@ -886,9 +803,8 @@ impl Switcher {
     /// SCANNING host card, so it appears the moment it is found instead of at the next
     /// run. Idempotent: a source already in the nav is left exactly as it is.
     ///
-    /// It APPENDS. The group order is frozen after launch, and a card the user is looking
-    /// at must not move because another machine answered - the new card takes the bottom
-    /// and its own first scan result sorts its sessions.
+    /// It APPENDS the new host to `state.groups`; `rebuild` then places it in the
+    /// deterministic order.
     pub fn add_source(&mut self, source: String, state: &mut crate::state::State) {
         if state.groups.iter().any(|g| g.source == source) {
             return;
@@ -933,7 +849,7 @@ impl Switcher {
     /// After a streamed update rebuilds the cards: if the user has driven the
     /// selection, keep it on the focused card when it survives; if the card
     /// vanished (killed/removed), land on the previous card. An untouched selection
-    /// follows the rebuild's recency preselect.
+    /// follows the rebuild's top-card preselect.
     fn restore_focus(&mut self, prior: PriorFocus, state: &crate::state::State) {
         // A pending re-scan reselect returns the selection to its session the instant that
         // session re-streams - but only while the selection still sits where the re-scan
@@ -989,7 +905,7 @@ impl Switcher {
 
     /// The row index targeting the same node as `focus`, if it survives a
     /// rebuild - so a re-scan keeps the selection in place rather than snapping to
-    /// the recency preselect.
+    /// the top-card preselect.
     fn row_matching(&self, focus: &RowRef) -> Option<usize> {
         self.rows
             .iter()

@@ -12,7 +12,7 @@ pub mod switcher;
 pub mod tree;
 
 pub use tree::{
-    add_session, filter_groups, fuzzy_match, remove_session, rename_session, sort_by_recency, Group,
+    add_session, filter_groups, fuzzy_match, remove_session, rename_session, sort_by_name, Group,
 };
 
 /// Braille frames of the one spinner xmux animates.

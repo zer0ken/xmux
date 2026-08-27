@@ -26,8 +26,7 @@ Because there is no per-session query, a poll sweep enumerates ONCE and resolves
 every session as a plain session card (the session alone). `last_attached` is 0:
 abduco prints human local
 wall-clock time, which cannot be converted to the shared epoch scale across hosts
-without the host's timezone, so the mux "does not report" it and sessions within a
-source sort by name.
+without the host's timezone, so the mux "does not report" it.
 
 The mux supplies mux vocabulary (argv, model, enumeration); the driver consumes it
 and owns the concrete display decision. The transport lowers the host execution.

@@ -44,7 +44,8 @@ One concept, one word. The two axes and the runtime:
 UI elements a user perceives as distinct things:
 
 - split view - the whole two-region layout.
-- nav view - the region holding the session cards, ordered by source recency (a left
+- nav view - the region holding the session cards, ordered local→WSL→remote then by
+  source name, sessions by name (a left
   column in side layout, a top band in portrait layout, where the same cards run in a
   column flow). Never the
   "sidebar", and never the "tree": the on-screen VIEW is the nav view; "tree" names
@@ -196,18 +197,15 @@ UI elements a user perceives as distinct things:
   The hint bar is two slots as well. Nothing here
   is an RGB value; see "Colour ownership" below for why, and `[ui] selection-style` /
   `[ui] hint-bar-style` for naming one anyway.
-- card order - the one order the flat card list follows, held as addresses. Recency is
-  measured per SOURCE, not per session: a source's cards are
-  contiguous, sources run most-recently-used first, and inside a source its own sessions
-  run most-recently-used first. Global session recency would split a source across the
-  list, restating its context line and leaving a connector claiming cards that belong to
-  another source. One insertion rule carries it: a session lands after the last card
-  of its own source, or at the end when its source has none yet - which also keeps a session
-  discovered later inside its group. The order is rebuilt while any source is still
-  scanning and frozen once they settle, so a routine poll never reshuffles cards under
-  the user.
+- card order - the one order the flat card list follows. It is deterministic: the
+  hosts run local, then WSL, then remote, each tier by source name ascending, and
+  inside a source its sessions run by name ascending, so one source's cards are
+  contiguous and the nav never names a source twice. `rebuild` applies the order on
+  every pass, and a routine poll reproduces the same order exactly, so the list never
+  reshuffles under the user.
 - selection - the nav's current pick, advanced by navigation; a routine poll or
-  restream never moves it (only launch / rescan re-sorts). The preselect and the
+  restream never moves it (the deterministic order is identical on every rebuild, so
+  there is nowhere for it to drift). The preselect and the
   reselect are the launch and post-rescan selections.
 - selection highlight - the selected card's rendering: reverse video filling the whole
   card, the terminal theme's own selected look,
@@ -300,7 +298,8 @@ UI elements a user perceives as distinct things:
   event, and the loop adds a scanning card for every mux the host does not already
   serve. That add is
   ADD-ONLY: an added source's id is always qualified (`prod:zellij`) and the mux already
-  served keeps the id it was painted with, because that id is what the frozen order, the
+  served keeps the id it was painted with, because that id is what the deterministic
+  order, the
   persisted selection, and typed ctl targets are keyed to.
 - roster - which HOSTS xmux offers, assembled from PROVIDERS, EVERY one on unless
   `[discovery]` turns it off: `~/.ssh/config` aliases, the online peers of this

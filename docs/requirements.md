@@ -21,9 +21,10 @@ no function, and no test, so renaming code is never a documentation change.
   distinguished.
 - **FR-A3** - `xmux doctor` reports config health, ssh availability, and per-source
   reachability with session counts.
-- **FR-A4** - Sessions are ordered by recency (most-recently-attached first) within
-  their source, and the sources themselves by their most recent session, so one source's
-  cards are contiguous and the nav never names a source twice.
+- **FR-A4** - Sessions are ordered deterministically: the hosts run local, then WSL,
+  then remote, and within each tier by source name ascending; inside a source its
+  sessions run by name ascending. A routine poll reproduces the same order, so one
+  source's cards are contiguous and the nav never names a source twice.
 - **FR-A5** - The roster (which HOSTS are offered) comes from providers the
   `[discovery]` table selects: `~/.ssh/config` aliases and this machine's tailnet peers,
   both on by default. A tailnet peer is offered under its DNS label; this machine and
@@ -75,9 +76,11 @@ no function, and no test, so renaming code is never a documentation change.
   arrives and every mux it reports that the host does not already serve becomes a
   scanning card on the spot. An added source's id is always qualified (`prod:zellij`)
   while the mux already served keeps the id it was painted with: that id is what the
-  frozen order, the persisted selection, and anything the user typed are keyed to, so
-  nothing is renamed and nothing is removed. New cards APPEND, so a card the user is
-  looking at does not move because another host answered. An added source is
+  deterministic order, the persisted selection, and anything the user typed are keyed
+  to, so
+  nothing is renamed and nothing is removed. A new card sorts into its name position,
+  so the deterministic order holds while a card the user is looking at does not move
+  because another host answered. An added source is
   OPERABLE, not merely visible: creating a session on it works
   exactly as on a configured source.
 - **FR-A11** - A mux running inside a WSL distribution is a source like any other. A
@@ -299,7 +302,8 @@ no function, and no test, so renaming code is never a documentation change.
   pid.
 - **FR-D5** - The app launches directly into the persistent split view (nav +
   terminal view) with the cursor preselected: the persisted last session if set,
-  else a local-first recency preselect. There is no separate picker mode; `prefix q`
+  else the first card of the deterministic order (a local session). There is no
+  separate picker mode; `prefix q`
   quits.
 - **FR-D6** - The log records what HAPPENED, never the rate xmux asks. A sweep that says
   what the sweep before it said is not written: an unchanged session list is not, and

@@ -49,7 +49,7 @@ pub(crate) fn read_psmux_registry_dir(dir: &Path) -> Vec<String> {
 
 /// Merges psmux's registry session NAMES (authoritative existence) with the
 /// `list-sessions` DETAIL rows. A `list-sessions` row wins for a session it covers
-/// (full windows/attached/recency); a registry name it omits is still surfaced with
+/// (full windows/attached/last_attached); a registry name it omits is still surfaced with
 /// a minimal placeholder, so a failed/partial `list-sessions` never blanks the
 /// tree view. Deduped on name (a session in both sources appears once).
 pub(crate) fn merge_psmux_sessions(
@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn merge_psmux_sessions_prefers_detail_and_keeps_registry_only() {
         // psmux's `list-sessions` aggregates every live default-socket session in one
-        // call, so its rows carry the real detail (windows/attached/recency). The
+        // call, so its rows carry the real detail (windows/attached/last_attached). The
         // registry (`*.port`) is the authoritative EXISTENCE set: a name present in
         // the registry but missing from the (possibly failed/partial) list-sessions
         // output is still surfaced, with minimal placeholder detail.

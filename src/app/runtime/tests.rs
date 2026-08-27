@@ -1047,10 +1047,10 @@ async fn a_discovered_mux_becomes_a_source_on_the_spot() {
 }
 
 #[tokio::test]
-async fn a_discovered_source_appends_and_leaves_the_selection_put() {
-    // A card the user is looking at must not move because another machine answered.
+async fn a_discovered_source_sorts_into_place_and_leaves_the_selection_put() {
+    // A card the user is looking at must not move because another machine answered:
+    // the discovered card sorts into its name position, and the selection stays put.
     let mut rt = test_rt(fake_env_with_sources(&["prod", "db"]));
-    let before: Vec<String> = rt.state.groups.iter().map(|g| g.source.clone()).collect();
     let selected = {
         let t = rt.switcher.terminal_view_target();
         (t.source, t.target)
@@ -1060,8 +1060,11 @@ async fn a_discovered_source_appends_and_leaves_the_selection_put() {
         muxes: vec!["zellij".into()],
     });
     let after: Vec<String> = rt.state.groups.iter().map(|g| g.source.clone()).collect();
-    assert_eq!(&after[..before.len()], &before[..], "the order is kept");
-    assert_eq!(after.last().unwrap(), "db:zellij", "the new card appends");
+    assert_eq!(
+        after,
+        vec!["local", "db", "db:zellij", "prod"],
+        "the discovered card sorts into name order"
+    );
     let now = rt.switcher.terminal_view_target();
     assert_eq!(
         (now.source, now.target),
@@ -1576,11 +1579,11 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
     let dir = std::env::temp_dir().join(format!("xmux-ctl-switch-sync-{}", std::process::id()));
 
     sync_selection_from_switcher(&mut state, &sw);
-    // db (last_attached 2) is the recency-preselected top card, so switch to api to
-    // exercise a real selection move.
+    // api (name order) is the preselected top card, so switch to db to exercise a real
+    // selection move.
     dispatch_action(
         Action::Switch {
-            address: "jup/api".into(),
+            address: "jup/db".into(),
         },
         &mut sw,
         &mut state,
@@ -1590,12 +1593,12 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
         (&ops, &op_tx),
     );
 
-    // The switch moved the selection to api; the loop-top derive routes it through
-    // apply(Select) - selection becomes jup/api and the attach is marked pending
+    // The switch moved the selection to db; the loop-top derive routes it through
+    // apply(Select) - selection becomes jup/db and the attach is marked pending
     // (the deadline is armed by the next Tick, not here).
     assert!(sync_selection_from_switcher(&mut state, &sw));
     assert_eq!(state.selection.source, "jup");
-    assert_eq!(state.selection.session, "api");
+    assert_eq!(state.selection.session, "db");
     assert!(state.attach_pending, "Select marks the attach pending");
     assert!(
         state.attach_deadline.is_none(),
