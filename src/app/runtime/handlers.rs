@@ -1105,17 +1105,13 @@ impl Runtime {
         false
     }
 
-    /// Whether a prefix interaction is live, in EITHER focus: `ready` (the prefix was
-    /// pressed and a command key is expected) or `holding` (the prefix key is still
-    /// physically down). The hint bar and the auto-hide nav show ask the same question,
-    /// so the two focus paths' latches are OR'd here rather than making the chrome know
-    /// about focus. `holding` is stable while the key is held, which is what stops the
-    /// status bar flickering under OS autorepeat.
+    /// Whether a prefix interaction is live, in EITHER focus: the prefix is READY,
+    /// awaiting its command key. The hint bar and the auto-hide nav show ask the same
+    /// question, so the two focus paths' armed latches are OR'd here rather than making
+    /// the chrome know about focus. Ready clears on the prefix's release (canceled) or
+    /// on any key (consumed), so this is the whole bar/nav show signal.
     pub(super) fn prefix_active(&self) -> bool {
-        self.mouse_state.nav_armed
-            || self.mouse_state.nav_holding
-            || self.term_input.is_armed()
-            || self.term_input.is_holding()
+        self.mouse_state.nav_armed || self.term_input.is_armed()
     }
 
     /// The op-result arm: fold a finished create back into the nav/state.

@@ -221,8 +221,8 @@ no function, and no test, so renaming code is never a documentation change.
   be readable over what it covers; the portrait band's resting bar paints its text plus a
   cell of padding, leaving the rest of the row to the offscreen counts.
 - **FR-B18** - A prefix waits for the next INPUT, and a mouse action is input: a click, a
-  release, a wheel or a drag ends the whole prefix gesture (the ready wait and any
-  physically held key) in either focus, because mouse bytes are scanned
+  release, a wheel or a drag cancels the prefix chord (the ready wait) in either focus,
+  because mouse bytes are scanned
   out of the stream before either focus path's key handling sees them and a chord left
   half-open keeps its cheatsheet on screen and then eats the next key. Bare hover is not
   an action: the pointer drifting must not break a chord being typed.

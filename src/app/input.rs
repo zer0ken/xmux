@@ -147,26 +147,34 @@ pub(crate) fn resolve_nav_key(
             && char::from_u32(crate::display::decode::kitty_prefix_base(prefix))
                 .is_some_and(|c| key.code == KeyCode::Char(c)));
     if key.kind == KeyEventKind::Release {
-        // A key release never acts; the prefix's release clears the hold (the
-        // terminal reports it only with the kitty protocol).
+        // A key release never acts; the prefix's release CANCELS the whole chord
+        // (ready and hold both clear, so the bar hides on release). The terminal
+        // reports the release only with the kitty protocol.
         if is_prefix_key {
             *holding = false;
+            *armed = false;
         }
         return None;
     }
-    // A prefix down always sets ready and holding (the state machine: prefix key
-    // down → +ready +holding). It is never a command key. A held key's autorepeat
-    // is one of these: it re-arms ready, which is already set, so the status bar
-    // stays steady instead of toggling, and a command key can be pressed again and
-    // again while the key is held.
+    // A prefix down arms ready (press) or keeps the hold (repeat). A held key's
+    // autorepeat is one of these: it never re-arms ready after a command consumed it,
+    // so the bar stays hidden once consumed instead of flickering back up.
     if is_prefix_key && !is_inputting {
-        *armed = true;
-        *holding = true;
+        // A held prefix's autorepeat (a kitty Repeat, or Windows Terminal's legacy
+        // re-PRESS of a held text key) keeps the hold and never re-arms ready after a
+        // command consumed it, so the bar stays hidden once consumed.
+        if key.kind == KeyEventKind::Repeat || *holding {
+            *holding = true;
+        } else {
+            *armed = true;
+            *holding = true;
+        }
         return None;
     }
     if *armed {
-        // Any key while ready clears ready only; holding persists until the release
-        // (the state machine: a key while ready → -ready).
+        // Any key while ready CONSUMES the prefix (even a no-op like focusing the
+        // already-focused view): ready clears, the bar hides. The hold is physical
+        // and clears only on the release (or a focus switch / mouse action).
         *armed = false;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         return match key.code {
@@ -195,14 +203,9 @@ pub(crate) fn resolve_nav_key(
             // it, so a bare digit stays free for the pane and cannot jump by accident.
             KeyCode::Char('r') | KeyCode::Char('n') => Some(Action::NavKey(key)),
             KeyCode::Char(c) if c.is_ascii_digit() => Some(Action::NavKey(key)),
-            // An unrecognized key ends the whole chord, not just ready: the action keys
-            // above keep holding so a held prefix's repeats keep them armed, but a stray
-            // key is the user abandoning the prefix, so the hold goes too (the bar hides
-            // even on a terminal that reports no prefix release).
-            _ => {
-                *holding = false;
-                None
-            }
+            // An unrecognized key simply consumes the prefix like any other: ready is
+            // already cleared above; the hold stays physical until the release.
+            _ => None,
         };
     }
     // Enter focuses the terminal view. ←/→ navigate the nav inside `handle_key`.
@@ -535,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn a_prefix_release_clears_holding_without_acting() {
+    fn a_prefix_release_cancels_the_chord_without_acting() {
         use ratatui::crossterm::event::{KeyEvent, KeyEventKind};
         let mut armed = false;
         let mut holding = false;
@@ -543,7 +546,7 @@ mod tests {
         let press = KeyEvent::new(KeyCode::Char('\x07'), KeyModifiers::NONE);
         assert!(resolve_nav_key(press, &mut armed, &mut holding, 0x07, false).is_none());
         assert!(armed && holding);
-        // a repeat while holding stays armed (a held key, not a fresh press)
+        // a repeat while holding keeps the hold (a held key, not a fresh press)
         let rep = KeyEvent::new_with_kind(
             KeyCode::Char('\x07'),
             KeyModifiers::NONE,
@@ -563,7 +566,7 @@ mod tests {
             armed && holding,
             "held repeats never toggle the armed state"
         );
-        // release (kitty) clears holding, produces no action, ready survives
+        // release (kitty) cancels the WHOLE chord, produces no action
         let rel = KeyEvent::new_with_kind(
             KeyCode::Char('\x07'),
             KeyModifiers::NONE,
@@ -571,7 +574,7 @@ mod tests {
         );
         assert!(resolve_nav_key(rel, &mut armed, &mut holding, 0x07, false).is_none());
         assert!(!holding);
-        assert!(armed);
+        assert!(!armed, "the release cancels ready too");
         // a non-prefix release never acts either
         let rel2 = KeyEvent::new_with_kind(
             KeyCode::Char('x'),
@@ -582,10 +585,10 @@ mod tests {
     }
 
     #[test]
-    fn a_windows_terminal_release_clears_the_nav_hold() {
+    fn a_windows_terminal_release_cancels_the_nav_chord() {
         // WT's getKittyBaseKey strips Ctrl and reports the letter for the release
         // (C-g → CSI 103;5:3u → decodes to Char('g') Release), not the control
-        // byte. It must still end the prefix's hold, or the status bar never hides.
+        // byte. It must still cancel the prefix's chord, or the status bar never hides.
         use ratatui::crossterm::event::{KeyEvent, KeyEventKind};
         let mut armed = false;
         let mut holding = false;
@@ -603,7 +606,10 @@ mod tests {
             KeyEventKind::Release,
         );
         assert!(resolve_nav_key(rel, &mut armed, &mut holding, 0x07, false).is_none());
-        assert!(!holding && armed, "the WT base-key release ends the hold");
+        assert!(
+            !holding && !armed,
+            "the WT base-key release cancels the chord"
+        );
         // A plain 'g' release (no ctrl) is not the prefix's and does not act either,
         // but it must not wrongly arm or clear anything it should not.
         let mut armed2 = false;
@@ -618,10 +624,11 @@ mod tests {
     }
 
     #[test]
-    fn a_command_clears_ready_only_and_an_autorepeat_rearms_it() {
-        // The state machine: a key while ready clears ready only (holding survives
-        // until the release), and a prefix autorepeat re-arms ready. So a command key
-        // (a resize arrow) can be pressed again and again while the prefix is held.
+    fn a_command_consumes_ready_and_an_autorepeat_never_rearms_it() {
+        // A command key CONSUMES the prefix: ready clears (the bar hides) and stays
+        // cleared, because a held prefix's autorepeat is swallowed and never re-arms
+        // it. Resize continuation is the RUNTIME repeat window (bare Ctrl-arrows), not
+        // a re-armed prefix, so a plain `h` after consumption is a bare nav key again.
         use ratatui::crossterm::event::{KeyEvent, KeyEventKind};
         let mut armed = false;
         let mut holding = false;
@@ -639,7 +646,7 @@ mod tests {
             Some(Action::Width(-1)),
             "the arrow resizes"
         );
-        assert!(!armed && holding, "a key while ready clears ready only");
+        assert!(!armed && holding, "a key while ready consumes ready only");
         resolve_nav_key(
             KeyEvent::new(KeyCode::Char('\x07'), KeyModifiers::NONE),
             &mut armed,
@@ -647,11 +654,16 @@ mod tests {
             0x07,
             false,
         );
-        assert!(armed && holding, "an autorepeat re-arms ready");
-        assert_eq!(
-            resolve_nav_key(cmd, &mut armed, &mut holding, 0x07, false),
-            Some(Action::Width(-1)),
-            "the next arrow resizes again"
+        assert!(
+            !armed && holding,
+            "an autorepeat never re-arms a consumed ready"
+        );
+        assert!(
+            matches!(
+                resolve_nav_key(cmd, &mut armed, &mut holding, 0x07, false),
+                Some(Action::NavKey(_))
+            ),
+            "after consumption a plain key is bare again, not a prefix command"
         );
         let rel = KeyEvent::new_with_kind(
             KeyCode::Char('\x07'),
@@ -659,7 +671,7 @@ mod tests {
             KeyEventKind::Release,
         );
         resolve_nav_key(rel, &mut armed, &mut holding, 0x07, false);
-        assert!(!holding, "the release clears holding");
+        assert!(!holding && !armed, "the release cancels the chord");
     }
 
     #[test]

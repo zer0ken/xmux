@@ -324,20 +324,20 @@ UI elements a user perceives as distinct things:
 - scan indicator - the `scanning n/m…` progress shown in the hint bar while host
   probes are in flight, behind the same spinner on the same frame as the cards it
   counts. It counts SOURCES; a card's own spinner names one card's unresolved level.
-- ready - the state between pressing the prefix and its command key: the prefix is
-  ready for its command. A prefix key down sets it, any other key while it holds
-  clears it, and the prefix's release leaves it set, so the cheatsheet stays up
-  after a tap until the command key lands. The hint bar reads it (together with
-  HOLDING) to swap from the resting prefix to the cheatsheet, so becoming ready is
-  a visible change and redraws the frame.
-- holding - the state while the prefix key is physically held down. A prefix key
-  down sets it and the prefix's release clears it; a command key while ready does
-  not. While it is set, a repeated prefix down (the OS autorepeat of the held key)
-  re-arms ready, so a command key can be pressed again and again while the prefix
-  is held, and the status bar and the nav stay steady instead of toggling. A
-  terminal that reports key releases (the kitty protocol) is what makes the release
-  observable; one that does not leaves the hold latched until a mouse action ends
-  the interaction.
+- ready - the state while the prefix is armed, awaiting its command key. A prefix
+  key down sets it; the prefix's release (a CANCEL) or ANY key while it holds (a
+  CONSUME, even a no-op like focusing the already-focused view) clears it. The hint
+  bar reads it to swap from the resting prefix to the cheatsheet, so becoming ready
+  is a visible change and redraws the frame; the bar hides the moment the prefix is
+  canceled or consumed.
+- holding - an INTERNAL latch while the prefix key is physically held down (set on
+  the press, cleared on the release). Its only job is to tell a held key's
+  autorepeat (a repeated prefix down) from a fresh second press, so the autorepeat
+  is swallowed and never re-arms a consumed ready. It is NOT part of the hint-bar /
+  nav show signal: that follows `ready` alone. A terminal that reports key releases
+  (the kitty protocol) is what makes the release observable; one that does not
+  leaves the hold latched until a focus switch or a mouse action ends the
+  interaction.
 - popup - the rounded-bordered, opaque, centered (draggable) dialog a popup modal
   draws, its accent title in the top border. The help and the input dialog are popups.
 - prompt - the `❯` entry marker on an input dialog's edit line.
@@ -348,20 +348,20 @@ boundary and nowhere above it.
 
 ### Prefix interaction
 
-The prefix interaction is a two-state machine over `ready` and `holding`:
+The prefix is a single `ready` state with two ways out:
 
-| Event | ready | holding |
-| --- | --- | --- |
-| prefix key down | set | set |
-| prefix key up | unchanged | clear |
-| any other key while ready | clear | unchanged |
+| Event | ready |
+| --- | --- |
+| prefix key down | set |
+| prefix key up (canceled) | clear |
+| any key while ready (consumed, even a no-op) | clear |
+| held key's autorepeat | unchanged (swallowed) |
 
-The hint bar and the auto-hide nav show for the whole time either state is set, and
-hide only when both are clear. Ready keeps the cheatsheet up after the prefix's
-release until a command key lands; holding keeps it up through a held key's
-autorepeat, so a held prefix neither flickers nor needs re-arming between repeated
-command keys (a resize arrow can be pressed again and again while the prefix is
-held).
+The hint bar and the auto-hide nav show for the whole time ready is set, and hide
+when it is canceled or consumed. A held key's autorepeat never re-arms a consumed
+ready, so a resize command's continuation is the RESIZE-REPEAT WINDOW (bare
+Ctrl+arrows within the repeat window), not the prefix; the bar drops on the first
+command key and stays down.
 
 `pane` is reserved for a mux window's terminal split (a tmux / psmux pane); it is
 never a screen region - screen regions are "views", and the line between them is

@@ -21,11 +21,12 @@ pub struct TermInput {
     prefix: u8,
     armed: bool,
     /// True while the prefix key is physically held down (set on the prefix press,
-    /// cleared on the prefix release). While it is true a repeated prefix down is a
-    /// hold-repeat and is ignored, so the hint bar and the auto-hide nav show stay
-    /// put while the key is held. A terminal that reports releases (the kitty
-    /// protocol) is what makes the release visible; one that does not leaves the
-    /// hold latched until a command key or a mouse action resolves it.
+    /// cleared on the prefix release). Its only job is to tell a held key's
+    /// autorepeat (a repeated prefix down) from a fresh second press: an autorepeat
+    /// is swallowed and never re-arms a consumed ready, so the bar stays put while
+    /// the key is held. A terminal that reports releases (the kitty protocol) is
+    /// what makes the release visible; one that does not leaves the hold latched
+    /// until a focus switch or a mouse action resolves it.
     holding: bool,
     in_paste: bool,
     paste_scan: Vec<u8>,
@@ -52,9 +53,9 @@ impl TermInput {
         self.armed
     }
 
-    /// Whether the prefix key is still physically held down. Together with `is_armed`
-    /// this is the `ready || holding` prefix-active signal the hint bar and the
-    /// auto-hide nav show read, so a held key keeps them steady.
+    /// Whether the prefix key is still physically held down. Internal: the app uses
+    /// it to tell a held key's autorepeat from a fresh press; the hint bar and the
+    /// auto-hide nav show follow `is_armed` (ready) alone.
     pub fn is_holding(&self) -> bool {
         self.holding
     }
@@ -234,10 +235,9 @@ impl TermInput {
                     break;
                 }
                 // Unrecognized single-byte follow-up: command mode swallows just this
-                // key; the rest of the read resumes as normal input. A non-action key
-                // also ends a held chord: on a terminal that reports no release the
-                // hold would otherwise stay latched and keep the status bar up forever.
-                self.holding = false;
+                // key; the rest of the read resumes as normal input. Ready is already
+                // consumed; the hold is physical and clears only on the release (or a
+                // focus switch / mouse action).
                 i += 1;
                 continue;
             }
@@ -245,11 +245,17 @@ impl TermInput {
             let b = bytes[i];
             self.track_paste(b);
             if !self.in_paste && b == self.prefix {
-                if !fwd.is_empty() {
-                    out.push(Action::Forward(std::mem::take(&mut fwd)));
+                if self.holding {
+                    // A held prefix's autorepeat after the prefix was consumed (or
+                    // before any command): swallow it, never re-arm ready, so the bar
+                    // stays put while the key is held instead of flickering.
+                } else {
+                    if !fwd.is_empty() {
+                        out.push(Action::Forward(std::mem::take(&mut fwd)));
+                    }
+                    self.armed = true;
+                    self.holding = true;
                 }
-                self.armed = true;
-                self.holding = true;
             } else {
                 fwd.push(b);
             }
@@ -262,10 +268,11 @@ impl TermInput {
     }
 
     /// Applies one parsed kitty key event to the prefix state and the forward buffer.
-    /// A release clears `holding` (only a kitty terminal reports releases); a held
-    /// prefix's repeat keeps `ready`; a deliberate second press sends a literal
-    /// prefix. Non-prefix events forward their legacy bytes (a release forwards
-    /// nothing, because a legacy program has no key-up event).
+    /// The prefix's release CANCELS the chord (ready and hold both clear, so the bar
+    /// hides); a held prefix's repeat is swallowed and never re-arms a consumed ready;
+    /// a deliberate fresh press sends a literal prefix. Non-prefix events forward
+    /// their legacy bytes (a release forwards nothing, because a legacy program has no
+    /// key-up event).
     fn handle_kitty(&mut self, ev: &crate::display::decode::KittyEvent, fwd: &mut Vec<u8>) {
         let is_prefix = ev.code == self.prefix as u32;
         // A release may carry the base key instead of the control byte (Windows
@@ -275,18 +282,20 @@ impl TermInput {
             is_prefix || ev.code == crate::display::decode::kitty_prefix_base(self.prefix);
         match ev.kind {
             3 => {
-                // release: the key is up. The prefix's release ends the hold.
+                // release: the key is up. The prefix's release cancels the whole
+                // chord (ready and hold both clear), so the bar hides on release.
                 if is_prefix_release {
                     self.holding = false;
+                    self.armed = false;
                 }
             }
             2 => {
-                // repeat: the same key is still down. A held prefix stays armed (the
-                // state machine: a prefix down keeps ready and holding); a non-prefix
-                // repeat forwards its legacy bytes unless a command is mid-flight (a
-                // repeat is not a command).
+                // repeat: the same key is still down. A held prefix's autorepeat is
+                // swallowed: it keeps the hold (so the next fresh press is still
+                // recognised) but never re-arms ready after a command consumed it. A
+                // non-prefix repeat forwards its legacy bytes unless a command is
+                // mid-flight (a repeat is not a command).
                 if is_prefix {
-                    self.armed = true;
                     self.holding = true;
                 } else if !self.armed {
                     self.forward_legacy(ev, fwd);
@@ -295,21 +304,18 @@ impl TermInput {
             _ => {
                 // press.
                 if is_prefix {
-                    if self.armed {
-                        if !self.holding {
-                            // a fresh press while ready: deliberate doubled prefix
-                            fwd.push(self.prefix);
-                            self.armed = false;
-                            self.holding = false;
-                        }
-                        // else: the key was already held, this is the repeat
-                    } else {
+                    if self.armed && !self.holding {
+                        // a fresh press while ready: deliberate doubled prefix
+                        fwd.push(self.prefix);
+                        self.armed = false;
+                        self.holding = false;
+                    } else if !self.armed {
                         self.armed = true;
                         self.holding = true;
                     }
+                    // else (armed && holding): the key is already held, this is a repeat
                 } else if self.armed {
-                    // a non-prefix key mid-command in CSI-u form is not one of the
-                    // command keys; swallow it and end the command (ready only).
+                    // a non-prefix key mid-command in CSI-u form: swallow and consume it
                     self.armed = false;
                 } else {
                     self.forward_legacy(ev, fwd);
@@ -395,15 +401,14 @@ mod tests {
     #[test]
     fn held_prefix_does_not_toggle_or_forward_literal() {
         let mut t = m();
-        // Learn the terminal reports releases: press, release, then a command.
+        // A tap: the press arms, the release CANCELS the whole chord (ready and hold
+        // both clear), so the bar hides on release.
         t.feed(&[0x07]); // press
         assert!(t.is_armed() && t.is_holding());
-        t.feed(b"\x1b[7;5:3u"); // release clears the hold; ready survives
-        assert!(!t.is_holding() && t.is_armed());
-        t.feed(b"h"); // a command consumes ready
-        assert!(!t.is_armed());
+        t.feed(b"\x1b[7;5:3u"); // release cancels the chord
+        assert!(!t.is_holding() && !t.is_armed());
         // Now hold the prefix: a press arms, legacy autorepeat bytes are swallowed
-        // (never forwarded as a literal), and the release clears the hold.
+        // (never forwarded as a literal), and the release cancels again.
         t.feed(&[0x07]);
         assert!(t.is_armed() && t.is_holding());
         assert_eq!(
@@ -424,14 +429,10 @@ mod tests {
             "release is swallowed"
         );
         assert!(!t.is_holding());
-        assert!(t.is_armed(), "ready survives the release");
-        // A deliberate doubled prefix (a fresh press after the release) sends a literal.
-        assert_eq!(
-            fwd(&t.feed(&[0x07])),
-            vec![0x07],
-            "a fresh second press sends a literal"
-        );
-        assert!(!t.is_armed());
+        assert!(!t.is_armed(), "the release cancels ready too");
+        // A fresh press after the release is a fresh chord, never a literal.
+        t.feed(&[0x07]);
+        assert!(t.is_armed() && t.is_holding(), "a second press re-arms");
     }
 
     #[test]
@@ -447,7 +448,7 @@ mod tests {
     fn a_windows_terminal_release_clears_the_hold() {
         // WT's getKittyBaseKey strips Ctrl and reports the letter for the release
         // (C-g → CSI 103;5:3u, code 103 = 'g'), not the control byte. It must still
-        // end the prefix's hold, or the status bar never hides.
+        // cancel the prefix's chord, or the status bar never hides.
         let mut t = m();
         t.feed(&[0x07]); // press
         assert!(t.is_armed() && t.is_holding());
@@ -457,7 +458,7 @@ mod tests {
             "the release is swallowed"
         );
         assert!(!t.is_holding(), "the WT base-key release ends the hold");
-        assert!(t.is_armed(), "ready survives the release");
+        assert!(!t.is_armed(), "the release cancels ready too");
     }
 
     #[test]
@@ -468,27 +469,32 @@ mod tests {
     }
 
     #[test]
-    fn a_command_clears_ready_only_and_an_autorepeat_rearms_it() {
-        // The state machine: a key while ready clears ready only (holding survives
-        // until the release), and a prefix autorepeat re-arms ready. So a command key
-        // (a resize arrow) can be pressed again and again while the prefix is held.
+    fn a_command_consumes_ready_and_an_autorepeat_never_rearms_it() {
+        // A command key CONSUMES the prefix: ready clears (the bar hides) and stays
+        // cleared, because a held prefix's autorepeat is swallowed and never re-arms
+        // it. Resize continuation after the first arrow is the RUNTIME repeat window
+        // (bare Ctrl-arrows), not a re-armed prefix, so a plain `h` after consumption
+        // is ordinary input again.
         let mut t = m();
         t.feed(&[0x07]); // prefix down: +ready +holding
         assert!(t.is_armed() && t.is_holding());
         assert_eq!(t.feed(b"h"), vec![Action::Width(-1)], "the arrow resizes");
         assert!(
             !t.is_armed() && t.is_holding(),
-            "a key while ready clears ready only"
+            "a key while ready consumes ready only"
         );
-        t.feed(&[0x07]); // the held key's autorepeat re-arms ready
-        assert!(t.is_armed() && t.is_holding());
+        t.feed(&[0x07]); // the held key's autorepeat must NOT re-arm ready
+        assert!(
+            !t.is_armed() && t.is_holding(),
+            "an autorepeat never re-arms a consumed ready"
+        );
         assert_eq!(
-            t.feed(b"h"),
-            vec![Action::Width(-1)],
-            "the next arrow resizes again"
+            fwd(&t.feed(b"h")),
+            b"h",
+            "after consumption a plain key is ordinary input, not a command"
         );
         t.feed(b"\x1b[7;5:3u"); // the release ends the hold
-        assert!(!t.is_holding(), "the release clears holding");
+        assert!(!t.is_holding());
     }
 
     #[test]
@@ -696,13 +702,18 @@ mod tests {
     }
 
     #[test]
-    fn double_prefix_sends_one_literal() {
-        // A fresh second press (the release landed between the two downs) sends a
-        // literal; a second down with no release is a hold-repeat and is ignored.
+    fn a_fresh_second_press_after_the_release_is_a_fresh_chord() {
+        // The release cancels the whole chord, so a second press after it is a fresh
+        // chord (ready + hold), never a doubled-prefix literal.
         let mut t = m();
         t.feed(&[0x07]); // press
-        t.feed(b"\x1b[7;5:3u"); // release ends the hold
-        assert_eq!(fwd(&t.feed(&[0x07])), vec![0x07]);
+        t.feed(b"\x1b[7;5:3u"); // release cancels the chord
+        assert_eq!(
+            fwd(&t.feed(&[0x07])),
+            Vec::<u8>::new(),
+            "no literal forwards"
+        );
+        assert!(t.is_armed() && t.is_holding(), "the second press re-arms");
     }
 
     #[test]
@@ -718,14 +729,16 @@ mod tests {
     }
 
     #[test]
-    fn double_prefix_then_trailing_forwards_literal_and_rest() {
-        // `C-g` (release) `C-g abc` in one read: a literal prefix byte then the
-        // trailing input (no byte loss). A repeated down with no release is a
-        // hold-repeat and never forwards a literal.
+    fn prefix_then_release_then_prefix_then_trailing_forwards_rest() {
+        // `C-g` (release) `C-g abc`: the release cancels the first chord, the second
+        // press arms a fresh one, and `abc`'s leading byte is swallowed as its command
+        // key (unrecognized), so only the trailing `bc` forwards. A repeated down with
+        // no release is a hold-repeat and behaves the same.
         let mut t = m();
         assert_eq!(
             fwd(&t.feed(b"\x07\x1b[7;5:3u\x07abc")),
-            vec![0x07, b'a', b'b', b'c']
+            b"bc",
+            "a fresh second chord swallows its command byte"
         );
         let mut t2 = m();
         assert_eq!(

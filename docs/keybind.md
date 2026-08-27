@@ -97,16 +97,14 @@ stops at the view border so the live screen keeps every row it has. In the portr
 layout it stops at its own text instead, because it shares that row with the
 offscreen-card counts. Press the prefix and the same row widens to the whole window,
 floating over the border and the live screen to list the keys that prefix unlocks; it
-shrinks back once the command key lands and the prefix key is released, or once any
-mouse action does (a click, a wheel, a drag: a prefix waits for the next input,
-whatever that turns out to be). Holding the
-prefix down keeps it there steadily: the
+shrinks back the moment the prefix is canceled (released) or consumed (ANY key while
+ready, even a no-op), or once any mouse action does (a click, a wheel, a drag: a
+prefix waits for the next input, whatever that turns out to be). A held key's
 autorepeat is read as a held key, not as new presses, so the bar neither flickers nor
-spams a literal prefix to the pane, and a command key can be pressed again and again
-while the prefix is held (each resize arrow keeps working). The doubled-prefix literal
-(`prefix prefix`) fires on a fresh second press, which a terminal that reports key
-releases makes distinguishable; a terminal that does not has no release to tell the
-presses apart, so a second press re-arms ready and sends no literal. Only the paint
+spams a literal prefix to the pane, and it never re-arms a consumed ready: resize
+continuation is the resize-repeat window (a bare Ctrl+arrow within the repeat
+window), so the bar drops on the first command key and stays down. A fresh second
+press after the release starts a fresh chord. Only the paint
 moves, never the layout, so arming the prefix never shifts a card.
 
 With the nav auto-hidden the mux owns every row, status line included, until a prefix

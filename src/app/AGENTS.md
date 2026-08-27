@@ -48,10 +48,9 @@ numbers it needs.
   new source goes) and the manager that kicks the new source's first scan.
 - Input routing has a pure, stateless core (key resolution, mouse chains, the
   predicates, the input outcome types); the stateful handlers are runtime methods
-  that call into it. The prefix is tracked as ready (awaiting its command) and
-  holding (the key still down): a command key clears ready only, the release
-  clears holding, a held key's autorepeat re-arms ready, and a mouse action ends
-  both.
+  that call into it. The prefix is tracked as ready (awaiting its command): the
+  release (a cancel) or any key while ready (a consume) clears it, a held key's
+  autorepeat never re-arms it, and a mouse action cancels it.
 - Focus holds the focus and modal state plus the transition helpers. The runtime
   state embeds it; the app reads and mutates it through those helpers.
 - The display mechanics (PTY, grid, input) live in `src/display`; per-source connection

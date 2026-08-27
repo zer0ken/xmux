@@ -1909,13 +1909,13 @@ fn arming_the_prefix_marks_the_frame_dirty_so_the_hint_bar_swaps() {
     let out = rt.handle_stdin_bytes(b"\x07", &Selection::default());
     assert!(rt.prefix_active(), "the bare prefix arms");
     assert!(out.dirty, "arming redraws, so the cheatsheet shows at once");
-    // The release ends the hold; ready survives, so the bar stays until the
-    // command key lands. Disarming (the command key lands) is equally visible.
-    let _ = rt.handle_stdin_bytes(b"\x1b[7;5:3u", &Selection::default());
-    assert!(rt.prefix_active(), "ready survives the release");
-    let out = rt.handle_stdin_bytes(b"t", &Selection::default());
-    assert!(!rt.prefix_active(), "the command key consumes the arm");
-    assert!(out.dirty, "disarming redraws too");
+    // The release CANCELS the chord, so the bar hides on release; a command key
+    // consumes it identically. Disarming is equally visible.
+    let out = rt.handle_stdin_bytes(b"\x1b[7;5:3u", &Selection::default());
+    assert!(!rt.prefix_active(), "the release cancels the arm");
+    assert!(out.dirty, "the release redraws the bar away");
+    let _ = rt.handle_stdin_bytes(b"t", &Selection::default());
+    assert!(!rt.prefix_active());
 }
 
 /// Builds a `Runtime` with one reachable session on source `jup`, focused on the
@@ -1981,34 +1981,12 @@ async fn prefix_r_in_terminal_focus_kicks_rescan() {
 }
 
 #[test]
-fn prefix_holding_alone_makes_prefix_active() {
-    use crate::ui::switcher::{Scan, Switcher};
-    // The hold latch alone (no armed latch) must keep the prefix-active signal live, so
-    // the hint bar and the auto-hide nav show stay put while the key is held down even
-    // before a command key is chosen.
-    let mut state = crate::state::State::from_scan(Scan {
-        groups: vec![],
-        panes: Default::default(),
-    });
-    let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
-    rt.state = state;
-    rt.switcher = switcher;
-    assert!(!rt.prefix_active());
-    rt.mouse_state.nav_holding = true;
-    assert!(rt.prefix_active(), "holding keeps the signal live");
-    rt.mouse_state.nav_holding = false;
-    assert!(!rt.prefix_active());
-}
-
-#[test]
 fn held_prefix_repeats_keep_nav_steady() {
     use crate::ui::switcher::{Scan, Switcher};
     // Windows Terminal re-sends a held text key as a legacy press (no event type on
     // the repeat), so a repeated `C-g` down must be a hold-repeat: it neither re-arms
-    // nor disarms, keeping the hint bar and the auto-hide nav show put while the key
-    // is held. Only the release (kitty) ends the hold; ready then survives until a
-    // command key resolves it.
+    // nor consumes, keeping the hint bar and the auto-hide nav show put while the key
+    // is held. The release (kitty) then CANCELS the whole chord, hiding the bar.
     let mut state = crate::state::State::from_scan(Scan {
         groups: vec![],
         panes: Default::default(),
@@ -2028,37 +2006,38 @@ fn held_prefix_repeats_keep_nav_steady() {
     rt.handle_stdin_bytes(b"\x07", &Selection::default());
     assert!(rt.prefix_active(), "more hold-repeats stay steady");
     rt.handle_stdin_bytes(b"\x1b[7;5:3u", &Selection::default());
-    assert!(
-        rt.prefix_active(),
-        "the release ends the hold; ready survives"
-    );
+    assert!(!rt.prefix_active(), "the release cancels the chord");
     assert!(!rt.mouse_state.nav_holding);
     rt.handle_stdin_bytes(b"t", &Selection::default());
-    assert!(!rt.prefix_active(), "the command key resolves it");
+    assert!(!rt.prefix_active());
 }
 
 #[test]
-fn holding_the_prefix_keeps_resize_commands_armed() {
-    // While the prefix key is held, each resize arrow keeps working: the arrow clears
-    // ready, the held key's autorepeat re-arms it, so the next arrow is a command
-    // again, and the prefix-active signal (the hint bar / auto-hide nav show) stays
-    // live for the whole hold instead of dropping on the first arrow.
+fn a_command_consumes_the_prefix_and_the_repeat_window_keeps_resizing() {
+    // The first command key CONSUMES the prefix: ready clears, so the bar/nav show
+    // drops immediately even while the key is still held. Continuation (mashing more
+    // arrows while holding) is the RUNTIME repeat window (bare Ctrl-arrows), not a
+    // re-armed prefix, so the bar stays hidden the whole time.
     let mut rt = rt_terminal_focus_with_session();
-    rt.handle_stdin_bytes(b"\x07", &Selection::default()); // prefix down: +ready +holding
-    assert!(rt.prefix_active());
+    rt.handle_stdin_bytes(b"\x07", &Selection::default()); // prefix down: +ready
+    assert!(rt.prefix_active(), "the bar shows while ready");
     rt.handle_stdin_bytes(b"\x1b[1;5C", &Selection::default()); // Ctrl+Right resizes
     assert!(
-        rt.prefix_active(),
-        "holding keeps the signal live after the arrow"
+        !rt.prefix_active(),
+        "the command consumes the prefix so the bar hides at once"
     );
-    rt.handle_stdin_bytes(b"\x07", &Selection::default()); // autorepeat re-arms ready
-    rt.handle_stdin_bytes(b"\x1b[1;5C", &Selection::default()); // Ctrl+Right resizes again
+    rt.handle_stdin_bytes(b"\x07", &Selection::default()); // held prefix's autorepeat
     assert!(
-        rt.prefix_active(),
-        "a second arrow still works and stays live"
+        !rt.prefix_active(),
+        "an autorepeat never re-arms a consumed ready"
+    );
+    rt.handle_stdin_bytes(b"\x1b[1;5C", &Selection::default()); // bare Ctrl+Right
+    assert!(
+        !rt.prefix_active(),
+        "the repeat window resizes without re-arming the bar"
     );
     rt.handle_stdin_bytes(b"\x1b[7;5:3u", &Selection::default()); // release
-    assert!(!rt.prefix_active(), "both states clear → the signal drops");
+    assert!(!rt.prefix_active());
 }
 
 #[test]
