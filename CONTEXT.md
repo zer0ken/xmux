@@ -184,7 +184,7 @@ UI elements a user perceives as distinct things:
   The text colour carries both the host and the mux on a session card's context line;
   the accent belongs to the LOWEST level the card displays - the session name on a
   session card, the mux on a host-state card that has no session to name. The one mark
-  that keeps its own colour is the unreachable host's `⚠`, which stays danger red as a
+  that keeps its own colour is the unreachable host's `⚠`, which stays danger yellow as a
   failure, and the scanning spinner stays pending yellow. A settled host-state card is a
   single host row: the unreachable one carries the `⚠` mark ahead of its host name, and
   a reachable empty host's card carries no word at all (its screen states "no sessions").

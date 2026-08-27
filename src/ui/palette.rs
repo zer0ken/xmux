@@ -96,11 +96,11 @@ pub(crate) const AUTO_LIGHT: &str = "auto-light";
 /// ANSI set - the level colours read on black, the accent pops on it.
 const fn auto_dark() -> Palette {
     Palette {
-        accent: Color::LightYellow,
+        accent: Color::LightGreen,
         overlay: Color::DarkGray,
         border_active: Color::White,
         border_inactive: Color::DarkGray,
-        border_hover: Color::LightYellow,
+        border_hover: Color::LightGreen,
         number: Color::DarkGray,
         separator: Color::DarkGray,
         connector: Color::DarkGray,
@@ -110,7 +110,7 @@ const fn auto_dark() -> Palette {
         bar_accent: Color::White,
         text: Color::White,
         pending: Color::Yellow,
-        danger: Color::Red,
+        danger: Color::LightYellow,
         selection_bg: None,
     }
 }
@@ -121,11 +121,11 @@ const fn auto_dark() -> Palette {
 /// bar of its own.
 const fn auto_light() -> Palette {
     Palette {
-        accent: Color::Yellow,
+        accent: Color::Green,
         overlay: Color::DarkGray,
         border_active: Color::Black,
         border_inactive: Color::White,
-        border_hover: Color::Yellow,
+        border_hover: Color::Green,
         number: Color::DarkGray,
         separator: Color::DarkGray,
         connector: Color::DarkGray,
@@ -135,7 +135,7 @@ const fn auto_light() -> Palette {
         bar_accent: Color::White,
         text: Color::Black,
         pending: Color::LightYellow,
-        danger: Color::LightRed,
+        danger: Color::Yellow,
         selection_bg: None,
     }
 }
@@ -298,16 +298,20 @@ mod tests {
     fn resolve_theme_resolves_both_and_rejects_unknown() {
         let (name, p) = resolve_theme("auto-dark").unwrap();
         assert_eq!(name, "auto-dark");
-        assert_eq!(p.accent, Color::LightYellow);
+        assert_eq!(p.accent, Color::LightGreen);
         assert_eq!(p.text, Color::White);
-        assert_eq!(p.border_hover, Color::LightYellow);
+        assert_eq!(p.border_hover, Color::LightGreen);
         assert_eq!(p.overlay, Color::DarkGray);
+        assert_eq!(p.danger, Color::LightYellow);
+        assert_eq!(p.pending, Color::Yellow);
         let (name, p) = resolve_theme("auto-light").unwrap();
         assert_eq!(name, "auto-light");
-        assert_eq!(p.accent, Color::Yellow);
+        assert_eq!(p.accent, Color::Green);
         assert_eq!(p.overlay, Color::DarkGray);
         assert_eq!(p.border_inactive, Color::White);
         assert_eq!(p.text, Color::Black);
+        assert_eq!(p.danger, Color::Yellow);
+        assert_eq!(p.pending, Color::LightYellow);
         assert!(resolve_theme("nope").is_none());
         assert!(resolve_theme("").is_none());
     }
