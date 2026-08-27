@@ -8,15 +8,17 @@ use crate::ui::palette;
 /// Whether the hint bar floats over the whole window this frame instead of sitting in
 /// the nav column.
 ///
-/// Two states make it float, and they are the two where xmux must speak RIGHT NOW: the
-/// prefix is armed (the cheatsheet is wanted, and says more than a nav column fits), or
-/// a refusal flash is showing while the nav is hidden (there is no nav row to put it in,
-/// and a refusal the user cannot see is worse than a row borrowed for a moment).
+/// Three states make it float, and they are the three where xmux must speak RIGHT
+/// NOW: the prefix is armed (the cheatsheet is wanted, and says more than a nav column
+/// fits), an input is open (the line being typed needs the room, and the user must see
+/// it even when the nav is hidden), or a refusal flash is showing while the nav is
+/// hidden (there is no nav row to put it in, and a refusal the user cannot see is worse
+/// than a row borrowed for a moment).
 ///
 /// Scan progress and the active filter deliberately do NOT float: they persist, and a
 /// hidden nav means the user asked for the whole screen to be the mux.
 fn hint_bar_floats(nav_width: u16, state: &crate::state::State) -> bool {
-    state.chrome.armed || (nav_width == 0 && !state.chrome.flash.is_empty())
+    state.is_inputting() || state.chrome.armed || (nav_width == 0 && !state.chrome.flash.is_empty())
 }
 
 /// Where the hint bar actually paints. At rest it is the nav-local rect
@@ -716,19 +718,16 @@ impl Switcher {
         }
     }
 
-    /// Draws the active centered modal popup (help / confirm / input) shifted by
-    /// `popup_offset`, through the shared opaque `render_popup`, and caches its rect
-    /// for drag hit-testing. The single `popup` Option makes these mutually
-    /// exclusive.
+    /// Draws the active centered modal popup, shifted by `popup_offset`, through the
+    /// shared opaque `render_popup`, and caches its rect for drag hit-testing. Only the
+    /// keys help is a popup now: an input renders in the hint bar instead, so its
+    /// presence never draws a centered box here.
     fn render_modal_popup(&mut self, frame: &mut Frame, area: Rect, state: &crate::state::State) {
-        let (title, lines) = match &state.modal {
-            Some(Modal::Help) => modal::help_lines(&state.chrome.ui_prefix),
-            Some(Modal::Input(input)) => modal::input_lines(input),
-            None => {
-                self.popup_geo.rect = Rect::default();
-                return;
-            }
+        let Some(Modal::Help) = &state.modal else {
+            self.popup_geo.rect = Rect::default();
+            return;
         };
+        let (title, lines) = modal::help_lines(&state.chrome.ui_prefix);
         let inner_w = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
         // borders + a cell of right padding, at least 24 wide, never past the screen.
         // `.max(24).min(width)` (not `clamp`) so a sub-24-col terminal cannot panic.

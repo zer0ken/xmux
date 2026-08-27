@@ -68,14 +68,14 @@ refused.
 Every card carries a dim 0-based number in its left column, on the same row as the
 session it names. The selected card shows the selection mark there instead: its number
 is the address of where you already are. `prefix <digit>` jumps straight there
-and leaves a small popup open holding the number, so anything past 9 is reached by
-typing the rest of it (`prefix 1` then `2` lands on 12, then `7` on 127).
+and opens the jump input in the hint bar holding the number, so anything past 9 is
+reached by typing the rest of it (`prefix 1` then `2` lands on 12, then `7` on 127).
 
-The popup only accepts a digit that keeps the number addressing a real entry, so
+The jump input only accepts a digit that keeps the number addressing a real entry, so
 one, two, and three digit numbers behave identically: whatever the buffer shows is
 somewhere you can land. With ten sessions, `prefix 9` is refused outright with a
-brief message, and after `prefix 1` a second `9` is simply not taken. `Enter` closes
-the popup and keeps the selection; `Esc` closes it and returns to where you started.
+brief message, and after `prefix 1` a second `9` is simply not taken. `Enter` submits
+the input and keeps the selection; `Esc` cancels it and returns to where you started.
 Digits are prefix-gated, so a bare digit never jumps by accident.
 
 ## Prefix commands
@@ -132,8 +132,9 @@ forwarded raw to the session's active pane, so programs running inside the mux
 
 - **Help** (`prefix ?`): a scrollless key reference. `q` or `Esc` closes it;
   any other key is swallowed while it is open.
-- **Input dialogs** (filter, new session): type into the buffer, `Backspace`
-  deletes, `Enter` submits, `Esc` cancels.
+- **Input** (filter, new session, jump): the hint bar becomes the input line,
+  `[feature] guide: <buffer>` with the caret at the edit position. Type into the
+  buffer, `Backspace` deletes, `Enter` submits, `Esc` cancels.
 - **Jump** (`prefix <digit>`): digits only, and only digits that keep the number in
   range. It acts while open (each edit moves the selection), so `Enter` merely closes
   it and `Esc` restores where you started.

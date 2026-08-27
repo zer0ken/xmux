@@ -155,8 +155,8 @@ no function, and no test, so renaming code is never a documentation change.
   the row of the session it addresses, and `prefix <digit>` jumps to it. The selected
   card holds the selection mark in that same column instead. Selecting a card changes
   nothing else on the card (the address column keeps its width), so a
-  name holds its column as the selection passes over it. The popup stays
-  open so the number can grow, and accepts a digit only while the result still addresses
+  name holds its column as the selection passes over it. The input stays
+  open in the hint bar so the number can grow, and accepts a digit only while the result still addresses
   a real session, so one-, two-, and three-digit numbers behave identically. Each edit
   moves the selection; `Enter` keeps it, `Esc` returns to where the jump started.
 - **FR-B11** - Every colour xmux paints is an ANSI-16 slot, so the TERMINAL THEME

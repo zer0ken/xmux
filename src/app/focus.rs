@@ -24,7 +24,7 @@ pub enum Focus {
     Nav,
     /// Terminal view focused — keys forward to the selected session's active pane.
     Terminal,
-    /// A centered modal popup (help / inline input / kill-confirm) owns keys;
+    /// A modal (the help popup or the inline input) owns keys;
     /// `prior` is the view to restore when it closes.
     Popup { prior: ViewFocus },
     /// The right-click context menu owns input; `prior` is the view to restore.

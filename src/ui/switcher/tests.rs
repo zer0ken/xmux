@@ -85,12 +85,13 @@ impl Harness {
     }
 
     /// The hint bar's row, read at the width it actually paints: the nav column at
-    /// rest, the whole window while the prefix is armed (the armed bar floats over the
-    /// view). Reading the nav width unconditionally would clip the armed cheatsheet.
+    /// rest, the whole window while the prefix is armed or an input is open (both
+    /// float the bar over the view). Reading the nav width unconditionally would clip
+    /// the armed cheatsheet or the input line.
     fn hint_bar_text(&self) -> String {
         let buf = self.buf();
         let y = buf.area.height - 1;
-        let limit = if self.state.chrome.armed {
+        let limit = if self.state.chrome.armed || self.state.is_inputting() {
             buf.area.width
         } else {
             NAV_WIDTH.min(buf.area.width)
@@ -2911,6 +2912,39 @@ fn the_armed_hint_bar_floats_across_the_whole_window() {
 }
 
 #[tokio::test]
+async fn the_input_hint_bar_floats_across_the_whole_window() {
+    // An open input must be seen even with the nav hidden (auto-hide + terminal
+    // focus): like the armed bar, it floats to the window's bottom row and covers
+    // the grid, so what is being typed never disappears.
+    let mut state = crate::state::State::from_scan(sample());
+    let mut sw = Switcher::new(&mut state);
+    sw.open_input(InputMode::Filter, &mut state);
+    let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
+    // A grid packed edge to edge, so any cell the bar fails to cover shows an `X`.
+    let mut grid = crate::display::grid::Grid::new(30, 140);
+    let mut fill = Vec::new();
+    for r in 0..30u16 {
+        fill.extend(format!("\x1b[{};1H", r + 1).bytes());
+        fill.extend(std::iter::repeat_n(b'X', 140));
+    }
+    grid.feed(&fill);
+    term.draw(|f| sw.render(f, Some(&grid), true, NavSize::hidden(NAV_WIDTH), &state))
+        .unwrap();
+    let y = term.backend().buffer().area.height - 1;
+    let row: String = (0..140)
+        .map(|x| term.backend().buffer()[(x, y)].symbol())
+        .collect();
+    assert!(
+        row.contains("[filter] filter sessions:"),
+        "the input bar floats onto the hidden-nav bottom row: {row:?}"
+    );
+    assert!(
+        !row.contains('X'),
+        "and covers the grid across the whole row: {row:?}"
+    );
+}
+
+#[tokio::test]
 async fn a_jump_never_holds_a_number_no_session_carries() {
     // One, two, and three digit numbers behave identically because the popup only takes
     // a digit that keeps the number in range, so the buffer always names a real session.
@@ -3284,20 +3318,6 @@ async fn every_popup_type_is_opaque_over_a_colored_grid() {
     );
 
     let mut h = Harness::new(sample());
-    h.ch('/').await;
-    let g = blue_grid();
-    h.term
-        .draw(|f| {
-            h.sw.render(f, Some(&g), false, NavSize::visible(NAV_WIDTH), &h.state)
-        })
-        .unwrap();
-    assert_eq!(
-        interior_blue(h.buf()),
-        0,
-        "input popup interior must be opaque"
-    );
-
-    let mut h = Harness::new(sample());
     let build = row_index(
         &h,
         |r| matches!(r, RowRef::Session { sess } if sess.name == "build"),
@@ -3322,7 +3342,7 @@ async fn every_popup_type_is_opaque_over_a_colored_grid() {
 fn popup_border_press_then_drag_moves_the_rect() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
-    sw.open_input(InputMode::Filter, &mut state); // a small popup with room to move both ways
+    sw.show_help(&mut state); // the help popup, the one popup that remains
     let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
     term.draw(|f| sw.render(f, None, false, NavSize::hidden(NAV_WIDTH), &state))
         .unwrap();
@@ -3332,11 +3352,11 @@ fn popup_border_press_then_drag_moves_the_rect() {
         sw.begin_popup_drag(bx, by, &state),
         "press on the border grabs"
     );
-    sw.drag_popup(bx + 5, by + 3);
+    sw.drag_popup(bx + 5, by + 1);
     term.draw(|f| sw.render(f, None, false, NavSize::hidden(NAV_WIDTH), &state))
         .unwrap();
     assert_eq!(sw.popup_geo.rect.x, before.x + 5, "moved right by 5");
-    assert_eq!(sw.popup_geo.rect.y, before.y + 3, "moved down by 3");
+    assert_eq!(sw.popup_geo.rect.y, before.y + 1, "moved down by 1");
     sw.end_popup_drag();
     assert!(!sw.popup_drag_active());
 }
@@ -3367,12 +3387,12 @@ fn closed_popup_cannot_be_grabbed_even_with_a_stale_rect() {
     // stale rect. A press must NOT grab a popup that is no longer open.
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
-    sw.open_input(InputMode::Filter, &mut state);
+    sw.show_help(&mut state);
     let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
     term.draw(|f| sw.render(f, None, false, NavSize::hidden(NAV_WIDTH), &state))
         .unwrap();
     let r = sw.popup_geo.rect; // border rect is now cached
-    sw.close_input(&mut state); // close WITHOUT re-rendering → popup_rect is stale
+    state.modal = None; // close WITHOUT re-rendering → popup_rect is stale
     assert!(
         !sw.begin_popup_drag(r.x, r.y, &state),
         "a stale rect must not grab a closed popup"
@@ -3472,25 +3492,33 @@ fn feed_help_key_is_modal_and_closes_on_q_or_esc() {
 }
 
 #[tokio::test]
-async fn input_renders_as_a_centered_popup_not_the_bottom_pane() {
+async fn input_renders_in_the_hint_bar() {
+    // The input is not a centered popup any more: it lives in the hint bar, which
+    // floats across the window (like the armed bar) and reads `[filter] filter
+    // sessions: <buffer>` on its bottom row. No bordered box appears anywhere.
     let mut h = Harness::new(sample());
     h.ch('/').await; // open the filter input
-    let buf = h.buf();
-    let w = buf.area.width;
-    let last = buf.area.height - 1;
-    // The entry field is not on the bottom row.
-    let bottom: String = (0..w).map(|x| buf[(x, last)].symbol()).collect();
+    assert!(h.state.is_inputting(), "input open");
+    let w = h.buf().area.width;
+    let last = h.buf().area.height - 1;
+    let bottom: String = (0..w).map(|x| h.buf()[(x, last)].symbol()).collect();
     assert!(
-        !bottom.contains('❯'),
-        "entry must not be on the bottom row anymore:\n{bottom}"
+        bottom.contains("[filter] filter sessions:"),
+        "the bar shows the feature head and guide: {bottom:?}"
     );
-    // It is in a centered bordered box somewhere in the middle rows.
-    let whole: String = (0..buf.area.height)
+    let whole: String = (0..h.buf().area.height)
         .flat_map(|y| (0..w).map(move |x| (x, y)))
-        .map(|(x, y)| buf[(x, y)].symbol().to_string())
+        .map(|(x, y)| h.buf()[(x, y)].symbol().to_string())
         .collect();
-    assert!(whole.contains('❯'), "entry field present in a popup");
-    assert!(whole.contains("Esc to cancel"), "popup shows the Esc hint");
+    assert!(!whole.contains('╭'), "no popup box is drawn anywhere");
+    // Typing lands in the bar's input area.
+    h.ch('b').await;
+    h.ch('u').await;
+    let bottom: String = (0..w).map(|x| h.buf()[(x, last)].symbol()).collect();
+    assert!(
+        bottom.contains(": bu"),
+        "typed text lands in the bar: {bottom:?}"
+    );
 }
 
 #[tokio::test]
