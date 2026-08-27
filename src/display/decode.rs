@@ -302,6 +302,24 @@ fn kitty_kind(ev: &KittyEvent) -> ratatui::crossterm::event::KeyEventKind {
     }
 }
 
+/// The base-key codepoint a terminal reports for the RELEASE of a C0 control
+/// prefix. Windows Terminal's `getKittyBaseKey` strips the Ctrl modifier and sends
+/// the letter (C-g releases as `CSI 103;5:3u`, code 103 = 'g'), while kitty itself
+/// reports the control byte (7). The prefix's release is either code.
+pub(crate) fn kitty_prefix_base(prefix: u8) -> u32 {
+    match prefix {
+        0x00 => 0x20,                        // C-Space
+        0x01..=0x1a => prefix as u32 + 0x60, // C-a..C-z → 'a'..'z'
+        0x1b => 0x5b,                        // C-[
+        0x1c => 0x5c,                        // C-\
+        0x1d => 0x5d,                        // C-]
+        0x1e => 0x5e,                        // C-^
+        0x1f => 0x5f,                        // C-_
+        0x7f => 0x3f,                        // C-?
+        b => b as u32,
+    }
+}
+
 /// Decodes the modifier from a CSI arrow's params (`1;<m>` → bitfield in `m-1`:
 /// Shift=1, Alt=2, Ctrl=4). Empty/absent params (a bare arrow) → no modifiers.
 fn csi_modifiers(params: &[u8]) -> KeyModifiers {
@@ -465,6 +483,31 @@ mod tests {
         assert!(parse_kitty_seq(b"\x1b[1;5A", 0).is_none());
         // An SGR mouse report is not a key event.
         assert!(parse_kitty_seq(b"\x1b[<0;10;5M", 0).is_none());
+    }
+
+    #[test]
+    fn windows_terminal_release_reports_the_base_key_not_the_control_byte() {
+        // WT's getKittyBaseKey strips Ctrl and reports the letter for the release
+        // (C-g → 103 = 'g'), so the release code is the base key, not the control
+        // byte 7. The prefix's release must be recognised as either.
+        let (_, ev) = parse_kitty_seq(b"\x1b[103;5:3u", 0).unwrap();
+        assert_eq!(
+            (ev.code, ev.modifiers, ev.kind),
+            (103, 4, 3),
+            "C-g release arrives as the base key 'g' with ctrl"
+        );
+        assert_eq!(kitty_prefix_base(0x07), 0x67, "C-g's base key is 'g'");
+        assert_eq!(kitty_prefix_base(0x02), 0x62, "C-b's base key is 'b'");
+        assert_eq!(kitty_prefix_base(0x00), 0x20, "C-Space's base key is space");
+    }
+
+    #[test]
+    fn windows_terminal_cg_release_decodes_to_the_base_key_char() {
+        use ratatui::crossterm::event::KeyEventKind;
+        let evs = KeyDecoder::new().feed(b"\x1b[103;5:3u");
+        assert_eq!(evs.len(), 1);
+        assert_eq!(evs[0].code, KeyCode::Char('g'));
+        assert_eq!(evs[0].kind, KeyEventKind::Release);
     }
 
     #[test]

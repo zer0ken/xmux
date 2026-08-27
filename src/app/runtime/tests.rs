@@ -264,17 +264,20 @@ fn reconciled_nav_width_hides_only_when_focused_and_enabled_and_no_prefix() {
 #[test]
 fn apply_width_delta_is_write_free_and_reports_change() {
     let mut w = 48u16;
-    assert!(apply_width_delta(1, &mut w), "a real delta reports changed");
+    assert!(
+        apply_width_delta(1, &mut w, "C-g"),
+        "a real delta reports changed"
+    );
     assert_eq!(w, 49);
     assert!(
-        !apply_width_delta(0, &mut w),
+        !apply_width_delta(0, &mut w, "C-g"),
         "a zero delta reports unchanged"
     );
     assert_eq!(w, 49);
     // Clamp at the max: a delta that cannot move the width reports unchanged.
     let mut hi = NAV_WIDTH_MAX;
     assert!(
-        !apply_width_delta(10, &mut hi),
+        !apply_width_delta(10, &mut hi, "C-g"),
         "a clamped no-op reports unchanged"
     );
     assert_eq!(hi, NAV_WIDTH_MAX);
@@ -293,17 +296,24 @@ fn spinner_frame_advances_with_wall_clock() {
 
 #[test]
 fn nav_width_adjust_clamps() {
-    assert_eq!(adjust_nav_width(48, 1), 49);
-    assert_eq!(adjust_nav_width(48, -1), 47);
+    // The floor is the resting prefix "C-g" (3 cells) plus a one-cell gap each side.
+    let min = nav_width_min("C-g");
+    assert_eq!(adjust_nav_width(48, 1, "C-g"), 49);
+    assert_eq!(adjust_nav_width(48, -1, "C-g"), 47);
     assert_eq!(
-        adjust_nav_width(NAV_WIDTH_MIN, -1),
-        NAV_WIDTH_MIN,
-        "clamped at min"
+        adjust_nav_width(min, -1, "C-g"),
+        min,
+        "clamped at the prefix floor"
     );
     assert_eq!(
-        adjust_nav_width(NAV_WIDTH_MAX, 1),
+        adjust_nav_width(NAV_WIDTH_MAX, 1, "C-g"),
         NAV_WIDTH_MAX,
         "clamped at max"
+    );
+    assert_eq!(
+        nav_width_min("C-Space"),
+        9,
+        "a wider prefix raises the floor"
     );
 }
 

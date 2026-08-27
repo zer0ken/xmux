@@ -209,8 +209,9 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-B16** - The nav's width and the portrait band's height are both live: the saved
   pref seeds them, the resize keys step them, a border drag sets them, and auto-hide takes
   the width away while no prefix interaction is live (a live one brings the nav back). The
-  width has a floor at just past the resting prefix bar, so the border can collapse to
-  right after the `C-g` status line. The values therefore travel as ONE value carrying
+  width has a floor at the resting prefix label plus a one-cell gap each side, so the
+  border can collapse to just past the `C-g` status line and a wider configured prefix
+  raises the floor. The values therefore travel as ONE value carrying
   the width the user set, the width on screen, and the band height, so the renderer, the
   PTY sizing and mouse hit-testing cannot read three different answers, and the effective
   width keeps its single owner. Hiding the nav does not move the layout: the turnover

@@ -9,13 +9,14 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
-use crate::app::runtime::{NAV_HEIGHT_MAX, NAV_HEIGHT_MIN, NAV_WIDTH_MAX, NAV_WIDTH_MIN};
+use crate::app::runtime::{NAV_HEIGHT_MAX, NAV_HEIGHT_MIN, NAV_WIDTH_MAX};
 use crate::display::dispatch::Action;
 
 /// The nav width a view border drag to 1-based screen column `col` sets: the dragged
 /// column becomes the view border position (= the nav width), clamped to the allowed range.
-pub(crate) fn view_border_drag_width(col: u16) -> u16 {
-    col.saturating_sub(1).clamp(NAV_WIDTH_MIN, NAV_WIDTH_MAX)
+pub(crate) fn view_border_drag_width(col: u16, ui_prefix: &str) -> u16 {
+    col.saturating_sub(1)
+        .clamp(crate::app::runtime::nav_width_min(ui_prefix), NAV_WIDTH_MAX)
 }
 
 /// The Top-layout nav height a horizontal view border drag to 1-based screen row `row`
@@ -138,7 +139,13 @@ pub(crate) fn resolve_nav_key(
     is_inputting: bool,
 ) -> Option<Action> {
     use ratatui::crossterm::event::KeyEventKind;
-    let is_prefix_key = key.code == KeyCode::Char(prefix as char);
+    // The prefix key is its control byte (kitty presses, legacy bytes), and on a
+    // release also the base key a terminal reports instead (Windows Terminal sends
+    // the letter, e.g. C-g → 'g', rather than the control byte).
+    let is_prefix_key = key.code == KeyCode::Char(prefix as char)
+        || (key.kind == KeyEventKind::Release
+            && char::from_u32(crate::display::decode::kitty_prefix_base(prefix))
+                .is_some_and(|c| key.code == KeyCode::Char(c)));
     if key.kind == KeyEventKind::Release {
         // A key release never acts; the prefix's release clears the hold (the
         // terminal reports it only with the kitty protocol).
@@ -568,6 +575,42 @@ mod tests {
     }
 
     #[test]
+    fn a_windows_terminal_release_clears_the_nav_hold() {
+        // WT's getKittyBaseKey strips Ctrl and reports the letter for the release
+        // (C-g → CSI 103;5:3u → decodes to Char('g') Release), not the control
+        // byte. It must still end the prefix's hold, or the status bar never hides.
+        use ratatui::crossterm::event::{KeyEvent, KeyEventKind};
+        let mut armed = false;
+        let mut holding = false;
+        resolve_nav_key(
+            KeyEvent::new(KeyCode::Char('\x07'), KeyModifiers::NONE),
+            &mut armed,
+            &mut holding,
+            0x07,
+            false,
+        );
+        assert!(armed && holding);
+        let rel = KeyEvent::new_with_kind(
+            KeyCode::Char('g'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
+        assert!(resolve_nav_key(rel, &mut armed, &mut holding, 0x07, false).is_none());
+        assert!(!holding && armed, "the WT base-key release ends the hold");
+        // A plain 'g' release (no ctrl) is not the prefix's and does not act either,
+        // but it must not wrongly arm or clear anything it should not.
+        let mut armed2 = false;
+        let mut holding2 = false;
+        let rel2 = KeyEvent::new_with_kind(
+            KeyCode::Char('g'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
+        assert!(resolve_nav_key(rel2, &mut armed2, &mut holding2, 0x07, false).is_none());
+        assert!(!armed2 && !holding2);
+    }
+
+    #[test]
     fn a_command_clears_ready_only_and_an_autorepeat_rearms_it() {
         // The state machine: a key while ready clears ready only (holding survives
         // until the release), and a prefix autorepeat re-arms ready. So a command key
@@ -666,16 +709,22 @@ mod tests {
     #[test]
     fn view_border_drag_width_clamps_to_range() {
         // The dragged 1-based column becomes the 0-based nav width, clamped to range.
-        assert_eq!(view_border_drag_width(51), 50);
+        // The floor is the resting prefix "C-g" (3 cells) plus a one-cell gap each side.
+        assert_eq!(view_border_drag_width(51, "C-g"), 50);
         assert_eq!(
-            view_border_drag_width(5),
-            NAV_WIDTH_MIN,
-            "too far left clamps to min"
+            view_border_drag_width(5, "C-g"),
+            crate::app::runtime::nav_width_min("C-g"),
+            "too far left clamps to the prefix floor"
         );
         assert_eq!(
-            view_border_drag_width(500),
+            view_border_drag_width(500, "C-g"),
             NAV_WIDTH_MAX,
             "too far right clamps to max"
+        );
+        assert_eq!(
+            view_border_drag_width(5, "C-Space"),
+            crate::app::runtime::nav_width_min("C-Space"),
+            "a wider prefix raises the floor"
         );
     }
 

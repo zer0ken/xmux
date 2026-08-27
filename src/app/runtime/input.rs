@@ -206,7 +206,7 @@ impl Runtime {
                         dirty = true;
                     }
                 } else {
-                    let target = view_border_drag_width(ev.col);
+                    let target = view_border_drag_width(ev.col, &env.ui_prefix);
                     if target != *nav_width_natural {
                         *nav_width_natural = target;
                         dirty = true;
@@ -315,7 +315,9 @@ impl Runtime {
     pub(super) fn resize_axis(&mut self, horizontal: bool, delta: i32) -> bool {
         let top = self.switcher.layout() == crate::ui::switcher::ViewLayout::Top;
         match (horizontal, top) {
-            (true, false) => apply_width_delta(delta, &mut self.nav_width_natural),
+            (true, false) => {
+                apply_width_delta(delta, &mut self.nav_width_natural, &self.env.ui_prefix)
+            }
             (false, true) => {
                 let base = if self.nav_height == 0 {
                     crate::ui::switcher::default_nav_height(self.body_rows)

@@ -372,6 +372,7 @@ impl Runtime {
             crate::ui::prefs::load_nav_width(&env.xmux_dir)
                 .unwrap_or(crate::ui::switcher::NAV_WIDTH),
             0,
+            &env.ui_prefix,
         );
         let nav_width = nav_width_natural;
         // Restore the Top-layout nav height (0 = auto ~40%); a stale value is clamped at

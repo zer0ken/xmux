@@ -271,10 +271,15 @@ impl TermInput {
     /// nothing, because a legacy program has no key-up event).
     fn handle_kitty(&mut self, ev: &crate::display::decode::KittyEvent, fwd: &mut Vec<u8>) {
         let is_prefix = ev.code == self.prefix as u32;
+        // A release may carry the base key instead of the control byte (Windows
+        // Terminal reports the letter, e.g. C-g → 103 = 'g'), so the prefix's
+        // release is either code. Presses and repeats keep the control byte.
+        let is_prefix_release =
+            is_prefix || ev.code == crate::display::decode::kitty_prefix_base(self.prefix);
         match ev.kind {
             3 => {
                 // release: the key is up. The prefix's release ends the hold.
-                if is_prefix {
+                if is_prefix_release {
                     self.holding = false;
                 }
             }
@@ -439,6 +444,23 @@ mod tests {
         assert_eq!(fwd(&t.feed(b"a\x1b[97;1:3u")), b"a");
         // A WT hybrid release of Up is swallowed too.
         assert_eq!(t.feed(b"\x1b[1;1:3A"), Vec::<Action>::new());
+    }
+
+    #[test]
+    fn a_windows_terminal_release_clears_the_hold() {
+        // WT's getKittyBaseKey strips Ctrl and reports the letter for the release
+        // (C-g → CSI 103;5:3u, code 103 = 'g'), not the control byte. It must still
+        // end the prefix's hold, or the status bar never hides.
+        let mut t = m();
+        t.feed(&[0x07]); // press
+        assert!(t.is_armed() && t.is_holding());
+        assert_eq!(
+            t.feed(b"\x1b[103;5:3u"),
+            Vec::<Action>::new(),
+            "the release is swallowed"
+        );
+        assert!(!t.is_holding(), "the WT base-key release ends the hold");
+        assert!(t.is_armed(), "ready survives the release");
     }
 
     #[test]
