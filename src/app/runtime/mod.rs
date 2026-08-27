@@ -55,7 +55,7 @@ const FRAME_MS: u64 = 33;
 /// backoff so a genuinely-down host is retried at this cadence, never hot-looped.
 const RECONNECT_MS: u64 = 2000;
 
-pub(crate) const NAV_WIDTH_MIN: u16 = 20;
+pub(crate) const NAV_WIDTH_MIN: u16 = 4;
 pub(crate) const NAV_WIDTH_MAX: u16 = 100;
 
 /// The Top-layout nav height drag range. The min keeps a few nav rows; compute_regions
