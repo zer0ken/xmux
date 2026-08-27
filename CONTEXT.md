@@ -331,9 +331,10 @@ UI elements a user perceives as distinct things:
 - holding - the state while the prefix key is physically held down. A held key's
   autorepeat is read as still-holding rather than as a second press, so the status
   bar and the nav stay steady under a hold instead of toggling. A terminal that
-  reports key releases (the kitty protocol) is what makes holding observable;
-  a terminal that does not reads a repeated prefix as the doubled-prefix literal,
-  exactly as before.
+  reports key releases (the kitty protocol) is what makes the release observable;
+  a terminal that does not leaves the hold latched until a command key or a mouse
+  action resolves it, and its second press is read as a hold-repeat rather than as
+  the doubled-prefix literal.
 - popup - the rounded-bordered, opaque, centered (draggable) dialog a popup modal
   draws, its accent title in the top border. The help and the input dialog are popups.
 - prompt - the `❯` entry marker on an input dialog's edit line.

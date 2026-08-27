@@ -139,17 +139,19 @@ pub(crate) fn resolve_nav_key(
 ) -> Option<Action> {
     use ratatui::crossterm::event::KeyEventKind;
     let is_prefix_key = key.code == KeyCode::Char(prefix as char);
-    match key.kind {
-        KeyEventKind::Release => {
-            // A key release never acts; the prefix's release clears the hold (the
-            // terminal reports it only with the kitty protocol).
-            if is_prefix_key {
-                *holding = false;
-            }
-            return None;
+    if key.kind == KeyEventKind::Release {
+        // A key release never acts; the prefix's release clears the hold (the
+        // terminal reports it only with the kitty protocol).
+        if is_prefix_key {
+            *holding = false;
         }
-        KeyEventKind::Repeat if *holding && is_prefix_key => return None, // a hold-repeat
-        _ => {}
+        return None;
+    }
+    // A prefix key while the same key is still held (no release since its press) is a
+    // hold-repeat: the terminal re-sends the down while the key is held, and it must
+    // neither re-arm nor consume the ready state. Only the release ends the hold.
+    if is_prefix_key && *holding {
+        return None;
     }
     if *armed {
         *armed = false;
@@ -535,6 +537,18 @@ mod tests {
         );
         assert!(resolve_nav_key(rep, &mut armed, &mut holding, 0x07, false).is_none());
         assert!(armed && holding);
+        // Windows Terminal re-sends a held text key as a legacy PRESS (no event type
+        // on the repeat), so a plain press while holding must be a hold-repeat too:
+        // neither re-arms nor consumes the ready state.
+        let legacy_rep = KeyEvent::new(KeyCode::Char('\x07'), KeyModifiers::NONE);
+        assert!(resolve_nav_key(legacy_rep, &mut armed, &mut holding, 0x07, false).is_none());
+        assert!(armed && holding);
+        let legacy_rep2 = KeyEvent::new(KeyCode::Char('\x07'), KeyModifiers::NONE);
+        assert!(resolve_nav_key(legacy_rep2, &mut armed, &mut holding, 0x07, false).is_none());
+        assert!(
+            armed && holding,
+            "held repeats never toggle the armed state"
+        );
         // release (kitty) clears holding, produces no action, ready survives
         let rel = KeyEvent::new_with_kind(
             KeyCode::Char('\x07'),

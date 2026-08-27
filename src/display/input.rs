@@ -20,14 +20,13 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 pub struct TermInput {
     prefix: u8,
     armed: bool,
-    /// True while the prefix key is physically held down (set on the kitty press,
-    /// cleared on the kitty release). Stable under OS autorepeat, so the hint bar and
-    /// the auto-hide nav show stay put while the key is held.
+    /// True while the prefix key is physically held down (set on the prefix press,
+    /// cleared on the prefix release). While it is true a repeated prefix down is a
+    /// hold-repeat and is ignored, so the hint bar and the auto-hide nav show stay
+    /// put while the key is held. A terminal that reports releases (the kitty
+    /// protocol) is what makes the release visible; one that does not leaves the
+    /// hold latched until a command key or a mouse action resolves it.
     holding: bool,
-    /// True once a kitty release sequence has been observed, proving the terminal
-    /// reports key events. Until then (a legacy terminal), a repeated prefix is a
-    /// deliberate second press (doubled-prefix), exactly as before.
-    kitty_seen: bool,
     in_paste: bool,
     paste_scan: Vec<u8>,
 }
@@ -41,7 +40,6 @@ impl TermInput {
             prefix,
             armed: false,
             holding: false,
-            kitty_seen: false,
             in_paste: false,
             paste_scan: Vec::new(),
         }
@@ -103,17 +101,17 @@ impl TermInput {
             // must never be read as a command key, and a held prefix must not disarm.
             if let Some((end, ev)) = crate::display::decode::parse_kitty_seq(bytes, i) {
                 i = end;
-                self.kitty_seen = true;
                 self.handle_kitty(&ev, &mut fwd);
                 continue;
             }
             if self.armed {
                 let b0 = bytes[i];
                 if b0 == self.prefix {
-                    // A held prefix's repeat (a legacy byte while the key is still
-                    // down and the terminal reports releases) is swallowed, keeping
-                    // `ready`; a deliberate second press sends one literal prefix byte.
-                    if self.holding && self.kitty_seen {
+                    // A repeated prefix down while the key is still held (no release
+                    // since its press) is a hold-repeat: ignored, keeping `ready`.
+                    // A fresh press (a release landed in between) is a deliberate
+                    // second press and sends one literal prefix byte.
+                    if self.holding {
                         i += 1;
                         continue;
                     }
@@ -638,8 +636,11 @@ mod tests {
 
     #[test]
     fn double_prefix_sends_one_literal() {
+        // A fresh second press (the release landed between the two downs) sends a
+        // literal; a second down with no release is a hold-repeat and is ignored.
         let mut t = m();
-        t.feed(&[0x07]);
+        t.feed(&[0x07]); // press
+        t.feed(b"\x1b[7;5:3u"); // release ends the hold
         assert_eq!(fwd(&t.feed(&[0x07])), vec![0x07]);
     }
 
@@ -657,10 +658,21 @@ mod tests {
 
     #[test]
     fn double_prefix_then_trailing_forwards_literal_and_rest() {
-        // `C-g C-g abc` in one read: a literal prefix byte then the trailing input
-        // (no byte loss).
+        // `C-g` (release) `C-g abc` in one read: a literal prefix byte then the
+        // trailing input (no byte loss). A repeated down with no release is a
+        // hold-repeat and never forwards a literal.
         let mut t = m();
-        assert_eq!(fwd(&t.feed(b"\x07\x07abc")), vec![0x07, b'a', b'b', b'c']);
+        assert_eq!(
+            fwd(&t.feed(b"\x07\x1b[7;5:3u\x07abc")),
+            vec![0x07, b'a', b'b', b'c']
+        );
+        let mut t2 = m();
+        assert_eq!(
+            fwd(&t2.feed(b"\x07\x07abc")),
+            b"bc",
+            "a hold-repeat forwards nothing; the key after it is the (still-armed)\
+             command key and is swallowed, so only the trailing input forwards"
+        );
     }
 
     #[test]

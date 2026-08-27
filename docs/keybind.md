@@ -99,11 +99,13 @@ offscreen-card counts. Press the prefix and the same row widens to the whole win
 floating over the border and the live screen to list the keys that prefix unlocks; it
 shrinks back once the command key lands, or once any mouse action does (a click, a wheel,
 a drag: a prefix waits for the next input, whatever that turns out to be). Holding the
-prefix down keeps it there steadily on a terminal that reports key releases: the
+prefix down keeps it there steadily: the
 autorepeat is read as a held key, not as new presses, so the bar neither flickers nor
-spams a literal prefix to the pane. A terminal that does not report releases reads the
-autorepeat as repeated presses, exactly as it always has. Only the
-paint moves, never the layout, so arming the prefix never shifts a card.
+spams a literal prefix to the pane. The doubled-prefix literal (`prefix prefix`)
+fires on a fresh second press, which a terminal that reports key releases makes
+distinguishable; a terminal that does not reads that second press as a hold-repeat
+and ignores it. Only the paint moves, never the layout, so arming the prefix never
+shifts a card.
 
 With the nav auto-hidden the mux owns every row, status line included, until a prefix
 interaction starts: then the nav comes back for the moment it is needed, so a jump can

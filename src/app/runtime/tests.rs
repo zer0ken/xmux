@@ -1989,6 +1989,42 @@ fn prefix_holding_alone_makes_prefix_active() {
 }
 
 #[test]
+fn held_prefix_repeats_keep_nav_steady() {
+    use crate::ui::switcher::{Scan, Switcher};
+    // Windows Terminal re-sends a held text key as a legacy press (no event type on
+    // the repeat), so a repeated `C-g` down must be a hold-repeat: it neither re-arms
+    // nor disarms, keeping the hint bar and the auto-hide nav show put while the key
+    // is held. Only the release (kitty) ends the hold; ready then survives until a
+    // command key resolves it.
+    let mut state = crate::state::State::from_scan(Scan {
+        groups: vec![],
+        panes: Default::default(),
+    });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.state = state;
+    rt.switcher = switcher;
+    assert!(!rt.prefix_active());
+    rt.handle_stdin_bytes(b"\x07", &Selection::default());
+    assert!(rt.prefix_active(), "the prefix arms");
+    rt.handle_stdin_bytes(b"\x07", &Selection::default());
+    assert!(
+        rt.prefix_active(),
+        "a hold-repeat must not toggle the armed state"
+    );
+    rt.handle_stdin_bytes(b"\x07", &Selection::default());
+    assert!(rt.prefix_active(), "more hold-repeats stay steady");
+    rt.handle_stdin_bytes(b"\x1b[7;5:3u", &Selection::default());
+    assert!(
+        rt.prefix_active(),
+        "the release ends the hold; ready survives"
+    );
+    assert!(!rt.mouse_state.nav_holding);
+    rt.handle_stdin_bytes(b"t", &Selection::default());
+    assert!(!rt.prefix_active(), "the command key resolves it");
+}
+
+#[test]
 fn a_mouse_action_disarms_the_prefix_and_a_hover_does_not() {
     use crate::ui::switcher::{Scan, Switcher};
     // A prefix waits for the NEXT input, and a mouse action is input. Mouse bytes are

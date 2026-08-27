@@ -54,8 +54,8 @@ back to the app, which owns the registry.
 - The terminal guard asks the terminal to report key releases (kitty
   report-event-types), because a C0 control byte stream never carries a key-up.
   A terminal that declines the request keeps its legacy encodings, and the input
-  layer then treats a repeated prefix as a deliberate second press exactly as it
-  did before.
+  layer then has no release to end a held prefix's hold, so a second press reads
+  as a hold-repeat rather than as the doubled-prefix literal.
 - Rendering marks each wide (CJK) glyph's trailing cell as always-update so the
   renderer's incremental diff repaints it on a wide-to-narrow transition;
   otherwise that trailing cell is skipped and the terminal keeps the old glyph's
