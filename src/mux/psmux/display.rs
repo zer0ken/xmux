@@ -16,6 +16,32 @@ use crate::model::Selection;
 /// constructs it for a `PerSession` host.
 pub struct PsmuxDriver;
 
+/// The reattach guard: whether `show` may HOLD the live client instead of reattaching it.
+/// `reported` is what the live client itself says about which session it is on, and
+/// `selected` is the session the selection asks for.
+///
+/// THE INVARIANT: a psmux session change always reattaches, and the ONE thing that
+/// suspends that is the client's own report that it is already there. Display bookkeeping
+/// alone can never suspend it, because bookkeeping is exactly what goes stale when psmux
+/// moves the client itself, which is the case this exists for.
+///
+/// Three consequences follow from grounding it on the live report and nothing else:
+///
+/// - NO SIGNAL ALWAYS REATTACHES. A remote host, a mux that carries no session in its
+///   client's environment, a dead or unreadable child: each answers `None`, so the guard
+///   never holds and the display path behaves exactly as it did without any of this. That
+///   is what keeps a dead client from wedging the terminal view blank - a hold on a client
+///   that is not there would leave nothing to confirm and nothing to respawn.
+/// - IT HOLDS EXACTLY WHERE A REATTACH WOULD DESTROY THE USER'S MOVE. The client reports
+///   the selected session only after the nav has followed it there, which is the one
+///   moment reattaching would kill the client the user just switched.
+/// - A HOLD IS STILL A SHOW. `show` returns true either way, so the loop advances the
+///   display truth to the held session and the attach gate settles, instead of finding
+///   the same difference on the next beat and firing forever.
+fn holds_the_live_client(reported: Option<&str>, selected: &str) -> bool {
+    reported == Some(selected)
+}
+
 impl MuxDriver for PsmuxDriver {
     fn kind(&self) -> &str {
         "psmux"
@@ -33,43 +59,60 @@ impl MuxDriver for PsmuxDriver {
         let key = host_selection_key(host);
         let live = ctx.registry.contains(&key);
         let pre_mismatch = host.display.shows(&key) != Some(sel.session.as_str());
+        let reported = crate::driver::live_client_session(host, ctx.registry);
 
-        // REATTACH, always: request a fresh attach for the selected session on its own
-        // per-session server. This is the ONLY way psmux reaches another session, because
-        // psmux names no client from outside its own session, and a switch aimed at a tty
-        // psmux cannot resolve moves whatever client the command's own route reached,
-        // which is a separate psmux terminal of the user's. A reattach is addressed by
-        // session NAME, so it can only ever land on xmux's own PTY, and it never trusts
-        // display bookkeeping that says the client is already there. The stale attachment
-        // is KEPT in the registry (not removed) so its grid stays on screen until the new
-        // attach is confirmed: DisplayReady swaps it in and tears the stale one down
-        // (stale-while-revalidate). At first display there is nothing to keep, so the view
-        // is blank until Ready.
-        let reason = if live { "reshow" } else { "no-live-client" };
-        tracing::info!(
-            host = %sel.source,
-            model = "per-session",
-            decision = "reattach",
-            reason,
-            session = %sel.session,
-            "display_show"
-        );
-        host.display.clear(&key);
-        let mux_argv = host.mux.attach_plan(&sel.session);
-        let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
-        let mut argv = vec![cmd];
-        argv.extend(args);
-        let id = request_attach(
-            ctx.registry,
-            ctx.worker,
-            &mut host.display,
-            ctx.attach_seq,
-            &key,
-            argv,
-            (cols, rows),
-        );
-        tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
-        host.display.set_shows(&key, &sel.session);
+        if holds_the_live_client(reported.as_deref(), &sel.session) {
+            // HOLD: the live client says it is already on the selected session, so there
+            // is nothing to reach and reattaching would kill the client the user just
+            // moved with psmux's own key binding.
+            tracing::info!(
+                host = %sel.source,
+                model = "per-session",
+                decision = "hold",
+                reason = "client-reports-this-session",
+                session = %sel.session,
+                "display_show"
+            );
+            // The client's own report is the truth, so record it: the bookkeeping and the
+            // client now agree, and the next show reads a belief the client backs.
+            host.display.set_shows(&key, &sel.session);
+        } else {
+            // REATTACH: request a fresh attach for the selected session on its own
+            // per-session server. This is the ONLY way psmux reaches another session,
+            // because psmux names no client from outside its own session, and a switch
+            // aimed at a tty psmux cannot resolve moves whatever client the command's own
+            // route reached, which is a separate psmux terminal of the user's. A reattach
+            // is addressed by session NAME, so it can only ever land on xmux's own PTY.
+            // The stale attachment is KEPT in the registry (not removed) so its grid stays
+            // on screen until the new attach is confirmed: DisplayReady swaps it in and
+            // tears the stale one down (stale-while-revalidate). At first display there is
+            // nothing to keep, so the view is blank until Ready.
+            let reason = if live { "reshow" } else { "no-live-client" };
+            tracing::info!(
+                host = %sel.source,
+                model = "per-session",
+                decision = "reattach",
+                reason,
+                session = %sel.session,
+                "display_show"
+            );
+            host.display.clear(&key);
+            let mux_argv = host.mux.attach_plan(&sel.session);
+            let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
+            let mut argv = vec![cmd];
+            argv.extend(args);
+            let id = request_attach(
+                ctx.registry,
+                ctx.worker,
+                &mut host.display,
+                ctx.attach_seq,
+                &key,
+                argv,
+                (cols, rows),
+            );
+            tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
+            host.display.set_shows(&key, &sel.session);
+        }
 
         if let Some(win) = sel.window {
             lower_select_window(host, control, &sel.session, win);
@@ -106,6 +149,43 @@ mod tests {
     use crate::display::registry::AttachRegistry;
     use crate::link::HostManager;
     use crate::model::Selection;
+
+    /// The reattach guard's whole decision table. The rows that REATTACH are what keep
+    /// the psmux invariant intact, and the one row that HOLDS is the whole bug fix: the
+    /// user moved xmux's own client with psmux's own key binding, the nav followed it,
+    /// and reattaching now would kill the client the user just moved.
+    ///
+    /// The `None` rows are one case each of "no signal", and they all reattach. That is
+    /// what makes the guard safe to add: a remote psmux, a client that died, a client too
+    /// young to have set the variable, and a platform with no live environment to read all
+    /// keep the behavior psmux had before there was anything to read, so the display path
+    /// can never wedge on a client that is not there.
+    #[test]
+    fn the_reattach_guard_holds_only_on_the_live_client_s_own_report() {
+        let table = [
+            (None, "vfy-ps-b", false),
+            (Some("vfy-ps-a"), "vfy-ps-b", false),
+            (Some(""), "vfy-ps-b", false),
+            (Some("vfy-ps-b"), "vfy-ps-b", true),
+            (Some("vfy-ps-B"), "vfy-ps-b", false),
+        ];
+        for (reported, selected, holds) in table {
+            assert_eq!(
+                holds_the_live_client(reported, selected),
+                holds,
+                "reported={reported:?} selected={selected}"
+            );
+        }
+    }
+
+    /// A session name differing only in case is a DIFFERENT session: psmux addresses
+    /// sessions by exact name, so the reported name is compared exactly even though the
+    /// environment VARIABLE it arrived in was found without case.
+    #[test]
+    fn the_reattach_guard_compares_the_session_name_exactly() {
+        assert!(!holds_the_live_client(Some("Work"), "work"));
+        assert!(holds_the_live_client(Some("work"), "work"));
+    }
 
     /// The psmux driver owns the per-session reattach decision: `show()` REPLACES the
     /// single host-keyed display attachment (drop the stale one, request a fresh attach

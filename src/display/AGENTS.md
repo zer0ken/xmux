@@ -35,6 +35,11 @@ back to the app, which owns the registry.
 - Input decoding, dispatch, and mouse parsing turn terminal input into routing
   decisions or input actions. Terminal setup holds the prefix parsing, mouse
   capture, and the terminal guard.
+- Reading one environment variable out of a live attach child is its own seam,
+  beside the attachment. It answers what the running process holds NOW, not what
+  the spawn was given, which is the only way to observe a mux that moves its
+  client between sessions inside the client process. It names no mux and no
+  variable: the caller supplies the variable to ask for.
 
 ## Invariants
 
@@ -45,6 +50,11 @@ back to the app, which owns the registry.
 - An attachment reports the name its own PTY carries as a plain fact about that
   PTY. Whether that name identifies a mux client depends on where the attach child
   actually runs, which is a transport question this layer never answers.
+- The live child-environment read has exactly two answers: a value, or NO SIGNAL.
+  Absence never stands in for a value and a value is never inferred. A platform
+  that exposes only a process's exec-time environment has no signal, because that
+  answer would be stale rather than missing, and a stale answer is worse than
+  none.
 - Teardown must signal child and control resources without blocking the runtime.
 - The pump answers the child's terminal QUERIES (device status, device
   attributes) itself, since there is no real terminal behind the PTY; otherwise

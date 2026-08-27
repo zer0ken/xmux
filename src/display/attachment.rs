@@ -218,6 +218,16 @@ impl Attachment {
     pub fn child_tty(&self) -> Option<&str> {
         self.child_tty.as_deref()
     }
+    /// The value `name` holds in the attach CHILD's LIVE environment right now, read out
+    /// of the running process rather than remembered from the spawn. A mux that moves its
+    /// client between sessions inside the client process rewrites the child's environment
+    /// and nothing else, so this is the only place that move can be observed. `None` is
+    /// "no signal" (the child is gone, unreadable, or holds no such variable), never "the
+    /// variable is empty". Which variable to ask for is the mux's knowledge; this layer
+    /// names none.
+    pub fn child_env(&self, name: &str) -> Option<String> {
+        crate::display::child_env::read(&*self.child, name)
+    }
     /// Queue input bytes to the child (FIFO, off the loop).
     pub fn input(&self, bytes: Vec<u8>) {
         #[cfg(test)]

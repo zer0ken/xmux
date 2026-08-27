@@ -371,6 +371,38 @@ fn sync_selection_from_switcher(
     true
 }
 
+/// Follows a session change the MUX made to xmux's own display client: records `session`
+/// as what the host's display now shows, and moves the nav selection to that session's
+/// card. Returns whether the selection was moved.
+///
+/// The nav follows only in TERMINAL focus, where the user is driving the mux and the two
+/// regions must keep naming one session. In nav focus the selection is the user's own and
+/// the mux does not get to move it; the display belief is still recorded, because that is
+/// a fact about where the client is, not a claim about what the user picked.
+///
+/// The single owner of this move: every way a mux announces a client switch converges
+/// here, so a mux that reports it over a control channel and one whose client has to be
+/// read for it produce the same nav behavior.
+fn follow_display_session(
+    hosts: &mut crate::model::Hosts,
+    switcher: &mut crate::ui::switcher::Switcher,
+    state: &mut crate::state::State,
+    host: &str,
+    session: &str,
+) -> bool {
+    let Some(h) = hosts.get_mut(host) else {
+        return false;
+    };
+    let key = host_selection_key(h);
+    h.display.set_shows(&key, session);
+    if !state.focus.is_terminal_focused() {
+        return false;
+    }
+    let addr = crate::session::address_of(host, session);
+    switcher.select_address(&addr, state);
+    true
+}
+
 /// The size to give a PTY attachment: the terminal view (right of the nav +
 /// view border), NOT the whole terminal. Sizing a session to the full terminal makes
 /// the remote wrap at a width wider than the visible view, so a line overflows the

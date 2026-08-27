@@ -43,6 +43,11 @@ the card numbers it needs.
   select where each arm is one method on that struct. It resolves the source's own
   driver for display and reads the grid back from it; it branches on nothing
   mux-specific. The canonical selection it reads lives in `src/model`.
+- `runtime/` owns FOLLOWING a session change the mux made to xmux's own display
+  client, in one place for every way that change is learned: pushed over a
+  control channel, or read off the live client for a mux that pushes nothing.
+  The read runs on the animation beat and is mux-blind in both directions, since
+  each mux answers whether its client can be read at all.
 - `runtime/` also owns MUX DISCOVERY's async half: one fire-and-forget probe per
   remote host that named no mux, spawned right after the startup scans, whose
   answers become new sources through an effect. It is the loop's job because only
@@ -71,6 +76,14 @@ the card numbers it needs.
 - The selection, defined in `src/model`, is the canonical selected source /
   session value consumed by display selection and rendering.
 - The per-mux display decision lives in the driver implementation, never here.
+- The nav follows a mux-side client switch only in terminal focus. In nav focus
+  the selection is the user's and the mux does not move it, though where the
+  client actually is is still recorded, because that is a fact rather than a
+  claim about what the user picked.
+- A follow is refused while a reattach is in flight for the display key. The
+  stale client is deliberately kept on screen and still sits on the session the
+  selection just left, so reading it then would report the old session as a fresh
+  switch and drag the nav backwards.
 - Focus is the single source of truth for which view owns keys and which modal,
   if any, is open. Focus and modal transitions stay in the focus module; the app
   and the state call into it rather than open-coding view or modal bookkeeping.

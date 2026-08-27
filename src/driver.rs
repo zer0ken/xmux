@@ -134,6 +134,48 @@ macro_rules! log_display_inventory {
 }
 pub(crate) use log_display_inventory;
 
+/// The session xmux's own display client is on, as the CLIENT ITSELF reports it: the mux
+/// names the environment variable its client carries that in, and the live attach child
+/// is read for it. `None` is NO SIGNAL, and every reason for it is a reason to trust
+/// nothing: the mux's client does not carry its session in its environment, the host is
+/// not this machine, no client is attached for this host, or the child gave no answer.
+///
+/// It answers the question no control channel can for a mux that switches sessions inside
+/// its client process, and it answers it about xmux's OWN client and no other, because
+/// the child read is the one xmux spawned. Mux-blind: the variable's NAME is the mux's
+/// knowledge and the reachability of the process is the transport's, so this composes the
+/// two and names neither a mux nor a variable itself.
+///
+/// The transport gate is the honesty rule, not an optimization. A process's environment is
+/// readable only on the machine it runs on, so a host reached over ssh or through a WSL
+/// distribution has no such witness, and the local registry scope is what says whether a
+/// host's processes are this box's processes.
+pub fn live_client_session(host: &Host, registry: &AttachRegistry) -> Option<String> {
+    let (key, var) = session_witness(host)?;
+    registry.child_env(&key, var)
+}
+
+/// Where a host's display client can be READ for the session it is on: the display key
+/// its attachment is registered under, and the environment variable the mux carries the
+/// session in. `None` when the host has no witness at all, which is the honesty gate the
+/// read is built on and is decided WITHOUT looking at any attachment, so it answers the
+/// same before, during, and after one.
+///
+/// Two independent conditions, and both must hold. The MUX has to say its client carries
+/// its session where it can be read; a mux whose client does not is not read for it. And
+/// the host has to be THIS MACHINE, because a process's environment is readable only on
+/// the machine it runs on: a psmux over ssh or inside a WSL distribution runs its client
+/// on the far side, where nothing here can look, and the local registry scope is what says
+/// whether a host's processes are this box's processes. A host that fails either one keeps
+/// exactly the behavior it had before there was any witness to read.
+pub(crate) fn session_witness(host: &Host) -> Option<(String, &str)> {
+    if !host.transport.local_registry_scope() {
+        return None;
+    }
+    let var = host.mux.display_session_env()?;
+    Some((crate::app::runtime::host_selection_key(host), var))
+}
+
 /// Moves the session's active window server-side (the real attached client follows).
 /// Over the host's open `-CC` connection if any (no fresh ssh handshake), else a lowered
 /// select-window subprocess. Shared by both drivers' window-row handling.
@@ -182,6 +224,69 @@ pub(crate) mod tests {
         assert_eq!(t.session, "api");
         assert_eq!(t.window, Some(2));
         assert_eq!(t.into_selection("jup"), sel);
+    }
+
+    /// The LOCAL-ONLY gate. A psmux client's session is read out of the client PROCESS,
+    /// and a process is readable only on the machine it runs on. An ssh host and a WSL
+    /// distribution both run their client on the far side, so neither has a witness to
+    /// read, and this must be decided from the host alone - never from a value that
+    /// happens to be readable here, which would report THIS box's session for a remote
+    /// one.
+    #[test]
+    fn only_a_host_on_this_box_has_a_client_to_read() {
+        let local = crate::model::Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("psmux"),
+        );
+        let (key, var) = session_witness(&local).expect("this box's own psmux client");
+        assert_eq!(key, "local", "read under the host's display key");
+        assert_eq!(var, "PSMUX_SESSION_NAME");
+
+        let remote = crate::model::Host::new(
+            crate::transport::ssh("prod".into(), String::new(), "linux".into()),
+            crate::mux::for_binary("psmux"),
+        );
+        assert!(
+            session_witness(&remote).is_none(),
+            "an ssh host's client runs on the far side, where no process can be read"
+        );
+
+        let wsl = crate::model::Host::new(
+            crate::transport::wsl("Ubuntu-24.04".into()),
+            crate::mux::for_binary("psmux"),
+        );
+        assert!(
+            session_witness(&wsl).is_none(),
+            "a WSL distribution's client runs inside the distribution, not on this box"
+        );
+    }
+
+    /// A mux whose client does not carry its session in its environment has nothing to
+    /// read even on this box, so it keeps exactly the behavior it had before there was
+    /// anything to read.
+    #[test]
+    fn a_mux_that_names_no_variable_has_no_client_to_read() {
+        for bin in ["tmux", "zellij", "abduco", "screen"] {
+            let host =
+                crate::model::Host::new(crate::transport::local(None), crate::mux::for_binary(bin));
+            assert!(
+                session_witness(&host).is_none(),
+                "{bin} names no session variable on its client"
+            );
+        }
+    }
+
+    /// No attachment for the host means no client, and no client means NO SIGNAL - not a
+    /// session name guessed from anywhere else. This is the leg that keeps a torn-down or
+    /// not-yet-spawned display from being read as an answer.
+    #[test]
+    fn a_host_with_no_attachment_reports_no_session() {
+        let host = crate::model::Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("psmux"),
+        );
+        let registry = AttachRegistry::new();
+        assert!(live_client_session(&host, &registry).is_none());
     }
 
     #[test]

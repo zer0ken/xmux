@@ -136,22 +136,12 @@ impl Runtime {
                 if !h.matches_display_tty(&client) {
                     return false;
                 }
-                let key = host_selection_key(h); // Shared ⇒ key == host id
-                                                 // xmux's own display PTY was moved to `session` by the mux itself (e.g. the
-                                                 // user's prefix+s). Sync the display belief so the next reconcile's show()
-                                                 // guard sees the PTY is already on `session` and lowers NO switch-client.
-                if let Some(h) = hosts.get_mut(&host) {
-                    h.display.set_shows(&key, &session);
-                }
-                // Follow the nav selection to that session's card, but only in
-                // terminal focus (the user is driving the PTY, not the nav). In nav
-                // focus the selection is the user's, and xmux's own switch already
-                // left it where it belongs.
-                let terminal_focus = state.focus.is_terminal_focused();
-                if terminal_focus {
-                    let addr = crate::session::address_of(&host, &session);
-                    switcher.select_address(&addr, state);
-                }
+                // xmux's own display PTY was moved to `session` by the mux itself (e.g. the
+                // user's prefix+s). Sync the display belief so the next reconcile's show()
+                // guard sees the PTY is already on `session` and lowers NO switch-client,
+                // and move the nav selection to that session's card.
+                let terminal_focus =
+                    follow_display_session(hosts, switcher, state, &host, &session);
                 tracing::info!(
                     host = %host,
                     session = %session,
@@ -1118,8 +1108,64 @@ impl Runtime {
         self.switcher.apply_op_result(result, &mut self.state);
     }
 
+    /// Reads xmux's own display client for the session it is on and follows a change,
+    /// for a mux that reports its client switches nowhere else. Returns true when the nav
+    /// selection moved.
+    ///
+    /// A mux with a control channel pushes a client-switch notification and the follow
+    /// runs off that event. A mux without one moves its client INSIDE the client process,
+    /// so nothing is pushed and nothing can be asked: the client's own live state is the
+    /// only witness, and it has to be looked at. This is that look, on the animation beat,
+    /// which is fast enough that the nav moves with the screen and bounded so a busy PTY
+    /// cannot turn it into a per-output-chunk probe.
+    ///
+    /// Mux-blind, in both directions. Which muxes have a witness to read is answered by
+    /// each mux (a mux with none reports nothing to read, and this returns immediately),
+    /// and what to do with the answer is the one follow every mux shares. So a mux added
+    /// later joins by answering, not by being named here.
+    ///
+    /// A follow is REFUSED while a reattach is in flight for the display key. The stale
+    /// client is deliberately kept on screen until the fresh one is ready, and it is still
+    /// sitting on the session the selection just left - reading it then would report the
+    /// old session as a fresh switch and drag the nav backwards, undoing the move the user
+    /// just made.
+    pub(super) fn follow_live_display_session(&mut self) -> bool {
+        if self.state.selection.is_empty() {
+            return false;
+        }
+        let source = self.state.selection.source.clone();
+        let Some(host) = self.hosts.get(&source) else {
+            return false;
+        };
+        let key = host_selection_key(host);
+        if host.display.in_flight_contains(&key) {
+            return false;
+        }
+        let Some(session) = crate::driver::live_client_session(host, &self.registry) else {
+            return false;
+        };
+        if host.display.shows(&key) == Some(session.as_str()) {
+            return false;
+        }
+        let moved = follow_display_session(
+            &mut self.hosts,
+            &mut self.switcher,
+            &mut self.state,
+            &source,
+            &session,
+        );
+        tracing::info!(
+            host = %source,
+            session = %session,
+            terminal_focus = moved,
+            "display_client_session_changed"
+        );
+        moved
+    }
+
     /// The animation-tick arm: detect a console resize (push the new size to PTYs +
-    /// control clients, force a full repaint) and refresh the connecting-spinner set.
+    /// control clients, force a full repaint), follow a mux-side switch of xmux's own
+    /// display client, and refresh the connecting-spinner set.
     pub(super) fn on_tick(&mut self, term: &mut Term) {
         // Resize detection: poll the console size (an ioctl, not a stdin read).
         if let Ok((c, r)) = ratatui::crossterm::terminal::size() {
@@ -1137,6 +1183,9 @@ impl Runtime {
                 }
                 self.dirty = true;
             }
+        }
+        if self.follow_live_display_session() {
+            self.dirty = true;
         }
         // Spinner set = the selected session if its PTY is still connecting.
         let mut sp = HashSet::new();

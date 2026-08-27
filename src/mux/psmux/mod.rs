@@ -115,6 +115,16 @@ impl Mux for Psmux {
     // own terminal. A reattach is addressed by session NAME, so it can only ever land
     // on this driver's own PTY.
 
+    /// psmux switches sessions inside the CLIENT: it detaches from one session's server,
+    /// records where to go, and the same process reconnects to another server, rewriting
+    /// this variable each time it lands. The client sets it on its first attach too, so
+    /// the value always names the session the client is on right now, while its argv
+    /// keeps naming the session it started on. Because the variable belongs to the
+    /// process, it names xmux's OWN client and no other psmux terminal of the user's.
+    fn display_session_env(&self) -> Option<&str> {
+        Some("PSMUX_SESSION_NAME")
+    }
+
     fn control_argv(&self) -> Option<Vec<String>> {
         None
     }
