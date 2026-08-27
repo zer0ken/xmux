@@ -585,6 +585,37 @@ mod tests {
     }
 
     #[test]
+    fn a_noop_nav_arrow_still_consumes_ready() {
+        // prefix Left / prefix Up name the nav, which already has focus here: they are
+        // no-ops (produce no action) but still CONSUME the prefix, so the bar hides.
+        use ratatui::crossterm::event::KeyEvent;
+        for code in [KeyCode::Left, KeyCode::Up] {
+            let mut armed = false;
+            let mut holding = false;
+            resolve_nav_key(
+                KeyEvent::new(KeyCode::Char('\x07'), KeyModifiers::NONE),
+                &mut armed,
+                &mut holding,
+                0x07,
+                false,
+            );
+            assert!(armed);
+            assert!(
+                resolve_nav_key(
+                    KeyEvent::new(code, KeyModifiers::NONE),
+                    &mut armed,
+                    &mut holding,
+                    0x07,
+                    false
+                )
+                .is_none(),
+                "a no-op nav arrow produces no action"
+            );
+            assert!(!armed, "a no-op nav arrow still consumes ready");
+        }
+    }
+
+    #[test]
     fn a_windows_terminal_release_cancels_the_nav_chord() {
         // WT's getKittyBaseKey strips Ctrl and reports the letter for the release
         // (C-g → CSI 103;5:3u → decodes to Char('g') Release), not the control

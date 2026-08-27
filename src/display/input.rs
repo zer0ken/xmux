@@ -108,23 +108,15 @@ impl TermInput {
             if self.armed {
                 let b0 = bytes[i];
                 if b0 == self.prefix {
-                    // A repeated prefix down while the key is still held (no release
-                    // since its press) is a hold-repeat: ignored, keeping `ready`.
-                    // A fresh press (a release landed in between) is a deliberate
-                    // second press and sends one literal prefix byte.
-                    if self.holding {
-                        i += 1;
-                        continue;
-                    }
-                    // Doubled prefix → one literal prefix byte; rest is normal input.
-                    self.armed = false;
-                    self.holding = false;
-                    fwd.push(self.prefix);
+                    // A held prefix's autorepeat: swallowed, so ready stays put (the
+                    // bar does not flicker) and no literal prefix reaches the pane.
                     i += 1;
                     continue;
                 }
-                // Any key while ready clears ready only; holding persists until the
-                // release (the state machine: a key while ready → -ready).
+                // Any key while ready CONSUMES the prefix (even a no-op like focusing
+                // the already-focused view): ready clears, the bar hides. The hold is
+                // physical and clears only on the release (or a focus switch / mouse
+                // action).
                 self.armed = false;
                 // prefix ? / h / l keep terminal-view focus (help toggle, nav resize), so the
                 // rest of the read still forwards to the pane - flush, emit, continue.
@@ -304,16 +296,11 @@ impl TermInput {
             _ => {
                 // press.
                 if is_prefix {
-                    if self.armed && !self.holding {
-                        // a fresh press while ready: deliberate doubled prefix
-                        fwd.push(self.prefix);
-                        self.armed = false;
-                        self.holding = false;
-                    } else if !self.armed {
+                    if !self.armed {
                         self.armed = true;
                         self.holding = true;
                     }
-                    // else (armed && holding): the key is already held, this is a repeat
+                    // else: the key is already held, this is a held-key repeat (swallowed)
                 } else if self.armed {
                     // a non-prefix key mid-command in CSI-u form: swallow and consume it
                     self.armed = false;
@@ -529,15 +516,20 @@ mod tests {
     }
 
     #[test]
-    fn prefix_then_right_or_down_stays_in_terminal() {
+    fn prefix_then_right_or_down_stays_in_terminal_and_consumes() {
         // prefix → and prefix ↓ both name the terminal view, which already has focus:
-        // swallowed, no FocusNav, and any trailing bytes resume as forwarded input.
+        // swallowed, no FocusNav, and any trailing bytes resume as forwarded input. The
+        // no-op still CONSUMES the prefix, so the bar hides and the next key is bare.
         for seq in [&b"\x1b[C"[..], &b"\x1b[B"[..]] {
             let mut t = m();
             t.feed(&[0x07]);
             assert!(
                 t.feed(seq).is_empty(),
                 "seq {seq:?} produces no action (stays in mux)"
+            );
+            assert!(
+                !t.is_armed(),
+                "seq {seq:?} is a no-op but still consumes the prefix"
             );
         }
         let mut t2 = m();
