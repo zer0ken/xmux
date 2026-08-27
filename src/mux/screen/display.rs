@@ -14,7 +14,7 @@ use crate::display::grid::Grid;
 use crate::driver::{lower_select_window, DriverCtx, MuxDriver};
 use crate::model::Selection;
 
-/// screen: one per-user daemon, displayed through ONE per-host PTY that is REATTACHED
+/// screen: one daemon per session, displayed through ONE per-host PTY that is REATTACHED
 /// whenever the selected session changes.
 pub struct ScreenDriver;
 
