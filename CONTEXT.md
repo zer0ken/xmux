@@ -329,8 +329,7 @@ UI elements a user perceives as distinct things:
   action's reason). Never a "toast" or "notice".
 - scan indicator - the `scanning n/m…` progress shown in the hint bar while host
   probes are in flight, behind the same spinner on the same frame as the cards it
-  counts. It counts SOURCES; a scanning host's card spinner names that host's
-  unresolved level.
+  counts. It counts SOURCES; a scanning host's card spinner trails that host's card.
 - armed - the state between pressing the prefix and its command key. The hint bar
   reads it to swap from the resting prefix to the cheatsheet, so arming is a
   visible change and redraws the frame.
@@ -393,7 +392,7 @@ value on a card.
   assumed mux stays off its card: the card reads the host alone rather
   than claim a mux the failed probe never confirmed.
 - An answer that has not arrived is shown as in flight, never as a value.
-  A scanning host's unresolved level turns the spinner, and no card spins
+  A scanning host's card turns the spinner trailing its line, and no card spins
   for a session once its host has resolved.
 - A failure is shown as a failure, never dressed as a value. The
   unreachable mark and the refusal keep their own state colour, and the

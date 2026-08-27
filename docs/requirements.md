@@ -100,7 +100,9 @@ no function, and no test, so renaming code is never a documentation change.
 ## B. The switcher: "see the list, decide whether & where to move"
 
 - **FR-B1** - The nav renders ONE CARD PER SESSION across every reachable source,
-  most recently used first: a session card is a single row naming the session, hung
+  in the deterministic display order (local sources first, then WSL distros, then
+  remote hosts, each tier by source name, sessions by name): a session card is a
+  single row naming the session, hung
   under a non-selectable `{host}/{mux}` SECTION TITLE that names the whole group once.
   The list is flat, with
   no window or pane rows: xmux aggregates and switches, and the mux itself already shows

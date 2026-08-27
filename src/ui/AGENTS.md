@@ -115,7 +115,7 @@ flatten renders for the dump verb.
   cards move to the top / left, so a scan reads as the pending hosts draining toward the
   sessions they become.
 - A card's rect is decided by the PAINT and read back from it, in both layouts. Neither
-  layout puts cards on a fixed row pitch (heights vary, the side list parts its bands, the
+  layout puts cards on a fixed pitch the paint ignores (the side list parts its bands, the
   portrait flow runs columns), so a hit-test that measured its own pitch would land clicks
   on cards the renderer put elsewhere.
 - A scrollbar is RESERVED a column of the nav region, never overlaid on the cards: the

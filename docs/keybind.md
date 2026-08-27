@@ -26,7 +26,9 @@ passed through untouched rather than intercepted.
 ## Nav navigation
 
 These act on the nav while it holds focus. It holds one card per session, each source's
-cards together, the source you used most recently first. While a side column leaves the terminal view
+cards together under its `{host}/{mux}` section title, in a deterministic order
+(local sources first, then WSL distros, then remote hosts, each by source name, sessions
+by name). While a side column leaves the terminal view
 wider than it is tall, the nav IS that column and the cards run down it (wider than tall
 as it looks on screen, where a row is about two columns tall). Once the window
 is narrow or short enough that the column would leave the terminal view square or taller,
