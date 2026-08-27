@@ -147,9 +147,13 @@ impl Runtime {
         // user meant for the pane. Bare hover is not an action: the pointer drifting across
         // the screen must not break a chord that is still being typed.
         let idle_motion = ev.pressed && (ev.cb & 0x23) == 0x23;
-        if !idle_motion && (st.nav_armed || term_input.is_armed()) {
+        if !idle_motion
+            && (st.nav_armed || st.nav_holding || term_input.is_armed() || term_input.is_holding())
+        {
             st.nav_armed = false;
+            st.nav_holding = false;
             term_input.disarm();
+            term_input.drop_hold();
             dirty = true;
         }
         let in_mux = to_grid_local(term_area, ev.col, ev.row);

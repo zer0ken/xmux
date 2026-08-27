@@ -1960,6 +1960,27 @@ async fn prefix_r_in_terminal_focus_kicks_rescan() {
 }
 
 #[test]
+fn prefix_holding_alone_makes_prefix_active() {
+    use crate::ui::switcher::{Scan, Switcher};
+    // The hold latch alone (no armed latch) must keep the prefix-active signal live, so
+    // the hint bar and the auto-hide nav show stay put while the key is held down even
+    // before a command key is chosen.
+    let mut state = crate::state::State::from_scan(Scan {
+        groups: vec![],
+        panes: Default::default(),
+    });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.state = state;
+    rt.switcher = switcher;
+    assert!(!rt.prefix_active());
+    rt.mouse_state.nav_holding = true;
+    assert!(rt.prefix_active(), "holding keeps the signal live");
+    rt.mouse_state.nav_holding = false;
+    assert!(!rt.prefix_active());
+}
+
+#[test]
 fn a_mouse_action_disarms_the_prefix_and_a_hover_does_not() {
     use crate::ui::switcher::{Scan, Switcher};
     // A prefix waits for the NEXT input, and a mouse action is input. Mouse bytes are
