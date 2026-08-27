@@ -25,6 +25,22 @@ impl KeyDecoder {
                 0x1b => {
                     // Need at least ESC + `[` to start a CSI.
                     if i + 1 < self.buf.len() && self.buf[i + 1] == b'[' {
+                        // A kitty key event (`CSI ... u`, or Windows Terminal's
+                        // letter-final hybrid with an event type) is parsed first so
+                        // press/repeat/release reach the handler as kinds, and a
+                        // release is never mis-read as a fresh press. A plain legacy
+                        // CSI (an arrow, a mouse report) is not one and falls through.
+                        if let Some((end, ev)) = parse_kitty_seq(&self.buf, i) {
+                            if let Some(code) = kitty_keycode(&ev) {
+                                out.push(KeyEvent::new_with_kind(
+                                    code,
+                                    kitty_modifiers(ev.modifiers),
+                                    kitty_kind(&ev),
+                                ));
+                            }
+                            i = end;
+                            continue;
+                        }
                         // Scan for the CSI final byte (0x40..=0x7e) after the params/intermediates.
                         let seq_start = i + 2; // first byte after ESC [
                         let mut j = seq_start;
@@ -239,6 +255,53 @@ pub(crate) fn parse_kitty_seq(bytes: &[u8], i: usize) -> Option<(usize, KittyEve
     ))
 }
 
+/// kitty bitfield → crossterm modifiers (shift=1, alt=2, ctrl=4).
+fn kitty_modifiers(bits: u8) -> KeyModifiers {
+    let mut m = KeyModifiers::NONE;
+    if bits & 1 != 0 {
+        m |= KeyModifiers::SHIFT;
+    }
+    if bits & 2 != 0 {
+        m |= KeyModifiers::ALT;
+    }
+    if bits & 4 != 0 {
+        m |= KeyModifiers::CONTROL;
+    }
+    m
+}
+
+/// kitty key-code / hybrid final → crossterm KeyCode.
+fn kitty_keycode(ev: &KittyEvent) -> Option<KeyCode> {
+    if ev.final_byte != b'u' {
+        return match ev.final_byte {
+            b'A' => Some(KeyCode::Up),
+            b'B' => Some(KeyCode::Down),
+            b'C' => Some(KeyCode::Right),
+            b'D' => Some(KeyCode::Left),
+            b'H' => Some(KeyCode::Home),
+            b'F' => Some(KeyCode::End),
+            _ => None,
+        };
+    }
+    match ev.code {
+        27 => Some(KeyCode::Esc),
+        13 => Some(KeyCode::Enter),
+        9 => Some(KeyCode::Tab),
+        127 => Some(KeyCode::Backspace),
+        c @ 0..=31 => Some(KeyCode::Char(c as u8 as char)), // e.g. C-g = '\x07'
+        c => char::from_u32(c).map(KeyCode::Char),
+    }
+}
+
+fn kitty_kind(ev: &KittyEvent) -> ratatui::crossterm::event::KeyEventKind {
+    use ratatui::crossterm::event::KeyEventKind;
+    match ev.kind {
+        2 => KeyEventKind::Repeat,
+        3 => KeyEventKind::Release,
+        _ => KeyEventKind::Press,
+    }
+}
+
 /// Decodes the modifier from a CSI arrow's params (`1;<m>` → bitfield in `m-1`:
 /// Shift=1, Alt=2, Ctrl=4). Empty/absent params (a bare arrow) → no modifiers.
 fn csi_modifiers(params: &[u8]) -> KeyModifiers {
@@ -396,6 +459,25 @@ mod tests {
         assert!(parse_kitty_seq(b"\x1b[1;5A", 0).is_none());
         // An SGR mouse report is not a key event.
         assert!(parse_kitty_seq(b"\x1b[<0;10;5M", 0).is_none());
+    }
+
+    #[test]
+    fn kitty_sequences_decode_with_kinds() {
+        use ratatui::crossterm::event::KeyEventKind;
+        // C-g release arrives as CSI 7;5:3u: a Release event (the nav must clear holding).
+        let evs = KeyDecoder::new().feed(b"\x1b[7;5:3u");
+        assert_eq!(evs.len(), 1);
+        assert_eq!(evs[0].code, KeyCode::Char('\x07'));
+        assert_eq!(evs[0].kind, KeyEventKind::Release);
+        // WT hybrid: an Up repeat decodes as a Repeat Up, a release as Release Up.
+        let evs = KeyDecoder::new().feed(b"\x1b[1;1:2A");
+        assert_eq!(evs[0].code, KeyCode::Up);
+        assert_eq!(evs[0].kind, KeyEventKind::Repeat);
+        let evs = KeyDecoder::new().feed(b"\x1b[1;1:3A");
+        assert_eq!(evs[0].code, KeyCode::Up);
+        assert_eq!(evs[0].kind, KeyEventKind::Release);
+        // A normal arrow press stays a Press.
+        assert_eq!(KeyDecoder::new().feed(b"\x1b[A")[0].kind, KeyEventKind::Press);
     }
 
     #[test]
