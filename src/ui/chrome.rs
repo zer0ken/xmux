@@ -838,14 +838,14 @@ impl Chrome {
         } else if self.armed {
             // The prefix is held: name what it unlocks. Longest-first so a narrow nav
             // drops the rarer chords rather than clipping mid-word.
-            // Order: focus nav, focus mux, jump, new, hide, rescan, filter, help, quit.
+            // Order: focus nav, focus terminal, jump, new, hide, rescan, filter, help, quit.
             // The focus rows use arrow symbols that point at the view they focus. The
             // resize keys are left out of the cheatsheet (the help modal has them).
             fit(
                 &[
-                    format!(" {p} · ←/↑ focus nav · →/↓ focus mux · 0-9 jump to a session · n new session · t hide nav · r rescan · / filter · ? help · q quit"),
-                    format!(" {p} · ←/↑ nav · →/↓ mux · 0-9 jump to · n new · t hide · r rescan · / filter · ? help · q quit"),
-                    format!(" {p} · ←/↑ nav · →/↓ mux · 0-9 jump · n new · t hide · r · / · ? · q"),
+                    format!(" {p} · ←/↑ focus nav · →/↓ focus terminal · 0-9 jump to a session · n new session · t hide nav · r rescan · / filter · ? help · q quit"),
+                    format!(" {p} · ←/↑ nav · →/↓ terminal · 0-9 jump to · n new · t hide · r rescan · / filter · ? help · q quit"),
+                    format!(" {p} · ←/↑ nav · →/↓ terminal · 0-9 jump · n new · t hide · r · / · ? · q"),
                     format!(" {p} · ←/↑ · →/↓ · 0-9 · n · t · r · / · ? · q"),
                     format!(" {p}…"),
                 ],
@@ -1126,7 +1126,7 @@ mod tests {
         // At rest: the prefix alone. That is the whole resting cheatsheet.
         assert_eq!(c.hint_bar_text(80, &state).trim(), "C-g");
         // Armed: the keys the prefix unlocks. Wide enough for the full descriptions,
-        // the rows run in the bar's fixed order (focus nav, focus mux, jump, new,
+        // the rows run in the bar's fixed order (focus nav, focus terminal, jump, new,
         // hide, rescan, filter, help, quit) and the focus rows use arrow symbols that
         // point at the view they focus.
         c.set_armed(true);
@@ -1134,7 +1134,7 @@ mod tests {
         assert!(full.starts_with(" C-g "), "{full:?}");
         let order = [
             "←/↑ focus nav",
-            "→/↓ focus mux",
+            "→/↓ focus terminal",
             "0-9 jump to a session",
             "n new session",
             "t hide nav",
@@ -1157,8 +1157,8 @@ mod tests {
         // A narrower bar drops to short descriptions while keeping the focus guidance.
         let armed = c.hint_bar_text(120, &state);
         assert!(
-            armed.contains("→/↓ mux"),
-            "short bar keeps focus-mux: {armed:?}"
+            armed.contains("→/↓ terminal"),
+            "short bar keeps focus-terminal: {armed:?}"
         );
         for key in ["n new", "r rescan", "? help", "q quit"] {
             assert!(armed.contains(key), "armed bar lists {key:?}: {armed:?}");

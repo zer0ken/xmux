@@ -263,7 +263,7 @@ pub(crate) fn modal_kind(modal: &Option<Modal>) -> Option<crate::app::focus::Mod
 }
 
 /// Feeds a raw key read to the help modal, tmux view-mode style. While help is open
-/// every key is consumed (returns true - nothing reaches the tree or the terminal
+/// every key is consumed (returns true - nothing reaches the nav or the terminal
 /// view); `q` or a lone Esc closes it, every other key is swallowed. Returns false
 /// when help is closed, so the read falls through to normal routing.
 pub(crate) fn feed_help(modal: &mut Option<Modal>, bytes: &[u8]) -> bool {
@@ -281,7 +281,7 @@ pub(crate) fn feed_help(modal: &mut Option<Modal>, bytes: &[u8]) -> bool {
 /// Greedily word-wraps `text` to lines no wider than `width` display columns
 /// (Unicode-aware), breaking on spaces; a word longer than `width` is hard-split so
 /// nothing is ever clipped. Always returns at least one line. Used so the input
-/// prompt's description wraps across a narrow tree column instead of being truncated.
+/// prompt's description wraps across a narrow nav column instead of being truncated.
 pub(crate) fn wrap_text(text: &str, width: u16) -> Vec<String> {
     use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
     let width = (width as usize).max(1);
@@ -327,10 +327,10 @@ pub(crate) fn wrap_text(text: &str, width: u16) -> Vec<String> {
 /// shared modal-popup path. `prefix` is the configured `[ui] prefix` binding.
 pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
     // tmux mode-tree style: a right-aligned, bold key column, a `│` rule, then
-    // the description. `Head` breaks the flat list into tree/focus/terminal sections;
+    // the description. `Head` breaks the flat list into navigation/focus/terminal sections;
     // `Note` is a description-only row (the mux state has no keys of its own).
     //
-    // The tree and terminal sections have no configurable keys so they are static.
+    // The navigation and terminal sections have no configurable keys so they are static.
     // The focus section uses `prefix` so the help modal matches the
     // active binding from config.
     enum HelpRow {
@@ -362,19 +362,19 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
         HelpRow::Gap,
         // Focus section - prefix rows built from `prefix`.
         HelpRow::Head(format!("focus ({p} = prefix)")),
-        HelpRow::Key(format!("Enter · {p} →/↓"), "focus the mux".into()),
+        HelpRow::Key(format!("Enter · {p} →/↓"), "focus the terminal".into()),
         HelpRow::Key(
             format!("{p} Tab"),
-            "toggle focus between nav and mux".into(),
+            "toggle focus between nav and terminal".into(),
         ),
         HelpRow::Key(format!("{p} ←/↑ · {p} Esc"), "focus the nav".into()),
         HelpRow::Key(
             format!("{p} C-←/→"),
-            "resize tree width (Side); h/l too. repeats briefly".into(),
+            "resize nav width (side); h/l too. repeats briefly".into(),
         ),
         HelpRow::Key(
             format!("{p} C-↑/↓"),
-            "resize tree height (portrait Top)".into(),
+            "resize nav height (portrait); repeats briefly".into(),
         ),
         HelpRow::Key(
             format!("{p} t"),
@@ -382,12 +382,12 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
         ),
         HelpRow::Key(format!("{p} ?"), "show this help (q / Esc closes)".into()),
         HelpRow::Key("click a view".into(), "focus that view".into()),
-        HelpRow::Key("drag the view border".into(), "resize the tree".into()),
+        HelpRow::Key("drag the view border".into(), "resize the nav".into()),
         HelpRow::Key(format!("{p} q"), "quit".into()),
         HelpRow::Key(format!("{p} {p}"), format!("send a literal {p} to the mux")),
         HelpRow::Gap,
-        // Mux section - no configurable keys; keep as literals.
-        HelpRow::Head("mux (focused)".into()),
+        // Terminal section - no configurable keys; keep as literals.
+        HelpRow::Head("terminal (focused)".into()),
         HelpRow::Note("keys, scroll & clicks go to the pane"),
         HelpRow::Note("(the mux needs its own mouse mode on)"),
     ];

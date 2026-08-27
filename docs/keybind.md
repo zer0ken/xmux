@@ -2,9 +2,9 @@
 
 Under the app (entered by running `xmux` with no arguments) the screen is split
 into two views: a **nav list** of every reachable session on the left and the
-selected session's **live screen** on the right. Keyboard focus is on one view
+selected session's **terminal view** on the right. Keyboard focus is on one view
 at a time. You move down the list with the keys below; moving the selection
-switches the right view to that session in place. A tmux-style **prefix** gates
+switches the terminal view to that session in place. A tmux-style **prefix** gates
 the handful of commands that apply regardless of which view holds focus.
 
 ## The prefix
@@ -26,10 +26,10 @@ passed through untouched rather than intercepted.
 ## Nav navigation
 
 These act on the nav while it holds focus. It holds one card per session, each source's
-cards together, the source you used most recently first. While a side column leaves the live screen
+cards together, the source you used most recently first. While a side column leaves the terminal view
 wider than it is tall, the nav IS that column and the cards run down it (wider than tall
 as it looks on screen, where a row is about two columns tall). Once the window
-is narrow or short enough that the column would leave the live screen square or taller,
+is narrow or short enough that the column would leave the terminal view square or taller,
 the nav moves to a band across the top instead and the same cards flow down a column and
 then continue to the right, a whole source at a time. Either
 way the order is the same, so every key below moves along one axis: the next card is the
@@ -41,14 +41,14 @@ one below, or the top of the next column.
 | `PageUp` / `PageDown` | jump ten cards (wraps, like the arrows) |
 | `Home` / `End` | jump to the first / last card |
 
-`Enter` hands focus to the live screen, as does `prefix →`.
+`Enter` hands focus to the terminal view, as does `prefix →`.
 
 ## Nav actions
 
 xmux aggregates and switches; it does not edit what a mux already edits. There is
 no rename, no kill, and no window or pane command - do those in the mux itself.
 Two actions remain. `/` filter needs nav focus; `prefix n` / `prefix r` also work
-while the live screen is focused:
+while the terminal view is focused:
 
 | Key | Action |
 |---|---|
@@ -79,7 +79,7 @@ Digits are prefix-gated, so a bare digit never jumps by accident.
 ## Prefix commands
 
 Press the prefix, then the command key. These behave identically whether the
-nav or the live screen holds focus.
+nav or the terminal view holds focus.
 
 | Chord | Action |
 |---|---|
@@ -88,15 +88,16 @@ nav or the live screen holds focus.
 | `prefix t` | toggle auto-hide-nav (focusing the screen then gives it the full width) |
 | `prefix h` / `prefix l` | narrow / widen the nav |
 | `prefix Ctrl-←` / `prefix Ctrl-→` | narrow / widen the nav (then a bare `Ctrl-←`/`Ctrl-→` keeps resizing for a moment) |
+| `prefix Ctrl-↑` / `prefix Ctrl-↓` | shrink / grow the nav band's height in the portrait layout (then a bare `Ctrl-↑`/`Ctrl-↓` keeps resizing for a moment) |
 | `prefix prefix` | send one literal prefix byte to the focused session's pane |
 
 ## The status line
 
 The nav's bottom row is its status line. At rest it shows one thing, the prefix, and
-stops at the view border so the live screen keeps every row it has. In the portrait
+stops at the view border so the terminal view keeps every row it has. In the portrait
 layout it stops at its own text instead, because it shares that row with the
 offscreen-card counts. Press the prefix and the same row widens to the whole window,
-floating over the border and the live screen to list the keys that prefix unlocks; it
+floating over the border and the terminal view to list the keys that prefix unlocks; it
 shrinks back once the command key lands, or once any mouse action does (a click, a wheel,
 a drag: a prefix waits for the next input, whatever that turns out to be). Only the paint
 moves, never the layout, so arming the prefix never shifts a card.
@@ -112,16 +113,16 @@ refusal too long for the nav width wraps onto more rows rather than clipping.
 
 | Key | Action |
 |---|---|
-| `Enter` | move focus from the nav into the live screen |
-| `prefix Tab` | toggle focus between the nav and the live screen |
-| `prefix →` / `prefix ↓` | focus the live screen |
+| `Enter` | move focus from the nav into the terminal view |
+| `prefix Tab` | toggle focus between the nav and the terminal view |
+| `prefix →` / `prefix ↓` | focus the terminal view |
 | `prefix ←` / `prefix ↑` / `prefix Esc` | focus the nav |
 
-An arrow points at the view it focuses. The live screen is right of the nav on a
+An arrow points at the view it focuses. The terminal view is right of the nav on a
 landscape screen and below it on a portrait one, so `→` and `↓` both name it; `←` and
 `↑` both name the nav. An arrow naming the view that already has focus does nothing.
 
-When the live screen has focus, every key that is not a prefix chord is
+When the terminal view has focus, every key that is not a prefix chord is
 forwarded raw to the session's active pane, so programs running inside the mux
 (vim, a pager, a shell) see exact input.
 
@@ -146,7 +147,7 @@ forwarded raw to the session's active pane, so programs running inside the mux
 | drag a modal's border | move the modal |
 
 There is no context menu: every action a right-click could offer is either a
-plain click (focus, select) or a prefix chord. While the live screen is focused,
+plain click (focus, select) or a prefix chord. While the terminal view is focused,
 mouse events over it are forwarded to the pane (the mux needs its own mouse mode
 enabled to use them).
 
