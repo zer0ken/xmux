@@ -71,8 +71,9 @@ UI elements a user perceives as distinct things:
   the view screens.
 - hint bar - the nav's own status line: the bottom row(s) of the nav region, ending
   at the view border rather than spanning the screen, so the terminal view keeps
-  every row it owns. At rest it shows only the prefix; while the prefix is ARMED it
-  shows the keys that prefix unlocks. A flash, the scan indicator, and the active
+  every row it owns. At rest it shows only the prefix; while a prefix interaction is
+  live (the prefix armed, or its key still held) it shows the keys that interaction
+  unlocks. A flash, the scan indicator, and the active
   filter outrank both, in that order. A long flash wraps across as many nav rows as
   it needs instead of clipping. A shown flash paints it in the error style.
 - view screen - what fills the terminal-view region in place of a mux, for a selection
@@ -131,7 +132,8 @@ UI elements a user perceives as distinct things:
   column's first card always states its context, and heights that moved with the selection
   would reflow whole columns as the cursor passed.
 - nav size - the nav's live geometry as one value: the width the user SET, the width ON
-  SCREEN this frame (0 while auto-hide has taken it), and the portrait band's height the
+  SCREEN this frame (0 while auto-hide has taken it and no prefix interaction is live),
+  and the portrait band's height the
   user set (0 = auto). All three are settable while xmux runs, so every consumer takes the
   whole value rather than picking two of the three out of the runtime: the effective width
   has one owner, and a resize cannot reach the renderer and miss the PTY sizing. The set
@@ -322,9 +324,16 @@ UI elements a user perceives as distinct things:
 - scan indicator - the `scanning n/m…` progress shown in the hint bar while host
   probes are in flight, behind the same spinner on the same frame as the cards it
   counts. It counts SOURCES; a card's own spinner names one card's unresolved level.
-- armed - the state between pressing the prefix and its command key. The hint bar
-  reads it to swap from the resting prefix to the cheatsheet, so arming is a
-  visible change and redraws the frame.
+- armed - the state between pressing the prefix and its command key: the prefix is
+  ready for its command, and the hint bar reads it (together with HOLDING) to swap
+  from the resting prefix to the cheatsheet, so arming is a visible change and
+  redraws the frame.
+- holding - the state while the prefix key is physically held down. A held key's
+  autorepeat is read as still-holding rather than as a second press, so the status
+  bar and the nav stay steady under a hold instead of toggling. A terminal that
+  reports key releases (the kitty protocol) is what makes holding observable;
+  a terminal that does not reads a repeated prefix as the doubled-prefix literal,
+  exactly as before.
 - popup - the rounded-bordered, opaque, centered (draggable) dialog a popup modal
   draws, its accent title in the top border. The help and the input dialog are popups.
 - prompt - the `❯` entry marker on an input dialog's edit line.

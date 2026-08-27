@@ -33,8 +33,10 @@ back to the app, which owns the registry.
   whether a display transition actually changed the visible screen; the
   grid-changed log event fires only on a change.
 - Input decoding, dispatch, and mouse parsing turn terminal input into routing
-  decisions or input actions. Terminal setup holds the prefix parsing, mouse
-  capture, and the terminal guard.
+  decisions or input actions. It recognizes the kitty protocol's press / repeat /
+  release events, so a release is never mis-read as a keypress and a held key's
+  repeats keep its prefix interaction live. Terminal setup holds the prefix parsing,
+  mouse capture, and the terminal guard.
 
 ## Invariants
 
@@ -49,6 +51,11 @@ back to the app, which owns the registry.
 - The pump answers the child's terminal QUERIES (device status, device
   attributes) itself, since there is no real terminal behind the PTY; otherwise
   the child stalls on startup and the terminal view stays empty.
+- The terminal guard asks the terminal to report key releases (kitty
+  report-event-types), because a C0 control byte stream never carries a key-up.
+  A terminal that declines the request keeps its legacy encodings, and the input
+  layer then treats a repeated prefix as a deliberate second press exactly as it
+  did before.
 - Rendering marks each wide (CJK) glyph's trailing cell as always-update so the
   renderer's incremental diff repaints it on a wide-to-narrow transition;
   otherwise that trailing cell is skipped and the terminal keeps the old glyph's

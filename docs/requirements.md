@@ -142,7 +142,9 @@ no function, and no test, so renaming code is never a documentation change.
   rest it names only the prefix; the states that outrank it (a refusal, scan progress,
   an active filter) take the row while they apply. Arming the prefix widens the PAINT
   to the whole window so the cheatsheet floats over the view border and the live grid,
-  leaving the layout alone so no card shifts.
+  leaving the layout alone so no card shifts. When the nav is auto-hidden, a live
+  prefix interaction brings the nav back for the moment it needs it (a jump reads the
+  card numbers), and it hides again when the interaction ends.
 - **FR-B10** - Every unselected card carries a 0-based number in its address column, on
   the row of the session it addresses, and `prefix <digit>` jumps to it. The selected
   card holds the selection mark in that same column instead. Selecting a card moves
@@ -206,17 +208,20 @@ no function, and no test, so renaming code is never a documentation change.
   at the boundary.
 - **FR-B16** - The nav's width and the portrait band's height are both live: the saved
   pref seeds them, the resize keys step them, a border drag sets them, and auto-hide takes
-  the width away entirely. They therefore travel as ONE value carrying the width the user
-  set, the width on screen, and the band height, so the renderer, the PTY sizing and mouse
-  hit-testing cannot read three different answers, and the effective width keeps its single
-  owner. Hiding the nav does not move the layout: the turnover reads the width the user
-  SET, so the nav returns the shape it left.
+  the width away while no prefix interaction is live (a live one brings the nav back). The
+  width has a floor at just past the resting prefix bar, so the border can collapse to
+  right after the `C-g` status line. The values therefore travel as ONE value carrying
+  the width the user set, the width on screen, and the band height, so the renderer, the
+  PTY sizing and mouse hit-testing cannot read three different answers, and the effective
+  width keeps its single owner. Hiding the nav does not move the layout: the turnover
+  reads the width the user SET, so the nav returns the shape it left.
 - **FR-B17** - The status row is a bar where it owns its row and a label where it does not:
   the side column's bar fills its row, and so does any armed or flashing bar, which has to
   be readable over what it covers; the portrait band's resting bar paints its text plus a
   cell of padding, leaving the rest of the row to the offscreen counts.
 - **FR-B18** - A prefix waits for the next INPUT, and a mouse action is input: a click, a
-  release, a wheel or a drag disarms it in either focus, because mouse bytes are scanned
+  release, a wheel or a drag ends the whole prefix gesture (the armed wait and any
+  physically held key) in either focus, because mouse bytes are scanned
   out of the stream before either focus path's key handling sees them and a chord left
   half-open keeps its cheatsheet on screen and then eats the next key. Bare hover is not
   an action: the pointer drifting must not break a chord being typed.

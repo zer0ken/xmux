@@ -86,7 +86,7 @@ nav or the live screen holds focus.
 | `prefix q` | quit xmux (the only quit binding) |
 | `prefix ?` | toggle the keybinding help |
 | `prefix t` | toggle auto-hide-nav (focusing the screen then gives it the full width) |
-| `prefix h` / `prefix l` | narrow / widen the nav |
+| `prefix h` / `prefix l` | narrow / widen the nav (down to just past the resting `C-g` status line) |
 | `prefix Ctrl-←` / `prefix Ctrl-→` | narrow / widen the nav (then a bare `Ctrl-←`/`Ctrl-→` keeps resizing for a moment) |
 | `prefix prefix` | send one literal prefix byte to the focused session's pane |
 
@@ -98,14 +98,21 @@ layout it stops at its own text instead, because it shares that row with the
 offscreen-card counts. Press the prefix and the same row widens to the whole window,
 floating over the border and the live screen to list the keys that prefix unlocks; it
 shrinks back once the command key lands, or once any mouse action does (a click, a wheel,
-a drag: a prefix waits for the next input, whatever that turns out to be). Only the paint
-moves, never the layout, so arming the prefix never shifts a card.
+a drag: a prefix waits for the next input, whatever that turns out to be). Holding the
+prefix down keeps it there steadily on a terminal that reports key releases: the
+autorepeat is read as a held key, not as new presses, so the bar neither flickers nor
+spams a literal prefix to the pane. A terminal that does not report releases reads the
+autorepeat as repeated presses, exactly as it always has. Only the
+paint moves, never the layout, so arming the prefix never shifts a card.
 
-With the nav auto-hidden the mux owns every row, status line included. The bar still
-floats over the bottom of the window for the two things that must be seen the moment
-they happen: the armed prefix, and a refusal. Scan progress and the active filter
-persist, so they stay in the nav and never take a row back from a hidden one. Four states outrank the prefix while they apply, in order: a refusal message
-(in red), the scan progress, the active filter, and then the resting prefix. A
+With the nav auto-hidden the mux owns every row, status line included, until a prefix
+interaction starts: then the nav comes back for the moment it is needed, so a jump can
+read the card numbers, and it hides again when the interaction ends. The bar also floats
+over the bottom of the window for the two things that must be seen the moment they
+happen: a live prefix, and a refusal. Scan progress and the active filter
+persist, so they stay in the nav and never take a row back from a hidden one. Four
+states outrank the prefix while they apply, in order: a refusal message (in red), the
+scan progress, the active filter, and then the resting prefix. A
 refusal too long for the nav width wraps onto more rows rather than clipping.
 
 ## Focus

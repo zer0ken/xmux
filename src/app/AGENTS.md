@@ -25,6 +25,12 @@ and exposes the transitions the app and the state fold through. It is UI state,
 not display mechanics: it decides where input is routed, not how a PTY is pumped
 or a grid is rendered.
 
+The input path keeps ONE prefix-interaction signal that both the hint bar and the
+auto-hide nav width read: a prefix press is ready (awaiting its command key), and
+a held prefix key is holding. Under auto-hide the nav comes back for a live
+prefix interaction and hides again when it ends, so a jump can read the card
+numbers it needs.
+
 ## Module Seams
 
 - `runtime/` owns the main event loop as one struct: the entry point builds it,
@@ -39,7 +45,8 @@ or a grid is rendered.
   new source goes) and the manager that kicks the new source's first scan.
 - Input routing has a pure, stateless core (key resolution, mouse chains, the
   predicates, the input outcome types); the stateful handlers are runtime methods
-  that call into it.
+  that call into it. The prefix is tracked as ready (command expected) or holding
+  (the key is still down), and a mouse action ends either.
 - Focus holds the focus and modal state plus the transition helpers. The runtime
   state embeds it; the app reads and mutates it through those helpers.
 - The display mechanics (PTY, grid, input) live in `src/display`; per-source connection
@@ -63,6 +70,9 @@ or a grid is rendered.
   if any, is open. Focus and modal transitions stay in the focus module; the app
   and the state call into it rather than open-coding view or modal bookkeeping.
 - This layer carries no PTY, grid, or terminal-protocol logic; that is `display`.
+- The effective nav width under auto-hide is reconciled at the loop top against the
+  one prefix-interaction signal the hint bar also reads, so a held prefix cannot
+  make the nav and the bar disagree.
 
 ## Common Pitfalls
 
