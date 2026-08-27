@@ -23,10 +23,13 @@ xmux는 단일 바이너리로, Windows·macOS·Linux용 사전빌드 패키지�
 패키지 매니저로 빠르게 설치한다.
 
 ```sh
-winget install --id zer0ken.xmux      # Windows
 brew install zer0ken/xmux/xmux        # macOS
-cargo install xmux                    # Linux / Rust가 있는 모든 OS
+cargo install xmux                    # Rust가 있는 모든 OS
 ```
+
+winget 설치는 아직 불가능하다. [`packaging/winget`](packaging/winget)의
+매니페스트가 커뮤니티 winget-pkgs 리포에 등재되어 있지 않다. Windows에서는
+사전빌드 바이너리나 `cargo install xmux`를 사용한다.
 
 소스에서 `xmux` 명령을 `PATH`에 설치한다.
 

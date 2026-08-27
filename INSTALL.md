@@ -16,15 +16,14 @@ The fastest one-line installs, per OS:
 
 | OS | Command |
 |---|---|
-| Windows | `winget install --id zer0ken.xmux` |
 | macOS | `brew install zer0ken/xmux/xmux` |
-| Linux · any OS with Rust | `cargo install xmux` |
+| Windows · Linux · any OS with Rust | `cargo install xmux` |
 
-These commands come from the package registrations described below; a couple
-need a one-time registration step before they work for everyone. Until then,
-the **prebuilt binary** or the `cargo install --path .` command above are
-always available. See [`packaging/`](packaging/) for the manifests and the
-registration steps.
+There is no winget install: the manifest in
+[`packaging/winget`](packaging/winget) is not registered in the community
+winget-pkgs repository. The **prebuilt binary** or the
+`cargo install --path .` command above are always available. See
+[`packaging/`](packaging/) for the manifests and the registration steps.
 
 ## Prerequisites
 
@@ -41,13 +40,11 @@ configuration. See the
 
 ### Package manager
 
-```powershell
-winget install --id zer0ken.xmux
-```
-
-This is enabled by the winget manifest in [`packaging/winget`](packaging/winget);
-it is published by submitting that manifest to the community winget-pkgs
-repository.
+There is no winget package: the manifest in
+[`packaging/winget`](packaging/winget) is not registered in the community
+winget-pkgs repository, so `winget install --id zer0ken.xmux` finds nothing.
+With Rust installed, `cargo install xmux` works; otherwise use the prebuilt
+binary below.
 
 ### Prebuilt binary
 
