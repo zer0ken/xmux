@@ -295,8 +295,16 @@ fn spinner_frame_advances_with_wall_clock() {
 fn nav_width_adjust_clamps() {
     assert_eq!(adjust_nav_width(48, 1), 49);
     assert_eq!(adjust_nav_width(48, -1), 47);
-    assert_eq!(adjust_nav_width(NAV_WIDTH_MIN, -1), NAV_WIDTH_MIN, "clamped at min");
-    assert_eq!(adjust_nav_width(NAV_WIDTH_MAX, 1), NAV_WIDTH_MAX, "clamped at max");
+    assert_eq!(
+        adjust_nav_width(NAV_WIDTH_MIN, -1),
+        NAV_WIDTH_MIN,
+        "clamped at min"
+    );
+    assert_eq!(
+        adjust_nav_width(NAV_WIDTH_MAX, 1),
+        NAV_WIDTH_MAX,
+        "clamped at max"
+    );
 }
 
 #[test]

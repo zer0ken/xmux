@@ -528,16 +528,28 @@ mod tests {
         assert!(resolve_nav_key(press, &mut armed, &mut holding, 0x07, false).is_none());
         assert!(armed && holding);
         // a repeat while holding stays armed (a held key, not a fresh press)
-        let rep = KeyEvent::new_with_kind(KeyCode::Char('\x07'), KeyModifiers::NONE, KeyEventKind::Repeat);
+        let rep = KeyEvent::new_with_kind(
+            KeyCode::Char('\x07'),
+            KeyModifiers::NONE,
+            KeyEventKind::Repeat,
+        );
         assert!(resolve_nav_key(rep, &mut armed, &mut holding, 0x07, false).is_none());
         assert!(armed && holding);
         // release (kitty) clears holding, produces no action, ready survives
-        let rel = KeyEvent::new_with_kind(KeyCode::Char('\x07'), KeyModifiers::NONE, KeyEventKind::Release);
+        let rel = KeyEvent::new_with_kind(
+            KeyCode::Char('\x07'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
         assert!(resolve_nav_key(rel, &mut armed, &mut holding, 0x07, false).is_none());
         assert!(!holding);
         assert!(armed);
         // a non-prefix release never acts either
-        let rel2 = KeyEvent::new_with_kind(KeyCode::Char('x'), KeyModifiers::NONE, KeyEventKind::Release);
+        let rel2 = KeyEvent::new_with_kind(
+            KeyCode::Char('x'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
         assert!(resolve_nav_key(rel2, &mut armed, &mut holding, 0x07, false).is_none());
     }
 

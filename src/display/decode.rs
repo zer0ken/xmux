@@ -443,7 +443,10 @@ mod tests {
         // C-g press / repeat / release (ctrl modifier field 5 = 1 + ctrl(4)).
         let (end, ev) = parse_kitty_seq(b"\x1b[7;5u", 0).unwrap();
         assert_eq!(end, 6);
-        assert_eq!((ev.code, ev.modifiers, ev.kind, ev.final_byte), (7, 4, 0, b'u'));
+        assert_eq!(
+            (ev.code, ev.modifiers, ev.kind, ev.final_byte),
+            (7, 4, 0, b'u')
+        );
         let (_, ev) = parse_kitty_seq(b"\x1b[7;5:2u", 0).unwrap();
         assert_eq!((ev.code, ev.kind), (7, 2));
         let (_, ev) = parse_kitty_seq(b"\x1b[7;5:3u", 0).unwrap();
@@ -453,7 +456,10 @@ mod tests {
         assert_eq!((ev.code, ev.modifiers, ev.kind), (97, 0, 3));
         // Windows Terminal hybrid: Up repeat/release, letter final.
         let (_, ev) = parse_kitty_seq(b"\x1b[1;1:2A", 0).unwrap();
-        assert_eq!((ev.code, ev.modifiers, ev.kind, ev.final_byte), (1, 0, 2, b'A'));
+        assert_eq!(
+            (ev.code, ev.modifiers, ev.kind, ev.final_byte),
+            (1, 0, 2, b'A')
+        );
         // A normal arrow (no event type) is NOT a kitty event: it stays legacy.
         assert!(parse_kitty_seq(b"\x1b[A", 0).is_none());
         assert!(parse_kitty_seq(b"\x1b[1;5A", 0).is_none());
@@ -477,7 +483,10 @@ mod tests {
         assert_eq!(evs[0].code, KeyCode::Up);
         assert_eq!(evs[0].kind, KeyEventKind::Release);
         // A normal arrow press stays a Press.
-        assert_eq!(KeyDecoder::new().feed(b"\x1b[A")[0].kind, KeyEventKind::Press);
+        assert_eq!(
+            KeyDecoder::new().feed(b"\x1b[A")[0].kind,
+            KeyEventKind::Press
+        );
     }
 
     #[test]

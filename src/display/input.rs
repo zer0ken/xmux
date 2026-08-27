@@ -396,15 +396,31 @@ mod tests {
         // (never forwarded as a literal), and the release clears the hold.
         t.feed(&[0x07]);
         assert!(t.is_armed() && t.is_holding());
-        assert_eq!(fwd(&t.feed(&[0x07])), Vec::<u8>::new(), "a repeat forwards nothing");
+        assert_eq!(
+            fwd(&t.feed(&[0x07])),
+            Vec::<u8>::new(),
+            "a repeat forwards nothing"
+        );
         assert!(t.is_armed(), "a hold-repeat must not disarm");
-        assert_eq!(fwd(&t.feed(&[0x07])), Vec::<u8>::new(), "more repeats stay swallowed");
+        assert_eq!(
+            fwd(&t.feed(&[0x07])),
+            Vec::<u8>::new(),
+            "more repeats stay swallowed"
+        );
         assert!(t.is_armed());
-        assert_eq!(t.feed(b"\x1b[7;5:3u"), Vec::<Action>::new(), "release is swallowed");
+        assert_eq!(
+            t.feed(b"\x1b[7;5:3u"),
+            Vec::<Action>::new(),
+            "release is swallowed"
+        );
         assert!(!t.is_holding());
         assert!(t.is_armed(), "ready survives the release");
         // A deliberate doubled prefix (a fresh press after the release) sends a literal.
-        assert_eq!(fwd(&t.feed(&[0x07])), vec![0x07], "a fresh second press sends a literal");
+        assert_eq!(
+            fwd(&t.feed(&[0x07])),
+            vec![0x07],
+            "a fresh second press sends a literal"
+        );
         assert!(!t.is_armed());
     }
 

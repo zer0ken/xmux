@@ -254,7 +254,12 @@ fn self_tty() -> String {
 /// auto-hide (the user needs the card numbers to jump, resize, or act on a card).
 /// Pure so the focus/mode interaction is unit-testable; the loop owns the natural
 /// width and the PTY resize on change.
-fn reconciled_nav_width(terminal_focused: bool, auto_hide_nav: bool, prefix_active: bool, natural: u16) -> u16 {
+fn reconciled_nav_width(
+    terminal_focused: bool,
+    auto_hide_nav: bool,
+    prefix_active: bool,
+    natural: u16,
+) -> u16 {
     if terminal_focused && auto_hide_nav && !prefix_active {
         0
     } else {
