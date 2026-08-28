@@ -531,6 +531,52 @@ impl Switcher {
         self.move_selection(delta, state);
     }
 
+    /// Horizontal navigation (←/→): the selection lands on the first card of the
+    /// previous/next SOURCE. The two axes name the two things the list is made of - the
+    /// vertical one walks the cards, the horizontal one walks the hosts - so a list of
+    /// many hosts is crossed without stepping over every session between them. Wraps at
+    /// both ends, as the vertical step does.
+    ///
+    /// Every source is reachable this way, whatever it has to show: one with sessions is
+    /// entered at its first session card, and one with none has exactly one card, its
+    /// host card, which is what the jump lands on.
+    ///
+    /// Neither axis is defined by where a card sits on screen, so both mean the same
+    /// thing in the side column and in the portrait band, whose cards flow down a column
+    /// and then right.
+    fn nav_horizontal(&mut self, delta: isize, state: &crate::state::State) {
+        let heads = self.group_heads();
+        if heads.is_empty() {
+            return;
+        }
+        let here = self
+            .current_source()
+            .and_then(|src| heads.iter().position(|(s, _)| *s == src))
+            .unwrap_or(0) as isize;
+        let n = heads.len() as isize;
+        let next = ((here + delta) % n + n) % n;
+        self.user_moved = true;
+        self.set_selected(heads[next as usize].1, state);
+    }
+
+    /// Each source in list order paired with its first selectable card - the landing
+    /// points of a horizontal step. A source's cards are contiguous (the flatten emits a
+    /// section and its sessions together, and sinks a source with nothing to show to the
+    /// host band as one card), so one entry per source is one place to land.
+    fn group_heads(&self) -> Vec<(String, usize)> {
+        let mut heads: Vec<(String, usize)> = Vec::new();
+        for (i, r) in self.rows.iter().enumerate() {
+            if !r.selectable() {
+                continue;
+            }
+            let source = source_of_row(&r.reference);
+            if !heads.iter().any(|(s, _)| s == source) {
+                heads.push((source.to_string(), i));
+            }
+        }
+        heads
+    }
+
     fn move_to(&mut self, pos: isize, state: &crate::state::State) {
         let sel = self.selectable_indices();
         if sel.is_empty() {
@@ -913,6 +959,15 @@ fn context_of(row: &Row) -> (&str, &str, &str) {
 /// The session address a card belongs to (a session card), or `None` for a
 /// host-state card and a section title. Lets selection tracking, kill-confirm
 /// survival, and `select_address` treat a session card as that session.
+/// The source a row belongs to: a host card and a section title name it, a session card
+/// carries it on its session.
+fn source_of_row(reference: &RowRef) -> &str {
+    match reference {
+        RowRef::Host { source, .. } | RowRef::Section { source, .. } => source,
+        RowRef::Session { sess } => &sess.source,
+    }
+}
+
 fn session_addr_of(reference: &RowRef) -> Option<String> {
     match reference {
         RowRef::Session { sess } => Some(sess.address()),

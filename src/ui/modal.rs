@@ -346,10 +346,8 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
     // navigation and the `/` filter stay bare.
     let rows: Vec<HelpRow> = vec![
         HelpRow::Head("navigation".into()),
-        HelpRow::Key(
-            "↑/↓/←/→ · j/k".into(),
-            "move one card (either way, either layout)".into(),
-        ),
+        HelpRow::Key("↑/↓ · j/k".into(), "move one card".into()),
+        HelpRow::Key("←/→".into(), "previous / next host".into()),
         HelpRow::Key("PgUp/PgDn".into(), "jump by 10".into()),
         HelpRow::Key("Home/End".into(), "first / last card".into()),
         HelpRow::Key(
