@@ -191,7 +191,11 @@ no function, and no test, so renaming code is never a documentation change.
   rather than splitting across the break; only a section taller than the whole column
   splits, having nowhere else to go, and its continuation re-states its title. Card order does not change, so the numbers still count in
   reading order. The paint records each card's rect and the hit-test reads it back, so a
-  click cannot land on a card the renderer put elsewhere.
+  click cannot land on a card the renderer put elsewhere. A title in the band is the
+  `{host}/{mux}` label alone: the rule the side column trails after that label underlines
+  a group across one full-width run, and a column standing beside another has no such
+  width to underline - the rule would reach the gutter and read as a bar parting the
+  columns instead.
 - **FR-B13** - The nav says what is off screen without spending a row on furniture. The
   side list's scrollbar takes a COLUMN of its own from the nav region, never painted over
   the cards, because the selected card is painted by inverting its whole rect and a thumb

@@ -554,9 +554,9 @@ impl Switcher {
     }
 
     /// One row measured for the column flow: whether it opens a unit, how wide its
-    /// content paints, and how many rows it takes. A section title's measured width is
-    /// its `{host}/{mux}` alone - its trailing rule fills whatever column width is
-    /// left, so it never widens a column.
+    /// content paints, and how many rows it takes. A section title measures its
+    /// `{host}/{mux}` alone, which is the whole of what it paints in the band: the
+    /// trailing rule belongs to the side list.
     fn flow_card(&self, i: usize, num_w: usize, spinner_glyph: char) -> columns::Card {
         let lines = self.nav_row_lines(i, num_w, spinner_glyph, 0);
         let w = |n: usize| lines.get(n).map_or(0, |l: &Line| l.width() as u16);
@@ -569,7 +569,8 @@ impl Switcher {
 
     /// Builds one navigation row's lines. A session card is the address column + the
     /// session name on a single detail line; a section title is the `{host}/{mux}`
-    /// header (dim, with a rule filling the row's width) and carries no address column;
+    /// header (dim, with a rule filling the row's width in the side list) and carries
+    /// no address column;
     /// a host-state card is the host/mux name on its row, with the unreachable mark
     /// (`⚠`) riding after the host name and the mux taking the accent, or a spinner in
     /// the level a scanning host has not resolved. A host-state card claims a mux only
@@ -612,9 +613,14 @@ impl Switcher {
             }
         };
 
-        // Section title: `{host}/{mux}` in the quiet header role, followed by a rule
-        // filling the row. Not a card - no number, not selectable, and the selection
-        // can never land on it.
+        // Section title: `{host}/{mux}` in the quiet header role. Not a card - no
+        // number, not selectable, and the selection can never land on it.
+        //
+        // A rule fills the rest of the row in the SIDE list only, where the nav is one
+        // full-width run and the rule reads as the group's own underline. The portrait
+        // band's columns are each only as wide as their widest card and stand side by
+        // side, so a rule there would run into the gutter and read as a bar parting the
+        // columns rather than as anything about the group: the title stands alone.
         if let RowRef::Section { .. } = &row.reference {
             let (host, mux, _) = context_of(row);
             let header = Style::default().fg(palette::get().overlay);
@@ -624,7 +630,10 @@ impl Switcher {
                 format!("{host}/{mux}")
             };
             let title_w = UnicodeWidthStr::width(title.as_str()) as u16;
-            let rule_w = width.saturating_sub(title_w.saturating_add(1));
+            let rule_w = match self.layout {
+                ViewLayout::Side => width.saturating_sub(title_w.saturating_add(1)),
+                ViewLayout::Top => 0,
+            };
             let mut spans = vec![Span::styled(title, header)];
             if rule_w > 0 {
                 spans.push(Span::styled(

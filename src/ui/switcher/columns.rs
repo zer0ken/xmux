@@ -32,8 +32,8 @@ pub(super) struct Card {
     /// section.
     pub(super) starts_run: bool,
     /// Display width of the card's content (address column included). A section title's
-    /// width is its `{host}/{mux}` alone - its trailing rule fills whatever column width
-    /// is left, so it never widens a column.
+    /// width is its `{host}/{mux}` alone: in the band a title carries no trailing rule,
+    /// so what it measures is what it paints.
     pub(super) width: u16,
     /// The card's natural line count (1, or 2 for a scanning host card).
     pub(super) lines: u16,

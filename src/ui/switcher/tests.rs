@@ -2050,6 +2050,38 @@ async fn the_section_title_shows_host_mux_and_the_session_takes_the_accent() {
 }
 
 #[tokio::test]
+async fn only_the_side_lists_section_title_trails_a_rule() {
+    // The side list is one full-width run, so the rule after `{host}/{mux}` reads as
+    // that group's underline. The portrait band flows the same rows into columns
+    // standing side by side, where the rule would run into the gutter and read as a bar
+    // parting the columns instead - so the band's title stands alone.
+    let row_text = |buf: &Buffer, y: u16, limit: u16| -> String {
+        (0..limit.min(buf.area.width))
+            .map(|x| buf[(x, y)].symbol())
+            .collect()
+    };
+
+    let side = Harness::new(sample());
+    assert_eq!(side.sw.layout(), ViewLayout::Side, "landscape → Side");
+    let y = side.nav_row_of("local").expect("the section title");
+    let painted = row_text(side.buf(), y, NAV_WIDTH);
+    assert!(
+        painted.contains(BAND_RULE),
+        "the side list's title trails a rule:\n{painted}"
+    );
+
+    let top = Harness::new_sized(sample(), 60, 70);
+    assert_eq!(top.sw.layout(), ViewLayout::Top, "portrait → Top");
+    let w = top.buf().area.width;
+    let y = row_of(top.buf(), "local", w).expect("the section title");
+    let painted = row_text(top.buf(), y, w);
+    assert!(
+        !painted.contains(BAND_RULE),
+        "the band's title carries no rule:\n{painted}"
+    );
+}
+
+#[tokio::test]
 async fn a_host_card_gives_its_mux_the_accent() {
     // A host-state card has no session to take the accent, so its mux - the lowest
     // level it displays - takes it; the host half stays text. The separator keeps its
