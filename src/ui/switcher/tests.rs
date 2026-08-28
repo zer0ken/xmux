@@ -302,6 +302,36 @@ fn sample() -> Scan {
     Scan { groups }
 }
 
+/// Two sources with a session each and TWO with none, so the host band holds more than
+/// one card. Used where the band's own SIZE is the point: on the horizontal axis it is
+/// one category however many cards it holds.
+fn scan_with_a_host_band() -> Scan {
+    Scan {
+        groups: vec![
+            Group {
+                source: "local".into(),
+                err: None,
+                sessions: vec![sess("local", "editor", 1, false, 100)],
+            },
+            Group {
+                source: "jupiter00".into(),
+                err: None,
+                sessions: vec![sess("jupiter00", "inference", 1, false, 300)],
+            },
+            Group {
+                source: "db-2".into(),
+                err: Some("connection timed out".into()),
+                sessions: vec![],
+            },
+            Group {
+                source: "db-3".into(),
+                err: Some("connection timed out".into()),
+                sessions: vec![],
+            },
+        ],
+    }
+}
+
 /// One reachable source carrying `n` sessions, so the nav holds exactly `n` cards
 /// numbered `0..n`. Used where the card COUNT is the point (a two-digit jump needs
 /// more cards than [`sample`] has).
@@ -2417,11 +2447,10 @@ async fn navigation_wraps_around() {
 
 #[tokio::test]
 async fn horizontal_steps_one_host_and_lands_on_its_first_card() {
-    // The two axes name the two things the list is made of. ←/→ cross a whole host at a
-    // time: from a session of one source the selection lands on the FIRST card of the
-    // next, so a list of many hosts is crossed without stepping over every session
-    // between them. A source with no session to show has exactly one card, its host
-    // card, and that is where the jump lands, so no source is unreachable on this axis.
+    // The two axes name the two things the list is made of. ←/→ cross a whole category
+    // at a time: from a session of one source the selection lands on the FIRST card of
+    // the next, so a list of many hosts is crossed without stepping over every session
+    // between them. The host band is the last category, entered at its first card.
     // (`sample`: local holds two sessions, jupiter00 one, db-2 is unreachable.)
     let mut h = Harness::new(sample());
     assert!(
@@ -2439,7 +2468,50 @@ async fn horizontal_steps_one_host_and_lands_on_its_first_card() {
     h.key(KeyCode::Right).await;
     assert!(
         matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "db-2"),
-        "a source with no session to show is entered at its host card"
+        "the host band is entered at its first card"
+    );
+}
+
+#[tokio::test]
+async fn the_host_band_is_one_stop_however_many_cards_it_holds() {
+    // The sources with nothing to show are ONE category on this axis, not one each: a
+    // list of machines with nothing running on them is a single thing to reach past
+    // rather than a run of places to be carried into one at a time. Every one of them is
+    // still a card, so the vertical axis reaches each.
+    let mut h = Harness::new(scan_with_a_host_band());
+    h.key(KeyCode::Right).await; // local → jupiter00
+    h.key(KeyCode::Right).await; // jupiter00 → the band
+    assert!(
+        matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "db-2"),
+        "→ enters the band at its first card"
+    );
+    h.key(KeyCode::Down).await;
+    assert!(
+        matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "db-3"),
+        "↓ still walks the band card by card"
+    );
+    h.key(KeyCode::Right).await;
+    assert!(
+        matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.source == "local"),
+        "→ crosses the whole band in one step, from any card in it"
+    );
+}
+
+#[tokio::test]
+async fn leaving_the_host_band_backwards_lands_on_the_last_source_with_sessions() {
+    // The band is left the same way in either direction, and from any card in it: ← from
+    // its second card returns to the source before it, not to its own first card.
+    let mut h = Harness::new(scan_with_a_host_band());
+    h.key(KeyCode::Right).await; // local → jupiter00
+    h.key(KeyCode::Right).await; // jupiter00 → the band
+    h.key(KeyCode::Down).await; // the band's second card
+    h.key(KeyCode::Left).await;
+    assert!(
+        matches!(
+            h.sw.current_ref(),
+            Some(RowRef::Session { sess }) if sess.source == "jupiter00"
+        ),
+        "← leaves the band for the source before it"
     );
 }
 
@@ -3230,7 +3302,7 @@ async fn hint_bar_and_help_reflect_new_model() {
         "help explains focusing the terminal view:\n{help}"
     );
     assert!(
-        help.contains("previous / next host"),
+        help.contains("previous / next host/mux"),
         "help names what the horizontal axis walks, since the two axes differ:\n{help}"
     );
     assert!(

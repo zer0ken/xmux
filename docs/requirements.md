@@ -119,10 +119,14 @@ no function, and no test, so renaming code is never a documentation change.
   differ. The waiting and unreachable state hints live in the nav, not here.
 - **FR-B4** - Navigation: up/down/home/end/pgup/pgdn; fuzzy filter over
   `<source>/<name>`; manual `prefix r` rescan. The two axes name the two things the
-  list is made of: up/down step one card, left/right step one HOST, landing on the
-  first card of the previous or next source (its first session, or its host card where
-  it has no session to show). Both wrap, and both mean the same thing in either
-  layout, since neither is defined by where a card sits on screen.
+  list is made of: up/down step one card, left/right step one CATEGORY, landing on its
+  first card. A category is a source that has sessions, entered at its first session,
+  or the whole host band (FR-B21) at once, entered at its first host card: a list of
+  machines with nothing running on them is one thing to reach past, not a run of places
+  to be carried into one at a time, and the card axis still reaches each of them. The
+  category is left from any card of it, so a selection deep inside the band steps
+  straight out. Both axes wrap, and both mean the same thing in either layout, since
+  neither is defined by where a card sits on screen.
 - **FR-B5** - Surveying without committing is first-class: xmux is a switcher, not a
   session owner. Quitting (`prefix q`, or the ctl `quit` verb) leaves the current
   mux session untouched: it is never killed or altered by exiting.

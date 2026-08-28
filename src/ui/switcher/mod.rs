@@ -532,26 +532,29 @@ impl Switcher {
     }
 
     /// Horizontal navigation (←/→): the selection lands on the first card of the
-    /// previous/next SOURCE. The two axes name the two things the list is made of - the
-    /// vertical one walks the cards, the horizontal one walks the hosts - so a list of
-    /// many hosts is crossed without stepping over every session between them. Wraps at
-    /// both ends, as the vertical step does.
+    /// previous/next CATEGORY. The two axes name the two things the list is made of -
+    /// the vertical one walks the cards, the horizontal one walks the categories - so a
+    /// list of many hosts is crossed without stepping over every session between them.
+    /// Wraps at both ends, as the vertical step does.
     ///
-    /// Every source is reachable this way, whatever it has to show: one with sessions is
-    /// entered at its first session card, and one with none has exactly one card, its
-    /// host card, which is what the jump lands on.
+    /// A category is a source that has sessions to show, or the whole host band at once
+    /// ([`category_of_row`]). Landing is always on the category's first card: its first
+    /// session, or the band's first host card. Leaving is from ANY card of it, so a
+    /// selection deep inside the band steps straight out.
     ///
     /// Neither axis is defined by where a card sits on screen, so both mean the same
     /// thing in the side column and in the portrait band, whose cards flow down a column
     /// and then right.
     fn nav_horizontal(&mut self, delta: isize, state: &crate::state::State) {
-        let heads = self.group_heads();
+        let heads = self.category_heads();
         if heads.is_empty() {
             return;
         }
         let here = self
-            .current_source()
-            .and_then(|src| heads.iter().position(|(s, _)| *s == src))
+            .rows
+            .get(self.selected)
+            .map(|r| category_of_row(&r.reference))
+            .and_then(|cat| heads.iter().position(|(c, _)| c.as_deref() == cat))
             .unwrap_or(0) as isize;
         let n = heads.len() as isize;
         let next = ((here + delta) % n + n) % n;
@@ -559,19 +562,20 @@ impl Switcher {
         self.set_selected(heads[next as usize].1, state);
     }
 
-    /// Each source in list order paired with its first selectable card - the landing
-    /// points of a horizontal step. A source's cards are contiguous (the flatten emits a
-    /// section and its sessions together, and sinks a source with nothing to show to the
-    /// host band as one card), so one entry per source is one place to land.
-    fn group_heads(&self) -> Vec<(String, usize)> {
-        let mut heads: Vec<(String, usize)> = Vec::new();
+    /// Each category in list order paired with its first selectable card - the landing
+    /// points of a horizontal step. The cards of one category are contiguous (the
+    /// flatten emits a section and its sessions together, and sinks every source with
+    /// nothing to show to the host band at the end), so one entry per category is one
+    /// place to land.
+    fn category_heads(&self) -> Vec<(Option<String>, usize)> {
+        let mut heads: Vec<(Option<String>, usize)> = Vec::new();
         for (i, r) in self.rows.iter().enumerate() {
             if !r.selectable() {
                 continue;
             }
-            let source = source_of_row(&r.reference);
-            if !heads.iter().any(|(s, _)| s == source) {
-                heads.push((source.to_string(), i));
+            let cat = category_of_row(&r.reference).map(str::to_string);
+            if !heads.iter().any(|(c, _)| *c == cat) {
+                heads.push((cat, i));
             }
         }
         heads
@@ -959,12 +963,19 @@ fn context_of(row: &Row) -> (&str, &str, &str) {
 /// The session address a card belongs to (a session card), or `None` for a
 /// host-state card and a section title. Lets selection tracking, kill-confirm
 /// survival, and `select_address` treat a session card as that session.
-/// The source a row belongs to: a host card and a section title name it, a session card
-/// carries it on its session.
-fn source_of_row(reference: &RowRef) -> &str {
+/// The category a card belongs to on the HORIZONTAL axis: its source where the card
+/// names a session, and the host band as a whole (`None`) for the cards of the sources
+/// with nothing to show.
+///
+/// The band is ONE category because its cards are one machine each with nothing running
+/// on it, and a list of them is a single thing to reach past rather than a run of places
+/// to be carried into one at a time. Every one of them is still a card, so the vertical
+/// axis walks them like any other.
+fn category_of_row(reference: &RowRef) -> Option<&str> {
     match reference {
-        RowRef::Host { source, .. } | RowRef::Section { source, .. } => source,
-        RowRef::Session { sess } => &sess.source,
+        RowRef::Host { .. } => None,
+        RowRef::Section { source, .. } => Some(source),
+        RowRef::Session { sess } => Some(&sess.source),
     }
 }
 
