@@ -286,7 +286,7 @@ impl Switcher {
                 width: cards.width,
                 height: slot.h,
             };
-            let lines = self.nav_row_lines(slot.idx, num_w, spinner_glyph, rect.width);
+            let lines = self.nav_row_lines(slot.idx, num_w, spinner_glyph, rect.width, false);
             frame.render_widget(Paragraph::new(lines), rect);
             if self.list_state.selected() == Some(slot.idx) {
                 frame
@@ -343,6 +343,18 @@ impl Switcher {
         let band = area;
         let boundary = self.band_boundary().unwrap_or(cards.len());
         let placed = columns::place(&cards, band.height, boundary);
+        // Which cards stand in the column their own section title stands in. A section
+        // taller than a whole column is the one that splits, and its continuation opens
+        // the next column under a RE-STATED title; the connector marks the title that
+        // owns the group, so it stops at the break rather than running under a repeat.
+        let mut home_col = vec![false; self.rows.len()];
+        let mut head_col = None;
+        for (i, flag) in home_col.iter_mut().enumerate() {
+            if self.starts_run(i) {
+                head_col = placed.get(i).map(|p| p.col);
+            }
+            *flag = matches!((head_col, placed.get(i)), (Some(c), Some(p)) if c == p.col);
+        }
         let widths = columns::widths(&cards, &placed, band.width);
         let bcol = columns::boundary_col(&placed, boundary);
         let parting = columns::parting(&widths, bcol, band.width, COL_GUTTER);
@@ -389,10 +401,16 @@ impl Switcher {
                     y: cell.rect.y - 1,
                     ..cell.rect
                 };
-                let lines = self.nav_row_lines(h, num_w, spinner_glyph, header_rect.width);
+                let lines = self.nav_row_lines(h, num_w, spinner_glyph, header_rect.width, false);
                 frame.render_widget(Paragraph::new(lines), header_rect);
             }
-            let lines = self.nav_row_lines(cell.idx, num_w, spinner_glyph, cell.rect.width);
+            let lines = self.nav_row_lines(
+                cell.idx,
+                num_w,
+                spinner_glyph,
+                cell.rect.width,
+                home_col[cell.idx],
+            );
             frame.render_widget(Paragraph::new(lines), cell.rect);
             if self.list_state.selected() == Some(cell.idx) {
                 // The card's OWN rect, not the band's width: in a grid the selection marks
@@ -558,7 +576,7 @@ impl Switcher {
     /// `{host}/{mux}` alone, which is the whole of what it paints in the band: the
     /// trailing rule belongs to the side list.
     fn flow_card(&self, i: usize, num_w: usize, spinner_glyph: char) -> columns::Card {
-        let lines = self.nav_row_lines(i, num_w, spinner_glyph, 0);
+        let lines = self.nav_row_lines(i, num_w, spinner_glyph, 0, true);
         let w = |n: usize| lines.get(n).map_or(0, |l: &Line| l.width() as u16);
         columns::Card {
             starts_run: self.starts_run(i),
@@ -595,6 +613,7 @@ impl Switcher {
         num_w: usize,
         spinner_glyph: char,
         width: u16,
+        connected: bool,
     ) -> Vec<Line<'static>> {
         let row = &self.rows[i];
         let selected = self.list_state.selected() == Some(i);
@@ -691,11 +710,29 @@ impl Switcher {
         }
 
         // Session card: the address column + the session name on a single detail line.
-        // The `{host}/{mux}` it used to restate now lives on the section title above it,
-        // and there is no connector - the title draws the group. The session name is
-        // the lowest level the card displays, so it takes the accent and stays bold.
+        // The `{host}/{mux}` it used to restate now lives on the section title above it.
+        // The session name is the lowest level the card displays, so it takes the accent
+        // and stays bold.
+        //
+        // The portrait band opens the card with the connector, which the side list does
+        // not draw: one full-width run needs nothing to say which title a card is under,
+        // and columns standing side by side do. `connected` is what decides the GLYPH,
+        // never the two columns it sits in - those are reserved on every session card.
         let (_, _, sess) = context_of(row);
-        let mut detail = address();
+        let mut detail = Vec::new();
+        if self.layout == ViewLayout::Top {
+            // The connector's two columns, blank where the glyph is not painted so the
+            // name holds one offset inside its column either way.
+            detail.push(Span::styled(
+                if connected {
+                    format!("{CARD_CONNECTOR} ")
+                } else {
+                    "  ".to_string()
+                },
+                Style::default().fg(palette::get().overlay),
+            ));
+        }
+        detail.extend(address());
         detail.push(Span::styled(
             sess.to_string(),
             accent.add_modifier(Modifier::BOLD),

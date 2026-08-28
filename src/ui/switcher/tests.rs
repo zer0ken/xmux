@@ -2055,16 +2055,10 @@ async fn only_the_side_lists_section_title_trails_a_rule() {
     // that group's underline. The portrait band flows the same rows into columns
     // standing side by side, where the rule would run into the gutter and read as a bar
     // parting the columns instead - so the band's title stands alone.
-    let row_text = |buf: &Buffer, y: u16, limit: u16| -> String {
-        (0..limit.min(buf.area.width))
-            .map(|x| buf[(x, y)].symbol())
-            .collect()
-    };
-
     let side = Harness::new(sample());
     assert_eq!(side.sw.layout(), ViewLayout::Side, "landscape → Side");
     let y = side.nav_row_of("local").expect("the section title");
-    let painted = row_text(side.buf(), y, NAV_WIDTH);
+    let painted = nav_line(&side, y);
     assert!(
         painted.contains(BAND_RULE),
         "the side list's title trails a rule:\n{painted}"
@@ -2072,12 +2066,74 @@ async fn only_the_side_lists_section_title_trails_a_rule() {
 
     let top = Harness::new_sized(sample(), 60, 70);
     assert_eq!(top.sw.layout(), ViewLayout::Top, "portrait → Top");
-    let w = top.buf().area.width;
-    let y = row_of(top.buf(), "local", w).expect("the section title");
-    let painted = row_text(top.buf(), y, w);
+    let y = row_of(top.buf(), "local", top.buf().area.width).expect("the section title");
+    let painted = band_line(&top, y);
     assert!(
         !painted.contains(BAND_RULE),
         "the band's title carries no rule:\n{painted}"
+    );
+}
+
+#[tokio::test]
+async fn the_band_connects_a_session_card_to_the_title_that_owns_it() {
+    // The band's columns stand side by side, so where a card falls in the reading order
+    // does not say which title owns it - a connector down the card's left does. The
+    // title itself carries none: it is what the connector points at.
+    let h = Harness::new_sized(sample(), 60, 70);
+    assert_eq!(h.sw.layout(), ViewLayout::Top, "portrait → Top");
+    let w = h.buf().area.width;
+    let title = row_of(h.buf(), "local", w).expect("the section title");
+    assert!(
+        !band_line(&h, title).starts_with(CARD_CONNECTOR),
+        "the title is what the connector points at, not a card that carries one"
+    );
+    for name in ["build", "editor"] {
+        let painted = band_line(&h, row_of(h.buf(), name, w).expect(name));
+        assert!(
+            painted.starts_with(CARD_CONNECTOR),
+            "{name} is connected to the title above it:\n{painted}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_split_sections_continuation_columns_carry_no_connector() {
+    // Only a section taller than a whole column splits, and each continuation column
+    // opens with the title RE-STATED. The connector marks the title that owns the group,
+    // so it stays in that title's own column rather than running under a repeat of it.
+    // Ten sessions in a three-row band: one section across five columns.
+    let h = Harness::new_sized(scan_with_sessions(10), 60, 12);
+    assert_eq!(h.sw.layout(), ViewLayout::Top, "portrait → Top");
+    let w = h.buf().area.width;
+    for name in ["s0", "s1"] {
+        let painted = band_line(&h, row_of(h.buf(), name, w).expect(name));
+        assert!(
+            painted.starts_with(CARD_CONNECTOR),
+            "{name} stands in the title's own column:\n{painted}"
+        );
+        assert_eq!(
+            painted.matches(CARD_CONNECTOR).count(),
+            1,
+            "the row's other columns are continuations and carry none:\n{painted}"
+        );
+    }
+    // The continuation still INDENTS by the connector's two columns, so every card of
+    // the section reads at one offset INSIDE its column whichever one it landed in.
+    // Measured against the rect the paint recorded, since the columns start wherever the
+    // widths put them.
+    let offset = |name: &str| -> u16 {
+        let (x, y) = locate(h.buf(), name, w).expect(name);
+        let (_, rect) =
+            h.sw.nav_cells
+                .iter()
+                .find(|(_, r)| r.y == y && r.x <= x && x < r.x + r.width)
+                .expect("the card the paint recorded");
+        x - rect.x
+    };
+    assert_eq!(
+        offset("s2"),
+        offset("s0"),
+        "a continuation's card reads at the same offset inside its column"
     );
 }
 
@@ -2334,11 +2390,20 @@ fn nav_line(h: &Harness, y: u16) -> String {
         .collect()
 }
 
+/// One screen row read across the WHOLE window - what the portrait band needs, whose
+/// nav is a wide strip rather than the side list's column.
+fn band_line(h: &Harness, y: u16) -> String {
+    (0..h.buf().area.width)
+        .map(|x| h.buf()[(x, y)].symbol().to_string())
+        .collect()
+}
+
 #[tokio::test]
 async fn a_sources_sessions_are_each_a_single_row_under_one_section_title() {
     // Every session of one source is a single-row card (the number + the name), stacked
-    // directly under the one section title that names the whole group. There are no
-    // connectors and no per-card context lines - the title draws the group.
+    // directly under the one section title that names the whole group. The side list
+    // draws no connector and no per-card context line: it is one full-width run, where
+    // the title and the rule under it already draw the group.
     let mut h = Harness::new(one_host_scan(
         "srv",
         vec![
@@ -2375,7 +2440,7 @@ async fn a_sources_sessions_are_each_a_single_row_under_one_section_title() {
         );
     }
     assert!(
-        !out.contains("├") && !out.contains("└"),
+        !out.contains("├") && !out.contains("└") && !out.contains(CARD_CONNECTOR),
         "no connector draws a group the title already draws:\n{out}"
     );
 }

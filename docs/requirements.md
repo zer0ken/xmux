@@ -195,7 +195,14 @@ no function, and no test, so renaming code is never a documentation change.
   `{host}/{mux}` label alone: the rule the side column trails after that label underlines
   a group across one full-width run, and a column standing beside another has no such
   width to underline - the rule would reach the gutter and read as a bar parting the
-  columns instead.
+  columns instead. What draws the group in the band is a CONNECTOR down the left of each
+  session card, since columns standing side by side leave a card's place in the reading
+  order saying nothing about which title owns it. It marks the title that owns the group,
+  so a section that splits keeps it in that title's own column and the continuation
+  columns, opening under a re-stated title, carry none. Every session card holds the
+  connector's two columns whether or not the glyph is painted, so a card reads at one
+  offset inside its column wherever it landed. The side list draws no connector: one
+  full-width run under one title needs nothing to say where the group ends.
 - **FR-B13** - The nav says what is off screen without spending a row on furniture. The
   side list's scrollbar takes a COLUMN of its own from the nav region, never painted over
   the cards, because the selected card is painted by inverting its whole rect and a thumb
