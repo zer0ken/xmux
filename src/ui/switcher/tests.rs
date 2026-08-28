@@ -2203,6 +2203,67 @@ async fn a_split_sections_continuation_columns_name_nothing() {
 }
 
 #[tokio::test]
+async fn a_column_is_never_narrower_than_the_title_naming_it() {
+    // A column is as wide as the WIDEST thing in it, and the section title is one of
+    // those things. Sessions named in one character must therefore not shrink the column
+    // under the `{host}/{mux}` above them: the title is the only row saying where the
+    // cards are, and a host cut in half names a machine that does not exist. It holds
+    // its one row while doing it - the fix is the column's width, never a second row.
+    let mut h = Harness::new_sized(
+        sources_scan(vec![
+            (
+                "build-runner-eu-west",
+                vec![sess_mux("build-runner-eu-west", "z", "zellij", 200)],
+            ),
+            ("jupiter00", vec![sess_mux("jupiter00", "a", "tmux", 100)]),
+        ]),
+        60,
+        12,
+    );
+    h.state.chrome.set_source_reach(
+        [
+            (
+                "build-runner-eu-west".to_string(),
+                reach("zellij", "build-runner-eu-west", "", "zellij ls"),
+            ),
+            (
+                "jupiter00".to_string(),
+                reach("tmux", "jupiter00", "", "tmux ls"),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    h.sw.rebuild(&mut h.state);
+    h.draw();
+    assert_eq!(h.sw.layout(), ViewLayout::Top, "portrait → Top");
+    let band = h.sw.nav_inner;
+    let painted: String = (band.y..band.y + band.height)
+        .map(|y| band_line(&h, y))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for title in ["build-runner-eu-west/zellij", "jupiter00/tmux"] {
+        assert!(
+            painted.contains(title),
+            "the one-character session did not shrink the column under {title}:\n{painted}"
+        );
+    }
+    // On its own row, whole: the title never carries onto a second one.
+    let cells = cells_of(&h.sw);
+    assert_eq!(cells[&0].height, 1, "the title is one row");
+    assert_eq!(
+        cells[&1].y,
+        cells[&0].y + 1,
+        "and its session hangs directly under it"
+    );
+    assert!(
+        cells[&0].width >= "build-runner-eu-west/zellij".len() as u16,
+        "the column carries the whole title: {:?}",
+        cells[&0]
+    );
+}
+
+#[tokio::test]
 async fn a_host_card_gives_its_mux_the_accent() {
     // A host-state card has no session to take the accent, so its mux - the lowest
     // level it displays - takes it; the host half stays text. The separator keeps its

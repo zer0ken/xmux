@@ -200,7 +200,11 @@ no function, and no test, so renaming code is never a documentation change.
   width to underline - the rule would reach the gutter and read as a bar parting the
   columns instead. What draws the group in the band is a CONNECTOR down the left of each
   session card, since columns standing side by side leave a card's place in the reading
-  order saying nothing about which title owns it. It marks the title that owns the group,
+  order saying nothing about which title owns it. A column is as wide as the widest thing
+  standing in it and the title is one of those things, so sessions named in one character
+  do not shrink the column under the `{host}/{mux}` above them: what is too long for the
+  room it has is answered in the column's WIDTH, never by carrying the name onto a second
+  row. It marks the title that owns the group,
   so a section that splits keeps it in that title's own column and the continuation
   columns carry none. The connector is the title's furniture and NOT part of the card: it
   stands in a strip left of the card's rect, so the selection - which paints a card by
