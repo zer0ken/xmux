@@ -2,7 +2,7 @@
 //! host's options - directly against the live mux on a host. Each function composes the two orthogonal axes: the
 //! MUX axis (`Host::mux`'s `*_plan`) supplies the mux argv and the MACHINE axis
 //! (`Host::transport`'s `exec_argv`) lowers it for local-vs-ssh execution, then it
-//! runs via an injected runner — exactly like `mux::enumerate_via_list_sessions`.
+//! runs via an injected runner - exactly like `mux::enumerate_via_list_sessions`.
 //! Nothing is cached and no state is held. Off-loop `Ops` assemble a value host from
 //! config and pass the source's runner.
 
@@ -20,18 +20,57 @@ async fn run_plan(
     runner.run(&name, &args).await
 }
 
-/// Creates a DETACHED session on the host and returns its assigned name (the mux
-/// prints it; tmux auto-names when `name` is empty). The trailing whitespace is
-/// trimmed. A mux that creates SILENTLY (zellij's `attach -b` prints nothing) yields
-/// the requested name, which is the name it just created.
+/// Creates a DETACHED session on the host and returns its name. A mux that names its
+/// own creations ([`Mux::assigns_new_session_name`]) auto-names an empty request and
+/// prints the final name, so its stdout is read back (trailing whitespace trimmed). A
+/// mux that does not gets a name chosen HERE when the request is empty, and its stdout
+/// is never read as a name: a silent create can still put NOISE on stdout (a shell
+/// banner, an motd), and adopting it would name a session that does not exist.
+///
+/// [`Mux::assigns_new_session_name`]: crate::mux::Mux::assigns_new_session_name
 pub async fn create(host: &Host, runner: &dyn Runner, name: &str) -> Result<String, RunError> {
-    let out = run_plan(host, runner, &host.mux.new_session_plan(name)).await?;
-    let printed = String::from_utf8_lossy(&out).trim().to_string();
-    Ok(if printed.is_empty() {
-        name.to_string()
+    if host.mux.assigns_new_session_name() {
+        let out = run_plan(host, runner, &host.mux.new_session_plan(name)).await?;
+        let printed = String::from_utf8_lossy(&out).trim().to_string();
+        return Ok(if printed.is_empty() {
+            name.to_string()
+        } else {
+            printed
+        });
+    }
+    let name = if name.is_empty() {
+        pick_session_name(host, runner).await?
     } else {
-        printed
-    })
+        name.to_string()
+    };
+    run_plan(host, runner, &host.mux.new_session_plan(&name)).await?;
+    Ok(name)
+}
+
+/// The name an empty create request gets on a mux that cannot name its own: the first
+/// name of the shared `<adjective>-<noun>` walk (the same one instance naming uses)
+/// that no session on the host holds. The taken set is the host's LIVE listing rather
+/// than xmux's inventory, so a session created outside xmux since the last poll cannot
+/// be collided with. Falls back to counting numerals after a full pass, so a name
+/// always comes back.
+async fn pick_session_name(host: &Host, runner: &dyn Runner) -> Result<String, RunError> {
+    let taken: std::collections::HashSet<String> = host
+        .mux
+        .enumerate(host.transport.as_ref(), runner)
+        .await?
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
+    for n in 0..super::control::nth_name_total() {
+        let name = super::control::nth_name(n);
+        if !taken.contains(&name) {
+            return Ok(name);
+        }
+    }
+    Ok((taken.len()..)
+        .map(|i| i.to_string())
+        .find(|name| !taken.contains(name))
+        .expect("an unbounded numeral walk always leaves the finite taken set"))
 }
 
 #[cfg(test)]
@@ -131,6 +170,94 @@ mod tests {
     async fn create_error_returns_err() {
         let fr = RecordingRunner::new("ignored\n", true);
         assert!(create(&local_host(), fr.as_ref(), "x").await.is_err());
+    }
+
+    /// Answers a SEQUENCE of commands in order, recording each: a create on a mux
+    /// that cannot name its own sessions runs the host listing first and the create
+    /// second.
+    struct SeqRunner {
+        outs: Mutex<std::collections::VecDeque<Result<Vec<u8>, RunError>>>,
+        recorded: Mutex<Vec<(String, Vec<String>)>>,
+    }
+
+    impl SeqRunner {
+        fn new(outs: Vec<Result<Vec<u8>, RunError>>) -> Self {
+            SeqRunner {
+                outs: Mutex::new(outs.into_iter().collect()),
+                recorded: Mutex::new(Vec::new()),
+            }
+        }
+        fn commands(&self) -> Vec<(String, Vec<String>)> {
+            self.recorded.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl Runner for SeqRunner {
+        async fn run(&self, name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
+            self.recorded
+                .lock()
+                .unwrap()
+                .push((name.to_string(), args.to_vec()));
+            self.outs
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Ok(Vec::new()))
+        }
+    }
+
+    /// A LOCAL zellij host: a mux that cannot name its own sessions (its create prints
+    /// nothing and its binary refuses an empty name).
+    fn zellij_host() -> Host {
+        Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("zellij"),
+        )
+    }
+
+    #[tokio::test]
+    async fn create_on_a_silent_mux_never_reads_stdout_as_a_name() {
+        // Windows zellij leaks the pane shell's banner onto the caller's stdout; a
+        // login shell can put an motd there. None of it is a session name.
+        let fr = SeqRunner::new(vec![Ok(b"PowerShell 7.6.5\nPS C:\\Users\\me> ".to_vec())]);
+        let got = create(&zellij_host(), &fr, "dev").await.unwrap();
+        assert_eq!(got, "dev");
+        let cmds = fr.commands();
+        assert_eq!(cmds.len(), 1, "a named create runs no listing: {cmds:?}");
+        assert_eq!(cmds[0].0, "zellij");
+        assert_eq!(cmds[0].1, vec!["attach", "-b", "dev"]);
+    }
+
+    #[tokio::test]
+    async fn create_empty_on_a_silent_mux_names_the_session_itself() {
+        // The walk starts at its first name and skips what the LIVE listing holds:
+        // "amber-otter" is taken, so the create gets "amber-heron".
+        let fr = SeqRunner::new(vec![
+            Ok(b"amber-otter [Created 5s ago] \n".to_vec()),
+            Ok(Vec::new()),
+        ]);
+        let got = create(&zellij_host(), &fr, "").await.unwrap();
+        assert_eq!(got, "amber-heron");
+        let cmds = fr.commands();
+        assert_eq!(cmds.len(), 2, "listing then create: {cmds:?}");
+        assert_eq!(cmds[0].1, vec!["list-sessions", "-n"]);
+        assert_eq!(cmds[1].1, vec!["attach", "-b", "amber-heron"]);
+    }
+
+    #[tokio::test]
+    async fn create_empty_on_an_idle_silent_mux_takes_the_walks_first_name() {
+        // zellij reports an idle host as an error-shaped "no sessions" message; the
+        // listing classifies it as reachable-but-empty, so the walk is unobstructed.
+        let fr = SeqRunner::new(vec![
+            Err(RunError::Exit {
+                stderr: "No active zellij sessions found.".into(),
+                code: 1,
+            }),
+            Ok(Vec::new()),
+        ]);
+        let got = create(&zellij_host(), &fr, "").await.unwrap();
+        assert_eq!(got, "amber-otter");
     }
 
     // Each op composes the Mux plan through the Transport and runs it via the

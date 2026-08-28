@@ -32,7 +32,7 @@ pub const MAX_FRAME: usize = 1 << 24;
 /// matched case-insensitively; a single char is taken verbatim (case preserved,
 /// so `"R"` differs from `"r"`). Returns `None` for anything unrecognized.
 pub fn parse_key(name: &str) -> Option<KeyEvent> {
-    // A single char is preserved exactly as given, including case — checked
+    // A single char is preserved exactly as given, including case - checked
     // before lowercasing so "R" and "r" stay distinct.
     let mut chars = name.chars();
     if let (Some(c), None) = (chars.next(), chars.next()) {
@@ -133,7 +133,7 @@ pub async fn read_frame<R: AsyncBufRead + Unpin>(r: &mut R) -> std::io::Result<S
 }
 
 /// Reads one newline-terminated request line, bounded to [`MAX_FRAME`] so a local
-/// buggy client that never sends a newline cannot grow the buffer without limit —
+/// buggy client that never sends a newline cannot grow the buffer without limit -
 /// the request path's symmetric counterpart to [`read_frame`]'s bound. `Ok(None)`
 /// signals EOF (close the connection); an over-limit line without a terminating
 /// newline is an error.
@@ -282,9 +282,10 @@ pub fn parse_ctl_op(line: &str) -> CtlRequest {
         },
         // Session lifecycle. Each maps to the SAME domain `Action` a keypress
         // produces; only the addressing is parsed here. `new-session`/`new-window`
-        // take an optional name (empty ⇒ the mux auto-names). `KillSession` /
+        // take an optional name (empty ⇒ auto-named: by the mux, or by the manage
+        // layer for a mux that cannot name its own). `KillSession` /
         // `RenameSession` carry a `Session` built from the address via `parse_target`
-        // (the op uses only its source + name — see `ui::ops::run_op`).
+        // (the op uses only its source + name - see `ui::ops::run_op`).
         "new-session" if !req.arg.trim().is_empty() => {
             let (source, name) = split_first(&req.arg);
             CtlRequest::Op(Action::CreateSession { source, name })
@@ -369,6 +370,13 @@ pub fn nth_name(n: u64) -> String {
     format!("{adj}-{noun}")
 }
 
+/// How many distinct names the [`nth_name`] walk yields before it repeats: the bound
+/// every walk over it shares (instance naming below, session naming in the manage
+/// layer).
+pub(crate) fn nth_name_total() -> u64 {
+    (ADJECTIVES.len() * NOUNS.len()) as u64
+}
+
 /// Picks a free instance name in `dir`, starting the [`nth_name`] walk at `seed` (the
 /// pid, so two instances started at once rarely probe the same name first) and stepping
 /// until a name no LIVE instance holds. A marker whose socket does not answer is a
@@ -376,8 +384,7 @@ pub fn nth_name(n: u64) -> String {
 /// machine from exhausting the list. Falls back to `<seed>` after a full pass, so this
 /// always returns a usable name.
 pub async fn pick_free_name(dir: &Path, seed: u64) -> String {
-    let total = (ADJECTIVES.len() * NOUNS.len()) as u64;
-    for step in 0..total {
+    for step in 0..nth_name_total() {
         let name = nth_name(seed.wrapping_add(step));
         let path = socket_path(dir, &name);
         if !path.exists() || Client::dial(&path).await.is_err() {
@@ -432,7 +439,7 @@ pub async fn prune_stale(dir: &Path, keep: &str) {
 
 /// The parsed `status` reply: the per-instance identity `xmux instances` shows. The
 /// wire form is TAB-separated `key=value` (tab, not space, so a value may itself
-/// contain spaces — e.g. a Windows `cwd`). [`format_status`] / [`parse_status`] are
+/// contain spaces - e.g. a Windows `cwd`). [`format_status`] / [`parse_status`] are
 /// inverses; keeping both here is what stops the producer (the app's `status_line`)
 /// and the consumer (`xmux instances`) from drifting.
 #[derive(Debug, Default, PartialEq)]
@@ -525,7 +532,7 @@ mod tests {
     #[test]
     fn parse_ctl_op_new_session_is_the_only_lifecycle_verb() {
         use crate::model::Action;
-        // new-session: source + optional name (empty ⇒ the mux auto-names).
+        // new-session: source + optional name (empty ⇒ auto-named).
         assert_eq!(
             parse_ctl_op("new-session jup api"),
             CtlRequest::Op(Action::CreateSession {
@@ -573,7 +580,7 @@ mod tests {
         assert!(
             matches!(parse_ctl_op("raw:text hi"), CtlRequest::RawBytes(b) if b == b"hi".to_vec())
         );
-        // A bare `key` (no raw: prefix) is not a recognized verb — the keystroke
+        // A bare `key` (no raw: prefix) is not a recognized verb - the keystroke
         // surface is only behind raw:, so it parses as Unknown.
         assert!(matches!(parse_ctl_op("key down"), CtlRequest::Unknown(_)));
         assert!(
@@ -690,7 +697,7 @@ mod tests {
     #[tokio::test]
     async fn read_request_line_bounds_unterminated_input() {
         // A local buggy client that never sends a newline must not grow the request
-        // buffer without limit — mirror the response path's MAX_FRAME bound.
+        // buffer without limit - mirror the response path's MAX_FRAME bound.
         let mut r = TokioBufReader::new(Cursor::new(vec![b'x'; MAX_FRAME + 1]));
         assert!(read_request_line(&mut r).await.is_err());
     }

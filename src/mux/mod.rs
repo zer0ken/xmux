@@ -1,5 +1,5 @@
 //! One mux mux per mux. `Box<dyn Mux>` lives inside a `Host`. The method set is
-//! exactly what the supervisor + control reader + manage layer call — no feature
+//! exactly what the supervisor + control reader + manage layer call - no feature
 //! catalogue. It covers both window operations and session lifecycle (create / kill /
 //! rename), so the manage layer routes every mux argv through the mux rather than
 //! building it off a bare binary name. The mux owns its binary name and
@@ -46,7 +46,7 @@ pub(crate) fn is_no_sessions(err: &RunError) -> bool {
         return false;
     };
     // command-not-found (127), not-executable (126), and ssh failure (255) are
-    // never a healthy-but-empty mux — a broken host must not be hidden as empty.
+    // never a healthy-but-empty mux - a broken host must not be hidden as empty.
     if matches!(code, 126 | 127 | 255) {
         return false;
     }
@@ -58,7 +58,7 @@ pub(crate) fn is_no_sessions(err: &RunError) -> bool {
 /// parse the rows (tagged with the host id), and classify an error as a
 /// reachable-but-empty mux (`Ok(vec![])`) versus an unreachable host (`Err`). tmux
 /// always uses it; psmux uses it for a REMOTE host (the local-registry merge is a
-/// LOCAL-psmux behavior — `~/.psmux` has no remote awareness).
+/// LOCAL-psmux behavior - `~/.psmux` has no remote awareness).
 pub(crate) async fn enumerate_via_list_sessions(
     bin: &str,
     kind: &str,
@@ -94,15 +94,15 @@ pub(crate) fn reason_is_no_sessions(text: &str) -> bool {
 
 /// The per-command budget [`ExecRunner`] applies to itself, so a command that never
 /// answers is torn down cleanly (kill → drain → wait) rather than the sweep's
-/// cancellation dropping pipe reads in flight (which crashes on Windows — see
+/// cancellation dropping pipe reads in flight (which crashes on Windows - see
 /// `source.rs`). Exceeds the ssh connect timeout (5s) so a slow remote is not mistaken
 /// for a hung one.
 pub(crate) const POLL_CMD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
 
 /// The sweep-level backstop around `runner.run`, one second longer than
 /// [`POLL_CMD_TIMEOUT`] so a real command's own clean teardown always finishes before
-/// this fires. It exists to bound a runner that does NOT self-limit — a fake runner
-/// under test, or a future runner that forgets its own budget — so a hung command can
+/// this fires. It exists to bound a runner that does NOT self-limit - a fake runner
+/// under test, or a future runner that forgets its own budget - so a hung command can
 /// never freeze the whole poll sweep.
 const POLL_SWEEP_BUDGET: std::time::Duration =
     std::time::Duration::from_secs(POLL_CMD_TIMEOUT.as_secs() + 1);
@@ -123,7 +123,7 @@ async fn within_poll_budget<T>(
 }
 
 /// An opaque, mux-authored plan for an in-place display-client switch. The driver runs
-/// it BLIND through the host's transport and never inspects which variant it is — the
+/// it BLIND through the host's transport and never inspects which variant it is - the
 /// variant↔lowering mapping is `run_switch_plan`'s job, not the driver's. Each variant
 /// lowers 1:1 to a [`crate::transport::LoweredSwitch`].
 pub enum SwitchPlan {
@@ -160,6 +160,21 @@ pub trait Mux: Send + Sync {
     /// later has to answer this itself rather than inherit an answer that breaks it.
     fn takes_server_socket(&self) -> bool;
 
+    /// Whether this mux ASSIGNS the name of a session it creates: given an empty name
+    /// it auto-names, and its create plan prints the final name to stdout. The two are
+    /// one capability, because a printed name is the only way an auto-assigned name can
+    /// be learned. The manage layer reads this to decide both sides of a create: whether
+    /// stdout is a name to parse (a mux whose create prints nothing can still have
+    /// stdout NOISE - a shell banner, an motd - and trusting it invents a session that
+    /// does not exist) and whether an empty name must be filled in by xmux before the
+    /// plan is built.
+    ///
+    /// Deliberately has NO default, for the same reason as
+    /// [`takes_server_socket`](Mux::takes_server_socket): a tmux-compatible default is
+    /// silently wrong for a silent-create mux, and the failure it causes (stdout noise
+    /// adopted as the new session's name) surfaces far from the mux that inherited it.
+    fn assigns_new_session_name(&self) -> bool;
+
     /// The mux argv this mux enumerates its sessions with, `argv[0]` the binary.
     ///
     /// Exists to be SHOWN - the unreachable screen states the command behind a failed
@@ -171,7 +186,7 @@ pub trait Mux: Send + Sync {
         mux::list_sessions(self.bin())
     }
 
-    /// The mux's own display driver — the per-host orchestration of which PTY to
+    /// The mux's own display driver - the per-host orchestration of which PTY to
     /// attach and whether to `switch-client` or reattach on a session change. Each
     /// mux constructs ITS OWN driver, so mux selection lives in the mux family
     /// (never a central `match server_model()`). The driver is zero-sized; the per-host
@@ -179,7 +194,7 @@ pub trait Mux: Send + Sync {
     /// `DriverCtx`, so a fresh value per call is free.
     fn driver(&self) -> Box<dyn crate::driver::MuxDriver>;
 
-    /// Clones into a fresh box — a spawned poll task needs an owned mux, and a trait
+    /// Clones into a fresh box - a spawned poll task needs an owned mux, and a trait
     /// object cannot derive `Clone`. Symmetric with `Transport::clone_box`; each mux
     /// deep-copies itself (identity + invoked binary preserved).
     fn clone_box(&self) -> Box<dyn Mux>;
@@ -202,7 +217,7 @@ pub trait Mux: Send + Sync {
     /// teardown). The driver runs the returned [`SwitchPlan`] blind through the transport,
     /// never inspecting the variant; the `tty >file` / read-back mechanism a shared mux
     /// uses stays inside the mux family, not on this boundary. `display_tty` is the
-    /// captured tty of xmux's display client — psmux targets it directly; tmux ignores it
+    /// captured tty of xmux's display client - psmux targets it directly; tmux ignores it
     /// (it reads the tty its attach recorded to a per-host file). `None` (the default) for
     /// a mux that supports no in-place switch, so the driver reattaches instead.
     fn switch_in_place(
@@ -237,7 +252,7 @@ pub trait Mux: Send + Sync {
     /// The control-mode wire protocol (line classification + notification→event policy
     /// + command-line builders) the host reader drives this `-CC` channel with. `None`
     /// for a mux with no host-level control stream (it is polled), matching `control_argv`.
-    /// The protocol is stateless, so the reference is `'static` (a shared unit struct) —
+    /// The protocol is stateless, so the reference is `'static` (a shared unit struct) -
     /// the host reader/writer threads borrow it for their whole lifetime.
     fn control_protocol(&self) -> Option<&'static dyn ControlProtocol> {
         None
@@ -250,7 +265,7 @@ pub trait Mux: Send + Sync {
     fn event_source(&self) -> EventSource;
 
     /// One poll sweep for a POLL host: enumerate sessions, emitting a
-    /// [`HostEvent::Sessions`] — the same payload a control client's metadata path
+    /// [`HostEvent::Sessions`] - the same payload a control client's metadata path
     /// produces. Built from the existing trait method (`enumerate`), so it is
     /// mux-blind and needs no per-impl override: tmux is control-driven and never
     /// calls it; psmux uses this default. The host manager owns the ticker/cancel
@@ -394,7 +409,7 @@ pub async fn installed_muxes(transport: &dyn Transport, runner: &dyn Runner) -> 
     found
 }
 
-/// The implicit tmux fallback — the single place that names tmux as the mux any
+/// The implicit tmux fallback - the single place that names tmux as the mux any
 /// binary/kind decodes to when it matches no `known_muxes()` entry. tmux has no
 /// positive help signal, so it cannot be a registry entry; this explicit helper is
 /// the one site that materialises it, preserving the invoked binary.
@@ -437,7 +452,7 @@ pub fn for_kind(kind: &str, bin: &str) -> Box<dyn Mux> {
     tmux_fallback(bin)
 }
 
-/// True when `name` names a mux xmux actually recognizes — tmux (the implicit
+/// True when `name` names a mux xmux actually recognizes - tmux (the implicit
 /// fallback) or any of the [`known_muxes`]. A narrower advisory predicate than
 /// [`for_binary`]/[`for_kind`], which always fall back to tmux; this lets config
 /// validation flag a value that decodes but names no real mux. Reuses
@@ -449,10 +464,10 @@ pub fn is_recognized(name: &str) -> bool {
 /// Probes a server's true identity over `transport`, independent of its binary name
 /// and `-V` (psmux mimics tmux's `-V`, reporting a fake `tmux 3.3.6`). Two stages:
 ///
-/// 1. `<bin> help` — psmux names itself here (its reliable positive signal). A real
+/// 1. `<bin> help` - psmux names itself here (its reliable positive signal). A real
 ///    tmux has no `help` command (`tmux help` exits non-zero), so a known-mux marker
 ///    in the output means that mux.
-/// 2. `<bin> -V` — reached only when stage 1 carried no marker. A working `-V` is a
+/// 2. `<bin> -V` - reached only when stage 1 carried no marker. A working `-V` is a
 ///    real tmux; psmux never reaches here because its `help` already matched.
 ///
 /// `Some(mux)` means a probe was conclusive. `None` means BOTH probes failed
@@ -567,10 +582,14 @@ mod tests {
         let m = tmux();
         assert_eq!(m.new_session_plan("dev"), mux::new_session("tmux", "dev"));
         assert_eq!(m.new_session_plan(""), mux::new_session("tmux", ""));
+        assert!(
+            m.assigns_new_session_name(),
+            "new-session auto-names an empty request and -P -F prints the result"
+        );
     }
 
     /// A minimal tmux-compatible mux that implements ONLY the required `Mux` methods
-    /// — none of the command-plan verbs. It must still compile and get every command
+    /// and none of the command-plan verbs. It must still compile and get every command
     /// plan for free from the trait defaults (the north-star additivity: a new
     /// tmux-compatible mux = identity + a few methods, the verbs are free).
     struct BareMux {
@@ -581,6 +600,11 @@ mod tests {
     impl Mux for BareMux {
         /// tmux-shaped, like the fake itself.
         fn takes_server_socket(&self) -> bool {
+            true
+        }
+
+        /// tmux-shaped, like the fake itself.
+        fn assigns_new_session_name(&self) -> bool {
             true
         }
 
@@ -714,6 +738,10 @@ mod tests {
         let m = psmux();
         assert_eq!(m.new_session_plan("dev"), mux::new_session("psmux", "dev"));
         assert_eq!(m.new_session_plan(""), mux::new_session("psmux", ""));
+        assert!(
+            m.assigns_new_session_name(),
+            "psmux runs tmux's new-session plan, prints included"
+        );
     }
 
     #[test]
@@ -948,7 +976,7 @@ Usage: zellij [OPTIONS]",
     #[tokio::test]
     async fn detect_backend_classifies_real_tmux_via_version_when_help_errors() {
         // Regression: real tmux has no `help` command (`tmux help` exits non-zero), so
-        // the help probe errors. The `-V` fallback must still identify it as tmux —
+        // the help probe errors. The `-V` fallback must still identify it as tmux -
         // otherwise a correctly-configured tmux host never gets detected/connected.
         let transport = crate::transport::local(None);
         let runner = ProbeRunner::new(None, Some("tmux 3.5a"));
@@ -1045,7 +1073,7 @@ Usage: zellij [OPTIONS]",
     #[test]
     fn fallback_preserves_the_invoked_binary() {
         // The tmux fallback (a binary that matches no known mux) keeps its invoked
-        // binary while reporting the tmux identity — pinned so folding the three
+        // binary while reporting the tmux identity - pinned so folding the three
         // fallback sites into one shared helper stays byte-identical.
         assert_eq!(for_binary("some-fork").kind(), "tmux");
         assert_eq!(for_binary("some-fork").bin(), "some-fork");
@@ -1142,7 +1170,7 @@ Usage: zellij [OPTIONS]",
         )));
     }
 
-    /// Always errors — models an unreachable poll host (ssh connect failure).
+    /// Always errors - models an unreachable poll host (ssh connect failure).
     struct FailRunner;
 
     #[async_trait]
@@ -1167,7 +1195,7 @@ Usage: zellij [OPTIONS]",
                 events.push(e)
             })
             .await;
-        // Exactly the Sessions event fires (no panes — enumeration returned nothing),
+        // Exactly the Sessions event fires (no panes - enumeration returned nothing),
         // and it carries the error so a transient poll failure stays observable.
         let sessions_ev = events
             .iter()
@@ -1192,7 +1220,7 @@ Usage: zellij [OPTIONS]",
         );
     }
 
-    /// A SUCCESSFUL poll sweep emits `Sessions { err: None }` — the same payload a
+    /// A SUCCESSFUL poll sweep emits `Sessions { err: None }` - the same payload a
     /// control client's metadata path produces.
     #[tokio::test]
     async fn poll_once_emits_sessions_on_success() {

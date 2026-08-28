@@ -148,6 +148,11 @@ flatten renders for the dump verb.
   of the scan, so a selection re-picked from the top would walk from host to host as
   they arrive; it lands on the first session to appear and stays until the user or
   the mux moves it.
+- The nav's two navigation steps name the two things its list is made of: one walks the
+  cards, the other walks the categories, landing on a category's first card. A category
+  is a source with sessions to show, or the whole host band at once. Neither step is
+  defined by where a card sits on screen, so both mean the same thing in the side column
+  and in the portrait band.
 - A selection xmux is TOLD to make - a ctl switch, a create landing on its new
   card, the nav following the session the mux moved its own display client onto -
   names the card and moves to it through one entry point. Nothing downstream tells

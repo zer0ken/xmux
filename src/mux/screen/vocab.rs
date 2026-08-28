@@ -21,8 +21,9 @@ pub fn attach(bin: &str, name: &str) -> Vec<String> {
     argv(&[bin, "-x", name])
 }
 
-/// `screen -dmS <name>` — start a DETACHED session. Prints nothing, so `manage::create`
-/// keeps the requested name.
+/// `screen -dmS <name>` — start a DETACHED session. Prints nothing, so its stdout is
+/// never a name (`assigns_new_session_name` is false and the manage layer names an
+/// empty request before building this plan).
 pub fn new_session(bin: &str, name: &str) -> Vec<String> {
     if name.is_empty() {
         argv(&[bin, "-dmS"])

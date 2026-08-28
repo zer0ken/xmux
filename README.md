@@ -84,6 +84,7 @@ In the nav list:
 | Key                      | Action                                                                   |
 | ------------------------ | ------------------------------------------------------------------------ |
 | `↑` / `↓` (or `k` / `j`) | move one card (wraps at both ends)                                       |
+| `←` / `→`                | previous / next `host/mux` section, the host cards counting as one       |
 | `Home` / `End`           | jump to the first / last card                                            |
 | `PageUp` / `PageDown`    | jump ten cards                                                           |
 | `Enter`                  | move focus into the selected session's terminal view                    |
