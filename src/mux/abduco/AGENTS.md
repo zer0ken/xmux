@@ -22,6 +22,11 @@ server-socket flag. The display driver holds ONE per-source PTY and REATTACHES i
 with `abduco -a <name>` on every session change, which attaches to that session's
 own server.
 
+abduco also cannot move an attached client to another session. Its whole option
+surface is `-a -A -c -l -n -e -f -p -q -r -v`, and none of those is a switch verb:
+`-e` only names the detach key. Pressing that key ends the attachment and leaves
+every session running, so the client is GONE rather than pointed somewhere else.
+
 Because there is no per-session query, a poll sweep enumerates ONCE and resolves
 every session as a plain session card (the session alone). `last_attached` is 0:
 abduco prints human local
@@ -49,6 +54,11 @@ and owns the concrete display decision. The transport lowers the host execution.
 - A session change ALWAYS reattaches; on a reattach the stale attachment is HELD,
   not removed, so its grid stays on screen until the fresh one is ready
   (stale-while-revalidate).
+- There is no session change to follow. abduco cannot move an attached client from
+  inside a session, so the nav follow that tmux's `%client-session-changed` drives
+  has nothing to fire on here: a detach ends the attachment instead of retargeting
+  it, and the nav selection standing still afterwards is the correct answer, not a
+  missed update.
 - Sync never pre-warms; it only reaps the source PTY when the source has no
   sessions left.
 - A session resolves as the session alone, never with a per-session command
@@ -59,6 +69,8 @@ and owns the concrete display decision. The transport lowers the host execution.
 
 - Do not invent a per-session query: abduco has none, and a bogus command
   would run every poll and fail.
+- Do not add a session-follow path for abduco: it would carry a notification abduco
+  cannot send about a move abduco cannot make.
 - Do not use `-V` (uppercase) anywhere: abduco rejects it; its version flag is
   `-v` (lowercase).
 - Do not rely on dvtm: abduco's default session command is the user's tool inside
