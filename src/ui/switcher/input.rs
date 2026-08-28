@@ -77,17 +77,17 @@ impl Switcher {
         // hint_bar; actions below may set a fresh one, which survives because this runs first.
         state.chrome.flash.clear();
         // The flat card list has no levels or host columns: ↑/↓ (and k/j) step one card,
-        // ←/→ step one host, PageUp/Down jump ten, Home/End go to the ends (prefix
+        // ←/→ step one category, PageUp/Down jump ten, Home/End go to the ends (prefix
         // →/Enter focuses the terminal at the app layer). `n` starts a session on
         // the selected host; a digit opens the jump popup seeded with it (the app only
         // forwards a digit here behind the prefix).
         match ev.code {
             KeyCode::Enter => {}
-            // The two axes name the two things the list is made of: ↑/↓ walk the cards,
-            // ←/→ walk the hosts, landing on the first card of the previous/next source.
-            // Neither is defined by where a card sits on screen, so both mean the same
-            // thing in the side column and in the portrait band, which flows its cards
-            // down a column and then right.
+            // ↑/↓ and ←/→ name the two things the list is made of: ↑/↓ walk the cards,
+            // ←/→ walk the categories, landing on the first card of the previous/next
+            // one. Neither is defined by where a card sits on screen, so both mean the
+            // same thing in the side column and in the portrait band, which flows its
+            // cards down a column and then right.
             KeyCode::Up | KeyCode::Char('k') => self.nav_vertical(-1, state),
             KeyCode::Down | KeyCode::Char('j') => self.nav_vertical(1, state),
             KeyCode::Left => self.nav_horizontal(-1, state),

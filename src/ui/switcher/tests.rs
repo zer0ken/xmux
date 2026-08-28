@@ -303,8 +303,8 @@ fn sample() -> Scan {
 }
 
 /// Two sources with a session each and TWO with none, so the host band holds more than
-/// one card. Used where the band's own SIZE is the point: on the horizontal axis it is
-/// one category however many cards it holds.
+/// one card. Used where the band's own SIZE is the point: to ←/→ it is one category
+/// however many cards it holds.
 fn scan_with_a_host_band() -> Scan {
     Scan {
         groups: vec![
@@ -413,8 +413,8 @@ fn up_down_and_hjkl_move_linearly() {
         &mut state,
     );
     assert_eq!(sw.selected, start, "k == ↑");
-    // ←/→ are the OTHER axis (one host per step), so neither is a second way to step a
-    // card: from the first card of the first source, → leaves that source entirely.
+    // ←/→ are the OTHER step (one category at a time), so neither is a second way to
+    // step a card: from the first card of the first source, → leaves that source.
     sw.handle_key(
         KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
         &mut state,
@@ -2447,7 +2447,7 @@ async fn navigation_wraps_around() {
 
 #[tokio::test]
 async fn horizontal_steps_one_host_and_lands_on_its_first_card() {
-    // The two axes name the two things the list is made of. ←/→ cross a whole category
+    // ↑/↓ and ←/→ name the two things the list is made of. ←/→ cross a whole category
     // at a time: from a session of one source the selection lands on the FIRST card of
     // the next, so a list of many hosts is crossed without stepping over every session
     // between them. The host band is the last category, entered at its first card.
@@ -2474,10 +2474,10 @@ async fn horizontal_steps_one_host_and_lands_on_its_first_card() {
 
 #[tokio::test]
 async fn the_host_band_is_one_stop_however_many_cards_it_holds() {
-    // The sources with nothing to show are ONE category on this axis, not one each: a
+    // The sources with nothing to show are ONE category to ←/→, not one each: a
     // list of machines with nothing running on them is a single thing to reach past
     // rather than a run of places to be carried into one at a time. Every one of them is
-    // still a card, so the vertical axis reaches each.
+    // still a card, so ↑/↓ reach each.
     let mut h = Harness::new(scan_with_a_host_band());
     h.key(KeyCode::Right).await; // local → jupiter00
     h.key(KeyCode::Right).await; // jupiter00 → the band
@@ -2539,8 +2539,8 @@ async fn horizontal_leaves_the_host_from_any_of_its_cards() {
 
 #[tokio::test]
 async fn horizontal_wraps_at_both_ends() {
-    // The host axis wraps exactly as the card axis does, so neither end of the list is a
-    // dead stop.
+    // The category step wraps exactly as the card step does, so neither end of the list
+    // is a dead stop.
     let mut h = Harness::new(sample());
     h.key(KeyCode::Left).await;
     assert!(
@@ -3302,8 +3302,8 @@ async fn hint_bar_and_help_reflect_new_model() {
         "help explains focusing the terminal view:\n{help}"
     );
     assert!(
-        help.contains("previous / next host/mux"),
-        "help names what the horizontal axis walks, since the two axes differ:\n{help}"
+        help.contains("previous / next host/mux (host cards as one)"),
+        "help names what ←/→ walk, since the two steps differ:\n{help}"
     );
     assert!(
         !help.contains("select = attach"),
