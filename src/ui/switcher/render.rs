@@ -276,6 +276,7 @@ impl Switcher {
             area.height,
             self.list_state.offset(),
             self.selected,
+            self.selected_section_title(),
         );
         let (cards, bar) = reserve_bar(area, flow.scrolls, false);
         *self.list_state.offset_mut() = flow.offset;

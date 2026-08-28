@@ -518,6 +518,23 @@ impl Switcher {
             .position(|r| matches!(r.reference, RowRef::Host { .. }))
     }
 
+    /// The index of the section title the SELECTED row hangs under: the Section row
+    /// directly above a selected session card, `None` when the selection is a host-state
+    /// card or no section heads it. A section title is the row its group of cards reads
+    /// its `{host}/{mux}` from, and it scrolls off the top edge with the cards it heads;
+    /// the side placement pulls the list back to show a title when the card under it and
+    /// the title fit on screen together.
+    fn selected_section_title(&self) -> Option<usize> {
+        let sel = self.selected;
+        let r = self.rows.get(sel)?;
+        if !matches!(r.reference, RowRef::Session { .. }) {
+            return None;
+        }
+        self.rows[..sel]
+            .iter()
+            .rposition(|r| matches!(r.reference, RowRef::Section { .. }))
+    }
+
     fn set_selected(&mut self, idx: usize, state: &crate::state::State) {
         if self.rows.is_empty() {
             return;
