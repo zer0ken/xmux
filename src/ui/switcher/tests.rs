@@ -997,8 +997,8 @@ async fn apply_source_result_marks_the_card_and_states_the_reason_on_the_screen(
 }
 
 #[tokio::test]
-async fn an_unselected_unreachable_card_keeps_the_danger_mark() {
-    // The ⚠ mark keeps the failure colour (danger). The SELECTED card is painted in
+async fn an_unselected_unreachable_card_keeps_the_warning_mark() {
+    // The ⚠ mark keeps the warning colour. The SELECTED card is painted in
     // reverse video, which flattens every level colour on it by design, so the colour
     // assertion reads an UNSELECTED unreachable card.
     let scan = selection_parked_elsewhere(Scan {
@@ -1016,8 +1016,8 @@ async fn an_unselected_unreachable_card_keeps_the_danger_mark() {
     );
     assert_eq!(
         h.nav_fg_of("⚠"),
-        Some(crate::ui::palette::get().danger),
-        "the mark keeps the failure colour on an unselected card"
+        Some(crate::ui::palette::get().warning),
+        "the mark keeps the warning colour on an unselected card"
     );
 }
 
@@ -1876,14 +1876,14 @@ async fn both_host_screens_share_one_grammar() {
 #[tokio::test]
 async fn levels_render_in_their_level_colors() {
     // The selection parks on a remote card so the local rows render UNSELECTED: the
-    // section title reads in the quiet header role, the session name in the accent.
+    // section title reads in the secondary role, the session name in the accent.
     let mut h = Harness::new(sample());
     assert!(h.sw.select_address("jupiter00/inference", &h.state));
     h.draw();
     assert_eq!(
         h.nav_fg_of("local"),
-        Some(crate::ui::palette::get().overlay),
-        "the section title is the quiet header role"
+        Some(crate::ui::palette::get().secondary),
+        "the section title is the secondary role"
     );
     assert_eq!(
         h.nav_fg_of("editor"),
@@ -2070,13 +2070,13 @@ async fn the_section_title_shows_host_mux_and_the_session_takes_the_accent() {
     );
     assert_eq!(
         h.nav_fg_of("srv"),
-        Some(crate::ui::palette::get().overlay),
-        "the host half is the quiet header role"
+        Some(crate::ui::palette::get().secondary),
+        "the host half is the secondary role"
     );
     assert_eq!(
         h.nav_fg_of("tmux"),
-        Some(crate::ui::palette::get().overlay),
-        "the mux half is the quiet header role"
+        Some(crate::ui::palette::get().secondary),
+        "the mux half is the secondary role"
     );
     assert_eq!(
         h.nav_fg_of("alpha"),
@@ -2300,10 +2300,10 @@ async fn a_column_is_never_narrower_than_the_title_naming_it() {
 }
 
 #[tokio::test]
-async fn a_host_card_gives_its_mux_the_accent() {
+async fn a_host_card_gives_its_mux_the_secondary() {
     // A host-state card has no session to take the accent, so its mux - the lowest
-    // level it displays - takes it; the host half stays text. The separator keeps its
-    // own furniture role.
+    // level it displays - stays with the host half; both read in the secondary role.
+    // The separator keeps its own furniture role.
     let scan = Scan {
         groups: vec![
             Group {
@@ -2328,15 +2328,15 @@ async fn a_host_card_gives_its_mux_the_accent() {
     );
     assert_eq!(
         h.nav_fg_of("psmux"),
-        Some(crate::ui::palette::get().accent),
-        "the mux is the host card's lowest level, so it takes the accent"
+        Some(crate::ui::palette::get().secondary),
+        "the mux shares the host half's secondary role"
     );
-    // The separator is furniture on both card kinds, and the host half is text.
+    // The separator is furniture on both card kinds, and the host half is secondary.
     let (x, y) = locate(h.buf(), "srv/psmux", NAV_WIDTH).expect("the host card");
-    assert_eq!(h.buf()[(x, y)].fg, color_text(), "the host half");
+    assert_eq!(h.buf()[(x, y)].fg, color_secondary(), "the host half");
     assert_eq!(
         h.buf()[(x + 3, y)].fg,
-        color_separator(),
+        color_decoration(),
         "the separator is its own role"
     );
 }
@@ -3602,28 +3602,24 @@ async fn view_border_splits_top_bottom_to_mark_focused_side() {
     assert_eq!(buf[(x, top)].symbol(), "│", "view border still drawn");
     assert_eq!(
         fg(&buf, bottom),
-        pal.border_active,
-        "terminal-view focus: bottom half accent"
+        pal.primary,
+        "terminal-view focus: bottom half primary"
     );
     assert_eq!(
         fg(&buf, top),
-        pal.border_inactive,
-        "terminal-view focus: top half inactive"
+        pal.disabled,
+        "terminal-view focus: top half disabled"
     );
 
-    // Tree focused: accent on the top (tree side), inactive on bottom.
+    // Tree focused: primary on the top (tree side), disabled on bottom.
     term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
-    assert_eq!(
-        fg(&buf, top),
-        pal.border_active,
-        "tree focus: top half accent"
-    );
+    assert_eq!(fg(&buf, top), pal.primary, "tree focus: top half primary");
     assert_eq!(
         fg(&buf, bottom),
-        pal.border_inactive,
-        "tree focus: bottom half inactive"
+        pal.disabled,
+        "tree focus: bottom half disabled"
     );
 }
 
@@ -3648,8 +3644,8 @@ async fn view_border_highlights_on_hover() {
         );
         assert_eq!(
             cell.fg,
-            crate::ui::palette::get().border_hover,
-            "hover: the border_hover role at row {y}"
+            crate::ui::palette::get().accent,
+            "hover: the border-hover cue reads in the accent role at row {y}"
         );
         assert!(
             !cell.modifier.contains(Modifier::REVERSED),

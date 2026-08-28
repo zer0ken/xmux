@@ -316,7 +316,7 @@ impl Switcher {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 BAND_RULE.repeat(rect.width as usize),
-                Style::default().fg(palette::get().overlay),
+                Style::default().fg(palette::get().decoration),
             ))),
             rect,
         );
@@ -457,7 +457,7 @@ impl Switcher {
     /// stay apart by a gap. A single light vertical line across the band, the same
     /// statement the side list's horizontal rule makes.
     fn render_column_rule(frame: &mut Frame, rect: Rect) {
-        let style = Style::default().fg(palette::get().overlay);
+        let style = Style::default().fg(palette::get().decoration);
         let buf = frame.buffer_mut();
         for y in rect.y..rect.y + rect.height {
             let cell = &mut buf[(rect.x, y)];
@@ -472,7 +472,7 @@ impl Switcher {
     fn render_card_connector(frame: &mut Frame, rect: Rect) {
         let cell = &mut frame.buffer_mut()[(rect.x, rect.y)];
         cell.set_symbol(CARD_CONNECTOR);
-        cell.set_style(Style::default().fg(palette::get().overlay));
+        cell.set_style(Style::default().fg(palette::get().decoration));
     }
 
     /// Writes the offscreen-card counts in `track` - the hint bar's row minus the cells the
@@ -492,7 +492,7 @@ impl Switcher {
         };
         // The overflow cue's OWN role, with the count BOLD so the number - the thing a
         // user reaches for - stands off the `<< … more >>` furniture around it.
-        let more_style = Style::default().fg(palette::get().more);
+        let more_style = Style::default().fg(palette::get().decoration);
         let bold = more_style.add_modifier(Modifier::BOLD);
         // `<< n more` / `n more >>`, the count the one bold cell in the run.
         let make_label = |n: usize, left_arrow: bool| -> (Vec<Span<'static>>, u16) {
@@ -562,7 +562,7 @@ impl Switcher {
                 .end_symbol(None)
                 .track_symbol(None)
                 .thumb_symbol("▐")
-                .thumb_style(Style::default().fg(palette::get().overlay)),
+                .thumb_style(Style::default().fg(palette::get().decoration)),
             bar,
             &mut sb,
         );
@@ -634,8 +634,8 @@ impl Switcher {
         let row = &self.rows[i];
         let selected = self.list_state.selected() == Some(i);
         let accent = Style::default().fg(palette::get().accent);
-        let number = Style::default().fg(color_number());
-        let separator = Style::default().fg(color_separator());
+        let number = Style::default().fg(color_decoration());
+        let separator = Style::default().fg(color_decoration());
         // The address column every card writes on - the only line, now that a card has
         // none other. A section title never calls it: it carries no number and is never
         // the selection.
@@ -658,7 +658,7 @@ impl Switcher {
         // columns rather than as anything about the group: the title stands alone.
         if let RowRef::Section { .. } = &row.reference {
             let (host, mux, _) = context_of(row);
-            let header = Style::default().fg(palette::get().overlay);
+            let header = Style::default().fg(palette::get().secondary);
             let title = if mux.is_empty() {
                 host.to_string()
             } else {
@@ -695,13 +695,13 @@ impl Switcher {
         } = &row.reference
         {
             let (host, mux, _) = context_of(row);
-            let pending = Style::default().fg(palette::get().pending);
+            let pending = Style::default().fg(palette::get().warning);
             // A host-state card's number sits on the host/mux line: the row is a word
             // about the host, not the thing the number names.
             let mut line = address();
             line.push(Span::styled(
                 host.to_string(),
-                Style::default().fg(color_text()),
+                Style::default().fg(color_secondary()),
             ));
             if *unreachable {
                 // The mark rides the host row flush after the host name.
@@ -709,14 +709,18 @@ impl Switcher {
                 // card just says so with a mark instead of a second row of text.
                 line.push(Span::styled(
                     "⚠",
-                    Style::default().fg(palette::get().danger),
+                    Style::default().fg(palette::get().warning),
                 ));
             }
             if !mux.is_empty() {
                 line.push(Span::styled("/", separator));
-                // The mux is confirmed whenever it is shown, so it takes the accent
-                // even while the host still scans for its sessions.
-                line.push(Span::styled(mux.to_string(), accent));
+                // The mux is confirmed whenever it is shown, so it stays with the host:
+                // both halves of the group identity read in secondary even while the host
+                // still scans for its sessions.
+                line.push(Span::styled(
+                    mux.to_string(),
+                    Style::default().fg(color_secondary()),
+                ));
             }
             if *scanning {
                 line.push(Span::styled(format!(" {spinner_glyph}"), pending));

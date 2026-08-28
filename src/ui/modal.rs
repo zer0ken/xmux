@@ -403,7 +403,7 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
         .unwrap_or(0);
     let bold = Style::new().add_modifier(Modifier::BOLD);
     let accent = Style::default().fg(palette::get().accent);
-    let rule = Span::styled("│ ", Style::default().fg(palette::get().overlay));
+    let rule = Span::styled("│ ", Style::default().fg(palette::get().decoration));
     let lines: Vec<Line> = rows
         .into_iter()
         .map(|r| match r {
@@ -529,7 +529,7 @@ pub(crate) fn render_popup(
     // base style keeps the interior opaque (see the doc comment above).
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(palette::get().overlay))
+        .border_style(Style::default().fg(palette::get().decoration))
         .title(Span::styled(
             format!(" {title} "),
             Style::default()

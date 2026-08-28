@@ -1314,10 +1314,7 @@ impl Runtime {
         ) else {
             return false;
         };
-        crate::ui::palette::apply(
-            &ui.theme,
-            crate::ui::chrome::parse_selection_bg(&ui.selection_style),
-        );
+        crate::ui::palette::apply(&ui.theme, crate::ui::chrome::palette_overrides(&ui));
         self.state
             .chrome
             .set_view_border_colors(crate::ui::switcher::ViewBorderColors::resolve(

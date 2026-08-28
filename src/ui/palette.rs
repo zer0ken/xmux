@@ -17,44 +17,48 @@
 //! the terminal swaps its own foreground and background, which is exactly what a theme
 //! means by "selected".
 //!
-//! A user who wants a specific colour names one (`[ui] selection-style`,
-//! `[ui] hint-bar-style`). Their terminal, their choice.
+//! A user who wants a specific colour names one: `[ui] primary`, `secondary`,
+//! `accent`, `decoration`, `warning`, `error`, `disabled`, the hint bar's
+//! `bar-bg`/`bar-fg`/`bar-accent`, `selection-style`, or `hint-bar-style`. Their
+//! terminal, their choice; those user-named colours are the only ones that may leave
+//! the sixteen slots (see [`Overrides`]).
 
 use std::sync::RwLock;
 
 use ratatui::style::{Color, Modifier, Style};
 
 /// The semantic colour set. One field per UI role - callers name the role, never
-/// a hue, so the assignments below stay changeable in one place.
-#[derive(Clone, Copy)]
+/// a hue, so the assignments below stay changeable in one place. Every field is an
+/// ANSI-16 slot (see the module doc) except the one the user names; a `[ui]` key can
+/// override any role (see [`Overrides`] and `Colour ownership` in `CONTEXT.md`).
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) struct Palette {
-    /// The single accent: the selection mark, popup titles, and the view border's
-    /// FOCUS half all share it, so "interactive / current" is one colour everywhere.
-    /// Painted on the CARD / TERMINAL background, so it follows the theme.
+    /// The view border's FOCUS half - the lit side of the nav|terminal divider that
+    /// marks which view holds focus. Its own role, apart from the card accent, so the
+    /// divider is tuned independently of the selection mark / session name.
+    pub primary: Color,
+    /// The host/mux text wherever it appears: the host half of a host-state card and
+    /// the `{host}/{mux}` section title above a group of session cards. The group
+    /// identity reads in one colour, brighter than the furniture that surrounds it.
+    pub secondary: Color,
+    /// The single accent: the session name, the selection mark, the popup titles, and
+    /// the view border's drag-hover cue all share it, so "interactive / current" is
+    /// one colour everywhere. Painted on the CARD / TERMINAL background, so it
+    /// follows the theme.
     pub accent: Color,
-    /// Content furniture, one role for the quiet supporting marks on the cards: the
-    /// "no sessions" status word, the `/` separator, the card number,
-    /// the popup borders, and the scrollbar thumb. All the marks a card
-    /// needs to read apart without being part of any level - see `bar_accent` and
-    /// `border_inactive` for the surfaces that live on a background of their own.
-    pub overlay: Color,
-    /// The view border's FOCUS half - the lit side of the nav|mux divider that marks
-    /// which view holds focus. Its own role, apart from the card accent, so the divider
-    /// is tuned independently of the selection mark / popup titles.
-    pub border_active: Color,
-    /// The view border's NON-focus half - the dim side of the nav|mux divider that
-    /// marks which half does NOT hold focus.
-    pub border_inactive: Color,
-    /// The view border's DRAG-HOVER cue (the grab handle that appears while the mouse
-    /// hovers the rule). Its own role, no longer a fixed yellow.
-    pub border_hover: Color,
-    /// The card's NUMBER in the left column (the digit gutter) - the address a user
-    /// jumps to. Split from `overlay` so it can be tuned apart from the other marks.
-    pub number: Color,
-    /// The `/` separator between the host/mux/session parts of a card's lines.
-    pub separator: Color,
-    /// The scroll-overflow cue (`« n more` / `n more »`) when cards run off the band.
-    pub more: Color,
+    /// Content furniture: the card number, the `/` separator, the section-title rule,
+    /// the band/column rules, the scrollbar thumb, the popup borders, and the
+    /// scroll-overflow cue (`« n more` / `n more »`). All the quiet marks a card needs
+    /// to read apart without being part of any level.
+    pub decoration: Color,
+    /// In-flight and special-state marks: the scanning spinner, the unreachable `⚠`
+    /// and any `!` status character.
+    pub warning: Color,
+    /// Failure state: error text and the refusal bar's background.
+    pub error: Color,
+    /// The view border's NON-focus half - the dim side of the nav|terminal divider
+    /// that marks which half does NOT hold focus.
+    pub disabled: Color,
     /// The hint bar's background: a single ANSI slot, so the bar reads as chrome
     /// rather than content. `[ui] hint-bar-style` overrides it.
     pub bar_bg: Color,
@@ -66,16 +70,6 @@ pub(crate) struct Palette {
     /// different surface than the cards), so the slot that reads on one may not read
     /// on the other: a light theme's dark `accent` is invisible on a dark bar.
     pub bar_accent: Color,
-    /// The one text colour a host-state card paints, separators and the accent target
-    /// excepted: the host half of the card reads in it, so a card reads as one neutral
-    /// block with a single highlighted element. The accent target (the session name, or
-    /// the mux on a host-state card) is the only card text that leaves it; a section
-    /// title reads in the quiet `overlay` header role instead.
-    pub text: Color,
-    /// In-flight state: the scanning status and the loading spinner.
-    pub pending: Color,
-    /// Failure state: the unreachable status and error text.
-    pub danger: Color,
     /// The background `[ui] selection-style` names, or `None` for the default: reverse
     /// video, the terminal's own "selected" look. Not a colour role - a user's override
     /// of one - so it is the only field that may hold a colour xmux did not choose.
@@ -93,20 +87,16 @@ pub(crate) const AUTO_LIGHT: &str = "auto-light";
 /// ANSI set - the level colours read on black, the accent pops on it.
 const fn auto_dark() -> Palette {
     Palette {
+        primary: Color::White,
+        secondary: Color::Gray,
         accent: Color::LightGreen,
-        overlay: Color::DarkGray,
-        border_active: Color::White,
-        border_inactive: Color::DarkGray,
-        border_hover: Color::LightGreen,
-        number: Color::DarkGray,
-        separator: Color::DarkGray,
-        more: Color::DarkGray,
+        decoration: Color::DarkGray,
+        warning: Color::Yellow,
+        error: Color::LightRed,
+        disabled: Color::DarkGray,
         bar_bg: Color::DarkGray,
         bar_fg: Color::White,
         bar_accent: Color::White,
-        text: Color::White,
-        pending: Color::Yellow,
-        danger: Color::LightYellow,
         selection_bg: None,
     }
 }
@@ -117,20 +107,16 @@ const fn auto_dark() -> Palette {
 /// bar of its own.
 const fn auto_light() -> Palette {
     Palette {
+        primary: Color::Black,
+        secondary: Color::DarkGray,
         accent: Color::Green,
-        overlay: Color::DarkGray,
-        border_active: Color::Black,
-        border_inactive: Color::White,
-        border_hover: Color::Green,
-        number: Color::DarkGray,
-        separator: Color::DarkGray,
-        more: Color::DarkGray,
+        decoration: Color::Gray,
+        warning: Color::Yellow,
+        error: Color::Red,
+        disabled: Color::Gray,
         bar_bg: Color::DarkGray,
         bar_fg: Color::White,
         bar_accent: Color::White,
-        text: Color::Black,
-        pending: Color::LightYellow,
-        danger: Color::Yellow,
         selection_bg: None,
     }
 }
@@ -169,18 +155,53 @@ fn resolve_or_default(name: &str) -> (&'static str, &'static Palette) {
     resolve_theme(name).unwrap_or((AUTO_DARK, &AUTO_DARK_THEME))
 }
 
-/// Installs a theme + selection override, REPLACING the active palette. Called at
-/// startup and again on every config change, so a `[ui] theme` / `selection-style`
-/// edit applies live. `theme` names a built-in theme (an unknown name falls back to
-/// `auto-dark`); `selection_bg` is `[ui] selection-style` - the only colour xmux takes
-/// from outside the sixteen slots, because the user naming it is the one person who
-/// knows their own theme.
-pub(crate) fn apply(theme: &str, selection_bg: Option<Color>) {
+/// The per-role overrides a user can name in `[ui]`; `None` leaves that role at the
+/// theme's own slot. The only colours xmux takes from outside the sixteen slots are
+/// ones the USER names, because the user naming one is the one person who knows their
+/// own theme (see the module doc and `Colour ownership` in `CONTEXT.md`).
+#[derive(Default, Clone, Copy)]
+pub(crate) struct Overrides {
+    pub primary: Option<Color>,
+    pub secondary: Option<Color>,
+    pub accent: Option<Color>,
+    pub decoration: Option<Color>,
+    pub warning: Option<Color>,
+    pub error: Option<Color>,
+    pub disabled: Option<Color>,
+    pub bar_bg: Option<Color>,
+    pub bar_fg: Option<Color>,
+    pub bar_accent: Option<Color>,
+    /// `[ui] selection-style`, parsed to `None` when unset (reverse video).
+    pub selection_bg: Option<Color>,
+}
+
+/// Installs a theme + the user's overrides, REPLACING the active palette. Called at
+/// startup and again on every config change, so a `[ui] theme` / role-colour /
+/// `selection-style` edit applies live. `theme` names a built-in theme (an unknown
+/// name falls back to `auto-dark`); each `Some` in `ov` replaces that role's slot,
+/// each `None` keeps the theme's own.
+pub(crate) fn apply(theme: &str, ov: Overrides) {
     let (_name, base) = resolve_or_default(theme);
-    *ACTIVE.write().unwrap() = Palette {
-        selection_bg,
-        ..*base
-    };
+    *ACTIVE.write().unwrap() = apply_overrides(*base, ov);
+}
+
+/// [`apply`] as a function of the base palette alone, so a test can exercise the
+/// override layering without touching the process-wide `ACTIVE` lock (one test
+/// setting it would change what every other test in the binary renders).
+fn apply_overrides(base: Palette, ov: Overrides) -> Palette {
+    let mut p = base;
+    p.primary = ov.primary.unwrap_or(p.primary);
+    p.secondary = ov.secondary.unwrap_or(p.secondary);
+    p.accent = ov.accent.unwrap_or(p.accent);
+    p.decoration = ov.decoration.unwrap_or(p.decoration);
+    p.warning = ov.warning.unwrap_or(p.warning);
+    p.error = ov.error.unwrap_or(p.error);
+    p.disabled = ov.disabled.unwrap_or(p.disabled);
+    p.bar_bg = ov.bar_bg.unwrap_or(p.bar_bg);
+    p.bar_fg = ov.bar_fg.unwrap_or(p.bar_fg);
+    p.bar_accent = ov.bar_accent.unwrap_or(p.bar_accent);
+    p.selection_bg = ov.selection_bg;
+    p
 }
 
 /// The active palette.
@@ -252,20 +273,16 @@ mod tests {
         // carries the guard with it.
         for p in [auto_dark(), auto_light()] {
             for (role, c) in [
+                ("primary", p.primary),
+                ("secondary", p.secondary),
                 ("accent", p.accent),
-                ("overlay", p.overlay),
-                ("border_active", p.border_active),
-                ("border_inactive", p.border_inactive),
-                ("border_hover", p.border_hover),
-                ("number", p.number),
-                ("separator", p.separator),
-                ("more", p.more),
+                ("decoration", p.decoration),
+                ("warning", p.warning),
+                ("error", p.error),
+                ("disabled", p.disabled),
                 ("bar_bg", p.bar_bg),
                 ("bar_fg", p.bar_fg),
                 ("bar_accent", p.bar_accent),
-                ("text", p.text),
-                ("pending", p.pending),
-                ("danger", p.danger),
             ] {
                 let ansi = match c {
                     Color::Rgb(..) => false,
@@ -292,20 +309,28 @@ mod tests {
     fn resolve_theme_resolves_both_and_rejects_unknown() {
         let (name, p) = resolve_theme("auto-dark").unwrap();
         assert_eq!(name, "auto-dark");
+        assert_eq!(p.primary, Color::White);
+        assert_eq!(p.secondary, Color::Gray);
         assert_eq!(p.accent, Color::LightGreen);
-        assert_eq!(p.text, Color::White);
-        assert_eq!(p.border_hover, Color::LightGreen);
-        assert_eq!(p.overlay, Color::DarkGray);
-        assert_eq!(p.danger, Color::LightYellow);
-        assert_eq!(p.pending, Color::Yellow);
+        assert_eq!(p.decoration, Color::DarkGray);
+        assert_eq!(p.warning, Color::Yellow);
+        assert_eq!(p.error, Color::LightRed);
+        assert_eq!(p.disabled, Color::DarkGray);
+        assert_eq!(p.bar_bg, Color::DarkGray);
+        assert_eq!(p.bar_fg, Color::White);
+        assert_eq!(p.bar_accent, Color::White);
         let (name, p) = resolve_theme("auto-light").unwrap();
         assert_eq!(name, "auto-light");
+        assert_eq!(p.primary, Color::Black);
+        assert_eq!(p.secondary, Color::DarkGray);
         assert_eq!(p.accent, Color::Green);
-        assert_eq!(p.overlay, Color::DarkGray);
-        assert_eq!(p.border_inactive, Color::White);
-        assert_eq!(p.text, Color::Black);
-        assert_eq!(p.danger, Color::Yellow);
-        assert_eq!(p.pending, Color::LightYellow);
+        assert_eq!(p.decoration, Color::Gray);
+        assert_eq!(p.warning, Color::Yellow);
+        assert_eq!(p.error, Color::Red);
+        assert_eq!(p.disabled, Color::Gray);
+        assert_eq!(p.bar_bg, Color::DarkGray);
+        assert_eq!(p.bar_fg, Color::White);
+        assert_eq!(p.bar_accent, Color::White);
         assert!(resolve_theme("nope").is_none());
         assert!(resolve_theme("").is_none());
     }
@@ -335,6 +360,27 @@ mod tests {
         assert!(s.add_modifier.contains(Modifier::REVERSED));
         assert_eq!(s.fg, Some(Color::Reset));
         assert_eq!(s.bg, Some(Color::Reset));
+    }
+
+    #[test]
+    fn an_override_replaces_only_that_role_and_leaves_the_rest() {
+        // `[ui] primary` names one role: it replaces that slot on the chosen theme and
+        // every other role keeps the theme's own. `None` in an override means "the
+        // theme's slot", not a reset.
+        let p = apply_overrides(
+            auto_dark(),
+            Overrides {
+                primary: Some(Color::Red),
+                ..Default::default()
+            },
+        );
+        assert_eq!(p.primary, Color::Red);
+        assert_eq!(p.secondary, auto_dark().secondary);
+        assert_eq!(p.accent, auto_dark().accent);
+        // selection_bg is replaced as given, even by None: that is the "reverse video"
+        // default rather than "keep what was there".
+        let p = apply_overrides(auto_dark(), Overrides::default());
+        assert_eq!(p, auto_dark());
     }
 
     #[test]

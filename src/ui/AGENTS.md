@@ -37,16 +37,16 @@ flatten renders for the dump verb.
 ## Module Seams
 
 - Pure row and group transforms belong in the row model.
-- UI colours come from the semantic palette (accent and muted tiers, the hint
-  bar's pair, the per-level card colours, the selection style, and the view border's
-  own `border_inactive` half), so the theme changes in one place. A theme is a named
+- UI colours come from the semantic palette (the seven roles - primary, secondary,
+  accent, decoration, warning, error, disabled - plus the hint bar's own pair and
+  the selection style), so the theme changes in one place. A theme is a named
   role→ANSI-slot assignment; the palette holds the registry (`auto-dark`,
-  `auto-light`) and `[ui] theme` selects one. `overlay` is the CONTENT furniture
-  (no-sessions, `/`, card number, section titles) - the view border's dim half is a
-  separate `border_inactive` role because it states focus, not a card mark. The hint
+  `auto-light`) and `[ui] theme` selects one. `decoration` is the CONTENT furniture
+  (card number, `/`, the rules); the view border's dim half is the separate
+  `disabled` role because it states focus, not a card mark. The hint
   bar reads its OWN accent (`bar_accent`) because it sits on a different surface than
   the cards - a slot that reads on one may not read on the other. What lives in the
-  chrome is only the override layer over these.
+  chrome is only the override layer over these (the per-role `[ui]` colour keys).
 - A colour the USER named is parsed in the chrome, never in the palette: the
   palette holds xmux's own choices, which are slots only.
 - Chrome rendering and its view-local state belong in the chrome; it reads

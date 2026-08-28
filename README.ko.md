@@ -148,14 +148,18 @@ prefix = "C-g"                        # xmux의 prefix (예: C-g, C-Space, C-b)
 auto-hide-nav = false                 # auto-hide-nav의 초기 상태
 view-active-border-style = "green"    # 포커스된 view border의 색
 hint-bar-style = "bg=blue,fg=white"   # 힌트 바의 색 (tmux status-style)
+primary = "brightwhite"               # 역할별 색 오버라이드: primary, secondary,
+accent = "lightgreen"                # accent, decoration, warning, error, disabled,
+bar-bg = "colour235"                  # 힌트 바의 bar-bg / bar-fg / bar-accent
 
 [[hosts]]
 ssh = "prod"          # ssh-config 별칭
 mux = "tmux"          # 생략하면 "tmux"
 ```
 
-xmux는 `config.toml`이 바뀌면 `[ui]` 표시 설정(테마, selection-style,
-hint-bar-style, view-border 스타일)을 재시작 없이 실시간으로 다시 적용한다.
+xmux는 `config.toml`이 바뀌면 `[ui]` 표시 설정(테마, 역할별 색 오버라이드,
+selection-style, hint-bar-style, view-border 스타일)을 재시작 없이 실시간으로
+다시 적용한다.
 호스트/로스터 변경은 여전히 `prefix r`로 다시 스캔해야 한다.
 
 xmux는 호스트를 먼저 `~/.ssh/config`에서 읽는다. 설정 파일은 그 발견을 보완하며

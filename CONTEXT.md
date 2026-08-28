@@ -521,7 +521,9 @@ and a config edit must not reset the user's sessions.
   background, and a terminal is free to answer no colour query at all (Windows Terminal
   answers none), which leaves a fixed fallback as the permanent state rather than a rare
   one.
-- The exceptions are colours the USER names: `[ui] selection-style`,
+- The exceptions are colours the USER names: the per-role keys (`[ui] primary`,
+  `secondary`, `accent`, `decoration`, `warning`, `error`, `disabled`, and the hint
+  bar's `bar-bg`/`bar-fg`/`bar-accent`), plus `[ui] selection-style`,
   `[ui] hint-bar-style`, and the view-border colours. Their terminal, their choice.
   The chrome's colour mapping is that vocabulary and the only place a `#rrggbb` may
   enter.

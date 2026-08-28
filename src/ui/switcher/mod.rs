@@ -59,20 +59,16 @@ pub(super) const CARD_CONNECTOR: &str = "\u{2502}";
 /// offset inside its column wherever the flow put it.
 pub(super) const CONNECTOR_W: u16 = 2;
 
-// The one colour every card's text reads in (separators and the accent target excepted),
-// so the levels read as one neutral block with a single highlighted element. A function,
-// not a const: the active palette (dark / light) is picked at runtime from the terminal
-// background.
-fn color_text() -> Color {
-    crate::ui::palette::get().text
+// The host/mux text on a host-state card, and the section title's pair: the group
+// identity reads in the `secondary` role. A function, not a const: the active palette
+// (dark / light) is picked at runtime from the terminal background.
+fn color_secondary() -> Color {
+    crate::ui::palette::get().secondary
 }
-/// The card's number in the address column.
-fn color_number() -> Color {
-    crate::ui::palette::get().number
-}
-/// The `/` separator between a card line's parts.
-fn color_separator() -> Color {
-    crate::ui::palette::get().separator
+/// The card's number in the address column, and the `/` separator: both are quiet
+/// furniture, so both read in the `decoration` role.
+fn color_decoration() -> Color {
+    crate::ui::palette::get().decoration
 }
 pub use crate::ui::chrome::ViewBorderColors;
 
