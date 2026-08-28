@@ -214,6 +214,22 @@ pub trait Mux: Send + Sync {
         None
     }
 
+    /// The environment variable this mux's own CLIENT carries the session it is attached
+    /// to in, and rewrites in place when the mux moves it. `None` (the default) for a mux
+    /// whose client does not, so nothing outside can read where its client went.
+    ///
+    /// It exists because a mux can move its client between sessions INSIDE the client
+    /// process: it detaches from one session's server and the same process reconnects to
+    /// another, keeping its pid and its original argv. No server sees that move, so a
+    /// control channel cannot report it and the argv still names the session the client
+    /// left. The live client's own environment is the only witness, and this names the
+    /// one variable to read. The read itself works only for a client on THIS machine, so
+    /// answering here is not a promise that an answer is available - the caller gates on
+    /// the transport as well.
+    fn display_session_env(&self) -> Option<&str> {
+        None
+    }
+
     /// The control argv for a `-CC` metadata channel. `None` for a mux with no
     /// host-level control stream (it is polled).
     fn control_argv(&self) -> Option<Vec<String>>;

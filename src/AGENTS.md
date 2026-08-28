@@ -37,7 +37,10 @@ the debounced attach, and renders the live split view.
   routing state machine. Focus is UI state, not display mechanics.
 - `driver.rs` holds ONLY the mux-agnostic display seam: the `MuxDriver` trait,
   the supervisor capabilities a driver borrows, the display target, the shared
-  window-selection helper, and the thin wrapper resolving a source's own driver.
+  window-selection helper, the composition that reads a host's live display client
+  for the session it is on (the mux names the variable, the transport says whether
+  a process on that host can be read at all), and the thin wrapper resolving a
+  source's own driver.
   The concrete drivers live in their mux family, and each mux constructs its
   OWN, so this module names no concrete mux type and no central `match` on
   server model exists. Showing a session carries the per-source display

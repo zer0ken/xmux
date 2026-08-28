@@ -43,6 +43,13 @@ the card numbers it needs.
   select where each arm is one method on that struct. It resolves the source's own
   driver for display and reads the grid back from it; it branches on nothing
   mux-specific. The canonical selection it reads lives in `src/model`.
+- `runtime/` owns holding the nav selection and xmux's own display client to ONE
+  session. It learns where the client is in whichever way the mux offers - pushed
+  over a control channel, or read off the live client for a mux that pushes
+  nothing - and records it; the read runs on the animation beat and is mux-blind
+  in both directions, since each mux answers whether its client can be read at
+  all. What follows from the two naming different sessions is one comparison made
+  on every loop pass, the same for every mux.
 - `runtime/` also owns MUX DISCOVERY's async half: one fire-and-forget probe per
   remote host that named no mux, spawned right after the startup scans, whose
   answers become new sources through an effect. It is the loop's job because only
@@ -71,6 +78,30 @@ the card numbers it needs.
 - The selection, defined in `src/model`, is the canonical selected source /
   session value consumed by display selection and rendering.
 - The per-mux display decision lives in the driver implementation, never here.
+- The nav selection and the session xmux's own display client is on must name the
+  same session, and which of the two moves is decided by the FOCUS and by nothing
+  else. In terminal focus the user is driving the mux, so the selection goes to the
+  client; in nav focus the selection is the user's own, so the client is attached
+  back to it. Exactly one of the two may act at a time, which is what keeps them
+  from undoing each other.
+- That is a COMPARISON, evaluated on every pass, never an event that is recorded
+  and replayed. Nothing anywhere holds a switch that happened, a move that is owed,
+  or a moment at which to pay one, so there is no policy for when such a record
+  would be paid and none for when it would be cancelled. Where the client is is the
+  only thing kept, because it is a standing fact rather than a pending action, and
+  a pass that stops seeing a difference stops asking for anything.
+- A move the nav cannot make is simply not made. A session created moments ago has
+  no card to move to; the client is still on it, so the next pass asks again and
+  the move lands on the first pass after the enumeration that brings the card in.
+- Reading the live client for its session is skipped while a reattach is in flight
+  for the display key. The stale client is deliberately kept on screen and still
+  sits on the session the selection just left, so reading it then would report the
+  old session as where the display is and send the reconcile after a client that is
+  already on its way elsewhere. A switch the mux pushed is a fresh fact rather than
+  a re-reading of a stale one, so it is not skipped.
+- Carrying the client back is armed only while the debounce is idle and nothing is
+  in flight. A navigation burst still coalesces into one trailing attach, and the
+  attach already carrying the display is never restarted under itself.
 - Focus is the single source of truth for which view owns keys and which modal,
   if any, is open. Focus and modal transitions stay in the focus module; the app
   and the state call into it rather than open-coding view or modal bookkeeping.

@@ -205,6 +205,11 @@ pub struct Attachment {
     child_tty: Option<String>,
     #[cfg(test)]
     input_log: Option<Arc<Mutex<Vec<Vec<u8>>>>>,
+    /// The one variable a headless attachment answers for, standing in for the live
+    /// environment of a real child. A test drives the decisions a client's own report
+    /// feeds without a client to read.
+    #[cfg(test)]
+    env_answer: Option<(String, String)>,
 }
 
 impl Attachment {
@@ -217,6 +222,20 @@ impl Attachment {
     /// trust it. `None` on a platform whose PTY carries no name.
     pub fn child_tty(&self) -> Option<&str> {
         self.child_tty.as_deref()
+    }
+    /// The value `name` holds in the attach CHILD's LIVE environment right now, read out
+    /// of the running process rather than remembered from the spawn. A mux that moves its
+    /// client between sessions inside the client process rewrites the child's environment
+    /// and nothing else, so this is the only place that move can be observed. `None` is
+    /// "no signal" (the child is gone, unreadable, or holds no such variable), never "the
+    /// variable is empty". Which variable to ask for is the mux's knowledge; this layer
+    /// names none.
+    pub fn child_env(&self, name: &str) -> Option<String> {
+        #[cfg(test)]
+        if let Some((var, value)) = &self.env_answer {
+            return var.eq_ignore_ascii_case(name).then(|| value.clone());
+        }
+        crate::display::child_env::read(&*self.child, name)
     }
     /// Queue input bytes to the child (FIFO, off the loop).
     pub fn input(&self, bytes: Vec<u8>) {
@@ -402,6 +421,8 @@ pub fn spawn_attachment(
         child_tty,
         #[cfg(test)]
         input_log: None,
+        #[cfg(test)]
+        env_answer: None,
     })
 }
 
@@ -458,6 +479,7 @@ pub fn fake_attachment(id: u64) -> Attachment {
         id,
         child_tty: None,
         input_log: None,
+        env_answer: None,
     }
 }
 
@@ -467,6 +489,16 @@ pub fn fake_attachment(id: u64) -> Attachment {
 pub fn fake_attachment_with_tty(id: u64, tty: &str) -> Attachment {
     let mut att = fake_attachment(id);
     att.child_tty = Some(tty.to_string());
+    att
+}
+
+/// A `fake_attachment` whose child answers `value` for `var`, standing in for the live
+/// environment a real attach child carries. Names no mux and no variable of its own: what
+/// to ask for is the caller's knowledge, exactly as it is of the real read.
+#[cfg(test)]
+pub fn fake_attachment_answering_env(id: u64, var: &str, value: &str) -> Attachment {
+    let mut att = fake_attachment(id);
+    att.env_answer = Some((var.to_string(), value.to_string()));
     att
 }
 

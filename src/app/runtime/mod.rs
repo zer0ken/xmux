@@ -371,6 +371,54 @@ fn sync_selection_from_switcher(
     true
 }
 
+/// The session a source's display client is ON: the one fact the nav selection is held
+/// against. It is the host's display record, which each mux keeps true its own way - the
+/// control notice a mux pushes when it moves a client, and, for a mux that moves its
+/// client inside the client process and pushes nothing, the live client read on the
+/// animation beat. `None` while no display has been established for the source, which is
+/// the first attach's own case and not a disagreement.
+///
+/// It is not what xmux last decided to show: that is `state.displayed`, and a session
+/// change the mux made moves the client without touching it, which is precisely how the
+/// nav and the terminal view came to name different sessions.
+fn display_session<'a>(hosts: &'a crate::model::Hosts, source: &str) -> Option<&'a str> {
+    let host = hosts.get(source)?;
+    host.display.shows(&host_selection_key(host))
+}
+
+/// Whether the display client sits on a session the selection does not name AND the
+/// selection is the one to keep, so the attach beat must carry the client back to it.
+///
+/// A CONDITION, evaluated here every beat and stored nowhere. Nothing records that a
+/// switch happened, when it happened, or that a move is owed for it, so there is no
+/// policy for when to pay such a record and none for when to cancel it: while the client
+/// is away from the selection the answer is yes, and the moment either side moves to the
+/// other it is no.
+///
+/// FOCUS decides which of the two moves, and it is the only thing that does. In nav focus
+/// the selection is the user's own, so the client comes back to it - this. In terminal
+/// focus the user is driving the mux, so the SELECTION goes to the client instead
+/// ([`Runtime::follow_selection_to_display`]) and this stays false, since carrying the
+/// client back would undo the switch the user just made with the mux's own keys.
+///
+/// WHY IT SETTLES, being a condition rather than an event. Each answer makes the two
+/// names EQUAL and nothing here makes them differ: this attaches the client to the
+/// session the selection already names, the follow moves the selection to the session the
+/// client is already on, and neither one moves the side it is comparing against. So the
+/// condition is false as soon as one of them has acted, and stays false until something
+/// outside - the user, or the mux - moves one of the two again, which is the difference
+/// that ought to be answered. The two can never take turns undoing each other either,
+/// because the focus admits exactly one of them at a time. The debounce and the in-flight
+/// gate bound the rate rather than the outcome: while an attach is under way this is not
+/// re-armed, so the client is carried once and not once per beat until it arrives.
+fn display_astray(state: &crate::state::State, hosts: &crate::model::Hosts) -> bool {
+    if state.selection.is_empty() || state.focus.is_terminal_focused() {
+        return false;
+    }
+    display_session(hosts, &state.selection.source)
+        .is_some_and(|shown| shown != state.selection.session)
+}
+
 /// The size to give a PTY attachment: the terminal view (right of the nav +
 /// view border), NOT the whole terminal. Sizing a session to the full terminal makes
 /// the remote wrap at a width wider than the visible view, so a line overflows the

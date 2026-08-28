@@ -660,12 +660,13 @@ impl Switcher {
     /// identity, not a screen position or a relative step, so an agent driving ctl
     /// lands on the right session regardless of how the tree is currently ordered.
     /// A no-op (returns false) when no such row exists or the selection is already there.
+    ///
+    /// The one mover for a selection xmux is TOLD to make, whoever asked: a ctl `switch`,
+    /// a create landing on its new card, or the nav following the session the mux moved
+    /// its own display client onto. All three name a card and move to it, and nothing
+    /// downstream tells them apart, so they share one entry point.
     pub fn select_address(&mut self, address: &str, state: &crate::state::State) -> bool {
-        let target = self
-            .rows
-            .iter()
-            .position(|r| session_addr_of(&r.reference).as_deref() == Some(address));
-        match target {
+        match self.row_of_session(address) {
             Some(i) if i != self.selected => {
                 self.user_moved = true;
                 self.set_selected(i, state);

@@ -22,10 +22,12 @@ AND its display driver, and is re-exported from the root:
 - `tmux/` owns the tmux mux, the display-tty file helpers, its control argv, its
   driver with its attach helper, and its pure control-mode wire functions behind
   the control-protocol trait. See `tmux/AGENTS.md`.
-- `psmux/` owns the psmux mux, its poll cadence, its driver (which reattaches on
-  every change, since it can name no client from outside its own session), and
-  the per-host session registry that backs enumeration (one server per session,
-  so there is no aggregate session listing). See `psmux/AGENTS.md`.
+- `psmux/` owns the psmux mux, its poll cadence, the environment variable its own
+  client carries its session in, its driver (which reattaches on every change
+  unless the live client itself reports it is already on the selected session,
+  since it can name no client from outside its own session), and the per-host
+  session registry that backs enumeration (one server per session, so there is no
+  aggregate session listing). See `psmux/AGENTS.md`.
 - `zellij/` owns the zellij mux, its poll cadence, the per-session action argv
   every zellij query is addressed with, and its driver (which reattaches on every
   session change because no client can be named from outside its own session),
@@ -86,6 +88,11 @@ it prints are one decision, so they move together.
   reattach on every change, since none can name a client from outside its own
   session. abduco additionally has no per-session query, so its poll resolves each
   session as the session alone rather than running one.
+- A mux answers whether its own CLIENT carries the session it is attached to in an
+  environment variable it rewrites in place, and which variable that is. It is a
+  mux fact and lives here; whether that variable can actually be read is the
+  transport's answer, since a process is readable only on the machine it runs on,
+  and the two are composed outside both families.
 
 ## Invariants
 
@@ -96,6 +103,11 @@ it prints are one decision, so they move together.
   would freeze that source's whole inventory. A timed-out listing surfaces as the
   source's error.
 - Transport-specific command wrapping belongs to the host axis.
+- A mux that moves its client between sessions INSIDE the client process is
+  invisible to every server, so nothing can be pushed and nothing can be asked:
+  the live client's own environment is the only witness. A mux says whether it has
+  such a witness by naming the variable, and says it has none by naming nothing.
+  Naming one is not a promise that an answer will arrive.
 - A mux answers for its OWN flags, and a flag question added to the trait carries no
   tmux-compatible default. Whether a mux takes a server-socket flag is asked of the mux
   for exactly this reason: zellij refuses an unexpected flag before it reads the verb, so

@@ -56,8 +56,9 @@ pub enum Action {
     Select(Selection),
     /// The loop cadence beat, carrying the clock and the runtime attach facts as
     /// DATA (never read inside `apply`). (Re)arms the attach deadline while a select
-    /// is pending so rapid navigation coalesces into one trailing attach, and fires
-    /// [`Command::Attach`] when the deadline has elapsed and the gate holds.
+    /// is pending so rapid navigation coalesces into one trailing attach, arms it for a
+    /// display sitting away from the selection, and fires [`Command::Attach`] when the
+    /// deadline has elapsed and the gate holds.
     Tick {
         /// The current instant (injected, not read inside `apply`).
         now: Instant,
@@ -65,6 +66,13 @@ pub enum Action {
         key_live: bool,
         /// Whether an attach for the selected session's key is already in flight.
         in_flight: bool,
+        /// Whether the display client sits on a session the SELECTION does not name and
+        /// is the side that has to move. A CONDITION, re-derived every beat from where
+        /// the client actually is, so nothing about the move is remembered anywhere: the
+        /// beat that stops seeing it stops asking for it. Which of the two regions moves
+        /// is the app's decision (the selection follows the client while the user drives
+        /// the mux); this carries only the case that ends in an attach.
+        display_astray: bool,
     },
     /// Advance the display truth (`state.displayed`) to this selection - the
     /// confirmation of a synchronous in-place switch or a `DisplayReady`. The loop

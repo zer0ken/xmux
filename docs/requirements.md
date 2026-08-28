@@ -279,6 +279,20 @@ no function, and no test, so renaming code is never a documentation change.
   session's own ADDRESS is unaffected - it
   is what the user types and what xmux is sent, so its grammar is the id's.
 
+- **FR-B23** - The nav FOLLOWS the mux when the mux moves xmux's own display client to
+  another session, so the two regions never name different sessions. A mux moves it
+  whenever the user drives the mux itself rather than the nav (`prefix`+`s` and
+  `switch-client` under tmux and psmux, `switch-session` under zellij). Which region yields
+  is decided by focus, and one of the two always does: in TERMINAL focus the user is
+  driving the mux, so the nav selection moves to the session the client is on; in NAV focus
+  the selection is the user's own, so it stays and the client is carried back to it
+  instead. A session the client reaches before the nav has enumerated it is followed as
+  soon as its card appears. The client's session is read where the mux carries it and
+  nowhere else: a control channel that pushes the change, or the client process's own
+  environment on this machine. A mux that offers no such reading, and a host whose client
+  runs on the far side of ssh or a WSL distribution, are not guessed at, and a mux that
+  cannot move a client between sessions at all (screen, abduco) has nothing to follow.
+
 ## C. Switching (the keystone)
 
 - **FR-C1** - A same-server pick lands on the picked session, pre-selecting the

@@ -59,6 +59,13 @@ impl AttachRegistry {
         }
     }
 
+    /// The value `name` holds in the LIVE environment of `addr`'s attach child. `None`
+    /// when nothing is attached at `addr` or the child gives no answer. Reads the running
+    /// process, so it reports a rewrite the mux made after the spawn.
+    pub fn child_env(&self, addr: &str, name: &str) -> Option<String> {
+        self.map.get(addr)?.child_env(name)
+    }
+
     /// Whether `addr`'s attach is still establishing (drives the spinner). `true`
     /// for an absent address (nothing attached yet ⇒ still "connecting").
     pub fn connecting(&self, addr: &str) -> bool {
