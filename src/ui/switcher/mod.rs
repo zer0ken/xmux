@@ -271,8 +271,10 @@ pub struct TerminalViewTarget {
 
 /// The switcher state machine.
 pub struct Switcher {
-    /// Set once the user explicitly moves the selection; while false, streaming
-    /// results advance the preselect toward the most-recent session.
+    /// Set once the selection has been moved deliberately: a key, a click, or an
+    /// address the app was told to select. [`Switcher::restore_focus`] reads it to
+    /// decide whether a vanished card falls back to its neighbour or to the rebuild's
+    /// own preselect.
     user_moved: bool,
     /// Signals the event loop to (re)kick the streaming probes - set on the
     /// initial seed and on an `r` re-scan; the loop reads + clears it.
@@ -411,13 +413,18 @@ impl Switcher {
     // --- tree model ---------------------------------------------------------
 
     fn rebuild(&mut self, state: &mut crate::state::State) {
-        // Once the user has moved the selection, hold their current session selection
-        // across this rebuild when it survives (matched by identity) - a routine rebuild
-        // (local poll, remote %-event refetch) must NOT snap the selection back to the top
-        // row, which would yank the displayed session out from under the user on every
-        // poll (the selection thrash). The user_moved gate at the target below preserves the
-        // launch behavior: an untouched selection preselects the top row (the local host,
-        // index 0).
+        // Hold the selection on its session across this rebuild whenever that session
+        // survives (matched by identity) - a rebuild re-derives the whole row list, so a
+        // routine one (local poll, remote %-event refetch) must NOT snap the selection
+        // back to the top row, which would yank the displayed session out from under
+        // whoever is watching (the selection thrash).
+        //
+        // It holds from the FIRST session the selection ever lands on, the user having
+        // moved it or not. During the scan the hosts answer in whatever order they
+        // happen to and each answer re-derives the rows, so a preselect that re-picked
+        // the top card would walk from host to host as they arrive, attaching a session
+        // per step. The session that answered first is the one already on screen, and it
+        // keeps the selection until the user or the mux moves it.
         let keep = self
             .rows
             .get(self.selected)
@@ -441,13 +448,9 @@ impl Switcher {
         let rows = tree::flatten(&state.groups, &state.scanning, &state.filter, &named_mux);
 
         self.rows = rows;
-        let target = self
-            .user_moved
-            .then(|| {
-                keep.as_ref()
-                    .and_then(|k| self.rows.iter().position(|r| same_node(&r.reference, k)))
-            })
-            .flatten()
+        let target = keep
+            .as_ref()
+            .and_then(|k| self.rows.iter().position(|r| same_node(&r.reference, k)))
             .or_else(|| self.rows.iter().position(Row::selectable))
             .unwrap_or(0);
         self.set_selected(target, state);

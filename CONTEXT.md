@@ -216,8 +216,9 @@ UI elements a user perceives as distinct things:
   every pass, and a routine poll reproduces the same order exactly, so the list never
   reshuffles under the user.
 - selection - the nav's current pick, advanced by navigation; a routine poll or
-  restream never moves it (the deterministic order is identical on every rebuild, so
-  there is nowhere for it to drift). The preselect and the
+  restream never moves it: the order is identical on every rebuild, and the session
+  under the cursor is held by identity across one, so neither a re-sort nor a host
+  answering late can take it. The preselect and the
   reselect are the launch and post-rescan selections.
 - selection highlight - the selected card's rendering: reverse video filling the whole
   card, the terminal theme's own selected look,

@@ -191,11 +191,21 @@ impl State {
                 // ARM ON THE CONDITION, not on a change. A display sitting away from the
                 // selection is a state, so it is answered for as long as it lasts and
                 // nothing has to be remembered from the moment it began: a selection that
-                // never moved again would arm nothing if only its MOVE could. Armed only
-                // with the debounce idle, so a navigation burst still coalesces into one
-                // trailing attach, and only with nothing in flight, so the attach already
-                // carrying the display there is not restarted under itself.
-                if display_astray && self.attach_deadline.is_none() && !in_flight {
+                // never moved again would arm nothing if only its MOVE could. The two
+                // ways it can sit away are one condition here, because the gate below
+                // fires on both: the client left for another session of the selected host
+                // (`display_astray`), or the confirmed display is another session
+                // altogether, which is what a display confirmed for a host the selection
+                // is not on looks like. Armed only with the debounce idle, so a
+                // navigation burst still coalesces into one trailing attach, and only
+                // with nothing in flight, so the attach already carrying the display
+                // there is not restarted under itself.
+                let display_elsewhere = display_astray || self.selection != self.displayed;
+                if display_elsewhere
+                    && !self.selection.is_empty()
+                    && self.attach_deadline.is_none()
+                    && !in_flight
+                {
                     self.attach_deadline = Some(now + Duration::from_millis(ATTACH_DEBOUNCE_MS));
                     return Vec::new();
                 }
@@ -560,6 +570,68 @@ mod tests {
         assert!(
             s.attach_deadline.is_none(),
             "the elapsed deadline is cleared"
+        );
+    }
+
+    #[test]
+    fn apply_tick_arms_when_the_display_sits_on_another_session_with_no_select() {
+        // The display can move while the selection stands still: an attach lands for a
+        // session nobody chose, or the mux carries the client away. `should_attach` fires
+        // on that difference, so the ARMING answers the same condition - if only a
+        // `Select` could arm, the gate would sit true with no deadline and the two
+        // regions would stay split until the next selection move.
+        let t0 = Instant::now();
+        let mut s = State {
+            selection: sel("api"),
+            displayed: sel("db"),
+            last_saved_session: "jup/api".into(), // already persisted → no persist command
+            ..State::default()
+        };
+        let armed = s.apply(Action::Tick {
+            now: t0,
+            key_live: true,
+            in_flight: false,
+            display_astray: false,
+        });
+        assert!(armed.is_empty(), "arming does not fire on the same tick");
+        assert_eq!(
+            s.attach_deadline,
+            Some(t0 + Duration::from_millis(90)),
+            "the difference alone arms the debounce"
+        );
+        let fired = s.apply(Action::Tick {
+            now: t0 + Duration::from_millis(90),
+            key_live: true,
+            in_flight: false,
+            display_astray: false,
+        });
+        assert_eq!(
+            fired,
+            vec![Command::Attach(sel("api"))],
+            "the attach carries the display back to the selection"
+        );
+    }
+
+    #[test]
+    fn apply_tick_arms_nothing_while_nothing_is_selected() {
+        // Until the scan puts a card under the cursor there is nowhere to carry the
+        // display to, so an empty selection differing from whatever is displayed arms
+        // nothing - it would only arm and clear a deadline every beat.
+        let t0 = Instant::now();
+        let mut s = State {
+            displayed: sel("db"),
+            ..State::default()
+        };
+        let cmds = s.apply(Action::Tick {
+            now: t0,
+            key_live: false,
+            in_flight: false,
+            display_astray: false,
+        });
+        assert!(cmds.is_empty(), "an empty selection attaches nothing");
+        assert!(
+            s.attach_deadline.is_none(),
+            "an empty selection arms nothing"
         );
     }
 

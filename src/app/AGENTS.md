@@ -75,6 +75,10 @@ the card numbers it needs.
   routed there as actions. The loop makes the decision (a live grid exists, a
   deadline elapsed, a click landed) and folds the result through apply, so domain
   mutation stays at one site.
+- Only the attach the SELECTION is displayed through confirms the display truth. A
+  landed attach for any other key installs and stays warm without claiming the
+  terminal view, so a host warming a PTY on its own inventory cannot move the view to
+  a machine nobody selected.
 - The selection, defined in `src/model`, is the canonical selected source /
   session value consumed by display selection and rendering.
 - The per-mux display decision lives in the driver implementation, never here.
