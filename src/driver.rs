@@ -227,39 +227,42 @@ pub(crate) mod tests {
         assert_eq!(t.into_selection("jup"), sel);
     }
 
-    /// The LOCAL-ONLY gate. A psmux client's session is read out of the client PROCESS,
-    /// and a process is readable only on the machine it runs on. An ssh host and a WSL
-    /// distribution both run their client on the far side, so neither has a witness to
-    /// read, and this must be decided from the host alone - never from a value that
-    /// happens to be readable here, which would report THIS box's session for a remote
-    /// one.
+    /// The LOCAL-ONLY gate, for every mux that names a variable. Such a client's session
+    /// is read out of the client PROCESS, and a process is readable only on the machine
+    /// it runs on. An ssh host and a WSL distribution both run their client on the far
+    /// side, so neither has a witness to read, and this must be decided from the host
+    /// alone - never from a value that happens to be readable here, which would report
+    /// THIS box's session for a remote one.
     #[test]
     fn only_a_host_on_this_box_has_a_client_to_read() {
-        let local = crate::model::Host::new(
-            crate::transport::local(None),
-            crate::mux::for_binary("psmux"),
-        );
-        let (key, var) = session_witness(&local).expect("this box's own psmux client");
-        assert_eq!(key, "local", "read under the host's display key");
-        assert_eq!(var, "PSMUX_SESSION_NAME");
+        for (bin, expected) in [
+            ("psmux", "PSMUX_SESSION_NAME"),
+            ("zellij", "ZELLIJ_SESSION_NAME"),
+        ] {
+            let local =
+                crate::model::Host::new(crate::transport::local(None), crate::mux::for_binary(bin));
+            let (key, var) = session_witness(&local).expect("this box's own client");
+            assert_eq!(key, "local", "read under the host's display key");
+            assert_eq!(var, expected);
 
-        let remote = crate::model::Host::new(
-            crate::transport::ssh("prod".into(), String::new(), "linux".into()),
-            crate::mux::for_binary("psmux"),
-        );
-        assert!(
-            session_witness(&remote).is_none(),
-            "an ssh host's client runs on the far side, where no process can be read"
-        );
+            let remote = crate::model::Host::new(
+                crate::transport::ssh("prod".into(), String::new(), "linux".into()),
+                crate::mux::for_binary(bin),
+            );
+            assert!(
+                session_witness(&remote).is_none(),
+                "an ssh {bin} client runs on the far side, where no process can be read"
+            );
 
-        let wsl = crate::model::Host::new(
-            crate::transport::wsl("Ubuntu-24.04".into()),
-            crate::mux::for_binary("psmux"),
-        );
-        assert!(
-            session_witness(&wsl).is_none(),
-            "a WSL distribution's client runs inside the distribution, not on this box"
-        );
+            let wsl = crate::model::Host::new(
+                crate::transport::wsl("Ubuntu-24.04".into()),
+                crate::mux::for_binary(bin),
+            );
+            assert!(
+                session_witness(&wsl).is_none(),
+                "a WSL {bin} client runs inside the distribution, not on this box"
+            );
+        }
     }
 
     /// A mux whose client does not carry its session in its environment has nothing to
@@ -267,7 +270,7 @@ pub(crate) mod tests {
     /// answers, so the two conditions are independent and both are load-bearing.
     #[test]
     fn a_mux_that_names_no_variable_has_no_client_to_read() {
-        for bin in ["tmux", "zellij", "abduco", "screen"] {
+        for bin in ["tmux", "abduco", "screen"] {
             let host =
                 crate::model::Host::new(crate::transport::local(None), crate::mux::for_binary(bin));
             assert!(
