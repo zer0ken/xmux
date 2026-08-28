@@ -31,6 +31,12 @@ impl Mux for Abduco {
         false
     }
 
+    /// `abduco -n` requires the name it is given and prints nothing back, so any
+    /// stdout under the create is noise, never a name.
+    fn assigns_new_session_name(&self) -> bool {
+        false
+    }
+
     fn kind(&self) -> &str {
         "abduco"
     }
@@ -99,7 +105,8 @@ impl Mux for Abduco {
     fn new_session_plan(&self, name: &str) -> Vec<String> {
         // `-n` creates a session without attaching, running abduco's default command
         // (typically dvtm, the user's tool inside the session — out of xmux's scope).
-        // abduco cannot auto-name, so an empty name fails like zellij's detached create.
+        // abduco requires the name it is given (`assigns_new_session_name` is false, so
+        // the manage layer names an empty request before building this plan).
         vec![self.bin.clone(), "-n".to_string(), name.to_string()]
     }
 }
@@ -213,8 +220,10 @@ mod tests {
 
     #[test]
     fn creating_a_session_is_a_detached_create() {
-        // `-n` creates without attaching; the name is required (abduco cannot
-        // auto-name), so an empty name is passed through and fails at the binary.
+        // `-n` creates without attaching; the name is always concrete by the time the
+        // plan is built (the manage layer names an empty request), and the plan itself
+        // stays a pure argv mapping.
+        assert!(!abduco().assigns_new_session_name());
         assert_eq!(
             abduco().new_session_plan("dev"),
             argv(&["abduco", "-n", "dev"])

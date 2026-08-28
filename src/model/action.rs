@@ -91,7 +91,7 @@ pub enum Action {
     /// `Tick` re-attaches immediately - the `r` reattach-kick, which re-attaches the
     /// current display with no debounce.
     RearmAttachNow { now: Instant },
-    /// Create a new session named `name` (empty = mux auto-name) on `source`. The one
+    /// Create a new session named `name` (empty = auto-named) on `source`. The one
     /// mutating intent xmux keeps: a reachable host with no sessions offers nothing to
     /// switch to, so starting the first one is part of switching, not mux editing.
     CreateSession { source: String, name: String },

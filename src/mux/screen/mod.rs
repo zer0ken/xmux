@@ -29,6 +29,12 @@ impl Mux for Screen {
         false
     }
 
+    /// `screen -dmS` requires the name it is given and prints nothing back, so any
+    /// stdout under the create is noise, never a name.
+    fn assigns_new_session_name(&self) -> bool {
+        false
+    }
+
     fn kind(&self) -> &str {
         "screen"
     }
@@ -180,6 +186,10 @@ mod tests {
         assert_eq!(
             screen().new_session_plan("dev"),
             argv(&["screen", "-dmS", "dev"])
+        );
+        assert!(
+            !screen().assigns_new_session_name(),
+            "the create prints nothing, so stdout is never a name and an empty              request is named by the manage layer"
         );
     }
 

@@ -49,6 +49,14 @@ impl Mux for Zellij {
         false
     }
 
+    /// zellij's detached create requires the name it is given and prints nothing back,
+    /// so any stdout under the create is noise, never a name. (A name-less `attach -b`
+    /// does auto-name, but only on a host with zero sessions, silently does nothing on
+    /// a host with several, and never prints the name it picked - unusable as a create.)
+    fn assigns_new_session_name(&self) -> bool {
+        false
+    }
+
     fn kind(&self) -> &str {
         "zellij"
     }
@@ -158,10 +166,11 @@ impl Mux for Zellij {
 
     fn new_session_plan(&self, name: &str) -> Vec<String> {
         // `attach -b` is zellij's create-detached: it starts the session's server
-        // without attaching this process to it. It prints nothing, so `manage::create`
-        // keeps the requested name. Unlike tmux's `-A` it is not create-or-attach: a
-        // name already in use fails, and zellij cannot auto-name a background session,
-        // so an empty name fails too. Both surface as the mux's own message.
+        // without attaching this process to it. It prints nothing and requires the name
+        // it is given (`assigns_new_session_name` is false, so the manage layer names an
+        // empty request before building this plan and never reads its stdout). Unlike
+        // tmux's `-A` it is not create-or-attach: a name already in use fails, surfaced
+        // as the mux's own message.
         vec![
             self.bin.clone(),
             "attach".to_string(),
@@ -293,6 +302,10 @@ mod tests {
         assert_eq!(
             zellij().new_session_plan("dev"),
             argv(&["zellij", "attach", "-b", "dev"])
+        );
+        assert!(
+            !zellij().assigns_new_session_name(),
+            "the create prints nothing, so stdout is never a name and an empty              request is named by the manage layer"
         );
     }
 

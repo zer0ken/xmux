@@ -61,6 +61,12 @@ impl Mux for Tmux {
         true
     }
 
+    /// tmux names its own creations: `new-session` auto-names an empty request and the
+    /// plan's `-P -F` prints the final name for the manage layer to read back.
+    fn assigns_new_session_name(&self) -> bool {
+        true
+    }
+
     fn kind(&self) -> &str {
         "tmux"
     }

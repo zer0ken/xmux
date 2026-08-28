@@ -361,6 +361,11 @@ mod tests {
             true
         }
 
+        /// tmux-shaped, like the fake itself.
+        fn assigns_new_session_name(&self) -> bool {
+            true
+        }
+
         fn kind(&self) -> &str {
             "stub"
         }
@@ -690,6 +695,11 @@ mod tests {
     impl Mux for EnumMux {
         /// tmux-shaped, like the fake itself.
         fn takes_server_socket(&self) -> bool {
+            true
+        }
+
+        /// tmux-shaped, like the fake itself.
+        fn assigns_new_session_name(&self) -> bool {
             true
         }
 
