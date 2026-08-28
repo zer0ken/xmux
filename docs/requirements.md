@@ -197,9 +197,30 @@ no function, and no test, so renaming code is never a documentation change.
   `{host}/{mux}` title over its session cards), so a source's rows stay together under
   the one title naming them and the section that does not fit opens the next column
   rather than splitting across the break; only a section taller than the whole column
-  splits, having nowhere else to go, and its continuation re-states its title. Card order does not change, so the numbers still count in
+  splits, having nowhere else to go, and the continuation picks it up at the TOP of the
+  next column, naming nothing: the title stands once, over the column the section starts
+  in, and the reading order is what says the continuation is the same section. Card order
+  does not change, so the numbers still count in
   reading order. The paint records each card's rect and the hit-test reads it back, so a
-  click cannot land on a card the renderer put elsewhere.
+  click cannot land on a card the renderer put elsewhere. A title in the band is the
+  `{host}/{mux}` label alone: the rule the side column trails after that label underlines
+  a group across one full-width run, and a column standing beside another has no such
+  width to underline - the rule would reach the gutter and read as a bar parting the
+  columns instead. A column is as wide as the widest thing standing in it and the title is
+  one of those things, so sessions named in one character do not shrink the column under
+  the `{host}/{mux}` above them: a label with more name than room is answered in the
+  column's WIDTH, never by carrying the name onto a second row.
+  What draws the group in the band is a CONNECTOR down the left of each
+  session card, since columns standing side by side leave a card's place in the reading
+  order saying nothing about which title owns it. It marks the title that owns the group,
+  so a section that splits keeps it in that title's own column and the continuation
+  columns carry none. The connector is the title's furniture and NOT part of the card: it
+  stands in a strip left of the card's rect, so the selection - which paints a card by
+  inverting that rect - leaves it alone rather than notching the line at the one row the
+  eye is on, and a click on the strip is a click on no card. Every session card is pushed
+  right by the strip whether or not a glyph is painted in it, so a card reads at one
+  offset inside its column wherever the flow put it. The side list draws no connector:
+  one full-width run under one title needs nothing to say where the group ends.
 - **FR-B13** - The nav says what is off screen without spending a row on furniture. The
   side list's scrollbar takes a COLUMN of its own from the nav region, never painted over
   the cards, because the selected card is painted by inverting its whole rect and a thumb

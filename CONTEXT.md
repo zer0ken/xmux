@@ -156,9 +156,11 @@ UI elements a user perceives as distinct things:
   source's rows stay together under the one title naming them, and the section that
   does not fit opens the next column instead of splitting across the break. A section
   taller than the whole column is the one exception, having nowhere else to go: it
-  splits, and the continuation re-states its title at the top of the next column. A
-  column is as wide as its widest row, columns are parted by one blank, and the flow is
-  pure geometry, so the paint, the hit-test and the tests read one answer. A list would
+  splits, and the continuation picks it up at the top of the next column, naming nothing.
+  A column is as wide as its widest row - the section title counted among them, so short
+  session names cannot narrow a column under the title over it - columns are parted by
+  one blank, and the flow is pure geometry, so the paint, the hit-test and the tests read
+  one answer. A list would
   show three cards in a band twenty rows wide and leave the rest of every row blank; the
   flow is what makes the band worth its rows.
 - source label - how a host and its mux are SHOWN: `{host}/{mux}`, one grammar wherever

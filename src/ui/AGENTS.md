@@ -119,6 +119,12 @@ flatten renders for the dump verb.
   layout puts cards on a fixed pitch the paint ignores (the side list parts its bands, the
   portrait flow runs columns), so a hit-test that measured its own pitch would land clicks
   on cards the renderer put elsewhere.
+- Nav FURNITURE is never inside a card's rect. The selected card is painted by inverting
+  that rect, so anything drawn inside one inverts with it; the portrait band's connector
+  therefore stands in a strip the column reserves left of the card, and the rect the paint
+  records - what the selection inverts and what the hit-test reads - starts past it. The
+  strip is reserved on every session card the band flows, painted or not, because the card
+  widths are measured before the flow decides columns.
 - A scrollbar is RESERVED a column of the nav region, never overlaid on the cards: the
   selected card is painted by inverting its rect, so a thumb drawn inside one inverts with
   it and reads as a hole in the bar. The portrait flow scrolls sideways and puts its cue on

@@ -2086,6 +2086,220 @@ async fn the_section_title_shows_host_mux_and_the_session_takes_the_accent() {
 }
 
 #[tokio::test]
+async fn only_the_side_lists_section_title_trails_a_rule() {
+    // The side list is one full-width run, so the rule after `{host}/{mux}` reads as
+    // that group's underline. The portrait band flows the same rows into columns
+    // standing side by side, where the rule would run into the gutter and read as a bar
+    // parting the columns instead - so the band's title stands alone.
+    let side = Harness::new(sample());
+    assert_eq!(side.sw.layout(), ViewLayout::Side, "landscape → Side");
+    let y = side.nav_row_of("local").expect("the section title");
+    let painted = nav_line(&side, y);
+    assert!(
+        painted.contains(BAND_RULE),
+        "the side list's title trails a rule:\n{painted}"
+    );
+
+    let top = Harness::new_sized(sample(), 60, 70);
+    assert_eq!(top.sw.layout(), ViewLayout::Top, "portrait → Top");
+    let y = row_of(top.buf(), "local", top.buf().area.width).expect("the section title");
+    let painted = band_line(&top, y);
+    assert!(
+        !painted.contains(BAND_RULE),
+        "the band's title carries no rule:\n{painted}"
+    );
+}
+
+#[tokio::test]
+async fn the_band_connects_a_session_card_to_the_title_that_owns_it() {
+    // The band's columns stand side by side, so where a card falls in the reading order
+    // does not say which title owns it - a connector down the card's left does. The
+    // title itself carries none: it is what the connector points at.
+    let h = Harness::new_sized(sample(), 60, 70);
+    assert_eq!(h.sw.layout(), ViewLayout::Top, "portrait → Top");
+    let w = h.buf().area.width;
+    let title = row_of(h.buf(), "local", w).expect("the section title");
+    assert!(
+        !band_line(&h, title).starts_with(CARD_CONNECTOR),
+        "the title is what the connector points at, not a card that carries one"
+    );
+    for name in ["build", "editor"] {
+        let painted = band_line(&h, row_of(h.buf(), name, w).expect(name));
+        assert!(
+            painted.starts_with(CARD_CONNECTOR),
+            "{name} is connected to the title above it:\n{painted}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_split_sections_continuation_columns_carry_no_connector() {
+    // Only a section taller than a whole column splits, and each continuation column
+    // opens with the title RE-STATED. The connector marks the title that owns the group,
+    // so it stays in that title's own column rather than running under a repeat of it.
+    // Ten sessions in a three-row band: one section across five columns.
+    let h = Harness::new_sized(scan_with_sessions(10), 60, 12);
+    assert_eq!(h.sw.layout(), ViewLayout::Top, "portrait → Top");
+    let w = h.buf().area.width;
+    for name in ["s0", "s1"] {
+        let painted = band_line(&h, row_of(h.buf(), name, w).expect(name));
+        assert!(
+            painted.starts_with(CARD_CONNECTOR),
+            "{name} stands in the title's own column:\n{painted}"
+        );
+        assert_eq!(
+            painted.matches(CARD_CONNECTOR).count(),
+            1,
+            "the row's other columns are continuations and carry none:\n{painted}"
+        );
+    }
+    // The continuation still INDENTS by the connector's two columns, so every card of
+    // the section reads at one offset INSIDE its column whichever one it landed in.
+    // Measured against the rect the paint recorded, since the columns start wherever the
+    // widths put them.
+    let offset = |name: &str| -> u16 {
+        let (x, y) = locate(h.buf(), name, w).expect(name);
+        let (_, rect) =
+            h.sw.nav_cells
+                .iter()
+                .find(|(_, r)| r.y == y && r.x <= x && x < r.x + r.width)
+                .expect("the card the paint recorded");
+        x - rect.x
+    };
+    assert_eq!(
+        offset("s2"),
+        offset("s0"),
+        "a continuation's card reads at the same offset inside its column"
+    );
+}
+
+#[tokio::test]
+async fn the_selections_inversion_stops_at_the_card_and_spares_the_connector() {
+    // The connector is the title's furniture, not the card's. The selection paints a
+    // card by inverting its whole rect, so a connector standing INSIDE that rect would
+    // invert with it and notch the line at exactly the row the eye is on. It sits in the
+    // strip left of the rect instead, and the line runs past the selected card unbroken.
+    let h = Harness::new_sized(sample(), 60, 70);
+    assert_eq!(h.sw.layout(), ViewLayout::Top, "portrait → Top");
+    let sel = h.sw.selected;
+    let (_, rect) =
+        h.sw.nav_cells
+            .iter()
+            .find(|(i, _)| *i == sel)
+            .expect("the selected card's rect");
+    assert!(
+        rect.x >= CONNECTOR_W,
+        "the selected card is a session card, which stands past a strip"
+    );
+    let buf = h.buf();
+    assert!(
+        buf[(rect.x, rect.y)].modifier.contains(Modifier::REVERSED),
+        "the card itself is painted in the terminal's own reverse video"
+    );
+    let strip = &buf[(rect.x - CONNECTOR_W, rect.y)];
+    assert_eq!(
+        strip.symbol(),
+        CARD_CONNECTOR,
+        "the connector stands left of the card"
+    );
+    assert!(
+        !strip.modifier.contains(Modifier::REVERSED),
+        "and the inversion does not reach it"
+    );
+}
+
+#[tokio::test]
+async fn a_split_sections_continuation_columns_name_nothing() {
+    // Only a section taller than a whole column splits. The continuation picks it up at
+    // the TOP of the next column and names nothing: the title stands once, over the
+    // column the section starts in, and the reading order - down, then right - is what
+    // says the continuation is the same section. A row spent naming it again is a row of
+    // cards lost, which is the whole reason the band flows into columns at all.
+    let h = Harness::new_sized(scan_with_sessions(10), 60, 12);
+    assert_eq!(h.sw.layout(), ViewLayout::Top, "portrait → Top");
+    let band = h.sw.nav_inner;
+    let painted: String = (band.y..band.y + band.height)
+        .map(|y| band_line(&h, y))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        painted.matches("local").count(),
+        1,
+        "the section is named once across every column it spans:\n{painted}"
+    );
+    let cells = cells_of(&h.sw);
+    assert!(
+        cells[&3].x > cells[&2].x,
+        "the section really did split: s2 opened a column"
+    );
+    assert_eq!(
+        cells[&3].y, cells[&0].y,
+        "and it opens at the band's top row, no row held for a name"
+    );
+}
+
+#[tokio::test]
+async fn a_column_is_never_narrower_than_the_title_naming_it() {
+    // A column is as wide as the WIDEST thing in it, and the section title is one of
+    // those things. Sessions named in one character must therefore not shrink the column
+    // under the `{host}/{mux}` above them: the title is the only row saying where the
+    // cards are, and a host cut in half names a machine that does not exist. It holds
+    // its one row while doing it - the fix is the column's width, never a second row.
+    let mut h = Harness::new_sized(
+        sources_scan(vec![
+            (
+                "build-runner-eu-west",
+                vec![sess_mux("build-runner-eu-west", "z", "zellij", 200)],
+            ),
+            ("jupiter00", vec![sess_mux("jupiter00", "a", "tmux", 100)]),
+        ]),
+        60,
+        12,
+    );
+    h.state.chrome.set_source_reach(
+        [
+            (
+                "build-runner-eu-west".to_string(),
+                reach("zellij", "build-runner-eu-west", "", "zellij ls"),
+            ),
+            (
+                "jupiter00".to_string(),
+                reach("tmux", "jupiter00", "", "tmux ls"),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    h.sw.rebuild(&mut h.state);
+    h.draw();
+    assert_eq!(h.sw.layout(), ViewLayout::Top, "portrait → Top");
+    let band = h.sw.nav_inner;
+    let painted: String = (band.y..band.y + band.height)
+        .map(|y| band_line(&h, y))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for title in ["build-runner-eu-west/zellij", "jupiter00/tmux"] {
+        assert!(
+            painted.contains(title),
+            "the one-character session did not shrink the column under {title}:\n{painted}"
+        );
+    }
+    // On its own row, whole: the title never carries onto a second one.
+    let cells = cells_of(&h.sw);
+    assert_eq!(cells[&0].height, 1, "the title is one row");
+    assert_eq!(
+        cells[&1].y,
+        cells[&0].y + 1,
+        "and its session hangs directly under it"
+    );
+    assert!(
+        cells[&0].width >= "build-runner-eu-west/zellij".len() as u16,
+        "the column carries the whole title: {:?}",
+        cells[&0]
+    );
+}
+
+#[tokio::test]
 async fn a_host_card_gives_its_mux_the_accent() {
     // A host-state card has no session to take the accent, so its mux - the lowest
     // level it displays - takes it; the host half stays text. The separator keeps its
@@ -2338,11 +2552,20 @@ fn nav_line(h: &Harness, y: u16) -> String {
         .collect()
 }
 
+/// One screen row read across the WHOLE window - what the portrait band needs, whose
+/// nav is a wide strip rather than the side list's column.
+fn band_line(h: &Harness, y: u16) -> String {
+    (0..h.buf().area.width)
+        .map(|x| h.buf()[(x, y)].symbol().to_string())
+        .collect()
+}
+
 #[tokio::test]
 async fn a_sources_sessions_are_each_a_single_row_under_one_section_title() {
     // Every session of one source is a single-row card (the number + the name), stacked
-    // directly under the one section title that names the whole group. There are no
-    // connectors and no per-card context lines - the title draws the group.
+    // directly under the one section title that names the whole group. The side list
+    // draws no connector and no per-card context line: it is one full-width run, where
+    // the title and the rule under it already draw the group.
     let mut h = Harness::new(one_host_scan(
         "srv",
         vec![
@@ -2379,7 +2602,7 @@ async fn a_sources_sessions_are_each_a_single_row_under_one_section_title() {
         );
     }
     assert!(
-        !out.contains("├") && !out.contains("└"),
+        !out.contains("├") && !out.contains("└") && !out.contains(CARD_CONNECTOR),
         "no connector draws a group the title already draws:\n{out}"
     );
 }
@@ -3964,7 +4187,10 @@ fn the_portrait_band_flows_cards_down_then_right() {
     assert_eq!(cells.len(), 9, "every row is placed: {cells:?}");
     for base in [0usize, 3, 6] {
         let (title, a, b) = (cells[&base], cells[&(base + 1)], cells[&(base + 2)]);
-        assert_eq!(title.x, a.x, "a source's rows share a column");
+        // One column, but a session card starts past the connector's strip while the
+        // title it hangs under holds the column's left edge.
+        assert_eq!(a.x, title.x + CONNECTOR_W, "a source's rows share a column");
+        assert_eq!(b.x, a.x, "and the session cards line up with each other");
         assert_eq!(title.y, 0, "the section title starts its column");
         assert_eq!(title.height, 1, "a title is one row");
         assert_eq!(a.y, 1, "the first session hangs directly under it");
@@ -3987,10 +4213,12 @@ fn a_column_holds_whole_sections() {
     let cells = cells_of(&sw);
     assert_eq!(cells.len(), 9);
     let x0 = cells[&0].x;
-    for i in [1usize, 2, 3, 4, 5] {
+    assert_eq!(cells[&3].x, x0, "both titles hold the column's left edge");
+    for i in [1usize, 2, 4, 5] {
         assert_eq!(
-            cells[&i].x, x0,
-            "sections one and two share the first column"
+            cells[&i].x,
+            x0 + CONNECTOR_W,
+            "sections one and two share the first column, their cards past the strip"
         );
     }
     assert_eq!(
@@ -4002,7 +4230,11 @@ fn a_column_holds_whole_sections() {
         "the section that does not fit starts a column instead of splitting: {cells:?}"
     );
     assert_eq!(cells[&6].y, 0, "at the top of it");
-    assert_eq!(cells[&7].x, cells[&6].x, "with its sessions under it");
+    assert_eq!(
+        cells[&7].x,
+        cells[&6].x + CONNECTOR_W,
+        "with its sessions under it"
+    );
 }
 
 #[test]

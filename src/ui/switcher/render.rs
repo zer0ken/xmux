@@ -343,6 +343,18 @@ impl Switcher {
         let band = area;
         let boundary = self.band_boundary().unwrap_or(cards.len());
         let placed = columns::place(&cards, band.height, boundary);
+        // Which cards stand in the column their own section title stands in. A section
+        // taller than a whole column is the one that splits, and its continuation opens
+        // the next column under a RE-STATED title; the connector marks the title that
+        // owns the group, so it stops at the break rather than running under a repeat.
+        let mut home_col = vec![false; self.rows.len()];
+        let mut head_col = None;
+        for (i, flag) in home_col.iter_mut().enumerate() {
+            if self.starts_run(i) {
+                head_col = placed.get(i).map(|p| p.col);
+            }
+            *flag = matches!((head_col, placed.get(i)), (Some(c), Some(p)) if c == p.col);
+        }
         let widths = columns::widths(&cards, &placed, band.width);
         let bcol = columns::boundary_col(&placed, boundary);
         let parting = columns::parting(&widths, bcol, band.width, COL_GUTTER);
@@ -381,27 +393,34 @@ impl Switcher {
             COL_GUTTER,
         );
         for cell in &cells {
-            // A section that split across a column break re-states its title at the top
-            // of the continuation: that header row is drawn (never clickable) above the
-            // card it continues.
-            if let Some(h) = cell.header {
-                let header_rect = Rect {
-                    y: cell.rect.y - 1,
-                    ..cell.rect
-                };
-                let lines = self.nav_row_lines(h, num_w, spinner_glyph, header_rect.width);
-                frame.render_widget(Paragraph::new(lines), header_rect);
+            // The connector's strip is the column's left edge, and the CARD begins past
+            // it. Furniture belonging to the title, not part of the card: the selection
+            // inverts the card's rect, and a mark swallowed by that inversion would
+            // break the one line the eye follows down the group. A section title and a
+            // host-state card open no group and take no strip.
+            let indent = if self.starts_run(cell.idx) {
+                0
+            } else {
+                CONNECTOR_W
+            };
+            let card = Rect {
+                x: cell.rect.x + indent,
+                width: cell.rect.width.saturating_sub(indent),
+                ..cell.rect
+            };
+            if indent > 0 && home_col[cell.idx] {
+                Self::render_card_connector(frame, cell.rect);
             }
-            let lines = self.nav_row_lines(cell.idx, num_w, spinner_glyph, cell.rect.width);
-            frame.render_widget(Paragraph::new(lines), cell.rect);
+            let lines = self.nav_row_lines(cell.idx, num_w, spinner_glyph, card.width);
+            frame.render_widget(Paragraph::new(lines), card);
             if self.list_state.selected() == Some(cell.idx) {
                 // The card's OWN rect, not the band's width: in a grid the selection marks
                 // one cell, and a full-width bar would claim the columns beside it.
                 frame
                     .buffer_mut()
-                    .set_style(cell.rect, palette::selection_style());
+                    .set_style(card, palette::selection_style());
             }
-            self.nav_cells.push((cell.idx, cell.rect));
+            self.nav_cells.push((cell.idx, card));
         }
         if let Some(rule_rect) = rule {
             Self::render_column_rule(frame, rule_rect);
@@ -445,6 +464,15 @@ impl Switcher {
             cell.set_symbol("│");
             cell.set_style(style);
         }
+    }
+
+    /// The connector down the left of one session card, marking the title that owns it.
+    /// Painted OUTSIDE the card, in the strip the column reserves for it, so the
+    /// selection's inversion of the card rect cannot reach it.
+    fn render_card_connector(frame: &mut Frame, rect: Rect) {
+        let cell = &mut frame.buffer_mut()[(rect.x, rect.y)];
+        cell.set_symbol(CARD_CONNECTOR);
+        cell.set_style(Style::default().fg(palette::get().overlay));
     }
 
     /// Writes the offscreen-card counts in `track` - the hint bar's row minus the cells the
@@ -554,22 +582,30 @@ impl Switcher {
     }
 
     /// One row measured for the column flow: whether it opens a unit, how wide its
-    /// content paints, and how many rows it takes. A section title's measured width is
-    /// its `{host}/{mux}` alone - its trailing rule fills whatever column width is
-    /// left, so it never widens a column.
+    /// content paints, and how many rows it takes. A section title measures its
+    /// `{host}/{mux}` alone, which is the whole of what it paints in the band: the
+    /// trailing rule belongs to the side list.
     fn flow_card(&self, i: usize, num_w: usize, spinner_glyph: char) -> columns::Card {
         let lines = self.nav_row_lines(i, num_w, spinner_glyph, 0);
         let w = |n: usize| lines.get(n).map_or(0, |l: &Line| l.width() as u16);
+        let starts_run = self.starts_run(i);
+        // A session card is pushed right by the connector's strip, so the column has to
+        // be wide enough for both. The strip is reserved whether or not the glyph is
+        // painted there: the widths are measured before the flow decides columns, so a
+        // card that reserved nothing could not be given the strip afterwards, and every
+        // card of a section reads at one offset inside its column wherever it landed.
+        let indent = if starts_run { 0 } else { CONNECTOR_W };
         columns::Card {
-            starts_run: self.starts_run(i),
-            width: w(0),
+            starts_run,
+            width: w(0) + indent,
             lines: 1,
         }
     }
 
     /// Builds one navigation row's lines. A session card is the address column + the
     /// session name on a single detail line; a section title is the `{host}/{mux}`
-    /// header (dim, with a rule filling the row's width) and carries no address column;
+    /// header (dim, with a rule filling the row's width in the side list) and carries
+    /// no address column;
     /// a host-state card is the host/mux name on its row, with the unreachable mark
     /// (`⚠`) riding after the host name and the mux taking the accent, or a spinner in
     /// the level a scanning host has not resolved. A host-state card claims a mux only
@@ -612,9 +648,14 @@ impl Switcher {
             }
         };
 
-        // Section title: `{host}/{mux}` in the quiet header role, followed by a rule
-        // filling the row. Not a card - no number, not selectable, and the selection
-        // can never land on it.
+        // Section title: `{host}/{mux}` in the quiet header role. Not a card - no
+        // number, not selectable, and the selection can never land on it.
+        //
+        // A rule fills the rest of the row in the SIDE list only, where the nav is one
+        // full-width run and the rule reads as the group's own underline. The portrait
+        // band's columns are each only as wide as their widest card and stand side by
+        // side, so a rule there would run into the gutter and read as a bar parting the
+        // columns rather than as anything about the group: the title stands alone.
         if let RowRef::Section { .. } = &row.reference {
             let (host, mux, _) = context_of(row);
             let header = Style::default().fg(palette::get().overlay);
@@ -624,7 +665,10 @@ impl Switcher {
                 format!("{host}/{mux}")
             };
             let title_w = UnicodeWidthStr::width(title.as_str()) as u16;
-            let rule_w = width.saturating_sub(title_w.saturating_add(1));
+            let rule_w = match self.layout {
+                ViewLayout::Side => width.saturating_sub(title_w.saturating_add(1)),
+                ViewLayout::Top => 0,
+            };
             let mut spans = vec![Span::styled(title, header)];
             if rule_w > 0 {
                 spans.push(Span::styled(
@@ -682,9 +726,13 @@ impl Switcher {
         }
 
         // Session card: the address column + the session name on a single detail line.
-        // The `{host}/{mux}` it used to restate now lives on the section title above it,
-        // and there is no connector - the title draws the group. The session name is
-        // the lowest level the card displays, so it takes the accent and stays bold.
+        // The `{host}/{mux}` it used to restate now lives on the section title above it.
+        // The session name is the lowest level the card displays, so it takes the accent
+        // and stays bold.
+        //
+        // The connector the portrait band draws down a session card's left is NOT part
+        // of the card and is painted separately; what a card holds is what a card holds
+        // in either layout.
         let (_, _, sess) = context_of(row);
         let mut detail = address();
         detail.push(Span::styled(

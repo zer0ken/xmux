@@ -42,6 +42,23 @@ pub(super) const COL_GUTTER: u16 = 1;
 /// box-drawing line, so it parts the bands without reading as a border around either.
 pub(super) const BAND_RULE: &str = "\u{2500}";
 
+/// The connector running down the left of a session card in the portrait `Top` band,
+/// saying which title owns it. The band's columns stand side by side, so a card's place
+/// in the reading order does not on its own say where one group ends and the next
+/// begins; the side list, one full-width run, needs no such mark and draws none.
+///
+/// Furniture the section title owns, NOT part of the card: it is painted in the strip
+/// left of the card rect, so the selection's inversion of that rect leaves it alone and
+/// the line runs unbroken past the selected card. A click on the strip is a click on no
+/// card, exactly as on the rule parting the bands.
+pub(super) const CARD_CONNECTOR: &str = "\u{2502}";
+
+/// The columns a session card's connector strip takes from the left of its column: the
+/// glyph and the space parting it from the card. Reserved on every session card the
+/// band flows, even in a column where no glyph is painted, so a card reads at one
+/// offset inside its column wherever the flow put it.
+pub(super) const CONNECTOR_W: u16 = 2;
+
 // The one colour every card's text reads in (separators and the accent target excepted),
 // so the levels read as one neutral block with a single highlighted element. A function,
 // not a const: the active palette (dark / light) is picked at runtime from the terminal
