@@ -112,7 +112,11 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-B3** - The terminal view shows the confirmed session's live grid and follows
   the cursor. A switch keeps the prior grid on screen until the new one is ready
   (stale-while-revalidate); only the first launch, before any grid exists, shows a
-  blank view. The waiting and unreachable state hints live in the nav, not here.
+  blank view. An attachment a host warms on a session of its own choosing is kept
+  live, because that is what makes its host instant to reach, but it is never
+  confirmed and so cannot take the view. Whenever the confirmed session is not the
+  one the cursor names, the view is carried back to the cursor for as long as the two
+  differ. The waiting and unreachable state hints live in the nav, not here.
 - **FR-B4** - Navigation: up/down/home/end/pgup/pgdn; fuzzy filter over
   `<source>/<name>`; manual `prefix r` rescan.
 - **FR-B5** - Surveying without committing is first-class: xmux is a switcher, not a
@@ -344,8 +348,11 @@ no function, and no test, so renaming code is never a documentation change.
   dials). Discovery enumerates the markers newest by mtime first, tie-broken by higher
   pid.
 - **FR-D5** - The app launches directly into the persistent split view (nav +
-  terminal view) with the cursor preselected: the persisted last session if set,
-  else the first card of the deterministic order (a local session). There is no
+  terminal view). The cursor preselects the first session to appear as the hosts
+  answer, and holds it: a host answering later does not take the cursor, wherever the
+  card order places it. A launch therefore attaches one session rather than one per
+  answer, and what the cursor names is what the terminal view shows throughout the
+  scan. The settled selection's address is persisted as the last session. There is no
   separate picker mode; `prefix q`
   quits.
 - **FR-D6** - The log records what HAPPENED, never the rate xmux asks. A sweep that says

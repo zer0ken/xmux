@@ -81,6 +81,11 @@ holds the modal state plus its popup geometry and forwards to that module.
 - The attach deadline is the debounce gate for settled selection attachment, and
   the pending flag marks a moved selection awaiting its first tick arm. Re-arming
   on every pending selection is the freeze fix; never arm once.
+- The tick ARMS on the same condition the gate FIRES on: a display sitting away from
+  the selection, whether the client left for another session or the confirmed display
+  is another session altogether. An arm that only a selection move could set would
+  leave the gate true with no deadline, and the two regions would stay split until
+  the next move.
 - The last saved session address prevents rewriting preferences on every window
   step within the same session.
 - This layer branches on nothing mux-specific: both apply sites fold intents and

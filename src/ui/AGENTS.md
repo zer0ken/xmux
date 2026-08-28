@@ -143,6 +143,11 @@ flatten renders for the dump verb.
 - This layer branches on nothing mux-specific: the switcher renders rows and emits
   domain intents, never a match on mux kind. Per-mux behavior lives behind the mux
   and driver seam, reached through the operations trait, not decided here.
+- A rebuild holds the selection on its session whenever that session survives the
+  rebuild, whoever put the selection there. The rows are re-derived on every answer
+  of the scan, so a selection re-picked from the top would walk from host to host as
+  they arrive; it lands on the first session to appear and stays until the user or
+  the mux moves it.
 - A selection xmux is TOLD to make - a ctl switch, a create landing on its new
   card, the nav following the session the mux moved its own display client onto -
   names the card and moves to it through one entry point. Nothing downstream tells

@@ -1244,6 +1244,48 @@ async fn streaming_keeps_local_preselect_when_untouched() {
 }
 
 #[tokio::test]
+async fn streaming_holds_the_first_session_that_answered() {
+    // The hosts answer the scan in whatever order they happen to, and every answer
+    // rebuilds the rows. The selection lands on the first session to appear and STAYS
+    // on it: a host answering later does not take the cursor, not even one the display
+    // order puts above it. A cursor that walked from host to host through the scan would
+    // attach a session per step, leaving the screen on whichever step is still in flight
+    // while the cursor names another.
+    let mut h = Harness::from_sources(&["local", "jupiter00"]);
+    // The remote answers first.
+    h.sw.apply_source_result(
+        "jupiter00".into(),
+        vec![sess("jupiter00", "infer", 1, false, 300)],
+        None,
+        &mut h.state,
+    );
+    h.draw();
+    assert!(
+        matches!(
+            h.sw.current_ref(),
+            Some(RowRef::Session { sess }) if sess.source == "jupiter00"
+        ),
+        "the first session to answer takes the cursor"
+    );
+    // The local host answers second, and the order puts it ABOVE the remote - the case a
+    // top-card preselect would move the cursor for.
+    h.sw.apply_source_result(
+        "local".into(),
+        vec![sess("local", "editor", 1, false, 100)],
+        None,
+        &mut h.state,
+    );
+    h.draw();
+    assert!(
+        matches!(
+            h.sw.current_ref(),
+            Some(RowRef::Session { sess }) if sess.source == "jupiter00" && sess.name == "infer"
+        ),
+        "a host answering later does not take the cursor off the session already on screen"
+    );
+}
+
+#[tokio::test]
 async fn request_rescan_arms_a_display_reattach() {
     // The `r` re-scan also arms an explicit re-attach of the current display, so a
     // detached / dead display client is re-created on demand (the loop consumes it).

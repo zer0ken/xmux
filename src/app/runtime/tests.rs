@@ -2480,6 +2480,80 @@ async fn ready_adopts_the_pty_name_only_where_the_child_is_the_mux_client() {
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn a_warm_attach_for_another_host_does_not_take_the_terminal_view() {
+    // A shared-model host warms a PTY on a session of its OWN choosing the moment its
+    // inventory arrives, so an attach can land for a host the selection is not on. It
+    // installs, which is what makes that host instant to reach - but it names a session
+    // nobody selected, so the terminal view stays where the selection is. Confirming it
+    // would move the view to another machine mid-scan while the cursor stands still,
+    // which is exactly the two regions disagreeing at launch.
+    let mut rt = a_settled_psmux_runtime();
+    rt.hosts.insert(crate::model::Host::new(
+        crate::transport::ssh("jup".into(), String::new(), "linux".into()),
+        crate::mux::for_binary("tmux"),
+    ));
+    {
+        let jup = rt.hosts.get_mut("jup").unwrap();
+        jup.display.set_shows("jup", "if-0");
+        jup.display.mark_in_flight("jup", 9);
+        jup.display.mark_pending(OWN_CLIENT + 2, "jup");
+    }
+    rt.on_display_event(DisplayEvent::Ready {
+        seq: 9,
+        key: "jup".into(),
+        attachment: crate::display::attachment::fake_attachment(OWN_CLIENT + 2),
+    });
+    assert_eq!(
+        (
+            rt.state.displayed.source.as_str(),
+            rt.state.displayed.session.as_str()
+        ),
+        ("local", "a"),
+        "the view stays on the selected session"
+    );
+    assert!(
+        rt.registry.contains("jup"),
+        "the warm attachment still installs, so its host stays instant to reach"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_attach_for_the_selected_host_takes_the_terminal_view() {
+    // The floor under the test above: the attach the selection IS displayed through
+    // confirms as the view, so the rule that keeps a warm attach out cannot keep the
+    // real one out too.
+    let mut rt = a_settled_psmux_runtime();
+    rt.hosts
+        .get_mut("local")
+        .unwrap()
+        .display
+        .set_shows("local", "b");
+    the_reattach_lands_for(&mut rt, 11, "b");
+    assert_eq!(
+        rt.state.displayed.session, "b",
+        "the selected host's landed attach is the view"
+    );
+}
+
+/// Lands a worker `Ready` on the local host under `seq`, answering for `session`.
+fn the_reattach_lands_for(rt: &mut Runtime, seq: u64, session: &str) {
+    rt.hosts
+        .get_mut("local")
+        .unwrap()
+        .display
+        .mark_in_flight("local", seq);
+    rt.on_display_event(DisplayEvent::Ready {
+        seq,
+        key: "local".into(),
+        attachment: crate::display::attachment::fake_attachment_answering_env(
+            OWN_CLIENT + 3,
+            "PSMUX_SESSION_NAME",
+            session,
+        ),
+    });
+}
+
 #[test]
 fn a_probe_line_shows_every_word_it_runs() {
     // The words are what the user pastes into a shell, so a word with a space in it is

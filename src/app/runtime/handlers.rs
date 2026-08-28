@@ -799,6 +799,9 @@ impl Runtime {
             } => {
                 let hid = host_of_key(&key).to_string();
                 let id = attachment.id();
+                // The key the SELECTION is displayed through, read before the host is
+                // borrowed mutably below. What the terminal view shows is decided by it.
+                let selected_key = display_key(&self.hosts, &self.state.selection);
                 let outcome = match self.hosts.get_mut(&hid) {
                     Some(h) => {
                         tracing::info!(key, seq, id, "attach_ready");
@@ -834,12 +837,21 @@ impl Runtime {
                                 h.record_display_tty(Some(tty));
                             }
                         }
-                        self.state
-                            .apply(crate::model::Action::ConfirmDisplay(Selection {
-                                source: hid.clone(),
-                                session: shown,
-                                window: None,
-                            }));
+                        // Only the attach the SELECTION is displayed through may claim the
+                        // terminal view. A host warms a PTY on a session of its own
+                        // choosing as its inventory arrives (the shared model's `sync`),
+                        // and that attachment earns its place in the registry - it is what
+                        // makes its host instant to reach - but it names a session nobody
+                        // selected, so confirming it would move the view to a host the
+                        // user never asked for. It installs warm and the view stays put.
+                        if key == selected_key {
+                            self.state
+                                .apply(crate::model::Action::ConfirmDisplay(Selection {
+                                    source: hid.clone(),
+                                    session: shown,
+                                    window: None,
+                                }));
+                        }
                     }
                     // Reaped-race, stale seq, or unknown host: tear the fresh attachment down
                     // (resolve_ready already cleared the bookkeeping for the first two).
