@@ -61,7 +61,10 @@ while the terminal view is focused:
 
 `prefix n` starts the new session on the host/mux the selected card belongs to -
 a host row or a session row both name one. Creating under an unreachable host is
-refused.
+refused. The session's name is asked for; left empty, one is auto-assigned - by the
+mux where it names its own sessions, otherwise by xmux, which picks an
+`<adjective>-<noun>` name (the instance-name vocabulary) that no session on that
+host already holds.
 
 ### Jumping by number
 

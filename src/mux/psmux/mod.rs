@@ -26,6 +26,12 @@ impl Mux for Psmux {
         true
     }
 
+    /// psmux runs tmux's `new-session` plan: an empty request is auto-named and the
+    /// final name is printed back.
+    fn assigns_new_session_name(&self) -> bool {
+        true
+    }
+
     fn kind(&self) -> &str {
         "psmux"
     }
