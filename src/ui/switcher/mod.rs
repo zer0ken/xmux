@@ -531,6 +531,56 @@ impl Switcher {
         self.move_selection(delta, state);
     }
 
+    /// Horizontal navigation (←/→): the selection lands on the first card of the
+    /// previous/next CATEGORY. It and the vertical step name the two things the list is
+    /// made of - one walks the cards, the other walks the categories - so a list of many
+    /// hosts is crossed without stepping over every session between them.
+    /// Wraps at both ends, as the vertical step does.
+    ///
+    /// A category is a source that has sessions to show, or the whole host band at once
+    /// ([`category_of_row`]). Landing is always on the category's first card: its first
+    /// session, or the band's first host card. Leaving is from ANY card of it, so a
+    /// selection deep inside the band steps straight out.
+    ///
+    /// Neither step is defined by where a card sits on screen, so both mean the same
+    /// thing in the side column and in the portrait band, whose cards flow down a column
+    /// and then right.
+    fn nav_horizontal(&mut self, delta: isize, state: &crate::state::State) {
+        let heads = self.category_heads();
+        if heads.is_empty() {
+            return;
+        }
+        let here = self
+            .rows
+            .get(self.selected)
+            .map(|r| category_of_row(&r.reference))
+            .and_then(|cat| heads.iter().position(|(c, _)| c.as_deref() == cat))
+            .unwrap_or(0) as isize;
+        let n = heads.len() as isize;
+        let next = ((here + delta) % n + n) % n;
+        self.user_moved = true;
+        self.set_selected(heads[next as usize].1, state);
+    }
+
+    /// Each category in list order paired with its first selectable card - the landing
+    /// points of a horizontal step. The cards of one category are contiguous (the
+    /// flatten emits a section and its sessions together, and sinks every source with
+    /// nothing to show to the host band at the end), so one entry per category is one
+    /// place to land.
+    fn category_heads(&self) -> Vec<(Option<String>, usize)> {
+        let mut heads: Vec<(Option<String>, usize)> = Vec::new();
+        for (i, r) in self.rows.iter().enumerate() {
+            if !r.selectable() {
+                continue;
+            }
+            let cat = category_of_row(&r.reference).map(str::to_string);
+            if !heads.iter().any(|(c, _)| *c == cat) {
+                heads.push((cat, i));
+            }
+        }
+        heads
+    }
+
     fn move_to(&mut self, pos: isize, state: &crate::state::State) {
         let sel = self.selectable_indices();
         if sel.is_empty() {
@@ -805,8 +855,9 @@ impl Switcher {
 
     /// After a streamed update rebuilds the cards: if the user has driven the
     /// selection, keep it on the focused card when it survives; if the card
-    /// vanished (killed/removed), land on the previous card. An untouched selection
-    /// follows the rebuild's top-card preselect.
+    /// vanished (killed/removed), land on the previous card. An untouched selection is
+    /// left exactly where the rebuild put it - on its own session where that survived,
+    /// on the first card otherwise.
     fn restore_focus(&mut self, prior: PriorFocus, state: &crate::state::State) {
         // A pending re-scan reselect returns the selection to its session the instant that
         // session re-streams - but only while the selection still sits where the re-scan
@@ -870,7 +921,7 @@ impl Switcher {
 
     /// The row index targeting the same node as `focus`, if it survives a
     /// rebuild - so a re-scan keeps the selection in place rather than snapping to
-    /// the top-card preselect.
+    /// the first card.
     fn row_matching(&self, focus: &RowRef) -> Option<usize> {
         self.rows
             .iter()
@@ -907,6 +958,22 @@ fn context_of(row: &Row) -> (&str, &str, &str) {
             &row.mux,
             &sess.name,
         ),
+    }
+}
+
+/// The category a card belongs to on the horizontal step: its source where the card
+/// names a session, and the host band as a whole (`None`) for the cards of the sources
+/// with nothing to show.
+///
+/// The band is ONE category because its cards are one machine each with nothing running
+/// on it, and a list of them is a single thing to reach past rather than a run of places
+/// to be carried into one at a time. Every one of them is still a card, so the vertical
+/// step walks them like any other.
+fn category_of_row(reference: &RowRef) -> Option<&str> {
+    match reference {
+        RowRef::Host { .. } => None,
+        RowRef::Section { source, .. } => Some(source),
+        RowRef::Session { sess } => Some(&sess.source),
     }
 }
 

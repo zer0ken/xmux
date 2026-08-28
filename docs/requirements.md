@@ -118,7 +118,15 @@ no function, and no test, so renaming code is never a documentation change.
   one the cursor names, the view is carried back to the cursor for as long as the two
   differ. The waiting and unreachable state hints live in the nav, not here.
 - **FR-B4** - Navigation: up/down/home/end/pgup/pgdn; fuzzy filter over
-  `<source>/<name>`; manual `prefix r` rescan.
+  `<source>/<name>`; manual `prefix r` rescan. Up/down and left/right name the two
+  things the list is made of: up/down step one card, left/right step one CATEGORY,
+  landing on its first card. A category is a source that has sessions, entered at its first session,
+  or the whole host band (FR-B21) at once, entered at its first host card: a list of
+  machines with nothing running on them is one thing to reach past, not a run of places
+  to be carried into one at a time, and the card step still reaches each of them. The
+  category is left from any card of it, so a selection deep inside the band steps
+  straight out. Both steps wrap, and both mean the same thing in either layout, since
+  neither is defined by where a card sits on screen.
 - **FR-B5** - Surveying without committing is first-class: xmux is a switcher, not a
   session owner. Quitting (`prefix q`, or the ctl `quit` verb) leaves the current
   mux session untouched: it is never killed or altered by exiting.
@@ -204,8 +212,8 @@ no function, and no test, so renaming code is never a documentation change.
   right of the nav in the side layout and below it in the portrait one, so `prefix right`
   and `prefix down` both focus the terminal while `prefix left` and `prefix up` both focus
   the nav. An arrow naming the view that already has focus does
-  nothing. Bare arrows belong to the cards instead: each steps ONE card along the list,
-  back for left and up, on for right and down. Not by column, because the portrait band
+  nothing. Bare arrows belong to the cards instead: up and down step one card, left and
+  right step one category (FR-B4). Neither is by column, because the portrait band
   puts the next card below in one place and one column over in another, and a key that
   moved by column would mean two different things in the two layouts.
 - **FR-B15** - Which layout is in force is decided by ONE test, always measured as if the

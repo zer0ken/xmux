@@ -44,7 +44,7 @@ impl Switcher {
     }
 
     /// Scroll wheel: move the selection exactly as ↑/↓ do (`nav_vertical`) - one card up
-    /// or down the flat list - so the wheel and the arrows never diverge.
+    /// or down the flat list - so the wheel and the card step never diverge.
     pub fn mouse_scroll(&mut self, down: bool, state: &crate::state::State) {
         self.nav_vertical(if down { 1 } else { -1 }, state);
     }

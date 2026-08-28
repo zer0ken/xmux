@@ -1,6 +1,6 @@
 //! Persists lightweight, best-effort UI preferences across runs (the last-selected
 //! session address, the nav width and height, the auto-hide-nav mode). Every value is a hint
-//! only — a stale, missing, or unparsable file falls back to the built-in default,
+//! only - a stale, missing, or unparsable file falls back to the built-in default,
 //! so xmux stays stateless about sessions themselves.
 
 use std::path::Path;
@@ -22,7 +22,7 @@ const NAV_HEIGHT_FILE: &str = "nav_height";
 const AUTO_HIDE_NAV_FILE: &str = "auto_hide_nav";
 
 /// Reads the persisted auto-hide-nav mode. `None` when the file is absent or
-/// unrecognised — the caller falls back to the config default.
+/// unrecognised - the caller falls back to the config default.
 pub fn load_auto_hide_nav(xmux_dir: &Path) -> Option<bool> {
     match std::fs::read_to_string(xmux_dir.join(AUTO_HIDE_NAV_FILE))
         .ok()?
@@ -44,7 +44,7 @@ pub fn save_auto_hide_nav(xmux_dir: &Path, on: bool) {
 }
 
 /// Reads the persisted tree width. `None` when the file is absent, unreadable, or
-/// not a `u16` — the caller falls back to the default width.
+/// not a `u16` - the caller falls back to the default width.
 pub fn load_nav_width(xmux_dir: &Path) -> Option<u16> {
     let raw = std::fs::read_to_string(xmux_dir.join(NAV_WIDTH_FILE)).ok()?;
     raw.trim().parse::<u16>().ok()
@@ -56,7 +56,7 @@ pub fn save_nav_width(xmux_dir: &Path, width: u16) {
     let _ = std::fs::write(xmux_dir.join(NAV_WIDTH_FILE), width.to_string());
 }
 
-/// Reads the persisted Top-layout tree height. `None` when absent or unparsable — the
+/// Reads the persisted Top-layout tree height. `None` when absent or unparsable - the
 /// caller falls back to the auto height (~40% of the body).
 pub fn load_nav_height(xmux_dir: &Path) -> Option<u16> {
     let raw = std::fs::read_to_string(xmux_dir.join(NAV_HEIGHT_FILE)).ok()?;
@@ -70,7 +70,9 @@ pub fn save_nav_height(xmux_dir: &Path, height: u16) {
 }
 
 /// Persists `address` (`source/session`) as the last-selected session. Best-effort:
-/// a write failure is ignored — it only degrades the next launch's preselect.
+/// a write failure is ignored, and so is the value on the next run - the launch
+/// preselect is the first session to answer the scan (FR-D5), so nothing reads this
+/// file back.
 pub fn save_last_session(xmux_dir: &Path, address: &str) {
     let _ = std::fs::write(xmux_dir.join(LAST_SESSION_FILE), address);
 }

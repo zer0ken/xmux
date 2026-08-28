@@ -302,6 +302,36 @@ fn sample() -> Scan {
     Scan { groups }
 }
 
+/// Two sources with a session each and TWO with none, so the host band holds more than
+/// one card. Used where the band's own SIZE is the point: to ←/→ it is one category
+/// however many cards it holds.
+fn scan_with_a_host_band() -> Scan {
+    Scan {
+        groups: vec![
+            Group {
+                source: "local".into(),
+                err: None,
+                sessions: vec![sess("local", "editor", 1, false, 100)],
+            },
+            Group {
+                source: "jupiter00".into(),
+                err: None,
+                sessions: vec![sess("jupiter00", "inference", 1, false, 300)],
+            },
+            Group {
+                source: "db-2".into(),
+                err: Some("connection timed out".into()),
+                sessions: vec![],
+            },
+            Group {
+                source: "db-3".into(),
+                err: Some("connection timed out".into()),
+                sessions: vec![],
+            },
+        ],
+    }
+}
+
 /// One reachable source carrying `n` sessions, so the nav holds exactly `n` cards
 /// numbered `0..n`. Used where the card COUNT is the point (a two-digit jump needs
 /// more cards than [`sample`] has).
@@ -362,8 +392,8 @@ fn two_window_scan() -> Scan {
 
 #[test]
 fn up_down_and_hjkl_move_linearly() {
-    // The card list has no levels: every arrow (and k/j) steps ONE card along it, and
-    // h/l are inert (they resize the nav behind the prefix instead).
+    // The card list has no levels: ↑/↓ (and k/j) step ONE card along it, and h/l are
+    // inert (they resize the nav behind the prefix instead).
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     let start = sw.selected;
@@ -383,16 +413,18 @@ fn up_down_and_hjkl_move_linearly() {
         &mut state,
     );
     assert_eq!(sw.selected, start, "k == ↑");
-    // ←/→ step the same one card. The portrait band flows its cards down a column and
-    // then right, so the card after this one is sometimes below and sometimes one column
-    // over; one step means one card either way, in both layouts.
+    // ←/→ are the OTHER step (one category at a time), so neither is a second way to
+    // step a card: from the first card of the first source, → leaves that source.
     sw.handle_key(
         KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
         &mut state,
     );
-    assert_eq!(sw.selected, next, "→ == ↓");
+    assert_ne!(sw.selected, next, "→ is not ↓");
     sw.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), &mut state);
-    assert_eq!(sw.selected, start, "← == ↑");
+    assert_eq!(
+        sw.selected, start,
+        "← returns to the first source's first card"
+    );
     // h/l are inert on the card list (they resize the nav behind the prefix).
     sw.handle_key(
         KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
@@ -473,11 +505,15 @@ async fn panes_are_not_selectable() {
         matches!(h.sw.current_ref(), Some(RowRef::Session { .. })),
         "launch lands on a session card"
     );
-    // → is inert (its panes are not selectable rows to descend onto).
-    h.key(KeyCode::Right).await;
+    // There is nothing under a session card to descend onto: a step lands on another
+    // card, never on a pane of the one it left.
+    h.key(KeyCode::Down).await;
     assert!(
-        matches!(h.sw.current_ref(), Some(RowRef::Session { .. })),
-        "→ is a no-op (its panes are not selectable)"
+        matches!(
+            h.sw.current_ref(),
+            Some(RowRef::Session { .. }) | Some(RowRef::Host { .. })
+        ),
+        "a step lands on a card, never on a pane"
     );
     // ↓ steps the flat list; the selection always lands on a real card node.
     let mut saw_session = false;
@@ -2410,6 +2446,115 @@ async fn navigation_wraps_around() {
 }
 
 #[tokio::test]
+async fn horizontal_steps_one_host_and_lands_on_its_first_card() {
+    // ↑/↓ and ←/→ name the two things the list is made of. ←/→ cross a whole category
+    // at a time: from a session of one source the selection lands on the FIRST card of
+    // the next, so a list of many hosts is crossed without stepping over every session
+    // between them. The host band is the last category, entered at its first card.
+    // (`sample`: local holds two sessions, jupiter00 one, db-2 is unreachable.)
+    let mut h = Harness::new(sample());
+    assert!(
+        matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.source == "local"),
+        "the launch cursor is a local session card"
+    );
+    h.key(KeyCode::Right).await;
+    assert!(
+        matches!(
+            h.sw.current_ref(),
+            Some(RowRef::Session { sess }) if sess.source == "jupiter00" && sess.name == "inference"
+        ),
+        "→ lands on the next source's first session"
+    );
+    h.key(KeyCode::Right).await;
+    assert!(
+        matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "db-2"),
+        "the host band is entered at its first card"
+    );
+}
+
+#[tokio::test]
+async fn the_host_band_is_one_stop_however_many_cards_it_holds() {
+    // The sources with nothing to show are ONE category to ←/→, not one each: a
+    // list of machines with nothing running on them is a single thing to reach past
+    // rather than a run of places to be carried into one at a time. Every one of them is
+    // still a card, so ↑/↓ reach each.
+    let mut h = Harness::new(scan_with_a_host_band());
+    h.key(KeyCode::Right).await; // local → jupiter00
+    h.key(KeyCode::Right).await; // jupiter00 → the band
+    assert!(
+        matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "db-2"),
+        "→ enters the band at its first card"
+    );
+    h.key(KeyCode::Down).await;
+    assert!(
+        matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "db-3"),
+        "↓ still walks the band card by card"
+    );
+    h.key(KeyCode::Right).await;
+    assert!(
+        matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.source == "local"),
+        "→ crosses the whole band in one step, from any card in it"
+    );
+}
+
+#[tokio::test]
+async fn leaving_the_host_band_backwards_lands_on_the_last_source_with_sessions() {
+    // The band is left the same way in either direction, and from any card in it: ← from
+    // its second card returns to the source before it, not to its own first card.
+    let mut h = Harness::new(scan_with_a_host_band());
+    h.key(KeyCode::Right).await; // local → jupiter00
+    h.key(KeyCode::Right).await; // jupiter00 → the band
+    h.key(KeyCode::Down).await; // the band's second card
+    h.key(KeyCode::Left).await;
+    assert!(
+        matches!(
+            h.sw.current_ref(),
+            Some(RowRef::Session { sess }) if sess.source == "jupiter00"
+        ),
+        "← leaves the band for the source before it"
+    );
+}
+
+#[tokio::test]
+async fn horizontal_leaves_the_host_from_any_of_its_cards() {
+    // The step is by SOURCE, not by card: it leaves the host the selection is on
+    // wherever inside that host the selection sits. Stepping to the next CARD from the
+    // last session of a source would look the same from that one card alone, so the
+    // selection is moved off the first card of a two-session source first.
+    let mut h = Harness::new(sample());
+    h.key(KeyCode::Down).await;
+    assert!(
+        matches!(
+            h.sw.current_ref(),
+            Some(RowRef::Session { sess }) if sess.source == "local" && sess.name == "editor"
+        ),
+        "the second local session"
+    );
+    h.key(KeyCode::Right).await;
+    assert!(
+        matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.source == "jupiter00"),
+        "→ leaves the source from a card that is not its last"
+    );
+}
+
+#[tokio::test]
+async fn horizontal_wraps_at_both_ends() {
+    // The category step wraps exactly as the card step does, so neither end of the list
+    // is a dead stop.
+    let mut h = Harness::new(sample());
+    h.key(KeyCode::Left).await;
+    assert!(
+        matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "db-2"),
+        "← from the first source wraps to the last"
+    );
+    h.key(KeyCode::Right).await;
+    assert!(
+        matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.source == "local"),
+        "→ from the last source wraps to the first"
+    );
+}
+
+#[tokio::test]
 async fn double_click_selects_node() {
     let mut h = Harness::new(sample());
     // inference preselected; double-click inside the tree moves the selection.
@@ -3155,6 +3300,10 @@ async fn hint_bar_and_help_reflect_new_model() {
     assert!(
         help.contains("focus the terminal"),
         "help explains focusing the terminal view:\n{help}"
+    );
+    assert!(
+        help.contains("previous / next host/mux (host cards as one)"),
+        "help names what ←/→ walk, since the two steps differ:\n{help}"
     );
     assert!(
         !help.contains("select = attach"),

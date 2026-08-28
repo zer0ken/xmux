@@ -34,14 +34,22 @@ as it looks on screen, where a row is about two columns tall). Once the window
 is narrow or short enough that the column would leave the terminal view square or taller,
 the nav moves to a band across the top instead and the same cards flow down a column and
 then continue to the right, a whole source at a time. Either
-way the order is the same, so every key below moves along one axis: the next card is the
-one below, or the top of the next column.
+way the order is the same, and the keys below read that order rather than the shape on
+screen: one steps a card, the other steps a category.
 
 | Key | Action |
 |---|---|
-| `↑` / `↓` / `←` / `→` (or `k` / `j`) | move one card (wraps at both ends) |
-| `PageUp` / `PageDown` | jump ten cards (wraps, like the arrows) |
+| `↑` / `↓` (or `k` / `j`) | move one card (wraps at both ends) |
+| `←` / `→` | move to the previous / next category, landing on its first card (wraps) |
+| `PageUp` / `PageDown` | jump ten cards (wraps, like the card step) |
 | `Home` / `End` | jump to the first / last card |
+
+A category is a source that has sessions to show, entered at its first session, or the
+whole band of host cards at once, entered at its first card. The band holds one card per
+machine with nothing running on it, and crossing those one at a time would be a long walk
+past nothing, so the category step treats the band as a single stop; the card step still
+reaches every one of them. A category is left from any card of it, so a selection deep
+inside the band steps straight out.
 
 `Enter` hands focus to the terminal view, as does `prefix →`.
 
