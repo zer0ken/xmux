@@ -47,11 +47,17 @@ pub(super) const BAND_RULE: &str = "\u{2500}";
 /// in the reading order does not on its own say where one group ends and the next
 /// begins; the side list, one full-width run, needs no such mark and draws none.
 ///
-/// Two columns wide with the space parting it from the address column, and RESERVED on
-/// every session card the band flows even where the glyph is not painted: the card
-/// widths are measured before the flow decides columns, so a card that reserved nothing
-/// could not be given the mark afterwards.
+/// Furniture the section title owns, NOT part of the card: it is painted in the strip
+/// left of the card rect, so the selection's inversion of that rect leaves it alone and
+/// the line runs unbroken past the selected card. A click on the strip is a click on no
+/// card, exactly as on the rule parting the bands.
 pub(super) const CARD_CONNECTOR: &str = "\u{2502}";
+
+/// The columns a session card's connector strip takes from the left of its column: the
+/// glyph and the space parting it from the card. Reserved on every session card the
+/// band flows, even in a column where no glyph is painted, so a card reads at one
+/// offset inside its column wherever the flow put it.
+pub(super) const CONNECTOR_W: u16 = 2;
 
 // The one colour every card's text reads in (separators and the accent target excepted),
 // so the levels read as one neutral block with a single highlighted element. A function,

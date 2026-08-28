@@ -286,7 +286,7 @@ impl Switcher {
                 width: cards.width,
                 height: slot.h,
             };
-            let lines = self.nav_row_lines(slot.idx, num_w, spinner_glyph, rect.width, false);
+            let lines = self.nav_row_lines(slot.idx, num_w, spinner_glyph, rect.width);
             frame.render_widget(Paragraph::new(lines), rect);
             if self.list_state.selected() == Some(slot.idx) {
                 frame
@@ -393,33 +393,34 @@ impl Switcher {
             COL_GUTTER,
         );
         for cell in &cells {
-            // A section that split across a column break re-states its title at the top
-            // of the continuation: that header row is drawn (never clickable) above the
-            // card it continues.
-            if let Some(h) = cell.header {
-                let header_rect = Rect {
-                    y: cell.rect.y - 1,
-                    ..cell.rect
-                };
-                let lines = self.nav_row_lines(h, num_w, spinner_glyph, header_rect.width, false);
-                frame.render_widget(Paragraph::new(lines), header_rect);
+            // The connector's strip is the column's left edge, and the CARD begins past
+            // it. Furniture belonging to the title, not part of the card: the selection
+            // inverts the card's rect, and a mark swallowed by that inversion would
+            // break the one line the eye follows down the group. A section title and a
+            // host-state card open no group and take no strip.
+            let indent = if self.starts_run(cell.idx) {
+                0
+            } else {
+                CONNECTOR_W
+            };
+            let card = Rect {
+                x: cell.rect.x + indent,
+                width: cell.rect.width.saturating_sub(indent),
+                ..cell.rect
+            };
+            if indent > 0 && home_col[cell.idx] {
+                Self::render_card_connector(frame, cell.rect);
             }
-            let lines = self.nav_row_lines(
-                cell.idx,
-                num_w,
-                spinner_glyph,
-                cell.rect.width,
-                home_col[cell.idx],
-            );
-            frame.render_widget(Paragraph::new(lines), cell.rect);
+            let lines = self.nav_row_lines(cell.idx, num_w, spinner_glyph, card.width);
+            frame.render_widget(Paragraph::new(lines), card);
             if self.list_state.selected() == Some(cell.idx) {
                 // The card's OWN rect, not the band's width: in a grid the selection marks
                 // one cell, and a full-width bar would claim the columns beside it.
                 frame
                     .buffer_mut()
-                    .set_style(cell.rect, palette::selection_style());
+                    .set_style(card, palette::selection_style());
             }
-            self.nav_cells.push((cell.idx, cell.rect));
+            self.nav_cells.push((cell.idx, card));
         }
         if let Some(rule_rect) = rule {
             Self::render_column_rule(frame, rule_rect);
@@ -463,6 +464,15 @@ impl Switcher {
             cell.set_symbol("│");
             cell.set_style(style);
         }
+    }
+
+    /// The connector down the left of one session card, marking the title that owns it.
+    /// Painted OUTSIDE the card, in the strip the column reserves for it, so the
+    /// selection's inversion of the card rect cannot reach it.
+    fn render_card_connector(frame: &mut Frame, rect: Rect) {
+        let cell = &mut frame.buffer_mut()[(rect.x, rect.y)];
+        cell.set_symbol(CARD_CONNECTOR);
+        cell.set_style(Style::default().fg(palette::get().overlay));
     }
 
     /// Writes the offscreen-card counts in `track` - the hint bar's row minus the cells the
@@ -576,11 +586,18 @@ impl Switcher {
     /// `{host}/{mux}` alone, which is the whole of what it paints in the band: the
     /// trailing rule belongs to the side list.
     fn flow_card(&self, i: usize, num_w: usize, spinner_glyph: char) -> columns::Card {
-        let lines = self.nav_row_lines(i, num_w, spinner_glyph, 0, true);
+        let lines = self.nav_row_lines(i, num_w, spinner_glyph, 0);
         let w = |n: usize| lines.get(n).map_or(0, |l: &Line| l.width() as u16);
+        let starts_run = self.starts_run(i);
+        // A session card is pushed right by the connector's strip, so the column has to
+        // be wide enough for both. The strip is reserved whether or not the glyph is
+        // painted there: the widths are measured before the flow decides columns, so a
+        // card that reserved nothing could not be given the strip afterwards, and every
+        // card of a section reads at one offset inside its column wherever it landed.
+        let indent = if starts_run { 0 } else { CONNECTOR_W };
         columns::Card {
-            starts_run: self.starts_run(i),
-            width: w(0),
+            starts_run,
+            width: w(0) + indent,
             lines: 1,
         }
     }
@@ -613,7 +630,6 @@ impl Switcher {
         num_w: usize,
         spinner_glyph: char,
         width: u16,
-        connected: bool,
     ) -> Vec<Line<'static>> {
         let row = &self.rows[i];
         let selected = self.list_state.selected() == Some(i);
@@ -714,25 +730,11 @@ impl Switcher {
         // The session name is the lowest level the card displays, so it takes the accent
         // and stays bold.
         //
-        // The portrait band opens the card with the connector, which the side list does
-        // not draw: one full-width run needs nothing to say which title a card is under,
-        // and columns standing side by side do. `connected` is what decides the GLYPH,
-        // never the two columns it sits in - those are reserved on every session card.
+        // The connector the portrait band draws down a session card's left is NOT part
+        // of the card and is painted separately; what a card holds is what a card holds
+        // in either layout.
         let (_, _, sess) = context_of(row);
-        let mut detail = Vec::new();
-        if self.layout == ViewLayout::Top {
-            // The connector's two columns, blank where the glyph is not painted so the
-            // name holds one offset inside its column either way.
-            detail.push(Span::styled(
-                if connected {
-                    format!("{CARD_CONNECTOR} ")
-                } else {
-                    "  ".to_string()
-                },
-                Style::default().fg(palette::get().overlay),
-            ));
-        }
-        detail.extend(address());
+        let mut detail = address();
         detail.push(Span::styled(
             sess.to_string(),
             accent.add_modifier(Modifier::BOLD),

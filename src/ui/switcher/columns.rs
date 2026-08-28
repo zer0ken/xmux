@@ -10,8 +10,9 @@
 //! them. Reading order is the fill order: down a column, then right.
 //!
 //! The one exception is a section taller than the whole column, which has nowhere else
-//! to go: it splits, and the continuation re-states its title (it is a column's first
-//! row, so it cannot hang under a title that is now in another column).
+//! to go: it splits, and the continuation picks the section up from the top of the next
+//! column. It names nothing: the title stands once, over the column the section starts
+//! in, and the reading order is what says the continuation is the same section.
 //!
 //! The host-state cards are a band of their own, never sharing a column with session
 //! cards. While the bands can spare a column for it they are pushed APART - sessions
@@ -47,17 +48,12 @@ pub(super) struct Placed {
     /// Rows from the top of the column.
     pub(super) y: u16,
     pub(super) h: u16,
-    /// A section title re-stated just above this card, from the section card at this
-    /// index: a section that split across a column break. Drawn, never clickable.
-    pub(super) header: Option<usize>,
 }
 
 /// One placed card's screen rect, paired with its card index.
 pub(super) struct Cell {
     pub(super) idx: usize,
     pub(super) rect: Rect,
-    /// The re-stated section title to draw just above this cell's rect, if any.
-    pub(super) header: Option<usize>,
 }
 
 /// How the two bands part in the horizontal direction.
@@ -73,7 +69,8 @@ pub(super) enum Parting {
 /// Assigns every card a column and a row offset. `boundary` is the index of the first
 /// host-state card; the host band it opens never shares a column with session cards.
 /// A section taller than a whole column splits: the continuation opens a column and
-/// re-states the section's title as a `header` on its first card.
+/// picks the section up from its top row, naming nothing - the title stands once, over
+/// the column the section starts in.
 pub(super) fn place(cards: &[Card], col_h: u16, boundary: usize) -> Vec<Placed> {
     let mut out: Vec<Placed> = Vec::with_capacity(cards.len());
     if cards.is_empty() || col_h == 0 {
@@ -101,7 +98,7 @@ pub(super) fn place(cards: &[Card], col_h: u16, boundary: usize) -> Vec<Placed> 
             col += 1;
             used = 0;
         }
-        for (k, card) in cards.iter().enumerate().take(j).skip(i) {
+        for card in cards.iter().take(j).skip(i) {
             let h = card.lines.min(col_h);
             if h == 0 {
                 continue;
@@ -112,22 +109,7 @@ pub(super) fn place(cards: &[Card], col_h: u16, boundary: usize) -> Vec<Placed> 
                 col += 1;
                 used = 0;
             }
-            // A continuation (a session card that opens a column, never the section
-            // title itself) re-states the section's title above it.
-            let header = if k > i && used == 0 && col_h >= 2 {
-                Some(i)
-            } else {
-                None
-            };
-            if header.is_some() {
-                used = 1; // the re-stated title takes the column's first row
-            }
-            out.push(Placed {
-                col,
-                y: used,
-                h,
-                header,
-            });
+            out.push(Placed { col, y: used, h });
             used += h;
         }
         i = j;
@@ -346,7 +328,6 @@ pub(super) fn cells(
                 width: w,
                 height: p.h.min(area.height - p.y),
             },
-            header: p.header,
         });
     }
     (out, rule)
@@ -416,9 +397,9 @@ mod tests {
     }
 
     #[test]
-    fn a_section_taller_than_the_column_splits_and_restates_its_title() {
+    fn a_section_taller_than_the_column_splits_and_names_nothing_twice() {
         // A 6-card section needs 6 rows; the column has 4. It has nowhere to go but
-        // across, and the continuation re-states the section's title.
+        // across, and the continuation picks the section up from its own top row.
         let cards = run(6, 10);
         let p = place(&cards, 4, cards.len());
         assert_eq!(
@@ -426,26 +407,18 @@ mod tests {
             vec![0, 0, 0, 0, 1, 1],
             "the section splits at the column edge: {p:?}"
         );
-        // The continuation's first card carries the re-stated title at the top of its
-        // column, one row above it.
         assert_eq!(p[4].col, 1);
-        assert_eq!(p[4].y, 1, "the title takes row 0, the card row 1");
         assert_eq!(
-            p[4].header,
-            Some(0),
-            "the title is the section's own, re-stated"
+            p[4].y, 0,
+            "no row is spent naming the section a second time"
         );
-        assert_eq!(
-            p[0].header, None,
-            "the section's real title states nothing extra"
-        );
-        assert!(p[5].header.is_none());
+        assert_eq!(p[5].y, 1, "the next card follows it");
     }
 
     #[test]
-    fn a_two_row_band_splits_a_taller_section_with_a_restated_title() {
+    fn a_two_row_band_splits_a_taller_section() {
         // A 3-card section needs 3 rows; the column has 2. The continuation opens a
-        // column and re-states the title above it.
+        // column and starts at the top of it.
         let cards = run(3, 10);
         let p = place(&cards, 2, cards.len());
         assert_eq!(
@@ -454,8 +427,7 @@ mod tests {
             "the title and one session share the first column"
         );
         assert_eq!(p[2].col, 1);
-        assert_eq!(p[2].y, 1);
-        assert_eq!(p[2].header, Some(0));
+        assert_eq!(p[2].y, 0);
     }
 
     #[test]
