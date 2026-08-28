@@ -1,6 +1,6 @@
-//! screen: one per-user daemon holding every session, no control-mode channel, every
-//! query a separate `screen` process. There is no `switch-client`, so the display
-//! reattaches on every session change (the zellij shape).
+//! screen: one daemon PER SESSION, all of them under one per-user socket directory, no
+//! control-mode channel, every query a separate `screen` process. There is no
+//! `switch-client`, so the display reattaches on every session change (the zellij shape).
 
 use super::*;
 
@@ -15,8 +15,8 @@ pub use display::ScreenDriver;
 /// mirrors zellij's polled read rather than psmux's single local registry stat.
 const SCREEN_POLL_MS: u64 = 3000;
 
-/// screen: one per-user daemon, enumerated from `-ls`, polled for change, each session
-/// displayed through its own attachment.
+/// screen: one daemon per session under a per-user socket directory, enumerated from
+/// `-ls`, polled for change, each session displayed through its own attachment.
 pub struct Screen {
     pub bin: String,
 }
@@ -38,8 +38,9 @@ impl Mux for Screen {
     }
 
     fn server_model(&self) -> ServerModel {
-        // One daemon holds every session, but there is no in-place `switch-client`, so
-        // the display reattaches per session like a per-session mux.
+        // Each session is its own daemon, so the server side alone already says per
+        // session; the display side agrees, there being no in-place `switch-client` to
+        // move one attachment from one session to another.
         ServerModel::PerSession
     }
 
