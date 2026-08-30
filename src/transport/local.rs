@@ -67,6 +67,15 @@ impl Transport for Local {
         v
     }
 
+    /// A local `-CC` control child is spawned with the mux binary directly and, on
+    /// Unix, dies at once on pipe stdio (`tcgetattr failed: Inappropriate ioctl for
+    /// device`), so the spawner must give it a pty - the local equivalent of the
+    /// remote `-tt`. Windows has no native tmux to run this path, so it stays on
+    /// pipes there.
+    fn control_needs_pty(&self) -> bool {
+        cfg!(unix)
+    }
+
     fn clone_box(&self) -> Box<dyn Transport> {
         Box::new(self.clone())
     }
@@ -118,6 +127,23 @@ mod tests {
             local(Some("/tmp/tmux-1000/work")).control_argv(&argv(&["tmux", "-CC", "attach"])),
             argv(&["tmux", "-S", "/tmp/tmux-1000/work", "-CC", "attach"])
         );
+    }
+
+    #[test]
+    fn control_needs_pty_is_true_only_for_a_unix_local_host() {
+        // A local `-CC` control child is spawned with the mux binary directly and
+        // on Unix dies on pipe stdio, so it needs a pty of its own; ssh's `-tt`
+        // and WSL's `script` wrapper already provide one on their paths.
+        assert_eq!(local(None).control_needs_pty(), cfg!(unix));
+        assert_eq!(
+            local(Some("/tmp/tmux-1000/work")).control_needs_pty(),
+            cfg!(unix)
+        );
+        assert!(
+            !crate::transport::ssh("prod".into(), String::new(), "linux".into())
+                .control_needs_pty()
+        );
+        assert!(!crate::transport::wsl("Ubuntu".into()).control_needs_pty());
     }
 
     #[test]

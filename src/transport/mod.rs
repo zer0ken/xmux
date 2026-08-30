@@ -63,6 +63,15 @@ pub trait Transport: Send + Sync {
     /// The argv for a `-CC` control-mode child given the mux's control argv.
     fn control_argv(&self, mux_control_argv: &[String]) -> Vec<String>;
 
+    /// True when the machine's `-CC` control child must run on a pty the spawner
+    /// allocates for it. The remote path already forces one (`ssh -tt`) and WSL
+    /// wraps its child in `script`; a machine that spawns the mux binary directly
+    /// on a Unix box (local tmux) has no such flag and the `-CC` client dies on
+    /// pipe stdio, so the spawner must give it a pty itself.
+    fn control_needs_pty(&self) -> bool {
+        false
+    }
+
     /// Joins a raw remote shell command behind the machine's execution wrapper.
     /// `None` when the machine issues no remote shell command (a local machine).
     fn raw_shell_argv(&self, _remote_cmd: &str) -> Option<Vec<String>> {
@@ -108,6 +117,9 @@ impl Transport for Box<dyn Transport> {
     }
     fn control_argv(&self, mux_control_argv: &[String]) -> Vec<String> {
         (**self).control_argv(mux_control_argv)
+    }
+    fn control_needs_pty(&self) -> bool {
+        (**self).control_needs_pty()
     }
     fn raw_shell_argv(&self, remote_cmd: &str) -> Option<Vec<String>> {
         (**self).raw_shell_argv(remote_cmd)

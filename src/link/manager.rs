@@ -75,8 +75,16 @@ impl HostManager {
                 let argv = control_argv(host).ok_or_else(|| {
                     anyhow::anyhow!("mux has a control event source but no control argv")
                 })?;
-                let client =
-                    HostClient::spawn(id, proto, &argv, cols, rows, self.events.clone(), &[])?;
+                let client = HostClient::spawn(
+                    id,
+                    proto,
+                    &argv,
+                    cols,
+                    rows,
+                    self.events.clone(),
+                    &[],
+                    host.transport.control_needs_pty(),
+                )?;
                 self.clients.insert(id.to_string(), client);
             }
             crate::model::EventSource::Poll { interval_ms } => {
@@ -159,6 +167,7 @@ impl HostManager {
             24,
             self.events.clone(),
             &[],
+            false,
         )
         .expect("spawn");
         self.clients.insert(host.to_string(), client);
@@ -213,6 +222,68 @@ mod tests {
             "jupiter06 inventory must list its real sessions"
         );
         mgr.teardown_all();
+    }
+
+    /// LIVE: starts a REAL local tmux server and connects the `-CC` control client to
+    /// it through the pty spawn (`control_needs_pty` on a Unix local host). On pipe
+    /// stdio the control child dies at once (`tcgetattr failed`) and the host reads
+    /// as unreachable; the pty the spawner allocates keeps it alive long enough to
+    /// resolve list-sessions into the real inventory. `#[ignore]` because it needs a
+    /// local tmux and touches a throwaway server socket:
+    ///   cargo test -p xmux link::manager::tests::live_local_tmux_control_connects -- --ignored --nocapture
+    #[ignore = "live: needs a local tmux; run on demand"]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn live_local_tmux_control_connects_via_pty() {
+        use std::process::Command;
+        use std::time::{Duration, Instant};
+
+        // A throwaway server so the test never touches the user's real sessions.
+        let sock = std::env::temp_dir().join(format!("xmux-test-{}.sock", std::process::id()));
+        let sock_s = sock.to_string_lossy().into_owned();
+        let start = Command::new("tmux")
+            .args(["-S", &sock_s, "new-session", "-d", "-s", "demo"])
+            .output()
+            .expect("start a throwaway tmux server");
+        assert!(start.status.success(), "tmux server start: {start:?}");
+
+        let host = crate::model::Host::new(
+            crate::transport::local(Some(sock_s.clone())),
+            crate::mux::for_binary("tmux").unwrap(),
+        );
+        assert!(
+            host.transport.control_needs_pty(),
+            "a local tmux control child needs a pty on this host"
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
+        let mut mgr = HostManager::new(tx);
+        // ensure threads the transport's control_needs_pty() into the pty spawn.
+        mgr.ensure("local", &host, 80, 24)
+            .expect("spawn the pty control client");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut connected = false;
+        while !connected && Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_secs(10), rx.recv()).await {
+                Ok(Some(HostEvent::Connected { sessions, .. })) => {
+                    assert!(
+                        sessions.iter().any(|s| s.name == "demo"),
+                        "list-sessions lists the demo session: {:?}",
+                        sessions.iter().map(|s| &s.name).collect::<Vec<_>>()
+                    );
+                    connected = true;
+                }
+                Ok(Some(_)) => continue,
+                _ => break,
+            }
+        }
+        assert!(
+            connected,
+            "the -CC control client must connect over its pty"
+        );
+        mgr.teardown_all();
+        let _ = Command::new("tmux")
+            .args(["-S", &sock_s, "kill-server"])
+            .output();
     }
 
     /// A constructible LOCAL `Source` for the manager tests: its runner defaults to the
