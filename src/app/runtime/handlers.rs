@@ -559,7 +559,7 @@ impl Runtime {
             self.registry.resize_all(vc, vr);
             self.mgr.resize_all(vc, vr);
             if crossed_hidden {
-                if let Err(e) = term.clear() {
+                if let Err(e) = clear_screen(term) {
                     tracing::warn!(error = %e, "term_clear_failed");
                 }
             }
@@ -1286,7 +1286,7 @@ impl Runtime {
                 self.mgr.resize_all(vc, vr);
                 let _ = term.autoresize();
                 // A console resize reflows the existing cells; force a full repaint.
-                if let Err(e) = term.clear() {
+                if let Err(e) = clear_screen(term) {
                     tracing::warn!(error = %e, "term_clear_failed");
                 }
                 self.dirty = true;

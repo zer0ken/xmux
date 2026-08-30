@@ -2638,3 +2638,22 @@ fn config_poll_ignores_a_missing_file() {
     assert!(super::handlers::poll_ui_config(&mut last, &path).is_none()); // gone: no reload
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn clear_screen_wipes_the_screen_and_repaints_every_cell() {
+    use ratatui::widgets::Paragraph;
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(4, 2)).unwrap();
+
+    // Frame 1 fills the screen, so the buffers and the backend hold non-default cells.
+    term.draw(|f| f.render_widget(Paragraph::new("xxxx\nxxxx"), f.area()))
+        .unwrap();
+    // The wipe blanks the backend with no cursor query, and leaves no stale buffer
+    // content for the next diff to treat as already drawn.
+    clear_screen(&mut term).unwrap();
+    term.backend().assert_buffer_lines(["    ", "    "]);
+    // Frame 2 draws one cell: everything it does not draw is blank on the screen,
+    // not frame 1's `x`.
+    term.draw(|f| f.render_widget(Paragraph::new("y"), f.area()))
+        .unwrap();
+    term.backend().assert_buffer_lines(["y   ", "    "]);
+}
