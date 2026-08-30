@@ -239,7 +239,10 @@ pub fn host_for(
     // `crate::mux::server_socket_for`.
     let local_socket = crate::mux::server_socket_for(bin, local_socket);
     let kind = crate::transport::kind_for(machine, id, os, xmux_dir, local_socket);
-    Host::new(kind.transport(), for_binary(bin))
+    Host::new(
+        kind.transport(),
+        for_binary(bin).expect("a host's binary is a registry name"),
+    )
 }
 
 #[cfg(test)]
@@ -264,11 +267,11 @@ mod tests {
     #[test]
     fn insert_keys_on_host_id_and_appends_order_once() {
         let mut hosts = Hosts::default();
-        let local = Host::new(crate::transport::local(None), for_binary("tmux"));
+        let local = Host::new(crate::transport::local(None), for_binary("tmux").unwrap());
         hosts.insert(local);
         assert_eq!(hosts.ids(), &["local".to_string()]);
         // Re-inserting the same id replaces in place, does not duplicate the order.
-        let local2 = Host::new(crate::transport::local(None), for_binary("psmux"));
+        let local2 = Host::new(crate::transport::local(None), for_binary("psmux").unwrap());
         hosts.insert(local2);
         assert_eq!(
             hosts.ids(),

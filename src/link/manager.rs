@@ -180,7 +180,7 @@ mod tests {
         use std::time::{Duration, Instant};
         let host = crate::model::Host::new(
             crate::transport::ssh("jupiter06".into(), String::new(), "linux".into()),
-            crate::mux::for_binary("tmux"),
+            crate::mux::for_binary("tmux").unwrap(),
         );
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
         let mut mgr = HostManager::new(tx);
@@ -223,14 +223,14 @@ mod tests {
     fn ssh_host(alias: &str, bin: &str, os: &str, control_path: &str) -> crate::model::Host {
         crate::model::Host::new(
             crate::transport::ssh(alias.into(), control_path.into(), os.into()),
-            crate::mux::for_binary(bin),
+            crate::mux::for_binary(bin).unwrap(),
         )
     }
 
     fn local_host(bin: &str, socket: Option<&str>) -> crate::model::Host {
         crate::model::Host::new(
             crate::transport::local(socket.map(str::to_string)),
-            crate::mux::for_binary(bin),
+            crate::mux::for_binary(bin).unwrap(),
         )
     }
 
@@ -312,7 +312,7 @@ mod tests {
         // ensure on an already-connected host returns Ok(false) (no fresh connect).
         let host = crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("psmux"),
+            crate::mux::for_binary("psmux").unwrap(),
         );
         assert!(!mgr.ensure("jupiter06", &host, 80, 24).unwrap());
     }
@@ -336,7 +336,7 @@ mod tests {
         let mut mgr = HostManager::new(tx);
         let host = crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_kind("psmux", "psmux-no-such-binary"),
+            crate::mux::for_kind("psmux", "psmux-no-such-binary").unwrap(),
         );
         assert!(
             mgr.ensure("local", &host, 80, 24).unwrap(),
@@ -366,7 +366,7 @@ mod tests {
         let mut mgr = HostManager::new(tx);
         let host = crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_kind("psmux", "psmux-no-such-binary"),
+            crate::mux::for_kind("psmux", "psmux-no-such-binary").unwrap(),
         );
         assert!(
             mgr.ensure("local", &host, 80, 24).unwrap(),

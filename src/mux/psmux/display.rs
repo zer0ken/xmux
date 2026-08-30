@@ -194,7 +194,7 @@ mod tests {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("psmux"),
+            crate::mux::for_binary("psmux").unwrap(),
         ));
         hosts
             .get_mut("local")
@@ -338,7 +338,7 @@ mod tests {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("psmux"),
+            crate::mux::for_binary("psmux").unwrap(),
         ));
         hosts
             .get_mut("local")
@@ -407,7 +407,7 @@ mod tests {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("psmux"),
+            crate::mux::for_binary("psmux").unwrap(),
         ));
         hosts
             .get_mut("local")
@@ -486,7 +486,7 @@ mod tests {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("psmux"),
+            crate::mux::for_binary("psmux").unwrap(),
         ));
         {
             let h = hosts.get_mut("local").unwrap();
@@ -553,7 +553,7 @@ mod tests {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("psmux"),
+            crate::mux::for_binary("psmux").unwrap(),
         ));
         hosts
             .get_mut("local")

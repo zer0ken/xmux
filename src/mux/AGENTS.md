@@ -66,12 +66,12 @@ it prints are one decision, so they move together.
 - Enumeration may use the transport, because it executes on a host.
 - Discovery answers "which muxes a host serves", and only ever from the
   registry: the candidate set is what xmux can drive, and each candidate is
-  confirmed by the identity probe answering AS that mux. It is called once per
-  host, by the environment for this box before the first paint and by the
-  runtime for each remote after it, never per source. The psmux-shadows-tmux
-  filter lives inside discovery and keys off what ANSWERED, never off an OS: a
-  remote's OS is not something xmux knows, since the ssh family's platform field
-  is the LOCAL one and gates multiplexing only.
+  confirmed by ITS OWN identity probe answering AS that candidate. It is called
+  once per host, by the environment for this box before the first paint and by
+  the runtime for each remote after it, never per source. Every family stands
+  equal: none is the fallback for another, and no name is dropped for another's
+  sake - the psmux alias of tmux never counts as tmux because tmux's own help
+  probe reads the alias's self-naming help.
 - Plan methods return mux argv or mux intent; they do not decide local versus ssh
   execution. The plan set covers what xmux itself issues: attach, enumerate, read
   sessions and options, select a window, and start a session. There is no kill,

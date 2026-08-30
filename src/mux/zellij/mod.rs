@@ -65,6 +65,16 @@ impl Mux for Zellij {
         &self.bin
     }
 
+    /// zellij names itself in its `help` banner (`Usage: zellij [OPTIONS]`), the same
+    /// positive signal psmux gives. One probe.
+    fn identity_probes(&self) -> Vec<Vec<String>> {
+        vec![vec![self.bin.clone(), "help".to_string()]]
+    }
+
+    fn classify_identity(&self, outputs: &[Option<String>]) -> Option<&'static str> {
+        named_mux(outputs.first()?.as_deref()?)
+    }
+
     fn server_model(&self) -> ServerModel {
         ServerModel::PerSession
     }

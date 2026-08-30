@@ -269,7 +269,8 @@ impl Config {
     ///
     /// A written value is taken verbatim, and a LIST yields one source per entry: a name
     /// the user wrote is a name they meant, even if it is not installed (it then shows as
-    /// unreachable rather than vanishing).
+    /// unreachable rather than vanishing). A written name no family owns is dropped here
+    /// and warned at load: an unknown name is never decoded to a family that does exist.
     ///
     /// An unset or `"auto"` value means "whatever this box actually has", so `installed`
     /// (from `mux::installed_muxes`) becomes the list, with the `os`'s conventional mux
@@ -278,7 +279,13 @@ impl Config {
     /// has, so nothing installed means no local source, not a mux that is not there.
     pub fn local_muxes(&self, os: &str, installed: &[String]) -> Vec<String> {
         if !self.local.mux.is_auto() {
-            return self.local.mux.names();
+            return self
+                .local
+                .mux
+                .names()
+                .into_iter()
+                .filter(|n| crate::mux::is_recognized(n))
+                .collect();
         }
         let conventional = if os == "windows" { "psmux" } else { "tmux" };
         let mut out: Vec<String> = Vec::new();
@@ -303,7 +310,7 @@ impl Config {
         for name in self.local.mux.names() {
             if name != "auto" && !crate::mux::is_recognized(&name) {
                 warnings.push(format!(
-                    "local mux {name:?} is not a recognized mux (tmux/psmux/zellij/abduco); treating it as tmux-compatible"
+                    "local mux {name:?} is not a recognized mux (tmux/psmux/zellij/abduco/screen); no source is created for it"
                 ));
             }
         }
@@ -311,7 +318,7 @@ impl Config {
             for name in h.mux.names() {
                 if !crate::mux::is_recognized(&name) {
                     warnings.push(format!(
-                        "host {:?} mux {name:?} is not a recognized mux (tmux/psmux/zellij/abduco); treating it as tmux-compatible",
+                        "host {:?} mux {name:?} is not a recognized mux (tmux/psmux/zellij/abduco/screen); no source is created for it",
                         h.ssh
                     ));
                 }
@@ -321,7 +328,7 @@ impl Config {
             for name in w.mux.names() {
                 if !crate::mux::is_recognized(&name) {
                     warnings.push(format!(
-                        "wsl {:?} mux {name:?} is not a recognized mux (tmux/psmux/zellij/abduco); treating it as tmux-compatible",
+                        "wsl {:?} mux {name:?} is not a recognized mux (tmux/psmux/zellij/abduco/screen); no source is created for it",
                         w.distro
                     ));
                 }
@@ -499,13 +506,19 @@ fn merge_specs(
 /// One [`HostSpec`] per mux on `alias`. The id is qualified only when the machine
 /// serves more than one, so a single-mux host keeps the bare alias it always had.
 fn host_specs_for(alias: &str, muxes: &[String]) -> Vec<HostSpec> {
+    // A written name no family owns is dropped (warned at load), never decoded to a
+    // family that does exist; the qualified-id count reads the names that survive.
+    let muxes: Vec<&String> = muxes
+        .iter()
+        .filter(|bin| crate::mux::is_recognized(bin.as_str()))
+        .collect();
     let qualified = muxes.len() > 1;
     muxes
         .iter()
         .map(|bin| HostSpec {
             id: crate::session::source_id(alias, bin, qualified),
             alias: alias.to_string(),
-            bin: bin.clone(),
+            bin: (*bin).clone(),
         })
         .collect()
 }

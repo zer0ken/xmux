@@ -1429,7 +1429,9 @@ pub(super) fn source_reach(s: &crate::model::source::Source) -> crate::ui::chrom
         probe: shell_line(&s.host().list_sessions_command()),
         machine: s.kind.addressed_as(),
         mux: s.binary.clone(),
-        kind: crate::mux::for_binary(&s.binary).kind().to_string(),
+        kind: crate::mux::for_binary(&s.binary)
+            .map(|m| m.kind().to_string())
+            .unwrap_or_else(|| s.binary.clone()),
         socket: s.kind.socket_path(),
     }
 }

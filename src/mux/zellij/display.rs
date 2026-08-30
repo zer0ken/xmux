@@ -135,7 +135,7 @@ mod tests {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("zellij"),
+            crate::mux::for_binary("zellij").unwrap(),
         ));
         hosts
             .get_mut("local")

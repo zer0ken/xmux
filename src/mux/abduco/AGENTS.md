@@ -43,9 +43,9 @@ and owns the concrete display decision. The transport lowers the host execution.
 - The driver pulls the mux-agnostic display seam from `src/driver.rs` and the
   supervisor capabilities from the app runtime. The seam does NOT import the
   driver; the dependency is one-way, so there is no cycle.
-- Identity detection (`-v` naming itself, `-V` being rejected) lives at the mux
-  root beside the other families' probes; this family only answers the `Mux`
-  surface the probe constructs.
+- Identity detection is this family's own `identity_probes` (one `-v` question;
+  `-V` is rejected) and `classify_identity` (the name in the output), implemented
+  beside the rest of the `Mux` surface - no central ladder answers for it.
 
 ## Invariants
 

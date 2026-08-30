@@ -239,15 +239,17 @@ pub(crate) mod tests {
             ("psmux", "PSMUX_SESSION_NAME"),
             ("zellij", "ZELLIJ_SESSION_NAME"),
         ] {
-            let local =
-                crate::model::Host::new(crate::transport::local(None), crate::mux::for_binary(bin));
+            let local = crate::model::Host::new(
+                crate::transport::local(None),
+                crate::mux::for_binary(bin).unwrap(),
+            );
             let (key, var) = session_witness(&local).expect("this box's own client");
             assert_eq!(key, "local", "read under the host's display key");
             assert_eq!(var, expected);
 
             let remote = crate::model::Host::new(
                 crate::transport::ssh("prod".into(), String::new(), "linux".into()),
-                crate::mux::for_binary(bin),
+                crate::mux::for_binary(bin).unwrap(),
             );
             assert!(
                 session_witness(&remote).is_none(),
@@ -256,7 +258,7 @@ pub(crate) mod tests {
 
             let wsl = crate::model::Host::new(
                 crate::transport::wsl("Ubuntu-24.04".into()),
-                crate::mux::for_binary(bin),
+                crate::mux::for_binary(bin).unwrap(),
             );
             assert!(
                 session_witness(&wsl).is_none(),
@@ -271,8 +273,10 @@ pub(crate) mod tests {
     #[test]
     fn a_mux_that_names_no_variable_has_no_client_to_read() {
         for bin in ["tmux", "abduco", "screen"] {
-            let host =
-                crate::model::Host::new(crate::transport::local(None), crate::mux::for_binary(bin));
+            let host = crate::model::Host::new(
+                crate::transport::local(None),
+                crate::mux::for_binary(bin).unwrap(),
+            );
             assert!(
                 session_witness(&host).is_none(),
                 "{bin} names no session variable on its client"
@@ -287,7 +291,7 @@ pub(crate) mod tests {
     fn a_host_with_no_attachment_reports_no_session() {
         let host = crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("psmux"),
+            crate::mux::for_binary("psmux").unwrap(),
         );
         let registry = AttachRegistry::new();
         assert!(live_client_session(&host, &registry).is_none());
@@ -301,15 +305,15 @@ pub(crate) mod tests {
         // concrete driver type — those live in `crate::mux::{tmux, psmux}`.
         let tmux_host = crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("tmux"),
+            crate::mux::for_binary("tmux").unwrap(),
         );
         let psmux_host = crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("psmux"),
+            crate::mux::for_binary("psmux").unwrap(),
         );
         let zellij_host = crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("zellij"),
+            crate::mux::for_binary("zellij").unwrap(),
         );
         let _t: Box<dyn MuxDriver> = driver_for(&tmux_host);
         let _p: Box<dyn MuxDriver> = driver_for(&psmux_host);
@@ -324,11 +328,11 @@ pub(crate) mod tests {
     fn driver_for_picks_the_mux_specific_driver_by_backend() {
         let tmux_host = crate::model::Host::new(
             crate::transport::ssh("jup".into(), String::new(), "linux".into()),
-            crate::mux::for_binary("tmux"),
+            crate::mux::for_binary("tmux").unwrap(),
         );
         let psmux_host = crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("psmux"),
+            crate::mux::for_binary("psmux").unwrap(),
         );
         assert_eq!(driver_for(&tmux_host).kind(), "tmux");
         assert_eq!(driver_for(&psmux_host).kind(), "psmux");
@@ -344,7 +348,7 @@ pub(crate) mod tests {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("psmux"),
+            crate::mux::for_binary("psmux").unwrap(),
         ));
         // A stale attachment + bookkeeping for a different session: show() must drop it
         // and reattach for the selected session (psmux is one PTY per host, reattached).

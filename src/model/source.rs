@@ -139,7 +139,7 @@ impl Source {
     pub(crate) fn host(&self) -> crate::model::Host {
         crate::model::Host::new(
             self.kind.clone().transport(),
-            crate::mux::for_binary(&self.binary),
+            crate::mux::for_binary(&self.binary).expect("a source's binary is a registry name"),
         )
     }
 }

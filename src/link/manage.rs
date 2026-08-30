@@ -123,7 +123,7 @@ mod tests {
     fn local_host() -> Host {
         Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("psmux"),
+            crate::mux::for_binary("psmux").unwrap(),
         )
     }
 
@@ -133,7 +133,7 @@ mod tests {
     fn remote_host() -> Host {
         Host::new(
             crate::transport::ssh("prod".into(), String::new(), "linux".into()),
-            crate::mux::for_binary("tmux"),
+            crate::mux::for_binary("tmux").unwrap(),
         )
     }
 
@@ -212,7 +212,7 @@ mod tests {
     fn zellij_host() -> Host {
         Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("zellij"),
+            crate::mux::for_binary("zellij").unwrap(),
         )
     }
 

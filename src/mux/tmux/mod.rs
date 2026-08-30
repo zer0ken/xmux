@@ -75,6 +75,30 @@ impl Mux for Tmux {
         &self.bin
     }
 
+    /// tmux names itself only in `-V` (`tmux <version>`), and it has no `help`
+    /// command (`tmux help` exits non-zero). The help probe runs FIRST because psmux
+    /// installs a `tmux` alias of itself whose `-V` mimics tmux's version line while
+    /// the alias's own help names it: a successful help naming a mux names ANOTHER
+    /// mux, and that is the alias correction.
+    fn identity_probes(&self) -> Vec<Vec<String>> {
+        vec![
+            vec![self.bin.clone(), "help".to_string()],
+            vec![self.bin.clone(), "-V".to_string()],
+        ]
+    }
+
+    fn classify_identity(&self, outputs: &[Option<String>]) -> Option<&'static str> {
+        // A help that succeeded names another mux (real tmux has no help): the
+        // psmux-behind-the-alias case, answered before the version line is read.
+        if let Some(help) = outputs.first().and_then(|o| o.as_deref()) {
+            if let Some(kind) = named_mux_excluding(help, "tmux") {
+                return Some(kind);
+            }
+        }
+        // The version line names the mux it belongs to; tmux's own is `tmux <version>`.
+        named_mux(outputs.get(1).and_then(|o| o.as_deref())?)
+    }
+
     fn server_model(&self) -> ServerModel {
         ServerModel::Shared
     }

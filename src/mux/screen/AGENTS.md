@@ -18,5 +18,6 @@ reattaches per session.
   empty-but-reachable mux, never a dead host.
 - `attach_plan` = `screen -x <name>` (multi-display) so xmux adds its display client
   whether the session is detached or attached elsewhere.
-- Detection: `screen -v` prints `Screen version … (GNU)`; `-V` errors, so screen is
-  never caught by the tmux `-V` fallback.
+- Detection: `screen -v` prints `Screen version … (GNU)`; `-V` errors. The probe
+  and the classify are this family's own `identity_probes` / `classify_identity`:
+  one `-v` question, answered by the name in its output.
