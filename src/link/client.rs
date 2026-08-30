@@ -3,7 +3,7 @@
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -30,7 +30,8 @@ pub struct HostClient {
     proto: &'static dyn ControlProtocol,
     /// Queue commands to the writer thread.
     cmd_tx: std::sync::mpsc::Sender<HostCmd>,
-    child: Child,
+    /// The control child, boxed so a piped child and a PTY child share one field.
+    child: Box<dyn portable_pty::Child + Send + Sync>,
     reader: Option<JoinHandle<()>>,
     writer: Option<JoinHandle<()>>,
     /// Drains the child's stderr to EOF so a child that writes more than the pipe
@@ -38,10 +39,24 @@ pub struct HostClient {
     stderr_drain: Option<JoinHandle<()>>,
 }
 
+/// The spawned control child and its stdio handles, boxed so the piped and PTY
+/// spawn shapes share one type. `stderr_drain` is the piped spawn's stderr-drain
+/// thread handle; a PTY child has no separate stderr (it shares the one master
+/// stream), so it carries `None`.
+struct Spawned {
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+    stdout: Box<dyn std::io::Read + Send>,
+    stdin: Box<dyn std::io::Write + Send>,
+    stderr_drain: Option<JoinHandle<()>>,
+}
+
 impl HostClient {
-    /// Spawns `argv` as a piped control-mode child at `cols×rows`, starts the
-    /// reader + writer OS threads, and queues the connect sequence (resize →
-    /// flow-control pause → list-sessions). `events` is the app's loop sink.
+    /// Spawns `argv` as a control-mode child at `cols×rows` - through a pty when
+    /// `pty` (a transport says its `-CC` client needs a terminal on its stdin),
+    /// else as a piped child - starts the reader + writer OS threads, and queues
+    /// the connect sequence (resize → flow-control pause → list-sessions).
+    /// `events` is the app's loop sink.
+    #[allow(clippy::too_many_arguments)] // one cohesive spawn API; callers pass all eight
     pub fn spawn(
         host: impl Into<String>,
         proto: &'static dyn ControlProtocol,
@@ -50,6 +65,7 @@ impl HostClient {
         rows: u16,
         events: tokio::sync::mpsc::UnboundedSender<HostEvent>,
         extra_env: &[(&str, &str)],
+        pty: bool,
     ) -> anyhow::Result<HostClient> {
         anyhow::ensure!(
             !argv.is_empty(),
@@ -57,45 +73,26 @@ impl HostClient {
         );
         let host = host.into();
 
-        let mut cmd = Command::new(&argv[0]);
-        cmd.args(&argv[1..])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        // Strip EVERY mux session var (all `PSMUX*`, `TMUX`, `TMUX_PANE` — see
-        // `mux::vocab::is_mux_var`), not just `PSMUX_SESSION`: a per-session psmux
-        // control child must not inherit stale psmux routing state (e.g. an
-        // ambient `PSMUX_SESSION_NAME`) that could override its `-s <session>`
-        // target and attach the wrong server.
-        for (k, _) in std::env::vars() {
-            if crate::mux::vocab::is_mux_var(&k) {
-                cmd.env_remove(&k);
+        // The child spawn shape: a PTY when the transport requires one (a local
+        // `-CC` mux client on Unix dies on pipe stdio - `tcgetattr failed`), else
+        // the piped spawn with a stderr drain.
+        let Spawned {
+            child,
+            stdout,
+            mut stdin,
+            stderr_drain,
+        } = if pty {
+            #[cfg(unix)]
+            {
+                spawn_pty_child(argv, extra_env, cols, rows)?
             }
-        }
-        for (k, v) in extra_env {
-            cmd.env(k, v);
-        }
-        let mut child = cmd.spawn()?;
-
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("child stdout missing"))?;
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("child stdin missing"))?;
-        let mut stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("child stderr missing"))?;
-
-        // Drain stderr to EOF and discard it. Without this, a child that writes more
-        // than the pipe buffer to stderr (ssh banners/warnings) blocks and wedges the
-        // connection. EOF arrives when the child dies (like stdout), so the join is bounded.
-        let stderr_drain = std::thread::spawn(move || {
-            let _ = std::io::copy(&mut stderr, &mut std::io::sink());
-        });
+            #[cfg(not(unix))]
+            {
+                unreachable!("a pty control spawn is Unix-only; no native local -CC on Windows")
+            }
+        } else {
+            spawn_piped_child(argv, extra_env)?
+        };
 
         let connecting = Arc::new(AtomicBool::new(true));
         let in_flight: InFlight = Arc::new(Mutex::new(VecDeque::new()));
@@ -144,7 +141,7 @@ impl HostClient {
             child,
             reader: Some(reader),
             writer: Some(writer),
-            stderr_drain: Some(stderr_drain),
+            stderr_drain,
         })
     }
 
@@ -230,9 +227,103 @@ impl HostClient {
             let _ = h.join();
         }
         // Reap the killed child so it is not left a zombie (Unix) / leaked handle.
-        // It was just killed and uses PIPES (not ConPTY), so this returns at once.
+        // It was just killed, so this returns at once.
         let _ = self.child.wait();
     }
+}
+
+/// Spawns the control child as a piped process (stdin/stdout/stderr all pipes)
+/// with the mux session vars stripped and `extra_env` applied, plus a stderr drain
+/// thread so a child that writes more than the pipe buffer to stderr (ssh
+/// banners/warnings) cannot block and wedge the connection. EOF arrives when the
+/// child dies, so the drain's join is bounded.
+fn spawn_piped_child(argv: &[String], extra_env: &[(&str, &str)]) -> anyhow::Result<Spawned> {
+    let mut cmd = Command::new(&argv[0]);
+    cmd.args(&argv[1..])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // Strip EVERY mux session var (all `PSMUX*`, `TMUX`, `TMUX_PANE` — see
+    // `mux::vocab::is_mux_var`), not just `PSMUX_SESSION`: a per-session psmux
+    // control child must not inherit stale psmux routing state (e.g. an
+    // ambient `PSMUX_SESSION_NAME`) that could override its `-s <session>`
+    // target and attach the wrong server.
+    for (k, _) in std::env::vars() {
+        if crate::mux::vocab::is_mux_var(&k) {
+            cmd.env_remove(&k);
+        }
+    }
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("child stdout missing"))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("child stdin missing"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("child stderr missing"))?;
+    let stderr_drain = std::thread::spawn(move || {
+        let _ = std::io::copy(&mut stderr, &mut std::io::sink());
+    });
+    Ok(Spawned {
+        child: Box::new(child),
+        stdout: Box::new(stdout),
+        stdin: Box::new(stdin),
+        stderr_drain: Some(stderr_drain),
+    })
+}
+
+/// Spawns the control child on a pty this process allocates (Unix). A `-CC` mux
+/// client reads its own stdin's terminal attributes and dies when stdin is not a
+/// terminal (`tcgetattr failed: Inappropriate ioctl for device`), and the control
+/// child's stdio would otherwise be pipes - so a local tmux control stream must get
+/// a pty the way the remote's `ssh -tt` and WSL's `script` wrapper force one. A
+/// pty child has no separate stderr (it shares the one master stream), so there is
+/// no drain handle to return.
+#[cfg(unix)]
+fn spawn_pty_child(
+    argv: &[String],
+    extra_env: &[(&str, &str)],
+    cols: u16,
+    rows: u16,
+) -> anyhow::Result<Spawned> {
+    use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+
+    let pair = native_pty_system().openpty(PtySize {
+        rows,
+        cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    })?;
+    let mut cmd = CommandBuilder::new(&argv[0]);
+    cmd.args(&argv[1..]);
+    // The same mux-session-var strip and `extra_env` the piped spawn applies, so
+    // the two spawn shapes give the child the same environment.
+    for (k, _) in std::env::vars() {
+        if crate::mux::vocab::is_mux_var(&k) {
+            cmd.env_remove(&k);
+        }
+    }
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
+    let child = pair.slave.spawn_command(cmd)?;
+    drop(pair.slave);
+    let reader = pair.master.try_clone_reader()?;
+    let writer = pair.master.take_writer()?;
+    Ok(Spawned {
+        child,
+        stdout: reader,
+        stdin: writer,
+        stderr_drain: None,
+    })
 }
 
 #[cfg(test)]
@@ -248,8 +339,9 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let client = HostClient::spawn("local", test_control_proto(), &argv, 80, 24, tx, &[])
-            .expect("spawn");
+        let client =
+            HostClient::spawn("local", test_control_proto(), &argv, 80, 24, tx, &[], false)
+                .expect("spawn");
         // echo exits immediately, closing pipes → teardown's joins return promptly.
         client.teardown();
     }
