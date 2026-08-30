@@ -716,6 +716,19 @@ impl Runtime {
         DrawObserver::slow_step("host_drain", t);
     }
 
+    /// Re-emits an OSC 52 clipboard sequence on xmux's own stdout so the terminal
+    /// above it sets the clipboard. Called from [`Runtime::on_pty_event`], which the
+    /// `select!` loop runs strictly between ratatui frames - ratatui owns stdout and a
+    /// write from anywhere else (the pump thread) would land mid-frame. Re-emitting
+    /// the escape, not calling a clipboard API, is what keeps this working when xmux
+    /// itself runs over ssh.
+    fn emit_osc52(seq: &[u8]) {
+        use std::io::Write;
+        let mut out = std::io::stdout().lock();
+        let _ = out.write_all(seq);
+        let _ = out.flush();
+    }
+
     /// The `pty_rx` arm: a kept attachment fed its grid or hit EOF (reap). Detach-to-recover
     /// re-attaches the VIEWED session if its client exits; a background session is just reaped.
     pub(super) fn on_pty_event(
@@ -752,6 +765,7 @@ impl Runtime {
                 record_display_tty(&mut self.hosts, &self.registry, id, tty)
             }
             PtyEvent::Output { .. } => {}
+            PtyEvent::Osc52 { seq } => Self::emit_osc52(&seq),
         }
         let mut budget = EVENT_DRAIN_BUDGET;
         while budget > 0 {
@@ -773,6 +787,10 @@ impl Runtime {
                 }
                 Ok(PtyEvent::DisplayTty { id, tty }) => {
                     record_display_tty(&mut self.hosts, &self.registry, id, tty);
+                    budget -= 1;
+                }
+                Ok(PtyEvent::Osc52 { seq }) => {
+                    Self::emit_osc52(&seq);
                     budget -= 1;
                 }
                 Err(_) => break,

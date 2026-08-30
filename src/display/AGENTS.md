@@ -15,7 +15,13 @@ and modal state machine lives in `app`).
 
 The display path runs real attached mux clients. Spawning an attachment opens a
 PTY-backed attach child; an output pump feeds a grid; the app renders the
-selected grid. Input and resize commands are queued to per-attachment control
+selected grid. The pump also scans the child's raw output for complete OSC 52
+clipboard writes and hands each whole sequence to the app loop, which re-emits it
+on xmux's own stdout between frames so the enclosing terminal sets the clipboard;
+every other byte of child output reaches the screen only through the grid, and an
+oversized sequence is dropped whole rather than buffered without limit.
+Re-emitting the escape rather than calling a clipboard API keeps the path working
+when xmux runs over ssh. Input and resize commands are queued to per-attachment control
 threads so the async runtime never blocks on PTY operations. The worker moves the
 blocking PTY open and spawn off the runtime thread and hands finished attachments
 back to the app, which owns the registry.
