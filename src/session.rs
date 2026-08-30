@@ -2,13 +2,13 @@
 //! server), its windows-and-panes detail, and the `<source>/<name>` address that
 //! targets one session across the server boundary.
 
-/// The reserved MACHINE name for this box. A local source id is this alone, or this
+/// The reserved MACHINE name for this machine. A local source id is this alone, or this
 /// qualified by a mux (see [`source_id`]).
 pub const LOCAL_SOURCE: &str = "local";
 
-/// The reserved MACHINE-name namespace for a WSL distribution on this box. A distro is
-/// neither reachable over ssh nor part of this box's own mux scope, so its machine name
-/// carries the family: `wsl.Ubuntu-24.04`. Naming the family in the id is what lets it be
+/// The reserved MACHINE-name namespace for a WSL distribution on this machine. A distro is
+/// neither reachable over ssh nor part of this machine's own mux scope, so its machine name
+/// carries the kind: `wsl.Ubuntu-24.04`. Naming the kind in the id is what lets it be
 /// recovered from the id ALONE, which is what an async mux-discovery answer needs - it
 /// carries a bare machine name, and the transport rebuilt from it has to be the same one
 /// the launch path built.
@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn the_machine_half_and_localness_survive_qualification() {
-        // Everything that asks "which machine" or "is this box" must keep working on a
+        // Everything that asks "which machine" or "is this machine" must keep working on a
         // qualified id; a bare comparison against LOCAL_SOURCE would stop seeing
         // `local:zellij` as local.
         assert_eq!(machine_of("local:zellij"), "local");
@@ -195,8 +195,8 @@ mod tests {
 
     #[test]
     fn a_wsl_machine_name_carries_its_distribution() {
-        // The family has to be recoverable from the name alone: `machine_of` on any id
-        // built over it yields the machine, and that machine says which family it is.
+        // The kind has to be recoverable from the name alone: `machine_of` on any id
+        // built over it yields the machine, and that machine says which kind it is.
         assert_eq!(wsl_distro_of("wsl.Ubuntu-24.04"), Some("Ubuntu-24.04"));
         assert_eq!(
             machine_of(&source_id("wsl.Ubuntu-24.04", "zellij", true)),
@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn a_wsl_machine_is_not_this_box() {
         // A distro's mux registry lives inside the distro, so it must not be taken for
-        // this box's own scope - the local-registry merge would read the wrong registry.
+        // this machine's own scope - the local-registry merge would read the wrong registry.
         assert!(!is_local_source("wsl.Ubuntu-24.04"));
         assert!(!is_local_source("wsl.Ubuntu-24.04:zellij"));
     }

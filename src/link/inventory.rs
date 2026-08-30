@@ -1,4 +1,4 @@
-//! The shared per-host vocabulary: the inventory data plus the command/event/reply
+//! The shared per-host types: the inventory data plus the command/event/reply
 //! types the reader thread, writer thread, and app exchange over their channels.
 
 use std::collections::VecDeque;
@@ -64,7 +64,7 @@ pub enum HostEvent {
     /// A `%`-notification reports the server's session/window STRUCTURE CHANGED
     /// (added, closed, renamed, or the set of sessions) — the app must REFETCH
     /// (re-run list-sessions), since the notification carries only an
-    /// id, not the new structure. Resyncs the tree view (#5).
+    /// id, not the new structure. Resyncs the nav (#5).
     Changed { host: String },
     /// `%exit` / EOF — reap.
     Exited {

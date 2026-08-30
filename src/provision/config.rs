@@ -38,7 +38,7 @@ pub struct DiscoveryConfig {
     /// Offer the online peers of this machine's tailnet, by their DNS label.
     #[serde(default = "default_true")]
     pub tailscale: bool,
-    /// Offer this box's WSL distributions, by the name `wsl.exe` lists them under.
+    /// Offer this machine's WSL distributions, by the name `wsl.exe` lists them under.
     #[serde(default = "default_true")]
     pub wsl: bool,
 }
@@ -151,7 +151,7 @@ pub struct UiConfig {
     /// The tree|terminal view border colour OVERRIDES, named after tmux's pane-border
     /// options: the focused side is `view-active-border-style`, the unfocused side
     /// `view-border-style`, the drag-hover cue `view-border-hover-style`. Values use
-    /// tmux's colour vocabulary (parsed by [`crate::ui::chrome::map_color`]). Each
+    /// tmux's colour syntax (parsed by [`crate::ui::chrome::map_color`]). Each
     /// defaults to EMPTY (unset), leaving that side at xmux's own colour
     /// — see [`crate::ui::chrome::ViewBorderColors::resolve`].
     #[serde(rename = "view-active-border-style", default)]
@@ -161,11 +161,11 @@ pub struct UiConfig {
     #[serde(rename = "view-border-hover-style", default)]
     pub view_border_hover_style: String,
     /// The hint bar's colour as a tmux `status-style` string (`bg=…,fg=…`, tmux colour
-    /// vocabulary parsed by [`crate::ui::chrome::parse_hint_bar_style`]). Empty (default)
+    /// colour syntax parsed by [`crate::ui::chrome::parse_hint_bar_style`]). Empty (default)
     /// = the built-in tmux default (themegreen/themeblack → yellowgreen / gray5).
     #[serde(rename = "hint-bar-style", default)]
     pub hint_bar_style: String,
-    /// The selected card's background, in the same colour vocabulary as the view border
+    /// The selected card's background, in the same colour slots as the view border
     /// (`bg=<colour>`, or a bare colour token). Empty (default) means the surface comes
     /// from the terminal's reported background, and NOTHING is painted when the terminal
     /// does not report one - see [`crate::ui::palette`]. This is how a user on a
@@ -215,7 +215,7 @@ pub struct HostConfig {
 
 /// Overrides the mux for a WSL distribution, or names one `[discovery] wsl` is not
 /// listing. `distro` is the bare name `wsl.exe` reports (`Ubuntu-24.04`); the machine it
-/// becomes carries the family prefix, so `exclude` names it as `wsl.Ubuntu-24.04`.
+/// becomes carries the WSL prefix, so `exclude` names it as `wsl.Ubuntu-24.04`.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct WslConfig {
     #[serde(default)]
@@ -269,10 +269,10 @@ impl Config {
     ///
     /// A written value is taken verbatim, and a LIST yields one source per entry: a name
     /// the user wrote is a name they meant, even if it is not installed (it then shows as
-    /// unreachable rather than vanishing). A written name no family owns is dropped here
-    /// and warned at load: an unknown name is never decoded to a family that does exist.
+    /// unreachable rather than vanishing). A written name no kind owns is dropped here
+    /// and warned at load: an unknown name is never decoded to a kind that does exist.
     ///
-    /// An unset or `"auto"` value means "whatever this box actually has", so `installed`
+    /// An unset or `"auto"` value means "whatever this machine actually has", so `installed`
     /// (from `mux::installed_muxes`) becomes the list, with the `os`'s conventional mux
     /// first so a single-mux box reads exactly as it always did. A box where discovery
     /// finds nothing yields an empty list: the local sources name what the box actually
@@ -398,7 +398,7 @@ impl Config {
     /// MACHINE names `[discovery] wsl` listed (`wsl.Ubuntu-24.04`); a `[[wsl]]` entry
     /// names its distribution bare and is prefixed here, so both halves key alike.
     ///
-    /// `exclude` names MACHINES here too, which for this family is the prefixed name.
+    /// `exclude` names MACHINES here too, which for this kind is the prefixed name.
     pub fn wsl_specs(&self, distro_machines: &[String]) -> Vec<HostSpec> {
         let prefixed: Vec<String> = self
             .wsl
@@ -416,7 +416,7 @@ impl Config {
             .map(String::as_str)
             .zip(self.wsl.iter().map(|w| &w.mux))
             .collect();
-        // Nothing to reserve: every name here already carries the family prefix, so it can
+        // Nothing to reserve: every name here already carries the WSL prefix, so it can
         // collide with neither `local` nor an ssh alias `host_specs` accepted.
         merge_specs(distro_machines, &configured, &self.excluded(), |_| false)
     }
@@ -427,7 +427,7 @@ impl Config {
     }
 }
 
-/// The machine names the ssh family may not claim: `local` is this box's own, and a
+/// The machine names the ssh kind may not claim: `local` is this machine's own, and a
 /// `wsl.`-prefixed name is a WSL distribution's. Either would otherwise be built as an
 /// ssh destination and shadow the machine that owns the name, so an ssh alias spelled
 /// either way is dropped rather than served ambiguously.
@@ -435,7 +435,7 @@ fn is_reserved_alias(machine: &str) -> bool {
     machine == crate::session::LOCAL_SOURCE || crate::session::wsl_distro_of(machine).is_some()
 }
 
-/// The merge every machine family's spec list follows: `discovered` names first, in the
+/// The merge every machine kind's spec list follows: `discovered` names first, in the
 /// order their provider gave them, then the `configured` entries that were not
 /// discovered. Config augments discovery; it never replaces it.
 ///
@@ -506,8 +506,8 @@ fn merge_specs(
 /// One [`HostSpec`] per mux on `alias`. The id is qualified only when the machine
 /// serves more than one, so a single-mux host keeps the bare alias it always had.
 fn host_specs_for(alias: &str, muxes: &[String]) -> Vec<HostSpec> {
-    // A written name no family owns is dropped (warned at load), never decoded to a
-    // family that does exist; the qualified-id count reads the names that survive.
+    // A written name no kind owns is dropped (warned at load), never decoded to a
+    // kind that does exist; the qualified-id count reads the names that survive.
     let muxes: Vec<&String> = muxes
         .iter()
         .filter(|bin| crate::mux::is_recognized(bin.as_str()))
@@ -1023,7 +1023,7 @@ bogus = "nope"
 
     #[test]
     fn the_conventional_mux_leads_the_discovered_list() {
-        // The order decides which source paints first and reads as this box's main one,
+        // The order decides which source paints first and reads as this machine's main one,
         // so a Windows box that has both psmux and tmux leads with psmux and a unix box
         // leads with tmux, exactly as a single-mux box always did.
         let c = Config::default();
@@ -1135,7 +1135,7 @@ bogus = "nope"
             assert_eq!(got[0].id, "prod", "spec={spec:?}");
             assert_eq!(got[0].bin, "zellij", "spec={spec:?}");
         }
-        // Same for this box.
+        // Same for this machine.
         let cfg = Config {
             local: LocalConfig {
                 mux: "zellij".into(),
@@ -1287,7 +1287,7 @@ mux = "tmux"
 
     #[test]
     fn exclude_names_a_wsl_machine_by_its_prefixed_name() {
-        // `exclude` names MACHINES, and a distribution's machine name carries the family
+        // `exclude` names MACHINES, and a distribution's machine name carries the WSL
         // prefix — which is how the Docker Desktop distributions are dropped.
         let cfg = Config {
             exclude: vec!["wsl.docker-desktop".into()],
@@ -1303,9 +1303,9 @@ mux = "tmux"
 
     #[test]
     fn an_ssh_alias_may_not_claim_a_wsl_machine_name() {
-        // A `wsl.`-prefixed name belongs to the WSL family, and `kind_for` reads the
-        // family out of the name. An ssh alias spelled that way would be built as a WSL
-        // machine, so it is dropped instead of served as the wrong family.
+        // A `wsl.`-prefixed name belongs to the WSL kind, and `kind_for` reads the
+        // kind out of the name. An ssh alias spelled that way would be built as a WSL
+        // machine, so it is dropped instead of served as the wrong kind.
         let cfg = Config::default();
         let aliases: Vec<String> = ["prod", "wsl.internal", "local"]
             .iter()
@@ -1347,7 +1347,7 @@ mux = "tmux"
 
     #[test]
     fn every_roster_provider_answers_by_default() {
-        // No provider waits to be asked for. One that cannot run on this box costs an
+        // No provider waits to be asked for. One that cannot run on this machine costs an
         // empty list rather than an error, so being on where there is nothing to say
         // costs nothing.
         let d = DiscoveryConfig::default();

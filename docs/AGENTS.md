@@ -24,7 +24,7 @@ also part of the contributor and user interface, so it is current English prose.
 - Durable docs describe current behavior and accepted decisions.
 - A document names no test, function, method, field, or library API. It may name
   what the design prescribes and what the outside world depends on: the two axes
-  and their vocabulary, the directory layout, config keys, CLI and ctl verbs,
+  and their terms, the directory layout, config keys, CLI and ctl verbs,
   socket names, and the argv of the muxes xmux drives.
 - A requirement is a behavior statement with a stable ID, not a coverage record.
 - ADRs should record decisions, context, and consequences without becoming task

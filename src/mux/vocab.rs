@@ -12,7 +12,7 @@ pub const SESSION_FORMAT: &str =
 
 /// Whether `key` is a mux session variable that a child spawned by xmux must not
 /// inherit (it would mis-target the server or be refused as nesting). This is the
-/// SSOT for the mux env vocabulary: matches exactly tmux's session markers and any
+/// SSOT for the mux env vars: matches exactly tmux's session markers and any
 /// psmux var; NOT a blanket `TMUX` prefix, which would also drop unrelated vars like
 /// `TMUX_TMPDIR` (selects the socket dir) or `TMUXP_*` (the separate tmuxp tool).
 pub fn is_mux_var(key: &str) -> bool {
@@ -21,7 +21,7 @@ pub fn is_mux_var(key: &str) -> bool {
 
 /// From a set of env var names, the subset that are mux session vars - the keys a
 /// child spawned by xmux must have cleared. Lets a spawner strip mux vars from its
-/// environment without itself naming any mux var (the vocabulary stays here).
+/// environment without itself naming any mux var (the list stays here).
 pub fn mux_env_keys_to_clear(keys: impl IntoIterator<Item = String>) -> Vec<String> {
     keys.into_iter().filter(|k| is_mux_var(k)).collect()
 }

@@ -42,7 +42,7 @@ fn display_tty_path(host_key: &str) -> String {
 /// records its OWN controlling tty to the per-host file before exec'ing the attach - the
 /// value `switch_in_place` reads back to move xmux's own display client, never the user's
 /// (which `list-clients` cannot tell apart). Out-of-band (a file, not the pty stream) so
-/// the Windows ConPTY cannot consume it. A family-private free fn (not a `Mux` method) so
+/// the Windows ConPTY cannot consume it. A implementation-private free fn (not a `Mux` method) so
 /// the `tty >file` mechanism never leaks across the mux boundary.
 pub(super) fn record_prefix(host_key: &str) -> String {
     format!("tty >{} 2>/dev/null; ", display_tty_path(host_key))
@@ -214,7 +214,7 @@ impl ControlProtocol for TmuxControl {
             | Notif::WindowClose { .. }
             | Notif::WindowRenamed { .. } => {
                 // The server's session/window STRUCTURE changed; the app refetches
-                // (list-sessions), so the tree view's session list resyncs. The
+                // (list-sessions), so the nav's session list resyncs. The
                 // notification carries only an id, so a blanket refetch is simplest.
                 Some(HostEvent::Changed {
                     host: host.to_string(),
@@ -241,7 +241,7 @@ impl ControlProtocol for TmuxControl {
                 })
             }
             // `%session-changed` (the metadata client's own auto-attached session) and
-            // `%window-pane-changed` (a pane became active) do not affect the tree view
+            // `%window-pane-changed` (a pane became active) do not affect the nav
             // tree - the per-session PTY attachments own the live pane - so they are inert.
             Notif::SessionChanged { .. } | Notif::WindowPaneChanged { .. } => None,
             Notif::Exit { reason } => {

@@ -1,9 +1,9 @@
-//! The app's raw-byte INPUT vocabulary. Each input surface RESOLVES raw bytes
+//! The app's raw-byte INPUT set. Each input surface RESOLVES raw bytes
 //! into a list of these `Action`s, so resolution stays pure (side-effect free,
 //! unit-testable). The semantic ones project to the DOMAIN [`crate::model::Action`]
 //! via [`Action::as_action`], which `State::apply` folds in; the byte-carrying and
 //! render-only variants are dispatched directly. `TermInput` (terminal-view focus keys) emits
-//! these; the nav-focus path joins the same vocabulary.
+//! these; the nav-focus path joins the same set.
 //!
 //! This `Action` is distinct from the domain `crate::model::Action`: this is the
 //! input layer (raw bytes → intent-or-transport), that is the domain layer (the

@@ -43,7 +43,7 @@ impl Hosts {
         self.map.insert(id, host);
     }
 
-    /// Assembles the hosts for a config: this box's hosts first (one per entry of the
+    /// Assembles the hosts for a config: this machine's hosts first (one per entry of the
     /// RESOLVED `local_muxes`, its socket from `$TMUX`), then each ssh host in order,
     /// then each WSL distribution. Mirrors `source::build` but yields owning `Host`s.
     /// `xmux_dir` seeds each ssh transport's ControlMaster socket path
@@ -59,7 +59,7 @@ impl Hosts {
     ) -> Hosts {
         let mut hosts = Hosts::default();
 
-        // One host per (machine, mux): this box contributes one for each mux it serves.
+        // One host per (machine, mux): this machine contributes one for each mux it serves.
         // The list is the one `Env` resolved, so these ids match the source ids.
         let qualified = local_muxes.len() > 1;
         for bin in local_muxes {
@@ -80,7 +80,7 @@ impl Hosts {
             .chain(cfg.wsl_specs(wsl_distros))
         {
             if spec.alias == LOCAL_SOURCE {
-                continue; // "local" is reserved for this box's sources.
+                continue; // "local" is reserved for this machine's sources.
             }
             hosts.insert(host_for(
                 &spec.alias,
@@ -383,7 +383,7 @@ mod tests {
     fn reconcile_keeps_local_when_the_fresh_roster_fails_to_name_it() {
         // A roster resolution whose local mux probe answered nothing names no `local`
         // machine at all. That probe result is a verdict on which muxes are installed,
-        // never on whether this box exists, so the standing local sources must survive
+        // never on whether this machine exists, so the standing local sources must survive
         // it instead of being reaped on the re-scan.
         let mut hosts = Hosts::build(
             &Config::default(),
@@ -621,8 +621,8 @@ mod tests {
 
     #[test]
     fn build_appends_wsl_distributions_after_the_ssh_hosts() {
-        // The registry projection and the source list must agree on the WSL family too,
-        // and the family has to survive as a transport: the ids an existing install had
+        // The registry projection and the source list must agree on the WSL implementation too,
+        // and the implementation has to survive as a transport: the ids an existing install had
         // keep their positions, and the new ones follow.
         let cfg = Config::default();
         let aliases = vec!["prod".to_string()];
@@ -691,7 +691,7 @@ mod tests {
             "no socket flag reaches zellij: {cmd:?}"
         );
 
-        // And the tmux family keeps addressing the server it was given.
+        // And the tmux implementation keeps addressing the server it was given.
         let t = host_for(
             crate::session::LOCAL_SOURCE,
             "psmux",

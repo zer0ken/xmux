@@ -31,7 +31,7 @@ pub use psmux::Psmux;
 pub use screen::Screen;
 pub use tmux::{Tmux, TmuxControl};
 pub use zellij::Zellij;
-// Re-export the pure mux vocabulary at the crate::mux root so `crate::mux::<fn>`
+// Re-export the pure mux builders at the crate::mux root so `crate::mux::<fn>`
 // call sites resolve unchanged whether the item is the Mux trait/factory or a
 // vocab builder/parser.
 pub use vocab::*;
@@ -124,7 +124,7 @@ async fn within_poll_budget<T>(
 
 /// An opaque, mux-authored plan for an in-place display-client switch. The driver runs
 /// it BLIND through the host's transport and never inspects which variant it is - the
-/// variant↔lowering mapping is `run_switch_plan`'s job, not the driver's. Each variant
+/// variant↔dispatch mapping is `run_switch_plan`'s job, not the driver's. Each variant
 /// lowers 1:1 to a [`crate::transport::LoweredSwitch`].
 pub enum SwitchPlan {
     /// Mux argv(s) to run non-interactively in order via the exec path (psmux:
@@ -150,14 +150,14 @@ pub trait Mux: Send + Sync {
 
     /// The argvs that ask this mux to name itself, in the order to ask them. Each argv
     /// runs as one probe over the host's transport (`argv[0]` the binary), and the
-    /// collected answers go to [`Mux::classify_identity`]. Detection is per family:
-    /// there is no shared ladder of stages, so a family owns WHICH commands identify it
+    /// collected answers go to [`Mux::classify_identity`]. Detection is per implementation:
+    /// there is no central sequence of shared stages, so an implementation owns WHICH commands identify it
     /// and in what order - tmux asks `help` before `-V` because a psmux alias of tmux
     /// mimics the version line, while abduco and screen ask only their `-v`.
     ///
     /// Deliberately has NO default. A default probe is a rank: it would make one
-    /// family's commands the question every other family is guessed with, exactly what
-    /// the shared ladder this replaced did.
+    /// implementation's commands the question every other implementation is guessed with, exactly what
+    /// exactly what the central stage sequence this replaced did.
     fn identity_probes(&self) -> Vec<Vec<String>>;
 
     /// Which mux the collected probe outputs name, as a registry kind
@@ -168,7 +168,7 @@ pub trait Mux: Send + Sync {
     /// `Some(kind)` may name ANOTHER mux: a `tmux` whose `help` names psmux is the
     /// psmux alias, and the source corrects to psmux with the invoked binary
     /// preserved. `None` is inconclusive - the caller keeps its current mux and
-    /// retries on a later scan; it is never decoded to a fallback family.
+    /// retries on a later scan; it is never decoded to a fallback kind.
     fn classify_identity(&self, outputs: &[Option<String>]) -> Option<&'static str>;
 
     /// Per-session vs shared. The supervisor reads this instead of `remote`.
@@ -211,7 +211,7 @@ pub trait Mux: Send + Sync {
 
     /// The mux's own display driver - the per-host orchestration of which PTY to
     /// attach and whether to `switch-client` or reattach on a session change. Each
-    /// mux constructs ITS OWN driver, so mux selection lives in the mux family
+    /// mux constructs ITS OWN driver, so mux selection lives in the mux implementation
     /// (never a central `match server_model()`). The driver is zero-sized; the per-host
     /// display state lives on `host.display`/`AttachRegistry`, borrowed through
     /// `DriverCtx`, so a fresh value per call is free.
@@ -239,7 +239,7 @@ pub trait Mux: Send + Sync {
     /// An opaque plan that moves xmux's OWN display client to `session` IN PLACE (no
     /// teardown). The driver runs the returned [`SwitchPlan`] blind through the transport,
     /// never inspecting the variant; the `tty >file` / read-back mechanism a shared mux
-    /// uses stays inside the mux family, not on this boundary. `display_tty` is the
+    /// uses stays inside the mux implementation, not on this boundary. `display_tty` is the
     /// captured tty of xmux's display client - psmux targets it directly; tmux ignores it
     /// (it reads the tty its attach recorded to a per-host file). `None` (the default) for
     /// a mux that supports no in-place switch, so the driver reattaches instead.
@@ -260,7 +260,7 @@ pub trait Mux: Send + Sync {
     /// process: it detaches from one session's server and the same process reconnects to
     /// another, keeping its pid and its original argv. No server sees that move, so a
     /// control channel cannot report it and the argv still names the session the client
-    /// left. The live client's own environment is the only witness, and this names the
+    /// left. The live client's own environment is the only source of truth, and this names the
     /// one variable to read. The read itself works only for a client on THIS machine, so
     /// answering here is not a promise that an answer is available - the caller gates on
     /// the transport as well.
@@ -314,7 +314,7 @@ pub trait Mux: Send + Sync {
     }
 
     // The command-plan verbs are tmux-compatible argv builders over `self.bin()`, so
-    // every tmux-compatible mux inherits them for free (the north-star additivity). A mux
+    // every tmux-compatible mux inherits them for free . A mux
     // whose argv diverges overrides only the verb it differs on.
     fn select_window_plan(&self, target: &str) -> Vec<String> {
         mux::select_window(self.bin(), target)
@@ -333,7 +333,7 @@ struct MuxKind {
     make: fn(String) -> Box<dyn Mux>,
 }
 
-// `name` is the canonical identity, the marker the family's classify reads its probe
+// `name` is the canonical identity, the marker the implementation's classify reads its probe
 // outputs for, and the conventional binary name. Every mux xmux drives is an entry;
 // none is a fallback for another.
 fn known_muxes() -> &'static [MuxKind] {
@@ -388,7 +388,7 @@ const DETECT_TIMEOUT_REMOTE: std::time::Duration = std::time::Duration::from_sec
 /// Which mux is installed on the machine `transport` reaches, out of the ones xmux can
 /// drive ([`supported_muxes`]).
 ///
-/// Every family stands equal: none is the fallback for another. Each candidate is
+/// No implementation is the fallback for another. Each candidate is
 /// asked with ITS OWN identity probe (the [`Mux::identity_probes`] of the mux its
 /// conventional name builds) and counts as installed only when the binary answers AS
 /// that candidate ([`Mux::classify_identity`]). A binary that carries one mux's name
@@ -399,7 +399,7 @@ pub async fn installed_muxes(transport: &dyn Transport, runner: &dyn Runner) -> 
     // Probe every candidate mux CONCURRENTLY (each with the same `DETECT_TIMEOUT`
     // budget) rather than one after another, so a machine's mux set resolves in ~one
     // probe-time instead of the sum of them. A remote machine gets the longer remote
-    // budget: its probes are ssh round trips, and a family that asks several commands
+    // budget: its probes are ssh round trips, and an implementation that asks several commands
     // would otherwise time out before its last one answers.
     let names = supported_muxes();
     let budget = if transport.is_remote() {
@@ -438,21 +438,21 @@ pub(crate) fn named_mux_excluding(text: &str, skip: &str) -> Option<&'static str
 }
 
 /// The mux whose name `text` contains, in registry order. Pure over the text; the
-/// families' [`Mux::classify_identity`] read their probe outputs through this.
+/// implementations' [`Mux::classify_identity`] read their probe outputs through this.
 pub(crate) fn named_mux(text: &str) -> Option<&'static str> {
     named_mux_excluding(text, "")
 }
 
-/// Picks a mux by conventional binary name; `None` for a name no family owns. A
+/// Picks a mux by conventional binary name; `None` for a name no kind owns. A
 /// written name that resolves to `None` is a config error warned at load, never a
-/// silent decode to another family.
+/// silent decode to another implementation.
 pub fn for_binary(bin: &str) -> Option<Box<dyn Mux>> {
     let k = known_muxes().iter().find(|k| k.name == bin)?;
     Some((k.make)(bin.to_string()))
 }
 
-/// The server socket to address the mux binary `bin` over: the one this box named, or
-/// `None` for a mux that takes no socket flag or a name no family owns.
+/// The server socket to address the mux binary `bin` over: the one this machine named, or
+/// `None` for a mux that takes no socket flag or a name no kind owns.
 ///
 /// The two composition sites (the source list and the host registry) call this before
 /// handing a socket to the transport axis, so a socket only ever reaches a mux that
@@ -463,7 +463,7 @@ pub fn server_socket_for(bin: &str, socket: Option<String>) -> Option<String> {
 }
 
 /// Builds a mux by canonical identity while preserving the binary used to
-/// reach it; `None` for a kind no family owns.
+/// reach it; `None` for an unknown kind.
 pub fn for_kind(kind: &str, bin: &str) -> Option<Box<dyn Mux>> {
     let k = known_muxes().iter().find(|k| k.name == kind)?;
     Some((k.make)(bin.to_string()))
@@ -471,7 +471,7 @@ pub fn for_kind(kind: &str, bin: &str) -> Option<Box<dyn Mux>> {
 
 /// True when `name` names a mux xmux actually recognizes: an entry of
 /// [`known_muxes`], which holds every mux xmux drives. Config validation warns on a
-/// written name this refuses, and the source build drops it - a name no family owns
+/// written name this refuses, and the source build drops it - a name no kind owns
 /// is never decoded to one that does.
 pub fn is_recognized(name: &str) -> bool {
     known_muxes().iter().any(|k| k.name == name)
@@ -481,7 +481,7 @@ pub fn is_recognized(name: &str) -> bool {
 /// argv is one probe run; a probe that errors (an absent command, a rejected flag, an
 /// unreachable host) collects `None`, and the outputs aligned with
 /// [`Mux::identity_probes`] go to [`Mux::classify_identity`]. Output is lowercased,
-/// so a family's classify matches case-insensitively.
+/// so a implementation's classify matches case-insensitively.
 async fn probe_identity(
     transport: &dyn Transport,
     mux: &dyn Mux,
@@ -589,7 +589,7 @@ mod tests {
 
     /// A minimal tmux-compatible mux that implements ONLY the required `Mux` methods
     /// and none of the command-plan verbs. It must still compile and get every command
-    /// plan for free from the trait defaults (the north-star additivity: a new
+    /// plan for free from the trait defaults (additivity: a new
     /// tmux-compatible mux = identity + a few methods, the verbs are free).
     struct BareMux {
         bin: String,
@@ -854,7 +854,7 @@ mod tests {
     #[test]
     fn discovery_only_looks_for_muxes_xmux_can_drive() {
         // The candidate set IS the supported set, so discovery can never turn up a name
-        // xmux has no family for: every candidate resolves to a mux of its own kind.
+        // xmux has no implementation for: every candidate resolves to a mux of its own kind.
         let names = supported_muxes();
         assert_eq!(names, vec!["tmux", "abduco", "psmux", "zellij", "screen"]);
         for name in names {
@@ -868,7 +868,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_machine_offers_every_supported_mux_it_actually_has() {
-        // The reported case: zellij is up on this box but nothing in the config says so.
+        // The reported case: zellij is up on this machine but nothing in the config says so.
         // Discovery asks each supported mux whether it is here, in the supported order.
         let t = crate::transport::local(None);
         let got = installed_muxes(&t, &MachineWith::new(&["tmux", "zellij"])).await;
@@ -897,8 +897,8 @@ mod tests {
     #[tokio::test]
     async fn a_machine_serving_tmux_and_psmux_is_offered_both() {
         // Equal treatment: a REAL tmux (help errors, as real tmux's does) next to a real
-        // psmux is identified as tmux - detection interrogates each binary, so both
-        // families are offered where both are installed.
+        // psmux is identified as tmux - detection asks each binary its own probe, so
+        // both implementations are offered where both are installed.
         let t = crate::transport::local(None);
         assert_eq!(
             installed_muxes(&t, &MachineWith::new(&["tmux", "psmux"])).await,
@@ -1044,7 +1044,7 @@ Usage: zellij [OPTIONS]",
     #[tokio::test]
     async fn detect_backend_classifies_abduco_by_low_version_marker() {
         // abduco rejects `-V` (uppercase, exit 1) and names itself in `-v` (lowercase)
-        // output: `abduco-0.6 © …`. `-v` is the family's one probe and identifies it.
+        // output: `abduco-0.6 © …`. `-v` is the implementation's one probe and identifies it.
         let transport = crate::transport::local(None);
         let runner = ProbeRunner::new(None, None).low_version(Some("abduco-0.6 © 2013-2018"));
         let got = detect_backend(&transport, "abduco", &runner).await.unwrap();
@@ -1083,7 +1083,7 @@ Usage: zellij [OPTIONS]",
             for_binary("tmux").unwrap().server_model(),
             ServerModel::Shared
         );
-        // No fallback: a name no family owns resolves to nothing at all.
+        // No fallback: a name no kind owns resolves to nothing at all.
         assert!(for_binary("").is_none());
         assert!(for_binary("some-fork-of-tmux").is_none());
     }
@@ -1104,7 +1104,7 @@ Usage: zellij [OPTIONS]",
     #[test]
     fn an_unknown_name_or_kind_decodes_to_nothing() {
         // Equal treatment: a name or kind outside the registry is an error for the
-        // caller to surface, never a silent decode to another family.
+        // caller to surface, never a silent decode to another kind.
         assert!(for_binary("some-fork").is_none());
         assert!(for_kind("nope", "tcustom").is_none());
     }
@@ -1155,7 +1155,7 @@ Usage: zellij [OPTIONS]",
     #[tokio::test]
     async fn detect_backend_classifies_screen_via_dash_v() {
         // screen's positive signal is `-v` ("Screen version ... (GNU)"), NOT `-V`
-        // (which errors); `-v` is the family's one probe and identifies it.
+        // (which errors); `-v` is the implementation's one probe and identifies it.
         let transport = crate::transport::local(None);
         let runner = ProbeRunner::new(Some("Must be connected to a terminal."), None)
             .low_version(Some("Screen version 4.09.00 (GNU) 30-Jan-22"));
@@ -1303,7 +1303,7 @@ Usage: zellij [OPTIONS]",
         assert_eq!(server_socket_for("psmux", sock()), sock());
         assert_eq!(server_socket_for("zellij", sock()), None);
         assert_eq!(server_socket_for("abduco", sock()), None);
-        // An unknown binary belongs to no family, so no socket is composed for it.
+        // An unknown binary belongs to no kind, so no socket is composed for it.
         assert_eq!(server_socket_for("mux-of-the-future", sock()), None);
         // No socket to hand on stays no socket, whoever the mux is.
         assert_eq!(server_socket_for("tmux", None), None);

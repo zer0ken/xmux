@@ -1,4 +1,4 @@
-//! Shared transport-axis shell vocabulary: rendering an argv safe for the POSIX
+//! Shared transport-axis shell helpers: rendering an argv safe for the POSIX
 //! shell an ssh connection hands its remote command to. The ssh transport
 //! (`super::ssh::Ssh`) is the sole consumer — a local transport never issues a
 //! remote shell command. This is the transport axis's own vocab home, the peer of

@@ -129,7 +129,7 @@ pub enum Provider {
     SshConfig,
     /// An online peer of this machine's tailnet.
     Tailscale,
-    /// A WSL distribution `wsl.exe` listed on this box.
+    /// A WSL distribution `wsl.exe` listed on this machine.
     Wsl,
     /// No provider listed it: a `[[hosts]]` or `[[wsl]]` entry named it outright.
     Config,

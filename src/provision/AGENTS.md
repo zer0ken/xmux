@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`provision` resolves what exists on this box: which machines, mux binaries, and
+`provision` resolves what exists on this machine: which machines, mux binaries, and
 sources xmux offers. It loads the optional TOML config and merges it with
 ssh-config discovery, names the ssh targets a source can reach, probes sources
 concurrently to enumerate their sessions, and resolves all of it into the source

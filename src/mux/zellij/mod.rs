@@ -136,7 +136,7 @@ impl Mux for Zellij {
     /// on. Because the variable belongs to the PROCESS, it names xmux's own display
     /// client and no other zellij client of the user's.
     ///
-    /// It is the only witness there is. No server sees the move, so the poll cannot ask
+    /// It is the only source of truth there is. No server sees the move, so the poll cannot ask
     /// for it, and the session listing cannot answer it either: the listing's
     /// current-session marker names the session the LISTING COMMAND ITSELF ran inside,
     /// and xmux polls from outside every session, so that marker is never present.

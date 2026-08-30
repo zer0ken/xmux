@@ -1,6 +1,6 @@
 //! The psmux display driver: a per-session mux (one server per session) displayed
 //! through ONE per-host PTY that is REATTACHED whenever the selected session changes.
-//! `Psmux::driver` constructs it, so mux selection lives in the psmux family, not a
+//! `Psmux::driver` constructs it, so mux selection lives in the psmux implementation, not a
 //! central match.
 
 use std::sync::{Arc, Mutex};

@@ -248,7 +248,7 @@ mod tests {
         // THE invariant of this module. A `Color::Rgb`, or an `Indexed` above 15, is a
         // hue xmux picked for somebody else's terminal: it cannot follow a theme, and it
         // is wrong on every theme it was not picked for. Sixteen slots and attributes are
-        // the whole vocabulary. Held for EVERY built-in theme, so a theme added later
+        // the whole slot set. Held for EVERY built-in theme, so a theme added later
         // carries the guard with it.
         for p in [auto_dark(), auto_light()] {
             for (role, c) in [

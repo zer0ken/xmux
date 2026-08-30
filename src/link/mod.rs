@@ -1,4 +1,4 @@
-//! Per-host metadata channels: the shared vocabulary plus the reader, writer,
+//! Per-host metadata channels: the shared types plus the reader, writer,
 //! client, poll, and manager concerns, each in its own submodule.
 
 #[cfg(test)]

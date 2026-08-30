@@ -7,7 +7,7 @@ use crate::session::LOCAL_SOURCE;
 
 /// The local machine. `socket` targets a non-default mux server (`-S <socket>`,
 /// parsed from `$TMUX`); `None` ⇒ the default socket. `id` is the SOURCE id this
-/// transport answers as: bare `local` when this box serves one mux, `local:<mux>` when
+/// transport answers as: bare `local` when this machine serves one mux, `local:<mux>` when
 /// it serves several, so two local sources on the same box stay distinct keys.
 #[derive(Clone, Debug)]
 pub struct Local {

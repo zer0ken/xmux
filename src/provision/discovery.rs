@@ -27,7 +27,7 @@ pub struct ScanResult {
 
 impl ScanResult {
     /// This source's reachability in the single [`Liveness`](crate::model::Liveness)
-    /// vocabulary. The message stays in `err`.
+    /// enum. The message stays in `err`.
     pub fn liveness(&self) -> crate::model::Liveness {
         crate::model::Liveness::from_scan_err(&self.err)
     }

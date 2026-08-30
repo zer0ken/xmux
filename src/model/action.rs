@@ -7,8 +7,8 @@
 //! attach, prefs persist, quit) - `apply` itself touches only `State`, so the
 //! intent → state-change → effect flow is one direction with one mutation point.
 //!
-//! `Action` is the DOMAIN vocabulary, distinct from `display::dispatch::Action` (the
-//! app's raw-byte input vocabulary, which projects INTO this via `as_action`).
+//! `Action` is the domain action set, distinct from `display::dispatch::Action` (the
+//! app's raw-byte input set, which projects INTO this via `as_action`).
 //! The display/navigation intents (Switch/Focus/Rescan/NavWidth/ToggleAutoHide/Quit),
 //! the selection/attach-debounce intents (`Select`/`Tick`), and the one async
 //! session-lifecycle intent (`CreateSession`) all live here. A lifecycle intent folds
@@ -16,7 +16,7 @@
 //! off-loop against the live mux.
 //!
 //! xmux aggregates and switches; it does not edit what a mux already edits. So the
-//! vocabulary carries no rename/kill/window intents - those belong to the mux itself.
+//! action set carries no rename/kill/window intents - those belong to the mux itself.
 //! The one creating intent that survives is `CreateSession`, because a host with no
 //! sessions has nothing to switch TO until one exists.
 

@@ -12,7 +12,7 @@ const LAST_SESSION_FILE: &str = "last_session";
 /// with `prefix h`/`l`, so the next launch restores it instead of the default.
 const NAV_WIDTH_FILE: &str = "nav_width";
 
-/// The file under the xmux dir holding the tree view height (portrait Top layout) the
+/// The file under the xmux dir holding the nav height (portrait Top layout) the
 /// user last set by dragging the horizontal view border, so the next launch restores it.
 const NAV_HEIGHT_FILE: &str = "nav_height";
 

@@ -561,7 +561,7 @@ pub(crate) fn current_grid(
     driver.and_then(|driver| driver.grid(displayed, ctx))
 }
 
-/// Spawns the lowered switch command off the event loop. Local variants run as a
+/// Spawns the dispatched switch command off the event loop. Local variants run as a
 /// plain subprocess; RawSsh variants run the full ssh argv non-interactively.
 pub(crate) fn run_lowered(lowered: crate::transport::LoweredSwitch) {
     use crate::model::source::Runner;
@@ -585,7 +585,7 @@ pub(crate) fn run_lowered(lowered: crate::transport::LoweredSwitch) {
 }
 
 /// Runs a mux's opaque [`crate::mux::SwitchPlan`] BLIND: the driver hands the whole plan
-/// here and this lowers each variant through the host's transport, never naming the mux
+/// here and this dispatches each variant through the host's transport, never naming the mux
 /// type. `Exec` argv(s) run non-interactively in order; a `Shell` command runs over the
 /// host's raw shell (`raw_shell_argv`). Returns whether the switch was issued - `false` when
 /// a `Shell` plan has no host shell (a local machine), so the caller falls back to a
@@ -711,7 +711,7 @@ fn spawn_mux_discovery(
 /// Running that on the loop would freeze rendering and input for its whole duration.
 ///
 /// A config that stopped PARSING resolves to defaults, which would silently narrow the
-/// roster to this box. That answer is dropped rather than applied: a typo must cost the
+/// roster to this machine. That answer is dropped rather than applied: a typo must cost the
 /// user a warning, never every remote card on screen.
 fn spawn_roster_resolve(
     xmux_dir: std::path::PathBuf,

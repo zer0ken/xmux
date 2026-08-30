@@ -17,7 +17,7 @@ use crate::ui::modal::{wrap_text, Modal};
 use crate::ui::switcher::fit;
 
 /// Parses a tmux-style colour token into a ratatui [`Color`], matching tmux/psmux's
-/// colour vocabulary so the view border colours can be configured exactly like
+/// colour slots so the view border colours can be configured exactly like
 /// `pane-border-style`: the 16 named ANSI colours, their `bright*` variants,
 /// `colourN`/`colorN` (a 0-255 palette index), `#RRGGBB`, and `default` (terminal
 /// default). A leading `fg=` is tolerated so a tmux style string drops in verbatim.
@@ -132,7 +132,7 @@ pub(crate) fn hint_bar_default_style() -> Style {
 /// Parses a `[ui] hint-bar-style` spec into the hint bar [`Style`]. Empty ⇒ the
 /// built-in tmux default ([`hint_bar_default_style`]). Otherwise a tmux-style comma
 /// list: `bg=<colour>` sets the background, `fg=<colour>` (or a bare colour token) the
-/// foreground, using the same colour vocabulary as the view border ([`map_color`], so
+/// foreground, using the same colour slots as the view border ([`map_color`], so
 /// named colours, `colourN`, `#RRGGBB`, `default`). Unrecognised tokens are ignored.
 pub(crate) fn parse_hint_bar_style(spec: &str) -> Style {
     if spec.trim().is_empty() {
@@ -154,7 +154,7 @@ pub(crate) fn parse_hint_bar_style(spec: &str) -> Style {
 
 /// Parses a `[ui] selection-style` spec into the selected card's background. Empty ⇒
 /// `None`, leaving the selection to reverse video - the terminal theme's own selected
-/// look, and xmux's default. Accepts the same colour vocabulary as the view
+/// look, and xmux's default. Accepts the same colour slots as the view
 /// border ([`map_color`]): `bg=<colour>`, or a bare colour token, since a selection
 /// surface IS a background and naming it twice would be noise. A `fg=` token is
 /// ignored - the card's text keeps its per-level roles.
@@ -283,7 +283,7 @@ fn siblings(
 /// Resolved once at startup from that source's own config, because how a source is
 /// REACHED cannot change under a run - only whether it answers can. Every field is
 /// already words: the screen prints them and nothing branches on any of them, which is
-/// what keeps this layer blind to which machine family or which mux a source is.
+/// what keeps this layer blind to which machine kind or which mux a source is.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SourceReach {
     /// The command a session listing spawns, spelled so it can be run by hand. The one
@@ -363,7 +363,7 @@ pub struct Chrome {
     /// unreachable screen states it: a host that failed is worth little without what was
     /// asked of it and how. See [`SourceReach`].
     pub(crate) source_reach: HashMap<String, SourceReach>,
-    /// The log file every lowered command and its result is written to (set once by the
+    /// The log file every dispatched command and its result is written to (set once by the
     /// app). The unreachable screen names the path, so the full history of what was run
     /// is findable rather than being something the user has to know about.
     pub(crate) log_path: String,
@@ -1117,7 +1117,7 @@ mod tests {
         // Empty (and whitespace-only) ⇒ the built-in tmux default (yellowgreen / gray5).
         assert_eq!(parse_hint_bar_style(""), hint_bar_default_style());
         assert_eq!(parse_hint_bar_style("   "), hint_bar_default_style());
-        // bg=/fg= tokens set the two colours (tmux status-style vocabulary).
+        // bg=/fg= tokens set the two colours (tmux status-style syntax).
         let s = parse_hint_bar_style("bg=blue,fg=white");
         assert_eq!(s.bg, Some(Color::Blue));
         assert_eq!(s.fg, Some(Color::White));
@@ -1275,7 +1275,7 @@ mod tests {
         assert_eq!(c.inactive, pal.border_inactive);
         assert_eq!(c.hover, Color::Cyan);
 
-        // The tmux colour vocabulary applies to the overrides (`default` = Reset).
+        // The tmux colour syntax applies to the overrides (`default` = Reset).
         let c = ViewBorderColors::resolve("fg=green", "default", "");
         assert_eq!(c.active, Color::Green);
         assert_eq!(c.inactive, Color::Reset);

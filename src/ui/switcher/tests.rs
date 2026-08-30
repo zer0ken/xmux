@@ -4708,7 +4708,7 @@ async fn unreachable_host_screen_separates_a_standing_failure_from_a_blip() {
 
 #[tokio::test]
 async fn unreachable_host_screen_names_the_log_file() {
-    // Everything xmux lowered and what came back is written down. The screen names the
+    // Everything xmux dispatched and what came back is written down. The screen names the
     // file, so the full history is findable rather than being something the user has to
     // already know about.
     let mut h = Harness::from_sources(&["prod"]);

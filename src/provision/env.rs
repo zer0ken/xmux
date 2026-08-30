@@ -177,7 +177,7 @@ pub async fn resolve_roster(
         },
         async {
             // The local mux list, resolved ONCE here and threaded on: `auto` (the default)
-            // asks this box which of the muxes xmux supports it actually has, so a zellij
+            // asks this machine which of the muxes xmux supports it actually has, so a zellij
             // you just installed shows up without being written down. Probed over a
             // socket-LESS local transport, because "is this mux here" has nothing to do
             // with which server socket a session lives on - and a `-S <socket>` injection
@@ -227,7 +227,7 @@ pub async fn resolve_roster(
 /// the life of the process. The returned error is the config-parse error.
 pub async fn build_env() -> (Env, Option<anyhow::Error>) {
     let xmux_dir = xmux_dir_path();
-    // The local server socket this box named, handed on RAW: the host registry filters
+    // The local server socket this machine named, handed on RAW: the host registry filters
     // it per mux exactly as the source list does, so both derive one answer from one
     // value. Reading it back off an assembled source would instead make it depend on
     // WHICH local mux happens to be first, and a first source that takes no socket
@@ -245,7 +245,7 @@ pub async fn build_env() -> (Env, Option<anyhow::Error>) {
 /// The address of the session xmux is running in, resolved against the LOCAL sources.
 ///
 /// The mux names the session; this pairs it with the source id that mux answers as on
-/// this box, because an address is a source and a session and the refusal has to match
+/// this machine, because an address is a source and a session and the refusal has to match
 /// the card exactly. A mux xmux does not serve here leaves it unresolved, which blocks
 /// nothing - the same as not being inside a mux at all.
 fn own_session_address(srcs: &[Source]) -> Option<String> {
@@ -260,8 +260,8 @@ fn own_session_address(srcs: &[Source]) -> Option<String> {
 ///
 /// A source spells the binary the user CONFIGURED, which need not be what the mux calls
 /// itself: psmux answers to `tmux` as well, so a box whose config says `tmux` is served
-/// by psmux all the same. The spelling is matched first, then the tmux family, which is
-/// unambiguous while the box serves one member of it. Neither matching leaves the
+/// by psmux all the same. The spelling is matched first, then the tmux-compatible
+/// kinds, which is unambiguous while the box serves one of them. Neither matching leaves the
 /// session unresolved, and an unresolved session blocks nothing.
 fn own_source_id<'a>(srcs: &'a [Source], kind: &str) -> Option<&'a str> {
     let local: Vec<&Source> = srcs
@@ -271,11 +271,11 @@ fn own_source_id<'a>(srcs: &'a [Source], kind: &str) -> Option<&'a str> {
     if let Some(s) = local.iter().find(|s| s.binary == kind) {
         return Some(&s.alias);
     }
-    let tmux_family = |b: &str| b == "tmux" || b == "psmux";
-    if !tmux_family(kind) {
+    let tmux_compatible = |b: &str| b == "tmux" || b == "psmux";
+    if !tmux_compatible(kind) {
         return None;
     }
-    let mut it = local.iter().filter(|s| tmux_family(&s.binary));
+    let mut it = local.iter().filter(|s| tmux_compatible(&s.binary));
     let only = it.next()?;
     it.next().is_none().then_some(only.alias.as_str())
 }
@@ -283,7 +283,7 @@ fn own_source_id<'a>(srcs: &'a [Source], kind: &str) -> Option<&'a str> {
 /// Which provider put each host on the roster, keyed by HOST name.
 ///
 /// `offered` is what the roster providers answered, already deduped in precedence order.
-/// The two families that never pass through those providers are added behind it: a WSL
+/// The two implementations that never pass through those providers are added behind it: a WSL
 /// distribution `wsl.exe` listed, and a host the CONFIG named outright, which is a host
 /// no provider offered and `host_specs` / `wsl_specs` append. First entry wins
 /// throughout, so a host that a provider listed keeps that provider even when a

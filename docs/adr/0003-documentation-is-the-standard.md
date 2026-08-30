@@ -31,7 +31,7 @@ A document does not name a test, a function, a method, a field, an enum
 variant, a source file, or a library API.
 
 A document may name what the design itself prescribes and what the outside world
-already depends on: the two axes and their vocabulary, the directory layout a
+already depends on: the two axes and their terms, the directory layout a
 new module must fit, config keys, CLI and ctl verbs, socket names, and the argv
 of the muxes xmux drives.
 

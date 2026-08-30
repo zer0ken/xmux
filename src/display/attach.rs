@@ -41,7 +41,7 @@ pub fn own_mux_session() -> Option<(String, String)> {
     Some((kind.as_str().to_string(), name))
 }
 
-/// The mux family xmux runs inside, read from the inside markers.
+/// The mux kind xmux runs inside, read from the inside markers.
 ///
 /// Each mux is recognized by ITS OWN inside-marker before any session variable is read,
 /// because those variables outlive the shell that set them: a psmux pane started from a
@@ -79,7 +79,7 @@ fn own_mux_kind(
     }
     if set(tmux).is_some() {
         // psmux sets `TMUX` for tmux-compat, so `PSMUX_SESSION` is what tells the two
-        // apart. It only DISCRIMINATES the family; the name is asked of the server.
+        // apart. It only DISCRIMINATES the kind; the name is asked of the server.
         return Some(if set(psmux_session).is_some() {
             MuxKind::Psmux
         } else {
@@ -167,7 +167,7 @@ mod tests {
     fn each_mux_is_recognized_by_its_own_marker() {
         // zellij first: it is the only one that sets `ZELLIJ`.
         assert_eq!(own_mux_kind(Some("0"), None, None), Some(MuxKind::Zellij));
-        // psmux sets `TMUX` too, so `PSMUX_SESSION` is what tells the family apart.
+        // psmux sets `TMUX` too, so `PSMUX_SESSION` is what tells the kinds apart.
         assert_eq!(
             own_mux_kind(None, Some("/tmp/psmux-8648/default,60836,0"), Some("xmus")),
             Some(MuxKind::Psmux)

@@ -657,7 +657,7 @@ async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
     let worker = crate::display::DisplayWorker::new(ptx);
     let mut registry = AttachRegistry::new();
     let mut attach_seq = 0u64;
-    // No control client registered ⇒ select_attach falls back to the lowered-switch
+    // No control client registered ⇒ select_attach falls back to the dispatched-switch
     // path (this test exercises attach/in-flight latching, not the switch transport).
     let (etx, _erx) = tokio::sync::mpsc::unbounded_channel::<crate::link::HostEvent>();
     let mgr = HostManager::new(etx);
@@ -1242,7 +1242,7 @@ async fn client_detached_matching_our_tty_reaps_display_and_rearms() {
 async fn client_session_changed_matching_our_tty_syncs_display_belief() {
     // The mux moved a client to another session (e.g. the user pressed prefix+s in the
     // terminal view). When that client is OUR display attach (its tty == Host.display_tty),
-    // sync the display belief so the next reconcile's show() guard lowers NO switch-client;
+    // sync the display belief so the next reconcile's show() guard dispatches NO switch-client;
     // a third party's own client can never match, so it is inert.
     let mut state = crate::state::State::from_sources(vec!["jup".into()]);
     let switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
@@ -1705,7 +1705,7 @@ async fn a_switch_asked_for_in_terminal_focus_is_not_dragged_back() {
         .set_view_focus(crate::app::focus::ViewFocus::Terminal);
     let t0 = std::time::Instant::now();
 
-    // What a ctl `switch local/b` lowers to.
+    // What a ctl `switch local/b` dispatches to.
     rt.switcher.select_address("local/b", &rt.state);
     one_pass(&mut rt, t0);
     one_pass(&mut rt, t0 + std::time::Duration::from_millis(50));

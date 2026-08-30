@@ -5,7 +5,7 @@
 //! and drive its enumerate/manage/attach through the `Host`/`Mux`/`Transport` APIs;
 //! the machine boundary itself — argv assembly and the ssh transport (connect-timeout,
 //! injection-safe quoting) — lives entirely in `Transport`, built at the single
-//! `MachineKind::transport` site. The mux-env vocabulary lives in `mux::vocab`.
+//! `MachineKind::transport` site. The mux-env rules live in `mux::vocab`.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -115,7 +115,7 @@ pub struct Source {
     pub alias: String,
     /// mux binary name on that machine.
     pub binary: String,
-    /// Which machine family (and its construction data — socket / ssh alias, control
+    /// Which machine kind (and its construction data — socket / ssh alias, control
     /// path, os) this source reaches its mux over. The single representation of transport
     /// kind; `transport()` maps it to a concrete `Transport` at one site.
     pub kind: MachineKind,
@@ -151,11 +151,11 @@ pub(crate) use crate::mux::reason_is_no_sessions;
 
 /// Assembles the source list for a config: local first, then each ssh host
 /// (ssh-config aliases merged with config overrides) in order, then each WSL
-/// distribution. WSL comes last so adding the family leaves every id an existing
+/// distribution. WSL comes last so adding the implementation leaves every id an existing
 /// install already had in the position it had.
 ///
 /// `local_muxes` is the RESOLVED local mux list (`Env` resolves it once, discovering
-/// what this box has when the config says `auto`), passed in rather than re-derived so
+/// what this machine has when the config says `auto`), passed in rather than re-derived so
 /// the source ids here and the host ids in `Hosts::build` cannot disagree.
 pub fn build(
     cfg: &Config,
@@ -166,7 +166,7 @@ pub fn build(
     xmux_dir: &Path,
     local_socket: Option<String>,
 ) -> Vec<Source> {
-    // One source per (machine, mux): this box contributes one for each mux it serves.
+    // One source per (machine, mux): this machine contributes one for each mux it serves.
     let qualified = local_muxes.len() > 1;
     let mut srcs: Vec<Source> = local_muxes
         .iter()
@@ -267,7 +267,7 @@ mod tests {
         );
         assert_eq!(z.kind.local_socket(), None, "no socket reaches zellij");
 
-        // The tmux family still targets the server it was told to.
+        // The tmux implementation still targets the server it was told to.
         let p = for_machine_mux(
             "local",
             "psmux",

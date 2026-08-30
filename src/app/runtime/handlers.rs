@@ -142,7 +142,7 @@ impl Runtime {
                 // what follows from the client and the selection naming different
                 // sessions is one comparison the loop makes continuously, in one place
                 // for every mux (`display_astray` / `follow_selection_to_display`). The
-                // record also keeps the next show() from lowering a switch-client to a
+                // record also keeps the next show() from dispatching a switch-client to a
                 // session the client is already on.
                 let key = host_selection_key(h); // Shared ⇒ key == host id
                 if let Some(h) = hosts.get_mut(&host) {
@@ -413,7 +413,7 @@ impl Runtime {
                 .map(|s| (s.alias.clone(), source_reach(s)))
                 .collect(),
         );
-        // Where the whole history of lowered commands is written, so the screen can name
+        // Where the whole history of dispatched commands is written, so the screen can name
         // the file instead of leaving the user to know about it.
         state.chrome.set_log_path(
             crate::logging::log_files(&env.xmux_dir)
@@ -1190,13 +1190,13 @@ impl Runtime {
     /// A mux with a control channel pushes a client-switch notification and the record is
     /// written off that event. A mux without one moves its client INSIDE the client
     /// process, so nothing is pushed and nothing can be asked: the client's own live state
-    /// is the only witness, and it has to be looked at. This is that look, on the
+    /// is the only source of truth, and it has to be looked at. This is that look, on the
     /// animation beat, which is fast enough that the nav moves with the screen and bounded
     /// so a busy PTY cannot turn it into a per-output-chunk probe. What FOLLOWS from the
     /// record and the selection naming different sessions is one comparison the loop makes
     /// continuously, the same for every mux, and none of it is decided here.
     ///
-    /// Mux-blind, in both directions. Which muxes have a witness to read is answered by
+    /// Mux-blind, in both directions. Which muxes have a source of truth to read is answered by
     /// each mux (a mux with none reports nothing to read, and this returns immediately),
     /// and what to do with the answer is shared by all of them. So a mux added later joins
     /// by answering, not by being named here.
@@ -1421,7 +1421,7 @@ impl Runtime {
 ///
 /// The reduction happens HERE, at the wiring, for the reason the roster providers are
 /// reduced here: the screen prints these and branches on none of them, so the UI layer
-/// never learns what a machine family or a mux binary is. Each field comes from the one
+/// never learns what a machine kind or a mux binary is. Each field comes from the one
 /// place that owns it - the machine describes its own addressing, the host composes its
 /// own listing command - rather than being re-derived from a source id.
 pub(super) fn source_reach(s: &crate::model::source::Source) -> crate::ui::chrome::SourceReach {

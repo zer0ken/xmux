@@ -1,7 +1,7 @@
 //! Performs the mux operations xmux itself issues - create a session, and read a
 //! host's options - directly against the live mux on a host. Each function composes the two orthogonal axes: the
 //! MUX axis (`Host::mux`'s `*_plan`) supplies the mux argv and the MACHINE axis
-//! (`Host::transport`'s `exec_argv`) lowers it for local-vs-ssh execution, then it
+//! (`Host::transport`'s `exec_argv`) dispatches it for local-vs-ssh execution, then it
 //! runs via an injected runner - exactly like `mux::enumerate_via_list_sessions`.
 //! Nothing is cached and no state is held. Off-loop `Ops` assemble a value host from
 //! config and pass the source's runner.

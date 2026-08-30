@@ -39,7 +39,7 @@ no function, and no test, so renaming code is never a documentation change.
   configuration.
 - **FR-A6** - A host's mux is identified by what its binary answers as, not by the
   name it was invoked under, so tmux, psmux, zellij, abduco, and screen mix freely
-  across hosts with no configuration. Each mux is one family behind the mux axis: the
+  across hosts with no configuration. Each mux is one implementation behind the mux axis: the
   command plans default to tmux-compatible argv (so a tmux-compatible mux is identity
   plus a few overrides), and a mux that shares no argv with tmux overrides every plan
   together with the shape of what each plan prints. zellij is that case: it is
@@ -84,7 +84,7 @@ no function, and no test, so renaming code is never a documentation change.
   OPERABLE, not merely visible: creating a session on it works
   exactly as on a configured source.
 - **FR-A11** - A mux running inside a WSL distribution is a source like any other. A
-  distribution is a HOST of its own, named `wsl.<distribution>` so which family it
+  distribution is a HOST of its own, named `wsl.<distribution>` so which kind it
   belongs to is readable in the id and in every address typed at it, and no ssh alias may
   claim a name spelled that way. Distributions are offered either by the `[discovery] wsl`
   provider (on by default, like every provider: a box without WSL costs an empty list
@@ -94,7 +94,7 @@ no function, and no test, so renaming code is never a documentation change.
   it by name. Everything FR-A7 to FR-A10 say then holds unchanged: several
   muxes in one distribution are several sources, `exclude` names the host, an unlisted
   mux surfaces as unreachable, and the distribution is asked which muxes it has after
-  launch. The family is added at the end of the source list, so every id an existing
+  launch. The WSL implementation is added at the end of the source list, so every id an existing
   install already had keeps the position it had.
 
 ## B. The switcher: "see the list, decide whether & where to move"
@@ -187,7 +187,7 @@ no function, and no test, so renaming code is never a documentation change.
   A background xmux picked instead would be wrong on every theme it was not picked for,
   and it cannot be computed from the terminal's own background either, since a terminal
   is free to answer no colour query at all. `[ui] selection-style` names a background
-  anyway, in the same colour vocabulary as the view border, and `xmux doctor` reports
+  anyway, in the same colour slots as the view border, and `xmux doctor` reports
   which of the two is in effect because it is invisible on a screenshot. The view
   border's two halves hold the same two slots on every source: what the border states is
   which VIEW holds focus, a fact about xmux, so no host and no mux may recolour it and a
@@ -353,8 +353,8 @@ no function, and no test, so renaming code is never a documentation change.
   the reconnect sweep self-heals; a dropped display client is reaped and re-attached.
 - **FR-C4** - A switch lands on the picked window. A fresh first attach folds the
   window into the attach argv (ssh folds the pre-selection into one `ssh -t`);
-  a live client is moved server-side by a lowered `select-window`.
-- **FR-C5** - No silent loss: every lowered switch/select command logs its exact argv
+  a live client is moved server-side by a dispatched `select-window`.
+- **FR-C5** - No silent loss: every dispatched switch/select command logs its exact argv
   and result; a failed attach is logged at warn level and returns to the nav rather
   than being swallowed; each driver logs its show decision and the grid-changed effect.
 
@@ -406,7 +406,7 @@ nothing to switch to until one exists.
 - **FR-E1** - Create a session on a HOST card (`prefix n`), then it appears in the
   nav. On a session card the action is refused with a flash naming where to press it.
 - **FR-E2** - There is no rename, kill, or window/pane command: not on a key, not
-  in a modal, not on the wire, and not in the mux command vocabulary.
+  in a modal, not on the wire, and not in the mux command set.
 - **FR-E3** - Create runs off the key path so a slow ssh round-trip never freezes
   rendering or the control channel. The committing key becomes a deferred operation the
   run loop spawns off-loop.

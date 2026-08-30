@@ -1,4 +1,4 @@
-//! Provisioning: which machines, binaries, and sources exist on this box, and
+//! Provisioning: which machines, binaries, and sources exist on this machine, and
 //! the resolved runtime view over them. `config` loads the optional TOML and
 //! merges it with ssh-config discovery, `roster` names the ssh targets, and
 //! `discovery` probes sources concurrently; `env` resolves all of it into the

@@ -21,7 +21,7 @@ the debounced attach, and renders the live split view.
 - `cli/` is the command surface: parsing and dispatch for the commands and the
   default interactive app, plus the self-update subcommand. `cli::run` is the sole
   entry the binary shim calls.
-- `provision/` resolves what exists on this box: the optional TOML config merged
+- `provision/` resolves what exists on this machine: the optional TOML config merged
   with ssh-config discovery, the roster of ssh targets, the concurrent source
   probe, and the resolved runtime view over them.
 - The control socket (in `link/`) owns ctl wire parsing, framing, endpoint
@@ -41,13 +41,13 @@ the debounced attach, and renders the live split view.
   for the session it is on (the mux names the variable, the transport says whether
   a process on that host can be read at all), and the thin wrapper resolving a
   source's own driver.
-  The concrete drivers live in their mux family, and each mux constructs its
+  The concrete drivers live in their mux implementation, and each mux constructs its
   OWN, so this module names no concrete mux type and no central `match` on
   server model exists. Showing a session carries the per-source display
   orchestration (which PTY to use, whether to switch in place or reattach) and
   is the sole site for that per-mux decision. The runtime resolves the driver
   and calls it; it branches on nothing mux-specific. The dependency is one-way:
-  a mux family imports the seam, and the seam never imports a concrete driver.
+  a mux implementation imports the seam, and the seam never imports a concrete driver.
 - `link/` owns the live host-facing channels: per-source connection management
   (control-mode reader/writer, poll task management, inventory, and source
   events), the mux operations xmux issues against a live host, and the
@@ -56,9 +56,9 @@ the debounced attach, and renders the live split view.
   payload and the transport wraps it for local or ssh execution. Nothing here
   hardcodes a mux verb or hand-rolls ssh.
 - `transport/` is the TRANSPORT axis: the `Transport` trait, the local/ssh/wsl
-  families, and the shared shell vocabulary. A source builds one at construction.
-- `mux/` is the MUX axis: the `Mux` trait, the per-mux families owning metadata,
-  command plans, and a display driver, and the shared mux vocabulary.
+  implementations, and the shared shell helpers. A source builds one at construction.
+- `mux/` is the MUX axis: the `Mux` trait, the per-mux implementations owning metadata,
+  command plans, and a display driver, and the shared mux builders.
 - The runtime coordinates these modules and owns the main event loop. Inbound
   source events route through the event-driven mutation site on the state; the
   handler is then a thin executor running the returned effects against the source
@@ -69,7 +69,7 @@ the debounced attach, and renders the live split view.
   Enumeration, manage lifecycle operations, and interactive-attach argv are NOT
   here: they live on the runtime source, the mux, and the transport, which the
   adapter reaches by building one and injecting its runner. The host axis is
-  solely the transport, whose shared shell vocabulary lives beside it; the adapter
+  solely the transport, whose shared shell helpers live beside it; the adapter
   carries no transport-wrapping implementation of its own.
 - The resolved environment (`provision/env`) is config assembly plumbing for
   source definitions and command construction, and the ONE place this host's mux
@@ -132,7 +132,7 @@ the debounced attach, and renders the live split view.
 - Do not block the app loop on process spawn, PTY close, pipe reads, writes, or
   resize operations.
 - Do not treat the source adapter as the preferred place for new execution
-  semantics. Host execution belongs to the transport, mux vocabulary and
+  semantics. Host execution belongs to the transport, mux semantics and
   classification (attach argv, server model, enumeration) to the mux, and
   per-source display orchestration with its concrete switch-or-reattach decision
   to the per-mux driver.
@@ -155,7 +155,7 @@ the debounced attach, and renders the live split view.
 - For app changes, locate the event source and the state it owns before adding
   fields or channels.
 - For connection or display changes, decide whether the behavior belongs to metadata,
-  display PTY, or transport lowering.
+  display PTY, or transport dispatch.
 
 ## Verification
 
