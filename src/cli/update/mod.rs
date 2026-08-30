@@ -9,6 +9,7 @@
 
 pub mod release;
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 pub struct Args {
@@ -63,14 +64,33 @@ fn classify(exe: &Path, cargo_bins: &[PathBuf], platform: Platform) -> InstallMe
     InstallMethod::Self_
 }
 
-/// The Cargo bin directories to check: `$CARGO_HOME/bin` if set, else `~/.cargo/bin`.
+/// The Cargo bin directories to check: `$CARGO_HOME/bin` when set, plus the
+/// profile home's `.cargo/bin` from `HOME` and `USERPROFILE`. Windows processes
+/// commonly run without `HOME`, so `USERPROFILE` carries the cargo bin there.
 fn cargo_bins() -> Vec<PathBuf> {
+    cargo_bins_from(
+        std::env::var_os("CARGO_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+        std::env::var_os("USERPROFILE").as_deref(),
+    )
+}
+
+/// Builds the candidates from explicit variables. A parameter (not `cfg`), like
+/// `classify`, so detection logic is unit-testable on any host.
+fn cargo_bins_from(
+    cargo_home: Option<&OsStr>,
+    home: Option<&OsStr>,
+    profile: Option<&OsStr>,
+) -> Vec<PathBuf> {
     let mut v = Vec::new();
-    if let Some(home) = std::env::var_os("CARGO_HOME") {
-        v.push(PathBuf::from(home).join("bin"));
+    if let Some(dir) = cargo_home {
+        v.push(PathBuf::from(dir).join("bin"));
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        v.push(PathBuf::from(home).join(".cargo").join("bin"));
+    if let Some(dir) = home {
+        v.push(PathBuf::from(dir).join(".cargo").join("bin"));
+    }
+    if let Some(dir) = profile {
+        v.push(PathBuf::from(dir).join(".cargo").join("bin"));
     }
     v
 }
@@ -411,6 +431,15 @@ mod tests {
         assert_eq!(super::parse_method("cargo").unwrap(), InstallMethod::Cargo);
         assert_eq!(super::parse_method("self").unwrap(), InstallMethod::Self_);
         assert!(super::parse_method("bogus").is_err());
+    }
+
+    #[test]
+    fn cargo_bins_cover_profile_home_without_home_var() {
+        let bins = super::cargo_bins_from(None, None, Some(OsStr::new("C:\\Users\\u")));
+        assert_eq!(
+            bins,
+            vec![PathBuf::from("C:\\Users\\u").join(".cargo").join("bin")]
+        );
     }
 
     #[test]
