@@ -149,14 +149,18 @@ prefix = "C-g"                        # xmux's prefix (e.g. C-g, C-Space, C-b)
 auto-hide-nav = false                 # initial auto-hide-nav state
 view-active-border-style = "green"    # focused view-border colour
 hint-bar-style = "bg=blue,fg=white"   # hint bar colour (tmux status-style)
+primary = "brightwhite"               # per-role colour overrides: primary, secondary,
+accent = "lightgreen"                # accent, decoration, warning, error, disabled,
+bar-bg = "colour235"                  # and the hint bar's bar-bg / bar-fg / bar-accent
 
 [[hosts]]
 ssh = "prod"          # an ssh-config alias
 mux = "tmux"          # defaults to "tmux" when omitted
 ```
 
-The `[ui]` presentation settings (theme, selection-style, hint-bar-style, view-border
-styles) are watched and re-applied live when `config.toml` changes - no restart needed.
+The `[ui]` presentation settings (theme, the per-role colour overrides,
+selection-style, hint-bar-style, view-border styles) are watched and re-applied live
+when `config.toml` changes - no restart needed.
 Host/roster edits still need a `prefix r` rescan.
 
 Hosts come from `~/.ssh/config` first; the config file augments that discovery,

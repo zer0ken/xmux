@@ -173,6 +173,33 @@ pub struct UiConfig {
     /// selection surface at all.
     #[serde(rename = "selection-style", default)]
     pub selection_style: String,
+    /// Per-role colour OVERRIDES for the chosen theme, named after the palette roles
+    /// (see [`crate::ui::palette`]): `primary`, `secondary`, `accent`, `decoration`,
+    /// `warning`, `error`, `disabled`, and the hint bar's `bar-bg`, `bar-fg`,
+    /// `bar-accent`. Values use the same colour vocabulary as the view border
+    /// (parsed by [`crate::ui::chrome::map_color`]): a named ANSI colour, `bright*`,
+    /// `colourN`, `#RRGGBB`, or `default`. Each defaults to EMPTY (unset), leaving that
+    /// role at the theme's own slot.
+    #[serde(rename = "primary", default)]
+    pub primary: String,
+    #[serde(rename = "secondary", default)]
+    pub secondary: String,
+    #[serde(rename = "accent", default)]
+    pub accent: String,
+    #[serde(rename = "decoration", default)]
+    pub decoration: String,
+    #[serde(rename = "warning", default)]
+    pub warning: String,
+    #[serde(rename = "error", default)]
+    pub error: String,
+    #[serde(rename = "disabled", default)]
+    pub disabled: String,
+    #[serde(rename = "bar-bg", default)]
+    pub bar_bg: String,
+    #[serde(rename = "bar-fg", default)]
+    pub bar_fg: String,
+    #[serde(rename = "bar-accent", default)]
+    pub bar_accent: String,
 }
 
 fn default_prefix() -> String {
@@ -199,6 +226,18 @@ impl Default for UiConfig {
             // Empty = no selection surface of xmux's own choosing (see
             // crate::ui::palette).
             selection_style: String::new(),
+            // Empty = unset: that role keeps the theme's own slot (see
+            // crate::ui::palette::Overrides).
+            primary: String::new(),
+            secondary: String::new(),
+            accent: String::new(),
+            decoration: String::new(),
+            warning: String::new(),
+            error: String::new(),
+            disabled: String::new(),
+            bar_bg: String::new(),
+            bar_fg: String::new(),
+            bar_accent: String::new(),
         }
     }
 }
@@ -1476,6 +1515,26 @@ bogus = "nope"
         assert_eq!(cfg.ui.view_active_border_style, "blue");
         assert_eq!(cfg.ui.view_border_style, "white");
         assert_eq!(cfg.ui.view_border_hover_style, "fg=red");
+    }
+
+    #[test]
+    fn ui_role_overrides_default_to_unset_and_round_trip() {
+        // The role keys are OVERRIDE-only, so missing → empty (the palette keeps the
+        // theme's own slot). An explicit value is stored raw for map_color to parse.
+        let missing = std::env::temp_dir().join("xmux-role-absent-xyz.toml");
+        let cfg = load(&missing).unwrap();
+        assert_eq!(cfg.ui.primary, "");
+        assert_eq!(cfg.ui.secondary, "");
+        assert_eq!(cfg.ui.bar_bg, "");
+        let path = write_temp(
+            "[ui]\nprimary = \"brightwhite\"\naccent = \"#ff0000\"\nbar-bg = \"colour235\"\n",
+            "ui-role-override.toml",
+        );
+        let (cfg, warnings) = load_verbose(&path).unwrap();
+        assert_eq!(cfg.ui.primary, "brightwhite");
+        assert_eq!(cfg.ui.accent, "#ff0000");
+        assert_eq!(cfg.ui.bar_bg, "colour235");
+        assert!(warnings.is_empty(), "role keys are known: {warnings:?}");
     }
 
     #[test]

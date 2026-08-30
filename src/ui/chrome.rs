@@ -88,9 +88,9 @@ impl Default for ViewBorderColors {
     fn default() -> Self {
         let pal = crate::ui::palette::get();
         ViewBorderColors {
-            active: pal.border_active,
-            inactive: pal.border_inactive,
-            hover: pal.border_hover,
+            active: pal.primary,
+            inactive: pal.disabled,
+            hover: pal.accent,
         }
     }
 }
@@ -171,15 +171,44 @@ pub(crate) fn parse_selection_bg(spec: &str) -> Option<Color> {
     None
 }
 
-/// The hint bar's refusal style: a solid danger bar (the active palette's
-/// `danger` as the background, the bar's own text slot on top) that breaks hard
+/// Builds the palette overrides from `[ui]` keys: each non-empty role string becomes
+/// `Some(map_color(..))`, each empty one `None` (the theme's own slot). `selection-style`
+/// folds into the same struct. The caller applies the result via
+/// [`crate::ui::palette::apply`].
+pub(crate) fn palette_overrides(
+    ui: &crate::provision::config::UiConfig,
+) -> crate::ui::palette::Overrides {
+    let pick = |s: &str| -> Option<Color> {
+        if s.trim().is_empty() {
+            None
+        } else {
+            Some(map_color(s))
+        }
+    };
+    crate::ui::palette::Overrides {
+        primary: pick(&ui.primary),
+        secondary: pick(&ui.secondary),
+        accent: pick(&ui.accent),
+        decoration: pick(&ui.decoration),
+        warning: pick(&ui.warning),
+        error: pick(&ui.error),
+        disabled: pick(&ui.disabled),
+        bar_bg: pick(&ui.bar_bg),
+        bar_fg: pick(&ui.bar_fg),
+        bar_accent: pick(&ui.bar_accent),
+        selection_bg: parse_selection_bg(&ui.selection_style),
+    }
+}
+
+/// The hint bar's refusal style: a solid error bar (the active palette's
+/// `error` as the background, the bar's own text slot on top) that breaks hard
 /// from the calm default so a refused action reads as an
 /// error at a glance, not as more of the key cheatsheet. Every flash today is a
 /// refusal, so a shown flash always paints this. Fixed, not configurable: an
 /// error must stay legible regardless of any `[ui] hint-bar-style` override.
 pub(crate) fn error_flash_style() -> Style {
     Style::default()
-        .bg(crate::ui::palette::get().danger)
+        .bg(crate::ui::palette::get().error)
         .fg(crate::ui::palette::get().bar_fg)
 }
 
@@ -329,7 +358,7 @@ impl ScreenCell {
     fn style(&self) -> Style {
         match self {
             ScreenCell::Key(_) => Style::default().add_modifier(Modifier::BOLD),
-            ScreenCell::Label(_) => Style::default().fg(crate::ui::palette::get().overlay),
+            ScreenCell::Label(_) => Style::default().fg(crate::ui::palette::get().decoration),
             ScreenCell::Continued | ScreenCell::Gap => Style::default(),
         }
     }
@@ -795,16 +824,18 @@ impl Chrome {
             })
             .collect();
 
-        let rule = Span::styled("│ ", Style::default().fg(pal.overlay));
+        let rule = Span::styled("│ ", Style::default().fg(pal.decoration));
         let state_style = Style::default().fg(match kind {
-            ViewScreen::Unreachable => pal.danger,
-            ViewScreen::Empty | ViewScreen::SelfSession => pal.overlay,
+            ViewScreen::Unreachable => pal.error,
+            ViewScreen::Empty | ViewScreen::SelfSession => pal.decoration,
         });
         let mut out = vec![
             Line::from(""),
             Line::from(Span::styled(
                 format!(" {}", self.headline(source, kind)),
-                Style::default().fg(pal.text).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(pal.secondary)
+                    .add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(format!(" {}", kind.word()), state_style)),
             Line::from(""),
@@ -928,7 +959,7 @@ impl Chrome {
         let accent = Style::default()
             .fg(crate::ui::palette::get().bar_accent)
             .add_modifier(Modifier::BOLD);
-        let sep_style = Style::default().fg(crate::ui::palette::get().overlay);
+        let sep_style = Style::default().fg(crate::ui::palette::get().decoration);
         let mut spans: Vec<Span> = Vec::new();
         for (i, seg) in line.split(" · ").enumerate() {
             if i > 0 {
@@ -1260,19 +1291,19 @@ mod tests {
 
     #[test]
     fn resolve_layers_the_config_override_over_the_fixed_defaults() {
-        // Unset → xmux's own pair, whatever source is displayed: the palette accent lit
-        // against its muted tone. Nothing outside this function can move them.
+        // Unset → xmux's own pair, whatever source is displayed: the palette primary lit
+        // against its disabled tone, the hover cue on the accent.
         let pal = crate::ui::palette::get();
         let d = ViewBorderColors::resolve("", "", "");
-        assert_eq!(d.active, pal.border_active);
-        assert_eq!(d.inactive, pal.border_inactive);
-        assert_eq!(d.hover, pal.border_hover);
+        assert_eq!(d.active, pal.primary);
+        assert_eq!(d.inactive, pal.disabled);
+        assert_eq!(d.hover, pal.accent);
         assert_eq!(d, ViewBorderColors::default());
 
         // Each key overrides its own role and leaves the others at the default.
         let c = ViewBorderColors::resolve("red", "", "cyan");
         assert_eq!(c.active, Color::Red);
-        assert_eq!(c.inactive, pal.border_inactive);
+        assert_eq!(c.inactive, pal.disabled);
         assert_eq!(c.hover, Color::Cyan);
 
         // The tmux colour syntax applies to the overrides (`default` = Reset).

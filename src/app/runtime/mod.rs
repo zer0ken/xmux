@@ -991,12 +991,12 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
 
     // The palette is ANSI-16 slots and attributes throughout, so it needs nothing from
     // the terminal but the theme the terminal already has: no colour query, no probing,
-    // no fallback to guess at. The one colour from outside those slots is the one the
-    // user names in `[ui] selection-style`.
-    crate::ui::palette::apply(
-        &env.roster().cfg.ui.theme,
-        crate::ui::chrome::parse_selection_bg(&env.roster().cfg.ui.selection_style),
-    );
+    // no fallback to guess at. The colours from outside those slots are the ones the
+    // user names in `[ui]` role keys and `[ui] selection-style`.
+    {
+        let ui = &env.roster().cfg.ui;
+        crate::ui::palette::apply(&ui.theme, crate::ui::chrome::palette_overrides(ui));
+    }
 
     let _term_guard = match TermGuard::enter() {
         Ok(g) => g,
