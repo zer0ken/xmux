@@ -102,7 +102,8 @@ UI elements a user perceives as distinct things:
   PTY CHILDREN, so nothing it opens is a terminal handover that a mux would refuse. It
   costs one thing, the `own session`.
 - own session - the mux session xmux is ITSELF running in, named once at startup from
-  what the mux says (zellij and psmux put it in the environment; tmux is asked). The one
+  what the mux says (zellij, abduco, and screen put it in the environment; tmux and
+  psmux are asked). The one
   address the terminal view refuses: mirroring it would attach a second client to the
   session holding xmux, moving the user's own client and painting xmux inside itself. A
   session running a DIFFERENT xmux is not it, and mirrors like any other.
