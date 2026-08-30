@@ -143,14 +143,17 @@ impl HostManager {
 #[cfg(test)]
 impl HostManager {
     /// Inserts a real no-op control child keyed by `host`, proving the map insert
-    /// without a live `-CC` server. `cmd.exe /c rem` spawns and exits immediately,
-    /// so its stdout EOFs at once and `teardown`'s joins return. Shared by the
-    /// `host` and `app` test modules.
+    /// without a live `-CC` server. The no-op (`cmd.exe /c rem` on Windows, `sh -c
+    /// true` elsewhere) spawns and exits immediately, so its stdout EOFs at once
+    /// and `teardown`'s joins return. Shared by the `host` and `app` test modules.
     pub(crate) fn insert_fake(&mut self, host: &str) {
+        #[cfg(windows)]
         let argv: Vec<String> = ["cmd.exe", "/c", "rem"]
             .iter()
             .map(|s| s.to_string())
             .collect();
+        #[cfg(not(windows))]
+        let argv: Vec<String> = ["sh", "-c", "true"].iter().map(|s| s.to_string()).collect();
         let client = HostClient::spawn(
             host,
             crate::link::test_control_proto(),

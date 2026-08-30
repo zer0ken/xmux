@@ -66,19 +66,32 @@ impl Runner for ExecRunner {
         let mut stdout = child.stdout.take().expect("spawn with piped stdout");
         let mut stderr = child.stderr.take().expect("spawn with piped stderr");
 
+        // Both pipes are drained WHILE the child runs, not after its exit: a command
+        // whose output exceeds the OS pipe capacity (65,536 bytes on Linux) blocks on
+        // its next write and never exits, so a wait-then-read order would hold every
+        // such command until the budget kills it and lose its output. join! polls both
+        // drains and the exit wait together, so completion does not depend on the
+        // output size.
+        //
         // The command applies its OWN budget here so a timeout can tear the child down
-        // cleanly — kill, reap, then drain both pipes to EOF — instead of the sweep's
-        // cancellation dropping the `output()` future while pipe reads are still in
-        // flight. On Windows that in-flight close crashes as "IO is still pending on
-        // closed socket" (0xC0000005, the enumeration_failed in issue #116); draining
-        // to EOF guarantees no read is pending when the handles drop. The sweep-level
-        // budget (within_poll_budget) is one second longer so this teardown always wins.
-        let deadline = tokio::time::sleep(crate::mux::POLL_CMD_TIMEOUT);
-        tokio::pin!(deadline);
+        // cleanly: kill, reap, then drain both pipes to EOF. Draining to EOF means no
+        // read is pending when the handles drop; on Windows an in-flight read at
+        // handle-close crashes as "IO is still pending on closed socket" (0xC0000005,
+        // the enumeration_failed in issue #116). The sweep-level budget
+        // (within_poll_budget) is one second longer so this teardown always wins.
         let mut out = Vec::new();
         let mut err = Vec::new();
-        let status = tokio::select! {
-            _ = &mut deadline => {
+        let outcome = tokio::time::timeout(crate::mux::POLL_CMD_TIMEOUT, async {
+            let (_, _, status) = tokio::join!(
+                stdout.read_to_end(&mut out),
+                stderr.read_to_end(&mut err),
+                child.wait(),
+            );
+            status
+        })
+        .await;
+        let status = match outcome {
+            Err(_) => {
                 let _ = child.start_kill();
                 let _ = child.wait().await;
                 // Drain to EOF so the pipes close with no pending read.
@@ -89,12 +102,8 @@ impl Runner for ExecRunner {
                     crate::mux::POLL_CMD_TIMEOUT.as_secs()
                 )));
             }
-            status = child.wait() => status.map_err(|e| RunError::Other(e.to_string()))?,
+            Ok(status) => status.map_err(|e| RunError::Other(e.to_string()))?,
         };
-        // The child exited: drain whatever is buffered, then classify. Reading to EOF
-        // here too means the handles close only with no read in flight.
-        let _ = stdout.read_to_end(&mut out).await;
-        let _ = stderr.read_to_end(&mut err).await;
         if status.success() {
             Ok(out)
         } else {
@@ -328,6 +337,69 @@ mod tests {
         assert_eq!(stderr, "boom", "trailing newline trimmed, got {stderr:?}");
     }
 
+    /// A command whose stdout exceeds the OS pipe capacity (65,536 bytes on
+    /// Linux). The child blocks on its next write once the pipe fills and never
+    /// exits, so a runner that waits for the exit before reading holds the call
+    /// until the 6s budget kills it and returns a timeout error instead of the
+    /// output.
+    #[tokio::test]
+    async fn exec_runner_returns_stdout_larger_than_the_pipe_capacity() {
+        const BYTES: usize = 200_000;
+        #[cfg(windows)]
+        let (name, args) = (
+            "powershell",
+            vec![
+                "-NoProfile".to_string(),
+                "-Command".to_string(),
+                format!("[Console]::Out.Write('a' * {BYTES})"),
+            ],
+        );
+        #[cfg(not(windows))]
+        let (name, args) = (
+            "sh",
+            vec![
+                "-c".to_string(),
+                format!("head -c {BYTES} /dev/zero | tr '\\000' a"),
+            ],
+        );
+        let out = ExecRunner
+            .run(name, &args)
+            .await
+            .unwrap_or_else(|e| panic!("large stdout must succeed: {e:?}"));
+        assert_eq!(out.len(), BYTES);
+    }
+
+    /// The same overflow on the stderr pipe: a command whose stderr exceeds the
+    /// pipe capacity must still surface as a real exit error carrying the whole
+    /// stderr, not as a budget timeout.
+    #[tokio::test]
+    async fn exec_runner_returns_stderr_larger_than_the_pipe_capacity() {
+        const BYTES: usize = 200_000;
+        #[cfg(windows)]
+        let (name, args) = (
+            "powershell",
+            vec![
+                "-NoProfile".to_string(),
+                "-Command".to_string(),
+                format!("[Console]::Error.Write('a' * {BYTES}); exit 1"),
+            ],
+        );
+        #[cfg(not(windows))]
+        let (name, args) = (
+            "sh",
+            vec![
+                "-c".to_string(),
+                format!("head -c {BYTES} /dev/zero | tr '\\000' a >&2; exit 1"),
+            ],
+        );
+        let err = ExecRunner.run(name, &args).await.expect_err("must fail");
+        let RunError::Exit { stderr, code } = &err else {
+            panic!("expected an exit error, got {err:?}");
+        };
+        assert_eq!(*code, 1);
+        assert_eq!(stderr.len(), BYTES);
+    }
+
     // LIVE: the timeout path runs a real hung command for the full POLL_CMD_TIMEOUT
     // (6s), so it is ignored and run on demand:
     //   cargo test --lib model::source::tests::exec_runner_times_out_and_kills -- --ignored
@@ -337,19 +409,22 @@ mod tests {
     #[ignore = "live: sleeps for the full 6s command budget"]
     #[tokio::test]
     async fn exec_runner_times_out_and_kills() {
-        // A command that outlives the budget: `sleep 30` on sh, `timeout 30` on cmd.
+        // A command that outlives the budget and runs as a SINGLE process: a shell
+        // wrapper (`sh -c sleep 30`) forks a grandchild that inherits the pipe
+        // write ends, so the post-kill drain would wait out the grandchild instead
+        // of returning at EOF. `sleep` execs directly on Unix; PowerShell's
+        // Start-Sleep is an in-process cmdlet on Windows.
         #[cfg(windows)]
         let (name, args) = (
-            "cmd",
+            "powershell",
             vec![
-                "/C".to_string(),
-                "timeout".to_string(),
-                "/t".to_string(),
-                "30".to_string(),
+                "-NoProfile".to_string(),
+                "-Command".to_string(),
+                "Start-Sleep -Seconds 30".to_string(),
             ],
         );
         #[cfg(not(windows))]
-        let (name, args) = ("sh", vec!["-c".to_string(), "sleep 30".to_string()]);
+        let (name, args) = ("sleep", vec!["30".to_string()]);
         let t0 = std::time::Instant::now();
         let err = ExecRunner
             .run(name, &args)

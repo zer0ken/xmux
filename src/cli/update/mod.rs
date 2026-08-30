@@ -303,7 +303,10 @@ fn run_winget_detached() -> Result<(), String> {
 }
 
 /// The detached updater script for a winget delegation: wait until no xmux
-/// process runs, then upgrade with output appended to `log`.
+/// process runs, then upgrade with output appended to `log`. Production use is
+/// the Windows-only detached updater; the test build exercises the script shape
+/// on every platform.
+#[cfg(any(windows, test))]
 fn winget_updater_script(log: &Path) -> String {
     format!(
         "{UPDATER_WAIT_PREAMBLE}\
