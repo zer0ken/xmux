@@ -55,10 +55,11 @@ pub fn own_mux_session() -> Option<(String, String)> {
 /// the wrong session entirely. `PSMUX_SESSION` is read only to tell psmux apart from
 /// tmux (psmux sets `$TMUX` for tmux-compat); its VALUE is never trusted for the name.
 ///
-/// When several markers are set the first in the chain wins: zellij, then abduco and
-/// screen, then tmux. abduco and screen come before tmux because their markers name the
-/// session this process is IN, while a `$TMUX` inherited from the pane such a session
-/// was created from would otherwise mask them and name the enclosing session.
+/// When several markers are set the first in the chain wins: abduco and screen, then
+/// zellij, then tmux. The abduco and screen markers name the session this process is
+/// IN, while `$ZELLIJ` and `$TMUX` are equally inheritable from the pane such a session
+/// was created from; an inherited marker that won would name the enclosing session and
+/// leave the immediate one mirrorable.
 #[derive(PartialEq, Debug)]
 enum MuxKind {
     Zellij,
@@ -91,14 +92,18 @@ fn own_mux_kind(
     fn set(v: Option<&str>) -> Option<&str> {
         v.filter(|s| !s.is_empty())
     }
-    if set(zellij).is_some() {
-        return Some(MuxKind::Zellij);
-    }
+    // The abduco and screen markers name the session this process is IN, so they
+    // come first: `$ZELLIJ` and `$TMUX` are equally inheritable from the pane such a
+    // session was created from, and letting an inherited marker win would name the
+    // enclosing session and leave the immediate one mirrorable.
     if set(abduco_session).is_some() {
         return Some(MuxKind::Abduco);
     }
     if set(sty).is_some() {
         return Some(MuxKind::Screen);
+    }
+    if set(zellij).is_some() {
+        return Some(MuxKind::Zellij);
     }
     if set(tmux).is_some() {
         // psmux sets `TMUX` for tmux-compat, so `PSMUX_SESSION` is what tells the two
@@ -199,7 +204,7 @@ mod tests {
 
     #[test]
     fn each_mux_is_recognized_by_its_own_marker() {
-        // zellij first: it is the only one that sets `ZELLIJ`.
+        // Alone, each marker names its own mux.
         assert_eq!(
             own_mux_kind(Some("0"), None, None, None, None),
             Some(MuxKind::Zellij)
@@ -251,10 +256,10 @@ mod tests {
     }
 
     #[test]
-    fn an_inherited_tmux_marker_does_not_mask_an_abduco_or_screen_session() {
-        // A session created from a tmux pane inherits `$TMUX`; the marker of the session
-        // xmux is actually inside must still win, or the enclosing session is refused
-        // instead of the one holding xmux.
+    fn an_inherited_marker_does_not_mask_an_abduco_or_screen_session() {
+        // A session created from a tmux or zellij pane inherits the pane's marker
+        // (`$TMUX`, `$ZELLIJ`); the marker of the session xmux is actually inside must
+        // still win, or the enclosing session is refused instead of the one holding xmux.
         assert_eq!(
             own_mux_kind(
                 None,
@@ -269,6 +274,20 @@ mod tests {
             own_mux_kind(
                 None,
                 Some("/tmp/tmux-1000/default,1234,0"),
+                None,
+                None,
+                Some("1234.pts-0.host")
+            ),
+            Some(MuxKind::Screen)
+        );
+        assert_eq!(
+            own_mux_kind(Some("/tmp/zellij-1000/x"), None, None, Some("dev"), None),
+            Some(MuxKind::Abduco)
+        );
+        assert_eq!(
+            own_mux_kind(
+                Some("/tmp/zellij-1000/x"),
+                None,
                 None,
                 None,
                 Some("1234.pts-0.host")
