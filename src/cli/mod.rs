@@ -313,7 +313,9 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
         // The pair reads as one label, the way every surface shows it. The binary follows
         // only where it is not the mux's own name (an alias, a path), which is a fact the
         // label cannot carry and a diagnostic wants.
-        let kind = crate::mux::for_binary(&s.binary).kind().to_string();
+        let kind = crate::mux::for_binary(&s.binary)
+            .map(|m| m.kind().to_string())
+            .unwrap_or_else(|| s.binary.clone());
         let label = crate::session::source_label(crate::session::machine_of(&s.alias), &kind);
         let via = if s.binary == kind {
             String::new()

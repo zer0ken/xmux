@@ -274,7 +274,7 @@ mod tests {
         // OWN attached session arrives as `%unlinked-window-*` (tmux sends the plain
         // `%window-*` form only for the client's current session). The displayed
         // session is usually NOT the control client's session, so without handling
-        // these the tree view misses real-time window add/delete there. They must emit
+        // these the nav misses real-time window add/delete there. They must emit
         // Changed exactly like their linked counterparts so the app refetches.
         for line in [
             "%unlinked-window-add @4",
@@ -363,7 +363,7 @@ mod tests {
     #[test]
     fn reader_session_changed_and_pane_changed_are_inert() {
         // `%session-changed` (the metadata client's own attach) and
-        // `%window-pane-changed` do not affect the tree view, so they must NOT
+        // `%window-pane-changed` do not affect the nav, so they must NOT
         // trigger a Changed refetch. (run_reader always emits a trailing Exited on
         // EOF, so assert specifically that no Changed was emitted.)
         for line in ["%session-changed $1 api", "%window-pane-changed @1 %2"] {

@@ -2,19 +2,19 @@
 
 ## Purpose
 
-`mux` is the mux family home. It defines mux-specific behavior behind the `Mux`
-trait AND holds the pure shared vocabulary every mux argv is built from. A mux
+`mux` is the home of the mux implementations. It defines mux-specific behavior behind the `Mux`
+trait AND holds the pure shared builders every mux argv is built from. A mux
 knows the mux binary, server model, enumeration behavior, attach command shape,
 control-channel availability, event source, death signal, and session
 operation plans.
 
 The module root holds the cross-mux surface: the `Mux` trait, the mux registry
-(the one list every factory and predicate reads), identity detection, the factory
+(the single source of truth every factory and predicate reads), identity detection, the factory
 functions, and the control-protocol trait that hides a mux's control-mode wire
 details (line framing and classification, the notification-to-event table, the
-size formatter) from the connection layer. The shared vocabulary holds the query format
+size formatter) from the connection layer. The shared module holds the query format
 templates, the argv builders, the row parsers, and the address utilities; the root
-re-exports it, so one path names a vocabulary builder and a mux factory alike.
+re-exports it, so one path names a shared builder and a mux factory alike.
 
 Each concrete mux lives in its own sub-directory, owning BOTH its metadata mux
 AND its display driver, and is re-exported from the root:
@@ -35,7 +35,7 @@ AND its display driver, and is re-exported from the root:
   listing as its one output shape. See `zellij/AGENTS.md`.
 - `abduco/` owns the abduco mux, its poll cadence, its listing parser (the bare
   binary IS the listing), its driver (which reattaches on every session change),
-  and the one-card-per-session rule. abduco is the simplest family: no control
+  and the one-card-per-session rule. abduco is the simplest implementation: no control
   stream, no server-socket flag, and no per-session query — a poll enumerates
   once and resolves each session as the session alone. See `abduco/AGENTS.md`.
 - `screen/` owns the GNU screen mux, its poll cadence, its `-ls`
@@ -48,9 +48,9 @@ driver type.
 
 ## Mental Model
 
-A mux describes mux vocabulary and classification. A transport lowers host
+A mux describes mux semantics and classification. A transport dispatches host
 execution. The `MuxDriver` trait in `src/driver.rs` is the mux-agnostic display
-seam; each mux's concrete driver lives in its own family directory and is
+seam; each mux's concrete driver lives in its own implementation directory and is
 constructed by the mux, so a mux owns BOTH its argv, server model, and
 enumeration AND its display orchestration. Shared muxes such as tmux use one
 aggregate server and a source-level control stream. Per-session muxes such as psmux,
@@ -66,23 +66,23 @@ it prints are one decision, so they move together.
 - Enumeration may use the transport, because it executes on a host.
 - Discovery answers "which muxes a host serves", and only ever from the
   registry: the candidate set is what xmux can drive, and each candidate is
-  confirmed by the identity probe answering AS that mux. It is called once per
-  host, by the environment for this box before the first paint and by the
-  runtime for each remote after it, never per source. The psmux-shadows-tmux
-  filter lives inside discovery and keys off what ANSWERED, never off an OS: a
-  remote's OS is not something xmux knows, since the ssh family's platform field
-  is the LOCAL one and gates multiplexing only.
+  confirmed by ITS OWN identity probe answering AS that candidate. It is called
+  once per host, by the environment for this machine before the first paint and by
+  the runtime for each remote after it, never per source. No implementation is
+  the fallback for another, and no name is dropped for another's
+  sake - the psmux alias of tmux never counts as tmux because tmux's own help
+  probe reads the alias's self-naming help.
 - Plan methods return mux argv or mux intent; they do not decide local versus ssh
   execution. The plan set covers what xmux itself issues: attach, enumerate, read
   sessions and options, select a window, and start a session. There is no kill,
   rename, or window-edit plan; the mux owns those. Every mux argv is built from a
-  mux and lowered by a transport, never off a bare binary name.
-- The generic command builders from the shared vocabulary are called ONLY inside
+  mux and dispatched by a transport, never off a bare binary name.
+- The generic command builders from the shared module are called ONLY inside
   the per-mux directories and the shared enumeration helper in the root, each
-  plan wrapping one. The pure address vocabulary is callable anywhere.
+  plan wrapping one. The pure address helpers are callable anywhere.
 - The server model, the event source, and the death signal are the classification
   values callers use instead of branching on mux names. The mux constructs the
-  source's driver, so mux selection lives in the mux family and never in a central
+  source's driver, so mux selection lives in the mux implementation and never in a central
   match on server model; the wrapper in `src/driver.rs` only resolves it. tmux
   keeps one PTY per source with an in-place switch; psmux, zellij, and abduco
   reattach on every change, since none can name a client from outside its own
@@ -92,7 +92,7 @@ it prints are one decision, so they move together.
   environment variable it rewrites in place, and which variable that is. It is a
   mux fact and lives here; whether that variable can actually be read is the
   transport's answer, since a process is readable only on the machine it runs on,
-  and the two are composed outside both families.
+  and the two are composed outside both implementations.
 
 ## Invariants
 
@@ -105,8 +105,8 @@ it prints are one decision, so they move together.
 - Transport-specific command wrapping belongs to the host axis.
 - A mux that moves its client between sessions INSIDE the client process is
   invisible to every server, so nothing can be pushed and nothing can be asked:
-  the live client's own environment is the only witness. A mux says whether it has
-  such a witness by naming the variable, and says it has none by naming nothing.
+  the live client's own environment is the only source of truth. A mux says whether it has
+  one by naming the variable, and says it has none by naming nothing.
   Naming one is not a promise that an answer will arrive.
 - A mux answers for its OWN flags, and a flag question added to the trait carries no
   tmux-compatible default. Whether a mux takes a server-socket flag is asked of the mux

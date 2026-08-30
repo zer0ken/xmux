@@ -55,7 +55,7 @@ holds the modal state plus its popup geometry and forwards to that module.
 ## Module Seams
 
 - The state depends on the domain layer for the selection and the action, command,
-  and effect vocabularies; on the UI layer for the inventory groups, the open
+  and effect sets; on the UI layer for the inventory groups, the open
   modal, and the switcher it rebuilds rows against; on the app layer for the focus
   state machine; and on the connection layer for the inbound events.
 - It stores state facts plus the two mutation sites. The run loop owns effect

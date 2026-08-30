@@ -1,10 +1,10 @@
 //! The WSL machine transport: runs a mux argv inside a Windows Subsystem for Linux
 //! distribution on THIS box. Local (no network hop) yet shell-based, which is the
 //! combination the two capability predicates exist to express. Untrusted argv elements
-//! are per-arg quoted via [`super::vocab::remote_command`], the same vocabulary the ssh
-//! family uses, because the command is handed to a POSIX shell inside the distro.
+//! are per-arg quoted via [`super::vocab::remote_command`], the same helpers the ssh
+//! implementation uses, because the command is handed to a POSIX shell inside the distro.
 //!
-//! This file also owns the family's machine-name provider ([`distros`]): the sibling of
+//! This file also owns the implementation's machine-name provider ([`distros`]): the sibling of
 //! the roster's ssh providers, kept here because listing distributions is `wsl.exe`
 //! mechanics (its own flags, its own output encoding) rather than roster policy.
 
@@ -17,7 +17,7 @@ use crate::session;
 /// resolves from `System32` without depending on `PATHEXT`.
 const WSL_BIN: &str = "wsl.exe";
 
-/// A WSL distribution on this box. `distro` is the name `wsl.exe -d` takes; `id` is the
+/// A WSL distribution on this machine. `distro` is the name `wsl.exe -d` takes; `id` is the
 /// SOURCE id this transport answers as - the machine name `wsl.<distro>` when the distro
 /// serves a single mux, and that name qualified by the mux when it serves several.
 #[derive(Clone, Debug)]
@@ -68,7 +68,7 @@ impl Transport for Wsl {
 
     /// A WSL command runs THROUGH the distribution's shell, so an attach can record its
     /// own tty and a `SwitchPlan::Shell` can execute. The distro's mux registry lives
-    /// inside the distro, so `local_registry_scope` stays the default `false` - this box's
+    /// inside the distro, so `local_registry_scope` stays the default `false` - this machine's
     /// `~/.psmux` describes a different machine. `is_remote` stays `false` as well: there
     /// is no network hop and no ssh option to shape.
     fn runs_through_shell(&self) -> bool {
@@ -85,7 +85,7 @@ impl Transport for Wsl {
     }
 
     /// Runs `[<pre_select> ; ] exec <attach>` in the distribution, exactly as the ssh
-    /// family does: `exec` replaces the shell so the attach owns the pty for its whole
+    /// implementation does: `exec` replaces the shell so the attach owns the pty for its whole
     /// life, and folding `pre_select` into the SAME command means the selection cannot be
     /// lost to a second launch that races the attach.
     fn interactive_attach_argv(
@@ -134,7 +134,7 @@ impl Transport for Wsl {
     }
 }
 
-/// The WSL distributions installed on this box, as MACHINE names (`wsl.Ubuntu-24.04`).
+/// The WSL distributions installed on this machine, as MACHINE names (`wsl.Ubuntu-24.04`).
 ///
 /// A box without WSL, a `wsl.exe` that cannot start, and unreadable output all yield an
 /// empty list rather than an error - the same rule the roster's providers follow, for the
@@ -203,9 +203,9 @@ mod tests {
 
     #[test]
     fn the_capability_pair_is_shell_yes_registry_no() {
-        // The combination the two predicates exist for, and the one no other family has:
+        // The combination the two predicates exist for, and the one no other implementation has:
         // an attach runs through a shell (so it can record its tty), while the mux
-        // registry that describes its sessions lives inside the distro, not on this box.
+        // registry that describes its sessions lives inside the distro, not on this machine.
         let t = wsl("Ubuntu-24.04");
         assert!(t.runs_through_shell());
         assert!(!t.local_registry_scope());
@@ -284,7 +284,7 @@ mod tests {
 
     #[test]
     fn raw_shell_argv_is_some_for_wsl() {
-        // A `SwitchPlan::Shell` needs a host shell to run in; this family has one, so an
+        // A `SwitchPlan::Shell` needs a host shell to run in; this implementation has one, so an
         // in-place switch does not fall back to a full reattach.
         let got = wsl("Ubuntu-24.04")
             .raw_shell_argv("c=$(cat /tmp/.xmux-cli-x); echo $c")

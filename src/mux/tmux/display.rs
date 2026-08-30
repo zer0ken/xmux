@@ -1,6 +1,6 @@
 //! The tmux display driver: a shared-server mux keeps ONE PTY per host, warmed on the
 //! first session and moved to another session with `switch-client`. `Tmux::driver`
-//! constructs it, so mux selection lives in the tmux family, not a central match.
+//! constructs it, so mux selection lives in the tmux implementation, not a central match.
 
 use std::sync::{Arc, Mutex};
 
@@ -152,7 +152,7 @@ impl MuxDriver for TmuxDriver {
         }
 
         // Window-row selection → move the session's active window. A fresh first attach
-        // already folded the window into the attach argv; otherwise lower a select-window.
+        // already folded the window into the attach argv; otherwise dispatch a select-window.
         if let Some(win) = sel.window {
             if !first_attach {
                 lower_select_window(host, control, &sel.session, win);
@@ -184,7 +184,7 @@ impl MuxDriver for TmuxDriver {
                 if !ctx.registry.contains(source) && !host.display.in_flight_contains(source) =>
             {
                 // Compose the two axes: the MUX supplies the attach argv (attach_plan),
-                // the MACHINE lowers it (ssh -t + exec / local -S) - the same composition
+                // the MACHINE dispatches it (ssh -t + exec / local -S) - the same composition
                 // `show()` uses. A remote shared attach records its own tty before exec
                 // (for a later in-place switch); local attaches and non-recording muxes
                 // stay bare. (Immutable host reads before the &mut host.display below.)
@@ -242,7 +242,7 @@ mod tests {
     fn remote_shared_attach_records_its_display_tty() {
         let host = crate::model::Host::new(
             crate::transport::ssh("jup".into(), String::new(), "linux".into()),
-            crate::mux::for_binary("tmux"),
+            crate::mux::for_binary("tmux").unwrap(),
         );
         let argv = vec![
             "ssh".to_string(),
@@ -264,7 +264,7 @@ mod tests {
     fn local_shared_attach_is_not_prefixed() {
         let host = crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("tmux"),
+            crate::mux::for_binary("tmux").unwrap(),
         );
         let argv = vec![
             "tmux".to_string(),
@@ -286,7 +286,7 @@ mod tests {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("tmux"),
+            crate::mux::for_binary("tmux").unwrap(),
         ));
         {
             let h = hosts.get_mut("local").unwrap();
@@ -352,7 +352,7 @@ mod tests {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("tmux"),
+            crate::mux::for_binary("tmux").unwrap(),
         ));
         {
             let h = hosts.get_mut("local").unwrap();
@@ -419,7 +419,7 @@ mod tests {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::transport::ssh("jup".into(), String::new(), "linux".into()),
-            crate::mux::for_binary("tmux"),
+            crate::mux::for_binary("tmux").unwrap(),
         ));
 
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
@@ -476,7 +476,7 @@ mod tests {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("tmux"),
+            crate::mux::for_binary("tmux").unwrap(),
         ));
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
         let worker = crate::display::DisplayWorker::with_spawner(
@@ -527,7 +527,7 @@ mod tests {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("tmux"),
+            crate::mux::for_binary("tmux").unwrap(),
         ));
         hosts
             .get_mut("local")

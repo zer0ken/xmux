@@ -1,6 +1,6 @@
 //! The screen display driver: a per-session mux displayed through ONE per-host PTY that
 //! is REATTACHED whenever the selected session changes. `Screen::driver` constructs it,
-//! so mux selection lives in the screen family, not a central match.
+//! so mux selection lives in the screen implementation, not a central match.
 //!
 //! There is no in-place client switch to make: screen has no `switch-client` equivalent
 //! and a client cannot be named from outside the session it is in, so every session

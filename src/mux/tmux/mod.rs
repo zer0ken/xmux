@@ -42,7 +42,7 @@ fn display_tty_path(host_key: &str) -> String {
 /// records its OWN controlling tty to the per-host file before exec'ing the attach - the
 /// value `switch_in_place` reads back to move xmux's own display client, never the user's
 /// (which `list-clients` cannot tell apart). Out-of-band (a file, not the pty stream) so
-/// the Windows ConPTY cannot consume it. A family-private free fn (not a `Mux` method) so
+/// the Windows ConPTY cannot consume it. A implementation-private free fn (not a `Mux` method) so
 /// the `tty >file` mechanism never leaks across the mux boundary.
 pub(super) fn record_prefix(host_key: &str) -> String {
     format!("tty >{} 2>/dev/null; ", display_tty_path(host_key))
@@ -73,6 +73,30 @@ impl Mux for Tmux {
 
     fn bin(&self) -> &str {
         &self.bin
+    }
+
+    /// tmux names itself only in `-V` (`tmux <version>`), and it has no `help`
+    /// command (`tmux help` exits non-zero). The help probe runs FIRST because psmux
+    /// installs a `tmux` alias of itself whose `-V` mimics tmux's version line while
+    /// the alias's own help names it: a successful help naming a mux names ANOTHER
+    /// mux, and that is the alias correction.
+    fn identity_probes(&self) -> Vec<Vec<String>> {
+        vec![
+            vec![self.bin.clone(), "help".to_string()],
+            vec![self.bin.clone(), "-V".to_string()],
+        ]
+    }
+
+    fn classify_identity(&self, outputs: &[Option<String>]) -> Option<&'static str> {
+        // A help that succeeded names another mux (real tmux has no help): the
+        // psmux-behind-the-alias case, answered before the version line is read.
+        if let Some(help) = outputs.first().and_then(|o| o.as_deref()) {
+            if let Some(kind) = named_mux_excluding(help, "tmux") {
+                return Some(kind);
+            }
+        }
+        // The version line names the mux it belongs to; tmux's own is `tmux <version>`.
+        named_mux(outputs.get(1).and_then(|o| o.as_deref())?)
     }
 
     fn server_model(&self) -> ServerModel {
@@ -190,7 +214,7 @@ impl ControlProtocol for TmuxControl {
             | Notif::WindowClose { .. }
             | Notif::WindowRenamed { .. } => {
                 // The server's session/window STRUCTURE changed; the app refetches
-                // (list-sessions), so the tree view's session list resyncs. The
+                // (list-sessions), so the nav's session list resyncs. The
                 // notification carries only an id, so a blanket refetch is simplest.
                 Some(HostEvent::Changed {
                     host: host.to_string(),
@@ -217,7 +241,7 @@ impl ControlProtocol for TmuxControl {
                 })
             }
             // `%session-changed` (the metadata client's own auto-attached session) and
-            // `%window-pane-changed` (a pane became active) do not affect the tree view
+            // `%window-pane-changed` (a pane became active) do not affect the nav
             // tree - the per-session PTY attachments own the live pane - so they are inert.
             Notif::SessionChanged { .. } | Notif::WindowPaneChanged { .. } => None,
             Notif::Exit { reason } => {

@@ -4,8 +4,8 @@
 //! detaches from one session's server and the same process reconnects to another, so
 //! the child xmux spawned keeps its pid and its original argv and only its ENVIRONMENT
 //! is rewritten. No server sees that move, so no control channel can report it, and the
-//! live child's own environment is the only witness of which session it is really on.
-//! This module reads that witness. It names no mux and no variable: which variable
+//! live child's own environment is the only source of truth for which session it is really on.
+//! This module reads it. It names no mux and no variable: which variable
 //! carries the session name is the mux's knowledge, supplied by the caller.
 //!
 //! The read is a WINDOWS facility. A process's environment block lives in that process's

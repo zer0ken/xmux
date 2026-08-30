@@ -1,4 +1,4 @@
-//! Per-host metadata channels: the shared vocabulary plus the reader, writer,
+//! Per-host metadata channels: the shared types plus the reader, writer,
 //! client, poll, and manager concerns, each in its own submodule.
 
 #[cfg(test)]
@@ -24,6 +24,7 @@ pub use writer::run_writer;
 #[cfg(test)]
 pub(crate) fn test_control_proto() -> &'static dyn ControlProtocol {
     crate::mux::for_binary("tmux")
+        .expect("tmux is a registry name")
         .control_protocol()
         .expect("tmux has a control protocol")
 }

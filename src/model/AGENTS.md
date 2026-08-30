@@ -5,15 +5,15 @@
 `model` holds runtime domain values shared across the mux and transport axes,
 connection management (`link`), and app code: the source definition and source
 state, source collections, the action / command / event-effect unidirectional-flow
-vocabulary, transport lowering results, server models, plans, and death-signal
+set, transport dispatch results, server models, plans, and death-signal
 helpers.
 
 ## Mental Model
 
 The model layer carries facts and intent, not live process ownership. A source
 combines host transport and mux state. An action is the single domain intent
-vocabulary shared by key handling and ctl; a command is the matching effect
-vocabulary the run loop dispatches. Applying an action, in `src/state`, is the
+set shared by key handling and ctl; a command is the matching effect
+set the run loop dispatches. Applying an action, in `src/state`, is the
 one site that turns intent into state changes plus commands. An event effect is
 the inbound mirror: applying a source event folds that event's self-contained state
 mutation and returns the mux follow-ups (refetch, probe, reap, sync, scan
@@ -22,7 +22,7 @@ registry.
 
 ## Module Seams
 
-- The action module defines the domain intent and effect vocabularies, the focus
+- The action module defines the domain intent and effect sets, the focus
   target, the slow-operation descriptor a deferred command carries for the UI to
   run off-loop, and the event effect returned for a source event. The raw-byte
   input action from `src/display` projects INTO the domain action; the two are
@@ -47,7 +47,7 @@ registry.
   has been folded.
 - Live control clients, polling tasks, and PTY attachments are owned outside
   `model`.
-- Transport lowering should preserve mux intent without introducing mux policy.
+- Transport dispatch should preserve mux intent without introducing mux policy.
 
 ## Common Pitfalls
 
@@ -65,7 +65,7 @@ registry.
 
 ## Verification
 
-- Check equality, parsing, lowering, and collection behavior for the value you
+- Check equality, parsing, dispatch, and collection behavior for the value you
   touched.
-- Re-check the state, ctl, and app surfaces when the intent or effect vocabulary
+- Re-check the state, ctl, and app surfaces when the intent or effect set
   changes: all three read it, and the apply site is in `src/state`.

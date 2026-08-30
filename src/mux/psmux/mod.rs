@@ -40,6 +40,17 @@ impl Mux for Psmux {
         &self.bin
     }
 
+    /// psmux names itself in `help` output (`usage: psmux ...`), its one reliable
+    /// positive signal: its `-V` mimics tmux's version line, so the version flag is
+    /// never asked. One probe.
+    fn identity_probes(&self) -> Vec<Vec<String>> {
+        vec![vec![self.bin.clone(), "help".to_string()]]
+    }
+
+    fn classify_identity(&self, outputs: &[Option<String>]) -> Option<&'static str> {
+        named_mux(outputs.first()?.as_deref()?)
+    }
+
     fn server_model(&self) -> ServerModel {
         ServerModel::PerSession
     }

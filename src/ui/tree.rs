@@ -149,7 +149,7 @@ pub fn order_groups(groups: &[Group]) -> Vec<Group> {
 }
 
 /// The display tier of a source: local (0) before WSL (1) before remote (2).
-/// A WSL machine is a distro on this box, neither this box's own mux scope nor an
+/// A WSL machine is a distro on this machine, neither this machine's own mux scope nor an
 /// ssh host, so it gets its own tier between them.
 fn source_tier(source: &str) -> u8 {
     let machine = crate::session::machine_of(source);
@@ -731,7 +731,7 @@ mod tests {
 
     #[test]
     fn every_mux_on_this_box_pins_ahead_of_every_remote() {
-        // Two muxes on this box are two sources with QUALIFIED ids. Both are local and
+        // Two muxes on this machine are two sources with QUALIFIED ids. Both are local and
         // both must stay ahead of the remotes: a comparison against the bare "local"
         // would sink them in among the ssh hosts.
         let groups = vec![

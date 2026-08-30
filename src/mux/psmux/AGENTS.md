@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`mux/psmux` is the psmux family: everything mux-specific to psmux lives here so
+`mux/psmux` is the psmux implementation: everything mux-specific to psmux lives here so
 no psmux code sits at the `src` root. It owns BOTH sides of the mux:
 
 - the metadata mux: binary name, a per-session server model, registry-merge
@@ -11,7 +11,7 @@ no psmux code sits at the `src` root. It owns BOTH sides of the mux:
   client carries its session in, and the window and session operation plans;
 - the display driver: the per-source display orchestration for a per-session mux.
 
-The mux constructs its own driver, so psmux selection lives in this family and
+The mux constructs its own driver, so psmux selection lives in this implementation and
 never in a central match on server model. psmux has no control stream; it is
 polled.
 
@@ -39,17 +39,17 @@ and the argv it started with. What it rewrites each time it lands is
 attach, so that value always names the session the client is on right now. It
 belongs to the process, so it names xmux's own client and can never report a
 separate psmux terminal of the user's. Reading it needs the client to be a process
-on THIS machine, so a remote psmux source has no such witness and behaves as
+on THIS machine, so a remote psmux source has no such source of truth and behaves as
 though there were none to read.
 
 A remote psmux source is enumerated and displayed the generic way.
 
-The mux supplies mux vocabulary (argv, model, enumeration); the driver consumes it
-and owns the concrete display decision. The transport lowers the host execution.
+The mux supplies the argv, model, and enumeration; the driver consumes it
+and owns the concrete display decision. The transport dispatches the host execution.
 
 ## Module Seams
 
-- The family root holds the mux itself and the poll cadence.
+- The implementation root holds the mux itself and the poll cadence.
 - The driver sits beside it and owns the per-source display orchestration.
 - The session registry backs local enumeration: an existence set merged with one
   detail row from a session listing.
@@ -89,11 +89,11 @@ and owns the concrete display decision. The transport lowers the host execution.
   which leaves nothing to confirm and nothing to respawn, and the terminal view
   stays blank until the user navigates away and back.
 - Do not fold the local registry into a REMOTE source: it would inject local session
-  names as phantoms and swallow an ssh failure into a fake empty list.
+  names that do not exist on the remote host and swallow an ssh failure into a fake empty list.
 
 ## Before Editing
 
-- Decide whether the behavior is psmux mux vocabulary, display orchestration, or
+- Decide whether the behavior is psmux argv, display orchestration, or
   registry enumeration.
 - Keep the driver's behavior identical unless the change is explicitly a behavior
   change; which client a command reaches is the highest-risk surface, since the

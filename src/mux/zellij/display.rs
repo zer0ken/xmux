@@ -1,6 +1,6 @@
 //! The zellij display driver: a per-session mux displayed through ONE per-host PTY
 //! that is REATTACHED whenever the selected session changes. `Zellij::driver`
-//! constructs it, so mux selection lives in the zellij family, not a central match.
+//! constructs it, so mux selection lives in the zellij implementation, not a central match.
 //!
 //! There is no in-place client switch to make. zellij's `switch-session` moves
 //! whichever client RUNS it, and a client cannot be named from outside the session it
@@ -135,7 +135,7 @@ mod tests {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("zellij"),
+            crate::mux::for_binary("zellij").unwrap(),
         ));
         hosts
             .get_mut("local")

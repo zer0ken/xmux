@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`mux/abduco` is the abduco family: everything mux-specific to abduco lives here so
+`mux/abduco` is the abduco implementation: everything mux-specific to abduco lives here so
 no abduco code sits at the `src` root. It owns BOTH sides of the mux:
 
 - the metadata mux: binary name, a per-session server model, listing
@@ -10,7 +10,7 @@ no abduco code sits at the `src` root. It owns BOTH sides of the mux:
   cadence, death signal, and the one-card-per-session rule;
 - the display driver: the per-source display orchestration for a per-session mux.
 
-The mux constructs its own driver, so abduco selection lives in this family and
+The mux constructs its own driver, so abduco selection lives in this implementation and
 never in a central match on server model. abduco has no control stream; it is polled.
 
 ## Mental Model
@@ -33,19 +33,19 @@ abduco prints human local
 wall-clock time, which cannot be converted to the shared epoch scale across hosts
 without the host's timezone, so the mux "does not report" it.
 
-The mux supplies mux vocabulary (argv, model, enumeration); the driver consumes it
-and owns the concrete display decision. The transport lowers the host execution.
+The mux supplies the argv, model, and enumeration; the driver consumes it
+and owns the concrete display decision. The transport dispatches the host execution.
 
 ## Module Seams
 
-- The family root holds the mux itself, the poll cadence, and the listing parser.
+- The implementation root holds the mux itself, the poll cadence, and the listing parser.
 - The driver sits beside it and owns the per-source display orchestration.
 - The driver pulls the mux-agnostic display seam from `src/driver.rs` and the
   supervisor capabilities from the app runtime. The seam does NOT import the
   driver; the dependency is one-way, so there is no cycle.
-- Identity detection (`-v` naming itself, `-V` being rejected) lives at the mux
-  root beside the other families' probes; this family only answers the `Mux`
-  surface the probe constructs.
+- Identity detection is this implementation's own `identity_probes` (one `-v` question;
+  `-V` is rejected) and `classify_identity` (the name in the output), implemented
+  beside the rest of the `Mux` surface - no central probe sequence answers for it.
 
 ## Invariants
 
@@ -80,10 +80,10 @@ and owns the concrete display decision. The transport lowers the host execution.
 
 ## Before Editing
 
-- Decide whether the behavior is abduco mux vocabulary, display orchestration, or
+- Decide whether the behavior is abduco argv, display orchestration, or
   listing enumeration.
 - Check tmux, psmux, AND zellij behavior when changing trait methods; abduco is
-  the simplest family and inherits nothing from tmux's argv.
+  the simplest implementation and inherits nothing from tmux's argv.
 
 ## Verification
 

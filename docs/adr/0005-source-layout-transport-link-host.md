@@ -33,7 +33,7 @@ each file lives in the seam that owns its behavior.
 - The domain type `Host` stays in `src/model/host.rs`.
 - `cli.rs` becomes `cli/`, gaining the `update` subcommand.
 - `config`/`roster`/`discovery`/`env` move to a new `provision/` directory: the
-  resolution of what exists on this box.
+  resolution of what exists on this machine.
 - `source` moves to `model/`; `attach` moves to `display/`; `prefs` moves to
   `ui/`; `control` and `manage` move to `link/`.
 - `session.rs` (the foundational data the axes and model build on), `driver.rs`

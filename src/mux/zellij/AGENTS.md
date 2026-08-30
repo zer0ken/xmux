@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`mux/zellij` is the zellij family: everything mux-specific to zellij lives here so
+`mux/zellij` is the zellij implementation: everything mux-specific to zellij lives here so
 no zellij code sits at the `src` root. It owns BOTH sides of the mux:
 
 - the metadata mux: binary name, a per-session server model, session-listing
@@ -13,15 +13,15 @@ no zellij code sits at the `src` root. It owns BOTH sides of the mux:
   with no in-place switch;
 - the output shapes: the session listing (a human line), as pure functions.
 
-The mux constructs its own driver, so zellij selection lives in this family and
+The mux constructs its own driver, so zellij selection lives in this implementation and
 never in a central match on server model. zellij has no control stream; it is
 polled.
 
 ## Mental Model
 
-zellij is a PER-SESSION mux, and it is the one mux family that shares NO argv with
+zellij is a PER-SESSION mux, and it is the one mux implementation that shares NO argv with
 tmux: every command plan is overridden rather than inherited, and its listing is
-parsed here rather than by the shared vocabulary.
+parsed here rather than by the shared builders.
 
 Its CLI is one process per query, and every query is addressed with
 `--session <name>`, because zellij's actions otherwise target the session the
@@ -44,12 +44,12 @@ client rewrites each time it lands is `ZELLIJ_SESSION_NAME` in its own environme
 which it also sets on the first attach, so that value always names the session the
 client is on right now. It belongs to the process, so it names xmux's own client
 and never another zellij client of the user's. Reading it needs the client to be a
-process on THIS machine, so a remote or WSL zellij source has no such witness and
+process on THIS machine, so a remote or WSL zellij source has no such source of truth and
 behaves as though there were none to read.
 
 ## Module Seams
 
-- The family root holds the mux itself, the poll cadence, the
+- The implementation root holds the mux itself, the poll cadence, the
   `--session <name> action <verb>` argv builder, and the clock the reported
   session age is subtracted from.
 - The parsing module holds the session-line grammar and the human-readable duration
@@ -111,7 +111,7 @@ behaves as though there were none to read.
 
 ## Before Editing
 
-- Decide whether the behavior is zellij mux vocabulary, an output shape, or
+- Decide whether the behavior is zellij argv, an output shape, or
   display orchestration.
 - Verify a new argv against a live zellij before shipping it. zellij's flags move
   between versions, and several of its subcommands accept a flag that changes only

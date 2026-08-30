@@ -13,7 +13,7 @@ control socket for headless driving. Each instance is addressed by NAME, owning
 Two orthogonal axes describe every connection and no module conflates them:
 `Transport` (HOST, local versus ssh) and `Mux` (MUX, the per-mux behavior
 trait). Attach and command argv are composed from a source's own transport and mux,
-so the two families combine without either knowing the other. A HOST is a machine
+so the two implementations combine without either knowing the other. A HOST is a machine
 that hosts muxes and that the roster names; a SOURCE is one mux on one host, so a
 host serving several muxes is several sources under one host.
 
@@ -27,7 +27,7 @@ There are two mux-facing paths:
   runtime.
 
 The app ties those paths together and branches on nothing mux-specific. Domain
-intent converges on a single action vocabulary applied at one site in the runtime
+intent converges on a single action set applied at one site in the runtime
 state; raw key and text injection is an unstable low-level surface.
 
 ## Module Seams
@@ -39,12 +39,12 @@ state; raw key and text injection is an unstable low-level surface.
 - `src/provision/` - resolution: the TOML config, the roster of ssh targets, the
   concurrent source probe, and the resolved runtime view over them.
 - `src/transport/` - the TRANSPORT axis: the `Transport` trait, the per-host
-  families, and the shared shell vocabulary. A source builds one at construction.
-- `src/mux/` - the MUX axis: the `Mux` trait, the per-mux families (`tmux/`,
+  implementations, and the shared shell helpers. A source builds one at construction.
+- `src/mux/` - the MUX axis: the `Mux` trait, the per-mux implementations (`tmux/`,
   `psmux/`, `zellij/`) owning metadata, command plans, and a display driver, and
-  the shared mux vocabulary.
-- `src/model/` - runtime domain values: sources, the action vocabulary, and the
-  command vocabulary.
+  the shared mux builders.
+- `src/model/` - runtime domain values: sources, the action set, and the
+  command set.
 - `src/driver.rs` - the mux-agnostic `MuxDriver` trait and the thin wrapper that
   resolves a source's driver; it names no concrete mux type.
 - `src/display/` - PTY attachment, the grid, terminal input, and low-level input
@@ -91,7 +91,7 @@ state; raw key and text injection is an unstable low-level surface.
 ## Before Editing
 
 - Identify whether the change touches metadata, display, UI interaction, domain
-  operations, or transport lowering.
+  operations, or transport dispatch.
 - Follow the existing seam first; only widen a seam when the current interface
   cannot represent the behavior.
 - Check `CONTEXT.md` for the vocabulary and open architecture notes before moving

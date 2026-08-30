@@ -30,7 +30,7 @@ rendered screen over a local socket.
 
 ## Module Seams
 
-The module is split by role: the shared vocabulary (inventory data plus the
+The module is split by role: the shared types (inventory data plus the
 command, event, and reply types the threads exchange), the control-mode stdout
 line state machine that produces source events, the writer that drains commands to
 the child with one in-flight correlation per line, the client owning one
@@ -44,7 +44,7 @@ and the composed control argv.
   hand-rolls ssh.
 - The manager owns the map of clients plus ensure, reap, and poll-task
   management; a client owns one source's reader and writer threads and channels.
-- The source event is the outbound vocabulary the runtime state consumes; the app
+- The source event is outbound event set the runtime state consumes; the app
   runs the returned effects back against these clients, the registry, and the
   display worker.
 - Depends on the mux axis for control-protocol parsing and on the domain types
@@ -76,7 +76,7 @@ and the composed control argv.
 ## Before Editing
 
 - Decide whether the change is metadata (here), display PTY (`src/display`), or
-  transport lowering (the host axis).
+  transport dispatch (the host axis).
 - For a new event, add the event variant, its arm in the state's event apply, and
   its effect follow-up together.
 

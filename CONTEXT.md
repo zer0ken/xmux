@@ -20,11 +20,11 @@ One concept, one word. The two axes and the runtime:
 
 - `Transport` (HOST axis) - the per-host execution trait (local / ssh / wsl); a
   source holds one. It owns where a command runs and how its argv is executed, and
-  knows nothing about the mux. "host" is the family/concept; `Transport` is the
+  knows nothing about the mux. "host" is the concept; `Transport` is the
   trait.
 - `Mux` (MUX axis) - the per-mux behavior trait (tmux / psmux / zellij / abduco /
   screen); a source
-  holds one. "mux" is the family/concept; `Mux` is the trait.
+  holds one. "mux" is the concept; `Mux` is the trait.
 - host - a machine that HOSTS muxes and that xmux can reach. The `roster` decides
   the set: of all the machines there are, the hosts are the ones it names. "machine"
   is the plain word for the thing in the world and names no abstraction here; the
@@ -286,12 +286,12 @@ UI elements a user perceives as distinct things:
   when its host serves a single mux, and `<host>:<mux>` (`local:zellij`) when it
   serves several, so a one-mux setup is spelled exactly as it always was. The two halves
   are read back through accessors; nothing compares a source id to `local` directly. A
-  HOST name says which family reaches it wherever the name alone would be ambiguous:
-  `local` is this box and `wsl.<distribution>` is a WSL distribution on it, everything
+  HOST name says which kind reaches it wherever the name alone would be ambiguous:
+  `local` is this machine and `wsl.<distribution>` is a WSL distribution on it, everything
   else being an ssh destination. That is what lets a host named LATER (a mux-discovery
   answer carries a bare host name and nothing else) be reached exactly as one named at
   launch, and it is why an ssh alias spelled either reserved way is refused rather than
-  served as the wrong family. The
+  served as the wrong kind. The
   nav renders the halves separately (`local/zellij`), so the id
   never appears with its mux twice. A source is held TWICE, once per consumer, and both
   copies resolve its host the same way: the event loop drives a source out of its
@@ -320,7 +320,7 @@ UI elements a user perceives as distinct things:
   persisted selection, and typed ctl targets are keyed to.
 - roster - which HOSTS xmux offers, assembled from PROVIDERS, EVERY one on unless
   `[discovery]` turns it off: `~/.ssh/config` aliases, the online peers of this
-  machine's tailnet, and this box's WSL distributions. Every provider yields plain ssh
+  machine's tailnet, and this machine's WSL distributions. Every provider yields plain ssh
   target names, so nothing downstream BEHAVES differently for one; which provider
   offered a name is kept beside it and shown on the unreachable host's view screen, never read
   to decide anything. The roster is what makes a machine a
@@ -351,8 +351,8 @@ UI elements a user perceives as distinct things:
   renders in the hint bar instead, reading `[feature] guide: <buffer>` with a
   reversed-block caret at the edit position.
 
-A zellij TAB is a `window` and a zellij SESSION is a `session`: xmux's vocabulary is
-one set of words for every mux, so a mux's own naming is translated at its family
+A zellij TAB is a `window` and a zellij SESSION is a `session`: xmux uses
+one set of words for every mux, so a mux's own naming is translated at its implementation
 boundary and nowhere above it.
 
 ### Prefix interaction
@@ -413,7 +413,7 @@ checked against. It is not a mirror of the code, so it never names a test, a
 function, a method, a field, or a library API: those move, and a document that
 follows them turns every code change into a documentation change. What a
 document may name is what the design itself prescribes and what the outside
-world already depends on: the two axes and their vocabulary, the directory
+world already depends on: the two axes and their terms, the directory
 layout a new module must fit, config keys, CLI and ctl verbs, socket names, and
 the argv of the muxes xmux drives.
 
@@ -444,23 +444,23 @@ value on a card.
 
 Two orthogonal axes describe every connection, and no module conflates them:
 
-- HOST - `src/transport/`. Each host family owns its execution behind the
+- HOST - `src/transport/`. Each host implementation owns its execution behind the
   `Transport` trait; a source builds one at construction, so host selection is
-  never a central `match`. Shared shell vocabulary (quoting, remote command
-  assembly) lives beside the families. `Transport` owns where a command runs and
+  never a central `match`. Shared shell helpers (quoting, remote command
+  assembly) lives beside the implementations. `Transport` owns where a command runs and
   how its argv is executed; it knows nothing about the mux.
-- MUX - `src/mux/<kind>/`. Each mux family (`tmux/`, `psmux/`, `zellij/`,
+- MUX - `src/mux/<kind>/`. Each mux implementation (`tmux/`, `psmux/`, `zellij/`,
   `abduco/`, `screen/`) owns its metadata and command plans behind the `Mux` trait
   and its display driver beside them. A mux builds its OWN driver, so mux selection
-  lives in the mux family,
-  never a central `match`. Shared mux vocabulary lives beside the families. The
+  lives in the mux implementation,
+  never a central `match`. Shared mux builders live beside the implementations. The
   trait's command plans default to tmux-compatible argv, so a tmux-compatible mux
   is identity plus a few overrides; a mux that shares no argv (zellij) overrides
   every plan AND the shape of what each plan prints, since a plan and its output
   are one decision.
 
 Attach argv is composed from a source's own mux + transport (the two axes
-together), so the two families are combined without either knowing the other.
+together), so the two implementations are combined without either knowing the other.
 
 The supervisor branches on NOTHING mux-specific. `src/app/` (runtime loop,
 focus, input routing), `src/ui/` (switcher / rows / chrome / modal / ops
@@ -477,7 +477,7 @@ The remaining layers each own one concern:
 - `src/link/` - per-source connection management (control-mode reader/writer,
   poll tasks, live client ownership).
 - `src/transport/` - the transport axis: the `Transport` trait, the local and ssh
-  families, and the shared shell vocabulary.
+  implementations, and the shared shell helpers.
 - `src/provision/` - resolution: the TOML config, the roster of ssh targets, the
   concurrent source probe, and the resolved runtime view over them.
 - `src/cli/` - the CLI surface: argument parsing and command dispatch.
@@ -510,7 +510,7 @@ reloads just that section, keeping the previous settings on a malformed edit. Th
 roster and hosts are not part of it - re-scanning sources is the `rescan` key's job
 and a config edit must not reset the user's sessions.
 
-- The vocabulary is the sixteen slots (one per UI role) plus ATTRIBUTES: reverse
+- The palette is the sixteen slots (one per UI role) plus ATTRIBUTES: reverse
   video, bold. Nothing else. An RGB colour, or an indexed colour above 15, is a hue
   xmux chose for somebody else's terminal, and it is wrong on every
   theme it was not chosen for. The palette is guarded so one cannot reach it.
@@ -523,7 +523,7 @@ and a config edit must not reset the user's sessions.
   one.
 - The exceptions are colours the USER names: `[ui] selection-style`,
   `[ui] hint-bar-style`, and the view-border colours. Their terminal, their choice.
-  The chrome's colour mapping is that vocabulary and the only place a `#rrggbb` may
+  The chrome's colour mapping is that palette and the only place a `#rrggbb` may
   enter.
 - A colour a CHILD program emits passes through untouched: it is that program's own
   choice against the same theme, and xmux is not in it.
@@ -534,10 +534,10 @@ A new colour goes into the palette as a slot, or it does not go in.
 
 At creation time, place a new source file by the axis it belongs to:
 
-- Host-specific → a new host family is a new module under `src/transport/`
+- Host-specific → a new host implementation is a new module under `src/transport/`
   implementing `Transport` (plus its factory); new per-host execution goes in
-  the existing local or ssh family.
-- Mux-specific (a new mux family or per-mux behavior) → `src/mux/<kind>/`.
+  the existing local or ssh implementation.
+- Mux-specific (a new mux implementation or per-mux behavior) → `src/mux/<kind>/`.
 - PTY / grid / terminal-protocol mechanics → `src/display/`.
 - Orchestration (runtime loop, focus) → `src/app/`.
 - Per-source connection management → `src/link/`.
@@ -565,7 +565,7 @@ as invariants, seams, and pitfalls - never as change history or phase narrative.
   off-loop operations assemble a runtime source from it and drive
   enumerate/manage/attach through the source, mux, and transport APIs; the host
   boundary (argv assembly, ssh transport) lives entirely in the transport, and the
-  psmux registry helpers live in the psmux family. The runtime source registry is
+  psmux registry helpers live in the psmux implementation. The runtime source registry is
   the app loop's (every source keyed by id, in display order); the environment
   keeps the source list and its alias index for the CLI, the scan, and the off-loop
   operations. The remaining direction: shrink the definition further by folding its

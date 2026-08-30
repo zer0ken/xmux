@@ -1,11 +1,11 @@
 //! The transport axis: how a mux argv reaches the server, SEPARATE from which mux
 //! runs there (that is `Mux`). A `Transport` owns argv assembly and the ssh
-//! wrapping only — it never decides a server model. Each machine family lives in
+//! wrapping only — it never decides a server model. Each machine implementation lives in
 //! its own file behind the `Transport` trait — `Local` (`local.rs`), `Ssh`
-//! (`ssh.rs`), `Wsl` (`wsl.rs`) — mirroring how each mux family lives behind `Mux`. Shared shell
-//! vocabulary (`quote`/`remote_command`) is in `vocab.rs`, the peer of
-//! `mux/vocab.rs`. A new family is a new file implementing `Transport` plus a
-//! factory here; the trait and its callers name no concrete family.
+//! (`ssh.rs`), `Wsl` (`wsl.rs`) — mirroring how each mux implementation lives behind `Mux`. Shared shell
+//! helpers (`quote`/`remote_command`) is in `vocab.rs`, the peer of
+//! `mux/vocab.rs`. A new implementation is a new file implementing `Transport` plus a
+//! factory here; the trait and its callers name no concrete implementation.
 
 pub mod local;
 pub mod ssh;
@@ -18,7 +18,7 @@ pub use wsl::Wsl;
 
 /// The machine boundary: turns a full mux argv (`argv[0]` = the mux binary) into a
 /// runnable `(command, args)`, and wraps interactive/control/raw execution for the
-/// machine it targets. Implementors are the machine families (`Local`, `Ssh`, `Wsl`); no
+/// machine it targets. Implementors are the machine implementations (`Local`, `Ssh`, `Wsl`); no
 /// caller branches on which one — it addresses a machine through this trait.
 pub trait Transport: Send + Sync {
     /// `"local"`, the ssh alias, or `wsl.<distro>` — the stable host id and `Hosts` map
@@ -34,7 +34,7 @@ pub trait Transport: Send + Sync {
     /// True when a display attach on this machine runs THROUGH a host shell (so an attach
     /// can prepend a `tty >file` record snippet, and a `SwitchPlan::Shell` can run). A
     /// machine that spawns the mux binary directly is `false` (the default). NOT derived
-    /// from `is_remote`: a local-but-shell family (WSL) sets this `true` while staying
+    /// from `is_remote`: a local-but-shell implementation (WSL) sets this `true` while staying
     /// non-remote.
     fn runs_through_shell(&self) -> bool {
         false
@@ -119,7 +119,7 @@ impl Transport for Box<dyn Transport> {
 
 /// The concrete, runnable shape of a display-client switch — what the driver hands to
 /// `run_lowered`. Lives on the TRANSPORT side (it is the execution shape), not in the
-/// mux's intent vocabulary. The mux never names these variants.
+/// mux's intent set. The mux never names these variants.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoweredSwitch {
     /// A local mux argv (`argv[0]` = binary) — run non-interactively.
@@ -129,11 +129,11 @@ pub enum LoweredSwitch {
     RawSsh(Vec<String>),
 }
 
-/// Which machine family a host reaches its mux over, carrying that family's own
+/// Which machine kind a host reaches its mux over, carrying that kind's own
 /// construction data. The SINGLE representation of transport kind: config/`Hosts::build`
 /// picks a variant, and the `MachineKind` query methods ([`transport`](Self::transport),
 /// [`local_socket`](Self::local_socket)) are the only code that matches on the kind. A new
-/// family is a variant here plus one arm in each of those methods — no code OUTSIDE
+/// kind is a variant here plus one arm in each of those methods — no code OUTSIDE
 /// `MachineKind` matches on the kind.
 #[derive(Clone, Debug)]
 pub enum MachineKind {
@@ -153,7 +153,7 @@ pub enum MachineKind {
         control_path: String,
         os: String,
     },
-    /// A WSL distribution on this box: the source `id` it answers as (empty means the
+    /// A WSL distribution on this machine: the source `id` it answers as (empty means the
     /// bare machine name `wsl.<distro>`) and the `distro` name `wsl.exe -d` takes.
     Wsl { id: String, distro: String },
 }
@@ -178,7 +178,7 @@ pub fn kind_for(
             socket: local_socket,
         }
     } else if let Some(distro) = crate::session::wsl_distro_of(machine) {
-        // The family is read back OUT of the machine name, so a source added later (an
+        // The kind is read back OUT of the machine name, so a source added later (an
         // async mux-discovery answer carries a bare machine name and nothing else) reaches
         // its distribution the same way one built at launch does.
         MachineKind::Wsl {
@@ -200,14 +200,14 @@ pub fn kind_for(
 
 impl MachineKind {
     /// The one site that maps a machine kind to a concrete [`Transport`] (Decision A).
-    /// A new family = a variant above + one arm here (and in the sibling `local_socket`);
+    /// A new kind = a variant above + one arm here (and in the sibling `local_socket`);
     /// no code outside `MachineKind` matches on the kind.
     /// How this machine is ADDRESSED, in words, with the wait that bounds reaching it.
     ///
     /// Shown, never parsed: the unreachable screen states it, so a host that failed says
-    /// what it was asked over. It lives here because this is where a machine family's
+    /// what it was asked over. It lives here because this is where a machine implementation's
     /// construction data already lives - the alternative is a caller that matches on the
-    /// family to describe it, and every such caller drifts from `transport`.
+    /// implementation to describe it, and every such caller drifts from `transport`.
     pub fn addressed_as(&self) -> String {
         match self {
             MachineKind::Local { .. } => "this box, no connection to make".to_string(),
@@ -250,13 +250,13 @@ impl MachineKind {
     }
 
     /// The local mux server socket (`-S`) this machine targets — `Some` only for a local
-    /// machine on a non-default socket, `None` for any other family or the default socket.
+    /// machine on a non-default socket, `None` for any other kind or the default socket.
     /// Like [`transport`](Self::transport), the match on the kind lives HERE on the type, so
-    /// a new family is compiler-forced to state its socket in one place.
+    /// a new implementation is compiler-forced to state its socket in one place.
     pub fn local_socket(&self) -> Option<String> {
         match self {
             MachineKind::Local { socket, .. } => socket.clone(),
-            // A WSL distribution is a machine of its own: the `$TMUX` socket this box is
+            // A WSL distribution is a machine of its own: the `$TMUX` socket this machine is
             // running inside is a Windows-side path that names nothing in the distro.
             MachineKind::Ssh { .. } | MachineKind::Wsl { .. } => None,
         }
@@ -264,7 +264,7 @@ impl MachineKind {
 }
 
 /// A local machine transport targeting an optional non-default mux socket, answering
-/// as the bare `local` source - this box serving one mux.
+/// as the bare `local` source - this machine serving one mux.
 pub fn local(socket: Option<String>) -> Box<dyn Transport> {
     Box::new(Local {
         socket,
@@ -272,7 +272,7 @@ pub fn local(socket: Option<String>) -> Box<dyn Transport> {
     })
 }
 
-/// A local machine transport answering as the source `id`. Used when this box serves
+/// A local machine transport answering as the source `id`. Used when this machine serves
 /// SEVERAL muxes and each needs its own key.
 pub fn local_as(id: String, socket: Option<String>) -> Box<dyn Transport> {
     Box::new(Local { id, socket })
@@ -372,9 +372,9 @@ mod tests {
     }
 
     #[test]
-    fn machine_kind_selects_the_family_at_one_site() {
+    fn machine_kind_selects_the_implementation_at_one_site() {
         // `MachineKind::transport` is the single site that maps a machine kind to a
-        // concrete Transport (Decision A: a new family = a variant + one match arm).
+        // concrete Transport (Decision A: a new kind = a variant + one match arm).
         let local = MachineKind::Local {
             id: String::new(),
             socket: Some("/tmp/s".into()),
@@ -401,9 +401,9 @@ mod tests {
     }
 
     #[test]
-    fn a_wsl_machine_name_selects_the_wsl_family() {
-        // `kind_for` is the single assembly site, and the WSL family is chosen by the
-        // machine NAME — nothing else is threaded in to say which family this is.
+    fn a_wsl_machine_name_selects_the_wsl_kind() {
+        // `kind_for` is the single assembly site, and the WSL kind is chosen by the
+        // machine NAME — nothing else is threaded in to say which kind this is.
         let kind = kind_for(
             "wsl.Ubuntu-24.04",
             String::new(),
@@ -515,7 +515,7 @@ mod describe_tests {
     use super::*;
 
     #[test]
-    fn each_family_says_how_it_is_addressed_and_over_what_path() {
+    fn each_kind_says_how_it_is_addressed_and_over_what_path() {
         // Shown on the unreachable screen: what a failed host was asked over. The ssh
         // wait is the SAME constant the option carries, so the words and the command
         // cannot disagree.

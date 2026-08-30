@@ -1,6 +1,6 @@
 //! The abduco display driver: a per-session mux (one server per session) displayed
 //! through ONE per-host PTY that is REATTACHED whenever the selected session changes.
-//! `Abduco::driver` constructs it, so mux selection lives in the abduco family, not a
+//! `Abduco::driver` constructs it, so mux selection lives in the abduco implementation, not a
 //! central match.
 
 use std::sync::{Arc, Mutex};

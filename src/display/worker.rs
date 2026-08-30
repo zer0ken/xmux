@@ -70,7 +70,7 @@ impl DisplayWorker {
             while let Ok(req) = cmd_rx.recv() {
                 // Resolve the mux session vars to strip from the attach child here,
                 // at the spawn call site, so the low-level `spawn_attachment` never
-                // names a mux var — the vocabulary stays in `mux::vocab`.
+                // names a mux var — the list stays in `mux::vocab`.
                 let env_clear =
                     crate::mux::vocab::mux_env_keys_to_clear(std::env::vars().map(|(k, _)| k));
                 let event = match spawner(

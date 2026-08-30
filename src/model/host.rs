@@ -356,6 +356,14 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Mux for StubMux {
+        fn identity_probes(&self) -> Vec<Vec<String>> {
+            Vec::new()
+        }
+
+        fn classify_identity(&self, _outputs: &[Option<String>]) -> Option<&'static str> {
+            None
+        }
+
         /// tmux-shaped, like the fake itself.
         fn takes_server_socket(&self) -> bool {
             true
@@ -693,6 +701,14 @@ mod tests {
     }
     #[async_trait::async_trait]
     impl Mux for EnumMux {
+        fn identity_probes(&self) -> Vec<Vec<String>> {
+            Vec::new()
+        }
+
+        fn classify_identity(&self, _outputs: &[Option<String>]) -> Option<&'static str> {
+            None
+        }
+
         /// tmux-shaped, like the fake itself.
         fn takes_server_socket(&self) -> bool {
             true
@@ -819,7 +835,7 @@ mod tests {
         // binary, its listing verb, and the machine's own wrapping around them.
         let h = Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("tmux"),
+            crate::mux::for_binary("tmux").unwrap(),
         );
         let cmd = h.list_sessions_command();
         assert_eq!(cmd[0], "tmux");
@@ -835,7 +851,7 @@ mod tests {
         // parsed into the host's inventory, with liveness Live.
         let mut h = Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("tmux"),
+            crate::mux::for_binary("tmux").unwrap(),
         );
         let r = CannedRunner::ok("3\t1\t1781246739\teditor\n1\t0\t\tbuild\n");
         h.enumerate_with(&r).await.unwrap();
@@ -857,7 +873,7 @@ mod tests {
         // A reachable mux with no server is empty (Live), not an error.
         let mut h = Host::new(
             crate::transport::ssh("prod".into(), String::new(), "linux".into()),
-            crate::mux::for_binary("tmux"),
+            crate::mux::for_binary("tmux").unwrap(),
         );
         let r = CannedRunner::err(RunError::Exit {
             stderr: "no server running on /tmp/tmux-1000/default".into(),
@@ -872,7 +888,7 @@ mod tests {
     async fn enumerate_with_unreachable_is_error() {
         let mut h = Host::new(
             crate::transport::ssh("prod".into(), String::new(), "linux".into()),
-            crate::mux::for_binary("tmux"),
+            crate::mux::for_binary("tmux").unwrap(),
         );
         let r = CannedRunner::err(RunError::Other(
             "ssh: connect to host prod port 22: Connection timed out".into(),
@@ -889,7 +905,7 @@ mod tests {
         } else {
             crate::transport::local(None)
         };
-        Host::new(transport, crate::mux::for_binary(binary))
+        Host::new(transport, crate::mux::for_binary(binary).unwrap())
     }
 
     #[test]
@@ -976,7 +992,7 @@ mod tests {
         use crate::model::DisplayTty;
         let mut h = Host::new(
             crate::transport::ssh("jup".into(), String::new(), "linux".into()),
-            crate::mux::for_binary("tmux"), // Shared → DeathSignal::ControlNotice
+            crate::mux::for_binary("tmux").unwrap(), // Shared → DeathSignal::ControlNotice
         );
         assert!(
             !h.matches_display_tty("/dev/pts/3"),
@@ -997,7 +1013,7 @@ mod tests {
     fn psmux_host_session_liveness_uses_the_port_stat() {
         let h = Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("psmux"), // PerSession → DeathSignal::PathStat
+            crate::mux::for_binary("psmux").unwrap(), // PerSession → DeathSignal::PathStat
         );
         let name = format!("xmux-hostlive-{}", std::process::id());
         let path = crate::model::death::psmux_port_path(&name);
@@ -1012,7 +1028,7 @@ mod tests {
     fn tmux_host_session_is_always_live_by_port_stat() {
         let h = Host::new(
             crate::transport::ssh("jup".into(), String::new(), "linux".into()),
-            crate::mux::for_binary("tmux"), // Shared → not PathStat
+            crate::mux::for_binary("tmux").unwrap(), // Shared → not PathStat
         );
         // A Shared host never dies by a .port file — liveness here is unconditionally true.
         assert!(h.session_is_live("anything"));
@@ -1062,7 +1078,7 @@ mod tests {
     async fn detect_and_correct_replaces_behavior_and_preserves_bin() {
         let mut h = Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("tmux"),
+            crate::mux::for_binary("tmux").unwrap(),
         );
         let runner = DetectRunner::ok("psmux command help");
         h.detect_and_correct(&runner).await;
@@ -1075,14 +1091,17 @@ mod tests {
         assert!(h.detected);
 
         h.detect_and_correct(&runner).await;
-        assert_eq!(runner.calls(), 1);
+        // tmux's probe pair (help, then -V) both run before the classify reads them;
+        // the corrected source never probes again.
+        h.detect_and_correct(&runner).await;
+        assert_eq!(runner.calls(), 2);
     }
 
     #[tokio::test]
     async fn detect_and_correct_retries_after_inconclusive_probe() {
         let mut h = Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("tmux"),
+            crate::mux::for_binary("tmux").unwrap(),
         );
         let runner = DetectRunner::err();
         h.detect_and_correct(&runner).await;

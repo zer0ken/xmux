@@ -43,6 +43,16 @@ impl Mux for Screen {
         &self.bin
     }
 
+    /// screen names itself in `-v` output (`Screen version ... (GNU)`) and rejects
+    /// `-V`; it has no help command. One probe.
+    fn identity_probes(&self) -> Vec<Vec<String>> {
+        vec![vec![self.bin.clone(), "-v".to_string()]]
+    }
+
+    fn classify_identity(&self, outputs: &[Option<String>]) -> Option<&'static str> {
+        named_mux(outputs.first()?.as_deref()?)
+    }
+
     fn server_model(&self) -> ServerModel {
         // Each session is its own daemon, so the server side alone already says per
         // session; the display side agrees, there being no in-place `switch-client` to

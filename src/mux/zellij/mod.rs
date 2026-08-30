@@ -65,6 +65,16 @@ impl Mux for Zellij {
         &self.bin
     }
 
+    /// zellij names itself in its `help` banner (`Usage: zellij [OPTIONS]`), the same
+    /// positive signal psmux gives. One probe.
+    fn identity_probes(&self) -> Vec<Vec<String>> {
+        vec![vec![self.bin.clone(), "help".to_string()]]
+    }
+
+    fn classify_identity(&self, outputs: &[Option<String>]) -> Option<&'static str> {
+        named_mux(outputs.first()?.as_deref()?)
+    }
+
     fn server_model(&self) -> ServerModel {
         ServerModel::PerSession
     }
@@ -126,7 +136,7 @@ impl Mux for Zellij {
     /// on. Because the variable belongs to the PROCESS, it names xmux's own display
     /// client and no other zellij client of the user's.
     ///
-    /// It is the only witness there is. No server sees the move, so the poll cannot ask
+    /// It is the only source of truth there is. No server sees the move, so the poll cannot ask
     /// for it, and the session listing cannot answer it either: the listing's
     /// current-session marker names the session the LISTING COMMAND ITSELF ran inside,
     /// and xmux polls from outside every session, so that marker is never present.

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`mux/tmux` is the tmux family: everything mux-specific to tmux lives here so no
+`mux/tmux` is the tmux implementation: everything mux-specific to tmux lives here so no
 tmux code sits at the `src` root. It owns BOTH sides of the mux:
 
 - the metadata mux: binary name, a shared server model, aggregate session-listing
@@ -10,7 +10,7 @@ tmux code sits at the `src` root. It owns BOTH sides of the mux:
   and the window and session operation plans;
 - the display driver: the per-source display orchestration for a shared-server mux.
 
-The mux constructs its own driver, so tmux selection lives in this family and
+The mux constructs its own driver, so tmux selection lives in this implementation and
 never in a central match on server model. The control-mode wire protocol lives
 beside them, behind the shared control-protocol trait.
 
@@ -24,14 +24,14 @@ switch targets xmux's own display client and never the user's own attached clien
 A LOCAL shared source has no remote shell to record or read the tty, so it
 reattaches instead.
 
-The mux supplies mux vocabulary (argv, model, enumeration, control payload); the
+The mux supplies the argv, model, enumeration, and control payload; the
 driver consumes it and owns the concrete attach-or-switch decision. The transport
-lowers the host execution, and the tmux family never hardcodes ssh.
+dispatches the host execution, and the tmux implementation never hardcodes ssh.
 
 ## Module Seams
 
-- The family root holds the mux itself, the per-source display-tty file helpers
-  (the path, the family-private record prefix, and the in-place switch plan that
+- The implementation root holds the mux itself, the per-source display-tty file helpers
+  (the path, the implementation-private record prefix, and the in-place switch plan that
   reads the recorded tty), the control argv, and the control-protocol
   implementation.
 - The driver sits beside it with the tmux-only attach helper that wraps the
@@ -66,7 +66,7 @@ lowers the host execution, and the tmux family never hardcodes ssh.
 
 ## Before Editing
 
-- Decide whether the behavior is tmux mux vocabulary, display orchestration, or
+- Decide whether the behavior is tmux argv, display orchestration, or
   the control-mode wire protocol.
 - Keep the driver's behavior identical unless the change is explicitly a behavior
   change; the display decision is the highest-risk surface.

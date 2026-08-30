@@ -4,7 +4,7 @@
 //! supervisor-owned spawn capability + registry so the driver owns the DECISION
 //! and per-host display STATE while the PTY infrastructure stays in the loop.
 //!
-//! The per-mux drivers (`TmuxDriver`, `PsmuxDriver`) live in their mux family
+//! The per-mux drivers (`TmuxDriver`, `PsmuxDriver`) live in their mux implementation
 //! (`crate::mux::{tmux, psmux}`) and OWN the display decision. Each mux
 //! constructs its own driver via [`Mux::driver`](crate::mux::Mux::driver),
 //! so [`driver_for`] is a thin mux-agnostic wrapper (`host.mux.driver()`) that names no
@@ -90,7 +90,7 @@ pub trait MuxDriver {
 
 /// The host's mux driver — the DECISION is a Mux method (`host.mux.driver()`), not a
 /// `match` at the call site. Each mux constructs its OWN driver, so mux selection
-/// lives in the mux family (`crate::mux::{tmux, psmux}`), never a central match here.
+/// lives in the mux implementation (`crate::mux::{tmux, psmux}`), never a central match here.
 /// Drivers are zero-sized, so a fresh value per call is free; the per-host state lives in
 /// `host.display`/`AttachRegistry` (via `DriverCtx`).
 pub fn driver_for(host: &Host) -> Box<dyn MuxDriver> {
@@ -148,16 +148,16 @@ pub(crate) use log_display_inventory;
 ///
 /// The transport gate is the honesty rule, not an optimization. A process's environment is
 /// readable only on the machine it runs on, so a host reached over ssh or through a WSL
-/// distribution has no such witness, and the local registry scope is what says whether a
-/// host's processes are this box's processes.
+/// distribution has no such source of truth, and the local registry scope is what says whether a
+/// host's processes are this machine's processes.
 pub fn live_client_session(host: &Host, registry: &AttachRegistry) -> Option<String> {
-    let (key, var) = session_witness(host)?;
+    let (key, var) = session_truth_source(host)?;
     registry.child_env(&key, var)
 }
 
 /// Where a host's display client can be READ for the session it is on: the display key
 /// its attachment is registered under, and the environment variable the mux carries the
-/// session in. `None` when the host has no witness at all, which is the honesty gate the
+/// session in. `None` when the host has no source of truth at all, which is the honesty gate the
 /// read is built on and is decided WITHOUT looking at any attachment, so it answers the
 /// same before, during, and after one.
 ///
@@ -166,10 +166,10 @@ pub fn live_client_session(host: &Host, registry: &AttachRegistry) -> Option<Str
 /// the host has to be THIS MACHINE, because a process's environment is readable only on
 /// the machine it runs on: a psmux over ssh or inside a WSL distribution runs its client
 /// on the far side, where nothing here can look, and the local registry scope is what says
-/// whether a host's processes are this box's processes. A host that fails either one has NO
-/// witness: nothing is read for it, and where its client sits is claimed from nothing
+/// whether a host's processes are this machine's processes. A host that fails either one has NO
+/// source of truth: nothing is read for it, and where its client sits is claimed from nothing
 /// else.
-pub(crate) fn session_witness(host: &Host) -> Option<(String, &str)> {
+pub(crate) fn session_truth_source(host: &Host) -> Option<(String, &str)> {
     if !host.transport.local_registry_scope() {
         return None;
     }
@@ -178,7 +178,7 @@ pub(crate) fn session_witness(host: &Host) -> Option<(String, &str)> {
 }
 
 /// Moves the session's active window server-side (the real attached client follows).
-/// Over the host's open `-CC` connection if any (no fresh ssh handshake), else a lowered
+/// Over the host's open `-CC` connection if any (no fresh ssh handshake), else a dispatched
 /// select-window subprocess. Shared by both drivers' window-row handling.
 pub(crate) fn lower_select_window(
     host: &Host,
@@ -230,7 +230,7 @@ pub(crate) mod tests {
     /// The LOCAL-ONLY gate, for every mux that names a variable. Such a client's session
     /// is read out of the client PROCESS, and a process is readable only on the machine
     /// it runs on. An ssh host and a WSL distribution both run their client on the far
-    /// side, so neither has a witness to read, and this must be decided from the host
+    /// side, so neither has a source of truth to read, and this must be decided from the host
     /// alone - never from a value that happens to be readable here, which would report
     /// THIS box's session for a remote one.
     #[test]
@@ -239,42 +239,46 @@ pub(crate) mod tests {
             ("psmux", "PSMUX_SESSION_NAME"),
             ("zellij", "ZELLIJ_SESSION_NAME"),
         ] {
-            let local =
-                crate::model::Host::new(crate::transport::local(None), crate::mux::for_binary(bin));
-            let (key, var) = session_witness(&local).expect("this box's own client");
+            let local = crate::model::Host::new(
+                crate::transport::local(None),
+                crate::mux::for_binary(bin).unwrap(),
+            );
+            let (key, var) = session_truth_source(&local).expect("this box's own client");
             assert_eq!(key, "local", "read under the host's display key");
             assert_eq!(var, expected);
 
             let remote = crate::model::Host::new(
                 crate::transport::ssh("prod".into(), String::new(), "linux".into()),
-                crate::mux::for_binary(bin),
+                crate::mux::for_binary(bin).unwrap(),
             );
             assert!(
-                session_witness(&remote).is_none(),
+                session_truth_source(&remote).is_none(),
                 "an ssh {bin} client runs on the far side, where no process can be read"
             );
 
             let wsl = crate::model::Host::new(
                 crate::transport::wsl("Ubuntu-24.04".into()),
-                crate::mux::for_binary(bin),
+                crate::mux::for_binary(bin).unwrap(),
             );
             assert!(
-                session_witness(&wsl).is_none(),
+                session_truth_source(&wsl).is_none(),
                 "a WSL {bin} client runs inside the distribution, not on this box"
             );
         }
     }
 
     /// A mux whose client does not carry its session in its environment has nothing to
-    /// read even on this box: the mux half of the gate refuses it whatever the transport
+    /// read even on this machine: the mux half of the gate refuses it whatever the transport
     /// answers, so the two conditions are independent and both are load-bearing.
     #[test]
     fn a_mux_that_names_no_variable_has_no_client_to_read() {
         for bin in ["tmux", "abduco", "screen"] {
-            let host =
-                crate::model::Host::new(crate::transport::local(None), crate::mux::for_binary(bin));
+            let host = crate::model::Host::new(
+                crate::transport::local(None),
+                crate::mux::for_binary(bin).unwrap(),
+            );
             assert!(
-                session_witness(&host).is_none(),
+                session_truth_source(&host).is_none(),
                 "{bin} names no session variable on its client"
             );
         }
@@ -287,7 +291,7 @@ pub(crate) mod tests {
     fn a_host_with_no_attachment_reports_no_session() {
         let host = crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("psmux"),
+            crate::mux::for_binary("psmux").unwrap(),
         );
         let registry = AttachRegistry::new();
         assert!(live_client_session(&host, &registry).is_none());
@@ -301,15 +305,15 @@ pub(crate) mod tests {
         // concrete driver type — those live in `crate::mux::{tmux, psmux}`.
         let tmux_host = crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("tmux"),
+            crate::mux::for_binary("tmux").unwrap(),
         );
         let psmux_host = crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("psmux"),
+            crate::mux::for_binary("psmux").unwrap(),
         );
         let zellij_host = crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("zellij"),
+            crate::mux::for_binary("zellij").unwrap(),
         );
         let _t: Box<dyn MuxDriver> = driver_for(&tmux_host);
         let _p: Box<dyn MuxDriver> = driver_for(&psmux_host);
@@ -324,11 +328,11 @@ pub(crate) mod tests {
     fn driver_for_picks_the_mux_specific_driver_by_backend() {
         let tmux_host = crate::model::Host::new(
             crate::transport::ssh("jup".into(), String::new(), "linux".into()),
-            crate::mux::for_binary("tmux"),
+            crate::mux::for_binary("tmux").unwrap(),
         );
         let psmux_host = crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("psmux"),
+            crate::mux::for_binary("psmux").unwrap(),
         );
         assert_eq!(driver_for(&tmux_host).kind(), "tmux");
         assert_eq!(driver_for(&psmux_host).kind(), "psmux");
@@ -344,7 +348,7 @@ pub(crate) mod tests {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::transport::local(None),
-            crate::mux::for_binary("psmux"),
+            crate::mux::for_binary("psmux").unwrap(),
         ));
         // A stale attachment + bookkeeping for a different session: show() must drop it
         // and reattach for the selected session (psmux is one PTY per host, reattached).
