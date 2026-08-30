@@ -16,20 +16,24 @@ use anyhow::{anyhow, Result};
 /// very session holding xmux, which moves the user's own client and paints xmux inside
 /// itself. Nothing else may branch on it.
 ///
-/// The kind comes from the inside-marker env vars (`$ZELLIJ`, `$TMUX`) that the muxes
-/// themselves set. The session NAME is not trusted from an env string; tmux and psmux
-/// are asked of their server with one `display-message` at startup, run with the mux
-/// environment left intact, because the ambient session is exactly what is being asked
-/// about. zellij names its session only in the environment, so there its name is read
-/// from `$ZELLIJ_SESSION_NAME`. A query that cannot answer leaves the session unknown,
-/// and an unknown session blocks nothing. For psmux the server answer is preferred, but
-/// a server the client cannot reach falls back to the session name psmux put in the
-/// environment, so a degraded client still refuses rather than painting itself.
+/// The kind comes from the inside-marker env vars (`$ZELLIJ`, `$TMUX`, `$ABDUCO_SESSION`,
+/// `$STY`) that the muxes themselves set. The session NAME is not trusted from an env
+/// string; tmux and psmux are asked of their server with one `display-message` at
+/// startup, run with the mux environment left intact, because the ambient session is
+/// exactly what is being asked about. The muxes that name their sessions only in the
+/// environment read them there: zellij from `$ZELLIJ_SESSION_NAME`, abduco from
+/// `$ABDUCO_SESSION`, and screen from `$STY`. A query that cannot answer leaves the
+/// session unknown, and an unknown session blocks nothing. For psmux the server answer
+/// is preferred, but a server the client cannot reach falls back to the session name
+/// psmux put in the environment, so a degraded client still refuses rather than painting
+/// itself.
 pub fn own_mux_session() -> Option<(String, String)> {
     let kind = own_mux_kind(
         std::env::var("ZELLIJ").ok().as_deref(),
         std::env::var("TMUX").ok().as_deref(),
         std::env::var("PSMUX_SESSION").ok().as_deref(),
+        std::env::var("ABDUCO_SESSION").ok().as_deref(),
+        std::env::var("STY").ok().as_deref(),
     )?;
     let name = match kind {
         MuxKind::Zellij => non_empty(std::env::var("ZELLIJ_SESSION_NAME").ok()),
@@ -37,6 +41,8 @@ pub fn own_mux_session() -> Option<(String, String)> {
         MuxKind::Psmux => {
             mux_session_name("psmux").or_else(|| non_empty(std::env::var("PSMUX_SESSION").ok()))
         }
+        MuxKind::Abduco => non_empty(std::env::var("ABDUCO_SESSION").ok()),
+        MuxKind::Screen => screen_session_name(std::env::var("STY").ok()),
     }?;
     Some((kind.as_str().to_string(), name))
 }
@@ -48,9 +54,16 @@ pub fn own_mux_session() -> Option<(String, String)> {
 /// zellij session still carries `ZELLIJ_SESSION_NAME`, and reading it there would name
 /// the wrong session entirely. `PSMUX_SESSION` is read only to tell psmux apart from
 /// tmux (psmux sets `$TMUX` for tmux-compat); its VALUE is never trusted for the name.
+///
+/// When several markers are set the first in the chain wins: zellij, then abduco and
+/// screen, then tmux. abduco and screen come before tmux because their markers name the
+/// session this process is IN, while a `$TMUX` inherited from the pane such a session
+/// was created from would otherwise mask them and name the enclosing session.
 #[derive(PartialEq, Debug)]
 enum MuxKind {
     Zellij,
+    Abduco,
+    Screen,
     Tmux,
     Psmux,
 }
@@ -59,6 +72,8 @@ impl MuxKind {
     fn as_str(&self) -> &'static str {
         match self {
             MuxKind::Zellij => "zellij",
+            MuxKind::Abduco => "abduco",
+            MuxKind::Screen => "screen",
             MuxKind::Tmux => "tmux",
             MuxKind::Psmux => "psmux",
         }
@@ -70,12 +85,20 @@ fn own_mux_kind(
     zellij: Option<&str>,
     tmux: Option<&str>,
     psmux_session: Option<&str>,
+    abduco_session: Option<&str>,
+    sty: Option<&str>,
 ) -> Option<MuxKind> {
     fn set(v: Option<&str>) -> Option<&str> {
         v.filter(|s| !s.is_empty())
     }
     if set(zellij).is_some() {
         return Some(MuxKind::Zellij);
+    }
+    if set(abduco_session).is_some() {
+        return Some(MuxKind::Abduco);
+    }
+    if set(sty).is_some() {
+        return Some(MuxKind::Screen);
     }
     if set(tmux).is_some() {
         // psmux sets `TMUX` for tmux-compat, so `PSMUX_SESSION` is what tells the two
@@ -106,6 +129,17 @@ fn mux_session_name(binary: &str) -> Option<String> {
 
 fn non_empty(v: Option<String>) -> Option<String> {
     v.filter(|s| !s.is_empty())
+}
+
+/// The session name a screen `$STY` carries: everything after the first dot. screen
+/// writes the whole `<pid>.<name>` socket name into `$STY`, and `screen -ls` lists that
+/// same socket as `<pid>.<name>`, so the part after the first dot is exactly the session
+/// name xmux shows on the card. An `STY` without a dot names nothing; screen always
+/// writes one, so that only rejects garbage.
+fn screen_session_name(sty: Option<String>) -> Option<String> {
+    let sty = sty?;
+    let name = sty.split_once('.')?.1;
+    non_empty(Some(name.to_string()))
 }
 
 /// Hands the controlling terminal to a child process and waits.
@@ -166,20 +200,45 @@ mod tests {
     #[test]
     fn each_mux_is_recognized_by_its_own_marker() {
         // zellij first: it is the only one that sets `ZELLIJ`.
-        assert_eq!(own_mux_kind(Some("0"), None, None), Some(MuxKind::Zellij));
+        assert_eq!(
+            own_mux_kind(Some("0"), None, None, None, None),
+            Some(MuxKind::Zellij)
+        );
+        // abduco names the session it holds directly in `ABDUCO_SESSION`.
+        assert_eq!(
+            own_mux_kind(None, None, None, Some("dev"), None),
+            Some(MuxKind::Abduco)
+        );
+        // screen carries its whole socket name in `STY`.
+        assert_eq!(
+            own_mux_kind(None, None, None, None, Some("1234.pts-0.host")),
+            Some(MuxKind::Screen)
+        );
         // psmux sets `TMUX` too, so `PSMUX_SESSION` is what tells the kinds apart.
         assert_eq!(
-            own_mux_kind(None, Some("/tmp/psmux-8648/default,60836,0"), Some("xmus")),
+            own_mux_kind(
+                None,
+                Some("/tmp/psmux-8648/default,60836,0"),
+                Some("xmus"),
+                None,
+                None
+            ),
             Some(MuxKind::Psmux)
         );
         // tmux names only the socket and pane.
         assert_eq!(
-            own_mux_kind(None, Some("/tmp/tmux-1000/default,1234,0"), None),
+            own_mux_kind(
+                None,
+                Some("/tmp/tmux-1000/default,1234,0"),
+                None,
+                None,
+                None
+            ),
             Some(MuxKind::Tmux)
         );
         // Outside every mux.
-        assert_eq!(own_mux_kind(None, None, None), None);
-        assert_eq!(own_mux_kind(Some(""), Some(""), None), None);
+        assert_eq!(own_mux_kind(None, None, None, None, None), None);
+        assert_eq!(own_mux_kind(Some(""), Some(""), None, None, None), None);
     }
 
     #[test]
@@ -187,6 +246,52 @@ mod tests {
         assert_eq!(MuxKind::Zellij.as_str(), "zellij");
         assert_eq!(MuxKind::Tmux.as_str(), "tmux");
         assert_eq!(MuxKind::Psmux.as_str(), "psmux");
+        assert_eq!(MuxKind::Abduco.as_str(), "abduco");
+        assert_eq!(MuxKind::Screen.as_str(), "screen");
+    }
+
+    #[test]
+    fn an_inherited_tmux_marker_does_not_mask_an_abduco_or_screen_session() {
+        // A session created from a tmux pane inherits `$TMUX`; the marker of the session
+        // xmux is actually inside must still win, or the enclosing session is refused
+        // instead of the one holding xmux.
+        assert_eq!(
+            own_mux_kind(
+                None,
+                Some("/tmp/tmux-1000/default,1234,0"),
+                None,
+                Some("dev"),
+                None
+            ),
+            Some(MuxKind::Abduco)
+        );
+        assert_eq!(
+            own_mux_kind(
+                None,
+                Some("/tmp/tmux-1000/default,1234,0"),
+                None,
+                None,
+                Some("1234.pts-0.host")
+            ),
+            Some(MuxKind::Screen)
+        );
+    }
+
+    #[test]
+    fn screen_names_its_session_after_the_first_dot() {
+        // `$STY` carries the whole `<pid>.<name>` socket name; the session is everything
+        // after the first dot, exactly what `screen -ls` lists on the card.
+        assert_eq!(
+            screen_session_name(Some("830608.foo.bar".into())).as_deref(),
+            Some("foo.bar")
+        );
+        assert_eq!(
+            screen_session_name(Some("830531..jupiter00".into())).as_deref(),
+            Some(".jupiter00")
+        );
+        // No dot names nothing; screen always writes one, so this only rejects garbage.
+        assert_eq!(screen_session_name(Some("nonsense".into())), None);
+        assert_eq!(screen_session_name(None), None);
     }
 
     #[test]
@@ -195,7 +300,7 @@ mod tests {
         // while `ZELLIJ` itself is gone. Reading it there would refuse to mirror a
         // session xmux is not in, and keep mirroring the one it IS in.
         assert_eq!(
-            own_mux_kind(None, Some("/tmp/psmux/x,1,0"), Some("xmus")),
+            own_mux_kind(None, Some("/tmp/psmux/x,1,0"), Some("xmus"), None, None),
             Some(MuxKind::Psmux),
         );
     }
