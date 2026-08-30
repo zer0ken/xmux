@@ -29,6 +29,12 @@ pub enum PtyEvent {
     /// filtered against it. Identity-preserving: only this attachment's own shell
     /// emits the marker.
     DisplayTty { id: u64, tty: String },
+    /// The child's output held a complete OSC 52 clipboard write
+    /// (`ESC ] 52 ; <selection> ; <base64>` plus a BEL or ST terminator). The pump
+    /// scanned it out of the raw stream (the vt100 parser would otherwise eat it);
+    /// the loop re-emits the same sequence on xmux's stdout between frames so the
+    /// terminal above sets the clipboard.
+    Osc52 { seq: Vec<u8> },
 }
 
 /// A command for a kept attachment's dedicated PTY control thread: bytes to write
@@ -64,6 +70,180 @@ fn scan_marker_once(acc: &mut Vec<u8>, captured: &mut Option<String>, chunk: &[u
             let cut = acc.len() - cap;
             acc.drain(0..cut);
         }
+    }
+}
+
+/// The bound on a single OSC 52 sequence's accumulation in the pump, bytes from
+/// `ESC ]` up to (not including) its terminator. A clipboard write bigger than this
+/// is dropped whole - the terminal it would reach caps its own clipboard - rather
+/// than buffered without limit.
+const OSC52_MAX: usize = 512 * 1024;
+
+/// Where the [`Osc52Scanner`] is in the `ESC ] <ps> ; <payload>` grammar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Osc52State {
+    /// No OSC in progress; scanning for `ESC`.
+    #[default]
+    Idle,
+    /// `Idle`, but the previous byte was `ESC` and the next byte decides whether an
+    /// OSC starts.
+    Esc,
+    /// After `ESC ]`: reading the parameter digits up to the first `;`.
+    Ps,
+    /// After `ESC ] <ps> ;`: reading the payload up to its terminator.
+    Payload,
+    /// `Payload`, but the previous byte was `ESC` and the next byte may be `\` (an
+    /// ST terminator) or an `ESC` inside the payload.
+    PayloadEsc,
+}
+
+/// A streaming scanner for OSC 52 clipboard sequences in a child's byte stream. It
+/// hands back each WHOLE sequence (`ESC ] 52 ; <selection> ; <base64>` plus its BEL
+/// or ST terminator) so xmux's own terminal can set the clipboard. It holds whatever
+/// state it needs across reads so a sequence split at a read boundary is still
+/// found, and it discards anything that is not a complete OSC 52: a non-52 OSC
+/// passes through untouched, and a payload over [`OSC52_MAX`] is dropped rather than
+/// buffered without bound.
+#[derive(Default)]
+pub struct Osc52Scanner {
+    state: Osc52State,
+    /// The bytes of the current OSC collected so far (`ESC ]` onward), bounded.
+    acc: Vec<u8>,
+    /// The OSC parameter number (the digits before the first `;`).
+    ps: u32,
+    /// Set once the current OSC's accumulated bytes exceed [`OSC52_MAX`]; the whole
+    /// sequence is then dropped at its terminator instead of emitted.
+    oversized: bool,
+}
+
+impl Osc52Scanner {
+    /// Appends each complete OSC 52 sequence found in `chunk` (bytes from `ESC ]`
+    /// through its terminator) to `out`. A sequence already half-consumed from a
+    /// previous read continues from where it stopped.
+    pub fn feed(&mut self, chunk: &[u8], out: &mut Vec<Vec<u8>>) {
+        let mut i = 0;
+        while i < chunk.len() {
+            let b = chunk[i];
+            match self.state {
+                Osc52State::Idle => {
+                    if b == 0x1b {
+                        self.state = Osc52State::Esc;
+                    }
+                    i += 1;
+                }
+                Osc52State::Esc => match b {
+                    // ESC ] begins an OSC.
+                    0x5d => {
+                        self.reset();
+                        self.acc.push(0x1b);
+                        self.acc.push(0x5d);
+                        self.state = Osc52State::Ps;
+                        i += 1;
+                    }
+                    // A lone ST with nothing before it: plain noise.
+                    0x5c => {
+                        self.state = Osc52State::Idle;
+                        i += 1;
+                    }
+                    // ESC in text, not an OSC start: reconsider this byte from Idle.
+                    _ => self.state = Osc52State::Idle,
+                },
+                Osc52State::Ps => match b {
+                    b'0'..=b'9' => {
+                        self.ps = self.ps.saturating_mul(10).saturating_add((b - b'0') as u32);
+                        self.push(b);
+                        i += 1;
+                    }
+                    b';' => {
+                        self.push(b);
+                        self.state = Osc52State::Payload;
+                        i += 1;
+                    }
+                    // BEL or ST before any payload: a complete empty OSC. A 52 with
+                    // no payload has nothing to forward.
+                    0x07 | 0x1b => {
+                        if b == 0x1b && i + 1 < chunk.len() && chunk[i + 1] == 0x5c {
+                            i += 1; // consume the ST's `\` too
+                        }
+                        self.reset();
+                        i += 1;
+                    }
+                    // A non-digit, non-`;` byte in the parameter field: malformed.
+                    _ => {
+                        self.reset();
+                        i += 1;
+                    }
+                },
+                Osc52State::Payload => match b {
+                    // BEL terminator.
+                    0x07 => {
+                        self.acc.push(0x07);
+                        self.finish(out);
+                        i += 1;
+                    }
+                    // ST terminator: ESC \ .
+                    0x1b if i + 1 < chunk.len() && chunk[i + 1] == 0x5c => {
+                        self.acc.push(0x1b);
+                        self.acc.push(0x5c);
+                        self.finish(out);
+                        i += 2;
+                    }
+                    // ESC at the end of the chunk may begin an ST in the next read.
+                    0x1b => {
+                        self.state = Osc52State::PayloadEsc;
+                        i += 1;
+                    }
+                    _ => {
+                        if self.ps == 52 {
+                            self.push(b);
+                        }
+                        i += 1;
+                    }
+                },
+                Osc52State::PayloadEsc => match b {
+                    0x5c => {
+                        self.acc.push(0x1b);
+                        self.acc.push(0x5c);
+                        self.finish(out);
+                        self.state = Osc52State::Idle;
+                        i += 1;
+                    }
+                    // The ESC was inside the payload; keep it and reconsider `b` there.
+                    _ => {
+                        if self.ps == 52 {
+                            self.push(0x1b);
+                        }
+                        self.state = Osc52State::Payload;
+                    }
+                },
+            }
+        }
+    }
+
+    /// Appends `b` to the current OSC if it fits the bound; marks the OSC oversized
+    /// once the bound is hit (it is then dropped at its terminator).
+    fn push(&mut self, b: u8) {
+        if self.acc.len() < OSC52_MAX {
+            self.acc.push(b);
+        } else {
+            self.oversized = true;
+        }
+    }
+
+    /// Ends the current OSC: emits the collected sequence when it is a complete,
+    /// bounded OSC 52, then resets for the next one.
+    fn finish(&mut self, out: &mut Vec<Vec<u8>>) {
+        if self.ps == 52 && !self.oversized {
+            out.push(std::mem::take(&mut self.acc));
+        }
+        self.reset();
+    }
+
+    fn reset(&mut self) {
+        self.acc.clear();
+        self.ps = 0;
+        self.oversized = false;
+        self.state = Osc52State::Idle;
     }
 }
 
@@ -354,7 +534,11 @@ pub fn spawn_attachment(
         let mut qtail: Vec<u8> = Vec::new();
         let mut marker_acc: Vec<u8> = Vec::new();
         let mut marker_done = false;
-        loop {
+        // Holds OSC-in-progress between reads so an OSC 52 split at a read boundary
+        // is still found (and a non-52 OSC's payload is skipped, not misread).
+        let mut osc52 = Osc52Scanner::default();
+        let mut osc: Vec<Vec<u8>> = Vec::new();
+        'pump: loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
@@ -392,6 +576,16 @@ pub fn spawn_attachment(
                             tracing::debug!(id, tty = %tty, "tty_marker_captured");
                             marker_done = true;
                             let _ = events.send(PtyEvent::DisplayTty { id, tty });
+                        }
+                    }
+                    // Forward any OSC 52 clipboard writes the child emitted: the vt100
+                    // parser would eat them, so the pump scans the raw stream and carries
+                    // each whole sequence to the loop, which re-emits it on xmux's stdout
+                    // between frames (the terminal above sets the clipboard).
+                    osc52.feed(&buf[..n], &mut osc);
+                    for seq in osc.drain(..) {
+                        if events.send(PtyEvent::Osc52 { seq }).is_err() {
+                            break 'pump; // the app is gone - stop pumping
                         }
                     }
                     // Coalesce: signal a redraw only if no Output is already pending
@@ -698,6 +892,84 @@ mod tests {
         );
     }
 
+    // OSC 52 forwarding: the pump re-emits a child's complete OSC 52 clipboard write
+    // on xmux's stdout. These prove the scanner finds a whole sequence (wherever it
+    // sits in the stream), across read boundaries, with either terminator, and that
+    // it drops anything that is not a complete, bounded OSC 52.
+
+    #[test]
+    fn osc52_emits_a_complete_sequence() {
+        let mut s = Osc52Scanner::default();
+        let mut out = Vec::new();
+        s.feed(b"pre \x1b]52;c;aGVsbG8=\x07 post", &mut out);
+        assert_eq!(out, vec![b"\x1b]52;c;aGVsbG8=\x07".to_vec()]);
+    }
+
+    #[test]
+    fn osc52_split_across_reads_is_still_emitted() {
+        let mut s = Osc52Scanner::default();
+        let mut out = Vec::new();
+        // Split mid-sequence (even inside the parameter digits) and at the terminator.
+        s.feed(b"\x1b]5", &mut out);
+        s.feed(b"2;c;aGVsbG8", &mut out);
+        s.feed(b"=\x07", &mut out);
+        assert_eq!(out, vec![b"\x1b]52;c;aGVsbG8=\x07".to_vec()]);
+    }
+
+    #[test]
+    fn osc52_accepts_bel_and_st_terminators() {
+        let mut s = Osc52Scanner::default();
+        let mut out = Vec::new();
+        s.feed(b"\x1b]52;c;aGVsbG8=\x07", &mut out);
+        s.feed(b"\x1b]52;c;aGVsbG8=\x1b\\", &mut out);
+        assert_eq!(
+            out,
+            vec![
+                b"\x1b]52;c;aGVsbG8=\x07".to_vec(),
+                b"\x1b]52;c;aGVsbG8=\x1b\\".to_vec(),
+            ]
+        );
+    }
+
+    #[test]
+    fn osc52_st_split_at_read_boundary_is_emitted() {
+        // ESC ends one read, `\` opens the next: the ST must still terminate the OSC.
+        let mut s = Osc52Scanner::default();
+        let mut out = Vec::new();
+        s.feed(b"\x1b]52;c;aGVsbG8=\x1b", &mut out);
+        assert!(out.is_empty(), "sequence is not complete yet");
+        s.feed(b"\\", &mut out);
+        assert_eq!(out, vec![b"\x1b]52;c;aGVsbG8=\x1b\\".to_vec()]);
+    }
+
+    #[test]
+    fn osc52_oversized_payload_is_dropped() {
+        let mut s = Osc52Scanner::default();
+        let mut out = Vec::new();
+        let mut chunk = b"\x1b]52;c;".to_vec();
+        chunk.extend(std::iter::repeat_n(b'a', OSC52_MAX + 100));
+        chunk.push(0x07);
+        s.feed(&chunk, &mut out);
+        assert!(out.is_empty(), "oversized OSC 52 is not forwarded");
+    }
+
+    #[test]
+    fn osc52_non_52_osc_is_left_alone() {
+        let mut s = Osc52Scanner::default();
+        let mut out = Vec::new();
+        // A non-52 OSC (title), and one whose payload embeds an OSC-52 look-alike
+        // (payload text, not a clipboard write), then a real OSC 52 after them.
+        s.feed(b"\x1b]0;some title\x07", &mut out);
+        assert!(out.is_empty(), "a non-52 OSC is not forwarded");
+        s.feed(b"\x1b]0;x\x1b]52;c;fake\x07y\x07", &mut out);
+        assert!(
+            out.is_empty(),
+            "an embedded look-alike is payload, not a write"
+        );
+        s.feed(b"\x1b]52;c;real\x07", &mut out);
+        assert_eq!(out, vec![b"\x1b]52;c;real\x07".to_vec()]);
+    }
+
     // End-to-end smoke of the real PTY-attach path: spawn a non-interactive child on
     // a ConPTY, and confirm its stdout round-trips into the `Grid` (the pump fed it),
     // an `Output` event was emitted, and `connecting` cleared.
@@ -753,6 +1025,52 @@ mod tests {
         assert!(
             matches!(ev_rx.try_recv(), Ok(PtyEvent::Output { id: 1 }) | Err(_)),
             "the pump emits Output events for the attachment"
+        );
+        att.teardown();
+    }
+
+    // End-to-end smoke of the OSC 52 forwarding path: spawn a NON-interactive child on
+    // a real ConPTY that writes an OSC 52 clipboard sequence to its tty, and confirm the
+    // pump hands the WHOLE sequence back as a `PtyEvent::Osc52` (what the loop then
+    // re-emits on xmux's stdout). Proves the sequence survives the vt100 parser, which
+    // would otherwise eat it.
+    //
+    // `#[ignore]` and MUST be run in a REAL terminal, which CI does not have:
+    //   cargo test -p xmux display::attachment::tests::spawn_attachment_forwards_osc52 -- --ignored --nocapture
+    #[ignore = "spawns a real ConPTY child; run only in a non-nested real terminal"]
+    #[test]
+    fn spawn_attachment_forwards_osc52_smoke() {
+        use std::time::{Duration, Instant};
+        let (ev_tx, mut ev_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
+        // A NON-interactive child that writes `ESC ] 52;c;aGVsbG8= BEL` to its tty,
+        // then idles briefly (sleep keeps the pty open so the pump reads the output
+        // before EOF).
+        let argv: Vec<String> = vec![
+            "powershell.exe".into(),
+            "-NoProfile".into(),
+            "-Command".into(),
+            "$s = [char]27 + ']52;c;aGVsbG8=' + [char]7; [Console]::Out.Write($s); Start-Sleep -Milliseconds 500"
+                .into(),
+        ];
+        let env_clear = crate::mux::vocab::mux_env_keys_to_clear(std::env::vars().map(|(k, _)| k));
+        let att = spawn_attachment(&argv, 80, 24, 1, ev_tx, &env_clear).expect("spawn");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut forwarded = None;
+        while Instant::now() < deadline {
+            match ev_rx.try_recv() {
+                Ok(PtyEvent::Osc52 { seq }) => {
+                    forwarded = Some(seq);
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) => std::thread::sleep(Duration::from_millis(25)),
+            }
+        }
+        assert_eq!(
+            forwarded.as_deref(),
+            Some(b"\x1b]52;c;aGVsbG8=\x07".as_slice()),
+            "the child's OSC 52 must reach the loop as a whole sequence"
         );
         att.teardown();
     }
