@@ -73,6 +73,26 @@ pub(crate) const NAV_HEIGHT_MAX: u16 = 100;
 /// passed to the `Runtime` methods that draw / resize / dump.
 type Term = ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>;
 
+/// Clears the physical screen and forces the next draw to repaint every cell.
+///
+/// Not `Terminal::clear`: that preserves the cursor by querying the terminal for
+/// its position first, and the reply to that query arrives on fd 0, where the
+/// app's own stdin reader thread outraces crossterm's event source - on Unix the
+/// query then times out (2 s) and the clear fails. Clearing through the backend
+/// sends no query, and resetting both buffers makes the next diff treat every
+/// cell as changed, so a cell the render leaves untouched comes up blank rather
+/// than resurrecting pre-clear content.
+fn clear_screen<B>(term: &mut ratatui::Terminal<B>) -> Result<(), B::Error>
+where
+    B: ratatui::backend::Backend,
+{
+    use ratatui::backend::ClearType;
+    term.backend_mut().clear_region(ClearType::All)?;
+    term.swap_buffers();
+    term.swap_buffers();
+    Ok(())
+}
+
 /// How long the resize-repeat window stays open after a prefix-driven nav resize:
 /// during it a bare Ctrl+←/→ (no prefix) keeps resizing and refreshes the window -
 /// tmux's `bind -r` repeat applied to the nav width. Each repeat resets the window.
@@ -1132,7 +1152,7 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
                 return 1;
             }
         };
-    if let Err(e) = term.clear() {
+    if let Err(e) = clear_screen(&mut term) {
         tracing::warn!(error = %e, "term_clear_failed");
     }
 
