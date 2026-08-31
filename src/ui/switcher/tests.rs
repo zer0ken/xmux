@@ -3643,6 +3643,85 @@ async fn a_leading_zero_names_its_value() {
     assert!(!h.state.is_inputting(), "Enter closes on the card 01 names");
 }
 
+#[tokio::test]
+async fn the_two_digit_boundary_starts_at_exactly_ten_cards() {
+    // Ten is where the numbers gain a digit: the address column is two wide, so a
+    // single-digit number takes a leading blank and 10 paints both of its digits.
+    // It is also the first count a two-digit number can name: 10 is the LAST card,
+    // and 11 is already past the end.
+    let mut h = Harness::new(scan_with_sessions(10));
+    let selectable: Vec<usize> = (0..h.sw.rows.len())
+        .filter(|&i| h.sw.rows[i].selectable())
+        .collect();
+    assert_eq!(
+        selectable.len(),
+        10,
+        "the fixture sits exactly on the boundary"
+    );
+    let last = *selectable.last().unwrap();
+    // The painted address is the width made visible: the first three columns of a
+    // card's row (the number right-aligned in two, then the separating blank).
+    let address_of = |h: &Harness, row: usize| -> String {
+        let (_, rect) =
+            h.sw.nav_cells
+                .iter()
+                .find(|(i, _)| *i == row)
+                .expect("every row was drawn");
+        (rect.x..rect.x + 3)
+            .map(|x| h.buf()[(x, rect.y)].symbol())
+            .collect()
+    };
+    assert_eq!(
+        address_of(&h, selectable[0]),
+        format!(" {} ", super::render::SELECTED_MARK),
+        "the selected card's mark sits right-aligned in the two-wide column"
+    );
+    assert_eq!(
+        address_of(&h, last).trim_end(),
+        "10",
+        "the last card paints its two-digit number"
+    );
+    // The jump starts far away so its steps are real moves: End sits on the last
+    // card, `prefix 1` walks back to the first, and the second digit walks forward
+    // into the first two-digit number, the last card again.
+    h.key(KeyCode::End).await;
+    assert_eq!(h.sw.selected, last, "End starts on the last card");
+    h.key(KeyCode::Char('1')).await;
+    assert_eq!(
+        h.sw.card_number(h.sw.selected),
+        1,
+        "the seeding digit lands immediately"
+    );
+    h.key(KeyCode::Char('0')).await;
+    assert_eq!(
+        h.sw.card_number(h.sw.selected),
+        10,
+        "10 addresses the first two-digit number"
+    );
+    assert_eq!(h.sw.selected, last, "which is the last selectable card");
+    h.key(KeyCode::Enter).await;
+    assert!(!h.state.is_inputting(), "Enter closes the popup");
+    assert_eq!(h.sw.selected, last, "and keeps where the jump landed");
+    // One past the boundary is already dead: the extension to 11 leaves the
+    // selection on the seeded card, and Enter flashes the range and keeps the
+    // popup open.
+    h.key(KeyCode::Char('1')).await;
+    h.key(KeyCode::Char('1')).await;
+    assert_eq!(
+        h.sw.card_number(h.sw.selected),
+        1,
+        "11 names no card, so the selection keeps the seeded card"
+    );
+    assert_eq!(h.input_buffer(), "11", "the buffer holds the dead number");
+    h.key(KeyCode::Enter).await;
+    assert!(h.state.is_inputting(), "the popup stays open");
+    assert!(
+        h.state.chrome.flash.contains("no session 11 (1 - 10)"),
+        "the flash names the dead number and the 1-based range: {}",
+        h.state.chrome.flash
+    );
+}
+
 #[test]
 fn a_hidden_nav_keeps_no_status_line_until_it_has_something_to_say() {
     // Auto-hide with the terminal focused gives the mux the whole screen (nav_width 0).
