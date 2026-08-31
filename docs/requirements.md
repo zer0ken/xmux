@@ -170,9 +170,11 @@ no function, and no test, so renaming code is never a documentation change.
   card holds the selection mark in that same column instead. Selecting a card changes
   nothing else on the card (the address column keeps its width), so a
   name holds its column as the selection passes over it. The input stays
-  open in the hint bar so the number can grow, and accepts a digit only while the result still addresses
-  a real session, so one-, two-, and three-digit numbers behave identically. Each edit
-  moves the selection; `Enter` keeps it, `Esc` returns to where the jump started.
+  open in the hint bar so the number can grow, and every digit is taken as typed: the
+  number only has to name a real card at Enter. Each edit moves the selection while
+  the number names a card and leaves it alone otherwise; `Enter` closes when the
+  number names a card and flashes the valid range while leaving the input open
+  otherwise; `Esc` returns to where the jump started.
 - **FR-B11** - Every colour xmux paints is an ANSI-16 slot, so the TERMINAL THEME
   resolves the hue and the whole UI recolours with the user's own scheme. A THEME is a
   named role→ANSI-slot assignment curated in a registry: the built-ins are

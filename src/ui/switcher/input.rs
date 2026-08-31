@@ -120,12 +120,12 @@ impl Switcher {
         self.dismiss_modals(state);
         match mode {
             InputMode::Filter => {
-                state.modal = Some(Modal::Input(Input::new(
-                    mode,
-                    " filter sessions".into(),
-                    state.filter.clone(),
-                    None,
-                )));
+                let mut input =
+                    Input::new(mode, " filter sessions".into(), state.filter.clone(), None);
+                // The filter the input opened from: Esc restores it, undoing every
+                // live edit made while the input was open.
+                input.restore_filter = Some(state.filter.clone());
+                state.modal = Some(Modal::Input(Box::new(input)));
             }
             // New is opened by `open_new`, Jump by `open_jump` (both capture context
             // the mode alone does not carry).
@@ -149,19 +149,20 @@ impl Switcher {
         let Some(source) = self.current_source() else {
             return;
         };
-        state.modal = Some(Modal::Input(Input::new(
+        state.modal = Some(Modal::Input(Box::new(Input::new(
             InputMode::New,
             " new session name (empty = auto)".into(),
             String::new(),
             Some(source),
-        )));
+        ))));
     }
 
     /// The row `number` addresses, or `None` when no card carries it: the nth
     /// SELECTABLE card, section titles excepted. The numbers run `0..selectable_count`,
     /// so a number that names nothing today can never be extended into one either (any
-    /// extra digit only makes it larger). That is what lets the jump VET a keystroke
-    /// instead of holding a dead number: see [`Switcher::jump_accepts`].
+    /// extra digit only makes it larger). The jump reads it on every edit to move the
+    /// selection while the number names a card, and at Enter to decide whether to land
+    /// or flash: see [`Switcher::jump_accepts`].
     fn jump_row(&self, number: &str) -> Option<usize> {
         let n = number.trim().parse::<usize>().ok()?;
         self.rows
@@ -172,7 +173,9 @@ impl Switcher {
             .map(|(i, _)| i)
     }
 
-    /// Whether the jump would accept `number`, i.e. some card carries it. An empty
+    /// Whether the jump would land on `number`, i.e. some card carries it. Read at
+    /// Enter only: every digit is taken while typing, and a number that names no card
+    /// just leaves the selection alone until Enter, which flashes the range. An empty
     /// buffer is not acceptable as a jump target but is a legal editing state, so it is
     /// handled by the caller, not here.
     fn jump_accepts(&self, number: &str) -> bool {
@@ -180,18 +183,15 @@ impl Switcher {
     }
 
     /// Opens the jump popup seeded with `digit`, remembering the session to return to.
-    /// The digit is applied immediately, so `prefix 4` lands on 4 and the popup stays
-    /// open only to let the number grow (4 → 41 → 417) or be cancelled. A digit no
-    /// card carries never opens it at all: with nine sessions, `prefix 9` is refused
-    /// with a flash rather than opening a popup that cannot go anywhere.
+    /// The digit is applied immediately when it names a card, so `prefix 4` lands on 4
+    /// and the popup stays open only to let the number grow (4 → 41 → 417) or be
+    /// cancelled. A digit no card carries still opens the popup holding it; the
+    /// selection is only moved while the number names a card, so a dead number just
+    /// waits for Enter to vet it.
     pub(super) fn open_jump(&mut self, digit: char, state: &mut crate::state::State) {
         state.chrome.flash.clear();
         let seed = digit.to_string();
         let last = self.selectable_count().saturating_sub(1);
-        if !self.jump_accepts(&seed) {
-            state.flash(format!("no session {seed} (0 - {last})"));
-            return;
-        }
         let restore = self.current_ref().cloned();
         self.dismiss_modals(state);
         let mut input = Input::new(
@@ -201,14 +201,14 @@ impl Switcher {
             None,
         );
         input.restore = restore;
-        state.modal = Some(Modal::Input(input));
+        state.modal = Some(Modal::Input(Box::new(input)));
         self.apply_jump(state);
     }
 
-    /// Moves the selection to the session the open jump popup's buffer names. Only an
-    /// empty buffer leaves the selection alone: every digit the popup accepted keeps the
-    /// number addressing a real card, so one, two, and three digit numbers all behave
-    /// the same - the buffer is never showing a number you cannot land on.
+    /// Moves the selection to the card the open jump popup's buffer names. The move
+    /// happens only while the number names a card and leaves the selection alone
+    /// otherwise (an empty buffer, or a number past the last card), so the number reads
+    /// as a live cursor rather than a value submitted at the end.
     fn apply_jump(&mut self, state: &mut crate::state::State) {
         let Some(Modal::Input(input)) = &state.modal else {
             return;
@@ -218,6 +218,24 @@ impl Switcher {
         };
         self.user_moved = true;
         self.set_selected(n, state);
+    }
+
+    /// Reflects the open filter input's buffer into the active filter and re-derives
+    /// the list, so the filter applies as the user types rather than at Enter. A no-op
+    /// when no filter input is open. The trimmed buffer is what the filter stores, so
+    /// typing a trailing space does not change the active filter.
+    fn apply_filter(&mut self, state: &mut crate::state::State) {
+        let filter = match &state.modal {
+            Some(Modal::Input(input)) if input.mode == InputMode::Filter => {
+                input.buffer.trim().to_string()
+            }
+            _ => return,
+        };
+        if state.filter == filter {
+            return;
+        }
+        state.filter = filter;
+        self.rebuild(state);
     }
 
     /// Returns the selection to the card a cancelled jump started from, matched by
@@ -237,6 +255,11 @@ impl Switcher {
     }
 
     fn handle_input_key(&mut self, ev: KeyEvent, state: &mut crate::state::State) -> Vec<Command> {
+        // A flash is a transient error/message - it lives only until the next key. Clear
+        // it here so a key while an input is open (a fresh edit, a fresh Enter) restores
+        // the input line; an action below may set a fresh one, which survives because
+        // this runs first.
+        state.chrome.flash.clear();
         match ev.code {
             KeyCode::Enter => {
                 let (mode, val, source) = {
@@ -249,30 +272,56 @@ impl Switcher {
                         input.source.clone(),
                     )
                 };
-                // Close the input first so a queue helper that early-returns on a
-                // validation failure (empty/unchanged name) still dismisses the modal.
-                self.close_input(state);
                 match mode {
-                    InputMode::Filter => {
-                        state.filter = val;
-                        self.rebuild(state);
+                    // Enter on a jump lands only when the buffer names a card. A number
+                    // no card carries flashes the range and keeps the popup open, so the
+                    // user can find out how high the numbers go without closing; an
+                    // empty buffer just keeps it open.
+                    InputMode::Jump => {
+                        if !val.is_empty() && self.jump_accepts(&val) {
+                            self.close_input(state);
+                        } else {
+                            let last = self.selectable_count().saturating_sub(1);
+                            if !val.is_empty() {
+                                state.flash(format!("no session {val} (0 - {last})"));
+                            }
+                        }
                         Vec::new()
                     }
-                    InputMode::New => self.queue_create(source, &val, state),
-                    // The jump already happened on every edit, so Enter just commits by
-                    // closing - there is nothing left to apply.
-                    InputMode::Jump => Vec::new(),
+                    // The filter applied on every edit, so Enter only closes it; the
+                    // create input closes first so a queue helper that early-returns on a
+                    // validation failure (empty/unchanged name) still dismisses the
+                    // modal.
+                    _ => {
+                        self.close_input(state);
+                        match mode {
+                            InputMode::Filter => Vec::new(),
+                            InputMode::New => self.queue_create(source, &val, state),
+                            InputMode::Jump => Vec::new(),
+                        }
+                    }
                 }
             }
             KeyCode::Esc => {
-                // A cancelled jump must undo the moves it already made; every other mode
-                // has changed nothing yet, so closing is the whole cancel.
-                let restore = match &state.modal {
-                    Some(Modal::Input(i)) if i.mode == InputMode::Jump => i.restore.clone(),
-                    _ => None,
+                // A cancelled jump must undo the moves it already made; a cancelled
+                // filter must restore the filter it opened from (it applied live, so
+                // every edit needs undoing); every other mode has changed nothing yet,
+                // so closing is the whole cancel.
+                let (restore, restore_filter) = match &state.modal {
+                    Some(Modal::Input(i)) if i.mode == InputMode::Jump => (i.restore.clone(), None),
+                    Some(Modal::Input(i)) if i.mode == InputMode::Filter => {
+                        (None, i.restore_filter.clone())
+                    }
+                    _ => (None, None),
                 };
                 self.close_input(state);
                 self.restore_jump(restore, state);
+                if let Some(f) = restore_filter {
+                    if state.filter != f {
+                        state.filter = f;
+                        self.rebuild(state);
+                    }
+                }
                 Vec::new()
             }
             // All other keys edit the buffer at the caret. Grab the input once so each
@@ -281,15 +330,10 @@ impl Switcher {
             // match the raw NAK / ETB bytes, not Char('u')/Char('w') + a modifier.
             code => {
                 let mut jumping = false;
-                // Vetting a digit needs the selectable count while `state.modal` is
-                // mutably borrowed, so capture the predicate's input up front. Section
-                // titles take no number, so the bound is the card count, not the row
-                // count.
-                let cards = self.selectable_count();
-                let accepts =
-                    |buf: String| matches!(buf.trim().parse::<usize>(), Ok(n) if n < cards);
+                let mut filtering = false;
                 if let Some(Modal::Input(input)) = state.modal.as_mut() {
                     jumping = input.mode == InputMode::Jump;
+                    filtering = input.mode == InputMode::Filter;
                     match code {
                         KeyCode::Backspace => input.backspace(),
                         KeyCode::Delete => input.delete(),
@@ -300,14 +344,13 @@ impl Switcher {
                         KeyCode::Char('\u{15}') => input.clear_line(),
                         KeyCode::Char('\u{17}') => input.delete_word_before(),
                         // A session number is digits only, so a stray letter is
-                        // dropped rather than making the buffer unparseable. A digit is
-                        // vetted by its RESULT: one that would take the number past the
-                        // last card is refused, so the buffer always names a session you
-                        // can land on and a two- or three-digit number behaves exactly
-                        // like a one-digit one. Control chars are ignored in every mode
-                        // so a stray C-g never lands as text.
+                        // dropped rather than making the buffer unparseable. Every digit
+                        // is taken as typed: the number only has to name a card at Enter,
+                        // and until then a dead number just leaves the selection alone.
+                        // Control chars are ignored in every mode so a stray C-g never
+                        // lands as text.
                         KeyCode::Char(c) if jumping => {
-                            if c.is_ascii_digit() && accepts(input.buffer_with(c)) {
+                            if c.is_ascii_digit() {
                                 input.insert(c);
                             }
                         }
@@ -315,22 +358,28 @@ impl Switcher {
                         _ => {}
                     }
                 }
-                // The jump acts WHILE open: re-target after every edit so the selection
-                // tracks the number being typed.
+                // Both live modes act WHILE open: a jump re-targets the selection after
+                // every edit, and a filter re-derives the list after every edit.
                 if jumping {
                     self.apply_jump(state);
+                }
+                if filtering {
+                    self.apply_filter(state);
                 }
                 Vec::new()
             }
         }
     }
 
-    /// Test/host hook: set the active input buffer directly.
+    /// Test/host hook: set the active input buffer directly. For the filter input the
+    /// buffer is also applied to the active filter, matching the live apply that every
+    /// keystroke performs, so the hook leaves the same state a real edit would.
     pub fn set_input_text(&mut self, text: &str, state: &mut crate::state::State) {
         if let Some(Modal::Input(input)) = state.modal.as_mut() {
             input.buffer = text.to_string();
             input.cursor = text.chars().count();
         }
+        self.apply_filter(state);
     }
 
     /// Resolves a create into an [`Action::CreateSession`] and folds it through

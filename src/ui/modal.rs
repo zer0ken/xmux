@@ -99,9 +99,10 @@ pub(crate) enum InputMode {
     New,
     /// Jump to a session by its number (the user-facing name: a `card` is the visual
     /// row, the session is what it stands for). Unlike the other modes this one acts
-    /// WHILE it is open: every edit moves the selection, so the number is a live cursor
-    /// rather than a value submitted at the end. Enter therefore only closes the popup,
-    /// and Esc restores where the jump started.
+    /// WHILE it is open: every edit moves the selection while the number names a card,
+    /// so the number is a live cursor rather than a value submitted at the end. Enter
+    /// closes the popup when the number names a card and flashes the valid range while
+    /// leaving it open otherwise; Esc restores where the jump started.
     Jump,
 }
 
@@ -122,6 +123,10 @@ pub(crate) struct Input {
     /// onto the wrong card. Esc returns here; Enter leaves the selection where the
     /// live jump already put it.
     pub(crate) restore: Option<RowRef>,
+    /// [`InputMode::Filter`] only: the filter the input opened from, restored on Esc.
+    /// The filter applies live while the input is open, so cancelling must undo every
+    /// edit back to this value.
+    pub(crate) restore_filter: Option<String>,
 }
 
 impl Input {
@@ -142,16 +147,8 @@ impl Input {
             cursor,
             source,
             restore: None,
+            restore_filter: None,
         }
-    }
-
-    /// What [`Self::insert`] would make the buffer, without changing anything. Lets a
-    /// mode veto a keystroke by its RESULT rather than guessing from the caret: the jump
-    /// only accepts a digit that keeps the number addressing a real session.
-    pub(crate) fn buffer_with(&self, c: char) -> String {
-        let mut v: Vec<char> = self.buffer.chars().collect();
-        v.insert(self.cursor.min(v.len()), c);
-        v.into_iter().collect()
     }
 
     /// Inserts `c` at the caret and advances past it. Char-indexed so multi-byte
@@ -238,9 +235,13 @@ impl Input {
 /// the others" invariant cannot drift. Lives on [`crate::state::State`]; the
 /// switcher owns only the behavior and the transient popup geometry (drag offset
 /// / drawn rect).
+///
+/// The input carries several owned strings (label, buffer, a create source, a
+/// jump restore reference, a filter restore value), so it is boxed to keep the
+/// enum small; callers pattern-match through the box and never see the pointer.
 pub(crate) enum Modal {
     Help,
-    Input(Input),
+    Input(Box<Input>),
 }
 
 /// True while a centered modal popup is open. Every modal is one today, so this

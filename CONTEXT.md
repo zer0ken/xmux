@@ -270,13 +270,12 @@ UI elements a user perceives as distinct things:
   addresses; a section title is not a card and spends no number there at all (its
   `{host}/{mux}` label is flush left). The column is one width per frame, so the names
   stay aligned and the numbers line up by units place as the count crosses 10.
-- jump - the digits-only input `prefix <digit>` opens in the hint bar. It acts
-  WHILE open: each edit
-  moves the selection, so Enter only closes it and Esc restores where it started. It
-  accepts only a digit that keeps the number addressing a real card, so one-, two-,
-  and three-digit numbers behave identically and the buffer never shows a number you
-  cannot land on. User-facing text calls this "jump to a session" (see the naming rule
-  below).
+- jump - the digits-only input `prefix <digit>` opens in the hint bar holding the
+  digit. It acts WHILE open: each edit moves the selection while the number names a
+  card, and a number no card carries leaves the selection alone. Enter closes the
+  popup when the number names a card and flashes the valid range while leaving it
+  open otherwise; Esc restores where it started. User-facing text calls this "jump to
+  a session" (see the naming rule below).
 - instance name - a running app's identity: an auto-generated `<adjective>-<noun>`
   (or `--name`), owning `ctl-<name>.sock` for its lifetime. `xmux send <name>` and
   `xmux instances` address instances by it; a unique name prefix resolves, and `-`
@@ -332,7 +331,10 @@ UI elements a user perceives as distinct things:
   source it served. Distinct
   from `mux discovery`, which asks a host WHICH MUXES it serves, from `discovery`,
   which scans a source for sessions, and from the host axis, which reaches one.
-- filter - the type-to-filter input over the nav list.
+- filter - the type-to-filter input over the nav list. It applies as you type: each
+  edit re-filters the cards, the selection holds its card while that survives and
+  lands on the first remaining card otherwise, and Esc restores the filter the input
+  opened with.
 - flash - a transient notice or error line shown in the hint bar (e.g. a refused
   action's reason). Never a "toast" or "notice".
 - scan indicator - the `scanning n/m…` progress shown in the hint bar while host

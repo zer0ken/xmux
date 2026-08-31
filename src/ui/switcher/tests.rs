@@ -1694,7 +1694,9 @@ async fn n_on_a_session_card_opens_new_for_its_host() {
 
 #[tokio::test]
 async fn filter_leaves_cursor_on_visible_session() {
-    // Filter to a session - selection must land on it after the filter completes.
+    // Filter to a session - selection must land on it once the filter is in effect.
+    // The filter applies live while the input is open (set_input_text applies it as a
+    // real edit would), so Enter only closes it.
     let mut h = Harness::from_sources(&["local"]);
     h.sw.apply_source_result(
         "local".into(),
@@ -1707,7 +1709,7 @@ async fn filter_leaves_cursor_on_visible_session() {
     );
     h.ch('/').await;
     h.sw.set_input_text("probeL", &mut h.state);
-    h.key(KeyCode::Enter).await; // apply filter
+    h.key(KeyCode::Enter).await; // close the input
     let t =
         h.sw.current_attach_target(&h.state)
             .expect("a session row is visible");
@@ -1720,8 +1722,9 @@ async fn filter_leaves_cursor_on_visible_session() {
 
 #[tokio::test]
 async fn filter_host_enter_targets_visible_session() {
-    // After filtering, the top card is the visible (matching) session, not a
-    // filtered-out one - so current_attach_target yields it.
+    // Under the filter the top card is the visible (matching) session, not a
+    // filtered-out one - so current_attach_target yields it. The filter is in effect
+    // while the input is open; Enter only closes it.
     let mut h = Harness::from_sources(&["alpha"]);
     h.sw.apply_source_result(
         "alpha".into(),
@@ -1734,7 +1737,7 @@ async fn filter_host_enter_targets_visible_session() {
     );
     h.ch('/').await;
     h.sw.set_input_text("keep", &mut h.state);
-    h.key(KeyCode::Enter).await; // apply filter
+    h.key(KeyCode::Enter).await; // close the input
     h.key(KeyCode::Home).await; // the first (only) visible card
     let t =
         h.sw.current_attach_target(&h.state)
@@ -1743,6 +1746,88 @@ async fn filter_host_enter_targets_visible_session() {
         t.target.as_str(),
         "keep-me",
         "current_attach_target under the filter yields the visible session"
+    );
+}
+
+#[tokio::test]
+async fn filter_applies_live_while_typing() {
+    // The list re-filters on every keystroke, before any Enter: typing "in" narrows
+    // the cards to the one match, and the active filter follows the buffer.
+    let mut h = Harness::new(sample());
+    h.ch('/').await;
+    h.ch('i').await;
+    assert!(h.state.is_inputting(), "the input stays open while typing");
+    h.ch('n').await;
+    let out = h.nav_cards_text();
+    assert!(out.contains("inference"), "the matching card stays:\n{out}");
+    assert!(
+        !out.contains("editor") && !out.contains("build"),
+        "the non-matching cards are gone before Enter:\n{out}"
+    );
+    assert_eq!(h.state.filter, "in", "the active filter follows the buffer");
+    // Enter only closes; the filtered list is already in effect.
+    h.key(KeyCode::Enter).await;
+    assert!(!h.state.is_inputting(), "Enter closes the input");
+    assert_eq!(h.state.filter, "in", "Enter applies nothing new");
+}
+
+#[tokio::test]
+async fn filter_esc_restores_the_opening_filter() {
+    // The input remembers the filter it opened from, so cancelling undoes every live
+    // edit back to it - the list returns to exactly the state it was in before `/`.
+    let mut h = Harness::new(sample());
+    // Establish a filter first.
+    h.ch('/').await;
+    for c in "infer".chars() {
+        h.ch(c).await;
+    }
+    h.key(KeyCode::Enter).await;
+    assert_eq!(h.state.filter, "infer", "the first filter is applied");
+    let filtered_rows = h.sw.rows.len();
+    assert!(
+        filtered_rows < 6,
+        "the filter narrows the list: {filtered_rows}"
+    );
+    // Reopen, edit the filter, then cancel: Esc restores the opening filter.
+    h.ch('/').await;
+    h.ch('x').await; // "inferx" matches nothing
+    assert_eq!(h.state.filter, "inferx", "the live filter follows the edit");
+    h.key(KeyCode::Esc).await;
+    assert!(!h.state.is_inputting(), "Esc closes the input");
+    assert_eq!(
+        h.state.filter, "infer",
+        "Esc restores the filter the input opened with"
+    );
+    assert_eq!(
+        h.sw.rows.len(),
+        filtered_rows,
+        "and the list returns with it"
+    );
+}
+
+#[tokio::test]
+async fn filter_keeps_the_selection_on_a_surviving_card_while_typing() {
+    // As the live filter shrinks the list, the selection never sits on a card that
+    // just filtered out: it holds its session while that survives, then lands on the
+    // first card the narrower list still shows. The selection starts on build (the
+    // first card in name-sorted order).
+    let mut h = Harness::new(sample());
+    h.ch('/').await;
+    h.ch('i').await; // keeps build, editor, inference - the selection's session survives
+    assert!(
+        matches!(
+            h.sw.current_ref(),
+            Some(RowRef::Session { sess }) if sess.name == "build"
+        ),
+        "the selection holds its card while it survives"
+    );
+    h.ch('n').await; // "in" keeps only inference
+    assert!(
+        matches!(
+            h.sw.current_ref(),
+            Some(RowRef::Session { sess }) if sess.name == "inference"
+        ),
+        "a filtered-out card is never the selection; it lands on the survivor"
     );
 }
 
@@ -3178,7 +3263,8 @@ async fn cancelling_a_jump_restores_the_starting_card() {
 #[tokio::test]
 async fn a_jump_past_the_last_card_is_inert() {
     // Typing a number that does not exist yet must not snap to an edge - the number is
-    // still being typed, and `9` on the way to `95` should not jerk the selection.
+    // still being typed, and `9` on the way to `95` should not jerk the selection. The
+    // digits are still taken into the buffer; only the selection refuses to move.
     let mut h = Harness::new(sample());
     let n = h.sw.rows.len();
     h.key(KeyCode::Char('1')).await;
@@ -3190,9 +3276,19 @@ async fn a_jump_past_the_last_card_is_inert() {
         h.sw.selected, one,
         "an out-of-range number leaves the selection alone"
     );
+    assert_eq!(
+        h.input_buffer(),
+        format!("1{n}"),
+        "the out-of-range number stays in the buffer"
+    );
     // A letter typed into a card number is dropped rather than breaking the parse.
     h.key(KeyCode::Char('x')).await;
     assert_eq!(h.sw.selected, one, "a non-digit is ignored");
+    assert_eq!(
+        h.input_buffer(),
+        format!("1{n}"),
+        "and never enters the buffer"
+    );
 }
 
 #[tokio::test]
@@ -3372,34 +3468,89 @@ async fn the_input_hint_bar_floats_across_the_whole_window() {
 }
 
 #[tokio::test]
-async fn a_jump_never_holds_a_number_no_session_carries() {
-    // One, two, and three digit numbers behave identically because the popup only takes
-    // a digit that keeps the number in range, so the buffer always names a real session.
+async fn a_jump_holds_out_of_range_numbers_and_vets_at_enter() {
+    // The number goes into the buffer whatever it addresses; the existence check is
+    // Enter-time. While the number names no card the selection stays put, and Enter on
+    // it flashes the range and keeps the popup open.
     let mut h = Harness::new(sample());
     let n = h.sw.rows.len();
     assert!(n < 10, "sample() is a single-digit list");
-    // The seeding digit itself is vetted: no popup opens for a number nothing carries.
+    let start = h.sw.selected;
+    // The seeding digit itself is not vetted: an out-of-range digit opens the popup
+    // holding it, and leaves the selection alone.
     h.key(KeyCode::Char(char::from_digit(n as u32, 10).unwrap()))
         .await;
     assert!(
-        !h.state.is_inputting(),
-        "an out-of-range digit opens nothing"
+        h.state.is_inputting(),
+        "an out-of-range digit opens the popup"
     );
+    assert_eq!(h.input_buffer(), n.to_string(), "the buffer holds it");
+    assert_eq!(
+        h.sw.selected, start,
+        "while no card carries the number, the selection stays"
+    );
+    // Enter on a dead number flashes the range and keeps the popup open.
+    h.key(KeyCode::Enter).await;
+    assert!(h.state.is_inputting(), "the popup stays open");
     assert!(
         h.state.chrome.flash.contains("no session"),
-        "and says so: {}",
+        "the flash names the dead number: {}",
         h.state.chrome.flash
     );
-    // In range, the popup opens and each further digit is taken only if it stays in range.
+    let bar = h.hint_bar_text();
+    assert!(
+        bar.contains("no session"),
+        "the flash shows over the open input: {bar:?}"
+    );
+    // A fresh edit clears the flash and the input line returns.
+    h.key(KeyCode::Backspace).await;
+    assert!(h.state.chrome.flash.is_empty(), "a key clears the flash");
+    // In range, the popup opens and each further digit is taken as typed.
     h.key(KeyCode::Char('1')).await;
     assert!(h.state.is_inputting(), "an in-range digit opens the popup");
+    assert_eq!(h.sw.card_number(h.sw.selected), 1, "the digit lands");
     h.key(KeyCode::Char('0')).await;
     assert_eq!(
         h.sw.card_number(h.sw.selected),
         1,
-        "10 is out of range, so the digit is dropped and 1 keeps its card"
+        "10 is out of range, so the selection keeps 1"
     );
-    assert_eq!(h.input_buffer(), "1", "and the buffer never showed it");
+    assert_eq!(
+        h.input_buffer(),
+        "10",
+        "the buffer holds the out-of-range extension"
+    );
+}
+
+#[tokio::test]
+async fn a_jump_enter_on_an_empty_buffer_keeps_the_popup_open() {
+    let mut h = Harness::new(sample());
+    h.key(KeyCode::Char('1')).await;
+    h.key(KeyCode::Backspace).await; // empty the buffer
+    h.key(KeyCode::Enter).await;
+    assert!(
+        h.state.is_inputting(),
+        "Enter on an empty buffer keeps the popup open"
+    );
+    assert!(h.state.chrome.flash.is_empty(), "and flashes nothing");
+    assert_eq!(h.input_buffer(), "", "the buffer is still empty");
+}
+
+#[tokio::test]
+async fn cancelling_a_jump_from_a_dead_number_still_restores() {
+    // Esc after typing a dead extension returns to where the jump started, exactly as
+    // a live one does: the selection that never moved is still the starting card.
+    let mut h = Harness::new(sample());
+    let start = h.sw.selected;
+    h.key(KeyCode::Char('1')).await; // live jump to 1
+    h.key(KeyCode::Char('9')).await; // 19 is dead; the selection stays on 1
+    assert_eq!(h.input_buffer(), "19");
+    h.key(KeyCode::Esc).await;
+    assert!(!h.state.is_inputting(), "Esc closes the popup");
+    assert_eq!(
+        h.sw.selected, start,
+        "Esc returns to where the jump started"
+    );
 }
 
 #[tokio::test]
