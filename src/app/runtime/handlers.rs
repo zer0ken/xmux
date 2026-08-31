@@ -47,17 +47,18 @@ impl Runtime {
             nav_width,
             nav_width_natural,
             nav_height,
+            nav_position,
             ..
         } = self;
         let (cols, rows) = (*cols, *rows);
         // The nav's live size as one value, read once for this effect: the width the user
-        // set, the width on screen, and the band height. Every geometry below is cut from
-        // it, so none of them re-derives one of the three.
+        // set, the width on screen, the band height, and the attachment side. Every
+        // geometry below is cut from it, so none of them re-derives one of the four.
         let nav = crate::ui::switcher::NavSize {
             natural: *nav_width_natural,
             width: *nav_width,
             height: *nav_height,
-            position: crate::ui::switcher::NavPosition::Left,
+            position: *nav_position,
         };
         match effect {
             EventEffect::ApplyInventory { host, sessions } => {
@@ -470,6 +471,7 @@ impl Runtime {
             nav_width,
             nav_width_natural,
             nav_height,
+            nav_position: crate::ui::switcher::NavPosition::Left,
             applied_nav_height: u16::MAX,
             auto_hide_nav,
             mouse_state: MouseState::default(),
@@ -515,7 +517,7 @@ impl Runtime {
             natural: self.nav_width_natural,
             width: self.nav_width,
             height: self.nav_height,
-            position: crate::ui::switcher::NavPosition::Left,
+            position: self.nav_position,
         }
     }
 

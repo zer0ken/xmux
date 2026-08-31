@@ -7,6 +7,8 @@ use ratatui::Terminal;
 use std::sync::Mutex;
 use unicode_width::UnicodeWidthStr;
 
+use super::tests_support::auto_nav;
+
 // --- mock ops -----------------------------------------------------------
 
 #[derive(Default)]
@@ -153,7 +155,7 @@ impl Harness {
         let sw = &mut self.sw;
         let state = &self.state;
         self.term
-            .draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), state))
+            .draw(|f| sw.render(f, None, false, auto_nav(NAV_WIDTH, f.area()), state))
             .unwrap();
     }
 
@@ -3117,12 +3119,20 @@ fn the_layout_turns_over_where_the_side_terminal_stops_being_wider_than_tall() {
 fn hiding_the_nav_leaves_the_layout_where_it_was() {
     use ratatui::layout::Rect;
     // Auto-hide takes the nav's width away for as long as the terminal holds focus. The
-    // layout must not move with it: it is measured from the width the user SET, which
-    // travels with the hidden nav, so the resize keys keep driving the same axis and the
-    // nav comes back the shape it left.
+    // layout must not move with it: it follows the attachment position, which the hidden
+    // nav carries unchanged, so the resize keys keep driving the same axis and the nav
+    // comes back the shape it left.
     let portrait = Rect::new(0, 0, 100, 34); // a 31-wide nav leaves 68 over 34 rows: square
-    let shown = compute_regions(portrait, NavSize::visible(31), 1);
-    let gone = compute_regions(portrait, NavSize::hidden(31), 1);
+    let shown = compute_regions(
+        portrait,
+        NavSize::visible(31).with_position(NavPosition::Top),
+        1,
+    );
+    let gone = compute_regions(
+        portrait,
+        NavSize::hidden(31).with_position(NavPosition::Top),
+        1,
+    );
     assert_eq!(shown.layout, ViewLayout::Band);
     assert_eq!(
         gone.layout,
@@ -3134,7 +3144,7 @@ fn hiding_the_nav_leaves_the_layout_where_it_was() {
         "and the terminal owns the whole area"
     );
     assert_eq!(gone.tree, Rect::default());
-    // The same holds the other way round: a wide window stays Side while hidden.
+    // The same holds the other way round: a wide window stays a column while hidden.
     let landscape = Rect::new(0, 0, 260, 40);
     assert_eq!(
         compute_regions(landscape, NavSize::hidden(31), 1).layout,
@@ -3142,6 +3152,25 @@ fn hiding_the_nav_leaves_the_layout_where_it_was() {
     );
     assert_eq!(
         compute_regions(landscape, NavSize::visible(31), 1).layout,
+        ViewLayout::Column
+    );
+    // And on the mirrored column: the aspect cannot move a pinned placement either.
+    assert_eq!(
+        compute_regions(
+            landscape,
+            NavSize::visible(31).with_position(NavPosition::Right),
+            1
+        )
+        .layout,
+        ViewLayout::Column
+    );
+    assert_eq!(
+        compute_regions(
+            landscape,
+            NavSize::hidden(31).with_position(NavPosition::Right),
+            1
+        )
+        .layout,
         ViewLayout::Column
     );
 }
@@ -3158,16 +3187,25 @@ fn compute_regions_side_top_and_hidden() {
     assert_eq!(s.view_border, Rect::new(48, 0, 1, 30));
     assert_eq!(s.terminal, Rect::new(49, 0, 91, 30));
     assert_eq!(s.hint_bar, Rect::new(0, 29, 48, 1));
-    // A landscape SCREEN can still be Top when the side tree would squeeze the terminal
-    // view into a portrait shape: 100 wide, tree 48 → terminal view ~51 wide vs 80 tall, so
-    // Top wins even though the screen itself is wider than tall.
-    let squeezed = compute_regions(Rect::new(0, 0, 140, 60), NavSize::visible(48), 1);
+    // A landscape SCREEN can still carry the band when the side tree would squeeze the
+    // terminal view into a portrait shape; the pinned Top states that placement directly:
+    // 100 wide, tree 48 → terminal view ~51 wide vs 80 tall, so a band beats a column
+    // even though the screen itself is wider than tall.
+    let squeezed = compute_regions(
+        Rect::new(0, 0, 140, 60),
+        NavSize::visible(48).with_position(NavPosition::Top),
+        1,
+    );
     assert_eq!(squeezed.layout, ViewLayout::Band);
-    // Portrait → Top: tree band on top, 1-row border, terminal below. The hint bar is
+    // Portrait → band on top: tree band on top, 1-row border, terminal below. The hint bar is
     // the BAND's bottom row, so it sits directly above the view border, not at the
     // screen's bottom edge.
     let port = Rect::new(0, 0, 40, 100);
-    let t = compute_regions(port, NavSize::visible(48), 1);
+    let t = compute_regions(
+        port,
+        NavSize::visible(48).with_position(NavPosition::Top),
+        1,
+    );
     assert_eq!(t.layout, ViewLayout::Band);
     assert_eq!(t.tree.y, 0);
     assert_eq!(t.tree.width, 40);
@@ -3182,6 +3220,56 @@ fn compute_regions_side_top_and_hidden() {
     assert_eq!(hidden.terminal, land);
     assert_eq!(hidden.hint_bar, Rect::default());
     assert_eq!(hidden.view_border, Rect::default());
+}
+
+#[test]
+fn compute_regions_right_column() {
+    use ratatui::layout::Rect;
+    // Pinned right: terminal left, 1-col border, tree right. The nav region's inner
+    // layout is the left column's unchanged - the mirror flips only what sits on which
+    // side of the view border - so the hint bar is still the nav region's bottom row.
+    let land = Rect::new(0, 0, 140, 30);
+    let s = compute_regions(
+        land,
+        NavSize::visible(48).with_position(NavPosition::Right),
+        1,
+    );
+    assert_eq!(s.layout, ViewLayout::Column);
+    assert_eq!(s.terminal, Rect::new(0, 0, 91, 30));
+    assert_eq!(s.view_border, Rect::new(91, 0, 1, 30));
+    assert_eq!(s.tree, Rect::new(92, 0, 48, 29));
+    assert_eq!(s.hint_bar, Rect::new(92, 29, 48, 1));
+    // The hidden sentinel keeps the position's shape: the terminal owns the whole area,
+    // the tree/border/hint bar default, and the layout stays the pinned column.
+    let gone = compute_regions(
+        land,
+        NavSize::hidden(48).with_position(NavPosition::Right),
+        1,
+    );
+    assert_eq!(gone.terminal, land);
+    assert_eq!(gone.layout, ViewLayout::Column);
+    assert_eq!(gone.tree, Rect::default());
+    assert_eq!(gone.view_border, Rect::default());
+    assert_eq!(gone.hint_bar, Rect::default());
+}
+
+#[test]
+fn compute_regions_bottom_band() {
+    use ratatui::layout::Rect;
+    // Pinned bottom: terminal above, 1-row border, tree band below. The hint bar is the
+    // bottom row of the SCREEN - the status line stays the nav region's lowest row in
+    // every placement - not the row adjacent to the view border.
+    let port = Rect::new(0, 0, 40, 100);
+    let b = compute_regions(
+        port,
+        NavSize::visible(48).with_position(NavPosition::Bottom),
+        1,
+    );
+    assert_eq!(b.layout, ViewLayout::Band);
+    assert_eq!(b.terminal, Rect::new(0, 0, 40, 59));
+    assert_eq!(b.view_border, Rect::new(0, 59, 40, 1));
+    assert_eq!(b.tree, Rect::new(0, 60, 40, 39));
+    assert_eq!(b.hint_bar, Rect::new(0, 99, 40, 1));
 }
 
 #[tokio::test]
@@ -4303,7 +4391,7 @@ fn portrait(scan: Scan, w: u16, h: u16) -> (Switcher, Terminal<TestBackend>) {
     let mut state = crate::state::State::from_scan(scan);
     let mut sw = Switcher::new(&mut state);
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
+    term.draw(|f| sw.render(f, None, false, auto_nav(NAV_WIDTH, f.area()), &state))
         .unwrap();
     assert_eq!(sw.layout, ViewLayout::Band, "the backend must be portrait");
     (sw, term)
@@ -4510,7 +4598,7 @@ fn the_hidden_columns_are_counted_on_the_status_row() {
     ));
     let mut sw = Switcher::new(&mut state);
     sw.move_to(-1, &state);
-    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
+    term.draw(|f| sw.render(f, None, false, auto_nav(NAV_WIDTH, f.area()), &state))
         .unwrap();
     let at_right = row(&term);
     assert!(
@@ -4547,7 +4635,7 @@ fn the_portrait_status_line_is_a_label_until_the_prefix_is_armed() {
     let mut state = crate::state::State::from_scan(column_flow_scan(&["aa", "bb", "cc"], 2));
     let mut sw = Switcher::new(&mut state);
     state.chrome.set_armed(true);
-    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
+    term.draw(|f| sw.render(f, None, false, auto_nav(NAV_WIDTH, f.area()), &state))
         .unwrap();
     let buf = term.backend().buffer();
     let armed_y = bar_y; // it widens in place: the band's own row, the window's full width

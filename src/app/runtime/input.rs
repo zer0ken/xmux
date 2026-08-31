@@ -123,6 +123,7 @@ impl Runtime {
             hosts,
             nav_width_natural,
             nav_height,
+            nav_position,
             cols,
             body_rows,
             nav_width,
@@ -157,8 +158,8 @@ impl Runtime {
         let col0 = ev.col.saturating_sub(1); // 1-based SGR → 0-based screen col
         let row0 = ev.row.saturating_sub(1);
         // The view border rect from the one shared geometry, so the grab / hover works in
-        // either layout: a vertical rule in Side, a horizontal rule in Top. The drag then
-        // resizes the nav WIDTH (Side, by column) or HEIGHT (Top, by row).
+        // any placement: a vertical rule in a column, a horizontal rule in a band. The
+        // drag then resizes the nav WIDTH (column, by column) or HEIGHT (band, by row).
         let full = ratatui::layout::Rect::new(0, 0, cols, body_rows.saturating_add(1));
         let regions = crate::ui::switcher::compute_regions(
             full,
@@ -166,7 +167,7 @@ impl Runtime {
                 natural: *nav_width_natural,
                 width: nav_width,
                 height: *nav_height,
-                position: crate::ui::switcher::NavPosition::Left,
+                position: *nav_position,
             },
             1,
         );

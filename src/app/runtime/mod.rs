@@ -1280,8 +1280,11 @@ struct Runtime {
     /// The nav's natural width (what prefix h/l adjusts; restored when shown again).
     nav_width_natural: u16,
     /// The Top-layout nav height, set by dragging the horizontal view border or the resize
-    /// keys. 0 = auto (~40% of the body). Only used in the portrait Top layout; ignored in Side.
+    /// keys. 0 = auto (~40% of the body). Only used in a band layout; ignored in a column.
     nav_height: u16,
+    /// The side the nav is attached to this frame; the layout and every region cut
+    /// follows it.
+    nav_position: crate::ui::switcher::NavPosition,
     /// The `nav_height` last applied to the PTY sizes, so the loop-top reconcile resizes the
     /// mux terminals when the Top height changes (not only on a width change). `u16::MAX`
     /// forces the first reconcile to size them.

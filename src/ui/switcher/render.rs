@@ -108,8 +108,8 @@ impl Switcher {
         self.screen_area = area;
         let nav_width = nav.width;
         // Cache the stacking so key handling routes the arrows to match what is on screen.
-        // Measured from the width the user SET, so hiding the nav leaves it alone.
-        self.layout = view_layout(area, nav.natural);
+        // It follows the attachment position, which the hidden nav carries unchanged.
+        self.layout = nav.position.layout();
         // Reset the buffer before painting. The widgets below do not all fill every cell
         // they own - the mux grid only paints its top-left clip (cells past the grid size
         // are skipped), the view border rule sets fg only, and the nav list leaves blank

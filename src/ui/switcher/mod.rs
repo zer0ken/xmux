@@ -223,10 +223,11 @@ fn split_nav(nav: Rect, hint_bar_h: u16) -> (Rect, Rect) {
 }
 
 pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
-    // The layout is decided from the width the user SET, never from the width on screen, so
-    // hiding the nav cannot flip it; the hidden sentinel below still gives the whole area
-    // to the terminal.
-    let layout = view_layout(area, nav.natural);
+    // The layout follows the attachment position: a left or right placement is a column,
+    // a top or bottom one a band. The position travels with the hidden nav unchanged, so
+    // hiding it cannot flip the layout; the hidden sentinel below still gives the whole
+    // area to the terminal.
+    let layout = nav.position.layout();
     let (nav_width, nav_height) = (nav.width, nav.height);
     if nav_width == 0 {
         return Regions {
@@ -237,8 +238,8 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
             hint_bar: Rect::default(),
         };
     }
-    match layout {
-        ViewLayout::Column => {
+    match nav.position {
+        NavPosition::Left => {
             let c = Layout::horizontal([
                 Constraint::Length(nav_width),
                 Constraint::Length(1),
@@ -254,7 +255,26 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
                 hint_bar,
             }
         }
-        ViewLayout::Band => {
+        NavPosition::Right => {
+            // The left column mirrored: the terminal keeps the remainder, the border and
+            // the tree follow on the right. The tree region is the left column's, so the
+            // in-region layout (card flow, hint bar) is identical at both placements.
+            let c = Layout::horizontal([
+                Constraint::Min(0),
+                Constraint::Length(1),
+                Constraint::Length(nav_width),
+            ])
+            .split(area);
+            let (tree, hint_bar) = split_nav(c[2], hint_bar_h);
+            Regions {
+                layout,
+                tree,
+                view_border: c[1],
+                terminal: c[0],
+                hint_bar,
+            }
+        }
+        NavPosition::Top => {
             let th = top_nav_height_for(area.height, nav_height);
             let r = Layout::vertical([
                 Constraint::Length(th),
@@ -268,6 +288,26 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
                 tree,
                 view_border: r[1],
                 terminal: r[2],
+                hint_bar,
+            }
+        }
+        NavPosition::Bottom => {
+            // The top band mirrored, down to the split order: the tree region is the top
+            // band's shape and `split_nav` keeps the status line on the region's bottom
+            // row, which with a bottom attachment is the bottom row of the screen.
+            let th = top_nav_height_for(area.height, nav_height);
+            let r = Layout::vertical([
+                Constraint::Min(0),
+                Constraint::Length(1),
+                Constraint::Length(th),
+            ])
+            .split(area);
+            let (tree, hint_bar) = split_nav(r[2], hint_bar_h);
+            Regions {
+                layout,
+                tree,
+                view_border: r[1],
+                terminal: r[0],
                 hint_bar,
             }
         }

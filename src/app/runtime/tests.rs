@@ -1145,6 +1145,7 @@ fn test_rt(env: Env) -> Runtime {
         nav_width: crate::ui::switcher::NAV_WIDTH,
         nav_width_natural: crate::ui::switcher::NAV_WIDTH,
         nav_height: 0,
+        nav_position: crate::ui::switcher::NavPosition::Left,
         applied_nav_height: u16::MAX,
         auto_hide_nav: false,
         mouse_state: MouseState::default(),
@@ -2332,10 +2333,10 @@ fn handle_mouse_event_view_border_grab_sets_dragging() {
 #[test]
 fn handle_mouse_event_top_layout_border_drag_resizes_height() {
     use crate::ui::switcher::{Scan, Switcher};
-    // In the portrait Top layout the view border is a HORIZONTAL rule; a left-press on that
-    // row grabs it and a drag sets the nav HEIGHT (not width). 40x60 → Top; the nav band
-    // carries its own hint bar, so its auto height is ~40% of the whole 60-row area = 24,
-    // putting the border at row 24 (0-based) = SGR row 25.
+    // In a band layout the view border is a HORIZONTAL rule; a left-press on that
+    // row grabs it and a drag sets the nav HEIGHT (not width). 40x60 carries the band:
+    // the nav band carries its own hint bar, so its auto height is ~40% of the whole
+    // 60-row area = 24, putting the border at row 24 (0-based) = SGR row 25.
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let sel = Selection::default();
@@ -2345,6 +2346,7 @@ fn handle_mouse_event_top_layout_border_drag_resizes_height() {
     rt.cols = 40;
     rt.body_rows = 59;
     rt.nav_height = 0; // auto
+    rt.nav_position = crate::ui::switcher::NavPosition::Top;
 
     let press = crate::display::mouse::MouseEvent {
         cb: 0,
@@ -2379,7 +2381,7 @@ fn resize_keys_adjust_height_in_top_layout() {
     use crate::ui::switcher::{Scan, Switcher, ViewLayout, NAV_WIDTH};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    // In the portrait Top layout the nav-resize keys (prefix h/l · Ctrl+←/→) adjust the
+    // In a band layout the nav-resize keys (prefix h/l · Ctrl+←/→) adjust the
     // HEIGHT, not the width - seeded from the auto height the first time.
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
@@ -2389,7 +2391,8 @@ fn resize_keys_adjust_height_in_top_layout() {
     rt.cols = 40;
     rt.body_rows = 59;
     rt.nav_height = 0; // auto
-                       // Render once into a portrait backend so the switcher caches layout = Top.
+    rt.nav_position = crate::ui::switcher::NavPosition::Top;
+    // Render once into a portrait backend so the switcher caches layout = Band.
     let mut term = Terminal::new(TestBackend::new(40, 60)).unwrap();
     {
         let sw = &mut rt.switcher;
@@ -2399,13 +2402,14 @@ fn resize_keys_adjust_height_in_top_layout() {
                 f,
                 None,
                 false,
-                crate::ui::switcher::NavSize::visible(NAV_WIDTH),
+                crate::ui::switcher::NavSize::visible(NAV_WIDTH)
+                    .with_position(crate::ui::switcher::NavPosition::Top),
                 st,
             )
         })
         .unwrap();
     }
-    assert_eq!(rt.switcher.layout(), ViewLayout::Band, "portrait → Top");
+    assert_eq!(rt.switcher.layout(), ViewLayout::Band, "portrait → Band");
 
     let auto = crate::ui::switcher::default_nav_height(59);
     // Vertical axis (Ctrl+↓ = grow) resizes HEIGHT in Top; horizontal (Ctrl+→) is a no-op here.
