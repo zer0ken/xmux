@@ -110,36 +110,38 @@ flatten renders for the dump verb.
   one question asked once (the first host-state card), so the paint, the hit-test and the
   scrollbar cannot part the list in three places.
 - A list with NOTHING but host-state cards (no session has a session to show) is the host
-  band alone, and it still takes its side of the split: anchored to the BOTTOM in the side
-  list, to the RIGHT edge in the portrait flow, with the blank rows/columns opposite being
+  band alone, and it still takes its side of the split: anchored to the BOTTOM in a
+  column, to the RIGHT edge in a band, with the blank rows/columns opposite being
   where the sessions that will be found land. As each source resolves, its section and
   cards move to the top / left, so a scan reads as the pending hosts draining toward the
   sessions they become.
 - A card's rect is decided by the PAINT and read back from it, in both layouts. Neither
-  layout puts cards on a fixed pitch the paint ignores (the side list parts its bands, the
-  portrait flow runs columns), so a hit-test that measured its own pitch would land clicks
+  layout puts cards on a fixed pitch the paint ignores (a column parts its bands, a
+  band runs columns), so a hit-test that measured its own pitch would land clicks
   on cards the renderer put elsewhere.
 - Nav FURNITURE is never inside a card's rect. The selected card is painted by inverting
-  that rect, so anything drawn inside one inverts with it; the portrait band's connector
+  that rect, so anything drawn inside one inverts with it; a band's connector
   therefore stands in a strip the column reserves left of the card, and the rect the paint
   records - what the selection inverts and what the hit-test reads - starts past it. The
   strip is reserved on every session card the band flows, painted or not, because the card
   widths are measured before the flow decides columns.
 - A scrollbar is RESERVED a column of the nav region, never overlaid on the cards: the
   selected card is painted by inverting its rect, so a thumb drawn inside one inverts with
-  it and reads as a hole in the bar. The portrait flow scrolls sideways and puts its cue on
+  it and reads as a hole in the bar. A band scrolls sideways and puts its cue on
   the status row instead, which is the band's own last row and never a card's, so the flow
   keeps every row of the band.
 - No card's height or shape moves with the selection: focus changes only the address
   column (the number becomes the mark), so a row that gained a line under the cursor
   would reflow the list and the columns as the cursor passed. A section title is a
-  fixed non-selectable row, and in the portrait flow the host band never shares a
+  fixed non-selectable row, and in a band the host band never shares a
   column with session cards.
 - A pending prefix is dropped by the next INPUT, mouse included. The mouse path has to say
   so itself, because mouse bytes never reach either focus path's key handling. Bare hover
   is exempt: it is the pointer sitting there, not an action.
-- An arrow key points AT the view it focuses, in both focus paths (one for nav focus, one
-  for terminal focus): right and down name the terminal, left and up name the nav. A change
+- An arrow PAIR names the view it focuses, keyed on the nav's attachment, in both focus
+  paths (one for nav focus, one for terminal focus): the pair facing the terminal's side
+  names the terminal (right and down with the nav on the left or above, left and up with
+  the nav on the right or below), the other pair names the nav. A change
   to one path is a change to both.
 - Modal input owns keys while open; those keys must not leak to the terminal view
   or global shortcuts. At most one modal is open, because the state holds one
@@ -157,8 +159,8 @@ flatten renders for the dump verb.
 - The nav's two navigation steps name the two things its list is made of: one walks the
   cards, the other walks the categories, landing on a category's first card. A category
   is a source with sessions to show, or the whole host band at once. Neither step is
-  defined by where a card sits on screen, so both mean the same thing in the side column
-  and in the portrait band.
+  defined by where a card sits on screen, so both mean the same thing in a column and in
+  a band.
 - A selection xmux is TOLD to make - a ctl switch, a create landing on its new
   card, the nav following the session the mux moved its own display client onto -
   names the card and moves to it through one entry point. Nothing downstream tells

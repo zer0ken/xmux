@@ -110,9 +110,10 @@ the card numbers it needs.
   if any, is open. Focus and modal transitions stay in the focus module; the app
   and the state call into it rather than open-coding view or modal bookkeeping.
 - This layer carries no PTY, grid, or terminal-protocol logic; that is `display`.
-- The effective nav width under auto-hide is reconciled at the loop top against the
-  one prefix-interaction signal the hint bar also reads, so a held prefix cannot
-  make the nav and the bar disagree.
+- The effective nav width, the band height, and the nav's attachment side are reconciled
+  at the loop top against the one prefix-interaction signal the hint bar also reads, so a
+  held prefix cannot make the nav and the bar disagree, and a placement change (settings,
+  or the `prefix p` pin) resizes the mux terminals and repaints in the same reconcile.
 
 ## Common Pitfalls
 

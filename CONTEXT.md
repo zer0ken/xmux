@@ -46,14 +46,16 @@ UI elements a user perceives as distinct things:
 
 - split view - the whole two-region layout.
 - nav view - the region holding the session cards, ordered local→WSL→remote then by
-  source name, sessions by name (a left
-  column in side layout, a top band in portrait layout, where the same cards run in a
+  source name, sessions by name (a left or right column, or a top or bottom band, per the
+  nav's attachment; in a band the same cards run in a
   column flow). Never the
   "sidebar", and never the "tree": the on-screen VIEW is the nav view; "tree" names
   only the internal row-model module, which is still a Source to Session
   structure.
-- terminal view - the right region (the selected session's live grid).
-- view border - the vertical line between the two views. Modelled on tmux's pane
+- terminal view - the other region: the selected session's live grid, holding the whole
+  area the nav's side does not take.
+- view border - the line between the two views: vertical between the two columns, horizontal
+  between the two bands. Modelled on tmux's pane
   border, but it borders views (not panes), so it is a `view border`, never a
   "pane border" or a bare "divider". Its colour is FIXED and the same on every
   source: the palette accent on the lit half, its own `border_inactive` muted tone on
@@ -133,26 +135,31 @@ UI elements a user perceives as distinct things:
   title never takes either.
 - nav size - the nav's live geometry as one value: the width the user SET, the width ON
   SCREEN this frame (0 while auto-hide has taken it and no prefix interaction is live),
-  and the portrait band's height the
-  user set (0 = auto). All three are settable while xmux runs, so every consumer takes the
-  whole value rather than picking two of the three out of the runtime: the effective width
+  the band height the
+  user set (0 = auto), and the side the nav is attached to. All four are settable while
+  xmux runs, so every consumer takes the
+  whole value rather than picking fields out of the runtime: the effective width
   has one owner, and a resize cannot reach the renderer and miss the PTY sizing. The set
   width and the on-screen width differ only while the nav is hidden, and that is exactly
   why both travel: the regions are cut from what is on screen, the layout turnover is
   measured from what the user set.
-- layout turnover - the one test that picks the side column or the top band, measured as
+- layout turnover - the one test that picks between the wide and the narrow placement of
+  the position resolution, measured as
   if the nav kept its side column: the terminal that column would leave is the window
   width less the nav and its border, over the window's full height. Wider than tall keeps
-  the side column; square or taller moves the nav to the top band and drops the column.
+  the wide placement; square or taller takes the narrow one.
   Wider than tall in the proportions the user SEES, not in cell counts: a row is about two
   columns tall, so the rows count double and 60 columns over 30 rows is square. Comparing
-  the counts directly kept the side column until the terminal was half as wide as it
-  looked. The as-if is the point too: going to the band hands those columns back to the
+  the counts directly kept the column until the terminal was half as wide as it
+  looked. The as-if is the point too: going to a band hands those columns back to the
   terminal and takes rows instead, so a test measuring the LIVE terminal would flip its own
-  input and the layout would oscillate on one cell of resize. Hiding the nav is not a
-  resize either, since the turnover reads the width the user set, so the nav comes back the
-  shape it left and the resize keys keep driving the same axis while it is gone.
-- column flow - how the portrait band lays its rows out: down a column, then right. A
+  input and the placement would oscillate on one cell of resize. The test is the
+  resolution's fixed criterion - it reads the window and the nav's natural width, never
+  the resolved placement - so nothing feeds back into its own question. Hiding the nav is
+  not a resize either, since the side travels with the hidden nav, so the nav comes back
+  the shape it left and the resize keys keep driving the same axis while it is gone.
+- column flow - how a band lays its rows out: down a column, then right, identical for a
+  top and a bottom band. A
   column takes whole SECTIONS (a `{host}/{mux}` title over its session cards), so a
   source's rows stay together under the one title naming them, and the section that
   does not fit opens the next column instead of splitting across the break. A section
@@ -175,19 +182,19 @@ UI elements a user perceives as distinct things:
   which a card marks with its spinner rather than by dropping the separator.
 - nav bands - the two bands the nav's rows fall into: the session cards (each under
   its section title), then the cards of the hosts with no session to show, which sit
-  below every session card whatever order the hosts were scanned in. In the SIDE column
+  below every session card whatever order the hosts were scanned in. In a column
   the parting is the ROOM between them while the cards can spare a row for it (the
   sessions hold the top edge, the host cards the bottom), and a rule across the cards
   once they cannot and the column scrolls as one list, because a gap parts only what a
   reader sees at once. The parting always has a row: the column is measured with the
   rule's row counted in, so a gap of one is the last thing before the rule and the bands
-  never meet, at the price of scrolling a row early. In the PORTRAIT band the parting is
+  never meet, at the price of scrolling a row early. In a band the parting is
   horizontal: the session columns hold the left edge, the host band is pushed to the
   right while a blank column parts them, and a vertical rule takes the boundary's column
   once they cannot (the run scrolls a column early for the same reason). Neither parting
   is a card, so a click on one selects nothing. A list with NOTHING but host cards is
   the host band alone, and it still takes its side of the split: anchored to the
-  bottom (side) / right edge (portrait), the blank rows or columns opposite being where
+  bottom (column) / right edge (band), the blank rows or columns opposite being where
   the sessions that will be found land, so a scan reads as the pending hosts draining
   toward the sessions they become.
 - level color - the per-segment card color, from the palette. Every foreground role
@@ -237,18 +244,18 @@ UI elements a user perceives as distinct things:
   the cards overflow it. Reserved, never overlaid, because the selected card is painted by
   inverting its whole rect and a thumb inside that rect inverts with it into a hole in the
   bar. Nothing is drawn at all while everything fits, so a nav that fits spends no cell on
-  furniture. The portrait flow has no strip: it scrolls sideways, and says so in words on
+  furniture. A band has no strip: it scrolls sideways, and says so in words on
   its status row (see "offscreen counts").
-- offscreen counts - what the portrait flow puts on its status row when columns are off
+- offscreen counts - what a band puts on its status row when columns are off
   screen: `<< 5 more` at the left end, `7 more >>` at the right, in the cells the status
   label does not take. Cards, not columns, because the reader is hunting a session, not a
   column. They cost no row (the status row is the band's own last row, never a card's) and
   say what a thumb cannot: which way the cards went, and how many. An ARMED bar takes the
   whole row back, counts included, since a cheatsheet has to be readable over what it
   covers.
-- status row fill - how much of its row the hint bar paints. The side column's bar, a
-  ready bar and a refusal fill the ROW: a solid bar, legible over whatever it covers. The
-  portrait band's resting bar paints its text plus a cell of padding and stops, because it
+- status row fill - how much of its row the hint bar paints. A column's bar, a
+  ready bar and a refusal fill the ROW: a solid bar, legible over whatever it covers. A
+  band's resting bar paints its text plus a cell of padding and stops, because it
   shares that row with the offscreen counts and a full-width slab of bar colour across a
   wide window is a lot of paint for one word.
 - spinner - the braille activity glyph marking the work still in flight. One
