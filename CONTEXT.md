@@ -334,7 +334,8 @@ UI elements a user perceives as distinct things:
 - filter - the type-to-filter input over the nav list. It applies as you type: each
   edit re-filters the cards, the selection holds its card while that survives and
   lands on the first remaining card otherwise, and Esc restores the filter the input
-  opened with.
+  opened with. A host hidden from the nav (`[ui] hide-unreachable`) shows its card
+  while the filter names it.
 - flash - a transient notice or error line shown in the hint bar (e.g. a refused
   action's reason). Never a "toast" or "notice".
 - scan indicator - the `scanning n/m…` progress shown in the hint bar while host

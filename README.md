@@ -147,6 +147,7 @@ theme = "auto-dark"                  # built-in ANSI theme: "auto-dark" (default
                                       # or "auto-light" (for a light terminal)
 prefix = "C-g"                        # xmux's prefix (e.g. C-g, C-Space, C-b)
 auto-hide-nav = false                 # initial auto-hide-nav state
+hide-unreachable = true               # hide hosts no scan has reached (the filter names one to show its card)
 view-active-border-style = "green"    # focused view-border colour
 hint-bar-style = "bg=blue,fg=white"   # hint bar colour (tmux status-style)
 primary = "brightwhite"               # per-role colour overrides: primary, secondary,
