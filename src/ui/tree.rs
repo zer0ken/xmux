@@ -3,6 +3,7 @@
 //! side-effect-free transforms over that model; the interactive ratatui
 //! rendering is layered on top separately.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 
 use crate::session::Session;
@@ -251,25 +252,27 @@ pub(crate) fn drop_hidden_unreachable(
 /// The groups to render, in `groups` order - that order is authoritative (established
 /// by the deterministic source order at rebuild via [`order_groups`], which a routine
 /// poll reproduces exactly, so a poll never reshuffles the tree). An empty filter
-/// returns the input unchanged. A non-matching filter must not be a dead end (XM-01):
+/// borrows the input unchanged. A non-matching filter must not be a dead end (XM-01):
 /// it falls back to header-only groups (every source, no sessions) so the hosts stay
 /// visible. Inputs are not mutated.
-pub(crate) fn visible_groups(groups: &[Group], filter: &str) -> Vec<Group> {
+pub(crate) fn visible_groups<'a>(groups: &'a [Group], filter: &str) -> Cow<'a, [Group]> {
     if filter.is_empty() {
-        groups.to_vec()
+        Cow::Borrowed(groups)
     } else {
         let filtered = filter_groups(groups, filter);
         if filtered.is_empty() {
-            groups
-                .iter()
-                .map(|g| Group {
-                    source: g.source.clone(),
-                    err: g.err.clone(),
-                    sessions: Vec::new(),
-                })
-                .collect()
+            Cow::Owned(
+                groups
+                    .iter()
+                    .map(|g| Group {
+                        source: g.source.clone(),
+                        err: g.err.clone(),
+                        sessions: Vec::new(),
+                    })
+                    .collect(),
+            )
         } else {
-            filtered
+            Cow::Owned(filtered)
         }
     }
 }
@@ -358,18 +361,24 @@ pub(crate) fn flatten(
     hide_unreachable: bool,
     mux_of_source: &dyn Fn(&str) -> String,
 ) -> Vec<Row> {
-    let groups = if hide_unreachable {
-        drop_hidden_unreachable(groups, scanning, filter)
+    // The prune output is the one owned copy on the empty-filter path: bound to a
+    // local and handed down as a slice, so `visible_groups` borrows the pruned
+    // groups instead of materializing them a second time.
+    let pruned;
+    let groups: &[Group] = if hide_unreachable {
+        pruned = drop_hidden_unreachable(groups, scanning, filter);
+        &pruned
     } else {
-        groups.to_vec()
+        groups
     };
-    let groups = visible_groups(&groups, filter);
+    let groups = visible_groups(groups, filter);
+    let groups: &[Group] = &groups;
 
     let mut rows = Vec::new();
     // 1. A section per source that has a session to show: the non-selectable
     //    `{host}/{mux}` title, then one session card per session. A session created
     //    from one of these cards is its sibling - it joins this same section.
-    for g in &groups {
+    for g in groups {
         if g.err.is_some() || g.sessions.is_empty() {
             continue;
         }
@@ -384,7 +393,7 @@ pub(crate) fn flatten(
         }
     }
     // 2. Host-state cards for hosts with no session to show - sunk to the bottom band.
-    for g in &groups {
+    for g in groups {
         let is_scanning = scanning.contains(&g.source);
         let unreachable = g.err.is_some();
         if !unreachable && !g.sessions.is_empty() {
