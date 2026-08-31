@@ -116,7 +116,7 @@ impl NavPosition {
         }
     }
 
-    /// The word this position writes to the config and the pref file.
+    /// The word this position writes to the pref file.
     pub fn word(self) -> &'static str {
         match self {
             NavPosition::Left => "left",

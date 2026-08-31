@@ -5,7 +5,7 @@
 `ui` owns the session switcher: pure row-model transforms, side-effecting UI
 operations, control socket serving helpers, interactive switcher state, rendering,
 and the lightweight preferences that persist UI hints (last-selected address, nav
-width and height, auto-hide-nav) across runs.
+width and height, auto-hide-nav, nav position) across runs.
 
 ## Mental Model
 
