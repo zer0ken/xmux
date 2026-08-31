@@ -22,7 +22,10 @@ use crate::ui::switcher::Switcher;
 /// A unit of work the app loop processes, from the control socket.
 pub enum Cmd {
     /// A resolved domain action — folded in at the app's single `State::apply` site.
-    Op(crate::model::Action),
+    /// Carries the channel the loop answers with the ctl reply: `switch` replies by
+    /// the address resolution against the current inventory; the other verbs have no
+    /// synchronous outcome and answer `ok`.
+    Op(crate::model::Action, oneshot::Sender<String>),
     /// A control-channel `status` request: reply with the focus + selection line.
     Status(oneshot::Sender<String>),
     /// A control-channel `dump` request: reply with the rendered screen.
@@ -151,7 +154,8 @@ async fn handle_conn(conn: Stream, cmd_tx: mpsc::Sender<Cmd>) {
 
 /// Maps a fire-and-forget enqueue result to the control-channel reply, so a command
 /// dropped because the app channel is closed is reported as `err:` rather than a
-/// false `ok`. Shared by the `Op`/`RawKey`/`RawBytes` arms.
+/// false `ok`. Shared by the `RawKey`/`RawBytes` arms (the `Op` arm round-trips
+/// through the loop instead, so its reply reflects the op's outcome).
 fn enqueue_reply(sent: Result<(), mpsc::error::SendError<Cmd>>) -> String {
     match sent {
         Ok(()) => "ok".into(),
@@ -176,7 +180,18 @@ async fn dispatch(line: &str, cmd_tx: &mpsc::Sender<Cmd>) -> String {
             }
             rx.await.unwrap_or_default()
         }
-        crate::link::control::CtlRequest::Op(op) => enqueue_reply(cmd_tx.send(Cmd::Op(op)).await),
+        crate::link::control::CtlRequest::Op(op) => {
+            // The loop answers the reply channel with the op's outcome (a `switch` is
+            // resolved against the inventory there); this task awaits that answer, so
+            // the reply reflects what the loop actually did, not that it was enqueued.
+            let (tx, rx) = oneshot::channel();
+            if cmd_tx.send(Cmd::Op(op, tx)).await.is_err() {
+                "err: control channel closed".into()
+            } else {
+                rx.await
+                    .unwrap_or_else(|_| "err: control channel closed".into())
+            }
+        }
         crate::link::control::CtlRequest::RawKey(ev) => {
             enqueue_reply(cmd_tx.send(Cmd::RawKey(ev)).await)
         }
@@ -232,22 +247,40 @@ mod tests {
     async fn dispatch_resolves_semantic_verbs_to_op_cmds() {
         use crate::model::{Action, FocusTarget};
         let (tx, mut rx) = mpsc::channel::<Cmd>(8);
+        // A responder stands in for the app loop: it asserts the action each `Op`
+        // carries and answers the ctl reply.
+        let responder = tokio::spawn(async move {
+            while let Some(cmd) = rx.recv().await {
+                match cmd {
+                    Cmd::Op(Action::Switch { address }, reply) => {
+                        assert_eq!(address, "jup/api");
+                        let _ = reply.send("ok".into());
+                    }
+                    Cmd::Op(Action::Focus(t), reply) => {
+                        assert_eq!(t, FocusTarget::Nav);
+                        let _ = reply.send("ok".into());
+                    }
+                    Cmd::Op(Action::Rescan, reply) => {
+                        let _ = reply.send("ok".into());
+                    }
+                    Cmd::RawBytes(b) => {
+                        assert_eq!(b, vec![0x1b, 0x5b, 0x41]);
+                    }
+                    Cmd::Op(_, _) | Cmd::RawKey(_) | Cmd::Dump(_) | Cmd::Status(_) => {
+                        panic!("unexpected command reached the responder")
+                    }
+                }
+            }
+        });
         assert_eq!(dispatch("switch jup/api", &tx).await, "ok");
-        assert!(
-            matches!(rx.recv().await, Some(Cmd::Op(Action::Switch { address })) if address == "jup/api")
-        );
         assert_eq!(dispatch("focus nav", &tx).await, "ok");
-        assert!(matches!(
-            rx.recv().await,
-            Some(Cmd::Op(Action::Focus(FocusTarget::Nav)))
-        ));
         assert_eq!(dispatch("rescan", &tx).await, "ok");
-        assert!(matches!(rx.recv().await, Some(Cmd::Op(Action::Rescan))));
-        // raw: keystrokes still flow, but only via the unstable namespace.
         assert_eq!(dispatch("raw:keys 1b5b41", &tx).await, "ok");
-        assert!(matches!(rx.recv().await, Some(Cmd::RawBytes(b)) if b == vec![0x1b, 0x5b, 0x41]));
         // the demoted bare verb is rejected
         assert!(dispatch("key down", &tx).await.starts_with("err:"));
+        // Close the channel so the responder exits.
+        drop(tx);
+        responder.await.unwrap();
     }
 
     #[tokio::test]
@@ -334,7 +367,21 @@ mod tests {
                     Cmd::Status(reply) => {
                         let _ = reply.send("focus=nav target=editor".into());
                     }
-                    Cmd::Op(_) | Cmd::RawBytes(_) => {}
+                    Cmd::Op(action, reply) => {
+                        // Mirror the app loop: `switch` answers by the address
+                        // resolution against the inventory, everything else answers ok.
+                        let resp = match &action {
+                            crate::model::Action::Switch { address } => {
+                                match state.resolve_switch_address(address) {
+                                    Ok(()) => "ok".into(),
+                                    Err(problem) => format!("err: {problem}"),
+                                }
+                            }
+                            _ => "ok".into(),
+                        };
+                        let _ = reply.send(resp);
+                    }
+                    Cmd::RawBytes(_) => {}
                 }
             }
         });
@@ -354,6 +401,21 @@ mod tests {
             client.do_cmd("bogus").await.unwrap(),
             "err: unknown command"
         );
+
+        // A `switch` reply reflects the address resolution: the session the nav
+        // lists answers ok; an unresolved source answers err naming what is missing.
+        assert_eq!(
+            client.do_cmd("switch local/editor").await.unwrap(),
+            "ok",
+            "a session the inventory lists resolves"
+        );
+        let err = client
+            .do_cmd("switch nosuchhost/nosuchsession")
+            .await
+            .unwrap();
+        assert!(err.starts_with("err: no such source"), "{err}");
+        let err = client.do_cmd("switch local/nope").await.unwrap();
+        assert!(err.starts_with("err: no such session"), "{err}");
 
         // Close the channel (drop every sender) so the consumer exits.
         drop(client);

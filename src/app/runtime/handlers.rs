@@ -910,7 +910,22 @@ impl Runtime {
         use crate::ui::run::{dump_screen, Cmd};
         use std::time::Duration;
         match cmd {
-            Cmd::Op(action) => {
+            Cmd::Op(action, reply) => {
+                // The ctl reply: `switch` answers by the address resolution against the
+                // current inventory (the same lookup the selection move performs); the
+                // other verbs have no synchronous outcome and answer ok. Sent before
+                // the quit check so a `quit` still acknowledges. The loop owns the
+                // state, so the reply is computed here, not in the dispatch task - the
+                // task only awaits it.
+                let resp = match &action {
+                    crate::model::Action::Switch { address } => {
+                        match self.state.resolve_switch_address(address) {
+                            Ok(()) => "ok".to_string(),
+                            Err(problem) => format!("err: {problem}"),
+                        }
+                    }
+                    _ => "ok".to_string(),
+                };
                 // dispatch_action spawns any RunOp off-loop itself; its OpResult folds back
                 // through op_tx as usual.
                 let (quit_op, wc) = dispatch_action(
@@ -922,6 +937,7 @@ impl Runtime {
                     &self.env.xmux_dir,
                     (&self.ops, &self.op_tx),
                 );
+                let _ = reply.send(resp);
                 if wc {
                     self.width_dirty = true;
                     self.width_flush_at =
