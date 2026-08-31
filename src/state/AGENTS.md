@@ -13,9 +13,9 @@ model.
 The state is the app's durable runtime state bag. It owns the inventory and the
 active filter, the canonical selection, the confirmed displayed address, the
 focus state machine (which view keys go to, and whether a modal is open), the
-open modal, the debounced attach deadline with its pending flag, and the last
-session address persisted to preferences. It is seeded from either a scan or the
-configured source list.
+open modal, the debounced attach deadline with its pending flag and its
+dead-display recovery budget, and the last session address persisted to
+preferences. It is seeded from either a scan or the configured source list.
 
 Applying an ACTION is the single domain-mutation site: it folds one intent into
 the state and returns the effects for the run loop to dispatch. It touches only
@@ -81,11 +81,17 @@ holds the modal state plus its popup geometry and forwards to that module.
 - The attach deadline is the debounce gate for settled selection attachment, and
   the pending flag marks a moved selection awaiting its first tick arm. Re-arming
   on every pending selection is the freeze fix; never arm once.
-- The tick ARMS on the same condition the gate FIRES on: a display sitting away from
-  the selection, whether the client left for another session or the confirmed display
-  is another session altogether. An arm that only a selection move could set would
-  leave the gate true with no deadline, and the two regions would stay split until
-  the next move.
+- The tick ARMS on the same condition the gate FIRES on: a display sitting away
+  from the selection - the client left for another session, the confirmed display
+  is another session altogether, or the display PTY is gone while the selection
+  stands. An arm that only a selection move could set would leave the gate true
+  with no deadline, and the two regions would stay split until the next move.
+- The dead-display recovery (the display PTY gone while the selection stands, as
+  when the mirrored client detaches) is bounded: it fires only while the
+  inventory still lists the selected session, and only within a per-selection
+  budget of consecutive attempts that a moved selection or a re-confirmed display
+  refills. A session that is gone makes every re-attach end in EOF in turn, so an
+  unbounded recovery would never stop retrying it.
 - The last saved session address prevents rewriting preferences on every window
   step within the same session.
 - This layer branches on nothing mux-specific: both apply sites fold intents and
