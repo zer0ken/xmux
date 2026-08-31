@@ -56,6 +56,11 @@ and owns the concrete display decision. The transport dispatches the host execut
 - The driver pulls the mux-agnostic display seam from `src/driver.rs` and the
   supervisor capabilities from the app runtime. The seam does NOT import the
   driver; the dependency is one-way, so there is no cycle.
+- Identity detection is this implementation's own `identity_probes` (one `help`
+  question; `-V` mimics tmux's version line so it is never asked) and
+  `classify_identity`: psmux's help output names psmux and mentions tmux, so the
+  classification drops the tmux name (psmux presents itself as a tmux
+  alternative) and psmux's own name decides.
 
 ## Invariants
 

@@ -101,6 +101,11 @@ flatten renders for the dump verb.
   nothing on screen turns out of step with anything else.
 - Row transforms do not mutate their inputs unless the function name and
   signature make mutation explicit.
+- The nav hides a settled unreachable host's card unless the filter names that host
+  (`[ui] hide-unreachable`, default on): the named card is the one entry to its
+  unreachable screen, so the hiding must leave it reachable. A reachable empty host and
+  a host still scanning never hide, and the prune runs before the filter, so the no-match
+  fallback cannot resurrect a host the filter does not name.
 - The dump should reflect the same split view the main draw path renders.
 - The nav's two bands are parted by the ROOM between them while the cards can spare a row
   for it, and by a rule once they cannot: a gap that scrolls out of view parts nothing a
