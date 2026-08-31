@@ -7,8 +7,7 @@ use crate::session::Session;
 
 /// The `list-sessions -F` template. The free-form session name is LAST so a tab
 /// inside a name cannot shift the fixed numeric columns.
-pub const SESSION_FORMAT: &str =
-    "#{session_windows}\t#{session_attached}\t#{session_last_attached}\t#{session_name}";
+pub const SESSION_FORMAT: &str = "#{session_windows}\t#{session_attached}\t#{session_name}";
 
 /// Whether `key` is a mux session variable that a child spawned by xmux must not
 /// inherit (it would mis-target the server or be refused as nesting). This is the
@@ -107,13 +106,13 @@ fn split_lines(out: &str) -> Vec<&str> {
 /// Parses `list-sessions` output ([`SESSION_FORMAT`]) into sessions tagged with
 /// `source` and the enumerating mux's `mux` kind. Malformed lines (short,
 /// non-numeric numeric columns, or empty name) are skipped so banners and garbage
-/// cannot poison the list. The name is rejoined from `fields[3..]` so a tab
+/// cannot poison the list. The name is rejoined from `fields[2..]` so a tab
 /// inside a name survives. Order is preserved.
 pub fn parse_sessions(source: &str, mux: &str, out: &str) -> Vec<Session> {
     let mut sessions = Vec::new();
     for ln in split_lines(out) {
         let fields: Vec<&str> = ln.split('\t').collect();
-        if fields.len() < 4 {
+        if fields.len() < 3 {
             continue;
         }
         let Ok(windows) = fields[0].parse::<i64>() else {
@@ -122,15 +121,7 @@ pub fn parse_sessions(source: &str, mux: &str, out: &str) -> Vec<Session> {
         let Ok(attached_n) = fields[1].parse::<i64>() else {
             continue;
         };
-        let last_attached = if fields[2].is_empty() {
-            0
-        } else {
-            match fields[2].parse::<i64>() {
-                Ok(n) => n,
-                Err(_) => continue,
-            }
-        };
-        let name = fields[3..].join("\t");
+        let name = fields[2..].join("\t");
         if name.is_empty() {
             continue;
         }
@@ -140,7 +131,6 @@ pub fn parse_sessions(source: &str, mux: &str, out: &str) -> Vec<Session> {
             mux: mux.to_string(),
             windows,
             attached: attached_n > 0,
-            last_attached,
         });
     }
     sessions
@@ -158,7 +148,7 @@ mod tests {
     fn session_format_template() {
         assert_eq!(
             SESSION_FORMAT,
-            "#{session_windows}\t#{session_attached}\t#{session_last_attached}\t#{session_name}"
+            "#{session_windows}\t#{session_attached}\t#{session_name}"
         );
     }
 
@@ -271,7 +261,7 @@ mod tests {
 
     #[test]
     fn parse_sessions_basic() {
-        let out = "3\t1\t1700000000\tmain\n2\t0\t1699999999\tother\n";
+        let out = "3\t1\tmain\n2\t0\tother\n";
         let got = parse_sessions("local", "tmux", out);
         assert_eq!(
             got,
@@ -282,7 +272,6 @@ mod tests {
                     mux: "tmux".into(),
                     windows: 3,
                     attached: true,
-                    last_attached: 1700000000
                 },
                 Session {
                     source: "local".into(),
@@ -290,7 +279,6 @@ mod tests {
                     mux: "tmux".into(),
                     windows: 2,
                     attached: false,
-                    last_attached: 1699999999
                 },
             ]
         );
@@ -298,7 +286,7 @@ mod tests {
 
     #[test]
     fn parse_sessions_crlf() {
-        let out = "1\t1\t100\ta\r\n1\t0\t200\tb\r\n";
+        let out = "1\t1\ta\r\n1\t0\tb\r\n";
         let got = parse_sessions("local", "tmux", out);
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].name, "a");
@@ -307,7 +295,7 @@ mod tests {
 
     #[test]
     fn parse_sessions_name_with_tab_and_slash() {
-        let out = "4\t1\t1700000000\tproj/a\tb\n";
+        let out = "4\t1\tproj/a\tb\n";
         let got = parse_sessions("ssh-host", "tmux", out);
         assert_eq!(
             got,
@@ -317,24 +305,6 @@ mod tests {
                 name: "proj/a\tb".into(),
                 windows: 4,
                 attached: true,
-                last_attached: 1700000000
-            }]
-        );
-    }
-
-    #[test]
-    fn parse_sessions_empty_last_attached() {
-        let out = "1\t0\t\tlegacy\n";
-        let got = parse_sessions("local", "tmux", out);
-        assert_eq!(
-            got,
-            vec![Session {
-                source: "local".into(),
-                name: "legacy".into(),
-                mux: "tmux".into(),
-                windows: 1,
-                attached: false,
-                last_attached: 0
             }]
         );
     }
@@ -344,11 +314,10 @@ mod tests {
         let out = concat!(
             "some random banner text\n",
             "\n",
-            "x\t1\t100\tbadwin\n",
-            "1\tnope\t100\tbadattach\n",
-            "1\t1\tabc\tbadtime\n",
-            "1\t1\t100\t\n",
-            "2\t1\t300\tgood\n",
+            "x\t1\tbadwin\n",
+            "1\tnope\tbadattach\n",
+            "1\t1\t\n",
+            "2\t1\tgood\n",
         );
         let got = parse_sessions("local", "tmux", out);
         assert_eq!(
@@ -359,7 +328,6 @@ mod tests {
                 mux: "tmux".into(),
                 windows: 2,
                 attached: true,
-                last_attached: 300
             }]
         );
     }
@@ -371,7 +339,7 @@ mod tests {
 
     #[test]
     fn parse_sessions_order_preserved() {
-        let out = "1\t0\t1\tz\n1\t0\t2\ta\n1\t0\t3\tm\n";
+        let out = "1\t0\tz\n1\t0\ta\n1\t0\tm\n";
         let got = parse_sessions("local", "tmux", out);
         let names: Vec<&str> = got.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["z", "a", "m"]);

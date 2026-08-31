@@ -49,11 +49,9 @@ behaves as though there were none to read.
 
 ## Module Seams
 
-- The implementation root holds the mux itself, the poll cadence, the
-  `--session <name> action <verb>` argv builder, and the clock the reported
-  session age is subtracted from.
-- The parsing module holds the session-line grammar and the human-readable duration
-  zellij prints an age in. Pure and total: anything that does not
+- The implementation root holds the mux itself, the poll cadence, and the
+  `--session <name> action <verb>` argv builder.
+- The parsing module holds the session-line grammar. Pure and total: anything that does not
   fit is skipped.
 - The driver sits beside them.
 - The driver pulls the mux-agnostic display seam from `src/driver.rs` and the
@@ -71,9 +69,6 @@ behaves as though there were none to read.
   fails the attach, which is the end-of-stream the death signal is waiting for.
 - A session listed as exited is a resurrectable record, not a session, and is
   dropped during enumeration.
-- The session's last-attached value carries its CREATION instant. zellij reports
-  no attach time, and the shared session model carries a value on the same epoch scale
-  tmux reports.
 - A session change reaches another session by a fresh attach, and the display
   belief is what suspends it: an attachment already recorded as showing the
   selected session is left alone. Following a client switch records the client's

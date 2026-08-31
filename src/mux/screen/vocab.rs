@@ -42,7 +42,7 @@ pub fn select_window(bin: &str, name: &str, index: i64) -> Vec<String> {
 /// line is `\t<pid>.<name>\t(<date> <time> <ampm>)\t(<state>)`; the name is everything
 /// after the first dot, and `attached` is read from the state column. Lines that carry
 /// no socket id (header/footer) or a non-numeric pid are skipped so banners cannot
-/// poison the list. `windows`/`last_attached` are unknown from `-ls`, so they are 0.
+/// poison the list. `windows` is unknown from `-ls`, so it is 0.
 pub fn parse_sessions(source: &str, mux: &str, out: &str) -> Vec<Session> {
     let mut sessions = Vec::new();
     for ln in out.split('\n') {
@@ -66,7 +66,6 @@ pub fn parse_sessions(source: &str, mux: &str, out: &str) -> Vec<Session> {
             mux: mux.to_string(),
             windows: 0,
             attached,
-            last_attached: 0,
         });
     }
     sessions

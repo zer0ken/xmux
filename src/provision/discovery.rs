@@ -234,9 +234,9 @@ mod tests {
     #[tokio::test]
     async fn scan_all_preserves_order_and_content() {
         let srcs = vec![
-            scan_source("a", static_ok("2\t1\t1781246739\teditor\n")),
-            scan_source("b", static_ok("1\t0\t0\tbuild\n")),
-            scan_source("c", static_ok("3\t1\t1781246800\tshell\n")),
+            scan_source("a", static_ok("2\t1\teditor\n")),
+            scan_source("b", static_ok("1\t0\tbuild\n")),
+            scan_source("c", static_ok("3\t1\tshell\n")),
         ];
         let got = scan_all(&srcs, Duration::from_secs(1), 4).await;
         assert_eq!(got.len(), 3);
@@ -254,7 +254,7 @@ mod tests {
     #[tokio::test]
     async fn scan_all_one_unreachable_does_not_stop_others() {
         let srcs = vec![
-            scan_source("a", static_ok("1\t1\t0\tone\n")),
+            scan_source("a", static_ok("1\t1\tone\n")),
             scan_source(
                 "b",
                 Arc::new(StaticRunner {
@@ -262,7 +262,7 @@ mod tests {
                     err_msg: Some("ssh: connect to host b port 22: Connection timed out".into()),
                 }),
             ),
-            scan_source("c", static_ok("1\t0\t0\ttwo\n")),
+            scan_source("c", static_ok("1\t0\ttwo\n")),
         ];
         let got = scan_all(&srcs, Duration::from_secs(1), 4).await;
         assert_eq!(got.len(), 3);
@@ -302,7 +302,7 @@ mod tests {
             self.max.fetch_max(n, Ordering::SeqCst);
             tokio::time::sleep(Duration::from_millis(8)).await;
             self.active.fetch_sub(1, Ordering::SeqCst);
-            Ok(b"1\t0\t0\ts\n".to_vec())
+            Ok(b"1\t0\ts\n".to_vec())
         }
     }
 
@@ -345,7 +345,7 @@ mod tests {
     impl Runner for BlockingRunner {
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             tokio::time::sleep(Duration::from_secs(10)).await;
-            Ok(b"1\t0\t0\ts\n".to_vec())
+            Ok(b"1\t0\ts\n".to_vec())
         }
     }
 
@@ -368,7 +368,7 @@ mod tests {
         // first, so a caller can print it without waiting on the slow one.
         let srcs = vec![
             scan_source("slow", Arc::new(BlockingRunner)),
-            scan_source("fast", static_ok("1\t0\t0\tready\n")),
+            scan_source("fast", static_ok("1\t0\tready\n")),
         ];
         let mut rx = scan_stream(&srcs, Duration::from_secs(1), 4).await;
         let first = rx.recv().await.expect("a result");

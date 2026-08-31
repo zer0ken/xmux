@@ -205,7 +205,6 @@ mod tests {
                     mux: "tmux".into(),
                     windows: 1,
                     attached: false,
-                    last_attached: 100,
                 }],
             }],
         }

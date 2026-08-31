@@ -968,7 +968,6 @@ mod tests {
                     mux: "tmux".into(),
                     windows: 2,
                     attached: false,
-                    last_attached: 100,
                 }],
             }],
         }
@@ -1162,7 +1161,6 @@ mod tests {
             mux: "tmux".into(),
             windows: 1,
             attached: false,
-            last_attached: 5,
         }];
         let effects = state.apply_event(
             HostEvent::Sessions {

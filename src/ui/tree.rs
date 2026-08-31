@@ -395,11 +395,10 @@ mod tests {
         crate::session::mux_of(source).to_string()
     }
 
-    fn sess(source: &str, name: &str, last: i64) -> Session {
+    fn sess(source: &str, name: &str) -> Session {
         Session {
             source: source.into(),
             name: name.into(),
-            last_attached: last,
             ..Default::default()
         }
     }
@@ -410,19 +409,19 @@ mod tests {
                 source: "jupiter00".into(),
                 err: None,
                 sessions: vec![
-                    sess("jupiter00", "inference", 0),
-                    sess("jupiter00", "training", 0),
+                    sess("jupiter00", "inference"),
+                    sess("jupiter00", "training"),
                 ],
             },
             Group {
                 source: "local".into(),
                 err: None,
-                sessions: vec![sess("local", "web", 0), sess("local", "db", 0)],
+                sessions: vec![sess("local", "web"), sess("local", "db")],
             },
             Group {
                 source: "deadhost".into(),
                 err: Some("dial: connection refused".into()),
-                sessions: vec![sess("deadhost", "ghost", 0)],
+                sessions: vec![sess("deadhost", "ghost")],
             },
         ]
     }
@@ -430,10 +429,10 @@ mod tests {
     #[test]
     fn sort_by_name_orders() {
         let mut in_ = vec![
-            sess("local", "beta", 100),
-            sess("local", "alpha", 200),
-            sess("local", "gamma", 100),
-            sess("local", "delta", 0),
+            sess("local", "beta"),
+            sess("local", "alpha"),
+            sess("local", "gamma"),
+            sess("local", "delta"),
         ];
         sort_by_name(&mut in_);
         let names: Vec<&str> = in_.iter().map(|s| s.name.as_str()).collect();
@@ -442,11 +441,7 @@ mod tests {
 
     #[test]
     fn sort_by_name_stable_for_equal_names() {
-        let mut in_ = vec![
-            sess("h1", "x", 50),
-            sess("h2", "x", 50),
-            sess("h3", "x", 50),
-        ];
+        let mut in_ = vec![sess("h1", "x"), sess("h2", "x"), sess("h3", "x")];
         sort_by_name(&mut in_);
         let srcs: Vec<&str> = in_.iter().map(|s| s.source.as_str()).collect();
         assert_eq!(srcs, vec!["h1", "h2", "h3"]);
@@ -538,9 +533,9 @@ mod tests {
         let groups = vec![Group {
             source: "local".into(),
             err: None,
-            sessions: vec![sess("local", "web", 0)],
+            sessions: vec![sess("local", "web")],
         }];
-        let got = add_session(&groups, sess("remote", "build", 0));
+        let got = add_session(&groups, sess("remote", "build"));
         assert_eq!(got.len(), 2);
         let last = got.last().unwrap();
         assert_eq!(last.source, "remote");
@@ -553,11 +548,11 @@ mod tests {
         let groups = vec![Group {
             source: "local".into(),
             err: None,
-            sessions: vec![sess("local", "web", 50)],
+            sessions: vec![sess("local", "web")],
         }];
         // A mid-session create does not sort here - it appends, and the next rebuild's
-        // deterministic order places it. The new session's recency value has no bearing.
-        let got = add_session(&groups, sess("local", "db", 100));
+        // deterministic order places it.
+        let got = add_session(&groups, sess("local", "db"));
         assert_eq!(got.len(), 1);
         let s = &got[0].sessions;
         assert_eq!(s.len(), 2);
@@ -575,10 +570,9 @@ mod tests {
                     source: "local".into(),
                     name: "web".into(),
                     windows: 1,
-                    last_attached: 10,
                     ..Default::default()
                 },
-                sess("local", "db", 5),
+                sess("local", "db"),
             ],
         }];
         let got = add_session(
@@ -587,7 +581,6 @@ mod tests {
                 source: "local".into(),
                 name: "web".into(),
                 windows: 9,
-                last_attached: 100,
                 ..Default::default()
             },
         );
@@ -595,7 +588,6 @@ mod tests {
         assert_eq!(s.len(), 2);
         let web = s.iter().find(|x| x.name == "web").expect("web present");
         assert_eq!(web.windows, 9);
-        assert_eq!(web.last_attached, 100);
         assert_eq!(s[0].name, "web");
     }
 
@@ -604,10 +596,10 @@ mod tests {
         let groups = vec![Group {
             source: "local".into(),
             err: None,
-            sessions: vec![sess("local", "web", 0)],
+            sessions: vec![sess("local", "web")],
         }];
         let orig_len = groups[0].sessions.len();
-        let _ = add_session(&groups, sess("local", "db", 0));
+        let _ = add_session(&groups, sess("local", "db"));
         assert_eq!(groups[0].sessions.len(), orig_len);
     }
 
@@ -616,7 +608,7 @@ mod tests {
         let groups = vec![Group {
             source: "local".into(),
             err: None,
-            sessions: vec![sess("local", "web", 0), sess("local", "db", 0)],
+            sessions: vec![sess("local", "web"), sess("local", "db")],
         }];
         let got = remove_session(&groups, "local/web");
         assert_eq!(got.len(), 1);
@@ -629,7 +621,7 @@ mod tests {
         let groups = vec![Group {
             source: "local".into(),
             err: None,
-            sessions: vec![sess("local", "web", 0)],
+            sessions: vec![sess("local", "web")],
         }];
         let got = remove_session(&groups, "local/web");
         assert_eq!(got.len(), 1);
@@ -642,7 +634,7 @@ mod tests {
         let groups = vec![Group {
             source: "local".into(),
             err: None,
-            sessions: vec![sess("local", "web", 0), sess("local", "db", 0)],
+            sessions: vec![sess("local", "web"), sess("local", "db")],
         }];
         let orig_len = groups[0].sessions.len();
         let _ = remove_session(&groups, "local/web");
@@ -654,7 +646,7 @@ mod tests {
         let groups = vec![Group {
             source: "local".into(),
             err: None,
-            sessions: vec![sess("local", "alpha", 100), sess("local", "zeta", 100)],
+            sessions: vec![sess("local", "alpha"), sess("local", "zeta")],
         }];
         let got = rename_session(&groups, "local/alpha", "zzz");
         let s = &got[0].sessions;
@@ -670,7 +662,7 @@ mod tests {
         let groups = vec![Group {
             source: "local".into(),
             err: None,
-            sessions: vec![sess("local", "web", 0)],
+            sessions: vec![sess("local", "web")],
         }];
         let got = rename_session(&groups, "local/nonexistent", "newname");
         assert_eq!(got.len(), 1);
@@ -683,7 +675,7 @@ mod tests {
         let groups = vec![Group {
             source: "local".into(),
             err: None,
-            sessions: vec![sess("local", "web", 0)],
+            sessions: vec![sess("local", "web")],
         }];
         let _ = rename_session(&groups, "local/web", "renamed");
         assert_eq!(groups[0].sessions[0].name, "web");
@@ -695,22 +687,22 @@ mod tests {
             Group {
                 source: "jupiter00".into(),
                 err: None,
-                sessions: vec![sess("jupiter00", "a", 100)],
+                sessions: vec![sess("jupiter00", "a")],
             },
             Group {
                 source: "local".into(),
                 err: None,
-                sessions: vec![sess("local", "w", 50)],
+                sessions: vec![sess("local", "w")],
             },
             Group {
                 source: "wsl.Debian".into(),
                 err: None,
-                sessions: vec![sess("wsl.Debian", "d", 999)],
+                sessions: vec![sess("wsl.Debian", "d")],
             },
             Group {
                 source: "jupiter06".into(),
                 err: None,
-                sessions: vec![sess("jupiter06", "b", 300)],
+                sessions: vec![sess("jupiter06", "b")],
             },
             Group {
                 source: "deadhost".into(),
@@ -720,9 +712,8 @@ mod tests {
         ];
         let out = order_groups(&groups);
         let order: Vec<&str> = out.iter().map(|g| g.source.as_str()).collect();
-        // local first, then WSL (whatever its sessions' recency), then remotes by
-        // name; each tier by source name ascending. deadhost's unreachable state does
-        // not sink it.
+        // local first, then WSL, then remotes by name; each tier by source name
+        // ascending. deadhost's unreachable state does not sink it.
         assert_eq!(
             order,
             vec!["local", "wsl.Debian", "deadhost", "jupiter00", "jupiter06"]
@@ -738,17 +729,17 @@ mod tests {
             Group {
                 source: "jupiter06".into(),
                 err: None,
-                sessions: vec![sess("jupiter06", "b", 300)],
+                sessions: vec![sess("jupiter06", "b")],
             },
             Group {
                 source: "local:zellij".into(),
                 err: None,
-                sessions: vec![sess("local:zellij", "z", 10)],
+                sessions: vec![sess("local:zellij", "z")],
             },
             Group {
                 source: "local:psmux".into(),
                 err: None,
-                sessions: vec![sess("local:psmux", "p", 20)],
+                sessions: vec![sess("local:psmux", "p")],
             },
         ];
         let out = order_groups(&groups);
@@ -792,7 +783,7 @@ mod tests {
         let groups = vec![Group {
             source: "jup".into(),
             err: None,
-            sessions: vec![sess("jup", "api", 0)],
+            sessions: vec![sess("jup", "api")],
         }];
         let rows = flatten(&groups, &HashSet::new(), "", &mux_of_source);
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
@@ -811,7 +802,7 @@ mod tests {
         let groups = vec![Group {
             source: "h".into(),
             err: None,
-            sessions: vec![sess("h", "a", 0), sess("h", "b", 0)],
+            sessions: vec![sess("h", "a"), sess("h", "b")],
         }];
         let rows = flatten(&groups, &HashSet::new(), "", &mux_of_source);
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
@@ -905,7 +896,7 @@ mod tests {
         let g = Group {
             source: "jup".into(),
             err: None,
-            sessions: vec![sess("jup", "api", 0), sess("jup", "web", 0)],
+            sessions: vec![sess("jup", "api"), sess("jup", "web")],
         };
         // Empty filter → the first session.
         assert_eq!(first_visible_session(&g, "").unwrap().name, "api");
@@ -917,7 +908,7 @@ mod tests {
         let dead = Group {
             source: "jup".into(),
             err: Some("refused".into()),
-            sessions: vec![sess("jup", "api", 0)],
+            sessions: vec![sess("jup", "api")],
         };
         assert!(first_visible_session(&dead, "").is_none());
     }

@@ -555,7 +555,6 @@ async fn r_rescan_rebuilds_nav_and_kicks_discovery() {
                 name: "api".into(),
                 windows: 1,
                 attached: false,
-                last_attached: 100,
             }],
         }],
     };
@@ -1297,7 +1296,6 @@ fn two_session_scan() -> crate::ui::switcher::Scan {
         name: name.into(),
         windows,
         attached: false,
-        last_attached: 100,
     };
     Scan {
         groups: vec![Group {
@@ -1389,7 +1387,6 @@ fn jup_sessions(names: &[&str]) -> Vec<crate::session::Session> {
             name: (*name).into(),
             windows: 1,
             attached: false,
-            last_attached: 100,
         })
         .collect()
 }
@@ -1513,7 +1510,6 @@ fn psmux_scan() -> crate::ui::switcher::Scan {
         name: name.into(),
         windows: 1,
         attached: false,
-        last_attached: 100,
     };
     crate::ui::switcher::Scan {
         groups: vec![Group {
@@ -1826,7 +1822,6 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
                     name: "api".into(),
                     windows: 1,
                     attached: false,
-                    last_attached: 200,
                 },
                 Session {
                     mux: String::new(),
@@ -1834,7 +1829,6 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
                     name: "db".into(),
                     windows: 1,
                     attached: false,
-                    last_attached: 100,
                 },
             ],
         }],
@@ -1932,7 +1926,6 @@ fn status_line_reports_focus_and_address() {
                 name: "api".into(),
                 windows: 1,
                 attached: false,
-                last_attached: 1,
             }],
         }],
     };
@@ -1971,7 +1964,6 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
                     name: "api".into(),
                     windows: 1,
                     attached: false,
-                    last_attached: 1,
                 },
                 Session {
                     mux: String::new(),
@@ -1979,7 +1971,6 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
                     name: "db".into(),
                     windows: 1,
                     attached: false,
-                    last_attached: 2,
                 },
             ],
         }],
@@ -2081,7 +2072,6 @@ fn rt_terminal_focus_with_session() -> Runtime {
                 name: "api".into(),
                 windows: 1,
                 attached: false,
-                last_attached: 1,
             }],
         }],
     };

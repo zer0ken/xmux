@@ -685,7 +685,7 @@ mod tests {
         // sessions (the per-host streaming probe the event loop fans out).
         let env = Arc::new(Env::new(
             Roster {
-                sources: vec![test_source("local", false, "2\t1\t100\teditor\n")],
+                sources: vec![test_source("local", false, "2\t1\teditor\n")],
                 local_muxes: vec!["tmux".into()],
                 ..Default::default()
             },
@@ -717,7 +717,6 @@ mod tests {
             mux: String::new(),
             windows,
             attached,
-            last_attached: 0,
         }
     }
 
@@ -852,13 +851,11 @@ mod tests {
                 Session {
                     source: "local".into(),
                     name: "old".into(),
-                    last_attached: 10,
                     ..Default::default()
                 },
                 Session {
                     source: "local".into(),
                     name: "new".into(),
-                    last_attached: 99,
                     ..Default::default()
                 },
             ],
