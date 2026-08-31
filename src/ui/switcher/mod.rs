@@ -458,7 +458,8 @@ impl Switcher {
         // The mux each card NAMES comes from one resolver, so a session card, its host's
         // card and the screen behind either cannot spell one mux three ways.
         let named_mux = |source: &str| state.chrome.source_mux(source).to_string();
-        let rows = tree::flatten(&state.groups, &state.scanning, &state.filter, &named_mux);
+        let rows =
+            tree::flatten(&state.groups, &state.scanning, &state.filter, false, &named_mux);
 
         self.rows = rows;
         let target = keep

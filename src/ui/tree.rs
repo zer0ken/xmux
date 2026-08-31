@@ -226,6 +226,28 @@ impl Row {
     }
 }
 
+/// The groups the nav may render when unreachable hosts are hidden (`[ui]
+/// hide-unreachable`): every reachable group, plus an unreachable group only while
+/// the filter names it - the named card is the one entry to that host's unreachable
+/// screen, and an empty filter hides every unreachable group. A host still scanning
+/// is not unreachable (its card turns the spinner), so it is never hidden, whatever
+/// stale error it carries. Inputs are not mutated.
+pub(crate) fn drop_hidden_unreachable(
+    groups: &[Group],
+    scanning: &HashSet<String>,
+    filter: &str,
+) -> Vec<Group> {
+    groups
+        .iter()
+        .filter(|g| {
+            g.err.is_none()
+                || scanning.contains(&g.source)
+                || (!filter.is_empty() && fuzzy_match(filter, &g.source))
+        })
+        .cloned()
+        .collect()
+}
+
 /// The groups to render, in `groups` order - that order is authoritative (established
 /// by the deterministic source order at rebuild via [`order_groups`], which a routine
 /// poll reproduces exactly, so a poll never reshuffles the tree). An empty filter
@@ -326,14 +348,22 @@ pub(crate) fn host_state_word(unreachable: bool) -> &'static str {
 /// bottom band. The mux each row NAMES is resolved here through `mux_of_source`, so a
 /// row cannot exist without it and two rows on one source cannot name their mux two
 /// ways; colour is derived at render time from each row's [`RowRef`], so this stays
-/// terminal-free. Inputs are not mutated.
+/// terminal-free. With `hide_unreachable`, the unreachable hosts are pruned before the
+/// filter runs, so the no-match fallback cannot resurrect a host the filter does not
+/// name. Inputs are not mutated.
 pub(crate) fn flatten(
     groups: &[Group],
     scanning: &HashSet<String>,
     filter: &str,
+    hide_unreachable: bool,
     mux_of_source: &dyn Fn(&str) -> String,
 ) -> Vec<Row> {
-    let groups = visible_groups(groups, filter);
+    let groups = if hide_unreachable {
+        drop_hidden_unreachable(groups, scanning, filter)
+    } else {
+        groups.to_vec()
+    };
+    let groups = visible_groups(&groups, filter);
 
     let mut rows = Vec::new();
     // 1. A section per source that has a session to show: the non-selectable
@@ -785,7 +815,7 @@ mod tests {
             err: None,
             sessions: vec![sess("jup", "api")],
         }];
-        let rows = flatten(&groups, &HashSet::new(), "", &mux_of_source);
+        let rows = flatten(&groups, &HashSet::new(), "", false, &mux_of_source);
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["section", "session"]);
         assert_eq!(addr_of(&rows[1].reference), "jup/api");
@@ -804,7 +834,7 @@ mod tests {
             err: None,
             sessions: vec![sess("h", "a"), sess("h", "b")],
         }];
-        let rows = flatten(&groups, &HashSet::new(), "", &mux_of_source);
+        let rows = flatten(&groups, &HashSet::new(), "", false, &mux_of_source);
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["section", "session", "session"]);
         let addrs: Vec<String> = rows.iter().map(|r| addr_of(&r.reference)).collect();
@@ -820,7 +850,7 @@ mod tests {
         }];
         let mut scanning = HashSet::new();
         scanning.insert("jup".to_string());
-        let rows = flatten(&groups, &scanning, "", &mux_of_source);
+        let rows = flatten(&groups, &scanning, "", false, &mux_of_source);
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["host"]);
         assert_eq!(addr_of(&rows[0].reference), "jup");
@@ -850,7 +880,7 @@ mod tests {
                 sessions: vec![],
             },
         ];
-        let rows = flatten(&groups, &HashSet::new(), "", &mux_of_source);
+        let rows = flatten(&groups, &HashSet::new(), "", false, &mux_of_source);
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["host", "host"]);
         assert_eq!(addr_of(&rows[0].reference), "empty");
@@ -884,7 +914,7 @@ mod tests {
         }];
         let mut scanning = HashSet::new();
         scanning.insert("kyla".to_string());
-        let rows = flatten(&groups, &scanning, "", &mux_of_source);
+        let rows = flatten(&groups, &scanning, "", false, &mux_of_source);
         assert!(matches!(
             rows[0].reference,
             RowRef::Host { scanning: true, .. }
@@ -911,5 +941,126 @@ mod tests {
             sessions: vec![sess("jup", "api")],
         };
         assert!(first_visible_session(&dead, "").is_none());
+    }
+
+    fn drop_hidden_setup() -> Vec<Group> {
+        vec![
+            Group {
+                source: "local".into(),
+                err: None,
+                sessions: vec![sess("local", "web")],
+            },
+            Group {
+                source: "empty".into(),
+                err: None,
+                sessions: vec![],
+            },
+            Group {
+                source: "deadhost".into(),
+                err: Some("refused".into()),
+                sessions: vec![],
+            },
+        ]
+    }
+
+    #[test]
+    fn drop_hidden_unreachable_keeps_reachable_and_drops_settled_failures() {
+        // An empty filter hides the settled unreachable host; the reachable hosts (one
+        // with sessions, one empty) keep their groups.
+        let got = drop_hidden_unreachable(&drop_hidden_setup(), &HashSet::new(), "");
+        let sources: Vec<&str> = got.iter().map(|g| g.source.as_str()).collect();
+        assert_eq!(sources, vec!["local", "empty"]);
+    }
+
+    #[test]
+    fn drop_hidden_unreachable_never_hides_a_scanning_host() {
+        // A host still scanning is not unreachable yet: whatever stale error it carries,
+        // its group stays, consistent with the render's spinner state.
+        let mut scanning = HashSet::new();
+        scanning.insert("deadhost".to_string());
+        let got = drop_hidden_unreachable(&drop_hidden_setup(), &scanning, "");
+        let sources: Vec<&str> = got.iter().map(|g| g.source.as_str()).collect();
+        assert_eq!(sources, vec!["local", "empty", "deadhost"]);
+    }
+
+    #[test]
+    fn drop_hidden_unreachable_filter_naming_the_host_keeps_its_group() {
+        // The filter naming the host keeps its card: it is the one entry to that host's
+        // unreachable screen.
+        let got = drop_hidden_unreachable(&drop_hidden_setup(), &HashSet::new(), "dead");
+        let sources: Vec<&str> = got.iter().map(|g| g.source.as_str()).collect();
+        assert_eq!(sources, vec!["local", "empty", "deadhost"]);
+    }
+
+    #[test]
+    fn drop_hidden_unreachable_does_not_mutate_input() {
+        let groups = drop_hidden_setup();
+        let orig_len = groups.len();
+        let _ = drop_hidden_unreachable(&groups, &HashSet::new(), "");
+        assert_eq!(groups.len(), orig_len);
+        assert_eq!(groups[2].source, "deadhost");
+        assert!(groups[2].err.is_some());
+    }
+
+    #[test]
+    fn flatten_hides_unreachable_hosts_when_asked() {
+        // With hiding on and an empty filter, the rows are the local section and card
+        // and the empty reachable host's card; the unreachable host takes no row.
+        let groups = drop_hidden_setup();
+        let rows = flatten(&groups, &HashSet::new(), "", true, &mux_of_source);
+        let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
+        assert_eq!(kinds, vec!["section", "session", "host"]);
+        assert!(!rows
+            .iter()
+            .any(|r| addr_of(&r.reference).contains("deadhost")));
+    }
+
+    #[test]
+    fn flatten_keeps_the_unreachable_card_when_the_filter_names_it() {
+        // The filter naming the hidden host brings its card back, unreachable as ever.
+        let groups = drop_hidden_setup();
+        let rows = flatten(&groups, &HashSet::new(), "dead", true, &mux_of_source);
+        assert!(rows.iter().any(|r| matches!(
+            &r.reference,
+            RowRef::Host { source, unreachable: true, .. } if source == "deadhost"
+        )));
+    }
+
+    #[test]
+    fn flatten_no_match_fallback_does_not_resurrect_a_hidden_host() {
+        // The prune runs before the filter, so the no-match fallback (header-only
+        // groups for every remaining host) cannot bring the hidden host back.
+        let groups = drop_hidden_setup();
+        let rows = flatten(&groups, &HashSet::new(), "zzz", true, &mux_of_source);
+        assert!(!rows
+            .iter()
+            .any(|r| addr_of(&r.reference).contains("deadhost")));
+        // The hosts the filter does not name keep their fallback cards.
+        assert!(rows
+            .iter()
+            .any(|r| addr_of(&r.reference) == "local"));
+        assert!(rows
+            .iter()
+            .any(|r| addr_of(&r.reference) == "empty"));
+    }
+
+    #[test]
+    fn flatten_hiding_every_host_leaves_no_rows() {
+        // Every host unreachable and hiding on: the nav holds no row at all, and
+        // nothing panics.
+        let groups = vec![
+            Group {
+                source: "deadhost".into(),
+                err: Some("refused".into()),
+                sessions: vec![],
+            },
+            Group {
+                source: "other".into(),
+                err: Some("timed out".into()),
+                sessions: vec![],
+            },
+        ];
+        let rows = flatten(&groups, &HashSet::new(), "", true, &mux_of_source);
+        assert!(rows.is_empty());
     }
 }
