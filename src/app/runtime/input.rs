@@ -277,6 +277,13 @@ impl Runtime {
                 dirty = true;
             }
             ChainAction::ForwardToMux => {
+                // Re-assert the CONIN capture bits at the instant each event is forwarded: a
+                // ConPTY child spawn clears ENABLE_MOUSE_INPUT / re-enables quick-edit on the
+                // parent CONIN at any moment, and the per-frame poll only restores capture one
+                // loop later, so a drag that starts in the gap would hand the terminal back its
+                // native drag-to-select. Re-asserting before the forward keeps capture alive for
+                // the whole interaction, not just at the next poll. No-op off Windows.
+                crate::display::term::ensure_mouse_capture();
                 if let Some((gc, gr)) = in_mux {
                     registry.input(
                         &display_key(hosts, selection),
