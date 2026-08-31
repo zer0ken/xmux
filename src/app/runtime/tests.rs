@@ -2423,6 +2423,50 @@ fn resize_keys_adjust_height_in_top_layout() {
     assert_eq!(rt.nav_height, auto, "and shrinks it back");
 }
 
+#[test]
+fn forward_to_mux_reasserts_capture_and_encodes_the_sgr_press() {
+    use crate::ui::switcher::{Scan, Switcher};
+    // A left-press over the FOCUSED terminal view reaches the mux as an SGR press
+    // re-encoded to the view-local cell, and the ForwardToMux arm re-asserts the CONIN
+    // capture bits before the forward (a no-op off Windows, where the assertion is a
+    // pure local read and write of xmux's own console handle).
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let sel = Selection {
+        source: "local".into(),
+        session: "work".into(),
+        window: None,
+    };
+    let nav_width = crate::ui::switcher::NAV_WIDTH;
+    let (vw, vh) = terminal_view_size(80, 24, crate::ui::switcher::NavSize::visible(nav_width));
+    let term_area = ratatui::layout::Rect::new(nav_width + 1, 0, vw, vh);
+    let (att, log) = crate::display::attachment::fake_attachment_with_input_log(42);
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    rt.registry.insert(&display_key(&rt.hosts, &sel), att);
+
+    // A left-button press inside the terminal view (SGR 1-based col/row, cb 0 = left).
+    let press = crate::display::mouse::MouseEvent {
+        cb: 0,
+        col: nav_width + 12,
+        row: 5,
+        pressed: true,
+    };
+    let (mut ft, mut wheel) = (false, false);
+    rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel, term_area);
+    // Re-encoded to grid-local (1-based): col nav_width+12 → gc 11, row 5 → gr 5.
+    let logged = log.lock().unwrap().clone();
+    assert_eq!(
+        logged,
+        vec![b"\x1b[<0;11;5M".to_vec()],
+        "the drag-start press reaches the mux, re-encoded to the view-local cell"
+    );
+}
+
 /// The tty a live display attach gives its host is decided by the transport's own shape.
 /// A machine that spawns the mux binary DIRECTLY puts the mux client in the very PTY xmux
 /// opened, so that PTY's name IS the client's tty: identity by ownership, known before the
