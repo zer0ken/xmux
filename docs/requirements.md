@@ -328,6 +328,15 @@ no function, and no test, so renaming code is never a documentation change.
   runs on the far side of ssh or a WSL distribution, are not guessed at, and a mux that
   cannot move a client between sessions at all (screen, abduco) has nothing to follow.
 
+- **FR-B24** - The nav hides the hosts no scan has reached: an unreachable host takes no
+  card by default, and `[ui] hide-unreachable` (default true) turns the hiding off. The
+  filter naming a hidden host brings its card back, and that named card is the one entry
+  to its unreachable screen. An empty filter hides every unreachable host, and a filter
+  matching nothing does not bring them back through the no-match fallback that shows the
+  other hosts. A reachable host with no sessions keeps its card, and a host still scanning
+  never hides, whatever stale failure it carries. A host that goes unreachable mid-run
+  hides from that result on and returns when a scan answers.
+
 ## C. Switching (the keystone)
 
 - **FR-C1** - A same-server pick lands on the picked session, pre-selecting the
