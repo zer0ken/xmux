@@ -165,7 +165,7 @@ no function, and no test, so renaming code is never a documentation change.
   leaving the layout alone so no card shifts. When the nav is auto-hidden, a live
   prefix interaction brings the nav back for the moment it needs it (a jump reads the
   card numbers), and it hides again when the interaction ends.
-- **FR-B10** - Every unselected card carries a 0-based number in its address column, on
+- **FR-B10** - Every unselected card carries a 1-based number in its address column, on
   the row of the session it addresses, and `prefix <digit>` jumps to it. The selected
   card holds the selection mark in that same column instead. Selecting a card changes
   nothing else on the card (the address column keeps its width), so a

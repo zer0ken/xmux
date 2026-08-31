@@ -63,7 +63,7 @@ while the terminal view is focused:
 | Key | Action |
 |---|---|
 | `/` | fuzzy-filter the list by `<source>/<name>` (no prefix; applies as you type) |
-| `prefix 0`-`prefix 9` | jump to a session by its number |
+| `prefix 1`-`prefix 9` | jump to a session by its number |
 | `prefix n` | start a new session on the selected host |
 | `prefix r` | re-scan: refresh which machines exist, and every source's sessions |
 
@@ -76,15 +76,19 @@ host already holds.
 
 ### Jumping by number
 
-Every card carries a dim 0-based number in its left column, on the same row as the
-session it names. The selected card shows the selection mark there instead: its number
+Every card carries a dim number in its left column, on the same row as the session it
+names, counted from 1 in the same order the list reads: the first card is 1 and the
+last is the card count. The selected card shows the selection mark there instead: its number
 is the address of where you already are. `prefix <digit>` jumps straight there
 and opens the jump input in the hint bar holding the number, so anything past 9 is
 reached by typing the rest of it (`prefix 1` then `2` lands on 12, then `7` on 127).
 
 Every digit is taken as typed: the selection follows the number while it names a real
-entry and stays put while it does not. `Enter` closes the input when the number names
-an entry and flashes the valid range (0 to the last card) while leaving it open
+entry and stays put while it does not. No card carries 0, so `prefix 0` opens the
+jump input holding a number no card carries and leaves the selection where it is;
+0 matters only inside a longer number (10, 20, 100), and a leading zero is just a
+spelling (01 is 1). `Enter` closes the input when the number names
+an entry and flashes the valid range (1 to the last card) while leaving it open
 otherwise; `Esc` cancels it and returns to where you started. Digits are
 prefix-gated, so a bare digit never jumps by accident.
 
