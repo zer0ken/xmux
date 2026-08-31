@@ -817,15 +817,16 @@ mod tests {
         assert_eq!(
             view_border_drag_width(135, "C-g", 140, true),
             crate::app::runtime::nav_width_min("C-g"),
-            "dragging the right border leftward clamps to the prefix floor"
+            "dragging the right border rightward clamps to the prefix floor"
         );
-        // Same mirror on the height: dragging the bottom border (0-based row 35 at the
-        // auto 24) to SGR 30 in a 60-row window gives 30; near the terminal it floors.
+        // Same mirror on the height: dragging the bottom border (0-based row 35 at
+        // the auto 24) to SGR 30 in a 60-row window gives 30; near the window's
+        // bottom edge it floors.
         assert_eq!(view_border_drag_height(30, 60, true), 30);
         assert_eq!(
             view_border_drag_height(58, 60, true),
             NAV_HEIGHT_MIN,
-            "dragging the bottom border upward clamps to the height floor"
+            "dragging the bottom border downward clamps to the height floor"
         );
     }
 

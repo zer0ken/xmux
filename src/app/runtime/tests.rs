@@ -2445,7 +2445,7 @@ fn handle_mouse_event_bottom_layout_border_drag_resizes_height() {
         "left-press on the horizontal bottom border grabs it"
     );
 
-    // Drag UP to SGR row 40 → the band keeps 60 - 40 = 20 rows.
+    // Drag DOWN to SGR row 40 → the band keeps 60 - 40 = 20 rows.
     let drag = crate::display::mouse::MouseEvent {
         cb: 0x20,
         col: 5,
