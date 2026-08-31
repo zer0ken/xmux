@@ -543,9 +543,9 @@ impl Chrome {
     pub(crate) fn render_view_border(&self, frame: &mut Frame, area: Rect, terminal_focused: bool) {
         let active = self.colors.active;
         let inactive = self.colors.inactive;
-        // Top layout: the view border runs HORIZONTALLY between the top tree and the
-        // bottom terminal. Split left/right to cue focus (left lit = tree focus, right =
-        // terminal focus), mirroring the vertical rule's top/bottom split.
+        // Band layout: the view border runs HORIZONTALLY between the nav band and the
+        // terminal. Split left/right to cue focus (nav half lit = nav focus, terminal
+        // half = terminal focus), mirroring the vertical rule's top/bottom split.
         if area.width > area.height {
             let g = if self.view_border_hovered {
                 "━"

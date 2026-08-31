@@ -145,7 +145,7 @@ impl Switcher {
         }
         // One geometry source for the whole frame (compute_regions), shared with the PTY
         // sizing and mouse hit-testing so they never diverge: the nav list / terminal split
-        // horizontally (Side) or vertically (Top, for a portrait screen), parted by the view
+        // side by side (Column) or stacked (Band), parted by the view
         // border, and the hint bar takes the nav's bottom rows. The hint bar is normally one
         // row; a long flash wraps, so size it to the wrapped line count (never clipped).
         // Measured at the width it will RENDER at: the nav column normally, the whole
@@ -155,7 +155,7 @@ impl Switcher {
         let hint_bar_h = state.chrome.hint_bar_lines(bar_w, state).len().max(1) as u16;
         let r = compute_regions(area, nav, hint_bar_h);
         let hidden = self.render_nav(frame, r.tree, state);
-        // The view border marks focus between the two views (vertical in Side, horizontal in Top).
+        // The view border marks focus between the two views (vertical in a column, horizontal in a band).
         state
             .chrome
             .render_view_border(frame, r.view_border, terminal_focused);
@@ -217,8 +217,8 @@ impl Switcher {
         self.render_modal_popup(frame, area, state);
     }
 
-    /// The navigation cards. `Side` stacks them in one vertically-scrolling list; the
-    /// portrait `Top` band flows them into columns (see [`columns`]), because a wide,
+    /// The navigation cards. A column stacks them in one vertically-scrolling list; a
+    /// band flows them into columns (see [`columns`]), because a wide,
     /// short region shows three cards as a list and twenty as a grid.
     ///
     /// Either way a scrollbar, when one is needed, gets its own row or column of the
@@ -242,15 +242,15 @@ impl Switcher {
         let spinner_glyph = crate::ui::spinner_glyph(state.chrome.spinner_frame);
         let num_w = self.number_width();
         match self.layout {
-            ViewLayout::Side => {
+            ViewLayout::Column => {
                 self.render_nav_list(frame, area, num_w, spinner_glyph);
                 None
             }
-            ViewLayout::Top => self.render_nav_columns(frame, area, num_w, spinner_glyph),
+            ViewLayout::Band => self.render_nav_columns(frame, area, num_w, spinner_glyph),
         }
     }
 
-    /// The `Side` layout's nav: two BANDS of cards in one vertically-scrolling region,
+    /// The column layout's nav: two BANDS of cards in one vertically-scrolling region,
     /// the section titles + session cards over the host-state cards, laid out by
     /// [`side::place`] - the one geometry the paint, the mouse hit-test and the
     /// scrollbar all read.
@@ -323,7 +323,7 @@ impl Switcher {
         );
     }
 
-    /// The portrait `Top` band's nav: the same rows flowed into columns that fill
+    /// The band layout's nav: the same rows flowed into columns that fill
     /// downward and continue to the right, each column holding whole sections (a
     /// `{host}/{mux}` title over its session cards) or a host-state card.
     ///
@@ -667,8 +667,8 @@ impl Switcher {
             };
             let title_w = UnicodeWidthStr::width(title.as_str()) as u16;
             let rule_w = match self.layout {
-                ViewLayout::Side => width.saturating_sub(title_w.saturating_add(1)),
-                ViewLayout::Top => 0,
+                ViewLayout::Column => width.saturating_sub(title_w.saturating_add(1)),
+                ViewLayout::Band => 0,
             };
             let mut spans = vec![Span::styled(title, header)];
             if rule_w > 0 {

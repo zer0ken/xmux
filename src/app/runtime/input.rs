@@ -173,7 +173,7 @@ impl Runtime {
             && regions
                 .view_border
                 .contains(ratatui::layout::Position { x: col0, y: row0 });
-        let top_layout = regions.layout == crate::ui::switcher::ViewLayout::Top;
+        let top_layout = regions.layout == crate::ui::switcher::ViewLayout::Band;
         if st.dragging_view_border {
             if !ev.pressed {
                 // Button up ends the drag; persist the final size once (motion resizes live
@@ -306,7 +306,7 @@ impl Runtime {
     /// clamped so the terminal keeps room, and persisted; width defers to `apply_width_delta`
     /// (the caller schedules the debounced persist). Returns whether the size changed.
     pub(super) fn resize_axis(&mut self, horizontal: bool, delta: i32) -> bool {
-        let top = self.switcher.layout() == crate::ui::switcher::ViewLayout::Top;
+        let top = self.switcher.layout() == crate::ui::switcher::ViewLayout::Band;
         match (horizontal, top) {
             (true, false) => {
                 apply_width_delta(delta, &mut self.nav_width_natural, &self.env.ui_prefix)

@@ -2405,7 +2405,7 @@ fn resize_keys_adjust_height_in_top_layout() {
         })
         .unwrap();
     }
-    assert_eq!(rt.switcher.layout(), ViewLayout::Top, "portrait → Top");
+    assert_eq!(rt.switcher.layout(), ViewLayout::Band, "portrait → Top");
 
     let auto = crate::ui::switcher::default_nav_height(59);
     // Vertical axis (Ctrl+↓ = grow) resizes HEIGHT in Top; horizontal (Ctrl+→) is a no-op here.

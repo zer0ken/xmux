@@ -33,7 +33,7 @@ pub const NAV_WIDTH: u16 = 48;
 /// Every shape test multiplies the rows by this and compares real proportions.
 pub(super) const CELL_ASPECT: u32 = 2;
 
-/// Blank columns between two card columns in the portrait `Top` flow. One is enough to
+/// Blank columns between two card columns in the band's column flow. One is enough to
 /// part them: every card opens with its address column, so a gutter reads as a gap
 /// between a name and the next number rather than two names running together.
 pub(super) const COL_GUTTER: u16 = 1;
@@ -42,7 +42,7 @@ pub(super) const COL_GUTTER: u16 = 1;
 /// box-drawing line, so it parts the bands without reading as a border around either.
 pub(super) const BAND_RULE: &str = "\u{2500}";
 
-/// The connector running down the left of a session card in the portrait `Top` band,
+/// The connector running down the left of a session card in the band's column flow,
 /// saying which title owns it. The band's columns stand side by side, so a card's place
 /// in the reading order does not on its own say where one group ends and the next
 /// begins; the side list, one full-width run, needs no such mark and draws none.
@@ -72,18 +72,20 @@ fn color_decoration() -> Color {
 }
 pub use crate::ui::chrome::ViewBorderColors;
 
-/// Which way the two views stack. `Side` (default) puts the tree in a left column;
-/// `Top` stacks the tree above the terminal once a side column would leave the terminal
-/// no wider than it is tall, so a narrow phone-shaped terminal stays usable.
+/// Which way the two views stack. `Column` puts the tree in a left or right column of
+/// the terminal view; `Band` stacks the tree in a top or bottom band. The default
+/// placement (left column) is a `Column`, and a band takes over once a side column would
+/// leave the terminal no wider than it is tall, so a narrow phone-shaped terminal stays
+/// usable.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ViewLayout {
-    Side,
-    Top,
+    Column,
+    Band,
 }
 
 /// The nav's live size, as one value: what the user set, and what is on screen this
 /// frame. Both are settable while xmux runs (`prefix h`/`l` and a border drag set the
-/// width, `prefix Ctrl+arrow` and a drag the `Top` height, and auto-hide takes the width
+/// width, `prefix Ctrl+arrow` and a drag the band height, and auto-hide takes the width
 /// away entirely), so every consumer reads them from here rather than deriving either.
 ///
 /// `natural` and `width` differ only while the nav is HIDDEN, and keeping both is the
@@ -96,7 +98,7 @@ pub struct NavSize {
     pub natural: u16,
     /// The width on screen this frame: `natural`, or 0 while the nav is hidden.
     pub width: u16,
-    /// The `Top` band's height the user set; 0 means auto (~40% of the body).
+    /// The band's height the user set; 0 means auto (~40% of the body).
     pub height: u16,
 }
 
@@ -120,7 +122,7 @@ impl NavSize {
         }
     }
 
-    /// The same nav with the `Top` band height the user set (0 = auto).
+    /// The same nav with the band height the user set (0 = auto).
     pub fn with_height(self, height: u16) -> Self {
         NavSize { height, ..self }
     }
@@ -128,40 +130,40 @@ impl NavSize {
 
 /// Picks the layout from the TERMINAL VIEW's aspect, not the whole screen's: putting the
 /// tree in a side column costs the terminal `nav_width + 1` columns, and if that would
-/// leave the terminal view no wider than it is tall, the tree stacks on `Top` instead so
-/// the terminal keeps full width. So a screen that is landscape overall can still go `Top`
-/// once the tree squeezes the terminal into a square-or-taller shape. `nav_width` is the
-/// width the tree would occupy in `Side` (the natural/unhidden width).
+/// leave the terminal view no wider than it is tall, the tree stacks in a band instead so
+/// the terminal keeps full width. So a screen that is landscape overall can still get the
+/// band once the tree squeezes the terminal into a square-or-taller shape. `nav_width` is
+/// the width the tree would occupy in a column (the natural/unhidden width).
 ///
 /// The aspect is the one the user SEES, not the one the cell counts state: a row is about
 /// two columns tall ([`CELL_ASPECT`]), so 60 columns over 30 rows is square. Comparing the
-/// counts directly would call that window landscape and keep the side column until the
+/// counts directly would call that window landscape and keep the column until the
 /// terminal was half as wide as it looked.
 ///
 /// The aspect is always measured AS IF the tree were in its side column, never from the
-/// terminal's live size: going `Top` gives the terminal back the tree's columns and takes
-/// the band's rows instead, so measuring the result would make the test flip its own input
-/// and the layout oscillate at the boundary. One side of the comparison, one answer: the
-/// side terminal is wider than tall (`x > y`) or it is not (`x <= y`).
+/// terminal's live size: going to a band gives the terminal back the tree's columns and
+/// takes the band's rows instead, so measuring the result would make the test flip its
+/// own input and the layout oscillate at the boundary. One side of the comparison, one
+/// answer: the column terminal is wider than tall (`x > y`) or it is not (`x <= y`).
 pub fn view_layout(area: Rect, nav_width: u16) -> ViewLayout {
     let side_term_w = area.width.saturating_sub(nav_width.saturating_add(1)) as u32;
     let side_term_h = area.height as u32 * CELL_ASPECT;
     if side_term_w <= side_term_h {
-        ViewLayout::Top
+        ViewLayout::Band
     } else {
-        ViewLayout::Side
+        ViewLayout::Column
     }
 }
 
-/// The auto `Top`-layout tree height for a body of `body_rows` rows (before the hint bar row
+/// The auto band-layout tree height for a body of `body_rows` rows (before the hint bar row
 /// is removed the caller passes `full_height - 1`). This is the seed a RELATIVE height resize
-/// (prefix h/l in Top) starts from while `nav_height` is still 0 (auto), so the first key
+/// (prefix h/l in a band) starts from while `nav_height` is still 0 (auto), so the first key
 /// adjusts the height the user actually sees.
 pub fn default_nav_height(body_rows: u16) -> u16 {
     top_nav_height(body_rows)
 }
 
-/// The tree region's height in the `Top` layout: ~40% of the body, at least a few rows, but
+/// The tree region's height in the band layout: ~40% of the body, at least a few rows, but
 /// never so tall the terminal loses its last rows. Composed with min/max (not `clamp`) so a
 /// tiny body - where the floor would exceed the ceiling and `clamp` would panic - just yields
 /// the small floor instead.
@@ -173,12 +175,12 @@ fn top_nav_height(body_h: u16) -> u16 {
 
 /// The screen regions the switcher draws into, derived ONCE per frame so the renderer,
 /// the PTY sizing, and mouse hit-testing all agree (one geometry, no divergence). The
-/// tree and terminal split the whole area horizontally (`Side`, sized by `nav_width`)
-/// or vertically (`Top`, sized by `nav_height`), parted by the one-cell view border;
+/// tree and terminal split the whole area side by side (`Column`, sized by `nav_width`)
+/// or stacked (`Band`, sized by `nav_height`), parted by the one-cell view border;
 /// the hint bar is the BOTTOM of the nav region, not a full-width strip, so it reads
 /// as the nav's own status line and the terminal view keeps every row it owns.
 /// `nav_width == 0` is the tree-hidden sentinel: the terminal owns the whole area (and
-/// there is no nav to carry a hint bar). `nav_height == 0` means the `Top` height is
+/// there is no nav to carry a hint bar). `nav_height == 0` means the band height is
 /// auto (~40% of the area).
 pub struct Regions {
     pub layout: ViewLayout,
@@ -188,7 +190,7 @@ pub struct Regions {
     pub hint_bar: Rect,
 }
 
-/// The Top-layout tree height: a user-set `nav_height` (dragged border) clamped so both
+/// The band-layout tree height: a user-set `nav_height` (dragged border) clamped so both
 /// views keep room, or the auto ~40% when `nav_height == 0`. min/max (not `clamp`) so a
 /// tiny body cannot panic on inverted bounds.
 fn top_nav_height_for(body_h: u16, nav_height: u16) -> u16 {
@@ -226,7 +228,7 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
         };
     }
     match layout {
-        ViewLayout::Side => {
+        ViewLayout::Column => {
             let c = Layout::horizontal([
                 Constraint::Length(nav_width),
                 Constraint::Length(1),
@@ -242,7 +244,7 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
                 hint_bar,
             }
         }
-        ViewLayout::Top => {
+        ViewLayout::Band => {
             let th = top_nav_height_for(area.height, nav_height);
             let r = Layout::vertical([
                 Constraint::Length(th),
@@ -312,12 +314,12 @@ pub struct Switcher {
     /// whichever band it sits in. The paint is the only thing that decides a card's rect,
     /// so a click cannot land on a card the renderer put elsewhere.
     nav_cells: Vec<(usize, Rect)>,
-    /// The leftmost drawn column of the `Top` column flow: the horizontal scroll
+    /// The leftmost drawn column of the band's column flow: the horizontal scroll
     /// position, moved only as far as keeping the selected card visible requires.
     nav_col_offset: usize,
-    /// The view stacking as of the last render (Side vs Top), cached so key handling can
+    /// The view stacking as of the last render (column vs band), cached so key handling can
     /// route the arrows to match what is on screen without re-deriving the geometry. Set
-    /// each frame by `render` from [`view_layout`].
+    /// each frame by `render` from the nav's position.
     layout: ViewLayout,
 
     /// A pending re-scan reselect: the session address the selection was on when `r`
@@ -353,7 +355,7 @@ impl Switcher {
             nav_inner: Rect::default(),
             nav_cells: Vec::new(),
             nav_col_offset: 0,
-            layout: ViewLayout::Side,
+            layout: ViewLayout::Column,
             rescan_reselect: None,
             screen_area: Rect::default(),
             popup_geo: PopupGeometry::default(),
@@ -404,9 +406,9 @@ impl Switcher {
         }
     }
 
-    /// The view stacking as of the last render (Side vs Top). Lets the app route the
-    /// tree-resize keys to the dimension the current layout resizes: WIDTH in Side, HEIGHT
-    /// in the portrait Top layout.
+    /// The view stacking as of the last render (column vs band). Lets the app route the
+    /// tree-resize keys to the dimension the current layout resizes: WIDTH in a column,
+    /// HEIGHT in a band.
     pub fn layout(&self) -> ViewLayout {
         self.layout
     }

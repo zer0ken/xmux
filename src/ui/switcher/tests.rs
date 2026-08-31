@@ -2171,7 +2171,7 @@ async fn only_the_side_lists_section_title_trails_a_rule() {
     // standing side by side, where the rule would run into the gutter and read as a bar
     // parting the columns instead - so the band's title stands alone.
     let side = Harness::new(sample());
-    assert_eq!(side.sw.layout(), ViewLayout::Side, "landscape → Side");
+    assert_eq!(side.sw.layout(), ViewLayout::Column, "landscape → Side");
     let y = side.nav_row_of("local").expect("the section title");
     let painted = nav_line(&side, y);
     assert!(
@@ -2180,7 +2180,7 @@ async fn only_the_side_lists_section_title_trails_a_rule() {
     );
 
     let top = Harness::new_sized(sample(), 60, 70);
-    assert_eq!(top.sw.layout(), ViewLayout::Top, "portrait → Top");
+    assert_eq!(top.sw.layout(), ViewLayout::Band, "portrait → Top");
     let y = row_of(top.buf(), "local", top.buf().area.width).expect("the section title");
     let painted = band_line(&top, y);
     assert!(
@@ -2195,7 +2195,7 @@ async fn the_band_connects_a_session_card_to_the_title_that_owns_it() {
     // does not say which title owns it - a connector down the card's left does. The
     // title itself carries none: it is what the connector points at.
     let h = Harness::new_sized(sample(), 60, 70);
-    assert_eq!(h.sw.layout(), ViewLayout::Top, "portrait → Top");
+    assert_eq!(h.sw.layout(), ViewLayout::Band, "portrait → Top");
     let w = h.buf().area.width;
     let title = row_of(h.buf(), "local", w).expect("the section title");
     assert!(
@@ -2218,7 +2218,7 @@ async fn a_split_sections_continuation_columns_carry_no_connector() {
     // so it stays in that title's own column rather than running under a repeat of it.
     // Ten sessions in a three-row band: one section across five columns.
     let h = Harness::new_sized(scan_with_sessions(10), 60, 12);
-    assert_eq!(h.sw.layout(), ViewLayout::Top, "portrait → Top");
+    assert_eq!(h.sw.layout(), ViewLayout::Band, "portrait → Top");
     let w = h.buf().area.width;
     for name in ["s0", "s1"] {
         let painted = band_line(&h, row_of(h.buf(), name, w).expect(name));
@@ -2259,7 +2259,7 @@ async fn the_selections_inversion_stops_at_the_card_and_spares_the_connector() {
     // invert with it and notch the line at exactly the row the eye is on. It sits in the
     // strip left of the rect instead, and the line runs past the selected card unbroken.
     let h = Harness::new_sized(sample(), 60, 70);
-    assert_eq!(h.sw.layout(), ViewLayout::Top, "portrait → Top");
+    assert_eq!(h.sw.layout(), ViewLayout::Band, "portrait → Top");
     let sel = h.sw.selected;
     let (_, rect) =
         h.sw.nav_cells
@@ -2295,7 +2295,7 @@ async fn a_split_sections_continuation_columns_name_nothing() {
     // says the continuation is the same section. A row spent naming it again is a row of
     // cards lost, which is the whole reason the band flows into columns at all.
     let h = Harness::new_sized(scan_with_sessions(10), 60, 12);
-    assert_eq!(h.sw.layout(), ViewLayout::Top, "portrait → Top");
+    assert_eq!(h.sw.layout(), ViewLayout::Band, "portrait → Top");
     let band = h.sw.nav_inner;
     let painted: String = (band.y..band.y + band.height)
         .map(|y| band_line(&h, y))
@@ -2351,7 +2351,7 @@ async fn a_column_is_never_narrower_than_the_title_naming_it() {
     );
     h.sw.rebuild(&mut h.state);
     h.draw();
-    assert_eq!(h.sw.layout(), ViewLayout::Top, "portrait → Top");
+    assert_eq!(h.sw.layout(), ViewLayout::Band, "portrait → Top");
     let band = h.sw.nav_inner;
     let painted: String = (band.y..band.y + band.height)
         .map(|y| band_line(&h, y))
@@ -3095,11 +3095,11 @@ fn the_layout_turns_over_where_the_side_terminal_stops_being_wider_than_tall() {
     // columns back and takes the band's rows, which lands it back on the other side of
     // the same test.
     for (w, h, want) in [
-        (150u16, 50u16, ViewLayout::Side), // 101 cells over 50 rows = 101 x 100: wider
-        (149, 50, ViewLayout::Top),        // 100 x 100: square, so the band takes over
-        (140, 50, ViewLayout::Top),        // 91 x 100: taller than wide
-        (74, 12, ViewLayout::Side),        // 25 x 24: one column wider than tall
-        (73, 12, ViewLayout::Top),         // 24 x 24: square, on a small window too
+        (150u16, 50u16, ViewLayout::Column), // 101 cells over 50 rows = 101 x 100: wider
+        (149, 50, ViewLayout::Band),         // 100 x 100: square, so the band takes over
+        (140, 50, ViewLayout::Band),         // 91 x 100: taller than wide
+        (74, 12, ViewLayout::Column),        // 25 x 24: one column wider than tall
+        (73, 12, ViewLayout::Band),          // 24 x 24: square, on a small window too
     ] {
         assert_eq!(
             view_layout(Rect::new(0, 0, w, h), 48),
@@ -3123,10 +3123,10 @@ fn hiding_the_nav_leaves_the_layout_where_it_was() {
     let portrait = Rect::new(0, 0, 100, 34); // a 31-wide nav leaves 68 over 34 rows: square
     let shown = compute_regions(portrait, NavSize::visible(31), 1);
     let gone = compute_regions(portrait, NavSize::hidden(31), 1);
-    assert_eq!(shown.layout, ViewLayout::Top);
+    assert_eq!(shown.layout, ViewLayout::Band);
     assert_eq!(
         gone.layout,
-        ViewLayout::Top,
+        ViewLayout::Band,
         "hiding the nav is not a reflow"
     );
     assert_eq!(
@@ -3138,11 +3138,11 @@ fn hiding_the_nav_leaves_the_layout_where_it_was() {
     let landscape = Rect::new(0, 0, 260, 40);
     assert_eq!(
         compute_regions(landscape, NavSize::hidden(31), 1).layout,
-        ViewLayout::Side
+        ViewLayout::Column
     );
     assert_eq!(
         compute_regions(landscape, NavSize::visible(31), 1).layout,
-        ViewLayout::Side
+        ViewLayout::Column
     );
 }
 
@@ -3153,7 +3153,7 @@ fn compute_regions_side_top_and_hidden() {
     // NAV column's bottom row, so the border and the terminal keep the full height.
     let land = Rect::new(0, 0, 140, 30);
     let s = compute_regions(land, NavSize::visible(48), 1);
-    assert_eq!(s.layout, ViewLayout::Side);
+    assert_eq!(s.layout, ViewLayout::Column);
     assert_eq!(s.tree, Rect::new(0, 0, 48, 29));
     assert_eq!(s.view_border, Rect::new(48, 0, 1, 30));
     assert_eq!(s.terminal, Rect::new(49, 0, 91, 30));
@@ -3162,13 +3162,13 @@ fn compute_regions_side_top_and_hidden() {
     // view into a portrait shape: 100 wide, tree 48 → terminal view ~51 wide vs 80 tall, so
     // Top wins even though the screen itself is wider than tall.
     let squeezed = compute_regions(Rect::new(0, 0, 140, 60), NavSize::visible(48), 1);
-    assert_eq!(squeezed.layout, ViewLayout::Top);
+    assert_eq!(squeezed.layout, ViewLayout::Band);
     // Portrait → Top: tree band on top, 1-row border, terminal below. The hint bar is
     // the BAND's bottom row, so it sits directly above the view border, not at the
     // screen's bottom edge.
     let port = Rect::new(0, 0, 40, 100);
     let t = compute_regions(port, NavSize::visible(48), 1);
-    assert_eq!(t.layout, ViewLayout::Top);
+    assert_eq!(t.layout, ViewLayout::Band);
     assert_eq!(t.tree.y, 0);
     assert_eq!(t.tree.width, 40);
     let band_h = t.tree.height + t.hint_bar.height;
@@ -4305,7 +4305,7 @@ fn portrait(scan: Scan, w: u16, h: u16) -> (Switcher, Terminal<TestBackend>) {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
-    assert_eq!(sw.layout, ViewLayout::Top, "the backend must be portrait");
+    assert_eq!(sw.layout, ViewLayout::Band, "the backend must be portrait");
     (sw, term)
 }
 
@@ -4568,7 +4568,7 @@ fn the_side_lists_scrollbar_column_is_outside_every_card() {
     let mut term = Terminal::new(TestBackend::new(140, 8)).unwrap();
     term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
-    assert_eq!(sw.layout, ViewLayout::Side);
+    assert_eq!(sw.layout, ViewLayout::Column);
     let buf = term.backend().buffer();
     let bar_x = NAV_WIDTH - 1;
     let col: String = (0..buf.area.height - 1)
