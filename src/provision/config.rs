@@ -149,6 +149,12 @@ pub struct UiConfig {
     /// (`prefix Tab`/`←`). Default false keeps the tree shown in both focus states.
     #[serde(rename = "auto-hide-nav", default)]
     pub auto_hide_nav: bool,
+    /// Whether the nav hides the cards of hosts no scan has reached (default true).
+    /// Typing a hidden host's name into the filter brings its card back, which is the
+    /// one entry to that host's unreachable screen. Config-only: the value applies at
+    /// startup, like `auto-hide-nav`'s initial state, and there is no live toggle.
+    #[serde(rename = "hide-unreachable", default = "default_hide_unreachable")]
+    pub hide_unreachable: bool,
     /// Whether the nav's attachment follows the wide/narrow turnover. False pins the
     /// `force-nav-position` (or the wide default) regardless of the aspect.
     #[serde(rename = "auto-nav-position", default = "default_true")]
@@ -226,6 +232,10 @@ fn default_prefix() -> String {
     "C-g".to_string()
 }
 
+fn default_hide_unreachable() -> bool {
+    true
+}
+
 fn default_wide_nav_position() -> String {
     "left".to_string()
 }
@@ -260,6 +270,7 @@ impl Default for UiConfig {
             theme: default_theme(),
             prefix: default_prefix(),
             auto_hide_nav: false,
+            hide_unreachable: default_hide_unreachable(),
             auto_nav_position: true,
             wide_nav_position: default_wide_nav_position(),
             narrow_nav_position: default_narrow_nav_position(),
@@ -455,6 +466,12 @@ impl Config {
     /// persisted state, when present, overrides this — see `state::load_auto_hide_nav`.
     pub fn ui_auto_hide_nav(&self) -> bool {
         self.ui.auto_hide_nav
+    }
+
+    /// Whether the nav hides unreachable hosts' cards (default true). Config-only:
+    /// no persisted or live-toggle state overrides it.
+    pub fn ui_hide_unreachable(&self) -> bool {
+        self.ui.hide_unreachable
     }
 
     /// Merges ssh-config discovery with the config file. Discovered aliases come
@@ -1639,6 +1656,33 @@ bogus = "nope"
         // Explicit false.
         let path = write_temp("[ui]\nauto-hide-nav = false\n", "autohide-false.toml");
         assert!(!load(&path).unwrap().ui_auto_hide_nav());
+    }
+
+    #[test]
+    fn ui_hide_unreachable_defaults_true_and_round_trips() {
+        // Missing file → true.
+        let missing = std::env::temp_dir().join("xmux-hideunreachable-absent-xyz.toml");
+        assert!(load(&missing).unwrap().ui_hide_unreachable());
+
+        // [ui] present but key missing → true; prefix still loads.
+        let path = write_temp("[ui]\nprefix = \"C-g\"\n", "hideunreachable-missing.toml");
+        let cfg = load(&path).unwrap();
+        assert!(cfg.ui_hide_unreachable());
+        assert_eq!(cfg.ui_prefix(), "C-g");
+
+        // Explicit false: the unreachable hosts show as before.
+        let path = write_temp(
+            "[ui]\nhide-unreachable = false\n",
+            "hideunreachable-false.toml",
+        );
+        assert!(!load(&path).unwrap().ui_hide_unreachable());
+
+        // Explicit true.
+        let path = write_temp(
+            "[ui]\nhide-unreachable = true\n",
+            "hideunreachable-true.toml",
+        );
+        assert!(load(&path).unwrap().ui_hide_unreachable());
     }
 
     #[test]

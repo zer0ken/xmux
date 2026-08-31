@@ -165,7 +165,7 @@ no function, and no test, so renaming code is never a documentation change.
   leaving the layout alone so no card shifts. When the nav is auto-hidden, a live
   prefix interaction brings the nav back for the moment it needs it (a jump reads the
   card numbers), and it hides again when the interaction ends.
-- **FR-B10** - Every unselected card carries a 0-based number in its address column, on
+- **FR-B10** - Every unselected card carries a 1-based number in its address column, on
   the row of the session it addresses, and `prefix <digit>` jumps to it. The selected
   card holds the selection mark in that same column instead. Selecting a card changes
   nothing else on the card (the address column keeps its width), so a
@@ -334,7 +334,15 @@ no function, and no test, so renaming code is never a documentation change.
   runs on the far side of ssh or a WSL distribution, are not guessed at, and a mux that
   cannot move a client between sessions at all (screen, abduco) has nothing to follow.
 
-- **FR-B24** - The nav attaches on one of FOUR sides of the terminal view - a left or
+- **FR-B24** - The nav hides the hosts no scan has reached: an unreachable host takes no
+  card by default, and `[ui] hide-unreachable` (default true) turns the hiding off. The
+  filter naming a hidden host brings its card back, and that named card is the one entry
+  to its unreachable screen. An empty filter hides every unreachable host, and a filter
+  matching nothing does not bring them back through the no-match fallback that shows the
+  other hosts. A reachable host with no sessions keeps its card, and a host still scanning
+  never hides, whatever stale failure it carries. A host that goes unreachable mid-run
+  hides from that result on and returns when a scan answers.
+- **FR-B25** - The nav attaches on one of FOUR sides of the terminal view - a left or
   right column, a top or bottom band - and the placement is a user choice at three layers:
   four `[ui]` settings (`auto-nav-position`, `wide-nav-position`, `narrow-nav-position`,
   `force-nav-position`) name the defaults (`true`, `left`, `top`, unset), the per-frame

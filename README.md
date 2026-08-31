@@ -88,7 +88,7 @@ In the nav list:
 | `Home` / `End`           | jump to the first / last card                                            |
 | `PageUp` / `PageDown`    | jump ten cards                                                           |
 | `Enter`                  | move focus into the selected session's terminal view                    |
-| `prefix 0`-`prefix 9`    | jump to a session by the number in its left column (keep typing for 10+) |
+| `prefix 1`-`prefix 9`    | jump to a session by the number in its left column (keep typing for 10+) |
 | `prefix n`               | start a new session on the selected host                                 |
 | `/`                      | fuzzy-filter the list                                                    |
 | `prefix r`               | re-scan: refresh which machines exist, and every source's sessions       |
@@ -147,6 +147,7 @@ theme = "auto-dark"                  # built-in ANSI theme: "auto-dark" (default
                                       # or "auto-light" (for a light terminal)
 prefix = "C-g"                        # xmux's prefix (e.g. C-g, C-Space, C-b)
 auto-hide-nav = false                 # initial auto-hide-nav state
+hide-unreachable = true               # hide hosts no scan has reached (the filter names one to show its card)
 auto-nav-position = true              # nav follows the wide/narrow placement judgment
 wide-nav-position = "left"            # nav placement when the terminal stays wider
 narrow-nav-position = "top"           # nav placement when it does not

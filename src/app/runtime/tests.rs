@@ -370,6 +370,91 @@ async fn host_exited_before_connect_marks_unreachable() {
     );
 }
 
+#[test]
+fn runtime_threads_hide_unreachable_into_its_switcher() {
+    use crate::ui::run::dump_screen;
+    // The default roster config: hide-unreachable = true.
+    let env = std::sync::Arc::new(fake_env_with_sources(&["jup"]));
+    let (mut rt, _io) = Runtime::new(env);
+    rt.switcher.apply_source_result(
+        "jup".into(),
+        Vec::new(),
+        Some("no route to host".into()),
+        &mut rt.state,
+    );
+    let out = dump_screen(&mut rt.switcher, None, 80, 24, &rt.state);
+    assert!(
+        !out.contains("jup"),
+        "the config default hides the unreachable host:\n{out}"
+    );
+    rt.switcher.set_hide_unreachable(false, &mut rt.state);
+    let out = dump_screen(&mut rt.switcher, None, 80, 24, &rt.state);
+    assert!(
+        out.contains("jup"),
+        "hide-unreachable = false shows the card:\n{out}"
+    );
+}
+
+#[test]
+fn hide_unreachable_mid_run_hides_the_card_and_the_selection_lands_on_a_remaining_card() {
+    use crate::ui::run::dump_screen;
+    use crate::ui::switcher::Switcher;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut state = crate::state::State::from_sources(vec!["local".into(), "jupiter06".into()]);
+    let mut switcher = Switcher::from_sources(&mut state);
+    switcher.set_hide_unreachable(true, &mut state);
+    // Put the selection on the jupiter06 card, then let local answer with a session.
+    switcher.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut state);
+    switcher.apply_source_result(
+        "local".into(),
+        vec![crate::session::Session {
+            source: "local".into(),
+            name: "editor".into(),
+            ..Default::default()
+        }],
+        None,
+        &mut state,
+    );
+    // jupiter06's control client dies mid-run: the card hides from that moment.
+    assert!(
+        note_host_exited(
+            &mut switcher,
+            &mut state,
+            &mut HashSet::new(),
+            "jupiter06",
+            Some("no route to host".into())
+        ),
+        "the dead never-connected host is marked unreachable"
+    );
+    let out = dump_screen(&mut switcher, None, 80, 24, &state);
+    assert!(
+        !out.contains("jupiter06"),
+        "hidden the moment it fails:\n{out}"
+    );
+    let t = switcher.terminal_view_target();
+    assert_eq!(
+        (t.source, t.target),
+        ("local".into(), "editor".into()),
+        "the selection lands on a remaining card"
+    );
+    // A later scan answers and the host returns.
+    switcher.apply_source_result(
+        "jupiter06".into(),
+        vec![crate::session::Session {
+            source: "jupiter06".into(),
+            name: "ops".into(),
+            ..Default::default()
+        }],
+        None,
+        &mut state,
+    );
+    let out = dump_screen(&mut switcher, None, 80, 24, &state);
+    assert!(
+        out.contains("jupiter06"),
+        "a successful scan revives the host:\n{out}"
+    );
+}
+
 #[tokio::test]
 async fn host_exited_with_no_sessions_marks_empty_not_unreachable() {
     use crate::ui::run::dump_screen;

@@ -368,7 +368,7 @@ pub(crate) fn help_lines(
         HelpRow::Key("PgUp/PgDn".into(), "jump by 10".into()),
         HelpRow::Key("Home/End".into(), "first / last card".into()),
         HelpRow::Key(
-            format!("{p} 0-9"),
+            format!("{p} 1-9"),
             "jump to a session by its number (keep typing for 10+)".into(),
         ),
         HelpRow::Key(format!("{p} n"), "new session on the selected host".into()),

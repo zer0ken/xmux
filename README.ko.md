@@ -87,7 +87,7 @@ xmux version
 | `Home` / `End`                   | 첫 카드 / 마지막 카드로 이동                               |
 | `PageUp` / `PageDown`            | 카드 열 개 이동                                            |
 | `Enter`                            | 선택한 세션의 터미널 뷰로 포커스를 옮긴다                |
-| `prefix 0`-`prefix 9`            | 왼쪽 열의 번호로 세션을 선택한다 (10 이상은 계속 입력한다) |
+| `prefix 1`-`prefix 9`            | 왼쪽 열의 번호로 세션을 선택한다 (10 이상은 계속 입력한다) |
 | `prefix n`                         | 선택한 호스트에 새 세션을 만든다                           |
 | `/`                                | 목록을 퍼지 필터로 좁힌다                                  |
 | `prefix r`                         | 다시 스캔한다. 머신 목록과 각 소스의 세션을 모두 갱신한다  |
@@ -146,6 +146,7 @@ theme = "auto-dark"                  # 내장 ANSI 테마: "auto-dark"(기본값
                                       # "auto-light"(밝은 터미널용)
 prefix = "C-g"                        # xmux의 prefix (예: C-g, C-Space, C-b)
 auto-hide-nav = false                 # auto-hide-nav의 초기 상태
+hide-unreachable = true               # 도달하지 못한 호스트는 nav에서 숨긴다 (필터에 이름을 입력하면 카드가 나타난다)
 view-active-border-style = "green"    # 포커스된 view border의 색
 hint-bar-style = "bg=blue,fg=white"   # 힌트 바의 색 (tmux status-style)
 primary = "brightwhite"               # 역할별 색 오버라이드: primary, secondary,

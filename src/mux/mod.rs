@@ -394,7 +394,8 @@ const DETECT_TIMEOUT_REMOTE: std::time::Duration = std::time::Duration::from_sec
 /// that candidate ([`Mux::classify_identity`]). A binary that carries one mux's name
 /// while answering as another is simply not this candidate: the psmux alias of tmux
 /// never counts as tmux, because tmux's own help probe reads the alias's self-naming
-/// help, and no name is dropped for another's sake.
+/// help. No classification reads ANOTHER mux's name as its own identity, and the one
+/// name a stage may drop is one that stage itself has a reason to skip.
 pub async fn installed_muxes(transport: &dyn Transport, runner: &dyn Runner) -> Vec<String> {
     // Probe every candidate mux CONCURRENTLY (each with the same `DETECT_TIMEOUT`
     // budget) rather than one after another, so a machine's mux set resolves in ~one
@@ -427,9 +428,11 @@ pub async fn installed_muxes(transport: &dyn Transport, runner: &dyn Runner) -> 
 }
 
 /// The mux whose name `text` contains, in registry order. `skip` drops one kind's
-/// name from the search: tmux's help stage skips itself, because real tmux has no
-/// `help` command, so a successful help naming a mux names ANOTHER mux - the
-/// psmux-behind-a-tmux-alias correction.
+/// name from the search. tmux's help stage skips itself: real tmux has no `help`
+/// command, so a successful help naming a mux names ANOTHER mux - the
+/// psmux-behind-a-tmux-alias correction. psmux's help stage skips tmux: psmux's
+/// own help output mentions tmux while presenting psmux as a tmux alternative, so
+/// those mentions never name the mux.
 pub(crate) fn named_mux_excluding(text: &str, skip: &str) -> Option<&'static str> {
     known_muxes()
         .iter()
@@ -927,6 +930,19 @@ mod tests {
         assert!(installed_muxes(&t, &runner).await.is_empty());
     }
 
+    #[tokio::test]
+    async fn a_psmux_whose_help_mentions_tmux_is_still_discovered() {
+        // psmux's help banner names itself and mentions tmux (it presents itself as
+        // a tmux alternative): the mentions are comparative, never an identity claim,
+        // so the psmux candidate is confirmed by its own name in its own output.
+        let t = crate::transport::local(None);
+        let runner = MachineWith {
+            present: vec!["psmux"],
+            help_marker: Some("psmux v3.3.8 - terminal multiplexer for windows (tmux alternative)"),
+        };
+        assert_eq!(installed_muxes(&t, &runner).await, vec!["psmux"]);
+    }
+
     /// Never answers anything.
     struct HangingRunner;
 
@@ -975,6 +991,25 @@ mod tests {
         assert_eq!(
             got.attach_plan("api"),
             argv(&["tmux", "new-session", "-A", "-s", "api"])
+        );
+    }
+
+    #[tokio::test]
+    async fn detect_backend_classifies_a_psmux_binary_as_psmux_despite_tmux_mentions() {
+        // A configured psmux source re-detects through the same classify: the tmux
+        // mentions in psmux's help must not swap it onto a tmux mux over the psmux
+        // binary.
+        let transport = crate::transport::local(None);
+        let runner = ProbeRunner::new(
+            Some("psmux v3.3.8 - Terminal multiplexer for Windows (tmux alternative)"),
+            Some("tmux 3.3.8"),
+        );
+        let got = detect_backend(&transport, "psmux", &runner).await.unwrap();
+        assert_eq!(got.kind(), "psmux");
+        assert_eq!(got.server_model(), ServerModel::PerSession);
+        assert_eq!(
+            got.attach_plan("api"),
+            argv(&["psmux", "new-session", "-A", "-s", "api"])
         );
     }
 

@@ -575,11 +575,7 @@ impl Switcher {
     /// themselves line up by units place. Section titles carry no number, so the width
     /// counts the SELECTABLE cards only.
     fn number_width(&self) -> usize {
-        self.selectable_count()
-            .saturating_sub(1)
-            .to_string()
-            .len()
-            .max(1)
+        self.selectable_count().to_string().len().max(1)
     }
 
     /// One row measured for the column flow: whether it opens a unit, how wide its

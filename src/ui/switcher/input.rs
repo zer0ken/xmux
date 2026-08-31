@@ -157,19 +157,19 @@ impl Switcher {
         ))));
     }
 
-    /// The row `number` addresses, or `None` when no card carries it: the nth
-    /// SELECTABLE card, section titles excepted. The numbers run `0..selectable_count`,
-    /// so a number that names nothing today can never be extended into one either (any
-    /// extra digit only makes it larger). The jump reads it on every edit to move the
-    /// selection while the number names a card, and at Enter to decide whether to land
-    /// or flash: see [`Switcher::jump_accepts`].
+    /// The row `number` addresses, or `None` when no card carries it: the number-th
+    /// SELECTABLE card, section titles excepted, counting from 1. The buffer is read
+    /// as its value, spelling included, so 01 is 1: the values no card carries are 0
+    /// alone and everything past the last card. The jump reads it on every edit to
+    /// move the selection while the number names a card, and at Enter to decide
+    /// whether to land or flash: see [`Switcher::jump_accepts`].
     fn jump_row(&self, number: &str) -> Option<usize> {
         let n = number.trim().parse::<usize>().ok()?;
         self.rows
             .iter()
             .enumerate()
             .filter(|(_, r)| r.selectable())
-            .nth(n)
+            .nth(n.checked_sub(1)?)
             .map(|(i, _)| i)
     }
 
@@ -191,12 +191,12 @@ impl Switcher {
     pub(super) fn open_jump(&mut self, digit: char, state: &mut crate::state::State) {
         state.chrome.flash.clear();
         let seed = digit.to_string();
-        let last = self.selectable_count().saturating_sub(1);
+        let last = self.selectable_count();
         let restore = self.current_ref().cloned();
         self.dismiss_modals(state);
         let mut input = Input::new(
             InputMode::Jump,
-            format!(" jump to a session (0 - {last})"),
+            format!(" jump to a session (1 - {last})"),
             seed,
             None,
         );
@@ -281,9 +281,9 @@ impl Switcher {
                         if !val.is_empty() && self.jump_accepts(&val) {
                             self.close_input(state);
                         } else {
-                            let last = self.selectable_count().saturating_sub(1);
+                            let last = self.selectable_count();
                             if !val.is_empty() {
-                                state.flash(format!("no session {val} (0 - {last})"));
+                                state.flash(format!("no session {val} (1 - {last})"));
                             }
                         }
                         Vec::new()
