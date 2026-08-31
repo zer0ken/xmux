@@ -57,6 +57,7 @@ impl Runtime {
             natural: *nav_width_natural,
             width: *nav_width,
             height: *nav_height,
+            position: crate::ui::switcher::NavPosition::Left,
         };
         match effect {
             EventEffect::ApplyInventory { host, sessions } => {
@@ -505,15 +506,16 @@ impl Runtime {
     /// width persist, then draw the gated frame. `term` is the loop-local ratatui
     /// terminal.
     /// The nav's live size, in one place: the width the user set, the width on screen
-    /// (0 while auto-hide has taken it), and the `Top` band height the user set. Every
-    /// geometry the loop computes reads this instead of picking two of the three fields
-    /// out of `self`, so a resize while xmux runs cannot reach one consumer and miss
-    /// another.
+    /// (0 while auto-hide has taken it), the band height the user set, and the side the
+    /// nav is attached to. Every geometry the loop computes reads this instead of picking
+    /// fields out of `self`, so a resize while xmux runs cannot reach one consumer and
+    /// miss another.
     pub(super) fn nav_size(&self) -> crate::ui::switcher::NavSize {
         crate::ui::switcher::NavSize {
             natural: self.nav_width_natural,
             width: self.nav_width,
             height: self.nav_height,
+            position: crate::ui::switcher::NavPosition::Left,
         }
     }
 

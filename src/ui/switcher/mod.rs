@@ -85,8 +85,9 @@ pub enum ViewLayout {
 
 /// The nav's live size, as one value: what the user set, and what is on screen this
 /// frame. Both are settable while xmux runs (`prefix h`/`l` and a border drag set the
-/// width, `prefix Ctrl+arrow` and a drag the band height, and auto-hide takes the width
-/// away entirely), so every consumer reads them from here rather than deriving either.
+/// width, `prefix Ctrl+arrow` and a drag the band height, auto-hide takes the width
+/// away entirely, and `prefix p` moves the attachment), so every consumer reads them
+/// from here rather than deriving any of the four.
 ///
 /// `natural` and `width` differ only while the nav is HIDDEN, and keeping both is the
 /// point: the layout turnover is measured from `natural`, so hiding the nav cannot flip
@@ -100,6 +101,8 @@ pub struct NavSize {
     pub width: u16,
     /// The band's height the user set; 0 means auto (~40% of the body).
     pub height: u16,
+    /// Which side of the terminal view the nav is attached to this frame.
+    pub position: NavPosition,
 }
 
 impl NavSize {
@@ -109,6 +112,7 @@ impl NavSize {
             natural,
             width: natural,
             height: 0,
+            position: NavPosition::Left,
         }
     }
 
@@ -119,12 +123,18 @@ impl NavSize {
             natural,
             width: 0,
             height: 0,
+            position: NavPosition::Left,
         }
     }
 
     /// The same nav with the band height the user set (0 = auto).
     pub fn with_height(self, height: u16) -> Self {
         NavSize { height, ..self }
+    }
+
+    /// The same nav attached on another side.
+    pub fn with_position(self, position: NavPosition) -> Self {
+        NavSize { position, ..self }
     }
 }
 
@@ -338,8 +348,11 @@ pub struct Switcher {
 mod columns;
 mod input;
 mod mouse;
+mod position;
 mod render;
 mod side;
+
+pub use position::{resolve_nav_position, NavPosition, NavPositionSetting};
 
 impl Switcher {
     fn blank() -> Self {

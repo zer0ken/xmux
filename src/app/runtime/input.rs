@@ -166,6 +166,7 @@ impl Runtime {
                 natural: *nav_width_natural,
                 width: nav_width,
                 height: *nav_height,
+                position: crate::ui::switcher::NavPosition::Left,
             },
             1,
         );
