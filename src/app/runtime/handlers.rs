@@ -389,6 +389,9 @@ impl Runtime {
         // The one session the terminal view refuses: the one xmux is running in. Named
         // once here, because the environment that names it cannot change under a run.
         switcher.set_own_session(env.own_session.clone());
+        // [ui] hide-unreachable: the nav drops the settled unreachable hosts' cards. The
+        // filter naming one brings its card, and its unreachable screen, back.
+        switcher.set_hide_unreachable(roster.cfg.ui_hide_unreachable(), &mut state);
         // Feed the switcher the ssh config so an unreachable host's screen can show
         // its Host/Match stanza. Read once; a missing file just yields no stanza.
         state.chrome.set_ssh_config_text(
