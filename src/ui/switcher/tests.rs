@@ -1064,6 +1064,151 @@ async fn a_card_claims_a_mux_only_when_it_is_confirmed() {
 }
 
 #[tokio::test]
+async fn hide_unreachable_leaves_no_card_for_the_unreachable_host() {
+    // With `[ui] hide-unreachable` on, the settled unreachable host takes no card;
+    // the reachable hosts keep theirs.
+    let mut h = Harness::new(sample());
+    h.sw.set_hide_unreachable(true, &mut h.state);
+    h.draw();
+    let out = h.nav_text();
+    assert!(
+        !out.contains("db-2"),
+        "the unreachable host takes no card:\n{out}"
+    );
+    assert!(
+        out.contains("jupiter00"),
+        "the reachable hosts keep their cards:\n{out}"
+    );
+}
+
+#[tokio::test]
+async fn the_filter_names_a_hidden_unreachable_host_and_its_card_returns() {
+    // The named card is the one entry to the unreachable screen: the filter naming
+    // the hidden host brings its card back, and Enter lands the selection on it.
+    let mut h = Harness::new(sample());
+    h.sw.set_hide_unreachable(true, &mut h.state);
+    h.draw();
+    h.ch('/').await;
+    h.ch('d').await;
+    h.ch('b').await;
+    assert!(
+        h.nav_cards_text().contains("db-2"),
+        "the filter naming the host brings its card back:\n{}",
+        h.nav_cards_text()
+    );
+    h.key(KeyCode::Enter).await;
+    assert!(
+        matches!(
+            h.sw.current_ref(),
+            Some(RowRef::Host { source, unreachable: true, .. }) if source == "db-2"
+        ),
+        "the selection lands on the named host's card"
+    );
+    let out = h.view_text();
+    assert!(
+        out.contains("unreachable"),
+        "the unreachable screen is reachable:\n{out}"
+    );
+}
+
+#[tokio::test]
+async fn hide_unreachable_off_brings_the_card_back() {
+    // The setter rebuilds the rows whichever way it flips: off undoes the hiding.
+    let mut h = Harness::new(sample());
+    h.sw.set_hide_unreachable(true, &mut h.state);
+    h.draw();
+    assert!(!h.nav_text().contains("db-2"));
+    h.sw.set_hide_unreachable(false, &mut h.state);
+    h.draw();
+    assert!(
+        h.nav_text().contains("db-2"),
+        "setting it back to false brings the card back:\n{}",
+        h.nav_text()
+    );
+}
+
+#[tokio::test]
+async fn a_selected_host_going_unreachable_hides_and_the_selection_lands_on_a_remaining_card() {
+    // A host going unreachable mid-run hides from that result on; the selection
+    // sitting on its card falls to a remaining card instead of vanishing.
+    let mut h = Harness::from_sources(&["local", "db-2"]);
+    h.sw.set_hide_unreachable(true, &mut h.state);
+    h.sw.apply_source_result(
+        "local".into(),
+        vec![sess_mux("local", "editor", "tmux")],
+        None,
+        &mut h.state,
+    );
+    h.sw.move_to(-1, &h.state); // the user parked the selection on db-2's card
+    assert!(
+        matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "db-2"),
+        "the selection starts on the db-2 card"
+    );
+    h.sw.apply_source_result(
+        "db-2".into(),
+        Vec::new(),
+        Some("connection timed out".into()),
+        &mut h.state,
+    );
+    h.draw();
+    let out = h.nav_text();
+    assert!(!out.contains("db-2"), "hidden the moment it fails:\n{out}");
+    assert!(
+        matches!(
+            h.sw.current_ref(),
+            Some(RowRef::Session { sess }) if sess.source == "local" && sess.name == "editor"
+        ),
+        "the selection lands on a remaining card"
+    );
+}
+
+#[tokio::test]
+async fn a_hidden_unreachable_host_returns_when_its_scan_answers() {
+    // Hiding is a view state, not a removal: a successful scan revives the card.
+    let mut h = Harness::new(sample());
+    h.sw.set_hide_unreachable(true, &mut h.state);
+    h.draw();
+    assert!(!h.nav_text().contains("db-2"));
+    h.sw.apply_source_result(
+        "db-2".into(),
+        vec![sess_mux("db-2", "reports", "tmux")],
+        None,
+        &mut h.state,
+    );
+    h.draw();
+    assert!(
+        h.nav_text().contains("db-2"),
+        "a successful scan revives the host:\n{}",
+        h.nav_text()
+    );
+}
+
+#[tokio::test]
+async fn hiding_every_host_leaves_a_tidy_empty_nav() {
+    // Every host unreachable and hiding on: the nav holds no card, and the hint bar
+    // keeps its prefix so the session is still operable.
+    let mut h = Harness::from_sources(&["db-2"]);
+    h.sw.set_hide_unreachable(true, &mut h.state);
+    h.sw.apply_source_result(
+        "db-2".into(),
+        Vec::new(),
+        Some("connection timed out".into()),
+        &mut h.state,
+    );
+    h.draw();
+    assert!(
+        h.nav_cards_text().trim().is_empty(),
+        "only empty lines in the nav:\n{:?}",
+        h.nav_cards_text()
+    );
+    assert!(
+        h.hint_bar_text().contains("C-g"),
+        "the hint bar still shows the prefix:\n{}",
+        h.hint_bar_text()
+    );
+}
+
+#[tokio::test]
 async fn unreachable_host_screen_keeps_a_long_reason_whole() {
     // ssh wraps the failure in its own context and names it LAST, past the width of the
     // screen: a reason cut off at the edge drops the only words that say what went wrong.

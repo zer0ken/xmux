@@ -304,6 +304,11 @@ pub struct Switcher {
     /// The address of the session xmux is ITSELF running in, when it is inside one. The
     /// one address the terminal view refuses: see [`Switcher::is_own_session`].
     own_session: Option<String>,
+    /// Whether the nav hides the settled unreachable hosts' cards (`[ui]
+    /// hide-unreachable`). The app threads it in at construction; there is no live
+    /// toggle. The filter naming a hidden host keeps its card, which is the
+    /// unreachable screen's one entry point.
+    hide_unreachable: bool,
 
     list_state: ListState,
     nav_inner: Rect,
@@ -349,6 +354,7 @@ impl Switcher {
             selected: 0,
             terminal_view_target: TerminalViewTarget::default(),
             own_session: None,
+            hide_unreachable: false,
             list_state: ListState::default(),
             nav_inner: Rect::default(),
             nav_cells: Vec::new(),
@@ -390,6 +396,17 @@ impl Switcher {
     /// named, it is never called and nothing is refused.
     pub fn set_own_session(&mut self, address: Option<String>) {
         self.own_session = address;
+    }
+
+    /// Sets whether the nav hides the settled unreachable hosts' cards, rebuilding the
+    /// rows since the setting decides which groups render. A no-op when the value is
+    /// unchanged. The app threads the config value in once at startup.
+    pub fn set_hide_unreachable(&mut self, on: bool, state: &mut crate::state::State) {
+        if self.hide_unreachable == on {
+            return;
+        }
+        self.hide_unreachable = on;
+        self.rebuild(state);
     }
 
     /// Whether `(source, target)` addresses the session xmux is ITSELF running in.
@@ -458,8 +475,13 @@ impl Switcher {
         // The mux each card NAMES comes from one resolver, so a session card, its host's
         // card and the screen behind either cannot spell one mux three ways.
         let named_mux = |source: &str| state.chrome.source_mux(source).to_string();
-        let rows =
-            tree::flatten(&state.groups, &state.scanning, &state.filter, false, &named_mux);
+        let rows = tree::flatten(
+            &state.groups,
+            &state.scanning,
+            &state.filter,
+            self.hide_unreachable,
+            &named_mux,
+        );
 
         self.rows = rows;
         let target = keep
