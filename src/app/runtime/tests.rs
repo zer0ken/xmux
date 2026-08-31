@@ -2015,6 +2015,42 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
 }
 
 #[test]
+fn prefix_p_cycles_the_nav_position_and_persists_it() {
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // `prefix p` moves the pin one step clockwise from the CURRENT effective position
+    // and saves it at once, the same moment `prefix t` saves the auto-hide toggle. The
+    // fifth step unpins (back to following the [ui] settings), which stores "auto".
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.nav_position = NavPosition::Left; // effective = left (unpinned)
+    let out = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
+    assert_eq!(rt.nav_position_pinned, Some(NavPosition::Top));
+    assert!(
+        std::fs::read_to_string(rt.env.xmux_dir.join("nav_position"))
+            .unwrap()
+            .contains("top"),
+        "the pin is saved the moment the key cycles"
+    );
+    let _ = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
+    assert_eq!(rt.nav_position_pinned, Some(NavPosition::Right));
+    let _ = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
+    assert_eq!(rt.nav_position_pinned, Some(NavPosition::Bottom));
+    let _ = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
+    assert_eq!(rt.nav_position_pinned, None, "the fifth step unpins");
+    assert!(
+        std::fs::read_to_string(rt.env.xmux_dir.join("nav_position"))
+            .unwrap()
+            .contains("auto"),
+        "unpinning stores \"auto\""
+    );
+    // The cycle itself does not claim the focus flags the outcome carries.
+    assert!(!out.focus_terminal && !out.focus_nav && !out.quit);
+}
+
+#[test]
 fn handle_stdin_bytes_quit_on_prefix_q_in_tree_focus() {
     use crate::ui::switcher::{Scan, Switcher};
     // prefix is Ctrl-G (0x07) in the default config; prefix then 'q' = quit.

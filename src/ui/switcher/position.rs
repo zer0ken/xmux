@@ -63,6 +63,20 @@ pub fn resolve_nav_position(
     setting.force.unwrap_or(setting.wide)
 }
 
+/// One step of the `prefix p` cycle: left → top → right → bottom → unpin. Unpinned,
+/// the first step goes to the clockwise neighbour of the CURRENT effective position, so
+/// no press is ever an invisible no-op; pinned, the pin's own neighbour decides.
+pub fn step_nav_position(
+    pinned: Option<NavPosition>,
+    effective: NavPosition,
+) -> Option<NavPosition> {
+    match pinned {
+        Some(NavPosition::Bottom) => None,
+        Some(p) => Some(p.clockwise()),
+        None => Some(effective.clockwise()),
+    }
+}
+
 impl NavPosition {
     /// The view stacking this placement produces: the two columns (left or right) or
     /// the two bands (top or bottom).
@@ -150,6 +164,47 @@ mod tests {
         assert_eq!(NavPosition::parse("\nbottom\n"), Some(NavPosition::Bottom));
         assert_eq!(NavPosition::parse("diagonal"), None);
         assert_eq!(NavPosition::parse(""), None);
+    }
+
+    #[test]
+    fn step_nav_position_cycles_one_step_clockwise() {
+        // Unpinned: the first step goes to the clockwise neighbour of the CURRENT
+        // effective position, so no press is ever an invisible no-op.
+        assert_eq!(
+            step_nav_position(None, NavPosition::Left),
+            Some(NavPosition::Top)
+        );
+        assert_eq!(
+            step_nav_position(None, NavPosition::Top),
+            Some(NavPosition::Right)
+        );
+        assert_eq!(
+            step_nav_position(None, NavPosition::Right),
+            Some(NavPosition::Bottom)
+        );
+        assert_eq!(
+            step_nav_position(None, NavPosition::Bottom),
+            Some(NavPosition::Left)
+        );
+        // Pinned: the pin's own clockwise neighbour, whatever is on screen now; the
+        // bottom pin's step unpins, leaving the keyboard path back to auto.
+        assert_eq!(
+            step_nav_position(Some(NavPosition::Left), NavPosition::Bottom),
+            Some(NavPosition::Top)
+        );
+        assert_eq!(
+            step_nav_position(Some(NavPosition::Top), NavPosition::Right),
+            Some(NavPosition::Right)
+        );
+        assert_eq!(
+            step_nav_position(Some(NavPosition::Right), NavPosition::Left),
+            Some(NavPosition::Bottom)
+        );
+        assert_eq!(
+            step_nav_position(Some(NavPosition::Bottom), NavPosition::Right),
+            None,
+            "the fifth step unpins"
+        );
     }
 
     #[test]

@@ -131,6 +131,19 @@ fn toggle_auto_hide(mode: &mut bool, xmux_dir: &std::path::Path) {
     crate::ui::prefs::save_auto_hide_nav(xmux_dir, *mode);
 }
 
+/// Applies one step of the `prefix p` cycle to the pin and saves it at once (the same
+/// moment `toggle_auto_hide` saves its toggle). `None` (the fifth step) stores "auto",
+/// which returns the nav to following the [ui] settings.
+fn cycle_nav_position(
+    pinned: &mut Option<crate::ui::switcher::NavPosition>,
+    effective: crate::ui::switcher::NavPosition,
+    xmux_dir: &std::path::Path,
+) {
+    let next = crate::ui::switcher::step_nav_position(*pinned, effective);
+    *pinned = next;
+    crate::ui::prefs::save_nav_position(xmux_dir, next);
+}
+
 /// Folds ONE domain [`Action`] in at the single mutation site ([`State::apply`]) and
 /// runs the [`Command`]s it returns - the site both a keypress (via
 /// `display::dispatch::Action::as_action`) and a ctl command resolve through, so the two

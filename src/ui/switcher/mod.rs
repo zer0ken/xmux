@@ -392,7 +392,7 @@ mod position;
 mod render;
 mod side;
 
-pub use position::{resolve_nav_position, NavPosition, NavPositionSetting};
+pub use position::{resolve_nav_position, step_nav_position, NavPosition, NavPositionSetting};
 
 impl Switcher {
     fn blank() -> Self {

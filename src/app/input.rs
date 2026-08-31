@@ -181,6 +181,7 @@ pub(crate) fn resolve_nav_key(
             KeyCode::Up if ctrl => Some(Action::Height(-1)),
             KeyCode::Down if ctrl => Some(Action::Height(1)),
             KeyCode::Char('t') => Some(Action::ToggleAutoHide),
+            KeyCode::Char('p') => Some(Action::CycleNavPosition),
             KeyCode::Char('?') => Some(Action::ShowHelp),
             // The arrow PAIR facing the terminal's side names the terminal: with the nav
             // on the left or above, prefix → and prefix ↓ both focus the terminal; with
@@ -352,6 +353,22 @@ mod tests {
             rt(b"\x07\x1b[1;5A", false),
             vec![Action::Height(-1)],
             "prefix Ctrl-Up shrinks height"
+        );
+    }
+
+    #[test]
+    fn prefix_p_cycles_the_nav_position() {
+        // `prefix p` is the position cycle, in nav focus at any placement: one value
+        // (the pin), not a separate auto toggle and force value.
+        assert_eq!(
+            rt(b"\x07p", false),
+            vec![Action::CycleNavPosition],
+            "prefix p from the default placement"
+        );
+        assert_eq!(
+            rt_at(b"\x07p", false, crate::ui::switcher::NavPosition::Right),
+            vec![Action::CycleNavPosition],
+            "prefix p from a pinned placement"
         );
     }
 

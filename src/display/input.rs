@@ -121,6 +121,16 @@ impl TermInput {
                     i += 1;
                     continue;
                 }
+                // prefix p → cycle the nav position; same shape: applied on the input path,
+                // terminal-view focus kept, the rest of the read still forwards.
+                if b0 == b'p' {
+                    if !fwd.is_empty() {
+                        out.push(Action::Forward(std::mem::take(&mut fwd)));
+                    }
+                    out.push(Action::CycleNavPosition);
+                    i += 1;
+                    continue;
+                }
                 // prefix n/r and prefix <digit> → the nav actions (new session, re-scan,
                 // card jump), so they are reachable from the terminal view too, not only
                 // nav focus. Emitted as a NavKey the caller hands to
@@ -297,6 +307,25 @@ mod tests {
             fwd(&t.feed(b"h", NavPosition::Left)),
             b"h",
             "after consumption a plain key is ordinary input, not a command"
+        );
+    }
+
+    #[test]
+    fn prefix_then_p_cycles_position_and_forwards_the_rest() {
+        // Same shape as prefix t: the cycle applies on the input path, terminal-view
+        // focus is kept, and the rest of the read still forwards to the pane.
+        let mut t = m();
+        t.feed(&[0x07], NavPosition::Left);
+        assert_eq!(
+            t.feed(b"p", NavPosition::Left),
+            vec![Action::CycleNavPosition]
+        );
+        let mut t2 = m();
+        t2.feed(&[0x07], NavPosition::Right);
+        assert_eq!(
+            fwd(&t2.feed(b"pabc", NavPosition::Right)),
+            b"abc",
+            "trailing input after prefix p forwards"
         );
     }
 

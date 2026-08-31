@@ -37,6 +37,9 @@ pub enum Action {
     Height(i32),
     /// `prefix t` — toggle auto-hide-nav mode.
     ToggleAutoHide,
+    /// `prefix p` — move the nav one side clockwise (left → top → right → bottom →
+    /// automatic). Key-driven only, no ctl verb: applied on the input path, like Height.
+    CycleNavPosition,
 }
 
 impl Action {
@@ -54,8 +57,12 @@ impl Action {
             Action::FocusTerminal => Some(DomainAction::Focus(FocusTarget::Terminal)),
             Action::FocusNav(_) => Some(DomainAction::Focus(FocusTarget::Nav)),
             // Height resize is key-driven only (no ctl verb yet); it is applied directly on
-            // the nav-input path, not through a domain action.
-            Action::Height(_) | Action::Forward(_) | Action::ShowHelp | Action::NavKey(_) => None,
+            // the nav-input path, not through a domain action. CycleNavPosition likewise.
+            Action::Height(_)
+            | Action::CycleNavPosition
+            | Action::Forward(_)
+            | Action::ShowHelp
+            | Action::NavKey(_) => None,
         }
     }
 }
@@ -84,6 +91,11 @@ mod tests {
         assert_eq!(
             Action::FocusNav(vec![]).as_action(),
             Some(DomainAction::Focus(FocusTarget::Nav))
+        );
+        assert_eq!(
+            Action::CycleNavPosition.as_action(),
+            None,
+            "the position cycle is key-driven only, no domain action"
         );
     }
     #[test]

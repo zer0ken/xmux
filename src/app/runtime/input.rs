@@ -13,7 +13,7 @@ impl Runtime {
         &mut self,
         bytes: &[u8],
         width_changed: &mut bool,
-    ) -> (bool, bool, i32, i32, bool) {
+    ) -> (bool, bool, i32, i32, bool, bool) {
         // Split-borrow the world state into the loose names the body uses (a nav read
         // touches most of it: decoder, switcher/state, host orchestration, width prefs).
         let Self {
@@ -43,6 +43,7 @@ impl Runtime {
         let mut width_delta = 0i32;
         let mut height_delta = 0i32;
         let mut toggle_auto_hide = false;
+        let mut cycle_position = false;
         let mut key_cmds: Vec<crate::model::Command> = Vec::new();
         for key in nav_decoder.feed(bytes) {
             // Re-query per key: opening a modal popup (via a NavKey applied below) flips
@@ -60,6 +61,7 @@ impl Runtime {
                 Some(Action::Width(d)) => width_delta = d,
                 Some(Action::Height(d)) => height_delta = d,
                 Some(Action::ToggleAutoHide) => toggle_auto_hide = true,
+                Some(Action::CycleNavPosition) => cycle_position = true,
                 Some(Action::ShowHelp) => switcher.toggle_help(state),
                 // resolve_nav_key never emits the mux-only or terminal-only variants
                 // (Forward/FocusNav); None = armed/consumed.
@@ -91,6 +93,7 @@ impl Runtime {
             width_delta,
             height_delta,
             toggle_auto_hide,
+            cycle_position,
         )
     }
 }
@@ -511,7 +514,7 @@ impl Runtime {
             // from EITHER view owns its keys here; the resolver gating in handle_nav_bytes
             // swallows everything but the modal's own keys, so a modal never emits
             // FocusTerminal/quit and the focus toggles below never fire mid-modal.
-            let (ft, q, wd, hd, th) = self.handle_nav_bytes(&non_mouse, width_changed);
+            let (ft, q, wd, hd, th, cp) = self.handle_nav_bytes(&non_mouse, width_changed);
             *focus_terminal = ft;
             *quit = q;
             // A prefix-driven resize: width (←/→ · h/l) or height (↑/↓); each applies only in
@@ -523,6 +526,14 @@ impl Runtime {
             }
             if th {
                 toggle_auto_hide(&mut self.auto_hide_nav, &self.env.xmux_dir);
+                *dirty = true;
+            }
+            if cp {
+                cycle_nav_position(
+                    &mut self.nav_position_pinned,
+                    self.nav_position,
+                    &self.env.xmux_dir,
+                );
                 *dirty = true;
             }
         } else if !consumed_by_repeat {
@@ -560,6 +571,14 @@ impl Runtime {
                     }
                     Action::ToggleAutoHide => {
                         toggle_auto_hide(&mut self.auto_hide_nav, &self.env.xmux_dir);
+                        *dirty = true;
+                    }
+                    Action::CycleNavPosition => {
+                        cycle_nav_position(
+                            &mut self.nav_position_pinned,
+                            self.nav_position,
+                            &self.env.xmux_dir,
+                        );
                         *dirty = true;
                     }
                     // prefix n/r reach here from terminal focus: run them through the
@@ -619,7 +638,7 @@ impl Runtime {
             self.state
                 .apply(crate::model::Action::Focus(crate::model::FocusTarget::Nav));
             if !nav_replay.is_empty() {
-                let (ft, q, wd, hd, th) = self.handle_nav_bytes(nav_replay, width_changed);
+                let (ft, q, wd, hd, th, cp) = self.handle_nav_bytes(nav_replay, width_changed);
                 if ft {
                     // The replayed bytes switch focus back to the terminal: clear the
                     // nav-side latches the replay may have armed, same as the direct
@@ -638,6 +657,14 @@ impl Runtime {
                 }
                 if th {
                     toggle_auto_hide(&mut self.auto_hide_nav, &self.env.xmux_dir);
+                    *dirty = true;
+                }
+                if cp {
+                    cycle_nav_position(
+                        &mut self.nav_position_pinned,
+                        self.nav_position,
+                        &self.env.xmux_dir,
+                    );
                     *dirty = true;
                 }
             }
