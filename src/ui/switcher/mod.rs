@@ -963,7 +963,7 @@ impl Switcher {
     /// Section titles are never landed on - they are not cards, so the fallback walks
     /// past them to the nearest card. Operates on the freshly rebuilt `self.rows`.
     fn fallback_after_removal(&self, prior_selected: usize) -> Option<usize> {
-        self.rows[..prior_selected]
+        self.rows[..prior_selected.min(self.rows.len())]
             .iter()
             .enumerate()
             .rev()
