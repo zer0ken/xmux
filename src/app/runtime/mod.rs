@@ -1107,11 +1107,9 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     // its machine answers). Deliberately off `Runtime::new` so a headless unit test can
     // build a `Runtime` without launching real detection probes / control clients.
     // PTYs are attached as each source's sessions arrive (see [`sync_source_terminals`]).
-    let init_size = terminal_view_size(
-        rt.cols,
-        rt.body_rows,
-        crate::ui::switcher::NavSize::visible(rt.nav_width),
-    );
+    // Runtime::new has already resolved the initial nav position from the [ui] settings
+    // and the persisted pin, so the first sizing reads the runtime's one nav value.
+    let init_size = terminal_view_size(rt.cols, rt.body_rows, rt.nav_size());
     run_discovery(
         &rt.env,
         &rt.hosts,
@@ -1285,6 +1283,12 @@ struct Runtime {
     /// The side the nav is attached to this frame; the layout and every region cut
     /// follows it.
     nav_position: crate::ui::switcher::NavPosition,
+    /// The keyboard/config pin on the nav position (`prefix p`): `Some(side)` overrides
+    /// the [ui] resolution outright, `None` follows it. Persisted on every change.
+    nav_position_pinned: Option<crate::ui::switcher::NavPosition>,
+    /// The [ui] nav-position settings the loop-top resolution reads. Refreshed when a
+    /// live config apply lands; the reconcile at the next loop top applies the new value.
+    nav_pos_setting: crate::ui::switcher::NavPositionSetting,
     /// The `nav_height` last applied to the PTY sizes, so the loop-top reconcile resizes the
     /// mux terminals when the Top height changes (not only on a width change). `u16::MAX`
     /// forces the first reconcile to size them.

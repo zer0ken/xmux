@@ -1146,6 +1146,8 @@ fn test_rt(env: Env) -> Runtime {
         nav_width_natural: crate::ui::switcher::NAV_WIDTH,
         nav_height: 0,
         nav_position: crate::ui::switcher::NavPosition::Left,
+        nav_position_pinned: None,
+        nav_pos_setting: crate::ui::switcher::NavPositionSetting::default(),
         applied_nav_height: u16::MAX,
         auto_hide_nav: false,
         mouse_state: MouseState::default(),
@@ -2425,6 +2427,62 @@ fn resize_keys_adjust_height_in_top_layout() {
     );
     assert!(rt.resize_axis(false, -1), "shrink changes the height");
     assert_eq!(rt.nav_height, auto, "and shrinks it back");
+}
+
+#[test]
+fn loop_top_resolves_the_pinned_nav_position() {
+    use crate::ui::switcher::{Scan, Switcher, ViewLayout};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    // The pin wins outright: whatever the aspect says, the loop top resolves the nav to
+    // the pinned side and the PTYs are sized for that split.
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.nav_position_pinned = Some(crate::ui::switcher::NavPosition::Right);
+    let mut term = Terminal::new(TestBackend::new(80, 25)).unwrap();
+    rt.prepare_and_draw(&mut term);
+    assert_eq!(
+        rt.nav_position,
+        crate::ui::switcher::NavPosition::Right,
+        "the loop top applied the pin"
+    );
+    // The switcher's cached stacking (what key handling routes by) follows the same
+    // value once the frame is drawn from the runtime's nav size.
+    let nav = rt.nav_size();
+    let (sw, st) = (&mut rt.switcher, &rt.state);
+    term.draw(|f| sw.render(f, None, false, nav, st)).unwrap();
+    assert_eq!(
+        rt.switcher.layout(),
+        ViewLayout::Column,
+        "right is a column"
+    );
+}
+
+#[test]
+fn loop_top_resolves_auto_for_a_portrait_backend() {
+    use crate::ui::switcher::{Scan, Switcher, ViewLayout};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    // No pin: the default settings resolve by the wide/narrow turnover. A 40x60 area
+    // (cols 40, body_rows 59 + the status row) is portrait, so the band takes over and
+    // the narrow default (top) applies.
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.cols = 40;
+    rt.body_rows = 59;
+    let mut term = Terminal::new(TestBackend::new(40, 60)).unwrap();
+    rt.prepare_and_draw(&mut term);
+    assert_eq!(rt.nav_position, crate::ui::switcher::NavPosition::Top);
+    let nav = rt.nav_size();
+    let (sw, st) = (&mut rt.switcher, &rt.state);
+    term.draw(|f| sw.render(f, None, false, nav, st)).unwrap();
+    assert_eq!(rt.switcher.layout(), ViewLayout::Band, "top is a band");
 }
 
 #[test]
