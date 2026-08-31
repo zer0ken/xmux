@@ -880,10 +880,10 @@ impl Chrome {
             // resize keys are left out of the cheatsheet (the help modal has them).
             fit(
                 &[
-                    format!(" {p} · ←/↑ focus nav · →/↓ focus terminal · 0-9 jump to a session · n new session · t hide nav · r rescan · ? help · q quit"),
-                    format!(" {p} · ←/↑ nav · →/↓ terminal · 0-9 jump to · n new · t hide · r rescan · ? help · q quit"),
-                    format!(" {p} · ←/↑ nav · →/↓ terminal · 0-9 jump · n new · t hide · r · ? · q"),
-                    format!(" {p} · ←/↑ · →/↓ · 0-9 · n · t · r · ? · q"),
+                    format!(" {p} · ←/↑ focus nav · →/↓ focus terminal · 1-9 jump to a session · n new session · t hide nav · r rescan · ? help · q quit"),
+                    format!(" {p} · ←/↑ nav · →/↓ terminal · 1-9 jump to · n new · t hide · r rescan · ? help · q quit"),
+                    format!(" {p} · ←/↑ nav · →/↓ terminal · 1-9 jump · n new · t hide · r · ? · q"),
+                    format!(" {p} · ←/↑ · →/↓ · 1-9 · n · t · r · ? · q"),
                     format!(" {p}…"),
                 ],
                 width,
@@ -1195,10 +1195,10 @@ mod tests {
             "the bar reads the input line: {t:?}"
         );
         // A flash displaces the input while it lasts.
-        c.flash("no session 9 (0 - 3)");
+        c.flash("no session 9 (1 - 4)");
         let t2 = c.hint_bar_text(60, &state);
         assert!(
-            t2.contains("no session 9 (0 - 3)"),
+            t2.contains("no session 9 (1 - 4)"),
             "the flash shows over the input: {t2:?}"
         );
         // The next key clears the flash and the input line returns.
@@ -1226,7 +1226,7 @@ mod tests {
         let order = [
             "←/↑ focus nav",
             "→/↓ focus terminal",
-            "0-9 jump to a session",
+            "1-9 jump to a session",
             "n new session",
             "t hide nav",
             "r rescan",
