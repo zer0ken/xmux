@@ -62,7 +62,7 @@ while the terminal view is focused:
 
 | Key | Action |
 |---|---|
-| `/` | fuzzy-filter the list by `<source>/<name>` (no prefix) |
+| `/` | fuzzy-filter the list by `<source>/<name>` (no prefix; applies as you type) |
 | `prefix 0`-`prefix 9` | jump to a session by its number |
 | `prefix n` | start a new session on the selected host |
 | `prefix r` | re-scan: refresh which machines exist, and every source's sessions |
@@ -160,6 +160,10 @@ forwarded raw to the session's active pane, so programs running inside the mux
 - **Input** (filter, new session, jump): the hint bar becomes the input line,
   `[feature] guide: <buffer>` with the caret at the edit position. Type into the
   buffer, `Backspace` deletes, `Enter` submits, `Esc` cancels.
+- **Filter** (`/`): the list re-filters as you type, so which cards survive is
+  visible before you press anything else; the selection holds its card while that
+  survives and lands on the first remaining card otherwise. `Enter` closes it and
+  keeps the filter; `Esc` restores the filter you opened with.
 - **Jump** (`prefix <digit>`): digits only. It acts while open (each edit moves the
   selection while the number names a card), so `Enter` closes when the number names a
   card and flashes the range otherwise, and `Esc` restores where you started.

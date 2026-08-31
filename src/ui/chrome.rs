@@ -1181,12 +1181,12 @@ mod tests {
         use crate::ui::modal::{Input, InputMode, Modal};
         let mut c = Chrome::default();
         let state = crate::state::State {
-            modal: Some(Modal::Input(Input::new(
+            modal: Some(Modal::Input(Box::new(Input::new(
                 InputMode::Filter,
                 " filter sessions".into(),
                 "xm".into(),
                 None,
-            ))),
+            )))),
             ..Default::default()
         };
         let t = c.hint_bar_text(60, &state);

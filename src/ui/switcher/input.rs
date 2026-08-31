@@ -120,12 +120,12 @@ impl Switcher {
         self.dismiss_modals(state);
         match mode {
             InputMode::Filter => {
-                state.modal = Some(Modal::Input(Input::new(
-                    mode,
-                    " filter sessions".into(),
-                    state.filter.clone(),
-                    None,
-                )));
+                let mut input =
+                    Input::new(mode, " filter sessions".into(), state.filter.clone(), None);
+                // The filter the input opened from: Esc restores it, undoing every
+                // live edit made while the input was open.
+                input.restore_filter = Some(state.filter.clone());
+                state.modal = Some(Modal::Input(Box::new(input)));
             }
             // New is opened by `open_new`, Jump by `open_jump` (both capture context
             // the mode alone does not carry).
@@ -149,12 +149,12 @@ impl Switcher {
         let Some(source) = self.current_source() else {
             return;
         };
-        state.modal = Some(Modal::Input(Input::new(
+        state.modal = Some(Modal::Input(Box::new(Input::new(
             InputMode::New,
             " new session name (empty = auto)".into(),
             String::new(),
             Some(source),
-        )));
+        ))));
     }
 
     /// The row `number` addresses, or `None` when no card carries it: the nth
@@ -201,7 +201,7 @@ impl Switcher {
             None,
         );
         input.restore = restore;
-        state.modal = Some(Modal::Input(input));
+        state.modal = Some(Modal::Input(Box::new(input)));
         self.apply_jump(state);
     }
 
@@ -218,6 +218,24 @@ impl Switcher {
         };
         self.user_moved = true;
         self.set_selected(n, state);
+    }
+
+    /// Reflects the open filter input's buffer into the active filter and re-derives
+    /// the list, so the filter applies as the user types rather than at Enter. A no-op
+    /// when no filter input is open. The trimmed buffer is what the filter stores, so
+    /// typing a trailing space does not change the active filter.
+    fn apply_filter(&mut self, state: &mut crate::state::State) {
+        let filter = match &state.modal {
+            Some(Modal::Input(input)) if input.mode == InputMode::Filter => {
+                input.buffer.trim().to_string()
+            }
+            _ => return,
+        };
+        if state.filter == filter {
+            return;
+        }
+        state.filter = filter;
+        self.rebuild(state);
     }
 
     /// Returns the selection to the card a cancelled jump started from, matched by
@@ -270,17 +288,14 @@ impl Switcher {
                         }
                         Vec::new()
                     }
-                    // The filter has nothing left to apply at Enter (the jump acts
-                    // while open; the create input closes first so a queue helper that
-                    // early-returns on a validation failure still dismisses the modal).
+                    // The filter applied on every edit, so Enter only closes it; the
+                    // create input closes first so a queue helper that early-returns on a
+                    // validation failure (empty/unchanged name) still dismisses the
+                    // modal.
                     _ => {
                         self.close_input(state);
                         match mode {
-                            InputMode::Filter => {
-                                state.filter = val;
-                                self.rebuild(state);
-                                Vec::new()
-                            }
+                            InputMode::Filter => Vec::new(),
                             InputMode::New => self.queue_create(source, &val, state),
                             InputMode::Jump => Vec::new(),
                         }
@@ -288,14 +303,25 @@ impl Switcher {
                 }
             }
             KeyCode::Esc => {
-                // A cancelled jump must undo the moves it already made; every other mode
-                // has changed nothing yet, so closing is the whole cancel.
-                let restore = match &state.modal {
-                    Some(Modal::Input(i)) if i.mode == InputMode::Jump => i.restore.clone(),
-                    _ => None,
+                // A cancelled jump must undo the moves it already made; a cancelled
+                // filter must restore the filter it opened from (it applied live, so
+                // every edit needs undoing); every other mode has changed nothing yet,
+                // so closing is the whole cancel.
+                let (restore, restore_filter) = match &state.modal {
+                    Some(Modal::Input(i)) if i.mode == InputMode::Jump => (i.restore.clone(), None),
+                    Some(Modal::Input(i)) if i.mode == InputMode::Filter => {
+                        (None, i.restore_filter.clone())
+                    }
+                    _ => (None, None),
                 };
                 self.close_input(state);
                 self.restore_jump(restore, state);
+                if let Some(f) = restore_filter {
+                    if state.filter != f {
+                        state.filter = f;
+                        self.rebuild(state);
+                    }
+                }
                 Vec::new()
             }
             // All other keys edit the buffer at the caret. Grab the input once so each
@@ -304,8 +330,10 @@ impl Switcher {
             // match the raw NAK / ETB bytes, not Char('u')/Char('w') + a modifier.
             code => {
                 let mut jumping = false;
+                let mut filtering = false;
                 if let Some(Modal::Input(input)) = state.modal.as_mut() {
                     jumping = input.mode == InputMode::Jump;
+                    filtering = input.mode == InputMode::Filter;
                     match code {
                         KeyCode::Backspace => input.backspace(),
                         KeyCode::Delete => input.delete(),
@@ -330,22 +358,28 @@ impl Switcher {
                         _ => {}
                     }
                 }
-                // The jump acts WHILE open: re-target after every edit so the selection
-                // tracks the number being typed.
+                // Both live modes act WHILE open: a jump re-targets the selection after
+                // every edit, and a filter re-derives the list after every edit.
                 if jumping {
                     self.apply_jump(state);
+                }
+                if filtering {
+                    self.apply_filter(state);
                 }
                 Vec::new()
             }
         }
     }
 
-    /// Test/host hook: set the active input buffer directly.
+    /// Test/host hook: set the active input buffer directly. For the filter input the
+    /// buffer is also applied to the active filter, matching the live apply that every
+    /// keystroke performs, so the hook leaves the same state a real edit would.
     pub fn set_input_text(&mut self, text: &str, state: &mut crate::state::State) {
         if let Some(Modal::Input(input)) = state.modal.as_mut() {
             input.buffer = text.to_string();
             input.cursor = text.chars().count();
         }
+        self.apply_filter(state);
     }
 
     /// Resolves a create into an [`Action::CreateSession`] and folds it through

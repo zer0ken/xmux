@@ -1694,7 +1694,9 @@ async fn n_on_a_session_card_opens_new_for_its_host() {
 
 #[tokio::test]
 async fn filter_leaves_cursor_on_visible_session() {
-    // Filter to a session - selection must land on it after the filter completes.
+    // Filter to a session - selection must land on it once the filter is in effect.
+    // The filter applies live while the input is open (set_input_text applies it as a
+    // real edit would), so Enter only closes it.
     let mut h = Harness::from_sources(&["local"]);
     h.sw.apply_source_result(
         "local".into(),
@@ -1707,7 +1709,7 @@ async fn filter_leaves_cursor_on_visible_session() {
     );
     h.ch('/').await;
     h.sw.set_input_text("probeL", &mut h.state);
-    h.key(KeyCode::Enter).await; // apply filter
+    h.key(KeyCode::Enter).await; // close the input
     let t =
         h.sw.current_attach_target(&h.state)
             .expect("a session row is visible");
@@ -1720,8 +1722,9 @@ async fn filter_leaves_cursor_on_visible_session() {
 
 #[tokio::test]
 async fn filter_host_enter_targets_visible_session() {
-    // After filtering, the top card is the visible (matching) session, not a
-    // filtered-out one - so current_attach_target yields it.
+    // Under the filter the top card is the visible (matching) session, not a
+    // filtered-out one - so current_attach_target yields it. The filter is in effect
+    // while the input is open; Enter only closes it.
     let mut h = Harness::from_sources(&["alpha"]);
     h.sw.apply_source_result(
         "alpha".into(),
@@ -1734,7 +1737,7 @@ async fn filter_host_enter_targets_visible_session() {
     );
     h.ch('/').await;
     h.sw.set_input_text("keep", &mut h.state);
-    h.key(KeyCode::Enter).await; // apply filter
+    h.key(KeyCode::Enter).await; // close the input
     h.key(KeyCode::Home).await; // the first (only) visible card
     let t =
         h.sw.current_attach_target(&h.state)
@@ -1743,6 +1746,88 @@ async fn filter_host_enter_targets_visible_session() {
         t.target.as_str(),
         "keep-me",
         "current_attach_target under the filter yields the visible session"
+    );
+}
+
+#[tokio::test]
+async fn filter_applies_live_while_typing() {
+    // The list re-filters on every keystroke, before any Enter: typing "in" narrows
+    // the cards to the one match, and the active filter follows the buffer.
+    let mut h = Harness::new(sample());
+    h.ch('/').await;
+    h.ch('i').await;
+    assert!(h.state.is_inputting(), "the input stays open while typing");
+    h.ch('n').await;
+    let out = h.nav_cards_text();
+    assert!(out.contains("inference"), "the matching card stays:\n{out}");
+    assert!(
+        !out.contains("editor") && !out.contains("build"),
+        "the non-matching cards are gone before Enter:\n{out}"
+    );
+    assert_eq!(h.state.filter, "in", "the active filter follows the buffer");
+    // Enter only closes; the filtered list is already in effect.
+    h.key(KeyCode::Enter).await;
+    assert!(!h.state.is_inputting(), "Enter closes the input");
+    assert_eq!(h.state.filter, "in", "Enter applies nothing new");
+}
+
+#[tokio::test]
+async fn filter_esc_restores_the_opening_filter() {
+    // The input remembers the filter it opened from, so cancelling undoes every live
+    // edit back to it - the list returns to exactly the state it was in before `/`.
+    let mut h = Harness::new(sample());
+    // Establish a filter first.
+    h.ch('/').await;
+    for c in "infer".chars() {
+        h.ch(c).await;
+    }
+    h.key(KeyCode::Enter).await;
+    assert_eq!(h.state.filter, "infer", "the first filter is applied");
+    let filtered_rows = h.sw.rows.len();
+    assert!(
+        filtered_rows < 6,
+        "the filter narrows the list: {filtered_rows}"
+    );
+    // Reopen, edit the filter, then cancel: Esc restores the opening filter.
+    h.ch('/').await;
+    h.ch('x').await; // "inferx" matches nothing
+    assert_eq!(h.state.filter, "inferx", "the live filter follows the edit");
+    h.key(KeyCode::Esc).await;
+    assert!(!h.state.is_inputting(), "Esc closes the input");
+    assert_eq!(
+        h.state.filter, "infer",
+        "Esc restores the filter the input opened with"
+    );
+    assert_eq!(
+        h.sw.rows.len(),
+        filtered_rows,
+        "and the list returns with it"
+    );
+}
+
+#[tokio::test]
+async fn filter_keeps_the_selection_on_a_surviving_card_while_typing() {
+    // As the live filter shrinks the list, the selection never sits on a card that
+    // just filtered out: it holds its session while that survives, then lands on the
+    // first card the narrower list still shows. The selection starts on build (the
+    // first card in name-sorted order).
+    let mut h = Harness::new(sample());
+    h.ch('/').await;
+    h.ch('i').await; // keeps build, editor, inference - the selection's session survives
+    assert!(
+        matches!(
+            h.sw.current_ref(),
+            Some(RowRef::Session { sess }) if sess.name == "build"
+        ),
+        "the selection holds its card while it survives"
+    );
+    h.ch('n').await; // "in" keeps only inference
+    assert!(
+        matches!(
+            h.sw.current_ref(),
+            Some(RowRef::Session { sess }) if sess.name == "inference"
+        ),
+        "a filtered-out card is never the selection; it lands on the survivor"
     );
 }
 

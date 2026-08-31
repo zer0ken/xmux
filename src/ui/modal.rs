@@ -123,6 +123,10 @@ pub(crate) struct Input {
     /// onto the wrong card. Esc returns here; Enter leaves the selection where the
     /// live jump already put it.
     pub(crate) restore: Option<RowRef>,
+    /// [`InputMode::Filter`] only: the filter the input opened from, restored on Esc.
+    /// The filter applies live while the input is open, so cancelling must undo every
+    /// edit back to this value.
+    pub(crate) restore_filter: Option<String>,
 }
 
 impl Input {
@@ -143,6 +147,7 @@ impl Input {
             cursor,
             source,
             restore: None,
+            restore_filter: None,
         }
     }
 
@@ -230,9 +235,13 @@ impl Input {
 /// the others" invariant cannot drift. Lives on [`crate::state::State`]; the
 /// switcher owns only the behavior and the transient popup geometry (drag offset
 /// / drawn rect).
+///
+/// The input carries several owned strings (label, buffer, a create source, a
+/// jump restore reference, a filter restore value), so it is boxed to keep the
+/// enum small; callers pattern-match through the box and never see the pointer.
 pub(crate) enum Modal {
     Help,
-    Input(Input),
+    Input(Box<Input>),
 }
 
 /// True while a centered modal popup is open. Every modal is one today, so this
