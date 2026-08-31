@@ -22,6 +22,9 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             ext: .tar.gz
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            ext: .tar.gz
           - os: macos-14
             target: aarch64-apple-darwin
             ext: .tar.gz
@@ -119,10 +122,21 @@ jobs:
       - name: Resolve version and checksums
         run: |
           set -euo pipefail
-          echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
-          echo "WIN_SHA=$(sha256sum artifacts/*windows-msvc.exe | cut -d' ' -f1)" >> "$GITHUB_ENV"
-          echo "ARM_SHA=$(sha256sum artifacts/*aarch64-apple-darwin.tar.gz | cut -d' ' -f1)" >> "$GITHUB_ENV"
-          echo "INTEL_SHA=$(sha256sum artifacts/*x86_64-apple-darwin.tar.gz | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          # Assigned before echoing: `set -e` does not abort on a failing
+          # command substitution inside an argument, and a missing artifact
+          # must fail this step instead of rendering an empty sha256.
+          VERSION=${GITHUB_REF_NAME#v}
+          WIN_SHA=$(sha256sum artifacts/*windows-msvc.exe | cut -d' ' -f1)
+          ARM_SHA=$(sha256sum artifacts/*aarch64-apple-darwin.tar.gz | cut -d' ' -f1)
+          INTEL_SHA=$(sha256sum artifacts/*x86_64-apple-darwin.tar.gz | cut -d' ' -f1)
+          LINUX_ARM_SHA=$(sha256sum artifacts/*aarch64-unknown-linux-gnu.tar.gz | cut -d' ' -f1)
+          LINUX_INTEL_SHA=$(sha256sum artifacts/*x86_64-unknown-linux-gnu.tar.gz | cut -d' ' -f1)
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "WIN_SHA=$WIN_SHA" >> "$GITHUB_ENV"
+          echo "ARM_SHA=$ARM_SHA" >> "$GITHUB_ENV"
+          echo "INTEL_SHA=$INTEL_SHA" >> "$GITHUB_ENV"
+          echo "LINUX_ARM_SHA=$LINUX_ARM_SHA" >> "$GITHUB_ENV"
+          echo "LINUX_INTEL_SHA=$LINUX_INTEL_SHA" >> "$GITHUB_ENV"
 
       - name: Update winget manifest
         run: |
@@ -154,14 +168,28 @@ jobs:
             license "MIT"
             version "$VERSION"
 
-            on_arm do
-              url "https://github.com/zer0ken/xmux/releases/download/v${VERSION}/xmux-v${VERSION}-aarch64-apple-darwin.tar.gz"
-              sha256 "$ARM_SHA"
+            on_macos do
+              on_arm do
+                url "https://github.com/zer0ken/xmux/releases/download/v${VERSION}/xmux-v${VERSION}-aarch64-apple-darwin.tar.gz"
+                sha256 "$ARM_SHA"
+              end
+
+              on_intel do
+                url "https://github.com/zer0ken/xmux/releases/download/v${VERSION}/xmux-v${VERSION}-x86_64-apple-darwin.tar.gz"
+                sha256 "$INTEL_SHA"
+              end
             end
 
-            on_intel do
-              url "https://github.com/zer0ken/xmux/releases/download/v${VERSION}/xmux-v${VERSION}-x86_64-apple-darwin.tar.gz"
-              sha256 "$INTEL_SHA"
+            on_linux do
+              on_arm do
+                url "https://github.com/zer0ken/xmux/releases/download/v${VERSION}/xmux-v${VERSION}-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "$LINUX_ARM_SHA"
+              end
+
+              on_intel do
+                url "https://github.com/zer0ken/xmux/releases/download/v${VERSION}/xmux-v${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "$LINUX_INTEL_SHA"
+              end
             end
 
             def install

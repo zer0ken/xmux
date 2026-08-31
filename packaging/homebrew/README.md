@@ -24,5 +24,5 @@ the command names it).
 
 ## Files
 
-- `Formula/xmux.rb` — the formula; installs the prebuilt macOS binary for both
-  Apple Silicon and Intel.
+- `Formula/xmux.rb`: the formula; installs the prebuilt binary for macOS
+  (Apple Silicon and Intel) and Linux (x86_64 and arm64).
