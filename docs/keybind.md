@@ -82,12 +82,11 @@ is the address of where you already are. `prefix <digit>` jumps straight there
 and opens the jump input in the hint bar holding the number, so anything past 9 is
 reached by typing the rest of it (`prefix 1` then `2` lands on 12, then `7` on 127).
 
-The jump input only accepts a digit that keeps the number addressing a real entry, so
-one, two, and three digit numbers behave identically: whatever the buffer shows is
-somewhere you can land. With ten sessions, `prefix 9` is refused outright with a
-brief message, and after `prefix 1` a second `9` is simply not taken. `Enter` submits
-the input and keeps the selection; `Esc` cancels it and returns to where you started.
-Digits are prefix-gated, so a bare digit never jumps by accident.
+Every digit is taken as typed: the selection follows the number while it names a real
+entry and stays put while it does not. `Enter` closes the input when the number names
+an entry and flashes the valid range (0 to the last card) while leaving it open
+otherwise; `Esc` cancels it and returns to where you started. Digits are
+prefix-gated, so a bare digit never jumps by accident.
 
 ## Prefix commands
 
@@ -161,9 +160,9 @@ forwarded raw to the session's active pane, so programs running inside the mux
 - **Input** (filter, new session, jump): the hint bar becomes the input line,
   `[feature] guide: <buffer>` with the caret at the edit position. Type into the
   buffer, `Backspace` deletes, `Enter` submits, `Esc` cancels.
-- **Jump** (`prefix <digit>`): digits only, and only digits that keep the number in
-  range. It acts while open (each edit moves the selection), so `Enter` merely closes
-  it and `Esc` restores where you started.
+- **Jump** (`prefix <digit>`): digits only. It acts while open (each edit moves the
+  selection while the number names a card), so `Enter` closes when the number names a
+  card and flashes the range otherwise, and `Esc` restores where you started.
 
 ## Mouse
 

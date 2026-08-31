@@ -270,13 +270,12 @@ UI elements a user perceives as distinct things:
   addresses; a section title is not a card and spends no number there at all (its
   `{host}/{mux}` label is flush left). The column is one width per frame, so the names
   stay aligned and the numbers line up by units place as the count crosses 10.
-- jump - the digits-only input `prefix <digit>` opens in the hint bar. It acts
-  WHILE open: each edit
-  moves the selection, so Enter only closes it and Esc restores where it started. It
-  accepts only a digit that keeps the number addressing a real card, so one-, two-,
-  and three-digit numbers behave identically and the buffer never shows a number you
-  cannot land on. User-facing text calls this "jump to a session" (see the naming rule
-  below).
+- jump - the digits-only input `prefix <digit>` opens in the hint bar holding the
+  digit. It acts WHILE open: each edit moves the selection while the number names a
+  card, and a number no card carries leaves the selection alone. Enter closes the
+  popup when the number names a card and flashes the valid range while leaving it
+  open otherwise; Esc restores where it started. User-facing text calls this "jump to
+  a session" (see the naming rule below).
 - instance name - a running app's identity: an auto-generated `<adjective>-<noun>`
   (or `--name`), owning `ctl-<name>.sock` for its lifetime. `xmux send <name>` and
   `xmux instances` address instances by it; a unique name prefix resolves, and `-`

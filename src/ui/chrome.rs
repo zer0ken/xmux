@@ -866,10 +866,12 @@ impl Chrome {
     pub(crate) fn hint_bar_text(&self, width: u16, state: &crate::state::State) -> String {
         // Use the active prefix so the hint_bar matches the user's configured binding.
         let p = &self.ui_prefix;
-        if let Some(Modal::Input(input)) = &state.modal {
-            crate::ui::modal::input_hint_text(input, width)
-        } else if !self.flash.is_empty() {
+        if !self.flash.is_empty() {
+            // A flash outranks even an open input: a dead jump number flashed its range
+            // while leaving the input open, so the range must show over the input line.
             format!(" ⚠ {}", self.flash)
+        } else if let Some(Modal::Input(input)) = &state.modal {
+            crate::ui::modal::input_hint_text(input, width)
         } else if self.armed {
             // The prefix is held: name what it unlocks. Longest-first so a narrow nav
             // drops the rarer chords rather than clipping mid-word.
@@ -1006,16 +1008,20 @@ impl Chrome {
     ) {
         // An open input owns the bar outright: the bar BECOMES the input line (see
         // [`Self::hint_bar_text`]), painted as the status bar with a reversed-block
-        // caret. This branch is the bar's whole render - the cheatsheet, the version
-        // label, and the key-token styling all yield to what is being typed.
-        if let Some(Modal::Input(input)) = &state.modal {
-            let line = crate::ui::modal::input_hint_line(input, area.width);
-            frame.render_widget(Clear, area);
-            frame.render_widget(
-                Paragraph::new(line).style(self.hint_bar_render_style()),
-                area,
-            );
-            return;
+        // caret. A flash outranks it - a dead jump number flashes its range while
+        // leaving the input open, so the range must show over the input line - and
+        // falls through to the flash path below, exactly as [`Self::hint_bar_text`]
+        // orders them.
+        if self.flash.is_empty() {
+            if let Some(Modal::Input(input)) = &state.modal {
+                let line = crate::ui::modal::input_hint_line(input, area.width);
+                frame.render_widget(Clear, area);
+                frame.render_widget(
+                    Paragraph::new(line).style(self.hint_bar_render_style()),
+                    area,
+                );
+                return;
+            }
         }
         // While the prefix is HELD the bar is expanded, and it pins its name and version to
         // the far right: a cheap build pointer that never crowds the cheatsheet. A flash is
@@ -1168,9 +1174,10 @@ mod tests {
     }
 
     #[test]
-    fn hint_bar_becomes_the_input_line_while_one_is_open() {
-        // An open input outranks every other bar state (resting prefix, armed, flash,
-        // scan, filter): the bar BECOMES `[feature] guide: buffer`.
+    fn hint_bar_shows_a_flash_over_an_open_input() {
+        // A flash outranks an open input: a dead jump number flashes its range while
+        // leaving the input open, so the range must show over the input line; once the
+        // flash clears, the input line takes the bar back.
         use crate::ui::modal::{Input, InputMode, Modal};
         let mut c = Chrome::default();
         let state = crate::state::State {
@@ -1187,12 +1194,19 @@ mod tests {
             t.contains("[filter] filter sessions: xm"),
             "the bar reads the input line: {t:?}"
         );
-        // A flash does not displace the input.
-        c.flash("host unreachable");
+        // A flash displaces the input while it lasts.
+        c.flash("no session 9 (0 - 3)");
         let t2 = c.hint_bar_text(60, &state);
         assert!(
-            t2.contains("[filter] filter sessions"),
-            "the input outranks a flash too: {t2:?}"
+            t2.contains("no session 9 (0 - 3)"),
+            "the flash shows over the input: {t2:?}"
+        );
+        // The next key clears the flash and the input line returns.
+        c.flash.clear();
+        let t3 = c.hint_bar_text(60, &state);
+        assert!(
+            t3.contains("[filter] filter sessions"),
+            "the input line returns once the flash clears: {t3:?}"
         );
     }
 

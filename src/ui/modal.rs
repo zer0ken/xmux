@@ -99,9 +99,10 @@ pub(crate) enum InputMode {
     New,
     /// Jump to a session by its number (the user-facing name: a `card` is the visual
     /// row, the session is what it stands for). Unlike the other modes this one acts
-    /// WHILE it is open: every edit moves the selection, so the number is a live cursor
-    /// rather than a value submitted at the end. Enter therefore only closes the popup,
-    /// and Esc restores where the jump started.
+    /// WHILE it is open: every edit moves the selection while the number names a card,
+    /// so the number is a live cursor rather than a value submitted at the end. Enter
+    /// closes the popup when the number names a card and flashes the valid range while
+    /// leaving it open otherwise; Esc restores where the jump started.
     Jump,
 }
 
@@ -143,15 +144,6 @@ impl Input {
             source,
             restore: None,
         }
-    }
-
-    /// What [`Self::insert`] would make the buffer, without changing anything. Lets a
-    /// mode veto a keystroke by its RESULT rather than guessing from the caret: the jump
-    /// only accepts a digit that keeps the number addressing a real session.
-    pub(crate) fn buffer_with(&self, c: char) -> String {
-        let mut v: Vec<char> = self.buffer.chars().collect();
-        v.insert(self.cursor.min(v.len()), c);
-        v.into_iter().collect()
     }
 
     /// Inserts `c` at the caret and advances past it. Char-indexed so multi-byte

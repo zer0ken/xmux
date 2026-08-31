@@ -3178,7 +3178,8 @@ async fn cancelling_a_jump_restores_the_starting_card() {
 #[tokio::test]
 async fn a_jump_past_the_last_card_is_inert() {
     // Typing a number that does not exist yet must not snap to an edge - the number is
-    // still being typed, and `9` on the way to `95` should not jerk the selection.
+    // still being typed, and `9` on the way to `95` should not jerk the selection. The
+    // digits are still taken into the buffer; only the selection refuses to move.
     let mut h = Harness::new(sample());
     let n = h.sw.rows.len();
     h.key(KeyCode::Char('1')).await;
@@ -3190,9 +3191,19 @@ async fn a_jump_past_the_last_card_is_inert() {
         h.sw.selected, one,
         "an out-of-range number leaves the selection alone"
     );
+    assert_eq!(
+        h.input_buffer(),
+        format!("1{n}"),
+        "the out-of-range number stays in the buffer"
+    );
     // A letter typed into a card number is dropped rather than breaking the parse.
     h.key(KeyCode::Char('x')).await;
     assert_eq!(h.sw.selected, one, "a non-digit is ignored");
+    assert_eq!(
+        h.input_buffer(),
+        format!("1{n}"),
+        "and never enters the buffer"
+    );
 }
 
 #[tokio::test]
@@ -3372,34 +3383,89 @@ async fn the_input_hint_bar_floats_across_the_whole_window() {
 }
 
 #[tokio::test]
-async fn a_jump_never_holds_a_number_no_session_carries() {
-    // One, two, and three digit numbers behave identically because the popup only takes
-    // a digit that keeps the number in range, so the buffer always names a real session.
+async fn a_jump_holds_out_of_range_numbers_and_vets_at_enter() {
+    // The number goes into the buffer whatever it addresses; the existence check is
+    // Enter-time. While the number names no card the selection stays put, and Enter on
+    // it flashes the range and keeps the popup open.
     let mut h = Harness::new(sample());
     let n = h.sw.rows.len();
     assert!(n < 10, "sample() is a single-digit list");
-    // The seeding digit itself is vetted: no popup opens for a number nothing carries.
+    let start = h.sw.selected;
+    // The seeding digit itself is not vetted: an out-of-range digit opens the popup
+    // holding it, and leaves the selection alone.
     h.key(KeyCode::Char(char::from_digit(n as u32, 10).unwrap()))
         .await;
     assert!(
-        !h.state.is_inputting(),
-        "an out-of-range digit opens nothing"
+        h.state.is_inputting(),
+        "an out-of-range digit opens the popup"
     );
+    assert_eq!(h.input_buffer(), n.to_string(), "the buffer holds it");
+    assert_eq!(
+        h.sw.selected, start,
+        "while no card carries the number, the selection stays"
+    );
+    // Enter on a dead number flashes the range and keeps the popup open.
+    h.key(KeyCode::Enter).await;
+    assert!(h.state.is_inputting(), "the popup stays open");
     assert!(
         h.state.chrome.flash.contains("no session"),
-        "and says so: {}",
+        "the flash names the dead number: {}",
         h.state.chrome.flash
     );
-    // In range, the popup opens and each further digit is taken only if it stays in range.
+    let bar = h.hint_bar_text();
+    assert!(
+        bar.contains("no session"),
+        "the flash shows over the open input: {bar:?}"
+    );
+    // A fresh edit clears the flash and the input line returns.
+    h.key(KeyCode::Backspace).await;
+    assert!(h.state.chrome.flash.is_empty(), "a key clears the flash");
+    // In range, the popup opens and each further digit is taken as typed.
     h.key(KeyCode::Char('1')).await;
     assert!(h.state.is_inputting(), "an in-range digit opens the popup");
+    assert_eq!(h.sw.card_number(h.sw.selected), 1, "the digit lands");
     h.key(KeyCode::Char('0')).await;
     assert_eq!(
         h.sw.card_number(h.sw.selected),
         1,
-        "10 is out of range, so the digit is dropped and 1 keeps its card"
+        "10 is out of range, so the selection keeps 1"
     );
-    assert_eq!(h.input_buffer(), "1", "and the buffer never showed it");
+    assert_eq!(
+        h.input_buffer(),
+        "10",
+        "the buffer holds the out-of-range extension"
+    );
+}
+
+#[tokio::test]
+async fn a_jump_enter_on_an_empty_buffer_keeps_the_popup_open() {
+    let mut h = Harness::new(sample());
+    h.key(KeyCode::Char('1')).await;
+    h.key(KeyCode::Backspace).await; // empty the buffer
+    h.key(KeyCode::Enter).await;
+    assert!(
+        h.state.is_inputting(),
+        "Enter on an empty buffer keeps the popup open"
+    );
+    assert!(h.state.chrome.flash.is_empty(), "and flashes nothing");
+    assert_eq!(h.input_buffer(), "", "the buffer is still empty");
+}
+
+#[tokio::test]
+async fn cancelling_a_jump_from_a_dead_number_still_restores() {
+    // Esc after typing a dead extension returns to where the jump started, exactly as
+    // a live one does: the selection that never moved is still the starting card.
+    let mut h = Harness::new(sample());
+    let start = h.sw.selected;
+    h.key(KeyCode::Char('1')).await; // live jump to 1
+    h.key(KeyCode::Char('9')).await; // 19 is dead; the selection stays on 1
+    assert_eq!(h.input_buffer(), "19");
+    h.key(KeyCode::Esc).await;
+    assert!(!h.state.is_inputting(), "Esc closes the popup");
+    assert_eq!(
+        h.sw.selected, start,
+        "Esc returns to where the jump started"
+    );
 }
 
 #[tokio::test]
