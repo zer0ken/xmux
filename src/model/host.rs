@@ -684,7 +684,6 @@ mod tests {
                     mux: String::new(),
                     windows: 1,
                     attached: false,
-                    last_attached: 0,
                 })
                 .collect();
             EnumMux {
@@ -853,7 +852,7 @@ mod tests {
             crate::transport::local(None),
             crate::mux::for_binary("tmux").unwrap(),
         );
-        let r = CannedRunner::ok("3\t1\t1781246739\teditor\n1\t0\t\tbuild\n");
+        let r = CannedRunner::ok("3\t1\teditor\n1\t0\tbuild\n");
         h.enumerate_with(&r).await.unwrap();
         assert_eq!(h.liveness, Liveness::Live);
         let names: Vec<&str> = h

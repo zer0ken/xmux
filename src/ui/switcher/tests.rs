@@ -253,14 +253,13 @@ fn mod_of(buf: &Buffer, text: &str, limit: u16) -> Option<Modifier> {
 
 // --- sample data --------------------------------------------------------
 
-fn sess(source: &str, name: &str, windows: i64, attached: bool, last: i64) -> Session {
+fn sess(source: &str, name: &str, windows: i64, attached: bool) -> Session {
     Session {
         source: source.into(),
         name: name.into(),
         mux: String::new(),
         windows,
         attached,
-        last_attached: last,
     }
 }
 
@@ -273,7 +272,7 @@ fn selection_parked_elsewhere(mut scan: Scan) -> Scan {
     scan.groups.push(Group {
         source: "aaa".into(),
         err: None,
-        sessions: vec![sess_mux("aaa", "parked", "psmux", 9_999)],
+        sessions: vec![sess_mux("aaa", "parked", "psmux")],
     });
     scan
 }
@@ -284,14 +283,14 @@ fn sample() -> Scan {
             source: "local".into(),
             err: None,
             sessions: vec![
-                sess("local", "editor", 2, true, 200),
-                sess("local", "build", 1, false, 100),
+                sess("local", "editor", 2, true),
+                sess("local", "build", 1, false),
             ],
         },
         Group {
             source: "jupiter00".into(),
             err: None,
-            sessions: vec![sess("jupiter00", "inference", 1, false, 300)],
+            sessions: vec![sess("jupiter00", "inference", 1, false)],
         },
         Group {
             source: "db-2".into(),
@@ -311,12 +310,12 @@ fn scan_with_a_host_band() -> Scan {
             Group {
                 source: "local".into(),
                 err: None,
-                sessions: vec![sess("local", "editor", 1, false, 100)],
+                sessions: vec![sess("local", "editor", 1, false)],
             },
             Group {
                 source: "jupiter00".into(),
                 err: None,
-                sessions: vec![sess("jupiter00", "inference", 1, false, 300)],
+                sessions: vec![sess("jupiter00", "inference", 1, false)],
             },
             Group {
                 source: "db-2".into(),
@@ -337,7 +336,7 @@ fn scan_with_a_host_band() -> Scan {
 /// more cards than [`sample`] has).
 fn scan_with_sessions(n: usize) -> Scan {
     let sessions = (0..n)
-        .map(|i| sess("local", &format!("s{i}"), 1, false, (n - i) as i64))
+        .map(|i| sess("local", &format!("s{i}"), 1, false))
         .collect();
     Scan {
         groups: vec![Group {
@@ -385,7 +384,7 @@ fn two_window_scan() -> Scan {
         groups: vec![Group {
             source: "jup".into(),
             err: None,
-            sessions: vec![sess("jup", "api", 2, false, 100)],
+            sessions: vec![sess("jup", "api", 2, false)],
         }],
     }
 }
@@ -468,18 +467,18 @@ async fn renders_a_session_card_per_session() {
 async fn launch_preselects_top_row() {
     // #G: on launch the highlight sits on the very top card (index 0) - the first
     // local session (frozen there before any remote streams in); no persisted
-    // last_session is consulted and a more-recent remote must not steal the top.
+    // last_session is consulted and a remote must not steal the top.
     let mut h = Harness::from_sources(&["local", "jupiter00"]);
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess("local", "editor", 1, false, 100)],
+        vec![sess("local", "editor", 1, false)],
         None,
         &mut h.state,
     );
-    // A more-recent remote streams in and must NOT pull the cursor down.
+    // A remote streams in and must NOT pull the cursor down.
     h.sw.apply_source_result(
         "jupiter00".into(),
-        vec![sess("jupiter00", "infer", 1, false, 300)],
+        vec![sess("jupiter00", "infer", 1, false)],
         None,
         &mut h.state,
     );
@@ -493,7 +492,7 @@ async fn launch_preselects_top_row() {
             h.sw.current_ref(),
             Some(RowRef::Session { sess }) if sess.source == "local" && sess.name == "editor"
         ),
-        "the top card is the local session, not the more-recent remote"
+        "the top card is the local session, not the remote"
     );
 }
 
@@ -613,7 +612,7 @@ async fn remove_source_drops_the_card_and_everything_keyed_to_it() {
     let mut h = Harness::from_sources(&["local", "jupiter00"]);
     h.sw.apply_source_result(
         "jupiter00".into(),
-        vec![sess("jupiter00", "api", 2, false, 100)],
+        vec![sess("jupiter00", "api", 2, false)],
         None,
         &mut h.state,
     );
@@ -651,7 +650,7 @@ async fn apply_source_result_turns_scanning_into_sessions() {
     );
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess("local", "editor", 2, false, 100)],
+        vec![sess("local", "editor", 2, false)],
         None,
         &mut h.state,
     );
@@ -673,15 +672,14 @@ async fn apply_source_result_turns_scanning_into_sessions() {
 
 #[tokio::test]
 async fn poll_preserves_session_order_after_scan() {
-    // Scan establishes name order db, web. A later poll reports web freshly
-    // attach-bumped (999) - recency would float it to the top, but the deterministic
-    // name order holds regardless of recency.
+    // Scan establishes name order db, web. A later poll reports the sessions in a
+    // different arrival order - the deterministic name order holds.
     let mut h = Harness::from_sources(&["local"]);
     h.sw.apply_source_result(
         "local".into(),
         vec![
-            sess("local", "web", 1, false, 100),
-            sess("local", "db", 1, false, 200),
+            sess("local", "web", 1, false),
+            sess("local", "db", 1, false),
         ],
         None,
         &mut h.state,
@@ -694,8 +692,8 @@ async fn poll_preserves_session_order_after_scan() {
     h.sw.apply_source_result(
         "local".into(),
         vec![
-            sess("local", "db", 1, false, 200),
-            sess("local", "web", 1, false, 999),
+            sess("local", "db", 1, false),
+            sess("local", "web", 1, false),
         ],
         None,
         &mut h.state,
@@ -713,8 +711,8 @@ async fn poll_sorts_a_new_session_into_place() {
     h.sw.apply_source_result(
         "local".into(),
         vec![
-            sess("local", "web", 1, false, 100),
-            sess("local", "db", 1, false, 200),
+            sess("local", "web", 1, false),
+            sess("local", "db", 1, false),
         ],
         None,
         &mut h.state,
@@ -724,9 +722,9 @@ async fn poll_sorts_a_new_session_into_place() {
     h.sw.apply_source_result(
         "local".into(),
         vec![
-            sess("local", "db", 1, false, 200),
-            sess("local", "web", 1, false, 100),
-            sess("local", "api", 1, false, 999),
+            sess("local", "db", 1, false),
+            sess("local", "web", 1, false),
+            sess("local", "api", 1, false),
         ],
         None,
         &mut h.state,
@@ -745,19 +743,19 @@ async fn poll_preserves_host_group_order_after_scan() {
     let mut h = Harness::from_sources(&["local", "jupiter00", "jupiter06"]);
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess("local", "w", 1, false, 50)],
+        vec![sess("local", "w", 1, false)],
         None,
         &mut h.state,
     );
     h.sw.apply_source_result(
         "jupiter06".into(),
-        vec![sess("jupiter06", "b", 1, false, 100)],
+        vec![sess("jupiter06", "b", 1, false)],
         None,
         &mut h.state,
     );
     h.sw.apply_source_result(
         "jupiter00".into(),
-        vec![sess("jupiter00", "a", 1, false, 300)],
+        vec![sess("jupiter00", "a", 1, false)],
         None,
         &mut h.state,
     );
@@ -766,11 +764,10 @@ async fn poll_preserves_host_group_order_after_scan() {
         vec!["local", "jupiter00", "jupiter06"],
         "the scan orders hosts local-first then by name"
     );
-    // A poll reports jupiter06's session freshly bumped (999) - recency would lift
-    // jupiter06 above jupiter00, but the deterministic name order holds.
+    // A poll reports jupiter06's session again - the deterministic name order holds.
     h.sw.apply_source_result(
         "jupiter06".into(),
-        vec![sess("jupiter06", "b", 1, false, 999)],
+        vec![sess("jupiter06", "b", 1, false)],
         None,
         &mut h.state,
     );
@@ -787,8 +784,8 @@ async fn rescan_reapplies_name_order() {
     h.sw.apply_source_result(
         "local".into(),
         vec![
-            sess("local", "web", 1, false, 100),
-            sess("local", "db", 1, false, 200),
+            sess("local", "web", 1, false),
+            sess("local", "db", 1, false),
         ],
         None,
         &mut h.state,
@@ -796,8 +793,8 @@ async fn rescan_reapplies_name_order() {
     h.sw.apply_source_result(
         "local".into(),
         vec![
-            sess("local", "db", 1, false, 200),
-            sess("local", "web", 1, false, 999),
+            sess("local", "db", 1, false),
+            sess("local", "web", 1, false),
         ],
         None,
         &mut h.state,
@@ -813,8 +810,8 @@ async fn rescan_reapplies_name_order() {
     h.sw.apply_source_result(
         "local".into(),
         vec![
-            sess("local", "db", 1, false, 200),
-            sess("local", "web", 1, false, 999),
+            sess("local", "db", 1, false),
+            sess("local", "web", 1, false),
         ],
         None,
         &mut h.state,
@@ -832,23 +829,23 @@ async fn three_hosts_cursor_on_middle() -> Harness {
     let mut h = Harness::from_sources(&["local", "jupiter00", "jupiter06"]);
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess("local", "web", 1, false, 100)],
+        vec![sess("local", "web", 1, false)],
         None,
         &mut h.state,
     );
     h.sw.apply_source_result(
         "jupiter00".into(),
-        vec![sess("jupiter00", "infer", 1, false, 300)],
+        vec![sess("jupiter00", "infer", 1, false)],
         None,
         &mut h.state,
     );
     h.sw.apply_source_result(
         "jupiter06".into(),
-        vec![sess("jupiter06", "build", 1, false, 50)],
+        vec![sess("jupiter06", "build", 1, false)],
         None,
         &mut h.state,
     );
-    // infer (recency 300) is the launch preselect - the top card - so a select_address
+    // infer is the launch preselect - the top card - so a select_address
     // to it is a no-op; pin it as a deliberate user selection so a rebuild won't drift it.
     h.sw.select_address("jupiter00/infer", &h.state);
     h.sw.user_moved = true;
@@ -878,19 +875,19 @@ async fn rescan_returns_cursor_to_the_same_session() {
     // Sessions re-stream in a different arrival order; infer's host arrives last.
     h.sw.apply_source_result(
         "jupiter06".into(),
-        vec![sess("jupiter06", "build", 1, false, 50)],
+        vec![sess("jupiter06", "build", 1, false)],
         None,
         &mut h.state,
     );
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess("local", "web", 1, false, 100)],
+        vec![sess("local", "web", 1, false)],
         None,
         &mut h.state,
     );
     h.sw.apply_source_result(
         "jupiter00".into(),
-        vec![sess("jupiter00", "infer", 1, false, 300)],
+        vec![sess("jupiter00", "infer", 1, false)],
         None,
         &mut h.state,
     );
@@ -910,13 +907,13 @@ async fn rescan_reselect_dropped_when_user_navigates_away() {
     // Sessions re-stream - the selection must NOT get yanked back to infer.
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess("local", "web", 1, false, 100)],
+        vec![sess("local", "web", 1, false)],
         None,
         &mut h.state,
     );
     h.sw.apply_source_result(
         "jupiter00".into(),
-        vec![sess("jupiter00", "infer", 1, false, 300)],
+        vec![sess("jupiter00", "infer", 1, false)],
         None,
         &mut h.state,
     );
@@ -1095,7 +1092,7 @@ async fn the_session_xmux_runs_in_is_never_a_terminal_view_target() {
     h.sw.set_own_session(Some("local/xmus".to_string()));
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess_mux("local", "xmus", "psmux", 100)],
+        vec![sess_mux("local", "xmus", "psmux")],
         None,
         &mut h.state,
     );
@@ -1120,7 +1117,7 @@ async fn the_session_xmux_runs_in_shows_a_screen_instead_of_its_grid() {
     h.sw.set_own_session(Some("local/xmus".to_string()));
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess_mux("local", "xmus", "psmux", 100)],
+        vec![sess_mux("local", "xmus", "psmux")],
         None,
         &mut h.state,
     );
@@ -1147,7 +1144,7 @@ async fn the_self_session_screen_headline_carries_the_mux_too() {
     h.sw.set_own_session(Some("local/xmus".to_string()));
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess_mux("local", "xmus", "psmux", 100)],
+        vec![sess_mux("local", "xmus", "psmux")],
         None,
         &mut h.state,
     );
@@ -1167,7 +1164,7 @@ async fn another_instances_session_is_shown_like_any_other() {
     h.sw.set_own_session(Some("local/xmus".to_string()));
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess_mux("local", "other", "psmux", 100)],
+        vec![sess_mux("local", "other", "psmux")],
         None,
         &mut h.state,
     );
@@ -1247,13 +1244,13 @@ async fn unreachable_host_screen_shows_ssh_config_stanza() {
 #[tokio::test]
 async fn streaming_keeps_local_preselect_when_untouched() {
     // An untouched selection sits on the top SESSION card (the local host's first
-    // session, row 1 - row 0 is its section title), and a later more-recent REMOTE
+    // session, row 1 - row 0 is its section title), and a later REMOTE
     // session streaming in must NOT steal it: the selection must not leap to a remote
     // on first launch (#1).
     let mut h = Harness::from_sources(&["local", "jupiter00"]);
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess("local", "editor", 1, false, 100)],
+        vec![sess("local", "editor", 1, false)],
         None,
         &mut h.state,
     );
@@ -1264,14 +1261,14 @@ async fn streaming_keeps_local_preselect_when_untouched() {
     );
     h.sw.apply_source_result(
         "jupiter00".into(),
-        vec![sess("jupiter00", "infer", 1, false, 300)],
+        vec![sess("jupiter00", "infer", 1, false)],
         None,
         &mut h.state,
     );
     h.draw();
     assert_eq!(
         h.sw.selected, 1,
-        "an untouched selection stays on the top session card; a recent remote must not steal it"
+        "an untouched selection stays on the top session card; a remote must not steal it"
     );
     assert!(
         matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.source == "local"),
@@ -1291,7 +1288,7 @@ async fn streaming_holds_the_first_session_that_answered() {
     // The remote answers first.
     h.sw.apply_source_result(
         "jupiter00".into(),
-        vec![sess("jupiter00", "infer", 1, false, 300)],
+        vec![sess("jupiter00", "infer", 1, false)],
         None,
         &mut h.state,
     );
@@ -1307,7 +1304,7 @@ async fn streaming_holds_the_first_session_that_answered() {
     // top-card preselect would move the cursor for.
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess("local", "editor", 1, false, 100)],
+        vec![sess("local", "editor", 1, false)],
         None,
         &mut h.state,
     );
@@ -1343,12 +1340,12 @@ async fn request_rescan_arms_a_display_reattach() {
 async fn rebuild_holds_a_user_moved_session_against_the_preselect() {
     // The selection thrash: once the user has moved the selection onto a session, a bare
     // rebuild (a frequent poll / %-event that does not route through restore_focus)
-    // must keep it there, not snap it back to the recency/preferred preselect.
+    // must keep it there, not snap it back to the preferred preselect.
     let mut state = crate::state::State::from_sources(vec!["h".into()]);
     let mut sw = Switcher::from_sources(&mut state);
     sw.apply_source_result(
         "h".into(),
-        vec![sess("h", "a", 1, false, 200), sess("h", "b", 1, false, 100)],
+        vec![sess("h", "a", 1, false), sess("h", "b", 1, false)],
         None,
         &mut state,
     );
@@ -1360,7 +1357,7 @@ async fn rebuild_holds_a_user_moved_session_against_the_preselect() {
             _ => None,
         })
         .collect();
-    // Pick the session that is NOT the preselect target (the recency-first one), so a
+    // Pick the session that is NOT the preselect target, so a
     // bare rebuild's preselect would move the selection here if the fix were absent.
     let other = names[1].clone();
     let idx = sw
@@ -1387,8 +1384,8 @@ async fn streaming_preserves_cursor_once_user_moves() {
     h.sw.apply_source_result(
         "local".into(),
         vec![
-            sess("local", "editor", 1, false, 100),
-            sess("local", "build", 1, false, 50),
+            sess("local", "editor", 1, false),
+            sess("local", "build", 1, false),
         ],
         None,
         &mut h.state,
@@ -1397,10 +1394,10 @@ async fn streaming_preserves_cursor_once_user_moves() {
     // build's card preselected (index 0, name order); step down to editor's card.
     h.key(KeyCode::Down).await;
     assert_eq!(cur_session_name(&h).as_deref(), Some("editor"));
-    // A more-recent remote session streams in; the selection must NOT jump.
+    // A remote session streams in; the selection must NOT jump.
     h.sw.apply_source_result(
         "jupiter00".into(),
-        vec![sess("jupiter00", "infer", 1, false, 300)],
+        vec![sess("jupiter00", "infer", 1, false)],
         None,
         &mut h.state,
     );
@@ -1701,8 +1698,8 @@ async fn filter_leaves_cursor_on_visible_session() {
     h.sw.apply_source_result(
         "local".into(),
         vec![
-            sess("local", "live", 2, true, 999),
-            sess("local", "xmux-probeL", 1, false, 50),
+            sess("local", "live", 2, true),
+            sess("local", "xmux-probeL", 1, false),
         ],
         None,
         &mut h.state,
@@ -1729,8 +1726,8 @@ async fn filter_host_enter_targets_visible_session() {
     h.sw.apply_source_result(
         "alpha".into(),
         vec![
-            sess("alpha", "keep-me", 1, false, 50),
-            sess("alpha", "other", 1, false, 999),
+            sess("alpha", "keep-me", 1, false),
+            sess("alpha", "other", 1, false),
         ],
         None,
         &mut h.state,
@@ -1994,14 +1991,13 @@ async fn the_session_reads_bold_on_its_card() {
 }
 
 /// A session stamped with its mux kind, for the context-line tests.
-fn sess_mux(source: &str, name: &str, mux: &str, last: i64) -> Session {
+fn sess_mux(source: &str, name: &str, mux: &str) -> Session {
     Session {
         source: source.into(),
         name: name.into(),
         mux: mux.into(),
         windows: 1,
         attached: false,
-        last_attached: last,
     }
 }
 
@@ -2030,25 +2026,23 @@ fn sources_scan(sources: Vec<(&str, Vec<Session>)>) -> Scan {
 }
 
 #[tokio::test]
-async fn a_sources_cards_are_contiguous_and_the_sources_run_most_recent_first() {
-    // Recency applies to the SOURCE. Ordering sessions by global recency alone would
-    // interleave these two hosts - alpha 500, beta 400, beta 300, alpha 200 - and alpha
-    // would state its context twice, in two places, with a connector under each claiming
-    // the cards below it. Instead alpha's cards sit together (it holds the most recent
-    // session of all), then beta's, and inside each host the recent session leads.
+async fn a_sources_cards_are_contiguous_and_the_order_is_deterministic() {
+    // A source's cards sit together under their source's one section title: alpha's
+    // before beta's, never interleaved with another host's, and inside each host the
+    // name order holds (a-new, then a-old).
     let mut h = Harness::new(sources_scan(vec![
         (
             "alpha",
             vec![
-                sess_mux("alpha", "a-old", "tmux", 200),
-                sess_mux("alpha", "a-new", "tmux", 500),
+                sess_mux("alpha", "a-old", "tmux"),
+                sess_mux("alpha", "a-new", "tmux"),
             ],
         ),
         (
             "beta",
             vec![
-                sess_mux("beta", "b-new", "tmux", 400),
-                sess_mux("beta", "b-old", "tmux", 300),
+                sess_mux("beta", "b-new", "tmux"),
+                sess_mux("beta", "b-old", "tmux"),
             ],
         ),
     ]));
@@ -2076,7 +2070,7 @@ async fn a_sources_cards_are_contiguous_and_the_sources_run_most_recent_first() 
     let (a_new, a_old, b_new, b_old) = (row("a-new"), row("a-old"), row("b-new"), row("b-old"));
     assert!(
         a_new < a_old && a_old < b_new && b_new < b_old,
-        "alpha then beta, each most recent first: a-new {a_new}, a-old {a_old}, b-new {b_new}, b-old {b_old}
+        "alpha then beta, each by name: a-new {a_new}, a-old {a_old}, b-new {b_new}, b-old {b_old}
 {out}"
     );
     // One section title per source: the title names the whole group, the cards below
@@ -2102,14 +2096,14 @@ async fn a_session_found_later_lands_inside_its_own_source() {
     // source - never appended to the bottom, which would strand it under another host's
     // context line and split the source it belongs to.
     let mut h = Harness::new(sources_scan(vec![
-        ("alpha", vec![sess_mux("alpha", "a-one", "tmux", 500)]),
-        ("beta", vec![sess_mux("beta", "b-one", "tmux", 400)]),
+        ("alpha", vec![sess_mux("alpha", "a-one", "tmux")]),
+        ("beta", vec![sess_mux("beta", "b-one", "tmux")]),
     ]));
     h.sw.apply_source_result(
         "alpha".into(),
         vec![
-            sess_mux("alpha", "a-one", "tmux", 500),
-            sess_mux("alpha", "a-two", "tmux", 100),
+            sess_mux("alpha", "a-one", "tmux"),
+            sess_mux("alpha", "a-two", "tmux"),
         ],
         None,
         &mut h.state,
@@ -2139,7 +2133,7 @@ async fn the_section_title_shows_host_mux_and_the_session_takes_the_accent() {
     // before its first frame.
     let mut h = Harness::new(selection_parked_elsewhere(one_host_scan(
         "srv",
-        vec![sess_mux("srv", "alpha", "tmux", 100)],
+        vec![sess_mux("srv", "alpha", "tmux")],
     )));
     h.state.chrome.set_source_reach(
         [("srv".to_string(), reach("tmux", "srv", "", "tmux ls"))]
@@ -2334,9 +2328,9 @@ async fn a_column_is_never_narrower_than_the_title_naming_it() {
         sources_scan(vec![
             (
                 "build-runner-eu-west",
-                vec![sess_mux("build-runner-eu-west", "z", "zellij", 200)],
+                vec![sess_mux("build-runner-eu-west", "z", "zellij")],
             ),
-            ("jupiter00", vec![sess_mux("jupiter00", "a", "tmux", 100)]),
+            ("jupiter00", vec![sess_mux("jupiter00", "a", "tmux")]),
         ]),
         60,
         12,
@@ -2394,7 +2388,7 @@ async fn a_host_card_gives_its_mux_the_secondary() {
             Group {
                 source: "srv:zellij".into(),
                 err: None,
-                sessions: vec![sess_mux("srv:zellij", "alpha", "zellij", 200)],
+                sessions: vec![sess_mux("srv:zellij", "alpha", "zellij")],
             },
             // A reachable machine with no session left: the host-state card.
             Group {
@@ -2530,7 +2524,7 @@ async fn the_bands_never_touch_on_screen() {
     // row. Scroll to the boundary first - the host sits below the fold at the top.
     let mut h = Harness::from_sources(&["local", "db-2"]);
     let sessions: Vec<crate::session::Session> = (0..27)
-        .map(|i| sess("local", &format!("s{i}"), 1, false, (27 - i) as i64))
+        .map(|i| sess("local", &format!("s{i}"), 1, false))
         .collect();
     h.sw.apply_source_result("local".into(), sessions, None, &mut h.state);
     h.draw();
@@ -2593,7 +2587,7 @@ async fn scanning_hosts_anchor_to_the_bottom_until_found() {
     let mut h = Harness::from_sources(&["local", "jupiter00"]);
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess("local", "editor", 1, false, 100)],
+        vec![sess("local", "editor", 1, false)],
         None,
         &mut h.state,
     );
@@ -2654,10 +2648,10 @@ async fn a_sources_sessions_are_each_a_single_row_under_one_section_title() {
     let mut h = Harness::new(one_host_scan(
         "srv",
         vec![
-            sess_mux("srv", "alpha", "tmux", 400),
-            sess_mux("srv", "beta", "tmux", 300),
-            sess_mux("srv", "gamma", "tmux", 200),
-            sess_mux("srv", "zeta", "tmux", 100),
+            sess_mux("srv", "alpha", "tmux"),
+            sess_mux("srv", "beta", "tmux"),
+            sess_mux("srv", "gamma", "tmux"),
+            sess_mux("srv", "zeta", "tmux"),
         ],
     ));
     h.state.chrome.set_source_reach(
@@ -2700,8 +2694,8 @@ async fn focus_changes_only_the_address_column() {
     let mut h = Harness::new(one_host_scan(
         "srv",
         vec![
-            sess_mux("srv", "alpha", "tmux", 300),
-            sess_mux("srv", "beta", "tmux", 200),
+            sess_mux("srv", "alpha", "tmux"),
+            sess_mux("srv", "beta", "tmux"),
         ],
     ));
     let beta_row = h.nav_row_of("beta").expect("beta detail");
@@ -3300,8 +3294,8 @@ async fn selecting_a_card_never_moves_its_session_name() {
     let mut h = Harness::new(one_host_scan(
         "srv",
         vec![
-            sess_mux("srv", "alpha", "tmux", 300),
-            sess_mux("srv", "beta", "tmux", 200),
+            sess_mux("srv", "alpha", "tmux"),
+            sess_mux("srv", "beta", "tmux"),
         ],
     ));
     // The COLUMN, not the byte offset: the address column and the `└` connector hold
@@ -4234,7 +4228,6 @@ fn select_address_moves_cursor_to_named_session() {
                     mux: String::new(),
                     windows: 1,
                     attached: false,
-                    last_attached: 200,
                 },
                 Session {
                     source: "jup".into(),
@@ -4242,14 +4235,13 @@ fn select_address_moves_cursor_to_named_session() {
                     mux: String::new(),
                     windows: 1,
                     attached: false,
-                    last_attached: 100,
                 },
             ],
         }],
     };
     let mut state = crate::state::State::from_scan(scan);
     let mut sw = Switcher::new(&mut state);
-    // Selection starts on the most-recent session row (api). Jump to db by address.
+    // Selection starts on the first session row (api). Jump to db by address.
     assert!(sw.select_address("jup/db", &state), "moved to jup/db");
     assert_eq!(sw.terminal_view_target().target, "db");
     // Already-there → no move; unknown address → no move, selection unchanged.
@@ -4289,18 +4281,16 @@ fn column_flow_scan(sources: &[&str], name_len: usize) -> Scan {
     column_flow_scan_sized(&counts, name_len)
 }
 
-/// Sources carrying the given session counts, most recent source first, every card the
-/// same width. The counts set each host/mux RUN's height (one expanded card over the
-/// rest collapsed), which is what the column flow packs.
+/// Sources carrying the given session counts, every card the same width. The counts
+/// set each host/mux RUN's height (one expanded card over the rest collapsed), which
+/// is what the column flow packs.
 fn column_flow_scan_sized(sources: &[(&str, usize)], name_len: usize) -> Scan {
     let pad = "x".repeat(name_len.saturating_sub(2));
     let mut out: Vec<(&str, Vec<Session>)> = Vec::new();
-    let mut last = 1000i64;
     for (src, n) in sources {
         let mut sessions = Vec::new();
         for k in 0..*n {
-            sessions.push(sess(src, &format!("{src}{pad}{k}"), 1, false, last));
-            last -= 1;
+            sessions.push(sess(src, &format!("{src}{pad}{k}"), 1, false));
         }
         out.push((*src, sessions));
     }
@@ -4394,12 +4384,12 @@ fn the_portrait_band_parts_sessions_left_and_hosts_right() {
             Group {
                 source: "aa".into(),
                 err: None,
-                sessions: vec![sess("aa", "a0", 1, false, 5), sess("aa", "a1", 1, false, 4)],
+                sessions: vec![sess("aa", "a0", 1, false), sess("aa", "a1", 1, false)],
             },
             Group {
                 source: "bb".into(),
                 err: None,
-                sessions: vec![sess("bb", "b0", 1, false, 3), sess("bb", "b1", 1, false, 2)],
+                sessions: vec![sess("bb", "b0", 1, false), sess("bb", "b1", 1, false)],
             },
             Group {
                 source: "dead".into(),
@@ -4646,7 +4636,7 @@ async fn a_session_with_no_stamped_mux_takes_its_source_mux() {
     );
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess_mux("local", "fresh", "", 100)],
+        vec![sess_mux("local", "fresh", "")],
         None,
         &mut h.state,
     );
@@ -4792,7 +4782,7 @@ async fn unreachable_host_screen_names_the_other_muxes_on_the_machine() {
     let mut h = Harness::from_sources(&["prod:tmux", "prod:zellij", "local"]);
     h.sw.apply_source_result(
         "prod:zellij".into(),
-        vec![sess_mux("prod:zellij", "infer", "zellij", 100)],
+        vec![sess_mux("prod:zellij", "infer", "zellij")],
         None,
         &mut h.state,
     );
@@ -4842,7 +4832,7 @@ async fn unreachable_host_screen_separates_a_standing_failure_from_a_blip() {
 
     h.sw.apply_source_result(
         "prod".into(),
-        vec![sess("prod", "editor", 1, false, 100)],
+        vec![sess("prod", "editor", 1, false)],
         None,
         &mut h.state,
     );

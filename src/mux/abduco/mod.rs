@@ -125,9 +125,7 @@ impl Mux for Abduco {
 /// `<status> <Day>\t<YYYY-MM-DD HH:MM:SS>\t<pid>\t<name>`; the header and any banner
 /// carry no tabs and are skipped. `attached` reads the leading status char (`*` = a
 /// client attached; `+` = command terminated while unattached; ` ` = running,
-/// unattached). abduco prints human LOCAL wall-clock time, which cannot be converted
-/// to the shared epoch scale across hosts without the host's timezone, so
-/// `last_attached` is 0 (the mux does not report it).
+/// unattached).
 pub fn parse_sessions(source: &str, mux: &str, out: &str) -> Vec<Session> {
     let mut sessions = Vec::new();
     for ln in out.split('\n') {
@@ -147,7 +145,6 @@ pub fn parse_sessions(source: &str, mux: &str, out: &str) -> Vec<Session> {
             mux: mux.to_string(),
             windows: 1,
             attached: status == '*',
-            last_attached: 0,
         });
     }
     sessions
@@ -264,10 +261,6 @@ mod tests {
         assert!(!got[1].attached, "the space marker means unattached");
         assert!(got.iter().all(|s| s.source == "jup" && s.mux == "abduco"));
         assert_eq!(got[0].windows, 1);
-        assert_eq!(
-            got[0].last_attached, 0,
-            "abduco reports no comparable last_attached"
-        );
     }
 
     #[tokio::test]

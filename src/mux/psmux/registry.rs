@@ -49,7 +49,7 @@ pub(crate) fn read_psmux_registry_dir(dir: &Path) -> Vec<String> {
 
 /// Merges psmux's registry session NAMES (authoritative existence) with the
 /// `list-sessions` DETAIL rows. A `list-sessions` row wins for a session it covers
-/// (full windows/attached/last_attached); a registry name it omits is still surfaced with
+/// (full windows/attached detail); a registry name it omits is still surfaced with
 /// a minimal placeholder, so a failed/partial `list-sessions` never blanks the
 /// nav. Deduped on name (a session in both sources appears once).
 pub(crate) fn merge_psmux_sessions(
@@ -68,7 +68,6 @@ pub(crate) fn merge_psmux_sessions(
                 mux: "psmux".to_string(),
                 windows: 1,
                 attached: false,
-                last_attached: 0,
             });
         }
     }
@@ -136,7 +135,7 @@ mod tests {
     #[test]
     fn merge_psmux_sessions_prefers_detail_and_keeps_registry_only() {
         // psmux's `list-sessions` aggregates every live default-socket session in one
-        // call, so its rows carry the real detail (windows/attached/last_attached). The
+        // call, so its rows carry the real detail (windows/attached). The
         // registry (`*.port`) is the authoritative EXISTENCE set: a name present in
         // the registry but missing from the (possibly failed/partial) list-sessions
         // output is still surfaced, with minimal placeholder detail.
@@ -146,7 +145,6 @@ mod tests {
             mux: "psmux".into(),
             windows: 3,
             attached: true,
-            last_attached: 200,
         }];
         let names = vec!["editor".to_string(), "build".to_string()];
         let got = merge_psmux_sessions("local", names, detail);
@@ -172,7 +170,6 @@ mod tests {
             mux: "psmux".into(),
             windows: 1,
             attached: false,
-            last_attached: 5,
         }];
         let got = merge_psmux_sessions("local", Vec::new(), detail);
         assert_eq!(got.len(), 1);
