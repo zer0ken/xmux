@@ -353,7 +353,7 @@ impl Runtime {
             &env.ui_prefix,
         );
         let nav_width = nav_width_natural;
-        // Restore the Top-layout nav height (0 = auto ~40%); a stale value is clamped at
+        // Restore the band-layout nav height (0 = auto ~40%); a stale value is clamped at
         // render time by compute_regions, so no clamp is needed here.
         let nav_height = crate::ui::prefs::load_nav_height(&env.xmux_dir).unwrap_or(0);
         // One read of the roster for the whole construction, so every product below is

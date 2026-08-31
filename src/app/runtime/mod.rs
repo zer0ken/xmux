@@ -64,7 +64,7 @@ pub(crate) fn nav_width_min(ui_prefix: &str) -> u16 {
     ui_prefix.chars().count() as u16 + 2
 }
 
-/// The Top-layout nav height drag range. The min keeps a few nav rows; compute_regions
+/// The band-layout nav height drag range. The min keeps a few nav rows; compute_regions
 /// clamps the max down to the body so the terminal always keeps room.
 pub(crate) const NAV_HEIGHT_MIN: u16 = 3;
 pub(crate) const NAV_HEIGHT_MAX: u16 = 100;
@@ -458,9 +458,9 @@ fn display_astray(state: &crate::state::State, hosts: &crate::model::Hosts) -> b
 /// right edge (and a double-width char straddles the clip boundary). The view width
 /// is `cols - nav_width - 1` (nav + the single view border rule), except `nav_width == 0`
 /// (the nav-hidden sentinel) gives the full `cols` with no view border. The hint bar
-/// lives INSIDE the nav region, so it costs the terminal view no height in `Side`: the
-/// view gets the full `body_rows + 1`. In `Top` the terminal view is what is left below
-/// the nav band. Both clamp to at least 1.
+/// lives INSIDE the nav region, so it costs the terminal view no height in a column: the
+/// view gets the full `body_rows + 1`. In a band layout the terminal view is what is
+/// left below the nav band. Both clamp to at least 1.
 pub(crate) fn terminal_view_size(
     cols: u16,
     body_rows: u16,
@@ -1290,7 +1290,7 @@ struct Runtime {
     nav_width: u16,
     /// The nav's natural width (what prefix h/l adjusts; restored when shown again).
     nav_width_natural: u16,
-    /// The Top-layout nav height, set by dragging the horizontal view border or the resize
+    /// The band-layout nav height, set by dragging the horizontal view border or the resize
     /// keys. 0 = auto (~40% of the body). Only used in a band layout; ignored in a column.
     nav_height: u16,
     /// The side the nav is attached to this frame; the layout and every region cut
@@ -1303,7 +1303,7 @@ struct Runtime {
     /// live config apply lands; the reconcile at the next loop top applies the new value.
     nav_pos_setting: crate::ui::switcher::NavPositionSetting,
     /// The `nav_height` last applied to the PTY sizes, so the loop-top reconcile resizes the
-    /// mux terminals when the Top height changes (not only on a width change). `u16::MAX`
+    /// mux terminals when the band height changes (not only on a width change). `u16::MAX`
     /// forces the first reconcile to size them.
     applied_nav_height: u16,
     auto_hide_nav: bool,

@@ -14,7 +14,7 @@ const LAST_SESSION_FILE: &str = "last_session";
 /// with `prefix h`/`l`, so the next launch restores it instead of the default.
 const NAV_WIDTH_FILE: &str = "nav_width";
 
-/// The file under the xmux dir holding the nav height (portrait Top layout) the
+/// The file under the xmux dir holding the nav height (portrait band layout) the
 /// user last set by dragging the horizontal view border, so the next launch restores it.
 const NAV_HEIGHT_FILE: &str = "nav_height";
 
@@ -82,14 +82,14 @@ pub fn save_nav_width(xmux_dir: &Path, width: u16) {
     let _ = std::fs::write(xmux_dir.join(NAV_WIDTH_FILE), width.to_string());
 }
 
-/// Reads the persisted Top-layout tree height. `None` when absent or unparsable - the
+/// Reads the persisted band-layout tree height. `None` when absent or unparsable - the
 /// caller falls back to the auto height (~40% of the body).
 pub fn load_nav_height(xmux_dir: &Path) -> Option<u16> {
     let raw = std::fs::read_to_string(xmux_dir.join(NAV_HEIGHT_FILE)).ok()?;
     raw.trim().parse::<u16>().ok()
 }
 
-/// Persists the Top-layout tree height. Best-effort: a write failure only loses the
+/// Persists the band-layout tree height. Best-effort: a write failure only loses the
 /// next launch's height restore.
 pub fn save_nav_height(xmux_dir: &Path, height: u16) {
     let _ = std::fs::write(xmux_dir.join(NAV_HEIGHT_FILE), height.to_string());

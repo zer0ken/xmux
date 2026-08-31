@@ -183,7 +183,7 @@ impl Runtime {
         if st.dragging_view_border {
             if !ev.pressed {
                 // Button up ends the drag; persist the final size once (motion resizes live
-                // but does not write per cell). Top drags the height, Side the width.
+                // but does not write per cell). A band drags the height, a column the width.
                 st.dragging_view_border = false;
                 if top_layout {
                     crate::ui::prefs::save_nav_height(&env.xmux_dir, *nav_height);
@@ -319,7 +319,7 @@ impl Runtime {
 impl Runtime {
     /// Applies a nav-resize delta on ONE axis, gated to the layout that actually shows that
     /// axis so a key never resizes a dimension the user cannot see: `horizontal` (←/→ · h/l)
-    /// resizes the WIDTH only in Side, `!horizontal` (↑/↓) the HEIGHT only in Top; the
+    /// resizes the WIDTH only in a column, `!horizontal` (↑/↓) the HEIGHT only in a band; the
     /// perpendicular axis is a no-op. Height is seeded from the effective auto height the
     /// first time (while `nav_height == 0`) so a relative step starts from what is on screen,
     /// clamped so the terminal keeps room, and persisted; width defers to `apply_width_delta`
@@ -399,7 +399,7 @@ impl Runtime {
         // Edge case: a sequence split across reads parses as None and falls into
         // non_mouse — rare in practice; no cross-read buffering in v1.
         // The terminal region from the one shared geometry, so a click lands on exactly
-        // what was drawn in either layout (in Top the terminal sits below the nav, not
+        // what was drawn in either layout (in a band the terminal sits below the nav, not
         // to the right of it).
         let full = ratatui::layout::Rect::new(0, 0, self.cols, self.body_rows.saturating_add(1));
         let term_area = crate::ui::switcher::compute_regions(full, self.nav_size(), 1).terminal;
@@ -557,8 +557,8 @@ impl Runtime {
                         *dirty = true;
                     }
                     // Same resize + repeat-window as the nav path, so a resize started from
-                    // the terminal view chains with bare Ctrl-arrows too. Width = ←/→ (Side),
-                    // height = ↑/↓ (Top).
+                    // the terminal view chains with bare Ctrl-arrows too. Width = ←/→ (column),
+                    // height = ↑/↓ (band).
                     Action::Width(d) => {
                         if self.resize_and_repeat(true, d) {
                             *width_changed = true;

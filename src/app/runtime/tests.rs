@@ -208,7 +208,7 @@ fn terminal_view_size_zero_tree_is_full_width() {
         (80, 24)
     );
     // Shown tree: cols - nav_width - 1 (view border). The hint bar lives inside the nav
-    // column, so the terminal view keeps every row. Wide enough to STAY in Side: a row is
+    // column, so the terminal view keeps every row. Wide enough to STAY a column: a row is
     // two columns tall, so the column survives only while `w - nav - 1` beats twice the
     // rows (200 - 49 = 151 against 48).
     assert_eq!(
@@ -236,7 +236,7 @@ fn terminal_view_size_keeps_full_height_when_the_tree_is_shown() {
         crate::ui::switcher::NavSize::hidden(crate::ui::switcher::NAV_WIDTH),
     );
     assert_eq!(full, 40);
-    // Tree shown in Side: the hint bar is the NAV column's bottom row, not a full-width
+    // Tree shown in a column: the hint bar is the NAV column's bottom row, not a full-width
     // strip, so the terminal view costs nothing in height.
     // 220 wide keeps the side column at 40 rows (171 against 80); at 120 the column would
     // leave a terminal squarer than it looks, and the band would take over.
@@ -334,8 +334,8 @@ fn terminal_view_size_subtracts_tree_and_view_border() {
 #[test]
 fn terminal_view_size_clamps_to_at_least_one() {
     use crate::ui::switcher::NAV_WIDTH;
-    // A 10-col terminal can't fit the 48-col tree beside it, so the layout goes Top and the
-    // terminal keeps full width; a zero-row body still clamps the height up to 1. The
+    // A 10-col terminal can't fit the 48-col tree beside it, so the layout goes to the band
+    // and the terminal keeps full width; a zero-row body still clamps the height up to 1. The
     // invariant this guards is that neither dimension is ever 0 (degenerate PTY size).
     let (vc, vr) = terminal_view_size(10, 0, crate::ui::switcher::NavSize::visible(NAV_WIDTH));
     assert!(vc >= 1, "width never zero, got {vc}");
@@ -2539,16 +2539,16 @@ fn resize_keys_adjust_height_in_top_layout() {
     assert_eq!(rt.switcher.layout(), ViewLayout::Band, "portrait → Band");
 
     let auto = crate::ui::switcher::default_nav_height(59);
-    // Vertical axis (Ctrl+↓ = grow) resizes HEIGHT in Top; horizontal (Ctrl+→) is a no-op here.
+    // Vertical axis (Ctrl+↓ = grow) resizes HEIGHT in a band; horizontal (Ctrl+→) is a no-op here.
     assert!(
         !rt.resize_axis(true, 1),
-        "horizontal resize is a no-op in Top"
+        "horizontal resize is a no-op in a band"
     );
     assert!(rt.resize_axis(false, 1), "grow changes the height");
     assert_eq!(
         rt.nav_height,
         auto + 1,
-        "a resize key grows the Top nav height from the auto seed"
+        "a resize key grows the band nav height from the auto seed"
     );
     assert!(rt.resize_axis(false, -1), "shrink changes the height");
     assert_eq!(rt.nav_height, auto, "and shrinks it back");

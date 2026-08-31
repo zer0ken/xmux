@@ -344,9 +344,9 @@ mod tests {
 
     #[test]
     fn prefix_then_left_or_up_focuses_nav_esc_is_not_a_command() {
-        // Left/Up each name the nav (left of the terminal in Side, above it in Top),
-        // consumed whole so the replay tail is empty. A bare Esc after the prefix is
-        // NOT a prefix command: it is treated like any unrecognized key, ending the
+        // Left/Up each name the nav (left of the terminal in a column, above it in a
+        // band), consumed whole so the replay tail is empty. A bare Esc after the prefix
+        // is NOT a prefix command: it is treated like any unrecognized key, ending the
         // chord and swallowing the key (no focus switch, nothing reaches the pane).
         for seq in [&b"\x1b[D"[..], &b"\x1b[A"[..]] {
             let mut t = m();
@@ -550,7 +550,7 @@ mod tests {
             vec![Action::Width(-1)],
             "Ctrl-Left narrows"
         );
-        // Ctrl+↑/↓ resize the HEIGHT (vertical axis, Top layout); ↓ grows.
+        // Ctrl+↑/↓ resize the HEIGHT (vertical axis, band layout); ↓ grows.
         let mut t3 = m();
         t3.feed(&[0x07], NavPosition::Left);
         assert_eq!(

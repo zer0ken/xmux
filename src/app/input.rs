@@ -177,7 +177,7 @@ pub(crate) fn resolve_nav_key(
             KeyCode::Right if ctrl => Some(Action::Width(1)),
             KeyCode::Char('h') => Some(Action::Width(-1)),
             KeyCode::Char('l') => Some(Action::Width(1)),
-            // prefix Ctrl+↑/↓ resize the nav HEIGHT (the vertical axis, Top layout); ↓ grows.
+            // prefix Ctrl+↑/↓ resize the nav HEIGHT (the vertical axis, band layout); ↓ grows.
             KeyCode::Up if ctrl => Some(Action::Height(-1)),
             KeyCode::Down if ctrl => Some(Action::Height(1)),
             KeyCode::Char('t') => Some(Action::ToggleAutoHide),
@@ -319,7 +319,8 @@ mod tests {
             "prefix Right focuses mux"
         );
         // An arrow names the view it focuses, whichever way the two are stacked: the
-        // terminal is right of the nav in Side and below it in Top, so ↓ focuses it too.
+        // terminal is right of the nav in a column and below it in a band, so ↓
+        // focuses it too.
         assert_eq!(
             rt(b"\x07\x1b[B", false),
             vec![Action::FocusTerminal],
@@ -343,7 +344,7 @@ mod tests {
             vec![Action::Width(-1)],
             "prefix Ctrl-Left narrows"
         );
-        // prefix Ctrl+↑/↓ resize the HEIGHT (vertical axis); the runtime applies it only in Top.
+        // prefix Ctrl+↑/↓ resize the HEIGHT (vertical axis); the runtime applies it only in a band.
         assert_eq!(
             rt(b"\x07\x1b[1;5B", false),
             vec![Action::Height(1)],

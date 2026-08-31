@@ -55,8 +55,8 @@ impl Harness {
         Self::new_sized(scan, 140, 30)
     }
 
-    /// A harness with a specific backend size - used to exercise the portrait Top
-    /// layout (height > width), whose navigation differs from the landscape Side layout.
+    /// A harness with a specific backend size - used to exercise the portrait band
+    /// layout (height > width), whose navigation differs from the landscape column layout.
     fn new_sized(scan: Scan, w: u16, h_: u16) -> Self {
         let backend = TestBackend::new(w, h_);
         let term = Terminal::new(backend).unwrap();
@@ -1493,7 +1493,7 @@ fn hint_bar_has_status_bar_background() {
     // left to the view beneath, not painted. Key tokens carry the accent over that base.
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
-    // Wide enough that the terminal view stays landscape, so the layout is Side and the
+    // Wide enough that the terminal view stays landscape, so the layout is a column and the
     // nav column runs the full height (its last row IS the hint bar).
     let mut term = Terminal::new(TestBackend::new(140, 20)).unwrap();
     term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
@@ -3090,10 +3090,10 @@ fn the_layout_turns_over_where_the_side_terminal_stops_being_wider_than_tall() {
     use ratatui::layout::Rect;
     // The test is the aspect of the terminal AS IF the tree kept its side column: with a
     // 48-wide tree that terminal is `w - 49` columns over the window's full height. It
-    // stays Side while that is wider than tall, and turns over the moment it is not - in
+    // stays a column while that is wider than tall, and turns over the moment it is not - in
     // the proportions the user SEES, so a row counts as two columns.
     //
-    // Measuring the LIVE terminal instead would oscillate: going Top hands it the tree's
+    // Measuring the LIVE terminal instead would oscillate: going to the band hands it the tree's
     // columns back and takes the band's rows, which lands it back on the other side of
     // the same test.
     for (w, h, want) in [
@@ -3178,7 +3178,7 @@ fn hiding_the_nav_leaves_the_layout_where_it_was() {
 #[test]
 fn compute_regions_side_top_and_hidden() {
     use ratatui::layout::Rect;
-    // Landscape → Side: tree left, 1-col border, terminal right. The hint bar is the
+    // Landscape → Column: tree left, 1-col border, terminal right. The hint bar is the
     // NAV column's bottom row, so the border and the terminal keep the full height.
     let land = Rect::new(0, 0, 140, 30);
     let s = compute_regions(land, NavSize::visible(48), 1);
@@ -3275,7 +3275,7 @@ fn compute_regions_bottom_band() {
 #[tokio::test]
 async fn wheel_moves_the_selection_like_the_arrow_keys() {
     // The plain wheel and ↑/↓ share nav_vertical, so one notch lands on the same row as one
-    // arrow press - in either layout (Side siblings / Top within-host).
+    // arrow press - in either layout (column siblings / band within-host).
     let mut a = Harness::new(sample());
     a.sw.mouse_scroll(true, &a.state);
     let by_wheel = a.sw.selected;
@@ -3283,7 +3283,7 @@ async fn wheel_moves_the_selection_like_the_arrow_keys() {
     b.key(KeyCode::Down).await;
     assert_eq!(
         by_wheel, b.sw.selected,
-        "wheel down lands where ↓ does (Side)"
+        "wheel down lands where ↓ does (column)"
     );
 
     let mut c = Harness::new_sized(sample(), 60, 70);
@@ -3293,7 +3293,7 @@ async fn wheel_moves_the_selection_like_the_arrow_keys() {
     d.key(KeyCode::Down).await;
     assert_eq!(
         by_wheel_top, d.sw.selected,
-        "wheel down lands where ↓ does (Top)"
+        "wheel down lands where ↓ does (band)"
     );
 }
 
