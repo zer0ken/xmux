@@ -1036,12 +1036,8 @@ mod tests {
             .iter()
             .any(|r| addr_of(&r.reference).contains("deadhost")));
         // The hosts the filter does not name keep their fallback cards.
-        assert!(rows
-            .iter()
-            .any(|r| addr_of(&r.reference) == "local"));
-        assert!(rows
-            .iter()
-            .any(|r| addr_of(&r.reference) == "empty"));
+        assert!(rows.iter().any(|r| addr_of(&r.reference) == "local"));
+        assert!(rows.iter().any(|r| addr_of(&r.reference) == "empty"));
     }
 
     #[test]

@@ -1590,11 +1590,17 @@ bogus = "nope"
         assert_eq!(cfg.ui_prefix(), "C-g");
 
         // Explicit false: the unreachable hosts show as before.
-        let path = write_temp("[ui]\nhide-unreachable = false\n", "hideunreachable-false.toml");
+        let path = write_temp(
+            "[ui]\nhide-unreachable = false\n",
+            "hideunreachable-false.toml",
+        );
         assert!(!load(&path).unwrap().ui_hide_unreachable());
 
         // Explicit true.
-        let path = write_temp("[ui]\nhide-unreachable = true\n", "hideunreachable-true.toml");
+        let path = write_temp(
+            "[ui]\nhide-unreachable = true\n",
+            "hideunreachable-true.toml",
+        );
         assert!(load(&path).unwrap().ui_hide_unreachable());
     }
 

@@ -427,7 +427,10 @@ fn hide_unreachable_mid_run_hides_the_card_and_the_selection_lands_on_a_remainin
         "the dead never-connected host is marked unreachable"
     );
     let out = dump_screen(&mut switcher, None, 80, 24, &state);
-    assert!(!out.contains("jupiter06"), "hidden the moment it fails:\n{out}");
+    assert!(
+        !out.contains("jupiter06"),
+        "hidden the moment it fails:\n{out}"
+    );
     let t = switcher.terminal_view_target();
     assert_eq!(
         (t.source, t.target),
