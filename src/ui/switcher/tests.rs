@@ -7,6 +7,8 @@ use ratatui::Terminal;
 use std::sync::Mutex;
 use unicode_width::UnicodeWidthStr;
 
+use super::tests_support::auto_nav;
+
 // --- mock ops -----------------------------------------------------------
 
 #[derive(Default)]
@@ -53,8 +55,8 @@ impl Harness {
         Self::new_sized(scan, 140, 30)
     }
 
-    /// A harness with a specific backend size - used to exercise the portrait Top
-    /// layout (height > width), whose navigation differs from the landscape Side layout.
+    /// A harness with a specific backend size - used to exercise the portrait band
+    /// layout (height > width), whose navigation differs from the landscape column layout.
     fn new_sized(scan: Scan, w: u16, h_: u16) -> Self {
         let backend = TestBackend::new(w, h_);
         let term = Terminal::new(backend).unwrap();
@@ -153,7 +155,7 @@ impl Harness {
         let sw = &mut self.sw;
         let state = &self.state;
         self.term
-            .draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), state))
+            .draw(|f| sw.render(f, None, false, auto_nav(NAV_WIDTH, f.area()), state))
             .unwrap();
     }
 
@@ -1684,7 +1686,7 @@ fn hint_bar_has_status_bar_background() {
     // left to the view beneath, not painted. Key tokens carry the accent over that base.
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
-    // Wide enough that the terminal view stays landscape, so the layout is Side and the
+    // Wide enough that the terminal view stays landscape, so the layout is a column and the
     // nav column runs the full height (its last row IS the hint bar).
     let mut term = Terminal::new(TestBackend::new(140, 20)).unwrap();
     term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
@@ -2364,7 +2366,7 @@ async fn only_the_side_lists_section_title_trails_a_rule() {
     // standing side by side, where the rule would run into the gutter and read as a bar
     // parting the columns instead - so the band's title stands alone.
     let side = Harness::new(sample());
-    assert_eq!(side.sw.layout(), ViewLayout::Side, "landscape → Side");
+    assert_eq!(side.sw.layout(), ViewLayout::Column, "landscape → Side");
     let y = side.nav_row_of("local").expect("the section title");
     let painted = nav_line(&side, y);
     assert!(
@@ -2373,7 +2375,7 @@ async fn only_the_side_lists_section_title_trails_a_rule() {
     );
 
     let top = Harness::new_sized(sample(), 60, 70);
-    assert_eq!(top.sw.layout(), ViewLayout::Top, "portrait → Top");
+    assert_eq!(top.sw.layout(), ViewLayout::Band, "portrait → Top");
     let y = row_of(top.buf(), "local", top.buf().area.width).expect("the section title");
     let painted = band_line(&top, y);
     assert!(
@@ -2388,7 +2390,7 @@ async fn the_band_connects_a_session_card_to_the_title_that_owns_it() {
     // does not say which title owns it - a connector down the card's left does. The
     // title itself carries none: it is what the connector points at.
     let h = Harness::new_sized(sample(), 60, 70);
-    assert_eq!(h.sw.layout(), ViewLayout::Top, "portrait → Top");
+    assert_eq!(h.sw.layout(), ViewLayout::Band, "portrait → Top");
     let w = h.buf().area.width;
     let title = row_of(h.buf(), "local", w).expect("the section title");
     assert!(
@@ -2411,7 +2413,7 @@ async fn a_split_sections_continuation_columns_carry_no_connector() {
     // so it stays in that title's own column rather than running under a repeat of it.
     // Ten sessions in a three-row band: one section across five columns.
     let h = Harness::new_sized(scan_with_sessions(10), 60, 12);
-    assert_eq!(h.sw.layout(), ViewLayout::Top, "portrait → Top");
+    assert_eq!(h.sw.layout(), ViewLayout::Band, "portrait → Top");
     let w = h.buf().area.width;
     for name in ["s0", "s1"] {
         let painted = band_line(&h, row_of(h.buf(), name, w).expect(name));
@@ -2452,7 +2454,7 @@ async fn the_selections_inversion_stops_at_the_card_and_spares_the_connector() {
     // invert with it and notch the line at exactly the row the eye is on. It sits in the
     // strip left of the rect instead, and the line runs past the selected card unbroken.
     let h = Harness::new_sized(sample(), 60, 70);
-    assert_eq!(h.sw.layout(), ViewLayout::Top, "portrait → Top");
+    assert_eq!(h.sw.layout(), ViewLayout::Band, "portrait → Top");
     let sel = h.sw.selected;
     let (_, rect) =
         h.sw.nav_cells
@@ -2488,7 +2490,7 @@ async fn a_split_sections_continuation_columns_name_nothing() {
     // says the continuation is the same section. A row spent naming it again is a row of
     // cards lost, which is the whole reason the band flows into columns at all.
     let h = Harness::new_sized(scan_with_sessions(10), 60, 12);
-    assert_eq!(h.sw.layout(), ViewLayout::Top, "portrait → Top");
+    assert_eq!(h.sw.layout(), ViewLayout::Band, "portrait → Top");
     let band = h.sw.nav_inner;
     let painted: String = (band.y..band.y + band.height)
         .map(|y| band_line(&h, y))
@@ -2544,7 +2546,7 @@ async fn a_column_is_never_narrower_than_the_title_naming_it() {
     );
     h.sw.rebuild(&mut h.state);
     h.draw();
-    assert_eq!(h.sw.layout(), ViewLayout::Top, "portrait → Top");
+    assert_eq!(h.sw.layout(), ViewLayout::Band, "portrait → Top");
     let band = h.sw.nav_inner;
     let painted: String = (band.y..band.y + band.height)
         .map(|y| band_line(&h, y))
@@ -3281,18 +3283,18 @@ fn the_layout_turns_over_where_the_side_terminal_stops_being_wider_than_tall() {
     use ratatui::layout::Rect;
     // The test is the aspect of the terminal AS IF the tree kept its side column: with a
     // 48-wide tree that terminal is `w - 49` columns over the window's full height. It
-    // stays Side while that is wider than tall, and turns over the moment it is not - in
+    // stays a column while that is wider than tall, and turns over the moment it is not - in
     // the proportions the user SEES, so a row counts as two columns.
     //
-    // Measuring the LIVE terminal instead would oscillate: going Top hands it the tree's
+    // Measuring the LIVE terminal instead would oscillate: going to the band hands it the tree's
     // columns back and takes the band's rows, which lands it back on the other side of
     // the same test.
     for (w, h, want) in [
-        (150u16, 50u16, ViewLayout::Side), // 101 cells over 50 rows = 101 x 100: wider
-        (149, 50, ViewLayout::Top),        // 100 x 100: square, so the band takes over
-        (140, 50, ViewLayout::Top),        // 91 x 100: taller than wide
-        (74, 12, ViewLayout::Side),        // 25 x 24: one column wider than tall
-        (73, 12, ViewLayout::Top),         // 24 x 24: square, on a small window too
+        (150u16, 50u16, ViewLayout::Column), // 101 cells over 50 rows = 101 x 100: wider
+        (149, 50, ViewLayout::Band),         // 100 x 100: square, so the band takes over
+        (140, 50, ViewLayout::Band),         // 91 x 100: taller than wide
+        (74, 12, ViewLayout::Column),        // 25 x 24: one column wider than tall
+        (73, 12, ViewLayout::Band),          // 24 x 24: square, on a small window too
     ] {
         assert_eq!(
             view_layout(Rect::new(0, 0, w, h), 48),
@@ -3310,16 +3312,24 @@ fn the_layout_turns_over_where_the_side_terminal_stops_being_wider_than_tall() {
 fn hiding_the_nav_leaves_the_layout_where_it_was() {
     use ratatui::layout::Rect;
     // Auto-hide takes the nav's width away for as long as the terminal holds focus. The
-    // layout must not move with it: it is measured from the width the user SET, which
-    // travels with the hidden nav, so the resize keys keep driving the same axis and the
-    // nav comes back the shape it left.
+    // layout must not move with it: it follows the attachment position, which the hidden
+    // nav carries unchanged, so the resize keys keep driving the same axis and the nav
+    // comes back the shape it left.
     let portrait = Rect::new(0, 0, 100, 34); // a 31-wide nav leaves 68 over 34 rows: square
-    let shown = compute_regions(portrait, NavSize::visible(31), 1);
-    let gone = compute_regions(portrait, NavSize::hidden(31), 1);
-    assert_eq!(shown.layout, ViewLayout::Top);
+    let shown = compute_regions(
+        portrait,
+        NavSize::visible(31).with_position(NavPosition::Top),
+        1,
+    );
+    let gone = compute_regions(
+        portrait,
+        NavSize::hidden(31).with_position(NavPosition::Top),
+        1,
+    );
+    assert_eq!(shown.layout, ViewLayout::Band);
     assert_eq!(
         gone.layout,
-        ViewLayout::Top,
+        ViewLayout::Band,
         "hiding the nav is not a reflow"
     );
     assert_eq!(
@@ -3327,41 +3337,69 @@ fn hiding_the_nav_leaves_the_layout_where_it_was() {
         "and the terminal owns the whole area"
     );
     assert_eq!(gone.tree, Rect::default());
-    // The same holds the other way round: a wide window stays Side while hidden.
+    // The same holds the other way round: a wide window stays a column while hidden.
     let landscape = Rect::new(0, 0, 260, 40);
     assert_eq!(
         compute_regions(landscape, NavSize::hidden(31), 1).layout,
-        ViewLayout::Side
+        ViewLayout::Column
     );
     assert_eq!(
         compute_regions(landscape, NavSize::visible(31), 1).layout,
-        ViewLayout::Side
+        ViewLayout::Column
+    );
+    // And on the mirrored column: the aspect cannot move a pinned placement either.
+    assert_eq!(
+        compute_regions(
+            landscape,
+            NavSize::visible(31).with_position(NavPosition::Right),
+            1
+        )
+        .layout,
+        ViewLayout::Column
+    );
+    assert_eq!(
+        compute_regions(
+            landscape,
+            NavSize::hidden(31).with_position(NavPosition::Right),
+            1
+        )
+        .layout,
+        ViewLayout::Column
     );
 }
 
 #[test]
 fn compute_regions_side_top_and_hidden() {
     use ratatui::layout::Rect;
-    // Landscape → Side: tree left, 1-col border, terminal right. The hint bar is the
+    // Landscape → Column: tree left, 1-col border, terminal right. The hint bar is the
     // NAV column's bottom row, so the border and the terminal keep the full height.
     let land = Rect::new(0, 0, 140, 30);
     let s = compute_regions(land, NavSize::visible(48), 1);
-    assert_eq!(s.layout, ViewLayout::Side);
+    assert_eq!(s.layout, ViewLayout::Column);
     assert_eq!(s.tree, Rect::new(0, 0, 48, 29));
     assert_eq!(s.view_border, Rect::new(48, 0, 1, 30));
     assert_eq!(s.terminal, Rect::new(49, 0, 91, 30));
     assert_eq!(s.hint_bar, Rect::new(0, 29, 48, 1));
-    // A landscape SCREEN can still be Top when the side tree would squeeze the terminal
-    // view into a portrait shape: 100 wide, tree 48 → terminal view ~51 wide vs 80 tall, so
-    // Top wins even though the screen itself is wider than tall.
-    let squeezed = compute_regions(Rect::new(0, 0, 140, 60), NavSize::visible(48), 1);
-    assert_eq!(squeezed.layout, ViewLayout::Top);
-    // Portrait → Top: tree band on top, 1-row border, terminal below. The hint bar is
+    // A landscape SCREEN can still carry the band when the side tree would squeeze the
+    // terminal view into a portrait shape; the pinned Top states that placement directly:
+    // 100 wide, tree 48 → terminal view ~51 wide vs 80 tall, so a band beats a column
+    // even though the screen itself is wider than tall.
+    let squeezed = compute_regions(
+        Rect::new(0, 0, 140, 60),
+        NavSize::visible(48).with_position(NavPosition::Top),
+        1,
+    );
+    assert_eq!(squeezed.layout, ViewLayout::Band);
+    // Portrait → band on top: tree band on top, 1-row border, terminal below. The hint bar is
     // the BAND's bottom row, so it sits directly above the view border, not at the
     // screen's bottom edge.
     let port = Rect::new(0, 0, 40, 100);
-    let t = compute_regions(port, NavSize::visible(48), 1);
-    assert_eq!(t.layout, ViewLayout::Top);
+    let t = compute_regions(
+        port,
+        NavSize::visible(48).with_position(NavPosition::Top),
+        1,
+    );
+    assert_eq!(t.layout, ViewLayout::Band);
     assert_eq!(t.tree.y, 0);
     assert_eq!(t.tree.width, 40);
     let band_h = t.tree.height + t.hint_bar.height;
@@ -3377,10 +3415,60 @@ fn compute_regions_side_top_and_hidden() {
     assert_eq!(hidden.view_border, Rect::default());
 }
 
+#[test]
+fn compute_regions_right_column() {
+    use ratatui::layout::Rect;
+    // Pinned right: terminal left, 1-col border, tree right. The nav region's inner
+    // layout is the left column's unchanged - the mirror flips only what sits on which
+    // side of the view border - so the hint bar is still the nav region's bottom row.
+    let land = Rect::new(0, 0, 140, 30);
+    let s = compute_regions(
+        land,
+        NavSize::visible(48).with_position(NavPosition::Right),
+        1,
+    );
+    assert_eq!(s.layout, ViewLayout::Column);
+    assert_eq!(s.terminal, Rect::new(0, 0, 91, 30));
+    assert_eq!(s.view_border, Rect::new(91, 0, 1, 30));
+    assert_eq!(s.tree, Rect::new(92, 0, 48, 29));
+    assert_eq!(s.hint_bar, Rect::new(92, 29, 48, 1));
+    // The hidden sentinel keeps the position's shape: the terminal owns the whole area,
+    // the tree/border/hint bar default, and the layout stays the pinned column.
+    let gone = compute_regions(
+        land,
+        NavSize::hidden(48).with_position(NavPosition::Right),
+        1,
+    );
+    assert_eq!(gone.terminal, land);
+    assert_eq!(gone.layout, ViewLayout::Column);
+    assert_eq!(gone.tree, Rect::default());
+    assert_eq!(gone.view_border, Rect::default());
+    assert_eq!(gone.hint_bar, Rect::default());
+}
+
+#[test]
+fn compute_regions_bottom_band() {
+    use ratatui::layout::Rect;
+    // Pinned bottom: terminal above, 1-row border, tree band below. The hint bar is the
+    // bottom row of the SCREEN - the status line stays the nav region's lowest row in
+    // every placement - not the row adjacent to the view border.
+    let port = Rect::new(0, 0, 40, 100);
+    let b = compute_regions(
+        port,
+        NavSize::visible(48).with_position(NavPosition::Bottom),
+        1,
+    );
+    assert_eq!(b.layout, ViewLayout::Band);
+    assert_eq!(b.terminal, Rect::new(0, 0, 40, 59));
+    assert_eq!(b.view_border, Rect::new(0, 59, 40, 1));
+    assert_eq!(b.tree, Rect::new(0, 60, 40, 39));
+    assert_eq!(b.hint_bar, Rect::new(0, 99, 40, 1));
+}
+
 #[tokio::test]
 async fn wheel_moves_the_selection_like_the_arrow_keys() {
     // The plain wheel and ↑/↓ share nav_vertical, so one notch lands on the same row as one
-    // arrow press - in either layout (Side siblings / Top within-host).
+    // arrow press - in either layout (column siblings / band within-host).
     let mut a = Harness::new(sample());
     a.sw.mouse_scroll(true, &a.state);
     let by_wheel = a.sw.selected;
@@ -3388,7 +3476,7 @@ async fn wheel_moves_the_selection_like_the_arrow_keys() {
     b.key(KeyCode::Down).await;
     assert_eq!(
         by_wheel, b.sw.selected,
-        "wheel down lands where ↓ does (Side)"
+        "wheel down lands where ↓ does (column)"
     );
 
     let mut c = Harness::new_sized(sample(), 60, 70);
@@ -3398,7 +3486,7 @@ async fn wheel_moves_the_selection_like_the_arrow_keys() {
     d.key(KeyCode::Down).await;
     assert_eq!(
         by_wheel_top, d.sw.selected,
-        "wheel down lands where ↓ does (Top)"
+        "wheel down lands where ↓ does (band)"
     );
 }
 
@@ -4516,7 +4604,10 @@ fn help_lines_reflects_configured_prefix() {
     // The focus-section rows must show the active prefix, not a hardcoded "C-g".
     let mut state = crate::state::State::default();
     state.chrome.set_ui_prefix("C-Space".into());
-    let (_title, lines) = modal::help_lines(&state.chrome.ui_prefix);
+    let (_title, lines) = modal::help_lines(
+        &state.chrome.ui_prefix,
+        crate::ui::switcher::NavPosition::Left,
+    );
     let text: String = lines
         .iter()
         .map(|l| l.to_string())
@@ -4533,7 +4624,10 @@ fn help_lines_reflects_configured_prefix() {
 
     // Default prefix (no setter) must still show C-g.
     let state_default = crate::state::State::default();
-    let (_title, lines_default) = modal::help_lines(&state_default.chrome.ui_prefix);
+    let (_title, lines_default) = modal::help_lines(
+        &state_default.chrome.ui_prefix,
+        crate::ui::switcher::NavPosition::Left,
+    );
     let text_default: String = lines_default
         .iter()
         .map(|l| l.to_string())
@@ -4635,9 +4729,9 @@ fn portrait(scan: Scan, w: u16, h: u16) -> (Switcher, Terminal<TestBackend>) {
     let mut state = crate::state::State::from_scan(scan);
     let mut sw = Switcher::new(&mut state);
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
+    term.draw(|f| sw.render(f, None, false, auto_nav(NAV_WIDTH, f.area()), &state))
         .unwrap();
-    assert_eq!(sw.layout, ViewLayout::Top, "the backend must be portrait");
+    assert_eq!(sw.layout, ViewLayout::Band, "the backend must be portrait");
     (sw, term)
 }
 
@@ -4842,7 +4936,7 @@ fn the_hidden_columns_are_counted_on_the_status_row() {
     ));
     let mut sw = Switcher::new(&mut state);
     sw.move_to(-1, &state);
-    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
+    term.draw(|f| sw.render(f, None, false, auto_nav(NAV_WIDTH, f.area()), &state))
         .unwrap();
     let at_right = row(&term);
     assert!(
@@ -4879,7 +4973,7 @@ fn the_portrait_status_line_is_a_label_until_the_prefix_is_armed() {
     let mut state = crate::state::State::from_scan(column_flow_scan(&["aa", "bb", "cc"], 2));
     let mut sw = Switcher::new(&mut state);
     state.chrome.set_armed(true);
-    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
+    term.draw(|f| sw.render(f, None, false, auto_nav(NAV_WIDTH, f.area()), &state))
         .unwrap();
     let buf = term.backend().buffer();
     let armed_y = bar_y; // it widens in place: the band's own row, the window's full width
@@ -4900,7 +4994,7 @@ fn the_side_lists_scrollbar_column_is_outside_every_card() {
     let mut term = Terminal::new(TestBackend::new(140, 8)).unwrap();
     term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
-    assert_eq!(sw.layout, ViewLayout::Side);
+    assert_eq!(sw.layout, ViewLayout::Column);
     let buf = term.backend().buffer();
     let bar_x = NAV_WIDTH - 1;
     let col: String = (0..buf.area.height - 1)

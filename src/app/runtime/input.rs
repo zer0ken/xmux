@@ -13,7 +13,7 @@ impl Runtime {
         &mut self,
         bytes: &[u8],
         width_changed: &mut bool,
-    ) -> (bool, bool, i32, i32, bool) {
+    ) -> (bool, bool, i32, i32, bool, bool) {
         // Split-borrow the world state into the loose names the body uses (a nav read
         // touches most of it: decoder, switcher/state, host orchestration, width prefs).
         let Self {
@@ -27,6 +27,7 @@ impl Runtime {
             ops,
             op_tx,
             nav_width_natural,
+            nav_position,
             auto_hide_nav,
             cols,
             body_rows: rows,
@@ -42,6 +43,7 @@ impl Runtime {
         let mut width_delta = 0i32;
         let mut height_delta = 0i32;
         let mut toggle_auto_hide = false;
+        let mut cycle_position = false;
         let mut key_cmds: Vec<crate::model::Command> = Vec::new();
         for key in nav_decoder.feed(bytes) {
             // Re-query per key: opening a modal popup (via a NavKey applied below) flips
@@ -50,7 +52,7 @@ impl Runtime {
             // help modal and the inline input both swallow prefix/Enter, so `prefix q`
             // can't quit and Enter can't focus the terminal while one is on screen.
             let is_inputting = state.is_modal_popup_open();
-            match resolve_nav_key(key, nav_armed, prefix, is_inputting) {
+            match resolve_nav_key(key, nav_armed, prefix, is_inputting, *nav_position) {
                 // A committed input/kill confirm folds through State::apply, which returns
                 // its Commands; collect them and dispatch the whole batch below.
                 Some(Action::NavKey(k)) => key_cmds.extend(switcher.handle_key(k, state)),
@@ -59,6 +61,7 @@ impl Runtime {
                 Some(Action::Width(d)) => width_delta = d,
                 Some(Action::Height(d)) => height_delta = d,
                 Some(Action::ToggleAutoHide) => toggle_auto_hide = true,
+                Some(Action::CycleNavPosition) => cycle_position = true,
                 Some(Action::ShowHelp) => switcher.toggle_help(state),
                 // resolve_nav_key never emits the mux-only or terminal-only variants
                 // (Forward/FocusNav); None = armed/consumed.
@@ -90,6 +93,7 @@ impl Runtime {
             width_delta,
             height_delta,
             toggle_auto_hide,
+            cycle_position,
         )
     }
 }
@@ -123,6 +127,7 @@ impl Runtime {
             hosts,
             nav_width_natural,
             nav_height,
+            nav_position,
             cols,
             body_rows,
             nav_width,
@@ -157,8 +162,8 @@ impl Runtime {
         let col0 = ev.col.saturating_sub(1); // 1-based SGR → 0-based screen col
         let row0 = ev.row.saturating_sub(1);
         // The view border rect from the one shared geometry, so the grab / hover works in
-        // either layout: a vertical rule in Side, a horizontal rule in Top. The drag then
-        // resizes the nav WIDTH (Side, by column) or HEIGHT (Top, by row).
+        // any placement: a vertical rule in a column, a horizontal rule in a band. The
+        // drag then resizes the nav WIDTH (column, by column) or HEIGHT (band, by row).
         let full = ratatui::layout::Rect::new(0, 0, cols, body_rows.saturating_add(1));
         let regions = crate::ui::switcher::compute_regions(
             full,
@@ -166,6 +171,7 @@ impl Runtime {
                 natural: *nav_width_natural,
                 width: nav_width,
                 height: *nav_height,
+                position: *nav_position,
             },
             1,
         );
@@ -173,11 +179,11 @@ impl Runtime {
             && regions
                 .view_border
                 .contains(ratatui::layout::Position { x: col0, y: row0 });
-        let top_layout = regions.layout == crate::ui::switcher::ViewLayout::Top;
+        let top_layout = regions.layout == crate::ui::switcher::ViewLayout::Band;
         if st.dragging_view_border {
             if !ev.pressed {
                 // Button up ends the drag; persist the final size once (motion resizes live
-                // but does not write per cell). Top drags the height, Side the width.
+                // but does not write per cell). A band drags the height, a column the width.
                 st.dragging_view_border = false;
                 if top_layout {
                     crate::ui::prefs::save_nav_height(&env.xmux_dir, *nav_height);
@@ -185,14 +191,27 @@ impl Runtime {
                     crate::ui::prefs::save_nav_width(&env.xmux_dir, *nav_width_natural);
                 }
             } else if !is_wheel {
+                // The resize KEYS keep the nav's own semantics whatever the placement (h
+                // narrows, l widens); the DRAG mirrors its math per side: a band drags the
+                // height (from the top edge, or the bottom edge when pinned there), a
+                // column the width (from the left edge, or the right one).
                 if top_layout {
-                    let target = view_border_drag_height(ev.row);
+                    let target = view_border_drag_height(
+                        ev.row,
+                        full.height,
+                        *nav_position == crate::ui::switcher::NavPosition::Bottom,
+                    );
                     if target != *nav_height {
                         *nav_height = target;
                         dirty = true;
                     }
                 } else {
-                    let target = view_border_drag_width(ev.col, &env.ui_prefix);
+                    let target = view_border_drag_width(
+                        ev.col,
+                        &env.ui_prefix,
+                        full.width,
+                        *nav_position == crate::ui::switcher::NavPosition::Right,
+                    );
                     if target != *nav_width_natural {
                         *nav_width_natural = target;
                         dirty = true;
@@ -300,13 +319,13 @@ impl Runtime {
 impl Runtime {
     /// Applies a nav-resize delta on ONE axis, gated to the layout that actually shows that
     /// axis so a key never resizes a dimension the user cannot see: `horizontal` (←/→ · h/l)
-    /// resizes the WIDTH only in Side, `!horizontal` (↑/↓) the HEIGHT only in Top; the
+    /// resizes the WIDTH only in a column, `!horizontal` (↑/↓) the HEIGHT only in a band; the
     /// perpendicular axis is a no-op. Height is seeded from the effective auto height the
     /// first time (while `nav_height == 0`) so a relative step starts from what is on screen,
     /// clamped so the terminal keeps room, and persisted; width defers to `apply_width_delta`
     /// (the caller schedules the debounced persist). Returns whether the size changed.
     pub(super) fn resize_axis(&mut self, horizontal: bool, delta: i32) -> bool {
-        let top = self.switcher.layout() == crate::ui::switcher::ViewLayout::Top;
+        let top = self.switcher.layout() == crate::ui::switcher::ViewLayout::Band;
         match (horizontal, top) {
             (true, false) => {
                 apply_width_delta(delta, &mut self.nav_width_natural, &self.env.ui_prefix)
@@ -380,7 +399,7 @@ impl Runtime {
         // Edge case: a sequence split across reads parses as None and falls into
         // non_mouse — rare in practice; no cross-read buffering in v1.
         // The terminal region from the one shared geometry, so a click lands on exactly
-        // what was drawn in either layout (in Top the terminal sits below the nav, not
+        // what was drawn in either layout (in a band the terminal sits below the nav, not
         // to the right of it).
         let full = ratatui::layout::Rect::new(0, 0, self.cols, self.body_rows.saturating_add(1));
         let term_area = crate::ui::switcher::compute_regions(full, self.nav_size(), 1).terminal;
@@ -495,7 +514,7 @@ impl Runtime {
             // from EITHER view owns its keys here; the resolver gating in handle_nav_bytes
             // swallows everything but the modal's own keys, so a modal never emits
             // FocusTerminal/quit and the focus toggles below never fire mid-modal.
-            let (ft, q, wd, hd, th) = self.handle_nav_bytes(&non_mouse, width_changed);
+            let (ft, q, wd, hd, th, cp) = self.handle_nav_bytes(&non_mouse, width_changed);
             *focus_terminal = ft;
             *quit = q;
             // A prefix-driven resize: width (←/→ · h/l) or height (↑/↓); each applies only in
@@ -509,10 +528,18 @@ impl Runtime {
                 toggle_auto_hide(&mut self.auto_hide_nav, &self.env.xmux_dir);
                 *dirty = true;
             }
+            if cp {
+                cycle_nav_position(
+                    &mut self.nav_position_pinned,
+                    self.nav_position,
+                    &self.env.xmux_dir,
+                );
+                *dirty = true;
+            }
         } else if !consumed_by_repeat {
             // TERMINAL focus: forward raw bytes to the selected session's PTY;
             // TermInput intercepts the prefix (→ nav / quit / help / resize / literal).
-            for action in self.term_input.feed(&non_mouse) {
+            for action in self.term_input.feed(&non_mouse, self.nav_position) {
                 match action {
                     // Forward keystrokes to the VISIBLE session (`displayed`), not the
                     // selection: until the new session is ready the prior one is on screen,
@@ -530,8 +557,8 @@ impl Runtime {
                         *dirty = true;
                     }
                     // Same resize + repeat-window as the nav path, so a resize started from
-                    // the terminal view chains with bare Ctrl-arrows too. Width = ←/→ (Side),
-                    // height = ↑/↓ (Top).
+                    // the terminal view chains with bare Ctrl-arrows too. Width = ←/→ (column),
+                    // height = ↑/↓ (band).
                     Action::Width(d) => {
                         if self.resize_and_repeat(true, d) {
                             *width_changed = true;
@@ -544,6 +571,14 @@ impl Runtime {
                     }
                     Action::ToggleAutoHide => {
                         toggle_auto_hide(&mut self.auto_hide_nav, &self.env.xmux_dir);
+                        *dirty = true;
+                    }
+                    Action::CycleNavPosition => {
+                        cycle_nav_position(
+                            &mut self.nav_position_pinned,
+                            self.nav_position,
+                            &self.env.xmux_dir,
+                        );
                         *dirty = true;
                     }
                     // prefix n/r reach here from terminal focus: run them through the
@@ -603,7 +638,7 @@ impl Runtime {
             self.state
                 .apply(crate::model::Action::Focus(crate::model::FocusTarget::Nav));
             if !nav_replay.is_empty() {
-                let (ft, q, wd, hd, th) = self.handle_nav_bytes(nav_replay, width_changed);
+                let (ft, q, wd, hd, th, cp) = self.handle_nav_bytes(nav_replay, width_changed);
                 if ft {
                     // The replayed bytes switch focus back to the terminal: clear the
                     // nav-side latches the replay may have armed, same as the direct
@@ -622,6 +657,14 @@ impl Runtime {
                 }
                 if th {
                     toggle_auto_hide(&mut self.auto_hide_nav, &self.env.xmux_dir);
+                    *dirty = true;
+                }
+                if cp {
+                    cycle_nav_position(
+                        &mut self.nav_position_pinned,
+                        self.nav_position,
+                        &self.env.xmux_dir,
+                    );
                     *dirty = true;
                 }
             }

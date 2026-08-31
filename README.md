@@ -148,6 +148,10 @@ theme = "auto-dark"                  # built-in ANSI theme: "auto-dark" (default
 prefix = "C-g"                        # xmux's prefix (e.g. C-g, C-Space, C-b)
 auto-hide-nav = false                 # initial auto-hide-nav state
 hide-unreachable = true               # hide hosts no scan has reached (the filter names one to show its card)
+auto-nav-position = true              # nav follows the wide/narrow placement judgment
+wide-nav-position = "left"            # nav placement when the terminal stays wider
+narrow-nav-position = "top"           # nav placement when it does not
+# force-nav-position = "right"        # with auto-nav-position = false: pin this side
 view-active-border-style = "green"    # focused view-border colour
 hint-bar-style = "bg=blue,fg=white"   # hint bar colour (tmux status-style)
 primary = "brightwhite"               # per-role colour overrides: primary, secondary,
@@ -164,9 +168,16 @@ selection-style, hint-bar-style, view-border styles) are watched and re-applied 
 when `config.toml` changes - no restart needed.
 Host/roster edits still need a `prefix r` rescan.
 
+The nav rides on one of the four sides of the terminal view (a left or right column, a top
+or bottom band); the `[ui]` keys above pick the default. `prefix p` moves the nav one side
+clockwise (left → top → right → bottom → automatic) and remembers the choice in
+`~/.xmux/nav_position`, which wins over these settings until the key cycles back to
+automatic.
+
 Hosts come from `~/.ssh/config` first; the config file augments that discovery,
 never replaces it. Persistent state (last selected session, the live
-auto-hide-nav toggle, logs, and control sockets) lives under `~/.xmux/`.
+auto-hide-nav toggle, the pinned nav position, logs, and control sockets) lives under
+`~/.xmux/`.
 
 ## Control socket
 
