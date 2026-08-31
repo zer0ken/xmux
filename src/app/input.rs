@@ -154,6 +154,7 @@ pub(crate) fn resolve_nav_key(
     armed: &mut bool,
     prefix: u8,
     is_inputting: bool,
+    nav_position: crate::ui::switcher::NavPosition,
 ) -> Option<Action> {
     // The prefix key is the configured control byte. A terminal reports no key-up, so
     // this is the only form it ever arrives in.
@@ -181,15 +182,21 @@ pub(crate) fn resolve_nav_key(
             KeyCode::Down if ctrl => Some(Action::Height(1)),
             KeyCode::Char('t') => Some(Action::ToggleAutoHide),
             KeyCode::Char('?') => Some(Action::ShowHelp),
-            // An arrow points AT the view it focuses, in either layout: the terminal is
-            // right of the nav in Side and below it in Top, so prefix → and prefix ↓ both
-            // focus the terminal, and prefix ← / prefix ↑ both name the nav, which already
-            // has focus here, so they resolve to nothing. prefix Tab
-            // cycles, mirroring the terminal side's prefix Tab → nav. The byte decoder
-            // yields Char('\t') for Tab, never KeyCode::Tab, so match both.
-            KeyCode::Right | KeyCode::Down | KeyCode::Tab | KeyCode::Char('\t') => {
+            // The arrow PAIR facing the terminal's side names the terminal: with the nav
+            // on the left or above, prefix → and prefix ↓ both focus the terminal; with
+            // the nav on the right or below the pair flips and ←/↑ name it. The other
+            // pair names the nav, which already has focus here, so it resolves to
+            // nothing. prefix Tab cycles regardless, mirroring the terminal side's
+            // prefix Tab → nav. The byte decoder yields Char('\t') for Tab, never
+            // KeyCode::Tab, so match both.
+            KeyCode::Tab | KeyCode::Char('\t') => Some(Action::FocusTerminal),
+            KeyCode::Right | KeyCode::Down if nav_position.forward_arrows_face_terminal() => {
                 Some(Action::FocusTerminal)
             }
+            KeyCode::Left | KeyCode::Up if !nav_position.forward_arrows_face_terminal() => {
+                Some(Action::FocusTerminal)
+            }
+            KeyCode::Right | KeyCode::Down | KeyCode::Left | KeyCode::Up => None,
             // Tier A: the state-changing nav actions are prefix-gated. The prefix arms
             // them; they then resolve to the nav executor via the existing NavKey path.
             // A digit joins them: `prefix <digit>` opens the card-jump popup seeded with
@@ -255,13 +262,22 @@ mod tests {
 
     // --- resolve_nav_key: pure NAV-focus key resolution -------------------
     /// Resolve one read at the default prefix (C-g = 0x07), fresh decoder/armed,
-    /// folding the per-key resolver over the decoded keys.
+    /// folding the per-key resolver over the decoded keys. The default placement
+    /// (Left) unless the test states otherwise.
     fn rt(bytes: &[u8], is_inputting: bool) -> Vec<Action> {
+        rt_at(bytes, is_inputting, crate::ui::switcher::NavPosition::Left)
+    }
+
+    fn rt_at(
+        bytes: &[u8],
+        is_inputting: bool,
+        nav_position: crate::ui::switcher::NavPosition,
+    ) -> Vec<Action> {
         let mut dec = crate::display::decode::KeyDecoder::new();
         let mut armed = false;
         dec.feed(bytes)
             .into_iter()
-            .filter_map(|k| resolve_nav_key(k, &mut armed, 0x07, is_inputting))
+            .filter_map(|k| resolve_nav_key(k, &mut armed, 0x07, is_inputting, nav_position))
             .collect()
     }
 
@@ -336,6 +352,62 @@ mod tests {
             rt(b"\x07\x1b[1;5A", false),
             vec![Action::Height(-1)],
             "prefix Ctrl-Up shrinks height"
+        );
+    }
+
+    #[test]
+    fn focus_arrows_follow_the_nav_placement_as_a_pair() {
+        use crate::ui::switcher::NavPosition;
+        // Left (the default, today's behavior): →/↓ name the terminal, ←/↑ the nav.
+        assert_eq!(
+            rt_at(b"\x07\x1b[C", false, NavPosition::Left),
+            vec![Action::FocusTerminal]
+        );
+        assert_eq!(
+            rt_at(b"\x07\x1b[B", false, NavPosition::Left),
+            vec![Action::FocusTerminal]
+        );
+        for seq in [b"\x07\x1b[D" as &[u8], b"\x07\x1b[A"] {
+            assert_eq!(
+                rt_at(seq, false, NavPosition::Left),
+                Vec::<Action>::new(),
+                "the nav-side pair is a no-op under nav focus"
+            );
+        }
+        // Top: the terminal is below, so ↓ still names it and ↑ the nav.
+        assert_eq!(
+            rt_at(b"\x07\x1b[B", false, NavPosition::Top),
+            vec![Action::FocusTerminal]
+        );
+        assert_eq!(
+            rt_at(b"\x07\x1b[A", false, NavPosition::Top),
+            Vec::<Action>::new()
+        );
+        // Right (the mirror): the whole pair flips - ←/↑ now name the terminal and
+        // →/↓ the nav (a no-op here).
+        assert_eq!(
+            rt_at(b"\x07\x1b[D", false, NavPosition::Right),
+            vec![Action::FocusTerminal]
+        );
+        assert_eq!(
+            rt_at(b"\x07\x1b[A", false, NavPosition::Right),
+            vec![Action::FocusTerminal]
+        );
+        for seq in [b"\x07\x1b[C" as &[u8], b"\x07\x1b[B"] {
+            assert_eq!(
+                rt_at(seq, false, NavPosition::Right),
+                Vec::<Action>::new(),
+                "the flipped nav-side pair is a no-op under nav focus"
+            );
+        }
+        // Bottom: the terminal is above, so ↑ names it and ↓ the nav.
+        assert_eq!(
+            rt_at(b"\x07\x1b[A", false, NavPosition::Bottom),
+            vec![Action::FocusTerminal]
+        );
+        assert_eq!(
+            rt_at(b"\x07\x1b[B", false, NavPosition::Bottom),
+            Vec::<Action>::new()
         );
     }
 
@@ -510,7 +582,15 @@ mod tests {
         let r1: Vec<Action> = dec
             .feed(b"\x07")
             .into_iter()
-            .filter_map(|k| resolve_nav_key(k, &mut armed, 0x07, false))
+            .filter_map(|k| {
+                resolve_nav_key(
+                    k,
+                    &mut armed,
+                    0x07,
+                    false,
+                    crate::ui::switcher::NavPosition::Left,
+                )
+            })
             .collect();
         assert_eq!(r1, Vec::<Action>::new());
         assert!(
@@ -520,7 +600,15 @@ mod tests {
         let r2: Vec<Action> = dec
             .feed(b"q")
             .into_iter()
-            .filter_map(|k| resolve_nav_key(k, &mut armed, 0x07, false))
+            .filter_map(|k| {
+                resolve_nav_key(
+                    k,
+                    &mut armed,
+                    0x07,
+                    false,
+                    crate::ui::switcher::NavPosition::Left,
+                )
+            })
             .collect();
         assert_eq!(r2, vec![Action::Quit]);
         assert!(!armed, "the command consumes the armed state");
@@ -538,6 +626,7 @@ mod tests {
                 &mut armed,
                 0x07,
                 false,
+                crate::ui::switcher::NavPosition::Left,
             );
             assert!(armed);
             assert!(
@@ -545,7 +634,8 @@ mod tests {
                     KeyEvent::new(code, KeyModifiers::NONE),
                     &mut armed,
                     0x07,
-                    false
+                    false,
+                    crate::ui::switcher::NavPosition::Left
                 )
                 .is_none(),
                 "a no-op nav arrow produces no action"
@@ -561,14 +651,22 @@ mod tests {
         // prefix (C-b = 0x02) must arm and resolve its commands like the default.
         let mut armed = false;
         let press = KeyEvent::new(KeyCode::Char('\x02'), KeyModifiers::NONE);
-        assert!(resolve_nav_key(press, &mut armed, 0x02, false).is_none());
+        assert!(resolve_nav_key(
+            press,
+            &mut armed,
+            0x02,
+            false,
+            crate::ui::switcher::NavPosition::Left
+        )
+        .is_none());
         assert!(armed, "the configured prefix arms");
         assert_eq!(
             resolve_nav_key(
                 KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
                 &mut armed,
                 0x02,
-                false
+                false,
+                crate::ui::switcher::NavPosition::Left
             ),
             Some(Action::Quit),
             "the command after the configured prefix resolves"
@@ -588,18 +686,31 @@ mod tests {
             &mut armed,
             0x07,
             false,
+            crate::ui::switcher::NavPosition::Left,
         );
         assert!(armed);
         let cmd = KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE);
         assert_eq!(
-            resolve_nav_key(cmd, &mut armed, 0x07, false),
+            resolve_nav_key(
+                cmd,
+                &mut armed,
+                0x07,
+                false,
+                crate::ui::switcher::NavPosition::Left
+            ),
             Some(Action::Width(-1)),
             "the key resizes"
         );
         assert!(!armed, "a key while ready consumes ready");
         assert!(
             matches!(
-                resolve_nav_key(cmd, &mut armed, 0x07, false),
+                resolve_nav_key(
+                    cmd,
+                    &mut armed,
+                    0x07,
+                    false,
+                    crate::ui::switcher::NavPosition::Left
+                ),
                 Some(Action::NavKey(_))
             ),
             "after consumption a plain key is bare again, not a prefix command"

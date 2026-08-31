@@ -20,7 +20,8 @@ pub enum Action {
     /// that followed the switch command in the same read: focus has changed, so the
     /// caller must hand them to the nav, not the pane.
     FocusNav(Vec<u8>),
-    /// Move focus to the terminal view (nav `Enter`, or `prefix` Right/Tab in nav focus).
+    /// Move focus to the terminal view (nav `Enter`, or `prefix` + the arrow pair facing
+    /// the terminal's side - →/↓ by default, ←/↑ with the nav on the right or below).
     FocusTerminal,
     /// A nav key to hand to `Switcher::handle_key` (navigation / input row).
     NavKey(KeyEvent),
@@ -29,10 +30,10 @@ pub enum Action {
     /// `prefix ?` — toggle the keys help modal. Focus stays on the terminal view.
     ShowHelp,
     /// `prefix h`/`l` or `prefix Ctrl+←/→` — adjust the nav WIDTH by this signed delta
-    /// (the horizontal axis; applied only in the Side layout).
+    /// (the horizontal axis; applied only in a column layout).
     Width(i32),
     /// `prefix Ctrl+↑/↓` — adjust the nav HEIGHT by this signed delta (the vertical axis;
-    /// applied only in the portrait Top layout). +1 grows (taller), -1 shrinks.
+    /// applied only in a band layout). +1 grows (taller), -1 shrinks.
     Height(i32),
     /// `prefix t` — toggle auto-hide-nav mode.
     ToggleAutoHide,

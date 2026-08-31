@@ -3,7 +3,8 @@
 //! sees exact input), EXCEPT a prefix (default `C-g`) followed by a command key,
 //! which is intercepted: `prefix Left|Up|Tab` returns focus to the nav,
 //! `prefix Right|Down` keeps focus on the (already-focused) terminal view (an arrow
-//! points at the view it focuses), `prefix q` quits, `prefix ?` toggles
+//! pair facing the terminal's side names it - with the nav on the right or below the
+//! pair flips), `prefix q` quits, `prefix ?` toggles
 //! the keys help, `prefix h`/`l` and `prefix Ctrl+←/→` resize the nav width,
 //! `prefix Ctrl+↑/↓` the nav height, `prefix t`
 //! toggles auto-hide-nav mode, and `prefix n`/`r` and `prefix <digit>` run the nav
@@ -14,6 +15,7 @@
 //! control byte, so it cannot collide with a UTF-8 continuation byte or appear mid-CSI;
 //! bracketed paste is respected so a prefix pasted as data is never intercepted.
 use crate::display::dispatch::Action;
+use crate::ui::switcher::NavPosition;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 pub struct TermInput {
@@ -67,7 +69,9 @@ impl TermInput {
     /// prefix sequence produces FocusNav/Quit/help/resize/… actions. The command key
     /// after a prefix is resolved at the byte level and consumes ONLY its own
     /// byte(s), so any trailing bytes in the same read resume as normal input.
-    pub fn feed(&mut self, bytes: &[u8]) -> Vec<Action> {
+    /// `nav_position` decides which arrow pair names the terminal (the pair facing
+    /// the terminal's side, flipped when the nav rides right or below).
+    pub fn feed(&mut self, bytes: &[u8], nav_position: NavPosition) -> Vec<Action> {
         let mut out = Vec::new();
         let mut fwd: Vec<u8> = Vec::new();
         let mut i = 0;
@@ -176,12 +180,13 @@ impl TermInput {
                         && bytes[i + 1] == b'['
                         && matches!(bytes[i + 2], b'A' | b'B' | b'C' | b'D');
                     if arrow {
-                        // An arrow points AT the view it focuses: the terminal is right of the
-                        // nav in Side and below it in Top, so prefix → (C) and prefix ↓ (B) both
-                        // name the view that already has focus here. Swallow them and stay; the
-                        // rest of the read resumes as mux input. prefix ← (D) and prefix ↑ (A)
-                        // name the nav and fall through to the focus switch below.
-                        if matches!(bytes[i + 2], b'C' | b'B') {
+                        // The arrow PAIR facing the terminal's side names the terminal, so
+                        // with the nav on the left or above (the default) →/↓ keep terminal
+                        // focus (swallowed; the rest of the read resumes as mux input) and
+                        // ←/↑ name the nav and fall through to the focus switch below. With
+                        // the nav on the right or below the whole pair flips.
+                        let forward = nav_position.forward_arrows_face_terminal();
+                        if matches!(bytes[i + 2], b'C' | b'B') == forward {
                             i += 3;
                             continue;
                         }
@@ -248,16 +253,16 @@ mod tests {
     #[test]
     fn plain_bytes_forward() {
         let mut t = m();
-        assert_eq!(fwd(&t.feed(b"ab")), b"ab");
+        assert_eq!(fwd(&t.feed(b"ab", NavPosition::Left)), b"ab");
     }
 
     #[test]
     fn a_doubled_prefix_forwards_one_literal_and_ends_the_chord() {
         let mut t = m();
-        t.feed(&[0x07]);
+        t.feed(&[0x07], NavPosition::Left);
         assert!(t.is_armed());
         assert_eq!(
-            fwd(&t.feed(&[0x07])),
+            fwd(&t.feed(&[0x07], NavPosition::Left)),
             vec![0x07],
             "a second prefix sends one literal prefix byte to the pane"
         );
@@ -266,7 +271,10 @@ mod tests {
         // to repeated taps and streams literals. Accepted: see the doubled-prefix comment
         // in `feed`.
         let mut t2 = m();
-        assert_eq!(fwd(&t2.feed(&[0x07, 0x07, 0x07, 0x07])), vec![0x07, 0x07]);
+        assert_eq!(
+            fwd(&t2.feed(&[0x07, 0x07, 0x07, 0x07], NavPosition::Left)),
+            vec![0x07, 0x07]
+        );
         assert!(!t2.is_armed());
     }
 
@@ -277,12 +285,16 @@ mod tests {
         // Ctrl-arrows), not a re-armed prefix, so a plain `h` after consumption is
         // ordinary input again.
         let mut t = m();
-        t.feed(&[0x07]);
+        t.feed(&[0x07], NavPosition::Left);
         assert!(t.is_armed());
-        assert_eq!(t.feed(b"h"), vec![Action::Width(-1)], "the key resizes");
+        assert_eq!(
+            t.feed(b"h", NavPosition::Left),
+            vec![Action::Width(-1)],
+            "the key resizes"
+        );
         assert!(!t.is_armed(), "a key while ready consumes ready");
         assert_eq!(
-            fwd(&t.feed(b"h")),
+            fwd(&t.feed(b"h", NavPosition::Left)),
             b"h",
             "after consumption a plain key is ordinary input, not a command"
         );
@@ -291,8 +303,14 @@ mod tests {
     #[test]
     fn prefix_then_tab_focuses_nav() {
         let mut t = m();
-        assert!(t.feed(&[0x07]).is_empty(), "prefix alone is held");
-        assert_eq!(t.feed(b"\t"), vec![Action::FocusNav(vec![])]);
+        assert!(
+            t.feed(&[0x07], NavPosition::Left).is_empty(),
+            "prefix alone is held"
+        );
+        assert_eq!(
+            t.feed(b"\t", NavPosition::Left),
+            vec![Action::FocusNav(vec![])]
+        );
     }
 
     #[test]
@@ -303,17 +321,17 @@ mod tests {
         // chord and swallowing the key (no focus switch, nothing reaches the pane).
         for seq in [&b"\x1b[D"[..], &b"\x1b[A"[..]] {
             let mut t = m();
-            t.feed(&[0x07]);
+            t.feed(&[0x07], NavPosition::Left);
             assert_eq!(
-                t.feed(seq),
+                t.feed(seq, NavPosition::Left),
                 vec![Action::FocusNav(vec![])],
                 "seq {seq:?} → nav"
             );
         }
         let mut t = m();
-        t.feed(&[0x07]);
+        t.feed(&[0x07], NavPosition::Left);
         assert_eq!(
-            t.feed(b"\x1b"),
+            t.feed(b"\x1b", NavPosition::Left),
             Vec::<Action>::new(),
             "prefix Esc is not a command: the chord ends, the key is swallowed"
         );
@@ -326,9 +344,9 @@ mod tests {
         // no-op still CONSUMES the prefix, so the bar hides and the next key is bare.
         for seq in [&b"\x1b[C"[..], &b"\x1b[B"[..]] {
             let mut t = m();
-            t.feed(&[0x07]);
+            t.feed(&[0x07], NavPosition::Left);
             assert!(
-                t.feed(seq).is_empty(),
+                t.feed(seq, NavPosition::Left).is_empty(),
                 "seq {seq:?} produces no action (stays in mux)"
             );
             assert!(
@@ -337,18 +355,51 @@ mod tests {
             );
         }
         let mut t2 = m();
-        t2.feed(&[0x07]);
+        t2.feed(&[0x07], NavPosition::Left);
         assert_eq!(
-            fwd(&t2.feed(b"\x1b[Cabc")),
+            fwd(&t2.feed(b"\x1b[Cabc", NavPosition::Left)),
             b"abc",
             "trailing input after prefix → forwards"
         );
         let mut t3 = m();
-        t3.feed(&[0x07]);
+        t3.feed(&[0x07], NavPosition::Left);
         assert_eq!(
-            fwd(&t3.feed(b"\x1b[Babc")),
+            fwd(&t3.feed(b"\x1b[Babc", NavPosition::Left)),
             b"abc",
             "trailing input after prefix ↓ forwards too"
+        );
+    }
+
+    #[test]
+    fn the_arrow_pair_flips_with_the_nav_on_the_right() {
+        // The pair facing the terminal's side names the terminal. At the default Left
+        // placement `C-g →` stays in the terminal (swallowed) and `C-g ←` leaves to the
+        // nav; pinned Right the whole pair mirrors.
+        let mut left = m();
+        left.feed(&[0x07], NavPosition::Left);
+        assert!(
+            left.feed(b"\x1b[C", NavPosition::Left).is_empty(),
+            "→ stays"
+        );
+        let mut left2 = m();
+        left2.feed(&[0x07], NavPosition::Left);
+        assert_eq!(
+            left2.feed(b"\x1b[D", NavPosition::Left),
+            vec![Action::FocusNav(vec![])],
+            "← leaves to nav"
+        );
+        let mut right = m();
+        right.feed(&[0x07], NavPosition::Right);
+        assert_eq!(
+            right.feed(b"\x1b[C", NavPosition::Right),
+            vec![Action::FocusNav(vec![])],
+            "→ leaves to the nav, which now rides on the right"
+        );
+        let mut right2 = m();
+        right2.feed(&[0x07], NavPosition::Right);
+        assert!(
+            right2.feed(b"\x1b[D", NavPosition::Right).is_empty(),
+            "← stays"
         );
     }
 
@@ -357,11 +408,14 @@ mod tests {
         // `C-g Left` in one read leaves to nav with NO replay tail (the `[D` of the
         // arrow must not leak as stray nav input).
         let mut t = m();
-        assert_eq!(t.feed(b"\x07\x1b[D"), vec![Action::FocusNav(vec![])]);
+        assert_eq!(
+            t.feed(b"\x07\x1b[D", NavPosition::Left),
+            vec![Action::FocusNav(vec![])]
+        );
         // With trailing input after the arrow, only that trailing input is replayed.
         let mut t2 = m();
         assert_eq!(
-            t2.feed(b"\x07\x1b[Dabc"),
+            t2.feed(b"\x07\x1b[Dabc", NavPosition::Left),
             vec![Action::FocusNav(b"abc".to_vec())]
         );
     }
@@ -372,7 +426,7 @@ mod tests {
         // byte loss - the trailing input belongs to the new focus).
         let mut t = m();
         assert_eq!(
-            t.feed(b"\x07\tabc"),
+            t.feed(b"\x07\tabc", NavPosition::Left),
             vec![Action::FocusNav(b"abc".to_vec())]
         );
     }
@@ -380,15 +434,15 @@ mod tests {
     #[test]
     fn prefix_then_q_quits() {
         let mut t = m();
-        t.feed(&[0x07]);
-        assert_eq!(t.feed(b"q"), vec![Action::Quit]);
+        t.feed(&[0x07], NavPosition::Left);
+        assert_eq!(t.feed(b"q", NavPosition::Left), vec![Action::Quit]);
     }
 
     #[test]
     fn prefix_then_question_toggles_help() {
         let mut t = m();
-        t.feed(&[0x07]);
-        assert_eq!(t.feed(b"?"), vec![Action::ShowHelp]);
+        t.feed(&[0x07], NavPosition::Left);
+        assert_eq!(t.feed(b"?", NavPosition::Left), vec![Action::ShowHelp]);
     }
 
     #[test]
@@ -396,7 +450,7 @@ mod tests {
         // Keeps terminal-view focus, so trailing bytes in the same read still forward.
         let mut t = m();
         assert_eq!(
-            t.feed(b"\x07tabc"),
+            t.feed(b"\x07tabc", NavPosition::Left),
             vec![Action::ToggleAutoHide, Action::Forward(b"abc".to_vec())]
         );
     }
@@ -407,9 +461,9 @@ mod tests {
         // so the nav actions work from terminal focus too.
         for (b, c) in [(b'n', 'n'), (b'r', 'r')] {
             let mut t = m();
-            t.feed(&[0x07]);
+            t.feed(&[0x07], NavPosition::Left);
             assert_eq!(
-                t.feed(&[b]),
+                t.feed(&[b], NavPosition::Left),
                 vec![Action::NavKey(KeyEvent::new(
                     KeyCode::Char(c),
                     KeyModifiers::NONE
@@ -425,7 +479,7 @@ mod tests {
         // same read still forward to the pane (the opened modal owns the NEXT read).
         let mut t = m();
         assert_eq!(
-            t.feed(b"\x07nabc"),
+            t.feed(b"\x07nabc", NavPosition::Left),
             vec![
                 Action::NavKey(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
                 Action::Forward(b"abc".to_vec()),
@@ -436,41 +490,49 @@ mod tests {
     #[test]
     fn prefix_then_h_or_l_resizes() {
         let mut t = m();
-        t.feed(&[0x07]);
-        assert_eq!(t.feed(b"h"), vec![Action::Width(-1)], "h narrows");
+        t.feed(&[0x07], NavPosition::Left);
+        assert_eq!(
+            t.feed(b"h", NavPosition::Left),
+            vec![Action::Width(-1)],
+            "h narrows"
+        );
         let mut t2 = m();
-        t2.feed(&[0x07]);
-        assert_eq!(t2.feed(b"l"), vec![Action::Width(1)], "l widens");
+        t2.feed(&[0x07], NavPosition::Left);
+        assert_eq!(
+            t2.feed(b"l", NavPosition::Left),
+            vec![Action::Width(1)],
+            "l widens"
+        );
     }
 
     #[test]
     fn prefix_then_ctrl_arrow_resizes() {
         let mut t = m();
-        t.feed(&[0x07]);
+        t.feed(&[0x07], NavPosition::Left);
         assert_eq!(
-            t.feed(b"\x1b[1;5C"),
+            t.feed(b"\x1b[1;5C", NavPosition::Left),
             vec![Action::Width(1)],
             "Ctrl-Right widens"
         );
         let mut t2 = m();
-        t2.feed(&[0x07]);
+        t2.feed(&[0x07], NavPosition::Left);
         assert_eq!(
-            t2.feed(b"\x1b[1;5D"),
+            t2.feed(b"\x1b[1;5D", NavPosition::Left),
             vec![Action::Width(-1)],
             "Ctrl-Left narrows"
         );
         // Ctrl+↑/↓ resize the HEIGHT (vertical axis, Top layout); ↓ grows.
         let mut t3 = m();
-        t3.feed(&[0x07]);
+        t3.feed(&[0x07], NavPosition::Left);
         assert_eq!(
-            t3.feed(b"\x1b[1;5B"),
+            t3.feed(b"\x1b[1;5B", NavPosition::Left),
             vec![Action::Height(1)],
             "Ctrl-Down grows height"
         );
         let mut t4 = m();
-        t4.feed(&[0x07]);
+        t4.feed(&[0x07], NavPosition::Left);
         assert_eq!(
-            t4.feed(b"\x1b[1;5A"),
+            t4.feed(b"\x1b[1;5A", NavPosition::Left),
             vec![Action::Height(-1)],
             "Ctrl-Up shrinks height"
         );
@@ -481,13 +543,13 @@ mod tests {
         // help/resize keep terminal-view focus, so trailing bytes in the same read still forward.
         let mut t = m();
         assert_eq!(
-            t.feed(b"\x07?abc"),
+            t.feed(b"\x07?abc", NavPosition::Left),
             vec![Action::ShowHelp, Action::Forward(b"abc".to_vec())]
         );
         // Bytes before the prefix flush first, preserving order around the command.
         let mut t2 = m();
         assert_eq!(
-            t2.feed(b"ab\x07lcd"),
+            t2.feed(b"ab\x07lcd", NavPosition::Left),
             vec![
                 Action::Forward(b"ab".to_vec()),
                 Action::Width(1),
@@ -502,19 +564,19 @@ mod tests {
         // prefix (C-b = 0x02) must arm, send its own byte on the doubled-prefix, and
         // resolve its commands like the default.
         let mut t = TermInput::new(0x02);
-        t.feed(&[0x02]);
+        t.feed(&[0x02], NavPosition::Left);
         assert!(t.is_armed());
         assert_eq!(
-            fwd(&t.feed(&[0x02])),
+            fwd(&t.feed(&[0x02], NavPosition::Left)),
             vec![0x02],
             "the doubled-prefix forwards the configured byte"
         );
         assert!(!t.is_armed(), "the doubled-prefix consumes ready");
         // The default prefix's byte is ordinary input to a differently-configured app.
-        assert_eq!(fwd(&t.feed(&[0x07])), vec![0x07]);
+        assert_eq!(fwd(&t.feed(&[0x07], NavPosition::Left)), vec![0x07]);
         // `z` is not a command key (unlike q/?/h/l/t/n/R/x/r), so it is swallowed.
-        t.feed(&[0x02]);
-        let out = t.feed(b"z");
+        t.feed(&[0x02], NavPosition::Left);
+        let out = t.feed(b"z", NavPosition::Left);
         assert!(
             out.is_empty(),
             "unrecognised follow-up is swallowed: {out:?}"
@@ -526,7 +588,7 @@ mod tests {
         // `C-g C-g abc`: the second prefix byte forwards one literal and ends the
         // chord, so `abc` is ordinary input again and follows it through.
         let mut t = m();
-        assert_eq!(fwd(&t.feed(b"abc")), b"abc");
+        assert_eq!(fwd(&t.feed(b"abc", NavPosition::Left)), b"abc");
         assert!(!t.is_armed());
     }
 
@@ -534,13 +596,13 @@ mod tests {
     fn prefix_then_unknown_then_trailing_forwards_rest() {
         // `C-g z abc`: z (not a command key) is swallowed as command mode; abc still forwards.
         let mut t = m();
-        assert_eq!(fwd(&t.feed(b"\x07zabc")), b"abc");
+        assert_eq!(fwd(&t.feed(b"\x07zabc", NavPosition::Left)), b"abc");
     }
 
     #[test]
     fn bytes_before_prefix_forward_then_intercept() {
         let mut t = m();
-        let out = t.feed(b"hi\x07\t");
+        let out = t.feed(b"hi\x07\t", NavPosition::Left);
         assert_eq!(
             out,
             vec![Action::Forward(b"hi".to_vec()), Action::FocusNav(vec![])]
@@ -551,15 +613,18 @@ mod tests {
     fn prefix_inside_bracketed_paste_is_literal() {
         let mut t = m();
         for b in b"\x1b[200~" {
-            let _ = t.feed(&[*b]);
+            let _ = t.feed(&[*b], NavPosition::Left);
         }
         // a 0x07 inside the paste forwards literally, never arms
-        assert_eq!(fwd(&t.feed(&[0x07])), vec![0x07]);
+        assert_eq!(fwd(&t.feed(&[0x07], NavPosition::Left)), vec![0x07]);
         for b in b"\x1b[201~" {
-            let _ = t.feed(&[*b]);
+            let _ = t.feed(&[*b], NavPosition::Left);
         }
         // after the paste the prefix arms again
-        assert!(t.feed(&[0x07]).is_empty());
-        assert_eq!(t.feed(b"\t"), vec![Action::FocusNav(vec![])]);
+        assert!(t.feed(&[0x07], NavPosition::Left).is_empty());
+        assert_eq!(
+            t.feed(b"\t", NavPosition::Left),
+            vec![Action::FocusNav(vec![])]
+        );
     }
 }

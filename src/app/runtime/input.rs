@@ -27,6 +27,7 @@ impl Runtime {
             ops,
             op_tx,
             nav_width_natural,
+            nav_position,
             auto_hide_nav,
             cols,
             body_rows: rows,
@@ -50,7 +51,7 @@ impl Runtime {
             // help modal and the inline input both swallow prefix/Enter, so `prefix q`
             // can't quit and Enter can't focus the terminal while one is on screen.
             let is_inputting = state.is_modal_popup_open();
-            match resolve_nav_key(key, nav_armed, prefix, is_inputting) {
+            match resolve_nav_key(key, nav_armed, prefix, is_inputting, *nav_position) {
                 // A committed input/kill confirm folds through State::apply, which returns
                 // its Commands; collect them and dispatch the whole batch below.
                 Some(Action::NavKey(k)) => key_cmds.extend(switcher.handle_key(k, state)),
@@ -527,7 +528,7 @@ impl Runtime {
         } else if !consumed_by_repeat {
             // TERMINAL focus: forward raw bytes to the selected session's PTY;
             // TermInput intercepts the prefix (→ nav / quit / help / resize / literal).
-            for action in self.term_input.feed(&non_mouse) {
+            for action in self.term_input.feed(&non_mouse, self.nav_position) {
                 match action {
                     // Forward keystrokes to the VISIBLE session (`displayed`), not the
                     // selection: until the new session is ready the prior one is on screen,
