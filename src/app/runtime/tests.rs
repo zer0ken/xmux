@@ -2379,6 +2379,95 @@ fn handle_mouse_event_top_layout_border_drag_resizes_height() {
 }
 
 #[test]
+fn handle_mouse_event_bottom_layout_border_drag_resizes_height() {
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // The bottom placement mirrors the top: the border is the row ABOVE the band, and a
+    // drag measures the height from the window's FAR edge. 40x60 pinned Bottom; the auto
+    // height is 24, so the border is 0-based row 35 = SGR row 36.
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let sel = Selection::default();
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.cols = 40;
+    rt.body_rows = 59;
+    rt.nav_height = 0; // auto
+    rt.nav_position = NavPosition::Bottom;
+
+    let press = crate::display::mouse::MouseEvent {
+        cb: 0,
+        col: 5,
+        row: 36,
+        pressed: true,
+    };
+    let (mut ft, mut wheel) = (false, false);
+    let area = ratatui::layout::Rect::default();
+    rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel, area);
+    assert!(
+        rt.mouse_state.dragging_view_border,
+        "left-press on the horizontal bottom border grabs it"
+    );
+
+    // Drag UP to SGR row 40 → the band keeps 60 - 40 = 20 rows.
+    let drag = crate::display::mouse::MouseEvent {
+        cb: 0x20,
+        col: 5,
+        row: 40,
+        pressed: true,
+    };
+    rt.handle_mouse_event(&drag, &sel, &mut ft, &mut wheel, area);
+    assert_eq!(
+        rt.nav_height, 20,
+        "dragging the bottom border measures the height from the far edge"
+    );
+}
+
+#[test]
+fn handle_mouse_event_right_layout_border_drag_resizes_width() {
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // The right placement mirrors the left: the border is the column LEFT of the nav,
+    // and a drag measures the width from the window's FAR edge. 140x30 pinned Right;
+    // the border is 0-based col 91 = SGR col 92.
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let sel = Selection::default();
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.cols = 140;
+    rt.body_rows = 29;
+    rt.nav_position = NavPosition::Right;
+
+    let press = crate::display::mouse::MouseEvent {
+        cb: 0,
+        col: 92,
+        row: 5,
+        pressed: true,
+    };
+    let (mut ft, mut wheel) = (false, false);
+    let area = ratatui::layout::Rect::default();
+    rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel, area);
+    assert!(
+        rt.mouse_state.dragging_view_border,
+        "left-press on the vertical right border grabs it"
+    );
+
+    // Drag RIGHT to SGR col 100 → the nav keeps 140 - 100 = 40 columns.
+    let drag = crate::display::mouse::MouseEvent {
+        cb: 0x20,
+        col: 100,
+        row: 5,
+        pressed: true,
+    };
+    rt.handle_mouse_event(&drag, &sel, &mut ft, &mut wheel, area);
+    assert_eq!(
+        rt.nav_width_natural, 40,
+        "dragging the right border measures the width from the far edge"
+    );
+}
+
+#[test]
 fn resize_keys_adjust_height_in_top_layout() {
     use crate::ui::switcher::{Scan, Switcher, ViewLayout, NAV_WIDTH};
     use ratatui::backend::TestBackend;

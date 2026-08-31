@@ -187,14 +187,27 @@ impl Runtime {
                     crate::ui::prefs::save_nav_width(&env.xmux_dir, *nav_width_natural);
                 }
             } else if !is_wheel {
+                // The resize KEYS keep the nav's own semantics whatever the placement (h
+                // narrows, l widens); the DRAG mirrors its math per side: a band drags the
+                // height (from the top edge, or the bottom edge when pinned there), a
+                // column the width (from the left edge, or the right one).
                 if top_layout {
-                    let target = view_border_drag_height(ev.row);
+                    let target = view_border_drag_height(
+                        ev.row,
+                        full.height,
+                        *nav_position == crate::ui::switcher::NavPosition::Bottom,
+                    );
                     if target != *nav_height {
                         *nav_height = target;
                         dirty = true;
                     }
                 } else {
-                    let target = view_border_drag_width(ev.col, &env.ui_prefix);
+                    let target = view_border_drag_width(
+                        ev.col,
+                        &env.ui_prefix,
+                        full.width,
+                        *nav_position == crate::ui::switcher::NavPosition::Right,
+                    );
                     if target != *nav_width_natural {
                         *nav_width_natural = target;
                         dirty = true;

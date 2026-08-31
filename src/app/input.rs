@@ -12,18 +12,36 @@ use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 use crate::app::runtime::{NAV_HEIGHT_MAX, NAV_HEIGHT_MIN, NAV_WIDTH_MAX};
 use crate::display::dispatch::Action;
 
-/// The nav width a view border drag to 1-based screen column `col` sets: the dragged
-/// column becomes the view border position (= the nav width), clamped to the allowed range.
-pub(crate) fn view_border_drag_width(col: u16, ui_prefix: &str) -> u16 {
-    col.saturating_sub(1)
-        .clamp(crate::app::runtime::nav_width_min(ui_prefix), NAV_WIDTH_MAX)
+/// The nav width a view border drag to 1-based screen column `col` sets, clamped to the
+/// allowed range. With the nav on the left the dragged column becomes the border position
+/// (= the nav width); with the nav on the right the mirror applies and the size is the
+/// window minus the dragged column.
+pub(crate) fn view_border_drag_width(
+    col: u16,
+    ui_prefix: &str,
+    window_cols: u16,
+    nav_on_right: bool,
+) -> u16 {
+    let w = if nav_on_right {
+        window_cols.saturating_sub(col)
+    } else {
+        col.saturating_sub(1)
+    };
+    w.clamp(crate::app::runtime::nav_width_min(ui_prefix), NAV_WIDTH_MAX)
 }
 
-/// The Top-layout nav height a horizontal view border drag to 1-based screen row `row`
-/// sets: the dragged row becomes the border position (0-based), which is the nav height,
-/// clamped to the allowed range. compute_regions clamps further to the live body height.
-pub(crate) fn view_border_drag_height(row: u16) -> u16 {
-    row.saturating_sub(1).clamp(NAV_HEIGHT_MIN, NAV_HEIGHT_MAX)
+/// The band-layout nav height a horizontal view border drag to 1-based screen row `row`
+/// sets, clamped to the allowed range. With the nav on top the dragged row becomes the
+/// border position (0-based), which is the nav height; with the nav on the bottom the
+/// mirror applies and the size is the window minus the dragged row. compute_regions
+/// clamps further to the live body height.
+pub(crate) fn view_border_drag_height(row: u16, window_rows: u16, nav_on_bottom: bool) -> u16 {
+    let h = if nav_on_bottom {
+        window_rows.saturating_sub(row)
+    } else {
+        row.saturating_sub(1)
+    };
+    h.clamp(NAV_HEIGHT_MIN, NAV_HEIGHT_MAX)
 }
 
 /// If `bytes` STARTS with a Ctrl-arrow (`ESC [ 1 ; 5 A/B/C/D`), returns `(horizontal,
@@ -643,21 +661,43 @@ mod tests {
     fn view_border_drag_width_clamps_to_range() {
         // The dragged 1-based column becomes the 0-based nav width, clamped to range.
         // The floor is the resting prefix "C-g" (3 cells) plus a one-cell gap each side.
-        assert_eq!(view_border_drag_width(51, "C-g"), 50);
+        assert_eq!(view_border_drag_width(51, "C-g", 140, false), 50);
         assert_eq!(
-            view_border_drag_width(5, "C-g"),
+            view_border_drag_width(5, "C-g", 140, false),
             crate::app::runtime::nav_width_min("C-g"),
             "too far left clamps to the prefix floor"
         );
         assert_eq!(
-            view_border_drag_width(500, "C-g"),
+            view_border_drag_width(500, "C-g", 140, false),
             NAV_WIDTH_MAX,
             "too far right clamps to max"
         );
         assert_eq!(
-            view_border_drag_width(5, "C-Space"),
+            view_border_drag_width(5, "C-Space", 140, false),
             crate::app::runtime::nav_width_min("C-Space"),
             "a wider prefix raises the floor"
+        );
+    }
+
+    #[test]
+    fn view_border_drag_mirrors_to_the_right_and_bottom() {
+        // On the right/bottom the drag measures from the FAR edge: the dragged 1-based
+        // column/row is where the border lands, so the size is the window minus it.
+        // Dragging the right border (0-based col 91 at a 48 width) to SGR 100 gives 40.
+        assert_eq!(view_border_drag_width(91, "C-g", 140, true), 49);
+        assert_eq!(view_border_drag_width(100, "C-g", 140, true), 40);
+        assert_eq!(
+            view_border_drag_width(135, "C-g", 140, true),
+            crate::app::runtime::nav_width_min("C-g"),
+            "dragging the right border leftward clamps to the prefix floor"
+        );
+        // Same mirror on the height: dragging the bottom border (0-based row 35 at the
+        // auto 24) to SGR 30 in a 60-row window gives 30; near the terminal it floors.
+        assert_eq!(view_border_drag_height(30, 60, true), 30);
+        assert_eq!(
+            view_border_drag_height(58, 60, true),
+            NAV_HEIGHT_MIN,
+            "dragging the bottom border upward clamps to the height floor"
         );
     }
 
