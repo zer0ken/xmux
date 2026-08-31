@@ -332,7 +332,7 @@ fn scan_with_a_host_band() -> Scan {
 }
 
 /// One reachable source carrying `n` sessions, so the nav holds exactly `n` cards
-/// numbered `0..n`. Used where the card COUNT is the point (a two-digit jump needs
+/// numbered `1..=n`. Used where the card COUNT is the point (a two-digit jump needs
 /// more cards than [`sample`] has).
 fn scan_with_sessions(n: usize) -> Scan {
     let sessions = (0..n)
@@ -3319,7 +3319,7 @@ async fn selecting_a_card_never_moves_its_session_name() {
 }
 
 #[test]
-fn every_unselected_card_carries_its_0_based_number_beside_its_session() {
+fn every_unselected_card_carries_its_1_based_number_beside_its_session() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
@@ -3331,12 +3331,7 @@ fn every_unselected_card_carries_its_0_based_number_beside_its_session() {
     // a number: it is the address you would type to get where you already are. A section
     // title carries no number at all - it is not a card, and it is never the selection.
     let selected = sw.list_state.selected().unwrap();
-    let num_w = sw
-        .selectable_count()
-        .saturating_sub(1)
-        .to_string()
-        .len()
-        .max(1) as u16;
+    let num_w = sw.selectable_count().to_string().len().max(1) as u16;
     let read =
         |x: u16, y: u16, w: u16| -> String { (x..x + w).map(|c| buf[(c, y)].symbol()).collect() };
     // Read each card where the PAINT put it: the side list parts its two bands, so a card
@@ -3581,6 +3576,71 @@ async fn a_jump_walks_into_a_two_digit_number() {
         19,
         "and keeps where the jump landed"
     );
+}
+
+#[tokio::test]
+async fn card_numbers_count_from_1_and_the_last_card_carries_the_count() {
+    // The number a card carries is its 1-based rank among the selectable cards:
+    // the first card is 1 and the last carries the card count. A section title
+    // carries no number, so the ranks count the cards only.
+    let mut h = Harness::new(sample());
+    let selectable: Vec<usize> = (0..h.sw.rows.len())
+        .filter(|&i| h.sw.rows[i].selectable())
+        .collect();
+    for (rank, &i) in selectable.iter().enumerate() {
+        assert_eq!(
+            h.sw.card_number(i),
+            rank + 1,
+            "card {i}'s number is its rank"
+        );
+    }
+    // `prefix 1` lands on the card numbered 1, the first selectable card.
+    h.key(KeyCode::Char('1')).await;
+    assert_eq!(h.sw.selected, selectable[0], "1 addresses the first card");
+}
+
+#[tokio::test]
+async fn a_jump_on_0_opens_the_input_and_names_no_card() {
+    // No card carries 0: `prefix 0` opens the jump input holding 0 and the
+    // selection stays put; Enter flashes the 1-based range and keeps the popup.
+    let mut h = Harness::new(sample());
+    h.key(KeyCode::End).await; // start far from where 0 used to point
+    let start = h.sw.selected;
+    h.key(KeyCode::Char('0')).await;
+    assert!(h.state.is_inputting(), "0 still opens the jump input");
+    assert_eq!(h.input_buffer(), "0", "the input holds the 0");
+    assert_eq!(
+        h.sw.selected, start,
+        "no card carries 0, so the selection stays"
+    );
+    let bar = h.hint_bar_text();
+    assert!(
+        bar.contains("jump to a session (1 - 4)"),
+        "the guide states the 1-based range: {bar:?}"
+    );
+    h.key(KeyCode::Enter).await;
+    assert!(h.state.is_inputting(), "the popup stays open");
+    assert!(
+        h.state.chrome.flash.contains("no session 0 (1 - 4)"),
+        "the flash names the dead number and the 1-based range: {}",
+        h.state.chrome.flash
+    );
+}
+
+#[tokio::test]
+async fn a_leading_zero_names_its_value() {
+    // The number is read as its value, spelling included: 01 is 1, the card 1
+    // addresses. The dead 0 comes alive the moment the digit giving it its
+    // value lands, and Enter closes on the card the value names.
+    let mut h = Harness::new(sample());
+    h.key(KeyCode::End).await;
+    h.key(KeyCode::Char('0')).await;
+    h.key(KeyCode::Char('1')).await;
+    let first = h.sw.rows.iter().position(Row::selectable).unwrap();
+    assert_eq!(h.sw.selected, first, "01 names the card 1 names");
+    assert_eq!(h.sw.card_number(h.sw.selected), 1, "which carries number 1");
+    h.key(KeyCode::Enter).await;
+    assert!(!h.state.is_inputting(), "Enter closes on the card 01 names");
 }
 
 #[test]

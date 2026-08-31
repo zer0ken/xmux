@@ -498,10 +498,11 @@ impl Switcher {
         self.rows.iter().filter(|r| r.selectable()).count()
     }
 
-    /// The number card `i` addresses: its rank among the selectable cards. A section
+    /// The number card `i` addresses: its 1-based position among the selectable
+    /// cards, the first card being 1 and the last the selectable count. A section
     /// title has no number; it is never the selection and never a jump target.
     fn card_number(&self, i: usize) -> usize {
-        self.rows[..i].iter().filter(|r| r.selectable()).count()
+        self.rows[..i].iter().filter(|r| r.selectable()).count() + 1
     }
 
     /// Where the nav's two bands meet: the first host-state card, the flatten having sunk
