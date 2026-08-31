@@ -4272,7 +4272,10 @@ fn help_lines_reflects_configured_prefix() {
     // The focus-section rows must show the active prefix, not a hardcoded "C-g".
     let mut state = crate::state::State::default();
     state.chrome.set_ui_prefix("C-Space".into());
-    let (_title, lines) = modal::help_lines(&state.chrome.ui_prefix);
+    let (_title, lines) = modal::help_lines(
+        &state.chrome.ui_prefix,
+        crate::ui::switcher::NavPosition::Left,
+    );
     let text: String = lines
         .iter()
         .map(|l| l.to_string())
@@ -4289,7 +4292,10 @@ fn help_lines_reflects_configured_prefix() {
 
     // Default prefix (no setter) must still show C-g.
     let state_default = crate::state::State::default();
-    let (_title, lines_default) = modal::help_lines(&state_default.chrome.ui_prefix);
+    let (_title, lines_default) = modal::help_lines(
+        &state_default.chrome.ui_prefix,
+        crate::ui::switcher::NavPosition::Left,
+    );
     let text_default: String = lines_default
         .iter()
         .map(|l| l.to_string())

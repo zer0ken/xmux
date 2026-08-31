@@ -780,7 +780,7 @@ impl Switcher {
             self.popup_geo.rect = Rect::default();
             return;
         };
-        let (title, lines) = modal::help_lines(&state.chrome.ui_prefix);
+        let (title, lines) = modal::help_lines(&state.chrome.ui_prefix, state.chrome.nav_position);
         let inner_w = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
         // borders + a cell of right padding, at least 24 wide, never past the screen.
         // `.max(24).min(width)` (not `clamp`) so a sub-24-col terminal cannot panic.

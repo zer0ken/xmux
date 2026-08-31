@@ -325,8 +325,12 @@ pub(crate) fn wrap_text(text: &str, width: u16) -> Vec<String> {
 }
 
 /// The help modal's `(title, lines)`, built once and rendered through the
-/// shared modal-popup path. `prefix` is the configured `[ui] prefix` binding.
-pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
+/// shared modal-popup path. `prefix` is the configured `[ui] prefix` binding;
+/// `nav_position` decides which arrow pair the focus rows name.
+pub(crate) fn help_lines(
+    prefix: &str,
+    nav_position: crate::ui::switcher::NavPosition,
+) -> (String, Vec<Line<'static>>) {
     // tmux mode-tree style: a right-aligned, bold key column, a `│` rule, then
     // the description. `Head` breaks the flat list into navigation/focus/terminal sections;
     // `Note` is a description-only row (the mux state has no keys of its own).
@@ -342,6 +346,15 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
     }
 
     let p = prefix;
+
+    // The focus rows name the arrow PAIR the current placement makes active (the pair
+    // facing the terminal's side names the terminal, so the pair flips with the nav on
+    // the right or below).
+    let (terminal_pair, nav_pair) = if nav_position.forward_arrows_face_terminal() {
+        ("→/↓", "←/↑")
+    } else {
+        ("←/↑", "→/↓")
+    };
 
     // Tree section - the mutating keys carry the prefix (bare presses are inert);
     // navigation and the `/` filter stay bare.
@@ -364,12 +377,15 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
         HelpRow::Gap,
         // Focus section - prefix rows built from `prefix`.
         HelpRow::Head(format!("focus ({p} = prefix)")),
-        HelpRow::Key(format!("Enter · {p} →/↓"), "focus the terminal".into()),
+        HelpRow::Key(
+            format!("Enter · {p} {terminal_pair}"),
+            "focus the terminal".into(),
+        ),
         HelpRow::Key(
             format!("{p} Tab"),
             "toggle focus between nav and terminal".into(),
         ),
-        HelpRow::Key(format!("{p} ←/↑ · {p} Esc"), "focus the nav".into()),
+        HelpRow::Key(format!("{p} {nav_pair} · {p} Esc"), "focus the nav".into()),
         HelpRow::Key(
             format!("{p} C-←/→"),
             "resize nav width (side); h/l too. repeats briefly".into(),
@@ -381,6 +397,10 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
         HelpRow::Key(
             format!("{p} t"),
             "toggle auto-hide-nav (║ view border = on)".into(),
+        ),
+        HelpRow::Key(
+            format!("{p} p"),
+            "cycle the nav position (left · top · right · bottom · auto)".into(),
         ),
         HelpRow::Key(format!("{p} ?"), "show this help (q / Esc closes)".into()),
         HelpRow::Key("click a view".into(), "focus that view".into()),
@@ -710,6 +730,57 @@ mod tests {
     fn modal_help_variant_constructs() {
         let m = Modal::Help;
         assert!(matches!(m, Modal::Help));
+    }
+
+    #[test]
+    fn help_focus_rows_name_the_arrow_pair_the_placement_makes_active() {
+        // The focus rows read the pair the current placement makes active: at the
+        // default (left) placement →/↓ name the terminal and ←/↑ the nav; pinned right
+        // the whole pair flips.
+        let flat = |lines: &[Line<'static>]| -> String {
+            lines
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let (t, lines) = help_lines("C-g", crate::ui::switcher::NavPosition::Left);
+        assert_eq!(t, "keys");
+        let left = flat(&lines);
+        assert!(left.contains("Enter · C-g →/↓"), "{left}");
+        assert!(left.contains("C-g →/↓"), "{left}");
+        assert!(left.contains("C-g ←/↑ · C-g Esc"), "{left}");
+        let (_t, lines) = help_lines("C-g", crate::ui::switcher::NavPosition::Right);
+        let right = flat(&lines);
+        assert!(right.contains("Enter · C-g ←/↑"), "{right}");
+        assert!(right.contains("C-g ←/↑"), "{right}");
+        assert!(right.contains("C-g →/↓ · C-g Esc"), "{right}");
+    }
+
+    #[test]
+    fn help_lists_the_position_cycle() {
+        // The `prefix p` row: the cycle order, with "auto" as the fifth stop.
+        let (_t, lines) = help_lines("C-g", crate::ui::switcher::NavPosition::Left);
+        let all = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<String>();
+        assert!(all.contains("C-g p"), "{all}");
+        assert!(
+            all.contains("cycle the nav position"),
+            "the row says what the key does: {all}"
+        );
+        assert!(all.contains("auto"), "the cycle names its auto stop: {all}");
     }
 
     #[test]

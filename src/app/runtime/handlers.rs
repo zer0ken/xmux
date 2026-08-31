@@ -604,6 +604,9 @@ impl Runtime {
             }
             self.dirty = true;
         }
+        // The cheatsheet and the help modal name the arrow pair the CURRENT placement
+        // makes active, so they read the resolved position every frame.
+        self.state.chrome.set_nav_position(self.nav_position);
         // A portable-pty child spawn clears ENABLE_MOUSE_INPUT on the parent CONIN,
         // killing mouse capture; re-assert it whenever it drifts off.
         crate::display::term::ensure_mouse_capture();
