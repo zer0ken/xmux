@@ -214,7 +214,11 @@ printf 'switch prod/api\nfocus terminal\n' | xmux send amber-otter
 An unknown name, an ambiguous prefix, or `-` with several instances running is an
 error naming the candidates, never a guess: sending a command to the wrong instance
 switches the wrong terminal. With no command, `send` reads them from stdin, one per
-line. A refused command exits non-zero so a script can detect it.
+line. A refused command exits non-zero so a script can detect it. A `switch` to a
+`<source>/<session>` address the instance's current inventory does not list is a
+refused command too: it replies `err:` naming which half is missing (the source, or
+a session under a present source), so a script learns the address did not resolve
+instead of a blind `ok`.
 
 A low-level `raw:` namespace (`raw:key`, `raw:keys`, `raw:text`) injects keystrokes
 or bytes; it is unstable and not part of the supported surface.

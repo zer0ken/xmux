@@ -424,7 +424,9 @@ nothing to switch to until one exists.
   verbs: xmux aggregates and switches, so editing a session stays with the mux. Raw
   key/text injection stays behind the unstable `raw:` namespace (`raw:key` /
   `raw:keys` / `raw:text`). A command-level failure replies `err: …` and `xmux send`
-  exits non-zero.
+  exits non-zero. A `switch` to a `<source>/<session>` address the inventory does not
+  list is such a failure: it replies `err:` naming which half is missing (the source,
+  or a session under a present source), so the reply reflects the address resolution.
 - **FR-F2** - There is one unified socket, not a separate app socket: `switch <address>`
   is a first-class ctl verb resolving to the same switch action a key press does.
 - **FR-F3** - Every instance takes a NAME at startup: an auto-generated
