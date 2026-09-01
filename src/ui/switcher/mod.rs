@@ -33,7 +33,7 @@ pub const NAV_WIDTH: u16 = 48;
 /// Every shape test multiplies the rows by this and compares real proportions.
 pub(super) const CELL_ASPECT: u32 = 2;
 
-/// Blank columns between two card columns in the portrait `Top` flow. One is enough to
+/// Blank columns between two card columns in the band's column flow. One is enough to
 /// part them: every card opens with its address column, so a gutter reads as a gap
 /// between a name and the next number rather than two names running together.
 pub(super) const COL_GUTTER: u16 = 1;
@@ -42,7 +42,7 @@ pub(super) const COL_GUTTER: u16 = 1;
 /// box-drawing line, so it parts the bands without reading as a border around either.
 pub(super) const BAND_RULE: &str = "\u{2500}";
 
-/// The connector running down the left of a session card in the portrait `Top` band,
+/// The connector running down the left of a session card in the band's column flow,
 /// saying which title owns it. The band's columns stand side by side, so a card's place
 /// in the reading order does not on its own say where one group ends and the next
 /// begins; the side list, one full-width run, needs no such mark and draws none.
@@ -72,19 +72,22 @@ fn color_decoration() -> Color {
 }
 pub use crate::ui::chrome::ViewBorderColors;
 
-/// Which way the two views stack. `Side` (default) puts the tree in a left column;
-/// `Top` stacks the tree above the terminal once a side column would leave the terminal
-/// no wider than it is tall, so a narrow phone-shaped terminal stays usable.
+/// Which way the two views stack. `Column` puts the tree in a left or right column of
+/// the terminal view; `Band` stacks the tree in a top or bottom band. The default
+/// placement (left column) is a `Column`, and a band takes over once a side column would
+/// leave the terminal no wider than it is tall, so a narrow phone-shaped terminal stays
+/// usable.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ViewLayout {
-    Side,
-    Top,
+    Column,
+    Band,
 }
 
 /// The nav's live size, as one value: what the user set, and what is on screen this
 /// frame. Both are settable while xmux runs (`prefix h`/`l` and a border drag set the
-/// width, `prefix Ctrl+arrow` and a drag the `Top` height, and auto-hide takes the width
-/// away entirely), so every consumer reads them from here rather than deriving either.
+/// width, `prefix Ctrl+arrow` and a drag the band height, auto-hide takes the width
+/// away entirely, and `prefix p` moves the attachment), so every consumer reads them
+/// from here rather than deriving any of the four.
 ///
 /// `natural` and `width` differ only while the nav is HIDDEN, and keeping both is the
 /// point: the layout turnover is measured from `natural`, so hiding the nav cannot flip
@@ -96,8 +99,10 @@ pub struct NavSize {
     pub natural: u16,
     /// The width on screen this frame: `natural`, or 0 while the nav is hidden.
     pub width: u16,
-    /// The `Top` band's height the user set; 0 means auto (~40% of the body).
+    /// The band's height the user set; 0 means auto (~40% of the body).
     pub height: u16,
+    /// Which side of the terminal view the nav is attached to this frame.
+    pub position: NavPosition,
 }
 
 impl NavSize {
@@ -107,6 +112,7 @@ impl NavSize {
             natural,
             width: natural,
             height: 0,
+            position: NavPosition::Left,
         }
     }
 
@@ -117,51 +123,57 @@ impl NavSize {
             natural,
             width: 0,
             height: 0,
+            position: NavPosition::Left,
         }
     }
 
-    /// The same nav with the `Top` band height the user set (0 = auto).
+    /// The same nav with the band height the user set (0 = auto).
     pub fn with_height(self, height: u16) -> Self {
         NavSize { height, ..self }
+    }
+
+    /// The same nav attached on another side.
+    pub fn with_position(self, position: NavPosition) -> Self {
+        NavSize { position, ..self }
     }
 }
 
 /// Picks the layout from the TERMINAL VIEW's aspect, not the whole screen's: putting the
 /// tree in a side column costs the terminal `nav_width + 1` columns, and if that would
-/// leave the terminal view no wider than it is tall, the tree stacks on `Top` instead so
-/// the terminal keeps full width. So a screen that is landscape overall can still go `Top`
-/// once the tree squeezes the terminal into a square-or-taller shape. `nav_width` is the
-/// width the tree would occupy in `Side` (the natural/unhidden width).
+/// leave the terminal view no wider than it is tall, the tree stacks in a band instead so
+/// the terminal keeps full width. So a screen that is landscape overall can still get the
+/// band once the tree squeezes the terminal into a square-or-taller shape. `nav_width` is
+/// the width the tree would occupy in a column (the natural/unhidden width).
 ///
 /// The aspect is the one the user SEES, not the one the cell counts state: a row is about
 /// two columns tall ([`CELL_ASPECT`]), so 60 columns over 30 rows is square. Comparing the
-/// counts directly would call that window landscape and keep the side column until the
+/// counts directly would call that window landscape and keep the column until the
 /// terminal was half as wide as it looked.
 ///
 /// The aspect is always measured AS IF the tree were in its side column, never from the
-/// terminal's live size: going `Top` gives the terminal back the tree's columns and takes
-/// the band's rows instead, so measuring the result would make the test flip its own input
-/// and the layout oscillate at the boundary. One side of the comparison, one answer: the
-/// side terminal is wider than tall (`x > y`) or it is not (`x <= y`).
+/// terminal's live size: going to a band gives the terminal back the tree's columns and
+/// takes the band's rows instead, so measuring the result would make the test flip its
+/// own input and the layout oscillate at the boundary. One side of the comparison, one
+/// answer: the column terminal is wider than tall (`x > y`) or it is not (`x <= y`).
 pub fn view_layout(area: Rect, nav_width: u16) -> ViewLayout {
     let side_term_w = area.width.saturating_sub(nav_width.saturating_add(1)) as u32;
     let side_term_h = area.height as u32 * CELL_ASPECT;
     if side_term_w <= side_term_h {
-        ViewLayout::Top
+        ViewLayout::Band
     } else {
-        ViewLayout::Side
+        ViewLayout::Column
     }
 }
 
-/// The auto `Top`-layout tree height for a body of `body_rows` rows (before the hint bar row
+/// The auto band-layout tree height for a body of `body_rows` rows (before the hint bar row
 /// is removed the caller passes `full_height - 1`). This is the seed a RELATIVE height resize
-/// (prefix h/l in Top) starts from while `nav_height` is still 0 (auto), so the first key
+/// (prefix h/l in a band) starts from while `nav_height` is still 0 (auto), so the first key
 /// adjusts the height the user actually sees.
 pub fn default_nav_height(body_rows: u16) -> u16 {
     top_nav_height(body_rows)
 }
 
-/// The tree region's height in the `Top` layout: ~40% of the body, at least a few rows, but
+/// The tree region's height in the band layout: ~40% of the body, at least a few rows, but
 /// never so tall the terminal loses its last rows. Composed with min/max (not `clamp`) so a
 /// tiny body - where the floor would exceed the ceiling and `clamp` would panic - just yields
 /// the small floor instead.
@@ -173,12 +185,12 @@ fn top_nav_height(body_h: u16) -> u16 {
 
 /// The screen regions the switcher draws into, derived ONCE per frame so the renderer,
 /// the PTY sizing, and mouse hit-testing all agree (one geometry, no divergence). The
-/// tree and terminal split the whole area horizontally (`Side`, sized by `nav_width`)
-/// or vertically (`Top`, sized by `nav_height`), parted by the one-cell view border;
+/// tree and terminal split the whole area side by side (`Column`, sized by `nav_width`)
+/// or stacked (`Band`, sized by `nav_height`), parted by the one-cell view border;
 /// the hint bar is the BOTTOM of the nav region, not a full-width strip, so it reads
 /// as the nav's own status line and the terminal view keeps every row it owns.
 /// `nav_width == 0` is the tree-hidden sentinel: the terminal owns the whole area (and
-/// there is no nav to carry a hint bar). `nav_height == 0` means the `Top` height is
+/// there is no nav to carry a hint bar). `nav_height == 0` means the band height is
 /// auto (~40% of the area).
 pub struct Regions {
     pub layout: ViewLayout,
@@ -188,7 +200,7 @@ pub struct Regions {
     pub hint_bar: Rect,
 }
 
-/// The Top-layout tree height: a user-set `nav_height` (dragged border) clamped so both
+/// The band-layout tree height: a user-set `nav_height` (dragged border) clamped so both
 /// views keep room, or the auto ~40% when `nav_height == 0`. min/max (not `clamp`) so a
 /// tiny body cannot panic on inverted bounds.
 fn top_nav_height_for(body_h: u16, nav_height: u16) -> u16 {
@@ -211,10 +223,11 @@ fn split_nav(nav: Rect, hint_bar_h: u16) -> (Rect, Rect) {
 }
 
 pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
-    // The layout is decided from the width the user SET, never from the width on screen, so
-    // hiding the nav cannot flip it; the hidden sentinel below still gives the whole area
-    // to the terminal.
-    let layout = view_layout(area, nav.natural);
+    // The layout follows the attachment position: a left or right placement is a column,
+    // a top or bottom one a band. The position travels with the hidden nav unchanged, so
+    // hiding it cannot flip the layout; the hidden sentinel below still gives the whole
+    // area to the terminal.
+    let layout = nav.position.layout();
     let (nav_width, nav_height) = (nav.width, nav.height);
     if nav_width == 0 {
         return Regions {
@@ -225,8 +238,8 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
             hint_bar: Rect::default(),
         };
     }
-    match layout {
-        ViewLayout::Side => {
+    match nav.position {
+        NavPosition::Left => {
             let c = Layout::horizontal([
                 Constraint::Length(nav_width),
                 Constraint::Length(1),
@@ -242,7 +255,26 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
                 hint_bar,
             }
         }
-        ViewLayout::Top => {
+        NavPosition::Right => {
+            // The left column mirrored: the terminal keeps the remainder, the border and
+            // the tree follow on the right. The tree region is the left column's, so the
+            // in-region layout (card flow, hint bar) is identical at both placements.
+            let c = Layout::horizontal([
+                Constraint::Min(0),
+                Constraint::Length(1),
+                Constraint::Length(nav_width),
+            ])
+            .split(area);
+            let (tree, hint_bar) = split_nav(c[2], hint_bar_h);
+            Regions {
+                layout,
+                tree,
+                view_border: c[1],
+                terminal: c[0],
+                hint_bar,
+            }
+        }
+        NavPosition::Top => {
             let th = top_nav_height_for(area.height, nav_height);
             let r = Layout::vertical([
                 Constraint::Length(th),
@@ -256,6 +288,26 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
                 tree,
                 view_border: r[1],
                 terminal: r[2],
+                hint_bar,
+            }
+        }
+        NavPosition::Bottom => {
+            // The top band mirrored, down to the split order: the tree region is the top
+            // band's shape and `split_nav` keeps the status line on the region's bottom
+            // row, which with a bottom attachment is the bottom row of the screen.
+            let th = top_nav_height_for(area.height, nav_height);
+            let r = Layout::vertical([
+                Constraint::Min(0),
+                Constraint::Length(1),
+                Constraint::Length(th),
+            ])
+            .split(area);
+            let (tree, hint_bar) = split_nav(r[2], hint_bar_h);
+            Regions {
+                layout,
+                tree,
+                view_border: r[1],
+                terminal: r[0],
                 hint_bar,
             }
         }
@@ -304,6 +356,11 @@ pub struct Switcher {
     /// The address of the session xmux is ITSELF running in, when it is inside one. The
     /// one address the terminal view refuses: see [`Switcher::is_own_session`].
     own_session: Option<String>,
+    /// Whether the nav hides the settled unreachable hosts' cards (`[ui]
+    /// hide-unreachable`). The app threads it in at construction; there is no live
+    /// toggle. The filter naming a hidden host keeps its card, which is the
+    /// unreachable screen's one entry point.
+    hide_unreachable: bool,
 
     list_state: ListState,
     nav_inner: Rect,
@@ -312,12 +369,12 @@ pub struct Switcher {
     /// whichever band it sits in. The paint is the only thing that decides a card's rect,
     /// so a click cannot land on a card the renderer put elsewhere.
     nav_cells: Vec<(usize, Rect)>,
-    /// The leftmost drawn column of the `Top` column flow: the horizontal scroll
+    /// The leftmost drawn column of the band's column flow: the horizontal scroll
     /// position, moved only as far as keeping the selected card visible requires.
     nav_col_offset: usize,
-    /// The view stacking as of the last render (Side vs Top), cached so key handling can
+    /// The view stacking as of the last render (column vs band), cached so key handling can
     /// route the arrows to match what is on screen without re-deriving the geometry. Set
-    /// each frame by `render` from [`view_layout`].
+    /// each frame by `render` from the nav's position.
     layout: ViewLayout,
 
     /// A pending re-scan reselect: the session address the selection was on when `r`
@@ -336,8 +393,11 @@ pub struct Switcher {
 mod columns;
 mod input;
 mod mouse;
+mod position;
 mod render;
 mod side;
+
+pub use position::{resolve_nav_position, step_nav_position, NavPosition, NavPositionSetting};
 
 impl Switcher {
     fn blank() -> Self {
@@ -349,11 +409,12 @@ impl Switcher {
             selected: 0,
             terminal_view_target: TerminalViewTarget::default(),
             own_session: None,
+            hide_unreachable: false,
             list_state: ListState::default(),
             nav_inner: Rect::default(),
             nav_cells: Vec::new(),
             nav_col_offset: 0,
-            layout: ViewLayout::Side,
+            layout: ViewLayout::Column,
             rescan_reselect: None,
             screen_area: Rect::default(),
             popup_geo: PopupGeometry::default(),
@@ -392,6 +453,17 @@ impl Switcher {
         self.own_session = address;
     }
 
+    /// Sets whether the nav hides the settled unreachable hosts' cards, rebuilding the
+    /// rows since the setting decides which groups render. A no-op when the value is
+    /// unchanged. The app threads the config value in once at startup.
+    pub fn set_hide_unreachable(&mut self, on: bool, state: &mut crate::state::State) {
+        if self.hide_unreachable == on {
+            return;
+        }
+        self.hide_unreachable = on;
+        self.rebuild(state);
+    }
+
     /// Whether `(source, target)` addresses the session xmux is ITSELF running in.
     ///
     /// That session has a live grid like any other, and showing it is still refused:
@@ -404,9 +476,9 @@ impl Switcher {
         }
     }
 
-    /// The view stacking as of the last render (Side vs Top). Lets the app route the
-    /// tree-resize keys to the dimension the current layout resizes: WIDTH in Side, HEIGHT
-    /// in the portrait Top layout.
+    /// The view stacking as of the last render (column vs band). Lets the app route the
+    /// tree-resize keys to the dimension the current layout resizes: WIDTH in a column,
+    /// HEIGHT in a band.
     pub fn layout(&self) -> ViewLayout {
         self.layout
     }
@@ -458,7 +530,13 @@ impl Switcher {
         // The mux each card NAMES comes from one resolver, so a session card, its host's
         // card and the screen behind either cannot spell one mux three ways.
         let named_mux = |source: &str| state.chrome.source_mux(source).to_string();
-        let rows = tree::flatten(&state.groups, &state.scanning, &state.filter, &named_mux);
+        let rows = tree::flatten(
+            &state.groups,
+            &state.scanning,
+            &state.filter,
+            self.hide_unreachable,
+            &named_mux,
+        );
 
         self.rows = rows;
         let target = keep
@@ -498,10 +576,11 @@ impl Switcher {
         self.rows.iter().filter(|r| r.selectable()).count()
     }
 
-    /// The number card `i` addresses: its rank among the selectable cards. A section
+    /// The number card `i` addresses: its 1-based position among the selectable
+    /// cards, the first card being 1 and the last the selectable count. A section
     /// title has no number; it is never the selection and never a jump target.
     fn card_number(&self, i: usize) -> usize {
-        self.rows[..i].iter().filter(|r| r.selectable()).count()
+        self.rows[..i].iter().filter(|r| r.selectable()).count() + 1
     }
 
     /// Where the nav's two bands meet: the first host-state card, the flatten having sunk
@@ -940,7 +1019,7 @@ impl Switcher {
     /// Section titles are never landed on - they are not cards, so the fallback walks
     /// past them to the nearest card. Operates on the freshly rebuilt `self.rows`.
     fn fallback_after_removal(&self, prior_selected: usize) -> Option<usize> {
-        self.rows[..prior_selected]
+        self.rows[..prior_selected.min(self.rows.len())]
             .iter()
             .enumerate()
             .rev()

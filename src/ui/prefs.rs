@@ -5,6 +5,8 @@
 
 use std::path::Path;
 
+use crate::ui::switcher::NavPosition;
+
 /// The file under the xmux dir holding the last-selected session address.
 const LAST_SESSION_FILE: &str = "last_session";
 
@@ -12,7 +14,7 @@ const LAST_SESSION_FILE: &str = "last_session";
 /// with `prefix h`/`l`, so the next launch restores it instead of the default.
 const NAV_WIDTH_FILE: &str = "nav_width";
 
-/// The file under the xmux dir holding the nav height (portrait Top layout) the
+/// The file under the xmux dir holding the nav height (portrait band layout) the
 /// user last set by dragging the horizontal view border, so the next launch restores it.
 const NAV_HEIGHT_FILE: &str = "nav_height";
 
@@ -20,6 +22,12 @@ const NAV_HEIGHT_FILE: &str = "nav_height";
 /// with `prefix t` ("1"/"0"), so the next launch restores it (overriding the
 /// `auto-hide-nav` config default).
 const AUTO_HIDE_NAV_FILE: &str = "auto_hide_nav";
+
+/// The file under the xmux dir holding the nav placement the user last set with
+/// `prefix p` (a side word, or "auto" when the key cycled back to following the
+/// [ui] settings), so the next launch restores the pin (overriding the
+/// `auto-nav-position` config default).
+const NAV_POSITION_FILE: &str = "nav_position";
 
 /// Reads the persisted auto-hide-nav mode. `None` when the file is absent or
 /// unrecognised - the caller falls back to the config default.
@@ -43,6 +51,24 @@ pub fn save_auto_hide_nav(xmux_dir: &Path, on: bool) {
     );
 }
 
+/// Reads the persisted nav placement pin. `Some(side)` pins the nav to that side;
+/// `None` (an absent, unreadable, "auto", or unparsable file) means follow the
+/// [ui] settings.
+pub fn load_nav_position(xmux_dir: &Path) -> Option<NavPosition> {
+    let raw = std::fs::read_to_string(xmux_dir.join(NAV_POSITION_FILE)).ok()?;
+    NavPosition::parse(&raw)
+}
+
+/// Persists the nav placement pin. `None` stores "auto" (no pin, follow the [ui]
+/// settings). Best-effort: a write failure only loses the next launch's restore.
+pub fn save_nav_position(xmux_dir: &Path, pinned: Option<NavPosition>) {
+    let word = match pinned {
+        Some(p) => p.word(),
+        None => "auto",
+    };
+    let _ = std::fs::write(xmux_dir.join(NAV_POSITION_FILE), word);
+}
+
 /// Reads the persisted tree width. `None` when the file is absent, unreadable, or
 /// not a `u16` - the caller falls back to the default width.
 pub fn load_nav_width(xmux_dir: &Path) -> Option<u16> {
@@ -56,14 +82,14 @@ pub fn save_nav_width(xmux_dir: &Path, width: u16) {
     let _ = std::fs::write(xmux_dir.join(NAV_WIDTH_FILE), width.to_string());
 }
 
-/// Reads the persisted Top-layout tree height. `None` when absent or unparsable - the
+/// Reads the persisted band-layout tree height. `None` when absent or unparsable - the
 /// caller falls back to the auto height (~40% of the body).
 pub fn load_nav_height(xmux_dir: &Path) -> Option<u16> {
     let raw = std::fs::read_to_string(xmux_dir.join(NAV_HEIGHT_FILE)).ok()?;
     raw.trim().parse::<u16>().ok()
 }
 
-/// Persists the Top-layout tree height. Best-effort: a write failure only loses the
+/// Persists the band-layout tree height. Best-effort: a write failure only loses the
 /// next launch's height restore.
 pub fn save_nav_height(xmux_dir: &Path, height: u16) {
     let _ = std::fs::write(xmux_dir.join(NAV_HEIGHT_FILE), height.to_string());
@@ -131,6 +157,32 @@ mod tests {
         assert_eq!(load_auto_hide_nav(&dir), None, "absent file");
         std::fs::write(dir.join(AUTO_HIDE_NAV_FILE), "yes").unwrap();
         assert_eq!(load_auto_hide_nav(&dir), None, "unrecognised value");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nav_position_save_then_load_round_trips() {
+        let dir = temp_dir("np-roundtrip");
+        save_nav_position(&dir, Some(NavPosition::Right));
+        assert_eq!(load_nav_position(&dir), Some(NavPosition::Right));
+        save_nav_position(&dir, Some(NavPosition::Bottom));
+        assert_eq!(load_nav_position(&dir), Some(NavPosition::Bottom));
+        // None means follow the [ui] settings, stored as the word "auto".
+        save_nav_position(&dir, None);
+        assert_eq!(
+            std::fs::read_to_string(dir.join(NAV_POSITION_FILE)).unwrap(),
+            "auto"
+        );
+        assert_eq!(load_nav_position(&dir), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nav_position_load_missing_or_garbage_is_none() {
+        let dir = temp_dir("np-garbage");
+        assert_eq!(load_nav_position(&dir), None, "absent file");
+        std::fs::write(dir.join(NAV_POSITION_FILE), "diagonal").unwrap();
+        assert_eq!(load_nav_position(&dir), None, "unrecognised value");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

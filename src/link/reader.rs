@@ -197,7 +197,7 @@ mod tests {
         let mut events = Vec::new();
         let lines = vec![
             "%begin 1 5 1".to_string(),
-            "2\t1\t1700000000\tapi".to_string(),
+            "2\t1\tapi".to_string(),
             "%end 1 5 1".to_string(),
         ]
         .into_iter();
@@ -434,7 +434,7 @@ mod tests {
                 "%begin 1 1 0".to_string(),
                 "%end 1 1 0".to_string(),
                 "%begin 1 2 1".to_string(),
-                "2\t1\t1700000000\tapi".to_string(),
+                "2\t1\tapi".to_string(),
                 "%end 1 2 1".to_string(),
             ]
             .into_iter();
@@ -467,7 +467,7 @@ mod tests {
                 "\x1bP1000p%begin 1 1 0".to_string(),
                 "%end 1 1 0".to_string(),
                 "%begin 1 2 1".to_string(),
-                "2\t1\t1700000000\tapi".to_string(),
+                "2\t1\tapi".to_string(),
                 "%end 1 2 1".to_string(),
             ]
             .into_iter();
@@ -507,7 +507,7 @@ mod tests {
             .push_back(PendingReply::ListSessions);
         let lines = vec![
             "\x1bP1000p%begin 1 10 1".to_string(), // DCS glued to the first reply
-            "2\t1\t1700000000\tapi".to_string(),
+            "2\t1\tapi".to_string(),
             "%end 1 10 1".to_string(),
             "%begin 1 11 0".to_string(), // spontaneous: must NOT consume a correlator
             "%end 1 11 0".to_string(),
@@ -546,7 +546,7 @@ mod tests {
             "noise".to_string(),
             "%end 1 5 0".to_string(),
             "%begin 1 6 1".to_string(), // our list-sessions reply, flags=1
-            "3\t1\t1700000000\twork".to_string(),
+            "3\t1\twork".to_string(),
             "%end 1 6 1".to_string(),
         ]
         .into_iter();

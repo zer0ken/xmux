@@ -208,7 +208,7 @@ fn terminal_view_size_zero_tree_is_full_width() {
         (80, 24)
     );
     // Shown tree: cols - nav_width - 1 (view border). The hint bar lives inside the nav
-    // column, so the terminal view keeps every row. Wide enough to STAY in Side: a row is
+    // column, so the terminal view keeps every row. Wide enough to STAY a column: a row is
     // two columns tall, so the column survives only while `w - nav - 1` beats twice the
     // rows (200 - 49 = 151 against 48).
     assert_eq!(
@@ -236,7 +236,7 @@ fn terminal_view_size_keeps_full_height_when_the_tree_is_shown() {
         crate::ui::switcher::NavSize::hidden(crate::ui::switcher::NAV_WIDTH),
     );
     assert_eq!(full, 40);
-    // Tree shown in Side: the hint bar is the NAV column's bottom row, not a full-width
+    // Tree shown in a column: the hint bar is the NAV column's bottom row, not a full-width
     // strip, so the terminal view costs nothing in height.
     // 220 wide keeps the side column at 40 rows (171 against 80); at 120 the column would
     // leave a terminal squarer than it looks, and the band would take over.
@@ -334,8 +334,8 @@ fn terminal_view_size_subtracts_tree_and_view_border() {
 #[test]
 fn terminal_view_size_clamps_to_at_least_one() {
     use crate::ui::switcher::NAV_WIDTH;
-    // A 10-col terminal can't fit the 48-col tree beside it, so the layout goes Top and the
-    // terminal keeps full width; a zero-row body still clamps the height up to 1. The
+    // A 10-col terminal can't fit the 48-col tree beside it, so the layout goes to the band
+    // and the terminal keeps full width; a zero-row body still clamps the height up to 1. The
     // invariant this guards is that neither dimension is ever 0 (degenerate PTY size).
     let (vc, vr) = terminal_view_size(10, 0, crate::ui::switcher::NavSize::visible(NAV_WIDTH));
     assert!(vc >= 1, "width never zero, got {vc}");
@@ -367,6 +367,91 @@ async fn host_exited_before_connect_marks_unreachable() {
     assert!(
         out.contains("no route to host"),
         "shows the exit reason:\n{out}"
+    );
+}
+
+#[test]
+fn runtime_threads_hide_unreachable_into_its_switcher() {
+    use crate::ui::run::dump_screen;
+    // The default roster config: hide-unreachable = true.
+    let env = std::sync::Arc::new(fake_env_with_sources(&["jup"]));
+    let (mut rt, _io) = Runtime::new(env);
+    rt.switcher.apply_source_result(
+        "jup".into(),
+        Vec::new(),
+        Some("no route to host".into()),
+        &mut rt.state,
+    );
+    let out = dump_screen(&mut rt.switcher, None, 80, 24, &rt.state);
+    assert!(
+        !out.contains("jup"),
+        "the config default hides the unreachable host:\n{out}"
+    );
+    rt.switcher.set_hide_unreachable(false, &mut rt.state);
+    let out = dump_screen(&mut rt.switcher, None, 80, 24, &rt.state);
+    assert!(
+        out.contains("jup"),
+        "hide-unreachable = false shows the card:\n{out}"
+    );
+}
+
+#[test]
+fn hide_unreachable_mid_run_hides_the_card_and_the_selection_lands_on_a_remaining_card() {
+    use crate::ui::run::dump_screen;
+    use crate::ui::switcher::Switcher;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut state = crate::state::State::from_sources(vec!["local".into(), "jupiter06".into()]);
+    let mut switcher = Switcher::from_sources(&mut state);
+    switcher.set_hide_unreachable(true, &mut state);
+    // Put the selection on the jupiter06 card, then let local answer with a session.
+    switcher.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut state);
+    switcher.apply_source_result(
+        "local".into(),
+        vec![crate::session::Session {
+            source: "local".into(),
+            name: "editor".into(),
+            ..Default::default()
+        }],
+        None,
+        &mut state,
+    );
+    // jupiter06's control client dies mid-run: the card hides from that moment.
+    assert!(
+        note_host_exited(
+            &mut switcher,
+            &mut state,
+            &mut HashSet::new(),
+            "jupiter06",
+            Some("no route to host".into())
+        ),
+        "the dead never-connected host is marked unreachable"
+    );
+    let out = dump_screen(&mut switcher, None, 80, 24, &state);
+    assert!(
+        !out.contains("jupiter06"),
+        "hidden the moment it fails:\n{out}"
+    );
+    let t = switcher.terminal_view_target();
+    assert_eq!(
+        (t.source, t.target),
+        ("local".into(), "editor".into()),
+        "the selection lands on a remaining card"
+    );
+    // A later scan answers and the host returns.
+    switcher.apply_source_result(
+        "jupiter06".into(),
+        vec![crate::session::Session {
+            source: "jupiter06".into(),
+            name: "ops".into(),
+            ..Default::default()
+        }],
+        None,
+        &mut state,
+    );
+    let out = dump_screen(&mut switcher, None, 80, 24, &state);
+    assert!(
+        out.contains("jupiter06"),
+        "a successful scan revives the host:\n{out}"
     );
 }
 
@@ -555,7 +640,6 @@ async fn r_rescan_rebuilds_nav_and_kicks_discovery() {
                 name: "api".into(),
                 windows: 1,
                 attached: false,
-                last_attached: 100,
             }],
         }],
     };
@@ -1192,6 +1276,9 @@ fn test_rt(env: Env) -> Runtime {
         nav_width: crate::ui::switcher::NAV_WIDTH,
         nav_width_natural: crate::ui::switcher::NAV_WIDTH,
         nav_height: 0,
+        nav_position: crate::ui::switcher::NavPosition::Left,
+        nav_position_pinned: None,
+        nav_pos_setting: crate::ui::switcher::NavPositionSetting::default(),
         applied_nav_height: u16::MAX,
         auto_hide_nav: false,
         mouse_state: MouseState::default(),
@@ -1343,7 +1430,6 @@ fn two_session_scan() -> crate::ui::switcher::Scan {
         name: name.into(),
         windows,
         attached: false,
-        last_attached: 100,
     };
     Scan {
         groups: vec![Group {
@@ -1435,7 +1521,6 @@ fn jup_sessions(names: &[&str]) -> Vec<crate::session::Session> {
             name: (*name).into(),
             windows: 1,
             attached: false,
-            last_attached: 100,
         })
         .collect()
 }
@@ -1559,7 +1644,6 @@ fn psmux_scan() -> crate::ui::switcher::Scan {
         name: name.into(),
         windows: 1,
         attached: false,
-        last_attached: 100,
     };
     crate::ui::switcher::Scan {
         groups: vec![Group {
@@ -1666,7 +1750,6 @@ fn zellij_scan() -> crate::ui::switcher::Scan {
         mux: "zellij".into(),
         windows: 1,
         attached: false,
-        last_attached: 100,
     };
     crate::ui::switcher::Scan {
         groups: vec![crate::ui::tree::Group {
@@ -2095,7 +2178,6 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
                     name: "api".into(),
                     windows: 1,
                     attached: false,
-                    last_attached: 200,
                 },
                 Session {
                     mux: String::new(),
@@ -2103,7 +2185,6 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
                     name: "db".into(),
                     windows: 1,
                     attached: false,
-                    last_attached: 100,
                 },
             ],
         }],
@@ -2201,7 +2282,6 @@ fn status_line_reports_focus_and_address() {
                 name: "api".into(),
                 windows: 1,
                 attached: false,
-                last_attached: 1,
             }],
         }],
     };
@@ -2240,7 +2320,6 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
                     name: "api".into(),
                     windows: 1,
                     attached: false,
-                    last_attached: 1,
                 },
                 Session {
                     mux: String::new(),
@@ -2248,7 +2327,6 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
                     name: "db".into(),
                     windows: 1,
                     attached: false,
-                    last_attached: 2,
                 },
             ],
         }],
@@ -2287,6 +2365,42 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
         state.attach_deadline.is_none(),
         "Select arms no deadline - the trailing Tick does"
     );
+}
+
+#[test]
+fn prefix_p_cycles_the_nav_position_and_persists_it() {
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // `prefix p` moves the pin one step clockwise from the CURRENT effective position
+    // and saves it at once, the same moment `prefix t` saves the auto-hide toggle. The
+    // fifth step unpins (back to following the [ui] settings), which stores "auto".
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.nav_position = NavPosition::Left; // effective = left (unpinned)
+    let out = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
+    assert_eq!(rt.nav_position_pinned, Some(NavPosition::Top));
+    assert!(
+        std::fs::read_to_string(rt.env.xmux_dir.join("nav_position"))
+            .unwrap()
+            .contains("top"),
+        "the pin is saved the moment the key cycles"
+    );
+    let _ = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
+    assert_eq!(rt.nav_position_pinned, Some(NavPosition::Right));
+    let _ = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
+    assert_eq!(rt.nav_position_pinned, Some(NavPosition::Bottom));
+    let _ = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
+    assert_eq!(rt.nav_position_pinned, None, "the fifth step unpins");
+    assert!(
+        std::fs::read_to_string(rt.env.xmux_dir.join("nav_position"))
+            .unwrap()
+            .contains("auto"),
+        "unpinning stores \"auto\""
+    );
+    // The cycle itself does not claim the focus flags the outcome carries.
+    assert!(!out.focus_terminal && !out.focus_nav && !out.quit);
 }
 
 #[test]
@@ -2350,7 +2464,6 @@ fn rt_terminal_focus_with_session() -> Runtime {
                 name: "api".into(),
                 windows: 1,
                 attached: false,
-                last_attached: 1,
             }],
         }],
     };
@@ -2611,10 +2724,10 @@ fn handle_mouse_event_view_border_grab_sets_dragging() {
 #[test]
 fn handle_mouse_event_top_layout_border_drag_resizes_height() {
     use crate::ui::switcher::{Scan, Switcher};
-    // In the portrait Top layout the view border is a HORIZONTAL rule; a left-press on that
-    // row grabs it and a drag sets the nav HEIGHT (not width). 40x60 → Top; the nav band
-    // carries its own hint bar, so its auto height is ~40% of the whole 60-row area = 24,
-    // putting the border at row 24 (0-based) = SGR row 25.
+    // In a band layout the view border is a HORIZONTAL rule; a left-press on that
+    // row grabs it and a drag sets the nav HEIGHT (not width). 40x60 carries the band:
+    // the nav band carries its own hint bar, so its auto height is ~40% of the whole
+    // 60-row area = 24, putting the border at row 24 (0-based) = SGR row 25.
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let sel = Selection::default();
@@ -2624,6 +2737,7 @@ fn handle_mouse_event_top_layout_border_drag_resizes_height() {
     rt.cols = 40;
     rt.body_rows = 59;
     rt.nav_height = 0; // auto
+    rt.nav_position = crate::ui::switcher::NavPosition::Top;
 
     let press = crate::display::mouse::MouseEvent {
         cb: 0,
@@ -2654,11 +2768,100 @@ fn handle_mouse_event_top_layout_border_drag_resizes_height() {
 }
 
 #[test]
+fn handle_mouse_event_bottom_layout_border_drag_resizes_height() {
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // The bottom placement mirrors the top: the border is the row ABOVE the band, and a
+    // drag measures the height from the window's FAR edge. 40x60 pinned Bottom; the auto
+    // height is 24, so the border is 0-based row 35 = SGR row 36.
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let sel = Selection::default();
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.cols = 40;
+    rt.body_rows = 59;
+    rt.nav_height = 0; // auto
+    rt.nav_position = NavPosition::Bottom;
+
+    let press = crate::display::mouse::MouseEvent {
+        cb: 0,
+        col: 5,
+        row: 36,
+        pressed: true,
+    };
+    let (mut ft, mut wheel) = (false, false);
+    let area = ratatui::layout::Rect::default();
+    rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel, area);
+    assert!(
+        rt.mouse_state.dragging_view_border,
+        "left-press on the horizontal bottom border grabs it"
+    );
+
+    // Drag DOWN to SGR row 40 → the band keeps 60 - 40 = 20 rows.
+    let drag = crate::display::mouse::MouseEvent {
+        cb: 0x20,
+        col: 5,
+        row: 40,
+        pressed: true,
+    };
+    rt.handle_mouse_event(&drag, &sel, &mut ft, &mut wheel, area);
+    assert_eq!(
+        rt.nav_height, 20,
+        "dragging the bottom border measures the height from the far edge"
+    );
+}
+
+#[test]
+fn handle_mouse_event_right_layout_border_drag_resizes_width() {
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // The right placement mirrors the left: the border is the column LEFT of the nav,
+    // and a drag measures the width from the window's FAR edge. 140x30 pinned Right;
+    // the border is 0-based col 91 = SGR col 92.
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let sel = Selection::default();
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.cols = 140;
+    rt.body_rows = 29;
+    rt.nav_position = NavPosition::Right;
+
+    let press = crate::display::mouse::MouseEvent {
+        cb: 0,
+        col: 92,
+        row: 5,
+        pressed: true,
+    };
+    let (mut ft, mut wheel) = (false, false);
+    let area = ratatui::layout::Rect::default();
+    rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel, area);
+    assert!(
+        rt.mouse_state.dragging_view_border,
+        "left-press on the vertical right border grabs it"
+    );
+
+    // Drag RIGHT to SGR col 100 → the nav keeps 140 - 100 = 40 columns.
+    let drag = crate::display::mouse::MouseEvent {
+        cb: 0x20,
+        col: 100,
+        row: 5,
+        pressed: true,
+    };
+    rt.handle_mouse_event(&drag, &sel, &mut ft, &mut wheel, area);
+    assert_eq!(
+        rt.nav_width_natural, 40,
+        "dragging the right border measures the width from the far edge"
+    );
+}
+
+#[test]
 fn resize_keys_adjust_height_in_top_layout() {
     use crate::ui::switcher::{Scan, Switcher, ViewLayout, NAV_WIDTH};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    // In the portrait Top layout the nav-resize keys (prefix h/l · Ctrl+←/→) adjust the
+    // In a band layout the nav-resize keys (prefix h/l · Ctrl+←/→) adjust the
     // HEIGHT, not the width - seeded from the auto height the first time.
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
@@ -2668,7 +2871,8 @@ fn resize_keys_adjust_height_in_top_layout() {
     rt.cols = 40;
     rt.body_rows = 59;
     rt.nav_height = 0; // auto
-                       // Render once into a portrait backend so the switcher caches layout = Top.
+    rt.nav_position = crate::ui::switcher::NavPosition::Top;
+    // Render once into a portrait backend so the switcher caches layout = Band.
     let mut term = Terminal::new(TestBackend::new(40, 60)).unwrap();
     {
         let sw = &mut rt.switcher;
@@ -2678,28 +2882,129 @@ fn resize_keys_adjust_height_in_top_layout() {
                 f,
                 None,
                 false,
-                crate::ui::switcher::NavSize::visible(NAV_WIDTH),
+                crate::ui::switcher::NavSize::visible(NAV_WIDTH)
+                    .with_position(crate::ui::switcher::NavPosition::Top),
                 st,
             )
         })
         .unwrap();
     }
-    assert_eq!(rt.switcher.layout(), ViewLayout::Top, "portrait → Top");
+    assert_eq!(rt.switcher.layout(), ViewLayout::Band, "portrait → Band");
 
     let auto = crate::ui::switcher::default_nav_height(59);
-    // Vertical axis (Ctrl+↓ = grow) resizes HEIGHT in Top; horizontal (Ctrl+→) is a no-op here.
+    // Vertical axis (Ctrl+↓ = grow) resizes HEIGHT in a band; horizontal (Ctrl+→) is a no-op here.
     assert!(
         !rt.resize_axis(true, 1),
-        "horizontal resize is a no-op in Top"
+        "horizontal resize is a no-op in a band"
     );
     assert!(rt.resize_axis(false, 1), "grow changes the height");
     assert_eq!(
         rt.nav_height,
         auto + 1,
-        "a resize key grows the Top nav height from the auto seed"
+        "a resize key grows the band nav height from the auto seed"
     );
     assert!(rt.resize_axis(false, -1), "shrink changes the height");
     assert_eq!(rt.nav_height, auto, "and shrinks it back");
+}
+
+#[test]
+fn loop_top_resolves_the_pinned_nav_position() {
+    use crate::ui::switcher::{Scan, Switcher, ViewLayout};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    // The pin wins outright: whatever the aspect says, the loop top resolves the nav to
+    // the pinned side and the PTYs are sized for that split.
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.nav_position_pinned = Some(crate::ui::switcher::NavPosition::Right);
+    let mut term = Terminal::new(TestBackend::new(80, 25)).unwrap();
+    rt.prepare_and_draw(&mut term);
+    assert_eq!(
+        rt.nav_position,
+        crate::ui::switcher::NavPosition::Right,
+        "the loop top applied the pin"
+    );
+    // The switcher's cached stacking (what key handling routes by) follows the same
+    // value once the frame is drawn from the runtime's nav size.
+    let nav = rt.nav_size();
+    let (sw, st) = (&mut rt.switcher, &rt.state);
+    term.draw(|f| sw.render(f, None, false, nav, st)).unwrap();
+    assert_eq!(
+        rt.switcher.layout(),
+        ViewLayout::Column,
+        "right is a column"
+    );
+}
+
+#[test]
+fn loop_top_resolves_auto_for_a_portrait_backend() {
+    use crate::ui::switcher::{Scan, Switcher, ViewLayout};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    // No pin: the default settings resolve by the wide/narrow turnover. A 40x60 area
+    // (cols 40, body_rows 59 + the status row) is portrait, so the band takes over and
+    // the narrow default (top) applies.
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.cols = 40;
+    rt.body_rows = 59;
+    let mut term = Terminal::new(TestBackend::new(40, 60)).unwrap();
+    rt.prepare_and_draw(&mut term);
+    assert_eq!(rt.nav_position, crate::ui::switcher::NavPosition::Top);
+    let nav = rt.nav_size();
+    let (sw, st) = (&mut rt.switcher, &rt.state);
+    term.draw(|f| sw.render(f, None, false, nav, st)).unwrap();
+    assert_eq!(rt.switcher.layout(), ViewLayout::Band, "top is a band");
+}
+
+#[test]
+fn forward_to_mux_reasserts_capture_and_encodes_the_sgr_press() {
+    use crate::ui::switcher::{Scan, Switcher};
+    // A left-press over the FOCUSED terminal view reaches the mux as an SGR press
+    // re-encoded to the view-local cell, and the ForwardToMux arm re-asserts the CONIN
+    // capture bits before the forward (a no-op off Windows, where the assertion is a
+    // pure local read and write of xmux's own console handle).
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let sel = Selection {
+        source: "local".into(),
+        session: "work".into(),
+        window: None,
+    };
+    let nav_width = crate::ui::switcher::NAV_WIDTH;
+    let (vw, vh) = terminal_view_size(80, 24, crate::ui::switcher::NavSize::visible(nav_width));
+    let term_area = ratatui::layout::Rect::new(nav_width + 1, 0, vw, vh);
+    let (att, log) = crate::display::attachment::fake_attachment_with_input_log(42);
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    rt.registry.insert(&display_key(&rt.hosts, &sel), att);
+
+    // A left-button press inside the terminal view (SGR 1-based col/row, cb 0 = left).
+    let press = crate::display::mouse::MouseEvent {
+        cb: 0,
+        col: nav_width + 12,
+        row: 5,
+        pressed: true,
+    };
+    let (mut ft, mut wheel) = (false, false);
+    rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel, term_area);
+    // Re-encoded to grid-local (1-based): col nav_width+12 → gc 11, row 5 → gr 5.
+    let logged = log.lock().unwrap().clone();
+    assert_eq!(
+        logged,
+        vec![b"\x1b[<0;11;5M".to_vec()],
+        "the drag-start press reaches the mux, re-encoded to the view-local cell"
+    );
 }
 
 /// The tty a live display attach gives its host is decided by the transport's own shape.

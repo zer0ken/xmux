@@ -165,14 +165,16 @@ no function, and no test, so renaming code is never a documentation change.
   leaving the layout alone so no card shifts. When the nav is auto-hidden, a live
   prefix interaction brings the nav back for the moment it needs it (a jump reads the
   card numbers), and it hides again when the interaction ends.
-- **FR-B10** - Every unselected card carries a 0-based number in its address column, on
+- **FR-B10** - Every unselected card carries a 1-based number in its address column, on
   the row of the session it addresses, and `prefix <digit>` jumps to it. The selected
   card holds the selection mark in that same column instead. Selecting a card changes
   nothing else on the card (the address column keeps its width), so a
   name holds its column as the selection passes over it. The input stays
-  open in the hint bar so the number can grow, and accepts a digit only while the result still addresses
-  a real session, so one-, two-, and three-digit numbers behave identically. Each edit
-  moves the selection; `Enter` keeps it, `Esc` returns to where the jump started.
+  open in the hint bar so the number can grow, and every digit is taken as typed: the
+  number only has to name a real card at Enter. Each edit moves the selection while
+  the number names a card and leaves it alone otherwise; `Enter` closes when the
+  number names a card and flashes the valid range while leaving the input open
+  otherwise; `Esc` returns to where the jump started.
 - **FR-B11** - Every colour xmux paints is an ANSI-16 slot, so the TERMINAL THEME
   resolves the hue and the whole UI recolours with the user's own scheme. A THEME is a
   named role→ANSI-slot assignment curated in a registry: the built-ins are
@@ -229,34 +231,40 @@ no function, and no test, so renaming code is never a documentation change.
   `7 more >>` at the right, counting CARDS behind the columns the window does not reach.
   That row is the band's own last row, never a card's. Nothing is drawn while everything
   fits.
-- **FR-B14** - An arrow points AT the view it focuses, on either axis: the terminal is
-  right of the nav in the side layout and below it in the portrait one, so `prefix right`
-  and `prefix down` both focus the terminal while `prefix left` and `prefix up` both focus
-  the nav. An arrow naming the view that already has focus does
+- **FR-B14** - The arrow PAIR facing the terminal's side names the terminal, and the
+  other pair names the nav, identically on both focus paths. With the nav on the left or
+  above, `prefix right` and `prefix down` focus the terminal while `prefix left` and
+  `prefix up` focus the nav; with the nav on the right or below the whole pair flips. An
+  arrow naming the view that already has focus does
   nothing. Bare arrows belong to the cards instead: up and down step one card, left and
-  right step one category (FR-B4). Neither is by column, because the portrait band
+  right step one category (FR-B4). Neither is by column, because the band
   puts the next card below in one place and one column over in another, and a key that
   moved by column would mean two different things in the two layouts.
-- **FR-B15** - Which layout is in force is decided by ONE test, always measured as if the
+- **FR-B15** - Which side the nav rides on is resolved each frame in one order: a
+  placement pinned at runtime, then the auto settings, then the forced placement, then the
+  wide default. While the auto settings are in force, the wide/narrow choice between them
+  is decided by ONE test, always measured as if the
   nav kept its side column: the terminal that column would leave is the window width less
   the nav and its border, over the window's full height, and while that is WIDER than tall
-  the nav is the side column. The moment it is not (square included) the nav becomes the
-  top band and the side column is gone. Wider than tall is judged in the proportions the
-  user SEES: a terminal row is about two columns tall, so the rows count double. Judging
-  it by cell counts alone held the side column until the terminal was half as wide as it
-  looked, and measuring the LIVE terminal would flip the test's own input, since going to
-  the band hands those columns back and takes rows instead, so the layout would oscillate
-  at the boundary.
-- **FR-B16** - The nav's width and the portrait band's height are both live: the saved
-  pref seeds them, the resize keys step them, a border drag sets them, and auto-hide takes
+  the wide placement applies. The moment it is not (square included) the narrow one does.
+  Wider than tall is judged in the proportions the
+  user SEES: a terminal row is about two columns tall, so the rows count double. The test
+  is the position resolution's FIXED criterion: it reads the window and the nav's natural
+  width, never the resolved placement, so the answer cannot feed back into the question
+  and nothing oscillates at the boundary. Measuring the LIVE terminal would flip the
+  test's own input, since moving to a band hands those columns back and takes rows
+  instead.
+- **FR-B16** - The nav's width, the band's height, and the side it rides on are all
+  live: the saved prefs seed them, the resize keys and `prefix p` step them, a border drag
+  sets the size, and auto-hide takes
   the width away while no prefix interaction is live (a live one brings the nav back). The
   width has a floor at the resting prefix label plus a one-cell gap each side, so the
   border can collapse to just past the `C-g` status line and a wider configured prefix
   raises the floor. The values therefore travel as ONE value carrying
-  the width the user set, the width on screen, and the band height, so the renderer, the
-  PTY sizing and mouse hit-testing cannot read three different answers, and the effective
-  width keeps its single owner. Hiding the nav does not move the layout: the turnover
-  reads the width the user SET, so the nav returns the shape it left.
+  the width the user set, the width on screen, the band height, and the attachment side,
+  so the renderer, the PTY sizing and mouse hit-testing cannot read different answers,
+  and the effective width keeps its single owner. Hiding the nav does not move the
+  layout: the side travels with the hidden nav, so the nav returns the shape it left.
 - **FR-B17** - The status row is a bar where it owns its row and a label where it does not:
   the side column's bar fills its row, and so does any ready or flashing bar, which has to
   be readable over what it covers; the portrait band's resting bar paints its text plus a
@@ -325,6 +333,34 @@ no function, and no test, so renaming code is never a documentation change.
   environment on this machine. A mux that offers no such reading, and a host whose client
   runs on the far side of ssh or a WSL distribution, are not guessed at, and a mux that
   cannot move a client between sessions at all (screen, abduco) has nothing to follow.
+
+- **FR-B24** - The nav hides the hosts no scan has reached: an unreachable host takes no
+  card by default, and `[ui] hide-unreachable` (default true) turns the hiding off. The
+  filter naming a hidden host brings its card back, and that named card is the one entry
+  to its unreachable screen. An empty filter hides every unreachable host, and a filter
+  matching nothing does not bring them back through the no-match fallback that shows the
+  other hosts. A reachable host with no sessions keeps its card, and a host still scanning
+  never hides, whatever stale failure it carries. A host that goes unreachable mid-run
+  hides from that result on and returns when a scan answers.
+- **FR-B25** - The nav attaches on one of FOUR sides of the terminal view - a left or
+  right column, a top or bottom band - and the placement is a user choice at three layers:
+  four `[ui]` settings (`auto-nav-position`, `wide-nav-position`, `narrow-nav-position`,
+  `force-nav-position`) name the defaults (`true`, `left`, `top`, unset), the per-frame
+  resolution order is pinned > auto > force > wide (FR-B15), and `prefix p` moves the nav
+  one side clockwise (left → top → right → bottom → automatic), saving the pinned value
+  to `~/.xmux/nav_position` the moment it changes, where it beats the settings until the
+  key cycles back to automatic. The mirror symmetry is shape-only: the layout INSIDE the
+  nav region is identical at all four placements (a right column is the left column's
+  list, a bottom band the top band's down-then-right flow), only what sits on which side
+  of the view border flips, and the status line stays the nav region's bottom row in all
+  four - with a bottom attachment that is the bottom row of the screen. The view border
+  drag mirrors its math per side (a right border measures the width from the right edge,
+  a bottom border the height from the bottom edge), while the resize keys keep the nav's
+  own size semantics whatever the placement. A position change leaves the terminal view
+  the remainder whole, with the selection and the focus kept, resizes the mux terminals
+  for the new split, and repaints the whole screen, since the border jumps to the
+  opposite side. The focus arrow pairs follow the placement (FR-B14), and the cheatsheet
+  and help modal name the pair the current placement makes active.
 
 ## C. Switching (the keystone)
 
@@ -422,7 +458,9 @@ nothing to switch to until one exists.
   verbs: xmux aggregates and switches, so editing a session stays with the mux. Raw
   key/text injection stays behind the unstable `raw:` namespace (`raw:key` /
   `raw:keys` / `raw:text`). A command-level failure replies `err: …` and `xmux send`
-  exits non-zero.
+  exits non-zero. A `switch` to a `<source>/<session>` address the inventory does not
+  list is such a failure: it replies `err:` naming which half is missing (the source,
+  or a session under a present source), so the reply reflects the address resolution.
 - **FR-F2** - There is one unified socket, not a separate app socket: `switch <address>`
   is a first-class ctl verb resolving to the same switch action a key press does.
 - **FR-F3** - Every instance takes a NAME at startup: an auto-generated

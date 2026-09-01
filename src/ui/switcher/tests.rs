@@ -7,6 +7,8 @@ use ratatui::Terminal;
 use std::sync::Mutex;
 use unicode_width::UnicodeWidthStr;
 
+use super::tests_support::auto_nav;
+
 // --- mock ops -----------------------------------------------------------
 
 #[derive(Default)]
@@ -53,8 +55,8 @@ impl Harness {
         Self::new_sized(scan, 140, 30)
     }
 
-    /// A harness with a specific backend size - used to exercise the portrait Top
-    /// layout (height > width), whose navigation differs from the landscape Side layout.
+    /// A harness with a specific backend size - used to exercise the portrait band
+    /// layout (height > width), whose navigation differs from the landscape column layout.
     fn new_sized(scan: Scan, w: u16, h_: u16) -> Self {
         let backend = TestBackend::new(w, h_);
         let term = Terminal::new(backend).unwrap();
@@ -153,7 +155,7 @@ impl Harness {
         let sw = &mut self.sw;
         let state = &self.state;
         self.term
-            .draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), state))
+            .draw(|f| sw.render(f, None, false, auto_nav(NAV_WIDTH, f.area()), state))
             .unwrap();
     }
 
@@ -253,14 +255,13 @@ fn mod_of(buf: &Buffer, text: &str, limit: u16) -> Option<Modifier> {
 
 // --- sample data --------------------------------------------------------
 
-fn sess(source: &str, name: &str, windows: i64, attached: bool, last: i64) -> Session {
+fn sess(source: &str, name: &str, windows: i64, attached: bool) -> Session {
     Session {
         source: source.into(),
         name: name.into(),
         mux: String::new(),
         windows,
         attached,
-        last_attached: last,
     }
 }
 
@@ -273,7 +274,7 @@ fn selection_parked_elsewhere(mut scan: Scan) -> Scan {
     scan.groups.push(Group {
         source: "aaa".into(),
         err: None,
-        sessions: vec![sess_mux("aaa", "parked", "psmux", 9_999)],
+        sessions: vec![sess_mux("aaa", "parked", "psmux")],
     });
     scan
 }
@@ -284,14 +285,14 @@ fn sample() -> Scan {
             source: "local".into(),
             err: None,
             sessions: vec![
-                sess("local", "editor", 2, true, 200),
-                sess("local", "build", 1, false, 100),
+                sess("local", "editor", 2, true),
+                sess("local", "build", 1, false),
             ],
         },
         Group {
             source: "jupiter00".into(),
             err: None,
-            sessions: vec![sess("jupiter00", "inference", 1, false, 300)],
+            sessions: vec![sess("jupiter00", "inference", 1, false)],
         },
         Group {
             source: "db-2".into(),
@@ -311,12 +312,12 @@ fn scan_with_a_host_band() -> Scan {
             Group {
                 source: "local".into(),
                 err: None,
-                sessions: vec![sess("local", "editor", 1, false, 100)],
+                sessions: vec![sess("local", "editor", 1, false)],
             },
             Group {
                 source: "jupiter00".into(),
                 err: None,
-                sessions: vec![sess("jupiter00", "inference", 1, false, 300)],
+                sessions: vec![sess("jupiter00", "inference", 1, false)],
             },
             Group {
                 source: "db-2".into(),
@@ -333,11 +334,11 @@ fn scan_with_a_host_band() -> Scan {
 }
 
 /// One reachable source carrying `n` sessions, so the nav holds exactly `n` cards
-/// numbered `0..n`. Used where the card COUNT is the point (a two-digit jump needs
+/// numbered `1..=n`. Used where the card COUNT is the point (a two-digit jump needs
 /// more cards than [`sample`] has).
 fn scan_with_sessions(n: usize) -> Scan {
     let sessions = (0..n)
-        .map(|i| sess("local", &format!("s{i}"), 1, false, (n - i) as i64))
+        .map(|i| sess("local", &format!("s{i}"), 1, false))
         .collect();
     Scan {
         groups: vec![Group {
@@ -385,7 +386,7 @@ fn two_window_scan() -> Scan {
         groups: vec![Group {
             source: "jup".into(),
             err: None,
-            sessions: vec![sess("jup", "api", 2, false, 100)],
+            sessions: vec![sess("jup", "api", 2, false)],
         }],
     }
 }
@@ -468,18 +469,18 @@ async fn renders_a_session_card_per_session() {
 async fn launch_preselects_top_row() {
     // #G: on launch the highlight sits on the very top card (index 0) - the first
     // local session (frozen there before any remote streams in); no persisted
-    // last_session is consulted and a more-recent remote must not steal the top.
+    // last_session is consulted and a remote must not steal the top.
     let mut h = Harness::from_sources(&["local", "jupiter00"]);
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess("local", "editor", 1, false, 100)],
+        vec![sess("local", "editor", 1, false)],
         None,
         &mut h.state,
     );
-    // A more-recent remote streams in and must NOT pull the cursor down.
+    // A remote streams in and must NOT pull the cursor down.
     h.sw.apply_source_result(
         "jupiter00".into(),
-        vec![sess("jupiter00", "infer", 1, false, 300)],
+        vec![sess("jupiter00", "infer", 1, false)],
         None,
         &mut h.state,
     );
@@ -493,7 +494,7 @@ async fn launch_preselects_top_row() {
             h.sw.current_ref(),
             Some(RowRef::Session { sess }) if sess.source == "local" && sess.name == "editor"
         ),
-        "the top card is the local session, not the more-recent remote"
+        "the top card is the local session, not the remote"
     );
 }
 
@@ -613,7 +614,7 @@ async fn remove_source_drops_the_card_and_everything_keyed_to_it() {
     let mut h = Harness::from_sources(&["local", "jupiter00"]);
     h.sw.apply_source_result(
         "jupiter00".into(),
-        vec![sess("jupiter00", "api", 2, false, 100)],
+        vec![sess("jupiter00", "api", 2, false)],
         None,
         &mut h.state,
     );
@@ -651,7 +652,7 @@ async fn apply_source_result_turns_scanning_into_sessions() {
     );
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess("local", "editor", 2, false, 100)],
+        vec![sess("local", "editor", 2, false)],
         None,
         &mut h.state,
     );
@@ -673,15 +674,14 @@ async fn apply_source_result_turns_scanning_into_sessions() {
 
 #[tokio::test]
 async fn poll_preserves_session_order_after_scan() {
-    // Scan establishes name order db, web. A later poll reports web freshly
-    // attach-bumped (999) - recency would float it to the top, but the deterministic
-    // name order holds regardless of recency.
+    // Scan establishes name order db, web. A later poll reports the sessions in a
+    // different arrival order - the deterministic name order holds.
     let mut h = Harness::from_sources(&["local"]);
     h.sw.apply_source_result(
         "local".into(),
         vec![
-            sess("local", "web", 1, false, 100),
-            sess("local", "db", 1, false, 200),
+            sess("local", "web", 1, false),
+            sess("local", "db", 1, false),
         ],
         None,
         &mut h.state,
@@ -694,8 +694,8 @@ async fn poll_preserves_session_order_after_scan() {
     h.sw.apply_source_result(
         "local".into(),
         vec![
-            sess("local", "db", 1, false, 200),
-            sess("local", "web", 1, false, 999),
+            sess("local", "db", 1, false),
+            sess("local", "web", 1, false),
         ],
         None,
         &mut h.state,
@@ -713,8 +713,8 @@ async fn poll_sorts_a_new_session_into_place() {
     h.sw.apply_source_result(
         "local".into(),
         vec![
-            sess("local", "web", 1, false, 100),
-            sess("local", "db", 1, false, 200),
+            sess("local", "web", 1, false),
+            sess("local", "db", 1, false),
         ],
         None,
         &mut h.state,
@@ -724,9 +724,9 @@ async fn poll_sorts_a_new_session_into_place() {
     h.sw.apply_source_result(
         "local".into(),
         vec![
-            sess("local", "db", 1, false, 200),
-            sess("local", "web", 1, false, 100),
-            sess("local", "api", 1, false, 999),
+            sess("local", "db", 1, false),
+            sess("local", "web", 1, false),
+            sess("local", "api", 1, false),
         ],
         None,
         &mut h.state,
@@ -745,19 +745,19 @@ async fn poll_preserves_host_group_order_after_scan() {
     let mut h = Harness::from_sources(&["local", "jupiter00", "jupiter06"]);
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess("local", "w", 1, false, 50)],
+        vec![sess("local", "w", 1, false)],
         None,
         &mut h.state,
     );
     h.sw.apply_source_result(
         "jupiter06".into(),
-        vec![sess("jupiter06", "b", 1, false, 100)],
+        vec![sess("jupiter06", "b", 1, false)],
         None,
         &mut h.state,
     );
     h.sw.apply_source_result(
         "jupiter00".into(),
-        vec![sess("jupiter00", "a", 1, false, 300)],
+        vec![sess("jupiter00", "a", 1, false)],
         None,
         &mut h.state,
     );
@@ -766,11 +766,10 @@ async fn poll_preserves_host_group_order_after_scan() {
         vec!["local", "jupiter00", "jupiter06"],
         "the scan orders hosts local-first then by name"
     );
-    // A poll reports jupiter06's session freshly bumped (999) - recency would lift
-    // jupiter06 above jupiter00, but the deterministic name order holds.
+    // A poll reports jupiter06's session again - the deterministic name order holds.
     h.sw.apply_source_result(
         "jupiter06".into(),
-        vec![sess("jupiter06", "b", 1, false, 999)],
+        vec![sess("jupiter06", "b", 1, false)],
         None,
         &mut h.state,
     );
@@ -787,8 +786,8 @@ async fn rescan_reapplies_name_order() {
     h.sw.apply_source_result(
         "local".into(),
         vec![
-            sess("local", "web", 1, false, 100),
-            sess("local", "db", 1, false, 200),
+            sess("local", "web", 1, false),
+            sess("local", "db", 1, false),
         ],
         None,
         &mut h.state,
@@ -796,8 +795,8 @@ async fn rescan_reapplies_name_order() {
     h.sw.apply_source_result(
         "local".into(),
         vec![
-            sess("local", "db", 1, false, 200),
-            sess("local", "web", 1, false, 999),
+            sess("local", "db", 1, false),
+            sess("local", "web", 1, false),
         ],
         None,
         &mut h.state,
@@ -813,8 +812,8 @@ async fn rescan_reapplies_name_order() {
     h.sw.apply_source_result(
         "local".into(),
         vec![
-            sess("local", "db", 1, false, 200),
-            sess("local", "web", 1, false, 999),
+            sess("local", "db", 1, false),
+            sess("local", "web", 1, false),
         ],
         None,
         &mut h.state,
@@ -832,23 +831,23 @@ async fn three_hosts_cursor_on_middle() -> Harness {
     let mut h = Harness::from_sources(&["local", "jupiter00", "jupiter06"]);
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess("local", "web", 1, false, 100)],
+        vec![sess("local", "web", 1, false)],
         None,
         &mut h.state,
     );
     h.sw.apply_source_result(
         "jupiter00".into(),
-        vec![sess("jupiter00", "infer", 1, false, 300)],
+        vec![sess("jupiter00", "infer", 1, false)],
         None,
         &mut h.state,
     );
     h.sw.apply_source_result(
         "jupiter06".into(),
-        vec![sess("jupiter06", "build", 1, false, 50)],
+        vec![sess("jupiter06", "build", 1, false)],
         None,
         &mut h.state,
     );
-    // infer (recency 300) is the launch preselect - the top card - so a select_address
+    // infer is the launch preselect - the top card - so a select_address
     // to it is a no-op; pin it as a deliberate user selection so a rebuild won't drift it.
     h.sw.select_address("jupiter00/infer", &h.state);
     h.sw.user_moved = true;
@@ -878,19 +877,19 @@ async fn rescan_returns_cursor_to_the_same_session() {
     // Sessions re-stream in a different arrival order; infer's host arrives last.
     h.sw.apply_source_result(
         "jupiter06".into(),
-        vec![sess("jupiter06", "build", 1, false, 50)],
+        vec![sess("jupiter06", "build", 1, false)],
         None,
         &mut h.state,
     );
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess("local", "web", 1, false, 100)],
+        vec![sess("local", "web", 1, false)],
         None,
         &mut h.state,
     );
     h.sw.apply_source_result(
         "jupiter00".into(),
-        vec![sess("jupiter00", "infer", 1, false, 300)],
+        vec![sess("jupiter00", "infer", 1, false)],
         None,
         &mut h.state,
     );
@@ -910,13 +909,13 @@ async fn rescan_reselect_dropped_when_user_navigates_away() {
     // Sessions re-stream - the selection must NOT get yanked back to infer.
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess("local", "web", 1, false, 100)],
+        vec![sess("local", "web", 1, false)],
         None,
         &mut h.state,
     );
     h.sw.apply_source_result(
         "jupiter00".into(),
-        vec![sess("jupiter00", "infer", 1, false, 300)],
+        vec![sess("jupiter00", "infer", 1, false)],
         None,
         &mut h.state,
     );
@@ -1067,6 +1066,199 @@ async fn a_card_claims_a_mux_only_when_it_is_confirmed() {
 }
 
 #[tokio::test]
+async fn hide_unreachable_leaves_no_card_for_the_unreachable_host() {
+    // With `[ui] hide-unreachable` on, the settled unreachable host takes no card;
+    // the reachable hosts keep theirs.
+    let mut h = Harness::new(sample());
+    h.sw.set_hide_unreachable(true, &mut h.state);
+    h.draw();
+    let out = h.nav_text();
+    assert!(
+        !out.contains("db-2"),
+        "the unreachable host takes no card:\n{out}"
+    );
+    assert!(
+        out.contains("jupiter00"),
+        "the reachable hosts keep their cards:\n{out}"
+    );
+}
+
+#[tokio::test]
+async fn the_filter_names_a_hidden_unreachable_host_and_its_card_returns() {
+    // The named card is the one entry to the unreachable screen: the filter naming
+    // the hidden host brings its card back, and Enter lands the selection on it.
+    let mut h = Harness::new(sample());
+    h.sw.set_hide_unreachable(true, &mut h.state);
+    h.draw();
+    h.ch('/').await;
+    h.ch('d').await;
+    h.ch('b').await;
+    assert!(
+        h.nav_cards_text().contains("db-2"),
+        "the filter naming the host brings its card back:\n{}",
+        h.nav_cards_text()
+    );
+    h.key(KeyCode::Enter).await;
+    assert!(
+        matches!(
+            h.sw.current_ref(),
+            Some(RowRef::Host { source, unreachable: true, .. }) if source == "db-2"
+        ),
+        "the selection lands on the named host's card"
+    );
+    let out = h.view_text();
+    assert!(
+        out.contains("unreachable"),
+        "the unreachable screen is reachable:\n{out}"
+    );
+}
+
+#[tokio::test]
+async fn hide_unreachable_off_brings_the_card_back() {
+    // The setter rebuilds the rows whichever way it flips: off undoes the hiding.
+    let mut h = Harness::new(sample());
+    h.sw.set_hide_unreachable(true, &mut h.state);
+    h.draw();
+    assert!(!h.nav_text().contains("db-2"));
+    h.sw.set_hide_unreachable(false, &mut h.state);
+    h.draw();
+    assert!(
+        h.nav_text().contains("db-2"),
+        "setting it back to false brings the card back:\n{}",
+        h.nav_text()
+    );
+}
+
+#[tokio::test]
+async fn a_selected_host_going_unreachable_hides_and_the_selection_lands_on_a_remaining_card() {
+    // A host going unreachable mid-run hides from that result on; the selection
+    // sitting on its card falls to a remaining card instead of vanishing.
+    let mut h = Harness::from_sources(&["local", "db-2"]);
+    h.sw.set_hide_unreachable(true, &mut h.state);
+    h.sw.apply_source_result(
+        "local".into(),
+        vec![sess_mux("local", "editor", "tmux")],
+        None,
+        &mut h.state,
+    );
+    h.sw.move_to(-1, &h.state); // the user parked the selection on db-2's card
+    assert!(
+        matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "db-2"),
+        "the selection starts on the db-2 card"
+    );
+    h.sw.apply_source_result(
+        "db-2".into(),
+        Vec::new(),
+        Some("connection timed out".into()),
+        &mut h.state,
+    );
+    h.draw();
+    let out = h.nav_text();
+    assert!(!out.contains("db-2"), "hidden the moment it fails:\n{out}");
+    assert!(
+        matches!(
+            h.sw.current_ref(),
+            Some(RowRef::Session { sess }) if sess.source == "local" && sess.name == "editor"
+        ),
+        "the selection lands on a remaining card"
+    );
+}
+
+#[tokio::test]
+async fn a_selected_host_own_failure_leaving_no_cards_does_not_panic_the_fallback() {
+    // A poll failure for the one host still holding cards empties the nav in one
+    // result (hiding on prunes the settled unreachable group whole). The selection
+    // sat on that host's session card, so the removal fallback runs with a previous
+    // index past the now-empty rows: it lands nowhere and nothing panics.
+    let mut h = Harness::from_sources(&["local", "db-2"]);
+    h.sw.set_hide_unreachable(true, &mut h.state);
+    // db-2 settles unreachable first and hides, leaving local the only cards.
+    h.sw.apply_source_result(
+        "db-2".into(),
+        Vec::new(),
+        Some("connection timed out".into()),
+        &mut h.state,
+    );
+    h.sw.apply_source_result(
+        "local".into(),
+        vec![sess_mux("local", "editor", "tmux")],
+        None,
+        &mut h.state,
+    );
+    h.sw.move_to(0, &h.state); // the user parked the selection on local's session card
+    assert!(
+        matches!(
+            h.sw.current_ref(),
+            Some(RowRef::Session { sess }) if sess.source == "local" && sess.name == "editor"
+        ),
+        "the selection starts on local's session card"
+    );
+    // local's poll fails: every card vanishes and the fallback runs on an empty list.
+    h.sw.apply_source_result(
+        "local".into(),
+        Vec::new(),
+        Some("connection timed out".into()),
+        &mut h.state,
+    );
+    h.draw();
+    assert!(
+        h.nav_cards_text().trim().is_empty(),
+        "the nav renders empty:\n{:?}",
+        h.nav_cards_text()
+    );
+    assert!(
+        h.sw.current_ref().is_none(),
+        "with no card left, the fallback lands nowhere"
+    );
+}
+
+#[tokio::test]
+async fn a_hidden_unreachable_host_returns_when_its_scan_answers() {
+    // Hiding is a view state, not a removal: a successful scan revives the card.
+    let mut h = Harness::new(sample());
+    h.sw.set_hide_unreachable(true, &mut h.state);
+    h.draw();
+    assert!(!h.nav_text().contains("db-2"));
+    h.sw.apply_source_result(
+        "db-2".into(),
+        vec![sess_mux("db-2", "reports", "tmux")],
+        None,
+        &mut h.state,
+    );
+    h.draw();
+    assert!(
+        h.nav_text().contains("db-2"),
+        "a successful scan revives the host:\n{}",
+        h.nav_text()
+    );
+}
+
+#[tokio::test]
+async fn hiding_every_host_leaves_a_tidy_empty_nav() {
+    // Every host unreachable and hiding on: the nav holds no card, and the hint bar
+    // keeps its prefix so the session is still operable.
+    let mut h = Harness::from_sources(&["db-2"]);
+    h.sw.set_hide_unreachable(true, &mut h.state);
+    h.sw.apply_source_result(
+        "db-2".into(),
+        Vec::new(),
+        Some("connection timed out".into()),
+        &mut h.state,
+    );
+    h.draw();
+    assert!(
+        h.nav_cards_text().trim().is_empty(),
+        "only empty lines in the nav:\n{:?}",
+        h.nav_cards_text()
+    );
+    assert!(
+        h.hint_bar_text().contains("C-g"),
+        "the hint bar still shows the prefix:\n{}",
+        h.hint_bar_text()
+    );
+}
+
+#[tokio::test]
 async fn unreachable_host_screen_keeps_a_long_reason_whole() {
     // ssh wraps the failure in its own context and names it LAST, past the width of the
     // screen: a reason cut off at the edge drops the only words that say what went wrong.
@@ -1095,7 +1287,7 @@ async fn the_session_xmux_runs_in_is_never_a_terminal_view_target() {
     h.sw.set_own_session(Some("local/xmus".to_string()));
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess_mux("local", "xmus", "psmux", 100)],
+        vec![sess_mux("local", "xmus", "psmux")],
         None,
         &mut h.state,
     );
@@ -1120,7 +1312,7 @@ async fn the_session_xmux_runs_in_shows_a_screen_instead_of_its_grid() {
     h.sw.set_own_session(Some("local/xmus".to_string()));
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess_mux("local", "xmus", "psmux", 100)],
+        vec![sess_mux("local", "xmus", "psmux")],
         None,
         &mut h.state,
     );
@@ -1147,7 +1339,7 @@ async fn the_self_session_screen_headline_carries_the_mux_too() {
     h.sw.set_own_session(Some("local/xmus".to_string()));
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess_mux("local", "xmus", "psmux", 100)],
+        vec![sess_mux("local", "xmus", "psmux")],
         None,
         &mut h.state,
     );
@@ -1167,7 +1359,7 @@ async fn another_instances_session_is_shown_like_any_other() {
     h.sw.set_own_session(Some("local/xmus".to_string()));
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess_mux("local", "other", "psmux", 100)],
+        vec![sess_mux("local", "other", "psmux")],
         None,
         &mut h.state,
     );
@@ -1247,13 +1439,13 @@ async fn unreachable_host_screen_shows_ssh_config_stanza() {
 #[tokio::test]
 async fn streaming_keeps_local_preselect_when_untouched() {
     // An untouched selection sits on the top SESSION card (the local host's first
-    // session, row 1 - row 0 is its section title), and a later more-recent REMOTE
+    // session, row 1 - row 0 is its section title), and a later REMOTE
     // session streaming in must NOT steal it: the selection must not leap to a remote
     // on first launch (#1).
     let mut h = Harness::from_sources(&["local", "jupiter00"]);
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess("local", "editor", 1, false, 100)],
+        vec![sess("local", "editor", 1, false)],
         None,
         &mut h.state,
     );
@@ -1264,14 +1456,14 @@ async fn streaming_keeps_local_preselect_when_untouched() {
     );
     h.sw.apply_source_result(
         "jupiter00".into(),
-        vec![sess("jupiter00", "infer", 1, false, 300)],
+        vec![sess("jupiter00", "infer", 1, false)],
         None,
         &mut h.state,
     );
     h.draw();
     assert_eq!(
         h.sw.selected, 1,
-        "an untouched selection stays on the top session card; a recent remote must not steal it"
+        "an untouched selection stays on the top session card; a remote must not steal it"
     );
     assert!(
         matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.source == "local"),
@@ -1291,7 +1483,7 @@ async fn streaming_holds_the_first_session_that_answered() {
     // The remote answers first.
     h.sw.apply_source_result(
         "jupiter00".into(),
-        vec![sess("jupiter00", "infer", 1, false, 300)],
+        vec![sess("jupiter00", "infer", 1, false)],
         None,
         &mut h.state,
     );
@@ -1307,7 +1499,7 @@ async fn streaming_holds_the_first_session_that_answered() {
     // top-card preselect would move the cursor for.
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess("local", "editor", 1, false, 100)],
+        vec![sess("local", "editor", 1, false)],
         None,
         &mut h.state,
     );
@@ -1343,12 +1535,12 @@ async fn request_rescan_arms_a_display_reattach() {
 async fn rebuild_holds_a_user_moved_session_against_the_preselect() {
     // The selection thrash: once the user has moved the selection onto a session, a bare
     // rebuild (a frequent poll / %-event that does not route through restore_focus)
-    // must keep it there, not snap it back to the recency/preferred preselect.
+    // must keep it there, not snap it back to the preferred preselect.
     let mut state = crate::state::State::from_sources(vec!["h".into()]);
     let mut sw = Switcher::from_sources(&mut state);
     sw.apply_source_result(
         "h".into(),
-        vec![sess("h", "a", 1, false, 200), sess("h", "b", 1, false, 100)],
+        vec![sess("h", "a", 1, false), sess("h", "b", 1, false)],
         None,
         &mut state,
     );
@@ -1360,7 +1552,7 @@ async fn rebuild_holds_a_user_moved_session_against_the_preselect() {
             _ => None,
         })
         .collect();
-    // Pick the session that is NOT the preselect target (the recency-first one), so a
+    // Pick the session that is NOT the preselect target, so a
     // bare rebuild's preselect would move the selection here if the fix were absent.
     let other = names[1].clone();
     let idx = sw
@@ -1387,8 +1579,8 @@ async fn streaming_preserves_cursor_once_user_moves() {
     h.sw.apply_source_result(
         "local".into(),
         vec![
-            sess("local", "editor", 1, false, 100),
-            sess("local", "build", 1, false, 50),
+            sess("local", "editor", 1, false),
+            sess("local", "build", 1, false),
         ],
         None,
         &mut h.state,
@@ -1397,10 +1589,10 @@ async fn streaming_preserves_cursor_once_user_moves() {
     // build's card preselected (index 0, name order); step down to editor's card.
     h.key(KeyCode::Down).await;
     assert_eq!(cur_session_name(&h).as_deref(), Some("editor"));
-    // A more-recent remote session streams in; the selection must NOT jump.
+    // A remote session streams in; the selection must NOT jump.
     h.sw.apply_source_result(
         "jupiter00".into(),
-        vec![sess("jupiter00", "infer", 1, false, 300)],
+        vec![sess("jupiter00", "infer", 1, false)],
         None,
         &mut h.state,
     );
@@ -1494,7 +1686,7 @@ fn hint_bar_has_status_bar_background() {
     // left to the view beneath, not painted. Key tokens carry the accent over that base.
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
-    // Wide enough that the terminal view stays landscape, so the layout is Side and the
+    // Wide enough that the terminal view stays landscape, so the layout is a column and the
     // nav column runs the full height (its last row IS the hint bar).
     let mut term = Terminal::new(TestBackend::new(140, 20)).unwrap();
     term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
@@ -1694,20 +1886,22 @@ async fn n_on_a_session_card_opens_new_for_its_host() {
 
 #[tokio::test]
 async fn filter_leaves_cursor_on_visible_session() {
-    // Filter to a session - selection must land on it after the filter completes.
+    // Filter to a session - selection must land on it once the filter is in effect.
+    // The filter applies live while the input is open (set_input_text applies it as a
+    // real edit would), so Enter only closes it.
     let mut h = Harness::from_sources(&["local"]);
     h.sw.apply_source_result(
         "local".into(),
         vec![
-            sess("local", "live", 2, true, 999),
-            sess("local", "xmux-probeL", 1, false, 50),
+            sess("local", "live", 2, true),
+            sess("local", "xmux-probeL", 1, false),
         ],
         None,
         &mut h.state,
     );
     h.ch('/').await;
     h.sw.set_input_text("probeL", &mut h.state);
-    h.key(KeyCode::Enter).await; // apply filter
+    h.key(KeyCode::Enter).await; // close the input
     let t =
         h.sw.current_attach_target(&h.state)
             .expect("a session row is visible");
@@ -1720,21 +1914,22 @@ async fn filter_leaves_cursor_on_visible_session() {
 
 #[tokio::test]
 async fn filter_host_enter_targets_visible_session() {
-    // After filtering, the top card is the visible (matching) session, not a
-    // filtered-out one - so current_attach_target yields it.
+    // Under the filter the top card is the visible (matching) session, not a
+    // filtered-out one - so current_attach_target yields it. The filter is in effect
+    // while the input is open; Enter only closes it.
     let mut h = Harness::from_sources(&["alpha"]);
     h.sw.apply_source_result(
         "alpha".into(),
         vec![
-            sess("alpha", "keep-me", 1, false, 50),
-            sess("alpha", "other", 1, false, 999),
+            sess("alpha", "keep-me", 1, false),
+            sess("alpha", "other", 1, false),
         ],
         None,
         &mut h.state,
     );
     h.ch('/').await;
     h.sw.set_input_text("keep", &mut h.state);
-    h.key(KeyCode::Enter).await; // apply filter
+    h.key(KeyCode::Enter).await; // close the input
     h.key(KeyCode::Home).await; // the first (only) visible card
     let t =
         h.sw.current_attach_target(&h.state)
@@ -1743,6 +1938,88 @@ async fn filter_host_enter_targets_visible_session() {
         t.target.as_str(),
         "keep-me",
         "current_attach_target under the filter yields the visible session"
+    );
+}
+
+#[tokio::test]
+async fn filter_applies_live_while_typing() {
+    // The list re-filters on every keystroke, before any Enter: typing "in" narrows
+    // the cards to the one match, and the active filter follows the buffer.
+    let mut h = Harness::new(sample());
+    h.ch('/').await;
+    h.ch('i').await;
+    assert!(h.state.is_inputting(), "the input stays open while typing");
+    h.ch('n').await;
+    let out = h.nav_cards_text();
+    assert!(out.contains("inference"), "the matching card stays:\n{out}");
+    assert!(
+        !out.contains("editor") && !out.contains("build"),
+        "the non-matching cards are gone before Enter:\n{out}"
+    );
+    assert_eq!(h.state.filter, "in", "the active filter follows the buffer");
+    // Enter only closes; the filtered list is already in effect.
+    h.key(KeyCode::Enter).await;
+    assert!(!h.state.is_inputting(), "Enter closes the input");
+    assert_eq!(h.state.filter, "in", "Enter applies nothing new");
+}
+
+#[tokio::test]
+async fn filter_esc_restores_the_opening_filter() {
+    // The input remembers the filter it opened from, so cancelling undoes every live
+    // edit back to it - the list returns to exactly the state it was in before `/`.
+    let mut h = Harness::new(sample());
+    // Establish a filter first.
+    h.ch('/').await;
+    for c in "infer".chars() {
+        h.ch(c).await;
+    }
+    h.key(KeyCode::Enter).await;
+    assert_eq!(h.state.filter, "infer", "the first filter is applied");
+    let filtered_rows = h.sw.rows.len();
+    assert!(
+        filtered_rows < 6,
+        "the filter narrows the list: {filtered_rows}"
+    );
+    // Reopen, edit the filter, then cancel: Esc restores the opening filter.
+    h.ch('/').await;
+    h.ch('x').await; // "inferx" matches nothing
+    assert_eq!(h.state.filter, "inferx", "the live filter follows the edit");
+    h.key(KeyCode::Esc).await;
+    assert!(!h.state.is_inputting(), "Esc closes the input");
+    assert_eq!(
+        h.state.filter, "infer",
+        "Esc restores the filter the input opened with"
+    );
+    assert_eq!(
+        h.sw.rows.len(),
+        filtered_rows,
+        "and the list returns with it"
+    );
+}
+
+#[tokio::test]
+async fn filter_keeps_the_selection_on_a_surviving_card_while_typing() {
+    // As the live filter shrinks the list, the selection never sits on a card that
+    // just filtered out: it holds its session while that survives, then lands on the
+    // first card the narrower list still shows. The selection starts on build (the
+    // first card in name-sorted order).
+    let mut h = Harness::new(sample());
+    h.ch('/').await;
+    h.ch('i').await; // keeps build, editor, inference - the selection's session survives
+    assert!(
+        matches!(
+            h.sw.current_ref(),
+            Some(RowRef::Session { sess }) if sess.name == "build"
+        ),
+        "the selection holds its card while it survives"
+    );
+    h.ch('n').await; // "in" keeps only inference
+    assert!(
+        matches!(
+            h.sw.current_ref(),
+            Some(RowRef::Session { sess }) if sess.name == "inference"
+        ),
+        "a filtered-out card is never the selection; it lands on the survivor"
     );
 }
 
@@ -1909,14 +2186,13 @@ async fn the_session_reads_bold_on_its_card() {
 }
 
 /// A session stamped with its mux kind, for the context-line tests.
-fn sess_mux(source: &str, name: &str, mux: &str, last: i64) -> Session {
+fn sess_mux(source: &str, name: &str, mux: &str) -> Session {
     Session {
         source: source.into(),
         name: name.into(),
         mux: mux.into(),
         windows: 1,
         attached: false,
-        last_attached: last,
     }
 }
 
@@ -1945,25 +2221,23 @@ fn sources_scan(sources: Vec<(&str, Vec<Session>)>) -> Scan {
 }
 
 #[tokio::test]
-async fn a_sources_cards_are_contiguous_and_the_sources_run_most_recent_first() {
-    // Recency applies to the SOURCE. Ordering sessions by global recency alone would
-    // interleave these two hosts - alpha 500, beta 400, beta 300, alpha 200 - and alpha
-    // would state its context twice, in two places, with a connector under each claiming
-    // the cards below it. Instead alpha's cards sit together (it holds the most recent
-    // session of all), then beta's, and inside each host the recent session leads.
+async fn a_sources_cards_are_contiguous_and_the_order_is_deterministic() {
+    // A source's cards sit together under their source's one section title: alpha's
+    // before beta's, never interleaved with another host's, and inside each host the
+    // name order holds (a-new, then a-old).
     let mut h = Harness::new(sources_scan(vec![
         (
             "alpha",
             vec![
-                sess_mux("alpha", "a-old", "tmux", 200),
-                sess_mux("alpha", "a-new", "tmux", 500),
+                sess_mux("alpha", "a-old", "tmux"),
+                sess_mux("alpha", "a-new", "tmux"),
             ],
         ),
         (
             "beta",
             vec![
-                sess_mux("beta", "b-new", "tmux", 400),
-                sess_mux("beta", "b-old", "tmux", 300),
+                sess_mux("beta", "b-new", "tmux"),
+                sess_mux("beta", "b-old", "tmux"),
             ],
         ),
     ]));
@@ -1991,7 +2265,7 @@ async fn a_sources_cards_are_contiguous_and_the_sources_run_most_recent_first() 
     let (a_new, a_old, b_new, b_old) = (row("a-new"), row("a-old"), row("b-new"), row("b-old"));
     assert!(
         a_new < a_old && a_old < b_new && b_new < b_old,
-        "alpha then beta, each most recent first: a-new {a_new}, a-old {a_old}, b-new {b_new}, b-old {b_old}
+        "alpha then beta, each by name: a-new {a_new}, a-old {a_old}, b-new {b_new}, b-old {b_old}
 {out}"
     );
     // One section title per source: the title names the whole group, the cards below
@@ -2017,14 +2291,14 @@ async fn a_session_found_later_lands_inside_its_own_source() {
     // source - never appended to the bottom, which would strand it under another host's
     // context line and split the source it belongs to.
     let mut h = Harness::new(sources_scan(vec![
-        ("alpha", vec![sess_mux("alpha", "a-one", "tmux", 500)]),
-        ("beta", vec![sess_mux("beta", "b-one", "tmux", 400)]),
+        ("alpha", vec![sess_mux("alpha", "a-one", "tmux")]),
+        ("beta", vec![sess_mux("beta", "b-one", "tmux")]),
     ]));
     h.sw.apply_source_result(
         "alpha".into(),
         vec![
-            sess_mux("alpha", "a-one", "tmux", 500),
-            sess_mux("alpha", "a-two", "tmux", 100),
+            sess_mux("alpha", "a-one", "tmux"),
+            sess_mux("alpha", "a-two", "tmux"),
         ],
         None,
         &mut h.state,
@@ -2054,7 +2328,7 @@ async fn the_section_title_shows_host_mux_and_the_session_takes_the_accent() {
     // before its first frame.
     let mut h = Harness::new(selection_parked_elsewhere(one_host_scan(
         "srv",
-        vec![sess_mux("srv", "alpha", "tmux", 100)],
+        vec![sess_mux("srv", "alpha", "tmux")],
     )));
     h.state.chrome.set_source_reach(
         [("srv".to_string(), reach("tmux", "srv", "", "tmux ls"))]
@@ -2092,7 +2366,7 @@ async fn only_the_side_lists_section_title_trails_a_rule() {
     // standing side by side, where the rule would run into the gutter and read as a bar
     // parting the columns instead - so the band's title stands alone.
     let side = Harness::new(sample());
-    assert_eq!(side.sw.layout(), ViewLayout::Side, "landscape → Side");
+    assert_eq!(side.sw.layout(), ViewLayout::Column, "landscape → Side");
     let y = side.nav_row_of("local").expect("the section title");
     let painted = nav_line(&side, y);
     assert!(
@@ -2101,7 +2375,7 @@ async fn only_the_side_lists_section_title_trails_a_rule() {
     );
 
     let top = Harness::new_sized(sample(), 60, 70);
-    assert_eq!(top.sw.layout(), ViewLayout::Top, "portrait → Top");
+    assert_eq!(top.sw.layout(), ViewLayout::Band, "portrait → Top");
     let y = row_of(top.buf(), "local", top.buf().area.width).expect("the section title");
     let painted = band_line(&top, y);
     assert!(
@@ -2116,7 +2390,7 @@ async fn the_band_connects_a_session_card_to_the_title_that_owns_it() {
     // does not say which title owns it - a connector down the card's left does. The
     // title itself carries none: it is what the connector points at.
     let h = Harness::new_sized(sample(), 60, 70);
-    assert_eq!(h.sw.layout(), ViewLayout::Top, "portrait → Top");
+    assert_eq!(h.sw.layout(), ViewLayout::Band, "portrait → Top");
     let w = h.buf().area.width;
     let title = row_of(h.buf(), "local", w).expect("the section title");
     assert!(
@@ -2139,7 +2413,7 @@ async fn a_split_sections_continuation_columns_carry_no_connector() {
     // so it stays in that title's own column rather than running under a repeat of it.
     // Ten sessions in a three-row band: one section across five columns.
     let h = Harness::new_sized(scan_with_sessions(10), 60, 12);
-    assert_eq!(h.sw.layout(), ViewLayout::Top, "portrait → Top");
+    assert_eq!(h.sw.layout(), ViewLayout::Band, "portrait → Top");
     let w = h.buf().area.width;
     for name in ["s0", "s1"] {
         let painted = band_line(&h, row_of(h.buf(), name, w).expect(name));
@@ -2180,7 +2454,7 @@ async fn the_selections_inversion_stops_at_the_card_and_spares_the_connector() {
     // invert with it and notch the line at exactly the row the eye is on. It sits in the
     // strip left of the rect instead, and the line runs past the selected card unbroken.
     let h = Harness::new_sized(sample(), 60, 70);
-    assert_eq!(h.sw.layout(), ViewLayout::Top, "portrait → Top");
+    assert_eq!(h.sw.layout(), ViewLayout::Band, "portrait → Top");
     let sel = h.sw.selected;
     let (_, rect) =
         h.sw.nav_cells
@@ -2216,7 +2490,7 @@ async fn a_split_sections_continuation_columns_name_nothing() {
     // says the continuation is the same section. A row spent naming it again is a row of
     // cards lost, which is the whole reason the band flows into columns at all.
     let h = Harness::new_sized(scan_with_sessions(10), 60, 12);
-    assert_eq!(h.sw.layout(), ViewLayout::Top, "portrait → Top");
+    assert_eq!(h.sw.layout(), ViewLayout::Band, "portrait → Top");
     let band = h.sw.nav_inner;
     let painted: String = (band.y..band.y + band.height)
         .map(|y| band_line(&h, y))
@@ -2249,9 +2523,9 @@ async fn a_column_is_never_narrower_than_the_title_naming_it() {
         sources_scan(vec![
             (
                 "build-runner-eu-west",
-                vec![sess_mux("build-runner-eu-west", "z", "zellij", 200)],
+                vec![sess_mux("build-runner-eu-west", "z", "zellij")],
             ),
-            ("jupiter00", vec![sess_mux("jupiter00", "a", "tmux", 100)]),
+            ("jupiter00", vec![sess_mux("jupiter00", "a", "tmux")]),
         ]),
         60,
         12,
@@ -2272,7 +2546,7 @@ async fn a_column_is_never_narrower_than_the_title_naming_it() {
     );
     h.sw.rebuild(&mut h.state);
     h.draw();
-    assert_eq!(h.sw.layout(), ViewLayout::Top, "portrait → Top");
+    assert_eq!(h.sw.layout(), ViewLayout::Band, "portrait → Top");
     let band = h.sw.nav_inner;
     let painted: String = (band.y..band.y + band.height)
         .map(|y| band_line(&h, y))
@@ -2309,7 +2583,7 @@ async fn a_host_card_gives_its_mux_the_secondary() {
             Group {
                 source: "srv:zellij".into(),
                 err: None,
-                sessions: vec![sess_mux("srv:zellij", "alpha", "zellij", 200)],
+                sessions: vec![sess_mux("srv:zellij", "alpha", "zellij")],
             },
             // A reachable machine with no session left: the host-state card.
             Group {
@@ -2445,7 +2719,7 @@ async fn the_bands_never_touch_on_screen() {
     // row. Scroll to the boundary first - the host sits below the fold at the top.
     let mut h = Harness::from_sources(&["local", "db-2"]);
     let sessions: Vec<crate::session::Session> = (0..27)
-        .map(|i| sess("local", &format!("s{i}"), 1, false, (27 - i) as i64))
+        .map(|i| sess("local", &format!("s{i}"), 1, false))
         .collect();
     h.sw.apply_source_result("local".into(), sessions, None, &mut h.state);
     h.draw();
@@ -2508,7 +2782,7 @@ async fn scanning_hosts_anchor_to_the_bottom_until_found() {
     let mut h = Harness::from_sources(&["local", "jupiter00"]);
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess("local", "editor", 1, false, 100)],
+        vec![sess("local", "editor", 1, false)],
         None,
         &mut h.state,
     );
@@ -2569,10 +2843,10 @@ async fn a_sources_sessions_are_each_a_single_row_under_one_section_title() {
     let mut h = Harness::new(one_host_scan(
         "srv",
         vec![
-            sess_mux("srv", "alpha", "tmux", 400),
-            sess_mux("srv", "beta", "tmux", 300),
-            sess_mux("srv", "gamma", "tmux", 200),
-            sess_mux("srv", "zeta", "tmux", 100),
+            sess_mux("srv", "alpha", "tmux"),
+            sess_mux("srv", "beta", "tmux"),
+            sess_mux("srv", "gamma", "tmux"),
+            sess_mux("srv", "zeta", "tmux"),
         ],
     ));
     h.state.chrome.set_source_reach(
@@ -2615,8 +2889,8 @@ async fn focus_changes_only_the_address_column() {
     let mut h = Harness::new(one_host_scan(
         "srv",
         vec![
-            sess_mux("srv", "alpha", "tmux", 300),
-            sess_mux("srv", "beta", "tmux", 200),
+            sess_mux("srv", "alpha", "tmux"),
+            sess_mux("srv", "beta", "tmux"),
         ],
     ));
     let beta_row = h.nav_row_of("beta").expect("beta detail");
@@ -3009,18 +3283,18 @@ fn the_layout_turns_over_where_the_side_terminal_stops_being_wider_than_tall() {
     use ratatui::layout::Rect;
     // The test is the aspect of the terminal AS IF the tree kept its side column: with a
     // 48-wide tree that terminal is `w - 49` columns over the window's full height. It
-    // stays Side while that is wider than tall, and turns over the moment it is not - in
+    // stays a column while that is wider than tall, and turns over the moment it is not - in
     // the proportions the user SEES, so a row counts as two columns.
     //
-    // Measuring the LIVE terminal instead would oscillate: going Top hands it the tree's
+    // Measuring the LIVE terminal instead would oscillate: going to the band hands it the tree's
     // columns back and takes the band's rows, which lands it back on the other side of
     // the same test.
     for (w, h, want) in [
-        (150u16, 50u16, ViewLayout::Side), // 101 cells over 50 rows = 101 x 100: wider
-        (149, 50, ViewLayout::Top),        // 100 x 100: square, so the band takes over
-        (140, 50, ViewLayout::Top),        // 91 x 100: taller than wide
-        (74, 12, ViewLayout::Side),        // 25 x 24: one column wider than tall
-        (73, 12, ViewLayout::Top),         // 24 x 24: square, on a small window too
+        (150u16, 50u16, ViewLayout::Column), // 101 cells over 50 rows = 101 x 100: wider
+        (149, 50, ViewLayout::Band),         // 100 x 100: square, so the band takes over
+        (140, 50, ViewLayout::Band),         // 91 x 100: taller than wide
+        (74, 12, ViewLayout::Column),        // 25 x 24: one column wider than tall
+        (73, 12, ViewLayout::Band),          // 24 x 24: square, on a small window too
     ] {
         assert_eq!(
             view_layout(Rect::new(0, 0, w, h), 48),
@@ -3038,16 +3312,24 @@ fn the_layout_turns_over_where_the_side_terminal_stops_being_wider_than_tall() {
 fn hiding_the_nav_leaves_the_layout_where_it_was() {
     use ratatui::layout::Rect;
     // Auto-hide takes the nav's width away for as long as the terminal holds focus. The
-    // layout must not move with it: it is measured from the width the user SET, which
-    // travels with the hidden nav, so the resize keys keep driving the same axis and the
-    // nav comes back the shape it left.
+    // layout must not move with it: it follows the attachment position, which the hidden
+    // nav carries unchanged, so the resize keys keep driving the same axis and the nav
+    // comes back the shape it left.
     let portrait = Rect::new(0, 0, 100, 34); // a 31-wide nav leaves 68 over 34 rows: square
-    let shown = compute_regions(portrait, NavSize::visible(31), 1);
-    let gone = compute_regions(portrait, NavSize::hidden(31), 1);
-    assert_eq!(shown.layout, ViewLayout::Top);
+    let shown = compute_regions(
+        portrait,
+        NavSize::visible(31).with_position(NavPosition::Top),
+        1,
+    );
+    let gone = compute_regions(
+        portrait,
+        NavSize::hidden(31).with_position(NavPosition::Top),
+        1,
+    );
+    assert_eq!(shown.layout, ViewLayout::Band);
     assert_eq!(
         gone.layout,
-        ViewLayout::Top,
+        ViewLayout::Band,
         "hiding the nav is not a reflow"
     );
     assert_eq!(
@@ -3055,41 +3337,69 @@ fn hiding_the_nav_leaves_the_layout_where_it_was() {
         "and the terminal owns the whole area"
     );
     assert_eq!(gone.tree, Rect::default());
-    // The same holds the other way round: a wide window stays Side while hidden.
+    // The same holds the other way round: a wide window stays a column while hidden.
     let landscape = Rect::new(0, 0, 260, 40);
     assert_eq!(
         compute_regions(landscape, NavSize::hidden(31), 1).layout,
-        ViewLayout::Side
+        ViewLayout::Column
     );
     assert_eq!(
         compute_regions(landscape, NavSize::visible(31), 1).layout,
-        ViewLayout::Side
+        ViewLayout::Column
+    );
+    // And on the mirrored column: the aspect cannot move a pinned placement either.
+    assert_eq!(
+        compute_regions(
+            landscape,
+            NavSize::visible(31).with_position(NavPosition::Right),
+            1
+        )
+        .layout,
+        ViewLayout::Column
+    );
+    assert_eq!(
+        compute_regions(
+            landscape,
+            NavSize::hidden(31).with_position(NavPosition::Right),
+            1
+        )
+        .layout,
+        ViewLayout::Column
     );
 }
 
 #[test]
 fn compute_regions_side_top_and_hidden() {
     use ratatui::layout::Rect;
-    // Landscape → Side: tree left, 1-col border, terminal right. The hint bar is the
+    // Landscape → Column: tree left, 1-col border, terminal right. The hint bar is the
     // NAV column's bottom row, so the border and the terminal keep the full height.
     let land = Rect::new(0, 0, 140, 30);
     let s = compute_regions(land, NavSize::visible(48), 1);
-    assert_eq!(s.layout, ViewLayout::Side);
+    assert_eq!(s.layout, ViewLayout::Column);
     assert_eq!(s.tree, Rect::new(0, 0, 48, 29));
     assert_eq!(s.view_border, Rect::new(48, 0, 1, 30));
     assert_eq!(s.terminal, Rect::new(49, 0, 91, 30));
     assert_eq!(s.hint_bar, Rect::new(0, 29, 48, 1));
-    // A landscape SCREEN can still be Top when the side tree would squeeze the terminal
-    // view into a portrait shape: 100 wide, tree 48 → terminal view ~51 wide vs 80 tall, so
-    // Top wins even though the screen itself is wider than tall.
-    let squeezed = compute_regions(Rect::new(0, 0, 140, 60), NavSize::visible(48), 1);
-    assert_eq!(squeezed.layout, ViewLayout::Top);
-    // Portrait → Top: tree band on top, 1-row border, terminal below. The hint bar is
+    // A landscape SCREEN can still carry the band when the side tree would squeeze the
+    // terminal view into a portrait shape; the pinned Top states that placement directly:
+    // 100 wide, tree 48 → terminal view ~51 wide vs 80 tall, so a band beats a column
+    // even though the screen itself is wider than tall.
+    let squeezed = compute_regions(
+        Rect::new(0, 0, 140, 60),
+        NavSize::visible(48).with_position(NavPosition::Top),
+        1,
+    );
+    assert_eq!(squeezed.layout, ViewLayout::Band);
+    // Portrait → band on top: tree band on top, 1-row border, terminal below. The hint bar is
     // the BAND's bottom row, so it sits directly above the view border, not at the
     // screen's bottom edge.
     let port = Rect::new(0, 0, 40, 100);
-    let t = compute_regions(port, NavSize::visible(48), 1);
-    assert_eq!(t.layout, ViewLayout::Top);
+    let t = compute_regions(
+        port,
+        NavSize::visible(48).with_position(NavPosition::Top),
+        1,
+    );
+    assert_eq!(t.layout, ViewLayout::Band);
     assert_eq!(t.tree.y, 0);
     assert_eq!(t.tree.width, 40);
     let band_h = t.tree.height + t.hint_bar.height;
@@ -3105,10 +3415,60 @@ fn compute_regions_side_top_and_hidden() {
     assert_eq!(hidden.view_border, Rect::default());
 }
 
+#[test]
+fn compute_regions_right_column() {
+    use ratatui::layout::Rect;
+    // Pinned right: terminal left, 1-col border, tree right. The nav region's inner
+    // layout is the left column's unchanged - the mirror flips only what sits on which
+    // side of the view border - so the hint bar is still the nav region's bottom row.
+    let land = Rect::new(0, 0, 140, 30);
+    let s = compute_regions(
+        land,
+        NavSize::visible(48).with_position(NavPosition::Right),
+        1,
+    );
+    assert_eq!(s.layout, ViewLayout::Column);
+    assert_eq!(s.terminal, Rect::new(0, 0, 91, 30));
+    assert_eq!(s.view_border, Rect::new(91, 0, 1, 30));
+    assert_eq!(s.tree, Rect::new(92, 0, 48, 29));
+    assert_eq!(s.hint_bar, Rect::new(92, 29, 48, 1));
+    // The hidden sentinel keeps the position's shape: the terminal owns the whole area,
+    // the tree/border/hint bar default, and the layout stays the pinned column.
+    let gone = compute_regions(
+        land,
+        NavSize::hidden(48).with_position(NavPosition::Right),
+        1,
+    );
+    assert_eq!(gone.terminal, land);
+    assert_eq!(gone.layout, ViewLayout::Column);
+    assert_eq!(gone.tree, Rect::default());
+    assert_eq!(gone.view_border, Rect::default());
+    assert_eq!(gone.hint_bar, Rect::default());
+}
+
+#[test]
+fn compute_regions_bottom_band() {
+    use ratatui::layout::Rect;
+    // Pinned bottom: terminal above, 1-row border, tree band below. The hint bar is the
+    // bottom row of the SCREEN - the status line stays the nav region's lowest row in
+    // every placement - not the row adjacent to the view border.
+    let port = Rect::new(0, 0, 40, 100);
+    let b = compute_regions(
+        port,
+        NavSize::visible(48).with_position(NavPosition::Bottom),
+        1,
+    );
+    assert_eq!(b.layout, ViewLayout::Band);
+    assert_eq!(b.terminal, Rect::new(0, 0, 40, 59));
+    assert_eq!(b.view_border, Rect::new(0, 59, 40, 1));
+    assert_eq!(b.tree, Rect::new(0, 60, 40, 39));
+    assert_eq!(b.hint_bar, Rect::new(0, 99, 40, 1));
+}
+
 #[tokio::test]
 async fn wheel_moves_the_selection_like_the_arrow_keys() {
     // The plain wheel and ↑/↓ share nav_vertical, so one notch lands on the same row as one
-    // arrow press - in either layout (Side siblings / Top within-host).
+    // arrow press - in either layout (column siblings / band within-host).
     let mut a = Harness::new(sample());
     a.sw.mouse_scroll(true, &a.state);
     let by_wheel = a.sw.selected;
@@ -3116,7 +3476,7 @@ async fn wheel_moves_the_selection_like_the_arrow_keys() {
     b.key(KeyCode::Down).await;
     assert_eq!(
         by_wheel, b.sw.selected,
-        "wheel down lands where ↓ does (Side)"
+        "wheel down lands where ↓ does (column)"
     );
 
     let mut c = Harness::new_sized(sample(), 60, 70);
@@ -3126,7 +3486,7 @@ async fn wheel_moves_the_selection_like_the_arrow_keys() {
     d.key(KeyCode::Down).await;
     assert_eq!(
         by_wheel_top, d.sw.selected,
-        "wheel down lands where ↓ does (Top)"
+        "wheel down lands where ↓ does (band)"
     );
 }
 
@@ -3178,7 +3538,8 @@ async fn cancelling_a_jump_restores_the_starting_card() {
 #[tokio::test]
 async fn a_jump_past_the_last_card_is_inert() {
     // Typing a number that does not exist yet must not snap to an edge - the number is
-    // still being typed, and `9` on the way to `95` should not jerk the selection.
+    // still being typed, and `9` on the way to `95` should not jerk the selection. The
+    // digits are still taken into the buffer; only the selection refuses to move.
     let mut h = Harness::new(sample());
     let n = h.sw.rows.len();
     h.key(KeyCode::Char('1')).await;
@@ -3190,9 +3551,19 @@ async fn a_jump_past_the_last_card_is_inert() {
         h.sw.selected, one,
         "an out-of-range number leaves the selection alone"
     );
+    assert_eq!(
+        h.input_buffer(),
+        format!("1{n}"),
+        "the out-of-range number stays in the buffer"
+    );
     // A letter typed into a card number is dropped rather than breaking the parse.
     h.key(KeyCode::Char('x')).await;
     assert_eq!(h.sw.selected, one, "a non-digit is ignored");
+    assert_eq!(
+        h.input_buffer(),
+        format!("1{n}"),
+        "and never enters the buffer"
+    );
 }
 
 #[tokio::test]
@@ -3204,8 +3575,8 @@ async fn selecting_a_card_never_moves_its_session_name() {
     let mut h = Harness::new(one_host_scan(
         "srv",
         vec![
-            sess_mux("srv", "alpha", "tmux", 300),
-            sess_mux("srv", "beta", "tmux", 200),
+            sess_mux("srv", "alpha", "tmux"),
+            sess_mux("srv", "beta", "tmux"),
         ],
     ));
     // The COLUMN, not the byte offset: the address column and the `└` connector hold
@@ -3229,7 +3600,7 @@ async fn selecting_a_card_never_moves_its_session_name() {
 }
 
 #[test]
-fn every_unselected_card_carries_its_0_based_number_beside_its_session() {
+fn every_unselected_card_carries_its_1_based_number_beside_its_session() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
@@ -3241,12 +3612,7 @@ fn every_unselected_card_carries_its_0_based_number_beside_its_session() {
     // a number: it is the address you would type to get where you already are. A section
     // title carries no number at all - it is not a card, and it is never the selection.
     let selected = sw.list_state.selected().unwrap();
-    let num_w = sw
-        .selectable_count()
-        .saturating_sub(1)
-        .to_string()
-        .len()
-        .max(1) as u16;
+    let num_w = sw.selectable_count().to_string().len().max(1) as u16;
     let read =
         |x: u16, y: u16, w: u16| -> String { (x..x + w).map(|c| buf[(c, y)].symbol()).collect() };
     // Read each card where the PAINT put it: the side list parts its two bands, so a card
@@ -3372,34 +3738,89 @@ async fn the_input_hint_bar_floats_across_the_whole_window() {
 }
 
 #[tokio::test]
-async fn a_jump_never_holds_a_number_no_session_carries() {
-    // One, two, and three digit numbers behave identically because the popup only takes
-    // a digit that keeps the number in range, so the buffer always names a real session.
+async fn a_jump_holds_out_of_range_numbers_and_vets_at_enter() {
+    // The number goes into the buffer whatever it addresses; the existence check is
+    // Enter-time. While the number names no card the selection stays put, and Enter on
+    // it flashes the range and keeps the popup open.
     let mut h = Harness::new(sample());
     let n = h.sw.rows.len();
     assert!(n < 10, "sample() is a single-digit list");
-    // The seeding digit itself is vetted: no popup opens for a number nothing carries.
+    let start = h.sw.selected;
+    // The seeding digit itself is not vetted: an out-of-range digit opens the popup
+    // holding it, and leaves the selection alone.
     h.key(KeyCode::Char(char::from_digit(n as u32, 10).unwrap()))
         .await;
     assert!(
-        !h.state.is_inputting(),
-        "an out-of-range digit opens nothing"
+        h.state.is_inputting(),
+        "an out-of-range digit opens the popup"
     );
+    assert_eq!(h.input_buffer(), n.to_string(), "the buffer holds it");
+    assert_eq!(
+        h.sw.selected, start,
+        "while no card carries the number, the selection stays"
+    );
+    // Enter on a dead number flashes the range and keeps the popup open.
+    h.key(KeyCode::Enter).await;
+    assert!(h.state.is_inputting(), "the popup stays open");
     assert!(
         h.state.chrome.flash.contains("no session"),
-        "and says so: {}",
+        "the flash names the dead number: {}",
         h.state.chrome.flash
     );
-    // In range, the popup opens and each further digit is taken only if it stays in range.
+    let bar = h.hint_bar_text();
+    assert!(
+        bar.contains("no session"),
+        "the flash shows over the open input: {bar:?}"
+    );
+    // A fresh edit clears the flash and the input line returns.
+    h.key(KeyCode::Backspace).await;
+    assert!(h.state.chrome.flash.is_empty(), "a key clears the flash");
+    // In range, the popup opens and each further digit is taken as typed.
     h.key(KeyCode::Char('1')).await;
     assert!(h.state.is_inputting(), "an in-range digit opens the popup");
+    assert_eq!(h.sw.card_number(h.sw.selected), 1, "the digit lands");
     h.key(KeyCode::Char('0')).await;
     assert_eq!(
         h.sw.card_number(h.sw.selected),
         1,
-        "10 is out of range, so the digit is dropped and 1 keeps its card"
+        "10 is out of range, so the selection keeps 1"
     );
-    assert_eq!(h.input_buffer(), "1", "and the buffer never showed it");
+    assert_eq!(
+        h.input_buffer(),
+        "10",
+        "the buffer holds the out-of-range extension"
+    );
+}
+
+#[tokio::test]
+async fn a_jump_enter_on_an_empty_buffer_keeps_the_popup_open() {
+    let mut h = Harness::new(sample());
+    h.key(KeyCode::Char('1')).await;
+    h.key(KeyCode::Backspace).await; // empty the buffer
+    h.key(KeyCode::Enter).await;
+    assert!(
+        h.state.is_inputting(),
+        "Enter on an empty buffer keeps the popup open"
+    );
+    assert!(h.state.chrome.flash.is_empty(), "and flashes nothing");
+    assert_eq!(h.input_buffer(), "", "the buffer is still empty");
+}
+
+#[tokio::test]
+async fn cancelling_a_jump_from_a_dead_number_still_restores() {
+    // Esc after typing a dead extension returns to where the jump started, exactly as
+    // a live one does: the selection that never moved is still the starting card.
+    let mut h = Harness::new(sample());
+    let start = h.sw.selected;
+    h.key(KeyCode::Char('1')).await; // live jump to 1
+    h.key(KeyCode::Char('9')).await; // 19 is dead; the selection stays on 1
+    assert_eq!(h.input_buffer(), "19");
+    h.key(KeyCode::Esc).await;
+    assert!(!h.state.is_inputting(), "Esc closes the popup");
+    assert_eq!(
+        h.sw.selected, start,
+        "Esc returns to where the jump started"
+    );
 }
 
 #[tokio::test]
@@ -3435,6 +3856,150 @@ async fn a_jump_walks_into_a_two_digit_number() {
         h.sw.card_number(h.sw.selected),
         19,
         "and keeps where the jump landed"
+    );
+}
+
+#[tokio::test]
+async fn card_numbers_count_from_1_and_the_last_card_carries_the_count() {
+    // The number a card carries is its 1-based rank among the selectable cards:
+    // the first card is 1 and the last carries the card count. A section title
+    // carries no number, so the ranks count the cards only.
+    let mut h = Harness::new(sample());
+    let selectable: Vec<usize> = (0..h.sw.rows.len())
+        .filter(|&i| h.sw.rows[i].selectable())
+        .collect();
+    for (rank, &i) in selectable.iter().enumerate() {
+        assert_eq!(
+            h.sw.card_number(i),
+            rank + 1,
+            "card {i}'s number is its rank"
+        );
+    }
+    // `prefix 1` lands on the card numbered 1, the first selectable card.
+    h.key(KeyCode::Char('1')).await;
+    assert_eq!(h.sw.selected, selectable[0], "1 addresses the first card");
+}
+
+#[tokio::test]
+async fn a_jump_on_0_opens_the_input_and_names_no_card() {
+    // No card carries 0: `prefix 0` opens the jump input holding 0 and the
+    // selection stays put; Enter flashes the 1-based range and keeps the popup.
+    let mut h = Harness::new(sample());
+    h.key(KeyCode::End).await; // start far from where 0 used to point
+    let start = h.sw.selected;
+    h.key(KeyCode::Char('0')).await;
+    assert!(h.state.is_inputting(), "0 still opens the jump input");
+    assert_eq!(h.input_buffer(), "0", "the input holds the 0");
+    assert_eq!(
+        h.sw.selected, start,
+        "no card carries 0, so the selection stays"
+    );
+    let bar = h.hint_bar_text();
+    assert!(
+        bar.contains("jump to a session (1 - 4)"),
+        "the guide states the 1-based range: {bar:?}"
+    );
+    h.key(KeyCode::Enter).await;
+    assert!(h.state.is_inputting(), "the popup stays open");
+    assert!(
+        h.state.chrome.flash.contains("no session 0 (1 - 4)"),
+        "the flash names the dead number and the 1-based range: {}",
+        h.state.chrome.flash
+    );
+}
+
+#[tokio::test]
+async fn a_leading_zero_names_its_value() {
+    // The number is read as its value, spelling included: 01 is 1, the card 1
+    // addresses. The dead 0 comes alive the moment the digit giving it its
+    // value lands, and Enter closes on the card the value names.
+    let mut h = Harness::new(sample());
+    h.key(KeyCode::End).await;
+    h.key(KeyCode::Char('0')).await;
+    h.key(KeyCode::Char('1')).await;
+    let first = h.sw.rows.iter().position(Row::selectable).unwrap();
+    assert_eq!(h.sw.selected, first, "01 names the card 1 names");
+    assert_eq!(h.sw.card_number(h.sw.selected), 1, "which carries number 1");
+    h.key(KeyCode::Enter).await;
+    assert!(!h.state.is_inputting(), "Enter closes on the card 01 names");
+}
+
+#[tokio::test]
+async fn the_two_digit_boundary_starts_at_exactly_ten_cards() {
+    // Ten is where the numbers gain a digit: the address column is two wide, so a
+    // single-digit number takes a leading blank and 10 paints both of its digits.
+    // It is also the first count a two-digit number can name: 10 is the LAST card,
+    // and 11 is already past the end.
+    let mut h = Harness::new(scan_with_sessions(10));
+    let selectable: Vec<usize> = (0..h.sw.rows.len())
+        .filter(|&i| h.sw.rows[i].selectable())
+        .collect();
+    assert_eq!(
+        selectable.len(),
+        10,
+        "the fixture sits exactly on the boundary"
+    );
+    let last = *selectable.last().unwrap();
+    // The painted address is the width made visible: the first three columns of a
+    // card's row (the number right-aligned in two, then the separating blank).
+    let address_of = |h: &Harness, row: usize| -> String {
+        let (_, rect) =
+            h.sw.nav_cells
+                .iter()
+                .find(|(i, _)| *i == row)
+                .expect("every row was drawn");
+        (rect.x..rect.x + 3)
+            .map(|x| h.buf()[(x, rect.y)].symbol())
+            .collect()
+    };
+    assert_eq!(
+        address_of(&h, selectable[0]),
+        format!(" {} ", super::render::SELECTED_MARK),
+        "the selected card's mark sits right-aligned in the two-wide column"
+    );
+    assert_eq!(
+        address_of(&h, last).trim_end(),
+        "10",
+        "the last card paints its two-digit number"
+    );
+    // The jump starts far away so its steps are real moves: End sits on the last
+    // card, `prefix 1` walks back to the first, and the second digit walks forward
+    // into the first two-digit number, the last card again.
+    h.key(KeyCode::End).await;
+    assert_eq!(h.sw.selected, last, "End starts on the last card");
+    h.key(KeyCode::Char('1')).await;
+    assert_eq!(
+        h.sw.card_number(h.sw.selected),
+        1,
+        "the seeding digit lands immediately"
+    );
+    h.key(KeyCode::Char('0')).await;
+    assert_eq!(
+        h.sw.card_number(h.sw.selected),
+        10,
+        "10 addresses the first two-digit number"
+    );
+    assert_eq!(h.sw.selected, last, "which is the last selectable card");
+    h.key(KeyCode::Enter).await;
+    assert!(!h.state.is_inputting(), "Enter closes the popup");
+    assert_eq!(h.sw.selected, last, "and keeps where the jump landed");
+    // One past the boundary is already dead: the extension to 11 leaves the
+    // selection on the seeded card, and Enter flashes the range and keeps the
+    // popup open.
+    h.key(KeyCode::Char('1')).await;
+    h.key(KeyCode::Char('1')).await;
+    assert_eq!(
+        h.sw.card_number(h.sw.selected),
+        1,
+        "11 names no card, so the selection keeps the seeded card"
+    );
+    assert_eq!(h.input_buffer(), "11", "the buffer holds the dead number");
+    h.key(KeyCode::Enter).await;
+    assert!(h.state.is_inputting(), "the popup stays open");
+    assert!(
+        h.state.chrome.flash.contains("no session 11 (1 - 10)"),
+        "the flash names the dead number and the 1-based range: {}",
+        h.state.chrome.flash
     );
 }
 
@@ -4039,7 +4604,10 @@ fn help_lines_reflects_configured_prefix() {
     // The focus-section rows must show the active prefix, not a hardcoded "C-g".
     let mut state = crate::state::State::default();
     state.chrome.set_ui_prefix("C-Space".into());
-    let (_title, lines) = modal::help_lines(&state.chrome.ui_prefix);
+    let (_title, lines) = modal::help_lines(
+        &state.chrome.ui_prefix,
+        crate::ui::switcher::NavPosition::Left,
+    );
     let text: String = lines
         .iter()
         .map(|l| l.to_string())
@@ -4056,7 +4624,10 @@ fn help_lines_reflects_configured_prefix() {
 
     // Default prefix (no setter) must still show C-g.
     let state_default = crate::state::State::default();
-    let (_title, lines_default) = modal::help_lines(&state_default.chrome.ui_prefix);
+    let (_title, lines_default) = modal::help_lines(
+        &state_default.chrome.ui_prefix,
+        crate::ui::switcher::NavPosition::Left,
+    );
     let text_default: String = lines_default
         .iter()
         .map(|l| l.to_string())
@@ -4083,7 +4654,6 @@ fn select_address_moves_cursor_to_named_session() {
                     mux: String::new(),
                     windows: 1,
                     attached: false,
-                    last_attached: 200,
                 },
                 Session {
                     source: "jup".into(),
@@ -4091,14 +4661,13 @@ fn select_address_moves_cursor_to_named_session() {
                     mux: String::new(),
                     windows: 1,
                     attached: false,
-                    last_attached: 100,
                 },
             ],
         }],
     };
     let mut state = crate::state::State::from_scan(scan);
     let mut sw = Switcher::new(&mut state);
-    // Selection starts on the most-recent session row (api). Jump to db by address.
+    // Selection starts on the first session row (api). Jump to db by address.
     assert!(sw.select_address("jup/db", &state), "moved to jup/db");
     assert_eq!(sw.terminal_view_target().target, "db");
     // Already-there → no move; unknown address → no move, selection unchanged.
@@ -4138,18 +4707,16 @@ fn column_flow_scan(sources: &[&str], name_len: usize) -> Scan {
     column_flow_scan_sized(&counts, name_len)
 }
 
-/// Sources carrying the given session counts, most recent source first, every card the
-/// same width. The counts set each host/mux RUN's height (one expanded card over the
-/// rest collapsed), which is what the column flow packs.
+/// Sources carrying the given session counts, every card the same width. The counts
+/// set each host/mux RUN's height (one expanded card over the rest collapsed), which
+/// is what the column flow packs.
 fn column_flow_scan_sized(sources: &[(&str, usize)], name_len: usize) -> Scan {
     let pad = "x".repeat(name_len.saturating_sub(2));
     let mut out: Vec<(&str, Vec<Session>)> = Vec::new();
-    let mut last = 1000i64;
     for (src, n) in sources {
         let mut sessions = Vec::new();
         for k in 0..*n {
-            sessions.push(sess(src, &format!("{src}{pad}{k}"), 1, false, last));
-            last -= 1;
+            sessions.push(sess(src, &format!("{src}{pad}{k}"), 1, false));
         }
         out.push((*src, sessions));
     }
@@ -4162,9 +4729,9 @@ fn portrait(scan: Scan, w: u16, h: u16) -> (Switcher, Terminal<TestBackend>) {
     let mut state = crate::state::State::from_scan(scan);
     let mut sw = Switcher::new(&mut state);
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
+    term.draw(|f| sw.render(f, None, false, auto_nav(NAV_WIDTH, f.area()), &state))
         .unwrap();
-    assert_eq!(sw.layout, ViewLayout::Top, "the backend must be portrait");
+    assert_eq!(sw.layout, ViewLayout::Band, "the backend must be portrait");
     (sw, term)
 }
 
@@ -4243,12 +4810,12 @@ fn the_portrait_band_parts_sessions_left_and_hosts_right() {
             Group {
                 source: "aa".into(),
                 err: None,
-                sessions: vec![sess("aa", "a0", 1, false, 5), sess("aa", "a1", 1, false, 4)],
+                sessions: vec![sess("aa", "a0", 1, false), sess("aa", "a1", 1, false)],
             },
             Group {
                 source: "bb".into(),
                 err: None,
-                sessions: vec![sess("bb", "b0", 1, false, 3), sess("bb", "b1", 1, false, 2)],
+                sessions: vec![sess("bb", "b0", 1, false), sess("bb", "b1", 1, false)],
             },
             Group {
                 source: "dead".into(),
@@ -4369,7 +4936,7 @@ fn the_hidden_columns_are_counted_on_the_status_row() {
     ));
     let mut sw = Switcher::new(&mut state);
     sw.move_to(-1, &state);
-    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
+    term.draw(|f| sw.render(f, None, false, auto_nav(NAV_WIDTH, f.area()), &state))
         .unwrap();
     let at_right = row(&term);
     assert!(
@@ -4406,7 +4973,7 @@ fn the_portrait_status_line_is_a_label_until_the_prefix_is_armed() {
     let mut state = crate::state::State::from_scan(column_flow_scan(&["aa", "bb", "cc"], 2));
     let mut sw = Switcher::new(&mut state);
     state.chrome.set_armed(true);
-    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
+    term.draw(|f| sw.render(f, None, false, auto_nav(NAV_WIDTH, f.area()), &state))
         .unwrap();
     let buf = term.backend().buffer();
     let armed_y = bar_y; // it widens in place: the band's own row, the window's full width
@@ -4427,7 +4994,7 @@ fn the_side_lists_scrollbar_column_is_outside_every_card() {
     let mut term = Terminal::new(TestBackend::new(140, 8)).unwrap();
     term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
-    assert_eq!(sw.layout, ViewLayout::Side);
+    assert_eq!(sw.layout, ViewLayout::Column);
     let buf = term.backend().buffer();
     let bar_x = NAV_WIDTH - 1;
     let col: String = (0..buf.area.height - 1)
@@ -4495,7 +5062,7 @@ async fn a_session_with_no_stamped_mux_takes_its_source_mux() {
     );
     h.sw.apply_source_result(
         "local".into(),
-        vec![sess_mux("local", "fresh", "", 100)],
+        vec![sess_mux("local", "fresh", "")],
         None,
         &mut h.state,
     );
@@ -4641,7 +5208,7 @@ async fn unreachable_host_screen_names_the_other_muxes_on_the_machine() {
     let mut h = Harness::from_sources(&["prod:tmux", "prod:zellij", "local"]);
     h.sw.apply_source_result(
         "prod:zellij".into(),
-        vec![sess_mux("prod:zellij", "infer", "zellij", 100)],
+        vec![sess_mux("prod:zellij", "infer", "zellij")],
         None,
         &mut h.state,
     );
@@ -4691,7 +5258,7 @@ async fn unreachable_host_screen_separates_a_standing_failure_from_a_blip() {
 
     h.sw.apply_source_result(
         "prod".into(),
-        vec![sess("prod", "editor", 1, false, 100)],
+        vec![sess("prod", "editor", 1, false)],
         None,
         &mut h.state,
     );

@@ -48,7 +48,11 @@ impl Mux for Psmux {
     }
 
     fn classify_identity(&self, outputs: &[Option<String>]) -> Option<&'static str> {
-        named_mux(outputs.first()?.as_deref()?)
+        // psmux's help output names psmux in its banner and usage lines and mentions
+        // tmux (it presents itself as a tmux alternative): the mentions are
+        // comparative, never an identity claim, so the read drops the tmux name and
+        // psmux's own name decides.
+        named_mux_excluding(outputs.first()?.as_deref()?, "tmux")
     }
 
     fn server_model(&self) -> ServerModel {
@@ -193,6 +197,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn psmux_help_naming_tmux_mentions_still_classifies_psmux() {
+        // psmux's help banner names psmux AND mentions tmux ("... for Windows (tmux
+        // alternative)"): the mentions are comparative, never an identity claim, so
+        // psmux's own name decides.
+        let banner = "psmux v3.3.8 - terminal multiplexer for windows (tmux alternative)\n\n\
+                      usage: psmux [-S socket-path] command";
+        let outs = vec![Some(banner.to_string())];
+        assert_eq!(psmux().classify_identity(&outs), Some("psmux"));
+    }
+
+    #[test]
+    fn psmux_help_naming_only_tmux_is_inconclusive() {
+        // An output carrying no psmux name of its own decides nothing: the dropped
+        // tmux mentions leave no identity, and None retries on a later scan rather
+        // than decoding to another kind.
+        let outs = vec![Some("tmux 3.3.8 - a terminal multiplexer".to_string())];
+        assert_eq!(psmux().classify_identity(&outs), None);
+    }
+
     fn ssh(alias: &str) -> Box<dyn Transport> {
         crate::transport::ssh(alias.into(), String::new(), "linux".into())
     }
@@ -219,7 +243,7 @@ mod tests {
         // host id. The result is EXACTLY the parsed rows - no local registry name is
         // merged in as a phantom (the regression `for_binary("psmux")` would cause).
         let m = psmux();
-        let runner = CannedRunner::ok("2\t1\t100\teditor\n1\t0\t0\tbuild\n");
+        let runner = CannedRunner::ok("2\t1\teditor\n1\t0\tbuild\n");
         let got = m.enumerate(&ssh("prod"), &runner).await.unwrap();
         let names: Vec<&str> = got.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(

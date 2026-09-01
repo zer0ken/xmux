@@ -121,6 +121,30 @@ impl State {
         }
     }
 
+    /// Resolves a `<source>/<session>` switch address against the current inventory -
+    /// the set the nav shows. `Ok` when a session with exactly that address is listed;
+    /// `Err` names which half is missing (an absent source, or a present source with no
+    /// matching session). The answer the ctl `switch` verb replies with: resolution,
+    /// not attach success, which is async and confirms later.
+    pub fn resolve_switch_address(&self, address: &str) -> Result<(), String> {
+        let target = crate::session::parse_target(address)?;
+        let found = self
+            .groups
+            .iter()
+            .any(|g| g.sessions.iter().any(|s| s.address() == address));
+        if found {
+            return Ok(());
+        }
+        if self.groups.iter().any(|g| g.source == target.source) {
+            Err(format!(
+                "no such session {:?} on source {:?}",
+                target.name, target.source
+            ))
+        } else {
+            Err(format!("no such source {:?}", target.source))
+        }
+    }
+
     /// The single domain-mutation site. Folds one [`Action`] into the state and
     /// returns the side effects to run as [`Command`]s. `apply` touches only `State`;
     /// every external effect (switcher selection move, attach, prefs persist, quit) is
@@ -1081,6 +1105,52 @@ mod tests {
     }
 
     #[test]
+    fn resolve_switch_address_reports_which_half_is_missing() {
+        let s = State::from_scan(Scan {
+            groups: vec![
+                Group {
+                    source: "jup".into(),
+                    err: None,
+                    sessions: vec![Session {
+                        source: "jup".into(),
+                        name: "api".into(),
+                        ..Default::default()
+                    }],
+                },
+                Group {
+                    source: "local:psmux".into(),
+                    err: None,
+                    sessions: vec![Session {
+                        source: "local:psmux".into(),
+                        name: "swtarget".into(),
+                        ..Default::default()
+                    }],
+                },
+            ],
+        });
+        // A session the inventory lists resolves.
+        assert_eq!(s.resolve_switch_address("jup/api"), Ok(()));
+        assert_eq!(
+            s.resolve_switch_address("local:psmux/swtarget"),
+            Ok(()),
+            "the qualified source address the nav actually uses resolves"
+        );
+        // A session missing under an existing source is a session error.
+        let err = s.resolve_switch_address("jup/nope").unwrap_err();
+        assert!(err.starts_with("no such session"), "{err}");
+        // A source that does not exist is a source error - the issue's `local/swtarget`
+        // when the real source is `local:psmux`, and a wholly unknown host.
+        let err = s.resolve_switch_address("local/swtarget").unwrap_err();
+        assert!(err.starts_with("no such source"), "{err}");
+        let err = s
+            .resolve_switch_address("nosuchhost/nosuchsession")
+            .unwrap_err();
+        assert!(err.starts_with("no such source"), "{err}");
+        // An address with no `/` is invalid, not a missing source.
+        assert!(s.resolve_switch_address("noslash").is_err());
+    }
+
+    #[test]
     fn apply_rescan_emits_rescan_command() {
         let mut s = State::default();
         assert_eq!(s.apply(Action::Rescan), vec![Command::Rescan]);
@@ -1180,7 +1250,6 @@ mod tests {
                     mux: "tmux".into(),
                     windows: 2,
                     attached: false,
-                    last_attached: 100,
                 }],
             }],
         }
@@ -1374,7 +1443,6 @@ mod tests {
             mux: "tmux".into(),
             windows: 1,
             attached: false,
-            last_attached: 5,
         }];
         let effects = state.apply_event(
             HostEvent::Sessions {

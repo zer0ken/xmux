@@ -405,6 +405,10 @@ pub struct Chrome {
     /// the cheatsheet appears exactly when it is needed and never competes with the
     /// cards for room.
     pub(crate) armed: bool,
+    /// The side the nav is attached to this frame (set by the app each frame from the
+    /// runtime's resolved position). The cheatsheet's focus segment names the arrow
+    /// pair the placement makes active.
+    pub(crate) nav_position: crate::ui::switcher::NavPosition,
     /// The tree|terminal view border colours (set once by the app from config; tmux defaults
     /// otherwise). See [`ViewBorderColors`].
     pub(crate) colors: ViewBorderColors,
@@ -427,6 +431,7 @@ impl Default for Chrome {
             log_path: String::new(),
             ui_prefix: "C-g".into(),
             armed: false,
+            nav_position: crate::ui::switcher::NavPosition::Left,
             colors: ViewBorderColors::default(),
             hint_bar_style: hint_bar_default_style(),
         }
@@ -486,6 +491,12 @@ impl Chrome {
         self.armed = armed;
     }
 
+    /// Sets the nav's attachment side. The app calls this each frame from the runtime's
+    /// resolved position; the cheatsheet reads it to name the active arrow pair.
+    pub(crate) fn set_nav_position(&mut self, position: crate::ui::switcher::NavPosition) {
+        self.nav_position = position;
+    }
+
     /// Sets the hint bar style. The app calls this once at startup from
     /// `[ui] hint-bar-style` (empty ⇒ the tmux default; see [`parse_hint_bar_style`]).
     pub(crate) fn set_hint_bar_style(&mut self, style: Style) {
@@ -543,9 +554,9 @@ impl Chrome {
     pub(crate) fn render_view_border(&self, frame: &mut Frame, area: Rect, terminal_focused: bool) {
         let active = self.colors.active;
         let inactive = self.colors.inactive;
-        // Top layout: the view border runs HORIZONTALLY between the top tree and the
-        // bottom terminal. Split left/right to cue focus (left lit = tree focus, right =
-        // terminal focus), mirroring the vertical rule's top/bottom split.
+        // Band layout: the view border runs HORIZONTALLY between the nav band and the
+        // terminal. Split left/right to cue focus (nav half lit = nav focus, terminal
+        // half = terminal focus), mirroring the vertical rule's top/bottom split.
         if area.width > area.height {
             let g = if self.view_border_hovered {
                 "━"
@@ -866,22 +877,30 @@ impl Chrome {
     pub(crate) fn hint_bar_text(&self, width: u16, state: &crate::state::State) -> String {
         // Use the active prefix so the hint_bar matches the user's configured binding.
         let p = &self.ui_prefix;
-        if let Some(Modal::Input(input)) = &state.modal {
-            crate::ui::modal::input_hint_text(input, width)
-        } else if !self.flash.is_empty() {
+        if !self.flash.is_empty() {
+            // A flash outranks even an open input: a dead jump number flashed its range
+            // while leaving the input open, so the range must show over the input line.
             format!(" ⚠ {}", self.flash)
+        } else if let Some(Modal::Input(input)) = &state.modal {
+            crate::ui::modal::input_hint_text(input, width)
         } else if self.armed {
             // The prefix is held: name what it unlocks. Longest-first so a narrow nav
             // drops the rarer chords rather than clipping mid-word.
-            // Order: focus nav, focus terminal, jump, new, hide, rescan, help, quit.
-            // The focus rows use arrow symbols that point at the view they focus. The
-            // resize keys are left out of the cheatsheet (the help modal has them).
+            // Order: focus nav, focus terminal, jump, new, hide, position, rescan, help,
+            // quit. The focus rows name the arrow PAIR the current placement makes
+            // active (the pair facing the terminal's side names the terminal), and the
+            // resize keys are left out (the help modal has them).
+            let focus = if self.nav_position.forward_arrows_face_terminal() {
+                "←/↑ focus nav · →/↓ focus terminal"
+            } else {
+                "→/↓ focus nav · ←/↑ focus terminal"
+            };
             fit(
                 &[
-                    format!(" {p} · ←/↑ focus nav · →/↓ focus terminal · 0-9 jump to a session · n new session · t hide nav · r rescan · ? help · q quit"),
-                    format!(" {p} · ←/↑ nav · →/↓ terminal · 0-9 jump to · n new · t hide · r rescan · ? help · q quit"),
-                    format!(" {p} · ←/↑ nav · →/↓ terminal · 0-9 jump · n new · t hide · r · ? · q"),
-                    format!(" {p} · ←/↑ · →/↓ · 0-9 · n · t · r · ? · q"),
+                    format!(" {p} · {focus} · 1-9 jump to a session · n new session · t hide nav · p nav position · r rescan · ? help · q quit"),
+                    format!(" {p} · {focus} · 1-9 jump to · n new · t hide · p position · r rescan · ? help · q quit"),
+                    format!(" {p} · {focus} · 1-9 · n · t · p · r · ? · q"),
+                    format!(" {p} · ←/↑ · →/↓ · 1-9 · n · t · p · r · ? · q"),
                     format!(" {p}…"),
                 ],
                 width,
@@ -1006,16 +1025,20 @@ impl Chrome {
     ) {
         // An open input owns the bar outright: the bar BECOMES the input line (see
         // [`Self::hint_bar_text`]), painted as the status bar with a reversed-block
-        // caret. This branch is the bar's whole render - the cheatsheet, the version
-        // label, and the key-token styling all yield to what is being typed.
-        if let Some(Modal::Input(input)) = &state.modal {
-            let line = crate::ui::modal::input_hint_line(input, area.width);
-            frame.render_widget(Clear, area);
-            frame.render_widget(
-                Paragraph::new(line).style(self.hint_bar_render_style()),
-                area,
-            );
-            return;
+        // caret. A flash outranks it - a dead jump number flashes its range while
+        // leaving the input open, so the range must show over the input line - and
+        // falls through to the flash path below, exactly as [`Self::hint_bar_text`]
+        // orders them.
+        if self.flash.is_empty() {
+            if let Some(Modal::Input(input)) = &state.modal {
+                let line = crate::ui::modal::input_hint_line(input, area.width);
+                frame.render_widget(Clear, area);
+                frame.render_widget(
+                    Paragraph::new(line).style(self.hint_bar_render_style()),
+                    area,
+                );
+                return;
+            }
         }
         // While the prefix is HELD the bar is expanded, and it pins its name and version to
         // the far right: a cheap build pointer that never crowds the cheatsheet. A flash is
@@ -1168,18 +1191,19 @@ mod tests {
     }
 
     #[test]
-    fn hint_bar_becomes_the_input_line_while_one_is_open() {
-        // An open input outranks every other bar state (resting prefix, armed, flash,
-        // scan, filter): the bar BECOMES `[feature] guide: buffer`.
+    fn hint_bar_shows_a_flash_over_an_open_input() {
+        // A flash outranks an open input: a dead jump number flashes its range while
+        // leaving the input open, so the range must show over the input line; once the
+        // flash clears, the input line takes the bar back.
         use crate::ui::modal::{Input, InputMode, Modal};
         let mut c = Chrome::default();
         let state = crate::state::State {
-            modal: Some(Modal::Input(Input::new(
+            modal: Some(Modal::Input(Box::new(Input::new(
                 InputMode::Filter,
                 " filter sessions".into(),
                 "xm".into(),
                 None,
-            ))),
+            )))),
             ..Default::default()
         };
         let t = c.hint_bar_text(60, &state);
@@ -1187,12 +1211,19 @@ mod tests {
             t.contains("[filter] filter sessions: xm"),
             "the bar reads the input line: {t:?}"
         );
-        // A flash does not displace the input.
-        c.flash("host unreachable");
+        // A flash displaces the input while it lasts.
+        c.flash("no session 9 (1 - 4)");
         let t2 = c.hint_bar_text(60, &state);
         assert!(
-            t2.contains("[filter] filter sessions"),
-            "the input outranks a flash too: {t2:?}"
+            t2.contains("no session 9 (1 - 4)"),
+            "the flash shows over the input: {t2:?}"
+        );
+        // The next key clears the flash and the input line returns.
+        c.flash.clear();
+        let t3 = c.hint_bar_text(60, &state);
+        assert!(
+            t3.contains("[filter] filter sessions"),
+            "the input line returns once the flash clears: {t3:?}"
         );
     }
 
@@ -1212,9 +1243,10 @@ mod tests {
         let order = [
             "←/↑ focus nav",
             "→/↓ focus terminal",
-            "0-9 jump to a session",
+            "1-9 jump to a session",
             "n new session",
             "t hide nav",
+            "p nav position",
             "r rescan",
             "? help",
             "q quit",
@@ -1230,12 +1262,12 @@ mod tests {
             );
             last = pos;
         }
-        // A narrower bar drops to short descriptions while keeping the focus guidance.
-        // With the cheatsheet no longer advertising `/`, the full line fits by 120, so
-        // measure at a width that forces the short variant.
-        let armed = c.hint_bar_text(100, &state);
+        // A narrower bar drops to short descriptions while keeping the focus guidance
+        // (the pair segment rides every rung). The full line is ~141 cells, so a 120-wide
+        // bar forces the middle rung, whose focus rows keep the full pair wording.
+        let armed = c.hint_bar_text(120, &state);
         assert!(
-            armed.contains("→/↓ terminal"),
+            armed.contains("→/↓ focus terminal"),
             "short bar keeps focus-terminal: {armed:?}"
         );
         for key in ["n new", "r rescan", "? help", "q quit"] {
@@ -1244,6 +1276,22 @@ mod tests {
         // A flash outranks the armed cheatsheet: a refusal must not be hidden by it.
         c.flash("host unreachable");
         assert!(c.hint_bar_text(120, &state).contains("host unreachable"));
+    }
+
+    #[test]
+    fn the_armed_cheatsheet_names_the_arrow_pair_the_placement_makes_active() {
+        let mut c = Chrome::default();
+        let state = crate::state::State::default();
+        c.set_armed(true);
+        // Default (left column): ←/↑ name the nav, →/↓ the terminal.
+        let left = c.hint_bar_text(400, &state);
+        assert!(left.contains("←/↑ focus nav"), "{left:?}");
+        assert!(left.contains("→/↓ focus terminal"), "{left:?}");
+        // Pinned right, the whole pair mirrors and the bar says so.
+        c.set_nav_position(crate::ui::switcher::NavPosition::Right);
+        let right = c.hint_bar_text(400, &state);
+        assert!(right.contains("→/↓ focus nav"), "{right:?}");
+        assert!(right.contains("←/↑ focus terminal"), "{right:?}");
     }
 
     #[test]

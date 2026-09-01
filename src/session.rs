@@ -95,8 +95,6 @@ pub struct Session {
     pub mux: String,
     pub windows: i64,
     pub attached: bool,
-    /// Unix seconds; `0` when the mux does not report it.
-    pub last_attached: i64,
 }
 
 impl Session {

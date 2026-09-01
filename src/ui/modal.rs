@@ -99,9 +99,10 @@ pub(crate) enum InputMode {
     New,
     /// Jump to a session by its number (the user-facing name: a `card` is the visual
     /// row, the session is what it stands for). Unlike the other modes this one acts
-    /// WHILE it is open: every edit moves the selection, so the number is a live cursor
-    /// rather than a value submitted at the end. Enter therefore only closes the popup,
-    /// and Esc restores where the jump started.
+    /// WHILE it is open: every edit moves the selection while the number names a card,
+    /// so the number is a live cursor rather than a value submitted at the end. Enter
+    /// closes the popup when the number names a card and flashes the valid range while
+    /// leaving it open otherwise; Esc restores where the jump started.
     Jump,
 }
 
@@ -122,6 +123,10 @@ pub(crate) struct Input {
     /// onto the wrong card. Esc returns here; Enter leaves the selection where the
     /// live jump already put it.
     pub(crate) restore: Option<RowRef>,
+    /// [`InputMode::Filter`] only: the filter the input opened from, restored on Esc.
+    /// The filter applies live while the input is open, so cancelling must undo every
+    /// edit back to this value.
+    pub(crate) restore_filter: Option<String>,
 }
 
 impl Input {
@@ -142,16 +147,8 @@ impl Input {
             cursor,
             source,
             restore: None,
+            restore_filter: None,
         }
-    }
-
-    /// What [`Self::insert`] would make the buffer, without changing anything. Lets a
-    /// mode veto a keystroke by its RESULT rather than guessing from the caret: the jump
-    /// only accepts a digit that keeps the number addressing a real session.
-    pub(crate) fn buffer_with(&self, c: char) -> String {
-        let mut v: Vec<char> = self.buffer.chars().collect();
-        v.insert(self.cursor.min(v.len()), c);
-        v.into_iter().collect()
     }
 
     /// Inserts `c` at the caret and advances past it. Char-indexed so multi-byte
@@ -238,9 +235,13 @@ impl Input {
 /// the others" invariant cannot drift. Lives on [`crate::state::State`]; the
 /// switcher owns only the behavior and the transient popup geometry (drag offset
 /// / drawn rect).
+///
+/// The input carries several owned strings (label, buffer, a create source, a
+/// jump restore reference, a filter restore value), so it is boxed to keep the
+/// enum small; callers pattern-match through the box and never see the pointer.
 pub(crate) enum Modal {
     Help,
-    Input(Input),
+    Input(Box<Input>),
 }
 
 /// True while a centered modal popup is open. Every modal is one today, so this
@@ -324,8 +325,12 @@ pub(crate) fn wrap_text(text: &str, width: u16) -> Vec<String> {
 }
 
 /// The help modal's `(title, lines)`, built once and rendered through the
-/// shared modal-popup path. `prefix` is the configured `[ui] prefix` binding.
-pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
+/// shared modal-popup path. `prefix` is the configured `[ui] prefix` binding;
+/// `nav_position` decides which arrow pair the focus rows name.
+pub(crate) fn help_lines(
+    prefix: &str,
+    nav_position: crate::ui::switcher::NavPosition,
+) -> (String, Vec<Line<'static>>) {
     // tmux mode-tree style: a right-aligned, bold key column, a `│` rule, then
     // the description. `Head` breaks the flat list into navigation/focus/terminal sections;
     // `Note` is a description-only row (the mux state has no keys of its own).
@@ -342,6 +347,15 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
 
     let p = prefix;
 
+    // The focus rows name the arrow PAIR the current placement makes active (the pair
+    // facing the terminal's side names the terminal, so the pair flips with the nav on
+    // the right or below).
+    let (terminal_pair, nav_pair) = if nav_position.forward_arrows_face_terminal() {
+        ("→/↓", "←/↑")
+    } else {
+        ("←/↑", "→/↓")
+    };
+
     // Tree section - the mutating keys carry the prefix (bare presses are inert);
     // navigation and the `/` filter stay bare.
     let rows: Vec<HelpRow> = vec![
@@ -354,7 +368,7 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
         HelpRow::Key("PgUp/PgDn".into(), "jump by 10".into()),
         HelpRow::Key("Home/End".into(), "first / last card".into()),
         HelpRow::Key(
-            format!("{p} 0-9"),
+            format!("{p} 1-9"),
             "jump to a session by its number (keep typing for 10+)".into(),
         ),
         HelpRow::Key(format!("{p} n"), "new session on the selected host".into()),
@@ -363,12 +377,15 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
         HelpRow::Gap,
         // Focus section - prefix rows built from `prefix`.
         HelpRow::Head(format!("focus ({p} = prefix)")),
-        HelpRow::Key(format!("Enter · {p} →/↓"), "focus the terminal".into()),
+        HelpRow::Key(
+            format!("Enter · {p} {terminal_pair}"),
+            "focus the terminal".into(),
+        ),
         HelpRow::Key(
             format!("{p} Tab"),
             "toggle focus between nav and terminal".into(),
         ),
-        HelpRow::Key(format!("{p} ←/↑ · {p} Esc"), "focus the nav".into()),
+        HelpRow::Key(format!("{p} {nav_pair} · {p} Esc"), "focus the nav".into()),
         HelpRow::Key(
             format!("{p} C-←/→"),
             "resize nav width (side); h/l too. repeats briefly".into(),
@@ -380,6 +397,10 @@ pub(crate) fn help_lines(prefix: &str) -> (String, Vec<Line<'static>>) {
         HelpRow::Key(
             format!("{p} t"),
             "toggle auto-hide-nav (║ view border = on)".into(),
+        ),
+        HelpRow::Key(
+            format!("{p} p"),
+            "cycle the nav position (left · top · right · bottom · auto)".into(),
         ),
         HelpRow::Key(format!("{p} ?"), "show this help (q / Esc closes)".into()),
         HelpRow::Key("click a view".into(), "focus that view".into()),
@@ -709,6 +730,57 @@ mod tests {
     fn modal_help_variant_constructs() {
         let m = Modal::Help;
         assert!(matches!(m, Modal::Help));
+    }
+
+    #[test]
+    fn help_focus_rows_name_the_arrow_pair_the_placement_makes_active() {
+        // The focus rows read the pair the current placement makes active: at the
+        // default (left) placement →/↓ name the terminal and ←/↑ the nav; pinned right
+        // the whole pair flips.
+        let flat = |lines: &[Line<'static>]| -> String {
+            lines
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let (t, lines) = help_lines("C-g", crate::ui::switcher::NavPosition::Left);
+        assert_eq!(t, "keys");
+        let left = flat(&lines);
+        assert!(left.contains("Enter · C-g →/↓"), "{left}");
+        assert!(left.contains("C-g →/↓"), "{left}");
+        assert!(left.contains("C-g ←/↑ · C-g Esc"), "{left}");
+        let (_t, lines) = help_lines("C-g", crate::ui::switcher::NavPosition::Right);
+        let right = flat(&lines);
+        assert!(right.contains("Enter · C-g ←/↑"), "{right}");
+        assert!(right.contains("C-g ←/↑"), "{right}");
+        assert!(right.contains("C-g →/↓ · C-g Esc"), "{right}");
+    }
+
+    #[test]
+    fn help_lists_the_position_cycle() {
+        // The `prefix p` row: the cycle order, with "auto" as the fifth stop.
+        let (_t, lines) = help_lines("C-g", crate::ui::switcher::NavPosition::Left);
+        let all = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<String>();
+        assert!(all.contains("C-g p"), "{all}");
+        assert!(
+            all.contains("cycle the nav position"),
+            "the row says what the key does: {all}"
+        );
+        assert!(all.contains("auto"), "the cycle names its auto stop: {all}");
     }
 
     #[test]

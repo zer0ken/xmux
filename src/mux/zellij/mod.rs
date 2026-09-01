@@ -113,7 +113,6 @@ impl Mux for Zellij {
             Ok(out) => Ok(parse::parse_sessions(
                 transport.host_id(),
                 &String::from_utf8_lossy(&out),
-                now_secs(),
             )),
             Err(e) if crate::mux::is_no_sessions(&e) => Ok(Vec::new()),
             Err(e) => Err(e),
@@ -188,16 +187,6 @@ impl Mux for Zellij {
             name.to_string(),
         ]
     }
-}
-
-/// Wall-clock seconds since the epoch: the reference the reported session AGE is
-/// subtracted from to reach a `last_attached` on the same scale tmux reports. A
-/// clock before the epoch reads as zero rather than panicking.
-fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -327,10 +316,6 @@ mod tests {
         let names: Vec<&str> = got.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["api", "build"]);
         assert!(got.iter().all(|s| s.source == "jup" && s.mux == "zellij"));
-        assert!(
-            got[0].last_attached > got[1].last_attached,
-            "the newer session sorts ahead of the older one"
-        );
     }
 
     #[tokio::test]

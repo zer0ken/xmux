@@ -47,16 +47,18 @@ impl Runtime {
             nav_width,
             nav_width_natural,
             nav_height,
+            nav_position,
             ..
         } = self;
         let (cols, rows) = (*cols, *rows);
         // The nav's live size as one value, read once for this effect: the width the user
-        // set, the width on screen, and the band height. Every geometry below is cut from
-        // it, so none of them re-derives one of the three.
+        // set, the width on screen, the band height, and the attachment side. Every
+        // geometry below is cut from it, so none of them re-derives one of the four.
         let nav = crate::ui::switcher::NavSize {
             natural: *nav_width_natural,
             width: *nav_width,
             height: *nav_height,
+            position: *nav_position,
         };
         match effect {
             EventEffect::ApplyInventory { host, sessions } => {
@@ -351,12 +353,23 @@ impl Runtime {
             &env.ui_prefix,
         );
         let nav_width = nav_width_natural;
-        // Restore the Top-layout nav height (0 = auto ~40%); a stale value is clamped at
+        // Restore the band-layout nav height (0 = auto ~40%); a stale value is clamped at
         // render time by compute_regions, so no clamp is needed here.
         let nav_height = crate::ui::prefs::load_nav_height(&env.xmux_dir).unwrap_or(0);
         // One read of the roster for the whole construction, so every product below is
         // built from ONE answer about which machines exist.
         let roster = env.roster();
+        let nav_pos_setting = roster.cfg.ui.nav_position_setting();
+        let nav_position_pinned = crate::ui::prefs::load_nav_position(&env.xmux_dir);
+        // The initial position: resolved once here so the first frame and the first PTY
+        // sizing already split the screen the way the settings and pin say. The loop-top
+        // reconcile below re-resolves it every frame from the same inputs.
+        let nav_position = crate::ui::switcher::resolve_nav_position(
+            &nav_pos_setting,
+            nav_position_pinned,
+            ratatui::layout::Rect::new(0, 0, cols, body_rows.saturating_add(1)),
+            nav_width_natural,
+        );
         let auto_hide_nav = crate::ui::prefs::load_auto_hide_nav(&env.xmux_dir)
             .unwrap_or_else(|| roster.cfg.ui_auto_hide_nav());
 
@@ -389,6 +402,9 @@ impl Runtime {
         // The one session the terminal view refuses: the one xmux is running in. Named
         // once here, because the environment that names it cannot change under a run.
         switcher.set_own_session(env.own_session.clone());
+        // [ui] hide-unreachable: the nav drops the settled unreachable hosts' cards. The
+        // filter naming one brings its card, and its unreachable screen, back.
+        switcher.set_hide_unreachable(roster.cfg.ui_hide_unreachable(), &mut state);
         // Feed the switcher the ssh config so an unreachable host's screen can show
         // its Host/Match stanza. Read once; a missing file just yields no stanza.
         state.chrome.set_ssh_config_text(
@@ -469,6 +485,9 @@ impl Runtime {
             nav_width,
             nav_width_natural,
             nav_height,
+            nav_position,
+            nav_position_pinned,
+            nav_pos_setting,
             applied_nav_height: u16::MAX,
             auto_hide_nav,
             mouse_state: MouseState::default(),
@@ -505,19 +524,25 @@ impl Runtime {
     /// width persist, then draw the gated frame. `term` is the loop-local ratatui
     /// terminal.
     /// The nav's live size, in one place: the width the user set, the width on screen
-    /// (0 while auto-hide has taken it), and the `Top` band height the user set. Every
-    /// geometry the loop computes reads this instead of picking two of the three fields
-    /// out of `self`, so a resize while xmux runs cannot reach one consumer and miss
-    /// another.
+    /// (0 while auto-hide has taken it), the band height the user set, and the side the
+    /// nav is attached to. Every geometry the loop computes reads this instead of picking
+    /// fields out of `self`, so a resize while xmux runs cannot reach one consumer and
+    /// miss another.
     pub(super) fn nav_size(&self) -> crate::ui::switcher::NavSize {
         crate::ui::switcher::NavSize {
             natural: self.nav_width_natural,
             width: self.nav_width,
             height: self.nav_height,
+            position: self.nav_position,
         }
     }
 
-    pub(super) fn prepare_and_draw(&mut self, term: &mut Term) {
+    /// Generic over the backend so the headless tests drive the same loop-top reconcile
+    /// against a `TestBackend` that the live loop drives against stdout.
+    pub(super) fn prepare_and_draw<B: ratatui::backend::Backend>(
+        &mut self,
+        term: &mut ratatui::Terminal<B>,
+    ) {
         use std::time::Duration;
         // Advance the spinner from wall-clock so it animates regardless of which arm fired.
         self.state
@@ -546,25 +571,45 @@ impl Runtime {
             prefix_active,
             self.nav_width_natural,
         );
-        // Resize when EITHER dimension of the split moved: the width (focus / hide / prefix
-        // h·l in Side) or the Top height (border drag / resize keys). Both change the mux
-        // terminal region, so both must resize the PTYs or the grid mismatches the draw.
-        if want_nav_width != self.nav_width || self.nav_height != self.applied_nav_height {
+        // The nav's attachment side is resolved here too, every frame: pinned > auto
+        // (wide/narrow) > force > wide. The wide/narrow judgment reads the area and the
+        // natural width only, never the resolved position, so nothing oscillates.
+        let want_position = crate::ui::switcher::resolve_nav_position(
+            &self.nav_pos_setting,
+            self.nav_position_pinned,
+            ratatui::layout::Rect::new(0, 0, self.cols, self.body_rows.saturating_add(1)),
+            self.nav_width_natural,
+        );
+        // Resize when ANY dimension of the split moved: the width (focus / hide / prefix
+        // h·l in a column), the band height (border drag / resize keys), or the side the
+        // nav is attached to. All change the mux terminal region, so all must resize the
+        // PTYs or the grid mismatches the draw.
+        if want_nav_width != self.nav_width
+            || self.nav_height != self.applied_nav_height
+            || want_position != self.nav_position
+        {
             // Crossing the hidden sentinel (0) flips the column TOPOLOGY; a stale wide-char
             // cell at the new boundary can survive ratatui's diff, so force a full repaint.
+            // A position change moves the border to the opposite side of the screen and
+            // gets the same treatment.
             let crossed_hidden = (want_nav_width == 0) != (self.nav_width == 0);
+            let crossed_position = want_position != self.nav_position;
+            self.nav_position = want_position;
             self.nav_width = want_nav_width;
             self.applied_nav_height = self.nav_height;
             let (vc, vr) = terminal_view_size(self.cols, self.body_rows, self.nav_size());
             self.registry.resize_all(vc, vr);
             self.mgr.resize_all(vc, vr);
-            if crossed_hidden {
+            if crossed_hidden || crossed_position {
                 if let Err(e) = clear_screen(term) {
                     tracing::warn!(error = %e, "term_clear_failed");
                 }
             }
             self.dirty = true;
         }
+        // The cheatsheet and the help modal name the arrow pair the CURRENT placement
+        // makes active, so they read the resolved position every frame.
+        self.state.chrome.set_nav_position(self.nav_position);
         // A portable-pty child spawn clears ENABLE_MOUSE_INPUT on the parent CONIN,
         // killing mouse capture; re-assert it whenever it drifts off.
         crate::display::term::ensure_mouse_capture();
@@ -624,7 +669,8 @@ impl Runtime {
                     cols: self.cols,
                     body_rows: self.body_rows,
                     nav: crate::ui::switcher::NavSize::visible(self.nav_width)
-                        .with_height(self.nav_height),
+                        .with_height(self.nav_height)
+                        .with_position(self.nav_position),
                 },
             );
             let terminal_focused = self.state.focus.is_terminal_focused();
@@ -910,7 +956,22 @@ impl Runtime {
         use crate::ui::run::{dump_screen, Cmd};
         use std::time::Duration;
         match cmd {
-            Cmd::Op(action) => {
+            Cmd::Op(action, reply) => {
+                // The ctl reply: `switch` answers by the address resolution against the
+                // current inventory (the same lookup the selection move performs); the
+                // other verbs have no synchronous outcome and answer ok. Sent before
+                // the quit check so a `quit` still acknowledges. The loop owns the
+                // state, so the reply is computed here, not in the dispatch task - the
+                // task only awaits it.
+                let resp = match &action {
+                    crate::model::Action::Switch { address } => {
+                        match self.state.resolve_switch_address(address) {
+                            Ok(()) => "ok".to_string(),
+                            Err(problem) => format!("err: {problem}"),
+                        }
+                    }
+                    _ => "ok".to_string(),
+                };
                 // dispatch_action spawns any RunOp off-loop itself; its OpResult folds back
                 // through op_tx as usual.
                 let (quit_op, wc) = dispatch_action(
@@ -922,6 +983,7 @@ impl Runtime {
                     &self.env.xmux_dir,
                     (&self.ops, &self.op_tx),
                 );
+                let _ = reply.send(resp);
                 if wc {
                     self.width_dirty = true;
                     self.width_flush_at =
@@ -981,7 +1043,8 @@ impl Runtime {
                         cols: self.cols,
                         body_rows: self.body_rows,
                         nav: crate::ui::switcher::NavSize::visible(self.nav_width)
-                            .with_height(self.nav_height),
+                            .with_height(self.nav_height)
+                            .with_position(self.nav_position),
                     },
                 );
                 let dump = match &grid_arc {
@@ -1048,7 +1111,8 @@ impl Runtime {
                             cols: self.cols,
                             body_rows: self.body_rows,
                             nav: crate::ui::switcher::NavSize::visible(self.nav_width)
-                                .with_height(self.nav_height),
+                                .with_height(self.nav_height)
+                                .with_position(self.nav_position),
                         };
                         driver.input(&self.state.displayed, bytes, &ctx);
                     }
@@ -1123,7 +1187,8 @@ impl Runtime {
                             cols: self.cols,
                             body_rows: self.body_rows,
                             nav: crate::ui::switcher::NavSize::visible(self.nav_width)
-                                .with_height(self.nav_height),
+                                .with_height(self.nav_height)
+                                .with_position(self.nav_position),
                         },
                     );
                     if shown {
@@ -1340,6 +1405,9 @@ impl Runtime {
         self.state
             .chrome
             .set_hint_bar_style(crate::ui::chrome::parse_hint_bar_style(&ui.hint_bar_style));
+        // The nav-position settings take effect at the next loop top, where the reconcile
+        // re-resolves the position from them.
+        self.nav_pos_setting = ui.nav_position_setting();
         true
     }
 
@@ -1390,7 +1458,8 @@ impl Runtime {
                 cols: self.cols,
                 body_rows: self.body_rows,
                 nav: crate::ui::switcher::NavSize::visible(self.nav_width)
-                    .with_height(self.nav_height),
+                    .with_height(self.nav_height)
+                    .with_position(self.nav_position),
             };
             sync_source_terminals(id, &inventory, &mut ctx);
         }

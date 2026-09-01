@@ -28,10 +28,7 @@ surface is `-a -A -c -l -n -e -f -p -q -r -v`, and none of those is a switch ver
 every session running, so the client is GONE rather than pointed somewhere else.
 
 Because there is no per-session query, a poll sweep enumerates ONCE and resolves
-every session as a plain session card (the session alone). `last_attached` is 0:
-abduco prints human local
-wall-clock time, which cannot be converted to the shared epoch scale across hosts
-without the host's timezone, so the mux "does not report" it.
+every session as a plain session card (the session alone).
 
 The mux supplies the argv, model, and enumeration; the driver consumes it
 and owns the concrete display decision. The transport dispatches the host execution.
@@ -63,7 +60,6 @@ and owns the concrete display decision. The transport dispatches the host execut
   sessions left.
 - A session resolves as the session alone, never with a per-session command
   that cannot exist.
-- `last_attached` is always 0: the mux reports no comparable value.
 
 ## Common Pitfalls
 

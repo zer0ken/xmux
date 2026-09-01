@@ -210,7 +210,6 @@ pub(crate) mod tests {
             mux: String::new(),
             windows: 1,
             attached: false,
-            last_attached: 0,
         }
     }
 
