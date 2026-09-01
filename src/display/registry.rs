@@ -5,6 +5,14 @@
 //! there is no cap or LRU eviction — the map size tracks the live session count. All
 //! blocking PTY work lives on each `Attachment`'s control and pump threads, so
 //! registry methods never block the event loop.
+//!
+//! A reaped attachment's last grid is kept beside the map, under the same key, and
+//! `grid` serves it until a fresh attachment installs there. The renderer reads the
+//! grid of the CONFIRMED display through this lookup, so the frame that was on screen
+//! when the client died stays there across the reattach that replaces it
+//! (stale-while-revalidate), the same rule a session change follows by holding the
+//! prior live client until the swap. Each key holds at most one such grid, and any
+//! `insert` or `remove` under the key drops it.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -15,6 +23,10 @@ use crate::display::grid::Grid;
 pub struct AttachRegistry {
     /// Keyed by `Session::address()` (`source/session`).
     map: HashMap<String, Attachment>,
+    /// The last grid of each reaped attachment, keyed by its address. Served by
+    /// `grid` until a fresh attachment installs under the key, so a display whose
+    /// client died keeps its last frame on screen instead of dropping to blank.
+    stale_grids: HashMap<String, Arc<Mutex<Grid>>>,
     next_id: u64,
 }
 
@@ -22,6 +34,7 @@ impl AttachRegistry {
     pub fn new() -> Self {
         AttachRegistry {
             map: HashMap::new(),
+            stale_grids: HashMap::new(),
             next_id: 1,
         }
     }
@@ -43,9 +56,14 @@ impl AttachRegistry {
         self.map.get(addr)
     }
 
-    /// The grid Arc for `addr`'s attachment, so the app can render it.
+    /// The grid Arc for `addr`'s attachment, so the app can render it: the live
+    /// attachment's grid, or - when the attachment is gone (EOF) - the last grid it
+    /// fed, kept until a fresh attachment installs under this key.
     pub fn grid(&self, addr: &str) -> Option<Arc<Mutex<Grid>>> {
-        self.map.get(addr).map(|a| a.grid.clone())
+        self.map
+            .get(addr)
+            .map(|a| a.grid.clone())
+            .or_else(|| self.stale_grids.get(addr).cloned())
     }
 
     /// Wipes `addr`'s grid to blank (a no-op if not attached). Called when the
@@ -106,22 +124,26 @@ impl AttachRegistry {
 
     /// Inserts a finished attachment under its address key (the off-loop handoff: the
     /// worker spawned it on its OS thread, the app stores it here so `grid`/`input`/
-    /// `reap` reach it). Overwrites any prior attachment at `addr`.
+    /// `reap` reach it). Overwrites any prior attachment at `addr`; the swap also
+    /// drops the key's stale grid, whose whole purpose was to cover this attach.
     pub fn insert(&mut self, addr: &str, att: Attachment) {
+        self.stale_grids.remove(addr);
         self.map.insert(addr.to_string(), att);
     }
 
-    /// Tears down and removes `addr`'s attachment (its session closed). A no-op if
-    /// it is not attached.
+    /// Tears down and removes `addr`'s attachment (its session closed), together with
+    /// any stale grid kept for the key. A no-op if it is not attached.
     pub fn remove(&mut self, addr: &str) {
         if let Some(att) = self.map.remove(addr) {
             att.teardown();
         }
+        self.stale_grids.remove(addr);
     }
 
-    /// Removes the attachment whose id == `id` (its master hit EOF), tearing it down.
-    /// Returns `true` if an attachment was removed, `false` if no attachment with that id
-    /// was registered (e.g. its off-loop `Ready` insert has not happened yet).
+    /// Removes the attachment whose id == `id` (its master hit EOF), tearing it down
+    /// and keeping its last grid under its key for rendering. Returns `true` if an
+    /// attachment was removed, `false` if no attachment with that id was registered
+    /// (e.g. its off-loop `Ready` insert has not happened yet).
     pub fn reap(&mut self, id: u64) -> bool {
         let addr = self
             .map
@@ -130,7 +152,9 @@ impl AttachRegistry {
             .map(|(addr, _)| addr.clone());
         if let Some(addr) = addr {
             if let Some(att) = self.map.remove(&addr) {
+                let grid = att.grid.clone();
                 att.teardown();
+                self.stale_grids.insert(addr, grid);
                 return true;
             }
         }
@@ -213,6 +237,66 @@ mod tests {
             !reg.contains("jupiter06/b"),
             "reap removes the EOF'd attachment"
         );
+    }
+
+    #[test]
+    fn reap_keeps_serving_the_last_grid_until_a_fresh_attachment_installs() {
+        // The renderer reads the CONFIRMED display's grid through `grid`; a reaped
+        // (EOF'd) attachment must keep its last frame there so the view holds the
+        // stale content across the reattach that replaces it, never dropping blank.
+        let mut reg = empty_registry();
+        reg.insert_fake("local/a", 1);
+        if let Some(g) = reg.grid("local/a") {
+            g.lock().unwrap().feed(b"last frame");
+        }
+        assert!(reg.reap(1), "reap of a live id returns true");
+        assert!(
+            !reg.contains("local/a"),
+            "the dead attachment leaves the map - it is not a live client"
+        );
+        let g = reg
+            .grid("local/a")
+            .expect("the last grid is still served after the reap");
+        assert!(
+            !g.lock().unwrap().is_blank(),
+            "the pre-EOF frame is what renders"
+        );
+        // The swap installs the fresh attachment and retires the stale grid with it.
+        reg.insert("local/a", crate::display::attachment::fake_attachment(2));
+        assert_eq!(
+            reg.get("local/a").map(|a| a.id()),
+            Some(2),
+            "the fresh attachment is the live client under the key"
+        );
+        assert!(
+            reg.grid("local/a").unwrap().lock().unwrap().is_blank(),
+            "the fresh attachment's own grid renders, not the stale one"
+        );
+    }
+
+    #[test]
+    fn removing_a_key_drops_its_stale_grid() {
+        // Whatever tears the key's attachment down also retires the stale grid kept
+        // for it: no grid outlives the teardown of everything under its key.
+        let mut reg = empty_registry();
+        reg.insert_fake("local/a", 1);
+        reg.reap(1);
+        assert!(reg.grid("local/a").is_some());
+        reg.remove("local/a");
+        assert!(
+            reg.grid("local/a").is_none(),
+            "no stale grid outlives its key's teardown"
+        );
+    }
+
+    #[test]
+    fn reap_unknown_id_keeps_no_stale_grid() {
+        // A pre-Ready Exited (no registered attachment) has no last frame to keep.
+        let mut reg = empty_registry();
+        reg.insert_fake("local/a", 1);
+        assert!(!reg.reap(999));
+        assert!(reg.contains("local/a"));
+        assert!(!reg.stale_grids.contains_key("local/a"));
     }
 
     #[test]

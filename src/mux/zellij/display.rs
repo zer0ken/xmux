@@ -211,6 +211,26 @@ mod tests {
         assert_eq!(h.display.shows("local"), Some("vfy-ze-b"));
     }
 
+    /// The detach recovery's driver decision: the display client is GONE (its
+    /// attachment EOF'd and was reaped) while the display belief still names the
+    /// selected session. The warm branch rests on a LIVE client, never on the belief
+    /// alone, so a dead one is reached by a fresh attach and never held up as if it
+    /// were still showing the session.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_dead_display_client_is_reattached_not_warmed() {
+        let (mut hosts, mut registry) = host_with_live_client("vfy-ze-b", 42);
+        registry.remove("local"); // the client's attachment EOF'd and was reaped
+        let shown = show_session(&mut hosts, &mut registry, "vfy-ze-b");
+
+        assert!(shown);
+        let h = hosts.get("local").unwrap();
+        assert!(
+            h.display.in_flight_contains("local"),
+            "a dead client is reached by a fresh attach, not held as warm"
+        );
+        assert_eq!(h.display.shows("local"), Some("vfy-ze-b"));
+    }
+
     /// The other half: a session change the NAV drives is still a reattach, so following
     /// a mux-side switch cannot wedge the next one. zellij can aim no switch at its own
     /// client from outside the session it is in, so a fresh attach is the only way to

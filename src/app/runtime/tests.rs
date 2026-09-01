@@ -968,11 +968,29 @@ fn should_attach_fires_on_change_and_recovery_never_storms_in_flight() {
         ..a.clone()
     };
     let gate = |selection: &Selection, displayed: &Selection, key_live, in_flight, astray| {
-        let s = crate::state::State {
+        // The dead-display leg asks the inventory to still list the session, so the
+        // state carries a listing for the source the selections point at.
+        let mut s = crate::state::State {
             selection: selection.clone(),
             displayed: displayed.clone(),
             ..crate::state::State::default()
         };
+        s.groups.push(crate::ui::tree::Group {
+            source: "h".into(),
+            err: None,
+            sessions: vec![
+                crate::session::Session {
+                    source: "h".into(),
+                    name: "api".into(),
+                    ..Default::default()
+                },
+                crate::session::Session {
+                    source: "h".into(),
+                    name: "db".into(),
+                    ..Default::default()
+                },
+            ],
+        });
         s.should_attach(key_live, in_flight, astray)
     };
     // Settled: displayed == selection, PTY live, nothing in flight → no attach.
@@ -981,8 +999,36 @@ fn should_attach_fires_on_change_and_recovery_never_storms_in_flight() {
     assert!(gate(&b, &a, true, false, false));
     // An attach for the key is already in flight → never re-fire (no storm).
     assert!(!gate(&b, &a, false, true, false));
-    // PTY gone (exited / reaped) while displayed == selection → re-attach to recover.
+    // PTY gone (the mirrored client detached / the attachment EOF'd) while displayed ==
+    // selection → re-attach to recover.
     assert!(gate(&a, &a, false, false, false));
+    // A dead display PTY for a session the inventory no longer lists is not recovered:
+    // there is nothing to attach to, and retrying would never end.
+    let mut dropped = crate::state::State {
+        selection: a.clone(),
+        displayed: a.clone(),
+        ..crate::state::State::default()
+    };
+    assert!(
+        !dropped.should_attach(false, false, false),
+        "no listing → no recovery"
+    );
+    // Past its retry budget the recovery stands down too: a session that is gone makes
+    // every re-attach EOF in turn, and the budget is what ends the chain.
+    dropped.groups.push(crate::ui::tree::Group {
+        source: "h".into(),
+        err: None,
+        sessions: vec![crate::session::Session {
+            source: "h".into(),
+            name: "api".into(),
+            ..Default::default()
+        }],
+    });
+    dropped.attach_retries = crate::state::ATTACH_RECOVERY_LIMIT;
+    assert!(
+        !dropped.should_attach(false, false, false),
+        "no budget → no recovery"
+    );
     // Everything xmux itself recorded agrees - the selection is what it last put on
     // screen and that PTY is alive - and the client is on another session anyway. Only
     // the astray leg can see it, and this is the split it closes.
@@ -1688,6 +1734,228 @@ async fn a_settled_display_attaches_nothing_however_long_it_runs() {
         rt.registry.get("local").map(|a| a.id()),
         Some(OWN_CLIENT),
         "the client on screen is the one that was there"
+    );
+}
+
+// --- zellij display detach → automatic reattach --------------------------------
+// zellij is per-session and polled: nothing pushes a detach, so the mirrored
+// client's death arrives only as the attachment's PTY hitting EOF. These pin the
+// recovery of that EOF while the session stays selected.
+
+/// A local zellij host with the nav loaded from a scan of `a` and `b`.
+fn zellij_scan() -> crate::ui::switcher::Scan {
+    let sess = |name: &str| crate::session::Session {
+        source: "local".into(),
+        name: name.into(),
+        mux: "zellij".into(),
+        windows: 1,
+        attached: false,
+    };
+    crate::ui::switcher::Scan {
+        groups: vec![crate::ui::tree::Group {
+            source: "local".into(),
+            err: None,
+            sessions: vec![sess("a"), sess("b")],
+        }],
+    }
+}
+
+/// The settled zellij world: the nav on `a`, xmux's own display client live on `a`,
+/// and everything agreeing - so what a test does next is the scenario, not the
+/// launch catching up.
+fn a_settled_zellij_runtime() -> Runtime {
+    let mut state = crate::state::State::from_scan(zellij_scan());
+    let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
+    switcher.select_address("local/a", &state);
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut hosts = crate::model::Hosts::default();
+    hosts.insert(crate::model::Host::new(
+        crate::transport::local(None),
+        crate::mux::for_binary("zellij").unwrap(),
+    ));
+    rt.hosts = hosts;
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.hosts
+        .get_mut("local")
+        .unwrap()
+        .display
+        .set_shows("local", "a");
+    rt.registry.insert(
+        "local",
+        crate::display::attachment::fake_attachment(OWN_CLIENT),
+    );
+    settled(&mut rt);
+    rt
+}
+
+/// Delivers the EOF the pump emits when the mirrored client detaches (or dies).
+fn the_client_detaches(rt: &mut Runtime, id: u64) {
+    let (_tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    rt.on_pty_event(PtyEvent::Exited { id }, &mut rx);
+}
+
+/// Completes the reattach the beat requested for the local host: the worker's Ready
+/// installs the fresh client, which answers for the session it was attached to.
+fn the_zellij_reattach_lands(rt: &mut Runtime, session: &str) {
+    let seq = rt
+        .hosts
+        .get("local")
+        .unwrap()
+        .display
+        .in_flight_seq("local")
+        .expect("a reattach is in flight");
+    rt.on_display_event(DisplayEvent::Ready {
+        seq,
+        key: "local".into(),
+        attachment: crate::display::attachment::fake_attachment_answering_env(
+            OWN_CLIENT + 1,
+            "ZELLIJ_SESSION_NAME",
+            session,
+        ),
+    });
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_detached_zellij_display_reattaches_the_still_selected_session() {
+    // The detach of the mirrored client EOFs its attachment while the session stays
+    // selected. The attach beat arms on the dead display by itself - in NAV focus
+    // too, where no rearm event fires - the driver reattaches, and the fresh client
+    // takes the view. The stale frame is served the whole time, so the view never
+    // drops blank between the detach and the recovery.
+    let mut rt = a_settled_zellij_runtime();
+    assert!(!rt.state.focus.is_terminal_focused(), "starts in nav focus");
+    let t0 = std::time::Instant::now();
+
+    the_client_detaches(&mut rt, OWN_CLIENT);
+    assert!(
+        !rt.registry.contains("local"),
+        "the dead attachment leaves the live map"
+    );
+    assert!(
+        rt.registry.grid("local").is_some(),
+        "its last frame still serves the view - no blank while reattaching"
+    );
+
+    one_pass(&mut rt, t0); // the dead display arms the attach beat
+    one_pass(&mut rt, t0 + std::time::Duration::from_millis(200)); // the beat fires it
+    assert!(
+        rt.hosts
+            .get("local")
+            .unwrap()
+            .display
+            .in_flight_contains("local"),
+        "the still-selected session is re-attached automatically"
+    );
+
+    the_zellij_reattach_lands(&mut rt, "a");
+    assert_eq!(
+        rt.registry.get("local").map(|a| a.id()),
+        Some(OWN_CLIENT + 1),
+        "the fresh client is the live one under the display key"
+    );
+    assert_eq!(
+        rt.state.displayed.session, "a",
+        "the recovered display is confirmed as the view"
+    );
+    // And the world is settled again: no further attach churns underneath it.
+    let t1 = std::time::Instant::now();
+    one_pass(&mut rt, t1);
+    one_pass(&mut rt, t1 + std::time::Duration::from_millis(200));
+    assert!(
+        rt.hosts.get("local").unwrap().display.in_flight_is_empty(),
+        "a recovered display attaches nothing more"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_detached_display_in_terminal_focus_rearms_and_recovers() {
+    // The terminal-focus half of the same detach: the EOF of the attachment the
+    // selection is displayed through rearms the attach beat directly, and the
+    // driver's reattach recovers the view.
+    let mut rt = a_settled_zellij_runtime();
+    rt.state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    let t0 = std::time::Instant::now();
+
+    the_client_detaches(&mut rt, OWN_CLIENT);
+    assert!(
+        rt.state.attach_deadline.is_some(),
+        "the viewed attachment's EOF rearms the attach beat"
+    );
+
+    one_pass(&mut rt, t0 + std::time::Duration::from_millis(200));
+    assert!(
+        rt.hosts
+            .get("local")
+            .unwrap()
+            .display
+            .in_flight_contains("local"),
+        "the recovery attach fires"
+    );
+    the_zellij_reattach_lands(&mut rt, "a");
+    assert_eq!(rt.state.displayed.session, "a");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_dead_session_recovery_stands_down_instead_of_reattaching_forever() {
+    // The chain the recovery budget exists for: the session is gone, so every
+    // recovery attach EOFs before it can install. Each EOF re-arms the beat; past
+    // the budget the beat stops spawning and the chain ends - with the last frame
+    // still served, and nothing left retrying.
+    let mut rt = a_settled_zellij_runtime();
+    let beat = std::time::Duration::from_millis(200);
+    let mut now = std::time::Instant::now();
+
+    the_client_detaches(&mut rt, OWN_CLIENT);
+    // The registry issues attachment ids from 1 and nothing else has allocated, so
+    // each doomed attach's child can be EOF'd by counting up from 1.
+    let mut child_id = 1u64;
+    let mut spawned = 0u64;
+    for _ in 0..(crate::state::ATTACH_RECOVERY_LIMIT as usize + 3) {
+        let before = rt.attach_seq;
+        one_pass(&mut rt, now); // arms (or stands down)
+        now += beat;
+        one_pass(&mut rt, now); // fires the armed beat
+        now += beat;
+        if rt.attach_seq == before {
+            continue; // the beat stood down this round
+        }
+        spawned += 1;
+        // The doomed attempt: the child EOFs before its Ready, and the Ready tears
+        // the dead attachment down instead of installing it.
+        let seq = rt
+            .hosts
+            .get("local")
+            .unwrap()
+            .display
+            .in_flight_seq("local")
+            .expect("the fired beat is in flight");
+        the_client_detaches(&mut rt, child_id);
+        child_id += 1;
+        rt.on_display_event(DisplayEvent::Ready {
+            seq,
+            key: "local".into(),
+            attachment: crate::display::attachment::fake_attachment(child_id - 1),
+        });
+        assert!(
+            !rt.hosts
+                .get("local")
+                .unwrap()
+                .display
+                .in_flight_contains("local"),
+            "the torn-down attempt releases the beat"
+        );
+    }
+    assert_eq!(
+        spawned,
+        crate::state::ATTACH_RECOVERY_LIMIT as u64,
+        "the recovery spawns exactly its budget, then stands down"
+    );
+    assert!(
+        !rt.registry.contains("local") && rt.registry.grid("local").is_some(),
+        "no live client, and the last frame is still what the view holds"
     );
 }
 

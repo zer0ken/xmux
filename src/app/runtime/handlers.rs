@@ -1376,9 +1376,6 @@ impl Runtime {
         self.state.chrome.set_spinner(sp);
     }
 
-    /// The reconnect-sweep arm: re-ensure died metadata channels, re-detect undetected
-    /// hosts, re-warm dropped control-host PTYs, capture display ttys, and re-attach the
-    /// selected session if its display terminal dropped. The sole automatic retry path.
     /// Live config reload, called on the redraw cadence. When [`poll_ui_config`] sees
     /// the file change it re-applies the `[ui]` presentation settings - theme /
     /// selection-style (the palette) and the hint-bar / view-border styles - so a
@@ -1414,6 +1411,13 @@ impl Runtime {
         true
     }
 
+    /// The reconnect-sweep arm: re-ensures died metadata channels, re-detects
+    /// undetected hosts, re-warms dropped control-host PTYs, and captures display
+    /// ttys. The selected session's display is NOT re-attached here: the attach beat
+    /// owns that recovery (the tick arms on the display PTY being gone, the driver
+    /// decides how to show the session), so a dropped display retries through the one
+    /// gated path - bounded against a session that is gone - instead of an unbounded
+    /// sweep of its own.
     pub(super) fn on_reconnect(&mut self) {
         let (vc, vr) = terminal_view_size(self.cols, self.body_rows, self.nav_size());
         // Snapshot the ids so the loops can re-borrow `hosts` (incl. &mut) without holding
@@ -1472,31 +1476,6 @@ impl Runtime {
                 if let Some(client) = self.mgr.get(id) {
                     client.capture_display_tty();
                 }
-            }
-        }
-        // Re-attach the selected session's display terminal if it dropped.
-        if !self.state.selection.is_empty() {
-            let key = display_key(&self.hosts, &self.state.selection);
-            let in_flight_for_key = self
-                .hosts
-                .get(&self.state.selection.source)
-                .map(|h| h.display.in_flight_contains(&key))
-                .unwrap_or(false);
-            if !self.registry.contains(&key) && !in_flight_for_key {
-                let mut ctx = crate::driver::DriverCtx {
-                    registry: &mut self.registry,
-                    hosts: &mut self.hosts,
-                    worker: &self.worker,
-                    mgr: &self.mgr,
-                    pty_tx: &self.driver_pty_tx,
-                    attach_seq: &mut self.attach_seq,
-                    cols: self.cols,
-                    body_rows: self.body_rows,
-                    nav: crate::ui::switcher::NavSize::visible(self.nav_width)
-                        .with_height(self.nav_height)
-                        .with_position(self.nav_position),
-                };
-                select_attach(&self.state.selection, &mut ctx);
             }
         }
     }
