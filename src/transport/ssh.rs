@@ -125,7 +125,7 @@ impl Transport for Ssh {
         if self.os == "windows" {
             return None; // no ControlMaster socket to leave authenticated
         }
-        let mut v = vec![
+        let v = vec![
             "ssh".to_string(),
             "-o".into(),
             "ControlMaster=yes".into(),

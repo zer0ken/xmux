@@ -1100,7 +1100,7 @@ mod tests {
                     "a locked host is still a failure (err set)"
                 );
             }
-            other => panic!("expected a host card, got a non-host row"),
+            _ => panic!("expected a host card, got a non-host row"),
         }
     }
 

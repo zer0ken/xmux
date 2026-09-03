@@ -43,11 +43,11 @@ pub struct HostClient {
 /// spawn shapes share one type. `stderr_drain` is the piped spawn's stderr-drain
 /// thread handle; a PTY child has no separate stderr (it shares the one master
 /// stream), so it carries `None`.
-struct Spawned {
-    child: Box<dyn portable_pty::Child + Send + Sync>,
-    stdout: Box<dyn std::io::Read + Send>,
-    stdin: Box<dyn std::io::Write + Send>,
-    stderr_drain: Option<JoinHandle<()>>,
+pub(super) struct Spawned {
+    pub(super) child: Box<dyn portable_pty::Child + Send + Sync>,
+    pub(super) stdout: Box<dyn std::io::Read + Send>,
+    pub(super) stdin: Box<dyn std::io::Write + Send>,
+    pub(super) stderr_drain: Option<JoinHandle<()>>,
 }
 
 impl HostClient {
@@ -288,7 +288,7 @@ fn spawn_piped_child(argv: &[String], extra_env: &[(&str, &str)]) -> anyhow::Res
 /// pty child has no separate stderr (it shares the one master stream), so there is
 /// no drain handle to return.
 #[cfg(unix)]
-fn spawn_pty_child(
+pub(super) fn spawn_pty_child(
     argv: &[String],
     extra_env: &[(&str, &str)],
     cols: u16,
