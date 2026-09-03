@@ -242,6 +242,9 @@ pub(crate) enum ViewScreen {
     SelfSession,
     /// The host could not be reached.
     Unreachable,
+    /// The host answered the network but refused the credentials (`Permission
+    /// denied`): a locked host is reachable and awaiting the password unlock.
+    Locked,
     /// The host answered and is serving no session.
     Empty,
 }
@@ -254,6 +257,7 @@ impl ViewScreen {
     fn word(self) -> &'static str {
         match self {
             ViewScreen::SelfSession => "running xmux",
+            ViewScreen::Locked => "locked",
             other => crate::ui::tree::host_state_word(
                 false,
                 other == ViewScreen::Unreachable,
@@ -670,7 +674,9 @@ impl Chrome {
                 ),
                 None => self.source_label(address),
             },
-            ViewScreen::Unreachable | ViewScreen::Empty => self.source_label(address),
+            ViewScreen::Unreachable | ViewScreen::Locked | ViewScreen::Empty => {
+                self.source_label(address)
+            }
         }
     }
 
@@ -706,7 +712,7 @@ impl Chrome {
                  which moves your own client and paints xmux inside itself"
                     .into(),
             ));
-        } else if kind == ViewScreen::Unreachable {
+        } else if kind == ViewScreen::Unreachable || kind == ViewScreen::Locked {
             // WHAT failed, then WHEN, then what was asked of the host and how, then who
             // put it on the list, then how it is configured, then what else on that same
             // machine answered, then where the whole history is written. Read top to
@@ -788,6 +794,12 @@ impl Chrome {
             if !self.log_path.is_empty() {
                 rows.push((ScreenCell::Label("log"), self.log_path.clone()));
             }
+            if kind == ViewScreen::Locked {
+                rows.push((ScreenCell::Label("unlock"),
+                    "Enter a username, then the masked password; xmux answers the ssh \
+                     prompt and establishes one authenticated connection the rest reuses"
+                    .into()));
+            }
             rows.push((ScreenCell::Gap, String::new()));
         } else {
             // Creating under an unreachable host is refused, so `n` is offered only where
@@ -842,6 +854,7 @@ impl Chrome {
         let rule = Span::styled("│ ", Style::default().fg(pal.decoration));
         let state_style = Style::default().fg(match kind {
             ViewScreen::Unreachable => pal.error,
+            ViewScreen::Locked => pal.warning,
             ViewScreen::Empty | ViewScreen::SelfSession => pal.decoration,
         });
         let mut out = vec![

@@ -396,6 +396,33 @@ fn runtime_threads_hide_unreachable_into_its_switcher() {
 }
 
 #[test]
+fn a_locked_host_shows_the_locked_view_screen() {
+    use crate::ui::run::dump_screen;
+    // A locked host (reached, credentials refused) shows the locked screen: its
+    // state word, not the unreachable word, and the auth-failure reason. It also
+    // survives the default hide-unreachable (a locked host is actionable).
+    use crate::ui::switcher::Switcher;
+    let mut state = crate::state::State::from_sources(vec!["pwbox".into()]);
+    let mut switcher = Switcher::from_sources(&mut state);
+    switcher.apply_source_result(
+        "pwbox".into(),
+        Vec::new(),
+        Some("pwtest@127.0.0.1: Permission denied (publickey,password).".into()),
+        &mut state,
+    );
+    let out = dump_screen(&mut switcher, None, 80, 24, &state);
+    assert!(out.contains("locked"), "the locked view names its state:\n{out}");
+    assert!(
+        !out.contains("unreachable"),
+        "a locked host is not the unreachable state:\n{out}"
+    );
+    assert!(
+        out.contains("pwtest@127.0.0.1"),
+        "the auth-failure reason is on the locked screen:\n{out}"
+    );
+}
+
+#[test]
 fn hide_unreachable_mid_run_hides_the_card_and_the_selection_lands_on_a_remaining_card() {
     use crate::ui::run::dump_screen;
     use crate::ui::switcher::Switcher;

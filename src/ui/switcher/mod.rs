@@ -735,11 +735,15 @@ impl Switcher {
         let Some(RowRef::Host {
             source,
             unreachable,
+            locked,
             ..
         }) = self.current_ref()
         else {
             return None;
         };
+        if *locked {
+            return Some(ViewScreen::Locked);
+        }
         if *unreachable {
             return Some(ViewScreen::Unreachable);
         }
