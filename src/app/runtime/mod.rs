@@ -224,6 +224,12 @@ fn dispatch_commands(
             Command::ToggleAutoHide => toggle_auto_hide(auto_hide_nav, xmux_dir),
             Command::Quit => quit = true,
             Command::RunOp(op) => spawn_op(op, op_sink.0, op_sink.1),
+            Command::RunUnlock { .. } => {
+                // The unlock worker is dispatched with the app's host access (Task 11);
+                // until that wiring lands the command cannot be produced (no UI path
+                // emits Action::Unlock yet), so reaching here would be a bug.
+                tracing::warn!("unlock dispatched before the app wiring");
+            }
             // Settled-selection effects come only from Action::Tick, dispatched by the
             // run loop with registry/host access - never from a key/ctl action here.
             Command::PersistLastSession(_) | Command::Attach(_) => {}

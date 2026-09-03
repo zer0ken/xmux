@@ -1219,6 +1219,7 @@ impl Runtime {
                 | crate::model::Command::AdjustNavWidth(_)
                 | crate::model::Command::ToggleAutoHide
                 | crate::model::Command::RunOp(_)
+                | crate::model::Command::RunUnlock { .. }
                 | crate::model::Command::Quit => {}
             }
         }
