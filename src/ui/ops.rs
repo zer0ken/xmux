@@ -48,8 +48,12 @@ pub trait Ops: Send + Sync {
 /// [`State::fold_op_result`]: crate::state::State::fold_op_result
 #[derive(Debug, Clone)]
 pub enum OpResult {
-    Created { session: Session },
-    Failed { message: String },
+    Created {
+        session: Session,
+    },
+    Failed {
+        message: String,
+    },
     /// The unlock worker's verdict. Not an inventory mutation: the app reacts to it
     /// (a rescan on success, a flash on failure), never a fold into the tree.
     Unlock {
@@ -90,12 +94,7 @@ pub async fn run_op(op: &MuxOp, ops: &dyn Ops) -> OpResult {
 /// Runs the unlock against the live transport and returns its [`OpResult`]. Pure
 /// over `ops` (no switcher state), so it runs in a detached task off the event loop
 /// like [`run_op`].
-pub async fn run_unlock(
-    source: &str,
-    user: &str,
-    password: &str,
-    ops: &dyn Ops,
-) -> OpResult {
+pub async fn run_unlock(source: &str, user: &str, password: &str, ops: &dyn Ops) -> OpResult {
     OpResult::Unlock {
         outcome: ops.unlock(source, user, password).await,
     }

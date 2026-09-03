@@ -130,6 +130,10 @@ as two sources. Each host and mux pairing is a **source**, named `local:psmux`
 when a host serves several and `prod` when it serves one. That name is what the
 nav shows and what commands address as `<source>/<session>`. Remote hosts are
 probed after the app is up, so a discovered source appears as its host answers.
+A remote host that answers the network but refuses your credentials shows
+`locked`; press Enter on its card, enter the username and the masked password,
+and xmux establishes one authenticated connection the rest of the session
+reuses.
 
 ## Configuration
 

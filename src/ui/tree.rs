@@ -1095,10 +1095,7 @@ mod tests {
                 ..
             } => {
                 assert!(*locked);
-                assert!(
-                    *unreachable,
-                    "a locked host is still a failure (err set)"
-                );
+                assert!(*unreachable, "a locked host is still a failure (err set)");
             }
             _ => panic!("expected a host card, got a non-host row"),
         }

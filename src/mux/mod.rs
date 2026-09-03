@@ -1228,7 +1228,9 @@ Usage: zellij [OPTIONS]",
             "ssh: connect to host 192.0.2.1 port 22: Connection timed out"
         ));
         assert!(!is_locked("Host key verification failed."));
-        assert!(!is_locked("tmux: open /tmp/tmux-0/default: Permission denied"));
+        assert!(!is_locked(
+            "tmux: open /tmp/tmux-0/default: Permission denied"
+        ));
         assert!(!is_locked("no server running on /tmp/tmux-1000/default"));
     }
 

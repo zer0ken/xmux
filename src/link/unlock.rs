@@ -238,8 +238,7 @@ mod tests {
     fn answerer_detects_the_final_auth_failure_signature() {
         let mut a = Answerer::new("hunter2".into());
         let _ = a.feed("alice@x's password: ");
-        let writes =
-            a.feed("Permission denied (publickey,password).");
+        let writes = a.feed("Permission denied (publickey,password).");
         assert_eq!(writes, vec![PromptWrite::Done(UnlockOutcome::AuthFailed)]);
     }
 
@@ -264,8 +263,13 @@ mod tests {
         // The same transport shape xmux builds for the host.
         let transport =
             crate::transport::ssh_as(host.clone(), host.clone(), cp.clone(), "linux".into());
-        let outcome =
-            unlock_host(&*transport, &user, &password, std::time::Duration::from_secs(30)).await;
+        let outcome = unlock_host(
+            &*transport,
+            &user,
+            &password,
+            std::time::Duration::from_secs(30),
+        )
+        .await;
         assert_eq!(
             outcome,
             UnlockOutcome::Ok,

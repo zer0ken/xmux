@@ -411,7 +411,10 @@ fn a_locked_host_shows_the_locked_view_screen() {
         &mut state,
     );
     let out = dump_screen(&mut switcher, None, 80, 24, &state);
-    assert!(out.contains("locked"), "the locked view names its state:\n{out}");
+    assert!(
+        out.contains("locked"),
+        "the locked view names its state:\n{out}"
+    );
     assert!(
         !out.contains("unreachable"),
         "a locked host is not the unreachable state:\n{out}"

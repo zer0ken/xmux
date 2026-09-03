@@ -1085,7 +1085,10 @@ async fn locked_host_unlock_flow_goes_user_then_masked_password() {
         h.ch(c).await;
     }
     let bar = h.hint_bar_text();
-    assert!(bar.contains('•'), "the password input draws bullets:\n{bar}");
+    assert!(
+        bar.contains('•'),
+        "the password input draws bullets:\n{bar}"
+    );
     assert!(
         !bar.contains("hunter2"),
         "no plaintext reaches the hint bar:\n{bar}"
@@ -1121,7 +1124,10 @@ async fn unlock_success_kicks_a_rescan_and_a_failure_keeps_the_host_locked() {
         },
         &mut h.state,
     );
-    assert!(h.sw.take_rescan_kick(), "a successful unlock re-scans the roster");
+    assert!(
+        h.sw.take_rescan_kick(),
+        "a successful unlock re-scans the roster"
+    );
     assert_eq!(h.state.groups[0].err, None, "the host is back to scanning");
     // A failed unlock stays locked; a retry re-enters the credentials.
     h.sw.apply_source_result(
@@ -1136,7 +1142,10 @@ async fn unlock_success_kicks_a_rescan_and_a_failure_keeps_the_host_locked() {
         },
         &mut h.state,
     );
-    assert!(h.sw.current_host_locked(), "auth failure keeps the card locked");
+    assert!(
+        h.sw.current_host_locked(),
+        "auth failure keeps the card locked"
+    );
     // A retry re-enters the credentials; the host stays locked until one works.
 }
 

@@ -640,8 +640,12 @@ mod tests {
 
     #[test]
     fn a_password_input_renders_only_bullets_for_its_buffer() {
-        let input =
-            Input::new(InputMode::Password, " password".into(), "hunter2".into(), None);
+        let input = Input::new(
+            InputMode::Password,
+            " password".into(),
+            "hunter2".into(),
+            None,
+        );
         // A block caret rides the end of the buffer (its own trailing cell).
         assert_eq!(
             input_hint_text(&input, 40).trim_end(),

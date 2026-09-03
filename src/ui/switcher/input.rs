@@ -344,12 +344,8 @@ impl Switcher {
                             // The unlock steps: User opens the masked password step
                             // carrying the id; Password submits the unlock with the
                             // carried id (never a guessed one).
-                            InputMode::User => {
-                                self.open_unlock_password(source, &val, state)
-                            }
-                            InputMode::Password => {
-                                self.queue_unlock(source, unlock_user, &val)
-                            }
+                            InputMode::User => self.open_unlock_password(source, &val, state),
+                            InputMode::Password => self.queue_unlock(source, unlock_user, &val),
                         }
                     }
                 }

@@ -258,10 +258,7 @@ impl ViewScreen {
         match self {
             ViewScreen::SelfSession => "running xmux",
             ViewScreen::Locked => "locked",
-            other => crate::ui::tree::host_state_word(
-                false,
-                other == ViewScreen::Unreachable,
-            ),
+            other => crate::ui::tree::host_state_word(false, other == ViewScreen::Unreachable),
         }
     }
 }
@@ -795,10 +792,12 @@ impl Chrome {
                 rows.push((ScreenCell::Label("log"), self.log_path.clone()));
             }
             if kind == ViewScreen::Locked {
-                rows.push((ScreenCell::Label("unlock"),
+                rows.push((
+                    ScreenCell::Label("unlock"),
                     "Enter a username, then the masked password; xmux answers the ssh \
                      prompt and establishes one authenticated connection the rest reuses"
-                    .into()));
+                        .into(),
+                ));
             }
             rows.push((ScreenCell::Gap, String::new()));
         } else {

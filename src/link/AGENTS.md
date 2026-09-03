@@ -66,6 +66,14 @@ and the composed control argv.
   for as long as xmux runs, so a line per tick is a file filled by one silent host. The
   rule is a value the loop folds outcomes into, so it is tested rather than read out of a
   log file afterwards.
+- The reader surfaces the connection child's OWN failure line (ssh's auth-failure,
+  refused, timed-out, or host-key text) as the exit reason when no protocol `%error`
+  names one, so an auth failure is told from a host that died silently.
+- The unlock establishes the ONE authenticated master: a single PTY prompt-answer ssh
+  (`ControlMaster=yes` over the shared control socket) answers the host-key and password
+  prompts, and every later `BatchMode` channel reuses the socket it leaves. The secret
+  rides only the transient command and the PTY writer - never stored, logged, or
+  rendered - and its success signal is the child's zero exit.
 
 ## Common Pitfalls
 
