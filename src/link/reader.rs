@@ -24,6 +24,11 @@ pub fn run_reader<E: FnMut(HostEvent)>(
     // The last %error block's text, so a never-connected exit carries a meaningful
     // reason (notably "no sessions" / "no server running" → reachable-but-empty).
     let mut last_error: Option<String> = None;
+    // The connection child's OWN failure line (ssh writes "Permission denied (…)"
+    // / "Connection refused" / … to the stream before dying), surfaced as the
+    // Exited reason only when no protocol %error named one - so an auth failure
+    // is told from a host that died silently.
+    let mut last_failure: Option<String> = None;
     for line in lines {
         // The entry DCS `\x1bP1000p` ([research §1]) introduces control mode. It may
         // arrive on its own line or glued to the first `%begin`. Strip it; a lone DCS
@@ -88,14 +93,34 @@ pub fn run_reader<E: FnMut(HostEvent)>(
             Line::Output { .. } | Line::ExtendedOutput { .. } => clear_connecting(state),
             Line::Notification(n) => dispatch_notif(host, proto, n, &last_error, &mut emit),
             // Stray frame/body outside a block.
-            Line::End { .. } | Line::Error { .. } | Line::Body(_) => {}
+            Line::End { .. } | Line::Error { .. } => {}
+            Line::Body(line) => {
+                if is_connection_failure(line) {
+                    last_failure = Some(line.trim().to_string());
+                }
+            }
         }
     }
     // Iterator ended = child stdout EOF.
     emit(HostEvent::Exited {
         host: host.to_string(),
-        reason: last_error,
+        reason: last_error.or(last_failure),
     });
+}
+
+/// True when `line` is the ssh connection child's own failure line (an auth
+/// failure, a refused/timed-out connect, or a host-key trust failure) rather than
+/// mux protocol content. The control stream for a REMOTE host is the ssh child's
+/// pty, so its death messages arrive here as raw body lines.
+fn is_connection_failure(line: &str) -> bool {
+    let l = line.to_lowercase();
+    l.contains("permission denied")
+        || l.contains("connection refused")
+        || l.contains("connection timed out")
+        || l.contains("no route to host")
+        || l.contains("network is unreachable")
+        || l.contains("host key verification failed")
+        || l.contains("name or service not known")
 }
 
 /// Resolves a closed `%begin…%end` block by parsing its body and carrying the result
@@ -605,6 +630,56 @@ mod tests {
                 HostEvent::Exited { reason: Some(r), .. } if r.contains("no sessions")
             )),
             "the exit reason carries the no-sessions error"
+        );
+    }
+
+    #[test]
+    fn exited_reason_falls_back_to_the_connection_failure_line() {
+        // A remote control child whose ssh dies on auth prints its own failure line
+        // to the pty stream; with no protocol %error, that line IS the exit reason
+        // (the app then tells locked from unreachable).
+        let state = test_state(80, 24);
+        let in_flight: InFlight = Default::default();
+        let mut reason = None;
+        run_reader(
+            "pwbox",
+            test_control_proto(),
+            vec!["pwtest@127.0.0.1: Permission denied (publickey,password).".to_string()]
+                .into_iter(),
+            &state,
+            &in_flight,
+            |ev| {
+                if let HostEvent::Exited { reason: r, .. } = ev {
+                    reason = r;
+                }
+            },
+        );
+        assert_eq!(
+            reason.as_deref(),
+            Some("pwtest@127.0.0.1: Permission denied (publickey,password).")
+        );
+    }
+
+    #[test]
+    fn exited_reason_keeps_no_connection_failure_when_only_protocol_or_idle_lines_arrive() {
+        let state = test_state(80, 24);
+        let in_flight: InFlight = Default::default();
+        let mut reason = None;
+        run_reader(
+            "pwbox",
+            test_control_proto(),
+            vec!["0: ksh* (1 panes)".to_string(), "".to_string()].into_iter(),
+            &state,
+            &in_flight,
+            |ev| {
+                if let HostEvent::Exited { reason: r, .. } = ev {
+                    reason = r;
+                }
+            },
+        );
+        assert_eq!(
+            reason, None,
+            "idle/protocol body lines are not a connection failure"
         );
     }
 
