@@ -1090,6 +1090,12 @@ async fn locked_host_unlock_flow_goes_user_then_masked_password() {
         !bar.contains("hunter2"),
         "no plaintext reaches the hint bar:\n{bar}"
     );
+    // The whole rendered frame (dump_screen) carries only bullets, never the secret.
+    assert!(
+        !h.text().contains("hunter2"),
+        "no plaintext reaches the rendered frame:\n{}",
+        h.text()
+    );
     h.key(KeyCode::Enter).await;
     // Submitting closes the input (the off-loop worker runs under the app, Task 11).
     assert!(h.state.modal.is_none(), "submitting closes the input");
