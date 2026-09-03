@@ -56,7 +56,16 @@ impl Runtime {
                 // A committed input/kill confirm folds through State::apply, which returns
                 // its Commands; collect them and dispatch the whole batch below.
                 Some(Action::NavKey(k)) => key_cmds.extend(switcher.handle_key(k, state)),
-                Some(Action::FocusTerminal) => focus_terminal = true,
+                Some(Action::FocusTerminal) => {
+                    focus_terminal = true;
+                    // Enter on a LOCKED host opens the unlock input instead of only
+                    // focusing the terminal (which would just show the locked screen):
+                    // the id step is prefilled from the run's saved secret, and the
+                    // user confirms it.
+                    if switcher.current_host_locked() {
+                        switcher.open_unlock_user(state);
+                    }
+                }
                 Some(Action::Quit) => quit = true,
                 Some(Action::Width(d)) => width_delta = d,
                 Some(Action::Height(d)) => height_delta = d,

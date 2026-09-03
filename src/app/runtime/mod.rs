@@ -224,12 +224,11 @@ fn dispatch_commands(
             Command::ToggleAutoHide => toggle_auto_hide(auto_hide_nav, xmux_dir),
             Command::Quit => quit = true,
             Command::RunOp(op) => spawn_op(op, op_sink.0, op_sink.1),
-            Command::RunUnlock { .. } => {
-                // The unlock worker is dispatched with the app's host access (Task 11);
-                // until that wiring lands the command cannot be produced (no UI path
-                // emits Action::Unlock yet), so reaching here would be a bug.
-                tracing::warn!("unlock dispatched before the app wiring");
-            }
+            Command::RunUnlock {
+                source,
+                user,
+                password,
+            } => spawn_unlock(source, user, password, op_sink.0, op_sink.1),
             // Settled-selection effects come only from Action::Tick, dispatched by the
             // run loop with registry/host access - never from a key/ctl action here.
             Command::PersistLastSession(_) | Command::Attach(_) => {}
@@ -1354,6 +1353,24 @@ fn spawn_op(
     let tx = op_tx.clone();
     tokio::spawn(async move {
         let result = crate::ui::switcher::run_op(&op, ops.as_ref()).await;
+        let _ = tx.send(result);
+    });
+}
+
+/// Runs the unlock off the loop the way [`spawn_op`] runs a mux op: the PTY
+/// prompt-answer is blocking I/O with its own timeout, so it must never freeze the
+/// loop; its [`OpResult::Unlock`] folds back through the same op channel.
+fn spawn_unlock(
+    source: String,
+    user: String,
+    password: String,
+    ops: &Arc<dyn crate::ui::switcher::Ops>,
+    op_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
+) {
+    let ops = ops.clone();
+    let tx = op_tx.clone();
+    tokio::spawn(async move {
+        let result = crate::ui::switcher::run_unlock(&source, &user, &password, ops.as_ref()).await;
         let _ = tx.send(result);
     });
 }

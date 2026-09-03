@@ -139,7 +139,7 @@ impl Switcher {
     /// relocked host re-unlocks with the same id; the user confirms it by pressing
     /// Enter, which opens the masked password step. Nothing is guessed: the id used
     /// later is exactly what is submitted here.
-    pub(super) fn open_unlock_user(&mut self, state: &mut crate::state::State) {
+    pub(crate) fn open_unlock_user(&mut self, state: &mut crate::state::State) {
         state.chrome.flash.clear();
         self.dismiss_modals(state);
         let Some(source) = self.current_source() else {
@@ -191,8 +191,8 @@ impl Switcher {
     pub(super) fn open_new(&mut self, state: &mut crate::state::State) {
         state.chrome.flash.clear();
         self.dismiss_modals(state);
-        if self.current_host_unreachable() {
-            state.flash("host unreachable, cannot create here");
+        if self.current_host_blocked() {
+            state.flash("host locked or unreachable, cannot create here");
             return;
         }
         let Some(source) = self.current_source() else {
@@ -502,6 +502,24 @@ impl Switcher {
             OpFollow::Flash(message) => {
                 state.flash(message);
             }
+            // A successful unlock established the authenticated ControlMaster: a
+            // roster re-scan then re-enumerates the host over it. Any failure stays
+            // locked and flashes why (the secret is still in memory for a retry).
+            OpFollow::UnlockResult(outcome) => match outcome {
+                crate::link::unlock::UnlockOutcome::Ok => self.request_rescan(state),
+                crate::link::unlock::UnlockOutcome::AuthFailed => {
+                    state.flash("authentication failed");
+                }
+                crate::link::unlock::UnlockOutcome::Timeout => {
+                    state.flash("unlock timed out");
+                }
+                crate::link::unlock::UnlockOutcome::Unavailable => {
+                    state.flash("unlock unavailable on this platform");
+                }
+                crate::link::unlock::UnlockOutcome::Failed(msg) => {
+                    state.flash(format!("unlock failed: {msg}"));
+                }
+            },
         }
     }
 

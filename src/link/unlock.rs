@@ -5,11 +5,10 @@
 
 use crate::transport::Transport;
 
-/// What the [`Answerer`] tells the pty loop to write next, or that it is done.
+/// What the [`Answerer`] tells the pty loop to write next, or that it is done. An
+/// empty return means nothing yet (keep reading).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PromptWrite {
-    /// Nothing yet; keep reading.
-    None,
     /// The ssh host-key prompt: write `yes\n`.
     HostKey,
     /// The password/passphrase prompt: write the secret and a newline.
@@ -20,7 +19,7 @@ pub(crate) enum PromptWrite {
 
 /// The verdict of one unlock attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum UnlockOutcome {
+pub enum UnlockOutcome {
     /// The master is established (the child exited 0); every later channel reuses it.
     Ok,
     /// The server refused the credentials (`Permission denied`).
@@ -153,7 +152,6 @@ pub(crate) async fn unlock_host(
                 let text = String::from_utf8_lossy(&chunk);
                 for action in answerer.feed(&text) {
                     match action {
-                        PromptWrite::None => {}
                         PromptWrite::HostKey => {
                             let _ = writer.write_all(b"yes\n");
                         }

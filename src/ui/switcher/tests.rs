@@ -14,6 +14,7 @@ use super::tests_support::auto_nav;
 #[derive(Default)]
 struct RecordOps {
     created: Mutex<Vec<String>>,
+    unlocked: Mutex<Vec<String>>,
 }
 
 #[async_trait::async_trait]
@@ -35,6 +36,15 @@ impl Ops for RecordOps {
             windows: 1,
             ..Default::default()
         })
+    }
+    async fn unlock(
+        &self,
+        source: &str,
+        _user: &str,
+        _password: &str,
+    ) -> crate::link::unlock::UnlockOutcome {
+        self.unlocked.lock().unwrap().push(source.to_string());
+        crate::link::unlock::UnlockOutcome::Ok
     }
 }
 
@@ -1080,6 +1090,45 @@ async fn locked_host_unlock_flow_goes_user_then_masked_password() {
     // off-loop worker runs under the app, Task 11).
     assert!(h.state.modal.is_none(), "submitting closes the input");
     assert_eq!(h.state.current_unlock_user("pwbox"), "alice");
+}
+
+#[tokio::test]
+async fn unlock_success_kicks_a_rescan_and_a_failure_keeps_the_host_locked() {
+    use crate::link::unlock::UnlockOutcome;
+    use crate::ui::ops::OpResult;
+    let mut h = Harness::from_sources(&["pwbox"]);
+    h.sw.apply_source_result(
+        "pwbox".into(),
+        vec![],
+        Some("Permission denied (publickey,password).".into()),
+        &mut h.state,
+    );
+    h.draw();
+    // A successful unlock clears the locked state and arms a roster re-scan (the
+    // re-enumeration runs over the freshly established ControlMaster).
+    h.sw.apply_op_result(
+        OpResult::Unlock {
+            outcome: UnlockOutcome::Ok,
+        },
+        &mut h.state,
+    );
+    assert!(h.sw.take_rescan_kick(), "a successful unlock re-scans the roster");
+    assert_eq!(h.state.groups[0].err, None, "the host is back to scanning");
+    // A failed unlock stays locked (the secret stays in memory for a retry).
+    h.sw.apply_source_result(
+        "pwbox".into(),
+        vec![],
+        Some("Permission denied (publickey,password).".into()),
+        &mut h.state,
+    );
+    h.sw.apply_op_result(
+        OpResult::Unlock {
+            outcome: UnlockOutcome::AuthFailed,
+        },
+        &mut h.state,
+    );
+    assert!(h.sw.current_host_locked(), "auth failure keeps the card locked");
+    assert_eq!(h.state.current_unlock_user("pwbox"), "");
 }
 
 #[tokio::test]

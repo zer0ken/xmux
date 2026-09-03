@@ -22,7 +22,7 @@ use crate::ui::modal::{self, Input, InputMode, Modal, PopupGeometry};
 use crate::ui::tree::{self, Group, Row, RowRef};
 
 use crate::ui::ops::OpFollow;
-pub use crate::ui::ops::{run_op, OpResult, Ops};
+pub use crate::ui::ops::{run_op, run_unlock, OpResult, Ops};
 
 /// Tree pane width: border + 1-cell inner padding each side + content.
 pub const NAV_WIDTH: u16 = 48;
@@ -719,6 +719,19 @@ impl Switcher {
         matches!(self.current_ref(), Some(RowRef::Host { unreachable, .. }) if *unreachable)
     }
 
+    /// True when the selected host answered the network but refused the credentials:
+    /// its card is the entry to the unlock input, and the app opens that input on
+    /// Enter instead of focusing the terminal.
+    pub(crate) fn current_host_locked(&self) -> bool {
+        matches!(self.current_ref(), Some(RowRef::Host { locked, .. }) if *locked)
+    }
+
+    /// True when the selected host is not a valid action target: it is unreachable
+    /// (dead) or locked (auth-failed). Creating under it is refused either way.
+    fn current_host_blocked(&self) -> bool {
+        self.current_host_unreachable() || self.current_host_locked()
+    }
+
     /// Which host screen the terminal view shows in place of the grid, or `None` when it
     /// shows the grid. Only a selected HOST card earns one, and only once it has settled:
     /// unreachable names why it failed, empty names what to press. A host still scanning
@@ -915,6 +928,10 @@ impl Switcher {
                 sessions,
             }),
         }
+        // A result that is no longer LOCKED (a host that died, or one that answered)
+        // has no use for its in-memory secret: drop it so the run keeps none for a
+        // host that is not waiting on a password.
+        state.forget_unlocked_secrets();
         self.rebuild(state);
         self.restore_focus(prior, state);
     }

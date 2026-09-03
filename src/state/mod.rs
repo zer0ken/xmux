@@ -528,6 +528,9 @@ impl State {
                 OpFollow::Reselect(addr)
             }
             OpResult::Failed { message } => OpFollow::Flash(message),
+            // The unlock verdict is no inventory mutation: the switcher reacts to
+            // it (a roster re-scan on success, a flash on failure).
+            OpResult::Unlock { outcome } => OpFollow::UnlockResult(outcome),
         }
     }
 
