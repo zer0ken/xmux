@@ -12,25 +12,30 @@ use crate::model::DisplayTty;
 use crate::mux::Mux;
 use crate::transport::Transport;
 
-/// Connecting / live / unreachable — the single per-host reachability state the
-/// supervisor and the tree read (no separate `connecting` flag or `connected` set).
+/// Connecting / live / locked / unreachable — the single per-host reachability
+/// state the supervisor and the tree read (no separate `connecting` flag or
+/// `connected` set).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Liveness {
     Connecting,
     Live,
+    /// Reached but the credentials were refused (`Permission denied`): a locked
+    /// host is the entry point to the password unlock, never a dead one.
+    Locked,
     Unreachable,
 }
 
 impl Liveness {
-    /// Projects a scan/ls outcome's optional error into reachability: `Some` ⇒
-    /// `Unreachable`, `None` ⇒ `Live`. The scan path has no "connecting" state, so
-    /// this is a two-way projection; the failure message itself is kept alongside
+    /// Projects a scan/ls outcome's optional error into reachability: `None` ⇒
+    /// `Live`; an ssh auth-failure text ⇒ `Locked`; any other failure ⇒
+    /// `Unreachable`. The scan path has no "connecting" state, so this is a
+    /// three-way projection; the failure message itself is kept alongside
     /// (`Liveness` is `Copy` and holds none).
     pub fn from_scan_err(err: &Option<String>) -> Liveness {
-        if err.is_some() {
-            Liveness::Unreachable
-        } else {
-            Liveness::Live
+        match err {
+            Some(text) if crate::mux::is_locked(text) => Liveness::Locked,
+            Some(_) => Liveness::Unreachable,
+            None => Liveness::Live,
         }
     }
 }
@@ -668,6 +673,21 @@ mod tests {
         let l = Liveness::Connecting;
         assert_eq!(l, Liveness::Connecting);
         assert_ne!(Liveness::Live, Liveness::Unreachable);
+    }
+
+    #[test]
+    fn from_scan_err_projects_auth_failure_to_locked_and_reach_failure_to_unreachable() {
+        assert_eq!(
+            Liveness::from_scan_err(&Some(
+                "pwtest@127.0.0.1: Permission denied (publickey,password).".into()
+            )),
+            Liveness::Locked
+        );
+        assert_eq!(
+            Liveness::from_scan_err(&Some("ssh: connect to host x: Connection refused".into())),
+            Liveness::Unreachable
+        );
+        assert_eq!(Liveness::from_scan_err(&None), Liveness::Live);
     }
 
     struct EnumMux {
