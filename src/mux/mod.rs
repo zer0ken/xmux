@@ -92,6 +92,17 @@ pub(crate) fn reason_is_no_sessions(text: &str) -> bool {
     })
 }
 
+/// True when `text` is ssh's canonical AUTH-failure line (`Permission denied (…`
+/// with the rejected-methods list), meaning the host was REACHED but refused the
+/// credentials: the locked state, distinct from unreachable. The `(` after
+/// "Permission denied" is ssh's own signature; a generic mux permission error or
+/// a reach failure ("Connection refused" / "Host key verification failed") does not
+/// carry it. Conservative on purpose: a false positive invites a password entry on
+/// a host that is merely down.
+pub(crate) fn is_locked(text: &str) -> bool {
+    text.contains("Permission denied (")
+}
+
 /// The per-command budget [`ExecRunner`] applies to itself, so a command that never
 /// answers is torn down cleanly (kill → drain → wait) rather than the sweep's
 /// cancellation dropping pipe reads in flight (which crashes on Windows - see
@@ -1197,6 +1208,28 @@ Usage: zellij [OPTIONS]",
         let got = detect_backend(&transport, "screen", &runner).await.unwrap();
         assert_eq!(got.kind(), "screen");
         assert_eq!(got.server_model(), ServerModel::PerSession);
+    }
+
+    #[test]
+    fn is_locked_matches_only_the_ssh_auth_failure_signature() {
+        // The canonical ssh auth-failure line (locked), and the exact "(" after
+        // "Permission denied" that distinguishes it from a generic mux permission error.
+        assert!(is_locked(
+            "pwtest@127.0.0.1: Permission denied (publickey,password)."
+        ));
+        assert!(is_locked(
+            "command failed (exit 255): pwtest@127.0.0.1: Permission denied (publickey)."
+        ));
+        assert!(is_locked(
+            "Permission denied (publickey,password,keyboard-interactive)."
+        ));
+        // Reach failures and non-ssh permission errors are NOT locked.
+        assert!(!is_locked(
+            "ssh: connect to host 192.0.2.1 port 22: Connection timed out"
+        ));
+        assert!(!is_locked("Host key verification failed."));
+        assert!(!is_locked("tmux: open /tmp/tmux-0/default: Permission denied"));
+        assert!(!is_locked("no server running on /tmp/tmux-1000/default"));
     }
 
     #[test]
