@@ -1040,6 +1040,49 @@ async fn a_locked_host_card_reads_locked_with_the_lock_mark() {
 }
 
 #[tokio::test]
+async fn locked_host_unlock_flow_goes_user_then_masked_password() {
+    use crate::ui::modal::{InputMode, Modal};
+    let mut h = Harness::from_sources(&["pwbox"]);
+    h.sw.apply_source_result(
+        "pwbox".into(),
+        vec![],
+        Some("pwtest@127.0.0.1: Permission denied (publickey,password).".into()),
+        &mut h.state,
+    );
+    h.draw();
+    // The unlock entry opens the USERNAME step (wiring Enter to it is the app's
+    // job, Task 11; here the step is driven directly).
+    h.sw.open_unlock_user(&mut h.state);
+    assert!(
+        matches!(&h.state.modal, Some(Modal::Input(i)) if i.mode == InputMode::User),
+        "the username step is open"
+    );
+    for c in "alice".chars() {
+        h.ch(c).await;
+    }
+    h.key(KeyCode::Enter).await;
+    assert!(
+        matches!(&h.state.modal, Some(Modal::Input(i)) if i.mode == InputMode::Password),
+        "Enter on the id moves to the masked password step"
+    );
+    // Typing the password renders masked, never the plaintext.
+    for c in "hunter2".chars() {
+        h.ch(c).await;
+    }
+    let bar = h.hint_bar_text();
+    assert!(bar.contains('•'), "the password input draws bullets:\n{bar}");
+    assert!(
+        !bar.contains("hunter2"),
+        "no plaintext reaches the hint bar:\n{bar}"
+    );
+    h.key(KeyCode::Enter).await;
+    // Submitting closes the input and stores the in-memory run secret (the
+    // off-loop worker runs under the app, Task 11).
+    assert!(h.state.modal.is_none(), "submitting closes the input");
+    assert_eq!(h.state.current_unlock_user("pwbox"), "alice");
+}
+
+#[tokio::test]
 async fn a_card_claims_a_mux_only_when_it_is_confirmed() {
     // A host-state card claims no mux it cannot back with an answer. A bare-id host
     // (its mux is a config assumption, never probed until the enumeration answers)

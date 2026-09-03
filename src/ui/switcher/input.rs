@@ -127,10 +127,59 @@ impl Switcher {
                 input.restore_filter = Some(state.filter.clone());
                 state.modal = Some(Modal::Input(Box::new(input)));
             }
-            // New is opened by `open_new`, Jump by `open_jump` (both capture context
-            // the mode alone does not carry).
-            InputMode::New | InputMode::Jump => {}
+            // New is opened by `open_new`, Jump by `open_jump`, and the unlock steps
+            // by `open_unlock_user` / `open_unlock_password` (all capture context the
+            // mode alone does not carry).
+            InputMode::New | InputMode::Jump | InputMode::User | InputMode::Password => {}
         }
+    }
+
+    /// The unlock entry: the USERNAME step of the two-step unlock input. The id is
+    /// prefilled from the run's saved secret for the selected host (if any) so a
+    /// relocked host re-unlocks with the same id; the user confirms it by pressing
+    /// Enter, which opens the masked password step. Nothing is guessed: the id used
+    /// later is exactly what is submitted here.
+    pub(super) fn open_unlock_user(&mut self, state: &mut crate::state::State) {
+        state.chrome.flash.clear();
+        self.dismiss_modals(state);
+        let Some(source) = self.current_source() else {
+            return;
+        };
+        state.modal = Some(crate::ui::modal::Modal::Input(Box::new(
+            crate::ui::modal::Input::new(
+                crate::ui::modal::InputMode::User,
+                format!(" username for {source}"),
+                state.current_unlock_user(&source),
+                Some(source),
+            ),
+        )));
+    }
+
+    /// The masked PASSWORD step of the unlock, carrying the id the User step just
+    /// submitted. The secret prefills from the run's saved one (a relock re-unlocks
+    /// with one Enter); the buffer draws masked either way.
+    fn open_unlock_password(
+        &mut self,
+        source: Option<String>,
+        user: &str,
+        state: &mut crate::state::State,
+    ) -> Vec<crate::model::Command> {
+        let Some(source) = source else {
+            return Vec::new();
+        };
+        let secret = state
+            .secret_for(&source)
+            .map(|s| s.secret.clone())
+            .unwrap_or_default();
+        let mut input = crate::ui::modal::Input::new(
+            crate::ui::modal::InputMode::Password,
+            format!(" password for {user}@{source}"),
+            secret,
+            Some(source),
+        );
+        input.unlock_user = Some(user.to_string());
+        state.modal = Some(crate::ui::modal::Modal::Input(Box::new(input)));
+        Vec::new()
     }
 
     /// The `n` action: a new SESSION on the selected card's host/mux. Every card
@@ -262,7 +311,7 @@ impl Switcher {
         state.chrome.flash.clear();
         match ev.code {
             KeyCode::Enter => {
-                let (mode, val, source) = {
+                let (mode, val, source, unlock_user) = {
                     let Some(Modal::Input(input)) = &state.modal else {
                         return Vec::new();
                     };
@@ -270,6 +319,7 @@ impl Switcher {
                         input.mode,
                         input.buffer.trim().to_string(),
                         input.source.clone(),
+                        input.unlock_user.clone(),
                     )
                 };
                 match mode {
@@ -298,6 +348,15 @@ impl Switcher {
                             InputMode::Filter => Vec::new(),
                             InputMode::New => self.queue_create(source, &val, state),
                             InputMode::Jump => Vec::new(),
+                            // The unlock steps: User opens the masked password step
+                            // carrying the id; Password submits the unlock with the
+                            // carried id (never a guessed one).
+                            InputMode::User => {
+                                self.open_unlock_password(source, &val, state)
+                            }
+                            InputMode::Password => {
+                                self.queue_unlock(source, unlock_user, &val, state)
+                            }
                         }
                     }
                 }
@@ -399,6 +458,29 @@ impl Switcher {
         state.apply(Action::CreateSession {
             source,
             name: name.to_string(),
+        })
+    }
+
+    /// Submits the unlock: the id carried from the User step plus the entered
+    /// password fold into [`Action::Unlock`](crate::model::Action::Unlock), which
+    /// stores the in-memory secret and emits the off-loop `RunUnlock` command.
+    fn queue_unlock(
+        &mut self,
+        source: Option<String>,
+        user: Option<String>,
+        password: &str,
+        state: &mut crate::state::State,
+    ) -> Vec<Command> {
+        let Some(source) = source else {
+            return Vec::new();
+        };
+        let Some(user) = user else {
+            return Vec::new();
+        };
+        state.apply(Action::Unlock {
+            source,
+            user,
+            password: password.to_string(),
         })
     }
 

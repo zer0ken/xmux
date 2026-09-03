@@ -104,6 +104,13 @@ pub(crate) enum InputMode {
     /// closes the popup when the number names a card and flashes the valid range while
     /// leaving it open otherwise; Esc restores where the jump started.
     Jump,
+    /// The unlock username step (unmasked, prefilled from the run's saved secret for
+    /// this host, else empty - the user always confirms the id by typing/submitting
+    /// it). Distinct from `New`: its Enter opens the password step, not a create.
+    User,
+    /// The unlock password step: the buffer renders masked (bullets) and its Enter
+    /// submits the unlock with the id carried on the input.
+    Password,
 }
 
 pub(crate) struct Input {
@@ -127,6 +134,9 @@ pub(crate) struct Input {
     /// The filter applies live while the input is open, so cancelling must undo every
     /// edit back to this value.
     pub(crate) restore_filter: Option<String>,
+    /// [`InputMode::Password`] only: the username the User step submitted, carried so
+    /// the final submit needs no look-up and no guessing.
+    pub(crate) unlock_user: Option<String>,
 }
 
 impl Input {
@@ -148,6 +158,7 @@ impl Input {
             source,
             restore: None,
             restore_filter: None,
+            unlock_user: None,
         }
     }
 
@@ -463,7 +474,13 @@ fn input_segments(input: &Input, width: u16) -> (String, String, String, String,
     // narrow the bar gets. A block caret at END of buffer needs its own cell past the
     // last char, so the window holds one fewer buffer char then.
     let avail = (width as i32 - head_w as i32).max(1) as usize;
-    let chars: Vec<char> = input.buffer.chars().collect();
+    // A password masks its buffer: the caret and windowing still track the real
+    // chars, only the drawn text is bullets, so no plaintext ever reaches the bar.
+    let chars: Vec<char> = if input.mode == InputMode::Password {
+        input.buffer.chars().map(|_| '•').collect()
+    } else {
+        input.buffer.chars().collect()
+    };
     let len = chars.len();
     let cur = input.cursor.min(len);
     let cell_budget = if cur == len {
@@ -605,6 +622,8 @@ fn input_title(mode: InputMode) -> &'static str {
         InputMode::Filter => "filter",
         InputMode::New => "new session",
         InputMode::Jump => "jump",
+        InputMode::User => "user",
+        InputMode::Password => "password",
     }
 }
 
@@ -617,6 +636,31 @@ mod tests {
 
     fn edit_input(buffer: &str) -> Input {
         Input::new(InputMode::New, "t".into(), buffer.to_string(), None)
+    }
+
+    #[test]
+    fn a_password_input_renders_only_bullets_for_its_buffer() {
+        let input =
+            Input::new(InputMode::Password, " password".into(), "hunter2".into(), None);
+        // A block caret rides the end of the buffer (its own trailing cell).
+        assert_eq!(
+            input_hint_text(&input, 40).trim_end(),
+            "[password] password: •••••••"
+        );
+        // The caret still tracks the real buffer, not the bullets.
+        let mut input = input;
+        input.cursor = 0;
+        let (_, _, before, at, after) = input_segments(&input, 40);
+        assert_eq!(format!("{before}{at}{after}"), "•••••••");
+    }
+
+    #[test]
+    fn a_user_input_renders_its_id_unmasked() {
+        let input = Input::new(InputMode::User, " username".into(), "alice".into(), None);
+        assert_eq!(
+            input_hint_text(&input, 40).trim_end(),
+            "[user] username: alice"
+        );
     }
 
     #[test]
